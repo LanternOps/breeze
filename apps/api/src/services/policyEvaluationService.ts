@@ -1620,17 +1620,32 @@ export async function evaluateDeviceComplianceFromConfigPolicy(
         });
     }
 
-    // Trigger remediation if enforcement is 'enforce' and a remediation script is configured
+    // Trigger remediation if enforcement is 'enforce'
     let remediationTriggered = false;
-    if (
-      status === 'non_compliant'
-      && complianceRule.enforcementLevel === 'enforce'
-      && complianceRule.remediationScriptId
-    ) {
-      remediationTriggered = await triggerConfigPolicyRemediation(
-        complianceRule,
-        targetDevice
-      );
+    if (status === 'non_compliant' && complianceRule.enforcementLevel === 'enforce') {
+      // Check per-rule remediation first (from rules JSONB)
+      const rulesArray = Array.isArray(complianceRule.rules) ? complianceRule.rules as Record<string, unknown>[] : [];
+      const failedRulesWithRemediation = rulesArray.filter((r) => {
+        const rem = r.remediation as Record<string, unknown> | undefined;
+        return rem && rem.type !== 'none';
+      });
+
+      for (const failedRule of failedRulesWithRemediation) {
+        const rem = failedRule.remediation as Record<string, unknown>;
+        if (rem.type === 'script' && typeof rem.scriptId === 'string') {
+          const tempRule = { ...complianceRule, remediationScriptId: rem.scriptId as string };
+          const triggered = await triggerConfigPolicyRemediation(tempRule, targetDevice);
+          if (triggered) remediationTriggered = true;
+        }
+        if (rem.type === 'software_deploy' && typeof rem.catalogId === 'string') {
+          console.log(`[ConfigPolicyCompliance] Software deploy remediation for catalogId=${rem.catalogId} on device=${device.id} — not yet implemented`);
+        }
+      }
+
+      // Fallback: check legacy remediationScriptId on the rule set
+      if (!remediationTriggered && complianceRule.remediationScriptId) {
+        remediationTriggered = await triggerConfigPolicyRemediation(complianceRule, targetDevice);
+      }
     }
 
     results.push({
