@@ -606,7 +606,7 @@ export default function DevicesPage() {
                 const token = onboardingToken || '<TOKEN>';
 
                 const secretFlag = enrollmentSecret ? ` --enrollment-secret "${enrollmentSecret}"` : '';
-                const winCmd = `Invoke-WebRequest -Uri "${ghBase}/breeze-agent-windows-amd64.exe" -OutFile breeze-agent.exe; .\\breeze-agent.exe service install; breeze-agent.exe enroll "${token}" --server "${apiUrl}"${secretFlag}; breeze-agent.exe service start`;
+                const winCmd = `Invoke-WebRequest -Uri "${ghBase}/breeze-agent-windows-amd64.exe" -OutFile breeze-agent.exe; .\\breeze-agent.exe service install; .\\breeze-agent.exe enroll "${token}" --server "${apiUrl}"${secretFlag}; .\\breeze-agent.exe service start`;
                 const unixCmd = `curl -fsSL -o breeze-agent "${ghBase}/breeze-agent-$(uname -s | tr A-Z a-z)-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" && chmod +x breeze-agent && sudo ./breeze-agent service install && sudo breeze-agent enroll "${token}" --server "${apiUrl}"${secretFlag} && sudo breeze-agent service start`;
 
                 return (
