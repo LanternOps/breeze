@@ -32,7 +32,7 @@ export function ConditionRow({
       onChange({
         field: fieldKey,
         operator: defaultOperator,
-        value: getDefaultValue(field.type, defaultOperator)
+        value: getDefaultValue(field.type, defaultOperator, field.enumValues)
       });
     }
   };
@@ -87,7 +87,7 @@ export function ConditionRow({
   );
 }
 
-function getDefaultValue(type: string, operator: FilterOperator): FilterValue {
+function getDefaultValue(type: string, operator: FilterOperator, enumValues?: string[]): FilterValue {
   if (['isNull', 'isNotNull', 'isEmpty', 'isNotEmpty'].includes(operator)) {
     return '';
   }
@@ -112,6 +112,8 @@ function getDefaultValue(type: string, operator: FilterOperator): FilterValue {
     case 'date':
     case 'datetime':
       return new Date().toISOString();
+    case 'enum':
+      return enumValues?.[0] ?? '';
     default:
       return '';
   }
