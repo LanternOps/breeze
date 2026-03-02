@@ -1,0 +1,317 @@
+---
+title: Log Shipping
+description: Collect, ship, and query agent diagnostic logs with gzip compression, level filtering, and full-text search.
+sidebar:
+  order: 43
+  label: Log Shipping
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Log Shipping collects diagnostic logs from the Breeze agent and stores them centrally for querying, correlation, and troubleshooting. Every agent component -- heartbeat, commands, patching, enrollment, discovery, terminal, and more -- writes structured log entries through Go's `slog` package. The logging subsystem intercepts these entries, buffers them in memory, compresses them with gzip, and ships them to the API in batches every 60 seconds. On the server side, logs are stored in PostgreSQL with indexes on device, timestamp, level, and component, making it fast to search across thousands of devices.
+
+This is distinct from the fleet event log system (which collects Windows Event Log, syslog, and application logs from managed devices). Log Shipping specifically handles the Breeze agent's own diagnostic output -- the internal telemetry that helps you understand what the agent is doing, debug enrollment failures, diagnose command execution issues, and monitor agent health across your fleet.
+
+---
+
+## Key Concepts
+
+### Log Levels
+
+| Level | Description | Numeric Priority |
+|---|---|---|
+| `debug` | Verbose diagnostic output for development and deep troubleshooting | Lowest |
+| `info` | Normal operational messages (startup, enrollment, heartbeat success) | Default |
+| `warn` | Non-fatal issues that may indicate a problem (retry, degraded state) | Medium |
+| `error` | Failures that require attention (command execution failed, connection lost) | Highest |
+
+### Log Entry Fields
+
+| Field | Type | Max Length | Description |
+|---|---|---|---|
+| `timestamp` | ISO 8601 datetime | -- | When the log entry was created on the agent |
+| `level` | enum | -- | One of: `debug`, `info`, `warn`, `error` |
+| `component` | string | 100 chars | Which agent subsystem produced the entry (e.g., `heartbeat`, `commands`, `patching`) |
+| `message` | string | 10,000 chars | Human-readable log message |
+| `fields` | JSON | 32 KB | Structured key-value data (command IDs, durations, error details, etc.) |
+| `agentVersion` | string | 50 chars | Version of the agent that produced the entry |
+
+### Common Components
+
+| Component | What It Logs |
+|---|---|
+| `heartbeat` | Heartbeat send/receive, metric collection, cert renewal |
+| `commands` | Command dispatch, execution, result reporting |
+| `patching` | Patch scan, download, install, reboot handling |
+| `enrollment` | Enrollment attempts, token exchange, config persistence |
+| `discovery` | Network scan execution, host detection, result shipping |
+| `terminal` | PTY allocation, resize, data relay |
+| `desktop` | Remote desktop session lifecycle, WebRTC signaling |
+| `updater` | Self-update checks, downloads, binary replacement |
+| `mtls` | Certificate loading, renewal, TLS configuration |
+| `logging` | Log shipper lifecycle, buffer management |
+
+---
+
+## Agent-Side Architecture
+
+The agent's logging subsystem has three layers:
+
+### 1. Local Logging
+
+The agent writes logs to stdout (or a file via `RotatingWriter`) using Go's `slog` package. The format is configurable as `text` (default) or `json`.
+
+```go
+// Create a component logger
+logger := logging.L("heartbeat")
+logger.Info("heartbeat sent", "statusCode", 200, "durationMs", 45)
+```
+
+### 2. Log File Rotation
+
+When file logging is enabled, the `RotatingWriter` handles size-based rotation:
+
+| Setting | Default | Description |
+|---|---|---|
+| Max file size | 50 MB | Rotates when the log file exceeds this size |
+| Max backups | 3 | Keeps up to 3 rotated files (`.1`, `.2`, `.3`) |
+| File permissions | `0600` | Owner read/write only |
+| Directory permissions | `0700` | Owner read/write/execute only |
+
+Rotation works by shifting existing backups (`.3` is deleted, `.2` becomes `.3`, etc.) and renaming the current file to `.1`.
+
+### 3. Remote Shipping
+
+The `Shipper` intercepts all log entries via a custom `slog.Handler` wrapper (`shippingHandler`) and forwards them to the API:
+
+<Steps>
+
+1. **Every slog call** passes through the `shippingHandler`, which writes to the local handler (stdout/file) and also enqueues the entry for remote shipping if it meets the minimum level threshold.
+
+2. **Entries are buffered** in a channel with capacity for 500 entries. If the buffer is full, entries are dropped and a counter is incremented. The dropped count is reported in the next heartbeat.
+
+3. **Every 60 seconds** (or when 500 entries accumulate), the shipper flushes the buffer. Entries are serialized as JSON and gzip-compressed.
+
+4. **The compressed batch is POSTed** to `POST /api/v1/agents/:agentId/logs` with `Content-Encoding: gzip` and `Authorization: Bearer` headers.
+
+5. **On failure**, the shipper retries up to 2 additional times with 1-second backoff plus random jitter. Server errors (5xx) and network errors trigger retries. Client errors (4xx) do not.
+
+6. **On graceful shutdown**, the shipper drains remaining buffered entries and ships them before exiting.
+
+</Steps>
+
+<Aside type="note">
+  The minimum shipping level is configurable at runtime via `SetShipperLevel()`. By default, it ships entries at `info` level and above. You can dynamically lower it to `debug` for a specific device to capture verbose diagnostics without restarting the agent.
+</Aside>
+
+---
+
+## API Ingest Endpoint
+
+Agents ship logs to:
+
+```
+POST /api/v1/agents/:agentId/logs
+Content-Type: application/json
+Content-Encoding: gzip
+Authorization: Bearer AGENT_TOKEN
+```
+
+### Request Body
+
+```json
+{
+  "logs": [
+    {
+      "timestamp": "2026-02-15T14:30:00.000Z",
+      "level": "info",
+      "component": "heartbeat",
+      "message": "heartbeat sent successfully",
+      "fields": {
+        "statusCode": 200,
+        "durationMs": 45
+      },
+      "agentVersion": "1.2.0"
+    }
+  ]
+}
+```
+
+### Constraints
+
+| Limit | Value |
+|---|---|
+| Max entries per request | 500 |
+| Max decompressed payload | 10 MB |
+| Max message length | 10,000 characters |
+| Max component length | 100 characters |
+| Max fields JSON size | 32 KB |
+| Batch insert size | 100 rows per database insert |
+
+### Response Codes
+
+| Status | Meaning |
+|---|---|
+| `201` | All logs accepted and stored |
+| `200` | Empty batch (0 logs) -- no-op |
+| `207` | Partial success -- some logs stored, some failed |
+| `400` | Invalid request body, decompression failure, or validation error |
+| `404` | Agent/device not found |
+| `500` | All logs failed to insert |
+
+---
+
+## Querying Diagnostic Logs
+
+Diagnostic logs are queried per-device through the devices API:
+
+```bash
+curl "/api/v1/devices/:deviceId/diagnostic-logs?level=warn,error&component=patching&since=2026-02-01T00:00:00Z&search=failed" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Query Parameters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `level` | string | Comma-separated levels to include (e.g., `warn,error`) |
+| `component` | string | Exact component name to filter by |
+| `since` | ISO 8601 datetime | Only logs at or after this time |
+| `until` | ISO 8601 datetime | Only logs at or before this time |
+| `search` | string | Case-insensitive text search across message and fields |
+| `page` | integer | Page number (default 1) |
+| `limit` | integer | Results per page (default 1000) |
+
+### Response Format
+
+```json
+{
+  "logs": [
+    {
+      "id": "uuid",
+      "deviceId": "uuid",
+      "orgId": "uuid",
+      "timestamp": "2026-02-15T14:30:00.000Z",
+      "level": "error",
+      "component": "patching",
+      "message": "patch installation failed",
+      "fields": {
+        "patchId": "KB5034441",
+        "exitCode": 1603,
+        "error": "HRESULT 0x80070005: Access denied"
+      },
+      "agentVersion": "1.2.0",
+      "createdAt": "2026-02-15T14:30:05.000Z"
+    }
+  ],
+  "total": 47,
+  "limit": 1000,
+  "offset": 0
+}
+```
+
+<Aside type="tip">
+  The `search` parameter performs a case-insensitive `ILIKE` search across both the `message` field and the `fields` JSON column. This lets you search for specific error codes, command IDs, or any structured data embedded in the log entry.
+</Aside>
+
+---
+
+## Fleet-Wide Log Search
+
+For searching logs across multiple devices and organizations, use the fleet log search endpoint:
+
+```bash
+curl -X POST /api/v1/logs/search \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "patch installation failed",
+    "timeRange": {
+      "start": "2026-02-01T00:00:00Z",
+      "end": "2026-02-28T23:59:59Z"
+    },
+    "level": ["error", "critical"],
+    "category": ["system"],
+    "deviceIds": ["UUID1", "UUID2"],
+    "limit": 100,
+    "sortBy": "timestamp",
+    "sortOrder": "desc"
+  }'
+```
+
+### Additional Fleet Log Features
+
+| Feature | Endpoint | Description |
+|---|---|---|
+| Aggregation | `GET /api/v1/logs/aggregation` | Time-bucketed counts grouped by level, category, source, or device |
+| Trends | `GET /api/v1/logs/trends` | Top error patterns and trending log sources |
+| Correlation detection | `POST /api/v1/logs/correlation/detect` | Find patterns appearing across multiple devices |
+| Correlation list | `GET /api/v1/logs/correlation` | List detected correlations with status |
+| Saved queries | `GET/POST/DELETE /api/v1/logs/queries` | Save and reuse common search filters |
+
+---
+
+## Dropped Log Monitoring
+
+When the agent's buffer is full (500 entries), new log entries are dropped. The agent tracks dropped entries and reports the count in each heartbeat. After a successful heartbeat, the counter resets to zero.
+
+You can monitor this by checking the heartbeat data for a device. A non-zero dropped log count indicates the agent is producing logs faster than it can ship them. Common causes:
+
+- **Network latency** to the API server is high
+- **Debug-level logging** is enabled, producing high volume
+- **Agent is under heavy load** (e.g., running many concurrent commands)
+
+To mitigate, increase the shipping level to `warn` or `error`, or investigate the root cause of the high log volume.
+
+---
+
+## API Reference
+
+### Agent Ingest
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/v1/agents/:id/logs` | Ship a batch of diagnostic log entries |
+
+### Device Diagnostic Logs
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/devices/:id/diagnostic-logs` | Query diagnostic logs for a specific device |
+
+### Fleet Log Search
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/v1/logs/search` | Search logs across the fleet with filters |
+| `GET` | `/api/v1/logs/aggregation` | Time-bucketed log aggregation |
+| `GET` | `/api/v1/logs/trends` | Trending log patterns |
+| `POST` | `/api/v1/logs/correlation/detect` | Detect cross-device log correlations |
+| `GET` | `/api/v1/logs/correlation/detect/:jobId` | Check status of an async correlation detection job |
+| `GET` | `/api/v1/logs/correlation` | List detected correlations |
+| `GET` | `/api/v1/logs/queries` | List saved log search queries |
+| `POST` | `/api/v1/logs/queries` | Create a saved log search query |
+| `GET` | `/api/v1/logs/queries/:id` | Get a saved query by ID |
+| `DELETE` | `/api/v1/logs/queries/:id` | Delete a saved query |
+
+---
+
+## Troubleshooting
+
+**Logs not appearing for a device**
+Verify the agent is enrolled and the log shipper is initialized. The shipper starts after enrollment when the agent has a valid server URL, agent ID, and auth token. Check the agent's local stdout for `[log-shipper]` messages indicating shipping errors.
+
+**Only seeing info-level and above**
+The default minimum shipping level is `info`. To capture `debug` entries, dynamically adjust the shipping level via the agent's configuration or use `SetShipperLevel("debug")`. Note that debug-level logging significantly increases volume and may cause buffer drops.
+
+**Logs delayed by up to 60 seconds**
+This is expected. The shipper flushes every 60 seconds or when the buffer reaches 500 entries, whichever comes first. For time-critical debugging, lower the minimum level to produce more entries and trigger faster flushes.
+
+**"Device not found" when agent ships logs**
+The ingest endpoint looks up the device by `agentId` (the `:id` path parameter). If the agent was recently re-enrolled with a new agent ID, the old ID will return 404. Verify the agent's configuration file has the correct agent ID.
+
+**Search returns no results despite logs existing**
+The `search` parameter on the diagnostic logs endpoint uses PostgreSQL `ILIKE` against the `message` column and the `fields` JSON cast to text. Ensure your search term does not contain special SQL characters. Also verify the `since`/`until` time range includes the logs you are looking for.
+
+**High dropped log count in heartbeat**
+The agent's buffer holds 500 entries. If the shipper cannot deliver batches fast enough (network issues, API downtime), entries are dropped. The dropped count resets after each successful heartbeat. Investigate network connectivity between the agent and API, or raise the minimum shipping level to reduce volume.

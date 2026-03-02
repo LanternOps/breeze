@@ -1,0 +1,288 @@
+---
+title: Script Builder AI
+description: AI-powered script generation and editing with natural language, context-aware tooling, and a curated template library.
+sidebar:
+  order: 45
+  label: Script Builder AI
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The Script Builder AI is an inline AI assistant embedded in the Breeze script editor. It uses a conversational interface to help you write, modify, and test scripts through natural language. The assistant has access to your device fleet, existing script library, alert data, and script execution history -- giving it the context it needs to generate scripts tailored to your environment.
+
+Script Builder AI sessions stream responses via Server-Sent Events (SSE), support tool approval workflows for device execution, and can directly apply code and metadata changes to the editor without copy-paste.
+
+---
+
+## Key Concepts
+
+### How It Works
+
+The Script Builder AI maintains a conversational session with full context about the script you are editing. When you send a message, the AI can:
+
+- Read the current editor state (code, language, parameters, OS targets)
+- Query your device fleet to tailor scripts to specific hardware or OS versions
+- Search your existing script library to avoid duplicates or build on prior work
+- Browse script templates for common tasks
+- Write code directly into the editor via the `apply_script_code` tool
+- Update script metadata (name, description, category, parameters) via `apply_script_metadata`
+- Execute saved scripts on devices (with your explicit approval)
+
+### Session Types
+
+Script Builder sessions are distinct from general Breeze AI sessions. They are scoped to the `script_builder` type and have access to a curated set of tools specific to script authoring.
+
+| Attribute | Value |
+|-----------|-------|
+| Session type | `script_builder` |
+| Streaming protocol | Server-Sent Events (SSE) |
+| Max message length | 10,000 characters |
+| Editor snapshot size | Up to 500,000 characters |
+| Auto-generated title | First message, truncated to 80 characters |
+
+### Supported Languages
+
+| Language | Extension | Description |
+|----------|-----------|-------------|
+| `powershell` | `.ps1` | Windows PowerShell and cross-platform PowerShell Core |
+| `bash` | `.sh` | Bash shell scripts for macOS and Linux |
+| `python` | `.py` | Python scripts (cross-platform) |
+| `cmd` | `.bat` | Windows command prompt batch files |
+
+### Parameter Types
+
+The AI can infer and set script parameters with these types:
+
+| Type | Description |
+|------|-------------|
+| `string` | Free-form text input |
+| `number` | Numeric input |
+| `boolean` | True/false toggle |
+| `select` | Dropdown with predefined options |
+
+### Run-As Levels
+
+| Level | Description |
+|-------|-------------|
+| `system` | Runs as the agent service account |
+| `user` | Runs in the context of a connected user session |
+| `elevated` | Runs with root/administrator privileges |
+
+---
+
+## Using Script Builder AI
+
+### Starting a Session
+
+<Steps>
+1. Open the **Script Editor** in the Breeze dashboard.
+2. Click the **AI Assistant** button to open the Script Builder panel.
+3. A new session is created automatically. If you are editing an existing script, the editor context is attached to the session.
+4. Type your request in natural language. For example: "Write a PowerShell script to clean up temp files older than 30 days on Windows endpoints."
+</Steps>
+
+### Iterating on a Script
+
+The AI maintains conversation history within a session, so you can refine scripts through follow-up messages:
+
+<Steps>
+1. Ask the AI to generate an initial script.
+2. Review the code that appears in the editor.
+3. Request changes: "Add error handling and logging" or "Make it also clean the Recycle Bin."
+4. The AI applies updates directly to the editor.
+5. Ask the AI to set metadata: "Set the category to Maintenance, target Windows, and add a parameter for the age threshold in days."
+</Steps>
+
+### Executing Scripts on Devices
+
+The `execute_script_on_device` tool is a Tier 3 tool, meaning it requires explicit user approval before it runs.
+
+<Steps>
+1. Save the script in the editor.
+2. Ask the AI: "Run this script on my Windows test devices."
+3. The AI sends an approval request with the script ID and target device IDs.
+4. Review the request and click **Approve** or **Deny**.
+5. If approved, the script executes and results are streamed back to the conversation.
+</Steps>
+
+<Aside type="caution">
+  Scripts must be saved before they can be executed on devices. The AI will use the saved script ID, not the unsaved editor content.
+</Aside>
+
+### Interrupting a Response
+
+If the AI is generating a long response or executing a chain of tool calls, you can interrupt it:
+
+<Steps>
+1. Click the **Stop** button in the AI panel.
+2. The current response is halted and the session returns to idle.
+3. Send a new message to continue the conversation.
+</Steps>
+
+---
+
+## AI Tools
+
+The Script Builder has access to 10 tools organized by function and safety tier.
+
+### Apply Tools (Tier 1)
+
+These tools write directly to the script editor. They do not execute any code on devices.
+
+| Tool | Description |
+|------|-------------|
+| `apply_script_code` | Replaces the script code in the editor with AI-generated content. Requires a `code` string and `language` identifier. |
+| `apply_script_metadata` | Updates editor form fields: name, description, category, OS types, parameters, runAs level, and timeout. Only fields included in the call are changed. |
+
+### Context Tools (Tier 1)
+
+These read-only tools give the AI awareness of your environment.
+
+| Tool | Description |
+|------|-------------|
+| `query_devices` | Search devices by status, OS type, or hostname. Used to tailor scripts to your fleet. |
+| `get_device_details` | Get full device details including hardware, OS, network, and installed software. |
+| `manage_alerts` | Query active alerts to understand what issues a script should address. |
+| `list_scripts` | Search the existing script library by name, category, language, or OS. |
+| `get_script_details` | Get full script details including code, parameters, and execution settings. |
+| `list_script_templates` | Browse available script templates for common tasks. |
+| `get_script_execution_history` | View past execution results for a script to understand success rates. |
+
+### Execution Tool (Tier 3 -- Requires Approval)
+
+| Tool | Description |
+|------|-------------|
+| `execute_script_on_device` | Run a saved script on one or more devices (up to 10 at once). Requires user approval before execution. |
+
+---
+
+## Script Library
+
+The Script Library is a centralized repository for organizing, versioning, and sharing scripts within your organization. It complements the AI assistant by providing a structured catalog that the AI can reference and build upon.
+
+### Categories
+
+Categories group scripts by function. Each organization manages its own set of categories.
+
+| Field | Required | Max Length | Description |
+|-------|----------|------------|-------------|
+| `name` | Yes | 100 | Category name (unique per organization) |
+| `description` | No | 500 | Description of the category |
+| `color` | No | 20 | Display color (e.g., `#E9C46A`) |
+
+### Tags
+
+Tags provide flexible cross-cutting labels. Unlike categories (one per script), a script can have multiple tags.
+
+| Field | Required | Max Length | Description |
+|-------|----------|------------|-------------|
+| `name` | Yes | 50 | Tag name (unique per organization) |
+
+### Templates
+
+Templates are starter scripts for common tasks. They define a language, compatible OS types, and boilerplate code. Users create new scripts from templates with custom names and descriptions.
+
+### Script Versions
+
+Every script tracks its version number. When you update a script's code, the previous version is saved as a snapshot. You can view the full version history and roll back to any previous version.
+
+| Operation | Description |
+|-----------|-------------|
+| Create version | Saves the current code as a snapshot and updates the script with new content |
+| List versions | Returns the complete version history, newest first |
+| Rollback | Restores the script to a previous version's content, creating a snapshot of the current state |
+
+### Usage Statistics
+
+Each script tracks execution metrics automatically:
+
+| Metric | Description |
+|--------|-------------|
+| `totalRuns` | Total number of executions |
+| `successCount` | Executions that completed with exit code 0 |
+| `failureCount` | Executions that failed |
+| `averageDurationSeconds` | Average execution time |
+| `lastRunAt` | Timestamp of the most recent execution |
+| `lastRunStatus` | Status of the most recent execution |
+| `recentRuns` | List of recent execution records with timestamps and durations |
+
+---
+
+## API Reference
+
+### Script Builder AI Sessions
+
+All endpoints require authentication and `organization`, `partner`, or `system` scope. Mounted at `/api/v1/ai/script-builder`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/sessions` | Create a new Script Builder AI session |
+| `GET` | `/sessions/:id` | Get session details with message history |
+| `DELETE` | `/sessions/:id` | Close a session |
+| `POST` | `/sessions/:id/messages` | Send a message and receive an SSE stream |
+| `POST` | `/sessions/:id/interrupt` | Interrupt an active AI response |
+| `POST` | `/sessions/:id/approve/:executionId` | Approve or deny a tool execution request |
+
+### Script Library
+
+All endpoints require authentication and `organization`, `partner`, or `system` scope. Mounted at `/api/v1/script-library`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/categories` | List all categories |
+| `POST` | `/categories` | Create a category |
+| `GET` | `/categories/:id` | Get a category |
+| `PATCH` | `/categories/:id` | Update a category |
+| `DELETE` | `/categories/:id` | Delete a category |
+| `GET` | `/tags` | List all tags |
+| `POST` | `/tags` | Create a tag |
+| `DELETE` | `/tags/:id` | Delete a tag |
+| `GET` | `/templates` | List templates (optional `categoryId` or `category` filter) |
+| `POST` | `/from-template/:templateId` | Create a new script from a template |
+| `GET` | `/scripts/:id/versions` | List version history for a script |
+| `POST` | `/scripts/:id/versions` | Create a new version (save current, update content) |
+| `POST` | `/scripts/:id/rollback/:versionId` | Roll back to a previous version |
+| `GET` | `/scripts/:id/usage-stats` | Get execution statistics for a script |
+
+---
+
+## SSE Event Types
+
+When you send a message to a Script Builder session, the response is streamed as Server-Sent Events. Each event has a `type` field:
+
+| Event Type | Description |
+|------------|-------------|
+| `text` | Partial text content from the AI response |
+| `tool_use` | The AI is calling a tool (includes tool name and arguments) |
+| `tool_result` | Result returned from a tool execution |
+| `title_updated` | Session title was auto-generated from the first message |
+| `done` | The AI has finished its response |
+| `error` | An error occurred during processing |
+
+---
+
+## Troubleshooting
+
+### "A message is already being processed for this session" (409)
+
+Only one message can be processed at a time per session. Wait for the current response to complete or use the interrupt endpoint before sending a new message.
+
+### "Session not found" (404)
+
+The session may have been closed or expired. Script Builder sessions share the same lifecycle as general AI sessions. Create a new session to continue.
+
+### Rate limit or budget errors
+
+The AI pre-flight check enforces rate limits and token budget caps. If you see a 429 (rate limit) or 402 (budget exceeded) error, wait before retrying or contact your administrator to adjust budget limits.
+
+### Tool approval request not appearing
+
+The `execute_script_on_device` tool is the only Tier 3 tool in the Script Builder. If an approval prompt does not appear, verify that the AI's response includes an approval request event in the SSE stream.
+
+### Script execution fails after approval
+
+Ensure the script has been saved (has a valid script ID) and that the target devices are online and accessible. The AI will report execution results or errors back in the conversation.
+
+### Category or tag name conflicts (409)
+
+Category and tag names must be unique within an organization. If you receive a 409 conflict, choose a different name or update the existing entry.

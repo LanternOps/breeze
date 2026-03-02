@@ -1,0 +1,281 @@
+---
+title: IP History
+description: Track IP address changes over time with interface-level detail, MAC address correlation, and assignment type detection.
+sidebar:
+  order: 49
+  label: IP History
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+IP History automatically tracks every IP address assignment on every managed device, recording when addresses appear, change, and disappear. Each heartbeat, the Breeze agent scans all active network interfaces, detects new or changed IP assignments, and reports the delta to the API. The API maintains a complete timeline of IP assignments per device with first-seen/last-seen timestamps, MAC address correlation, subnet mask, gateway, DNS servers, and whether the address was assigned via DHCP, statically configured, or acquired through a VPN tunnel.
+
+This feature is essential for incident response (answering "which device had IP 10.0.5.42 at 2 PM on Tuesday?"), compliance auditing, and network troubleshooting. When a device moves between subnets, switches from DHCP to static, or connects to a VPN, the full history is preserved with interface-level granularity.
+
+---
+
+## Key Concepts
+
+### IP Assignment Types
+
+| Type | Description |
+|---|---|
+| `dhcp` | Address assigned by a DHCP server (detected via lease file inspection or OS commands) |
+| `static` | Manually configured address (inferred when no DHCP lease evidence is found) |
+| `vpn` | Address assigned by a VPN tunnel (detected by interface name heuristics) |
+| `link-local` | Auto-configured link-local address (169.254.x.x for IPv4, fe80:: for IPv6) |
+| `unknown` | Assignment method could not be determined |
+
+### IP Types
+
+| Type | Description |
+|---|---|
+| `ipv4` | IPv4 address |
+| `ipv6` | IPv6 address |
+
+### IP History Record Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | UUID | Unique identifier for the IP history record |
+| `deviceId` | UUID | Device the IP was observed on |
+| `orgId` | UUID | Organization the device belongs to |
+| `interfaceName` | string (max 100) | Network interface name (e.g., `eth0`, `Wi-Fi`, `Ethernet`) |
+| `ipAddress` | string (max 45) | The IP address |
+| `ipType` | string | `ipv4` or `ipv6` |
+| `assignmentType` | enum | One of `dhcp`, `static`, `vpn`, `link-local`, `unknown` |
+| `macAddress` | string (max 17) | MAC address of the interface (e.g., `00:1A:2B:3C:4D:5E`) |
+| `subnetMask` | string (max 45) | Subnet mask or prefix length |
+| `gateway` | string (max 45) | Default gateway address |
+| `dnsServers` | string[] | DNS server addresses (up to 8) |
+| `firstSeen` | datetime | When this IP was first observed on this interface |
+| `lastSeen` | datetime | When this IP was most recently confirmed active |
+| `isActive` | boolean | Whether the IP is currently assigned to the interface |
+| `deactivatedAt` | datetime | When the IP was removed from the interface (null if still active) |
+| `createdAt` | datetime | When the record was created |
+| `updatedAt` | datetime | When the record was last updated |
+
+---
+
+## How IP Changes Are Detected
+
+<Steps>
+
+1. **Agent collects current network state**
+
+   During each heartbeat, the agent's IP tracking subsystem calls the inventory collector to enumerate all active network interfaces and their IP addresses. Loopback and down interfaces are skipped. For each interface with an IP address, the agent records the interface name, IP address, IP type, MAC address, and inferred assignment type.
+
+2. **Assignment type is determined heuristically**
+
+   The agent uses platform-specific heuristics to classify how each IP was assigned:
+
+   <Tabs>
+   <TabItem label="VPN Detection">
+   The interface name is checked against known VPN interface prefixes and keywords: `tun`, `tap`, `wg`, `ppp`, `utun`, `vpn`, `tailscale`, `zerotier`, `wireguard`, `openvpn`, `anyconnect`, `globalprotect`, `fortinet`, `l2tp`, `pptp`, `ipsec`, `protonvpn`, `nordlynx`, `hamachi`.
+   </TabItem>
+   <TabItem label="Link-Local Detection">
+   IPv4 addresses in the `169.254.0.0/16` range and IPv6 link-local unicast addresses are classified as `link-local`.
+   </TabItem>
+   <TabItem label="DHCP Detection">
+   The agent checks for DHCP lease evidence using OS-specific methods:
+
+   - **Linux**: Scans lease files in `/run/systemd/netif/leases/`, `/var/lib/NetworkManager/`, `/var/lib/dhcp/`, and `/var/lib/dhclient/` for matching interface name and IP address.
+   - **macOS**: Runs `ipconfig getpacket <interface>` and checks for `yiaddr` or `lease_time` in the output.
+   - **Windows**: Runs `ipconfig /all` and looks for "DHCP Enabled: Yes" in the interface section containing the IP address.
+   - **Fallback**: If no explicit evidence is found, common interface prefixes (`eth`, `en`, `eno`, `ens`, `enp`, `wlan` on Linux/macOS; `Ethernet`, `Wi-Fi`, `WLAN` on Windows) with private IP addresses are assumed to be DHCP.
+   </TabItem>
+   </Tabs>
+
+   Anything that does not match VPN, link-local, or DHCP criteria is classified as `static`.
+
+3. **Delta is computed against previous state**
+
+   The agent maintains a local state file (`ip_state.json`) in its data directory. On each heartbeat, it compares the current IP snapshot against the saved state:
+
+   - **Changed IPs**: Addresses that are new (not present in the previous state) or whose metadata has changed (assignment type, MAC address, subnet mask, gateway, or DNS servers).
+   - **Removed IPs**: Addresses that were in the previous state but are no longer present.
+   - **Current IPs**: The full set of currently active IP assignments (used for `lastSeen` timestamp updates).
+
+   The current state is then saved to disk for the next comparison.
+
+4. **Update is sent in the heartbeat payload**
+
+   The IP history update is included as the `ipHistoryUpdate` field in the heartbeat request body:
+
+   ```json
+   {
+     "ipHistoryUpdate": {
+       "currentIPs": [...],
+       "changedIPs": [...],
+       "removedIPs": [...],
+       "detectedAt": "2026-03-02T14:30:00Z"
+     }
+   }
+   ```
+
+5. **API processes the delta transactionally**
+
+   The API's `processDeviceIPHistoryUpdate` service handles the update inside a database transaction:
+
+   - **Removed IPs**: Matching active records are marked `isActive = false` with `deactivatedAt` set to the detection timestamp.
+   - **Changed IPs (existing)**: If an active record already exists for the interface/IP/type combination, its metadata (assignment type, MAC, subnet, gateway, DNS) and `lastSeen` timestamp are updated.
+   - **Changed IPs (new)**: New records are inserted with `firstSeen` and `lastSeen` set to the detection timestamp.
+   - **Current IPs**: All matching active records have their `lastSeen` timestamp refreshed.
+   - **Bootstrap**: If the device has no active IP history records but the agent reports `currentIPs`, all current IPs are treated as new records. This seeds the initial history for newly enrolled devices.
+
+</Steps>
+
+<Aside type="note">
+Each IP history entry is deduplicated by the composite key of `interfaceName + ipAddress + ipType`. If a device has the same IP on the same interface, only one active record exists. Metadata changes (e.g., gateway change) update the existing record rather than creating a new one.
+</Aside>
+
+---
+
+## Querying IP History
+
+Use the IP history API endpoint to retrieve historical IP assignments for a device.
+
+### GET /devices/:id/ip-history
+
+Returns IP history records for a device, ordered by `firstSeen` descending (most recent first).
+
+**Query parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `limit` | integer | 100 | Maximum number of records to return (1-500) |
+| `offset` | integer | 0 | Number of records to skip for pagination |
+| `active_only` | boolean | false | If `true`, only return currently active IP assignments |
+
+**Response (200):**
+
+```json
+{
+  "deviceId": "a1b2c3d4-...",
+  "count": 3,
+  "data": [
+    {
+      "id": "f5e6d7c8-...",
+      "deviceId": "a1b2c3d4-...",
+      "orgId": "11223344-...",
+      "interfaceName": "Ethernet",
+      "ipAddress": "10.0.5.42",
+      "ipType": "ipv4",
+      "assignmentType": "dhcp",
+      "macAddress": "00:1A:2B:3C:4D:5E",
+      "subnetMask": "255.255.255.0",
+      "gateway": "10.0.5.1",
+      "dnsServers": ["10.0.5.1", "8.8.8.8"],
+      "firstSeen": "2026-02-15T08:00:00.000Z",
+      "lastSeen": "2026-03-02T14:30:00.000Z",
+      "isActive": true,
+      "deactivatedAt": null,
+      "createdAt": "2026-02-15T08:00:00.000Z",
+      "updatedAt": "2026-03-02T14:30:00.000Z"
+    },
+    {
+      "id": "a9b8c7d6-...",
+      "deviceId": "a1b2c3d4-...",
+      "orgId": "11223344-...",
+      "interfaceName": "Ethernet",
+      "ipAddress": "192.168.1.100",
+      "ipType": "ipv4",
+      "assignmentType": "dhcp",
+      "macAddress": "00:1A:2B:3C:4D:5E",
+      "subnetMask": "255.255.255.0",
+      "gateway": "192.168.1.1",
+      "dnsServers": ["192.168.1.1"],
+      "firstSeen": "2026-01-10T12:00:00.000Z",
+      "lastSeen": "2026-02-14T23:59:00.000Z",
+      "isActive": false,
+      "deactivatedAt": "2026-02-15T08:00:00.000Z",
+      "createdAt": "2026-01-10T12:00:00.000Z",
+      "updatedAt": "2026-02-15T08:00:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+## API Reference
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/devices/:id/ip-history` | Retrieve IP history records for a device (requires `organization`, `partner`, or `system` scope) |
+| `POST` | `/agents/:id/heartbeat` | Agent heartbeat containing `ipHistoryUpdate` field (agent auth required) |
+
+---
+
+## Heartbeat Payload Schema
+
+The `ipHistoryUpdate` object within the heartbeat payload uses this structure for each IP entry:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `interfaceName` | string | Yes | Network interface name (1-100 characters) |
+| `ipAddress` | string | Yes | Valid IPv4 or IPv6 address (max 45 characters) |
+| `ipType` | enum | No | `ipv4` or `ipv6` (auto-detected from address if omitted) |
+| `assignmentType` | enum | No | `dhcp`, `static`, `vpn`, `link-local`, or `unknown` |
+| `macAddress` | string | No | MAC address (max 17 characters) |
+| `subnetMask` | string | No | Subnet mask (max 45 characters) |
+| `gateway` | string | No | Default gateway (max 45 characters) |
+| `dnsServers` | string[] | No | DNS server addresses (max 8 entries, each max 45 characters) |
+
+The `ipHistoryUpdate` wrapper object contains:
+
+| Field | Type | Description |
+|---|---|---|
+| `currentIPs` | array | All IP addresses currently assigned (used to refresh `lastSeen`) |
+| `changedIPs` | array | New or modified IP assignments |
+| `removedIPs` | array | IP assignments that are no longer present |
+| `detectedAt` | ISO 8601 datetime | When the agent detected the changes |
+
+Each array can contain up to 100 entries.
+
+---
+
+## Database Indexes
+
+The `device_ip_history` table has the following indexes for efficient querying:
+
+| Index | Columns | Use Case |
+|---|---|---|
+| `device_ip_history_device_id_idx` | `device_id` | Query all IP history for a specific device |
+| `device_ip_history_org_id_idx` | `org_id` | Query all IP history across an organization |
+| `device_ip_history_ip_address_idx` | `ip_address` | Find which device had a specific IP address |
+| `device_ip_history_first_seen_idx` | `first_seen` | Filter by when IPs were first observed |
+| `device_ip_history_last_seen_idx` | `last_seen` | Filter by when IPs were last confirmed |
+| `device_ip_history_is_active_idx` | `is_active` | Filter active vs. deactivated records |
+| `device_ip_history_ip_time_idx` | `ip_address`, `first_seen`, `last_seen` | Find which device had a specific IP at a specific time |
+
+---
+
+## Troubleshooting
+
+### No IP history records for a device
+
+- Verify the agent is online and sending heartbeats. IP history data is included in the heartbeat payload.
+- Check that the `ipHistoryUpdate` field is present in the heartbeat body. If the agent detects no network interfaces with IP addresses, the field is omitted.
+- On the first heartbeat after enrollment, the API bootstraps initial records from the `currentIPs` array. If `currentIPs` is empty, no records are created.
+
+### All IPs show as "static" when they should be "dhcp"
+
+- The agent uses heuristics to detect DHCP assignments. On Linux, it checks lease files in standard locations (`/run/systemd/netif/leases/`, `/var/lib/NetworkManager/`, `/var/lib/dhcp/`). If your DHCP client stores leases in a non-standard location, the detection may fail.
+- On macOS, the agent runs `ipconfig getpacket <interface>`. If the command is not available or returns an error, the fallback heuristic (private IP on common interface prefix) is used.
+- On Windows, the agent parses `ipconfig /all` output. If the command times out (1500ms limit), detection falls back to the interface name heuristic.
+
+### IP history shows duplicate entries
+
+- Each IP assignment is uniquely identified by the combination of `interfaceName`, `ipAddress`, and `ipType`. If you see what appear to be duplicates, they likely differ in one of these fields (e.g., the same IP on different interfaces, or the same interface name with IPv4 and IPv6 variants).
+- Deactivated records (where `isActive = false`) are preserved for historical reference. The same IP can appear multiple times with different `firstSeen`/`lastSeen` ranges if the address was removed and later reassigned.
+
+### IP changes are delayed
+
+- IP history is collected during each heartbeat cycle (default: every 60 seconds). Changes are detected by comparing the current network state against the locally saved state file.
+- If the agent is restarted, the state file is reloaded from disk. If the state file was lost or corrupted, the next heartbeat will treat all current IPs as new, which may trigger a bootstrap of the full current state.
+
+### "Invalid IP address format" validation errors
+
+- IPv6 addresses with zone IDs (e.g., `fe80::1%eth0`) have the zone ID stripped before validation. If validation still fails, the IP address format is not recognized by Node.js `isIP()`.
+- Ensure IP addresses do not contain whitespace or other unexpected characters.

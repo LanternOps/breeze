@@ -1,0 +1,324 @@
+---
+title: Enrollment Keys
+description: Create, scope, rotate, and manage enrollment keys for onboarding agents into Breeze RMM.
+sidebar:
+  order: 6
+  label: Enrollment Keys
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Enrollment keys are short-lived, usage-limited tokens that authorize new agents to register with the Breeze API. Each key is scoped to an organization and optionally pinned to a specific site, ensuring that agents land in the correct place in the multi-tenant hierarchy without exposing long-lived credentials.
+
+---
+
+## Key Concepts
+
+| Concept | Description |
+|---------|-------------|
+| **Enrollment key** | A 64-character hex string (32 random bytes) presented by the agent during the `POST /api/v1/agents/enroll` call. |
+| **SHA-256 + pepper** | The raw key is never stored. It is hashed with a server-side pepper before being written to the database. |
+| **TTL (`expiresAt`)** | Time-to-live. After this timestamp the key is rejected. Default: 60 minutes from creation. |
+| **Max usage (`maxUsage`)** | Maximum number of successful enrollments allowed. Default: 1. Range: 1 -- 100,000. |
+| **Usage count (`usageCount`)** | Incremented atomically on each successful enrollment. Once it reaches `maxUsage`, the key is exhausted. |
+| **Site pinning (`siteId`)** | When set, every agent that enrolls with this key is placed into the specified site. The enrollment endpoint requires a `siteId` to be present on the key. |
+| **Enrollment secret** | A separate, static secret (`AGENT_ENROLLMENT_SECRET` environment variable) that gates the enrollment endpoint in production. This is independent of the enrollment key itself. |
+
+<Aside type="tip">
+  Enrollment keys and the enrollment secret serve complementary roles. The **enrollment secret** is a static gate that controls _whether_ the enrollment endpoint accepts requests at all. The **enrollment key** controls _where_ the agent lands (org, site) and _how many_ agents can enroll.
+</Aside>
+
+---
+
+## Enrollment Key Lifecycle
+
+### Creating a Key
+
+<Steps>
+1. Authenticate with a user session that has the `organizations:write` permission and has completed MFA.
+2. Send a `POST` request to `/api/v1/enrollment-keys` with the desired scope.
+3. Copy the `key` field from the 201 response. This is the only time the raw key is returned.
+4. Embed the key in your agent installer, deployment script, or MDM payload.
+</Steps>
+
+```bash
+curl -X POST https://breeze.yourdomain.com/api/v1/enrollment-keys \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orgId": "ORG_UUID",
+    "siteId": "SITE_UUID",
+    "name": "Chicago Office Q1 Deploy",
+    "maxUsage": 50,
+    "expiresAt": "2026-04-01T00:00:00Z"
+  }'
+```
+
+**Request body:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `orgId` | `uuid` | Depends | Inferred for org-scoped users | Target organization. Required for partner and system scopes. |
+| `siteId` | `uuid` | No | `null` | Pin enrolled agents to a specific site. The enrollment endpoint will reject keys without a `siteId`. |
+| `name` | `string` | Yes | -- | Human-readable label (1--255 characters). |
+| `maxUsage` | `integer` | No | `1` | Maximum enrollments allowed (1--100,000). |
+| `expiresAt` | `datetime` | No | Now + TTL | ISO 8601 expiration. Defaults to current time plus `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` (default 60). |
+
+<Aside>
+  The default TTL is configurable via the `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` environment variable. If unset, keys expire 60 minutes after creation.
+</Aside>
+
+**Response (201):**
+
+```json
+{
+  "id": "a1b2c3d4-...",
+  "orgId": "ORG_UUID",
+  "siteId": "SITE_UUID",
+  "name": "Chicago Office Q1 Deploy",
+  "usageCount": 0,
+  "maxUsage": 50,
+  "expiresAt": "2026-04-01T00:00:00.000Z",
+  "createdBy": "USER_UUID",
+  "createdAt": "2026-03-02T12:00:00.000Z",
+  "key": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
+}
+```
+
+<Aside type="caution">
+  The `key` field is only included in the response when a key is created or rotated. It is stripped from all other responses. Store it immediately in a secure location.
+</Aside>
+
+---
+
+### Listing Keys
+
+```bash
+# All non-expired keys for the authenticated org
+curl https://breeze.yourdomain.com/api/v1/enrollment-keys?expired=false \
+  -H "Authorization: Bearer $TOKEN"
+
+# Filter by org (partner/system scope)
+curl "https://breeze.yourdomain.com/api/v1/enrollment-keys?orgId=ORG_UUID&page=1&limit=25" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `page` | `string` | Page number (default `1`). |
+| `limit` | `string` | Results per page (default `50`, max `100`). |
+| `orgId` | `uuid` | Filter by organization. |
+| `expired` | `true` or `false` | Filter by expiration status. |
+
+The response includes a `pagination` object with `page`, `limit`, and `total` fields.
+
+---
+
+### Rotating a Key
+
+Rotation generates new key material for an existing record while resetting `usageCount` to zero. Use it to extend a deployment window or reissue a compromised key without changing the key ID.
+
+```bash
+curl -X POST https://breeze.yourdomain.com/api/v1/enrollment-keys/KEY_UUID/rotate \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "maxUsage": 100,
+    "expiresAt": "2026-06-01T00:00:00Z"
+  }'
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `maxUsage` | `integer` or `null` | No | New limit. Pass `null` for unlimited. Omit to keep the current value. |
+| `expiresAt` | `datetime` | No | New expiration. Omit to keep the current value. |
+
+The old key value is immediately invalidated. The response includes the new `key` field.
+
+---
+
+### Deleting a Key
+
+Enrollment keys are **hard deleted** from the database. This is irreversible.
+
+```bash
+curl -X DELETE https://breeze.yourdomain.com/api/v1/enrollment-keys/KEY_UUID \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## How Agent Enrollment Uses the Key
+
+When an agent starts for the first time, it presents the enrollment key to the API. The full flow is:
+
+<Steps>
+1. The agent sends `POST /api/v1/agents/enroll` with the raw enrollment key, hostname, OS type, architecture, and agent version.
+2. In production, the API first validates the static **enrollment secret** (from the `AGENT_ENROLLMENT_SECRET` env var or `x-agent-enrollment-secret` header).
+3. The API hashes the enrollment key with SHA-256 + pepper and looks up the matching record.
+4. The API checks that the key has not expired (`expiresAt > NOW()`) and has remaining usage (`usageCount < maxUsage`).
+5. `usageCount` is atomically incremented.
+6. The API verifies the key has a `siteId`. If not, the enrollment is rejected and the usage increment is rolled back.
+7. A device record is created (or updated if the hostname already exists in the same org + site) with a new `agentId` and `agentTokenHash`.
+8. Hardware and network inventory from the enrollment payload is stored.
+9. An mTLS certificate is issued if Cloudflare mTLS is configured for the organization.
+10. The API returns the `agentId`, `deviceId`, `authToken` (a `brz_`-prefixed bearer token), `orgId`, `siteId`, and heartbeat configuration.
+</Steps>
+
+```json
+// Successful enrollment response (201)
+{
+  "agentId": "hex-agent-id",
+  "deviceId": "uuid",
+  "authToken": "brz_a1b2c3d4...",
+  "orgId": "uuid",
+  "siteId": "uuid",
+  "config": {
+    "heartbeatIntervalSeconds": 60,
+    "metricsCollectionIntervalSeconds": 30
+  },
+  "mtls": null
+}
+```
+
+<Aside type="caution">
+  The `authToken` is only returned once. The agent stores it in its local config file (`/etc/breeze/config.json` on Linux/macOS, `C:\ProgramData\Breeze\config.json` on Windows) with restrictive file permissions (0600). The API stores only the SHA-256 hash.
+</Aside>
+
+---
+
+## Security Model
+
+### Peppered Hashing
+
+Enrollment keys are hashed using SHA-256 with a server-side pepper before storage. The pepper is read from environment variables in this priority order:
+
+1. `ENROLLMENT_KEY_PEPPER`
+2. `APP_ENCRYPTION_KEY`
+3. `SECRET_ENCRYPTION_KEY`
+4. `JWT_SECRET`
+
+In production, at least one of these must be set or the server will refuse to start.
+
+The hash is computed as:
+
+```
+SHA-256( pepper + ":" + rawKey )
+```
+
+This means that even if the database is compromised, the raw enrollment keys cannot be recovered without knowledge of the pepper.
+
+### Dual Gate: Secret + Key
+
+The enrollment endpoint uses two layers of protection:
+
+| Layer | Purpose | Scope |
+|-------|---------|-------|
+| **Enrollment secret** (`AGENT_ENROLLMENT_SECRET`) | Static gating token validated at the start of the request. Required in production if set. | Global -- same for all enrollments. |
+| **Enrollment key** | Per-deployment token that determines org, site, and usage limits. | Per-key -- each deployment batch gets its own key. |
+
+The enrollment secret can be passed as the `enrollmentSecret` field in the request body or via the `x-agent-enrollment-secret` header.
+
+### Re-enrollment
+
+If an agent with the same hostname already exists in the same org and site, the enrollment endpoint updates the existing device record rather than creating a duplicate. This supports scenarios like OS reinstalls or agent upgrades. However, if the existing device has been **decommissioned**, re-enrollment is blocked with a 403 error.
+
+### Audit Trail
+
+Every enrollment key operation is recorded in the audit log:
+
+| Action | Trigger |
+|--------|---------|
+| `enrollment_key.create` | New key created. |
+| `enrollment_key.rotate` | Key material regenerated. Includes previous and new `maxUsage`, `expiresAt`, and `usageCount`. |
+| `enrollment_key.delete` | Key permanently deleted. |
+| `agent.enroll` | Agent successfully enrolls using a key. Logged with `actorType: agent`. |
+
+---
+
+## Multi-Tenant Access Control
+
+Enrollment key management respects the Breeze multi-tenant hierarchy:
+
+| User Scope | Behavior |
+|------------|----------|
+| **Organization** | Can only manage keys for their own organization. `orgId` is inferred automatically. |
+| **Partner** | Can manage keys for any organization they have access to. Must provide `orgId` when managing multiple orgs. If the partner has exactly one org, `orgId` is inferred. |
+| **System** | Can manage keys for any organization. Must provide `orgId`. |
+
+All management endpoints require `organizations:read` for listing/viewing and `organizations:write` + MFA for creating, rotating, and deleting.
+
+---
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` | `60` | Default time-to-live for new enrollment keys when `expiresAt` is not specified. |
+| `ENROLLMENT_KEY_PEPPER` | -- | Pepper used for SHA-256 hashing of enrollment keys. Falls back to `APP_ENCRYPTION_KEY`, `SECRET_ENCRYPTION_KEY`, or `JWT_SECRET`. |
+| `AGENT_ENROLLMENT_SECRET` | -- | Static secret that gates the enrollment endpoint in production. If empty or unset, the gate is skipped in non-production environments. |
+
+---
+
+## API Reference
+
+All routes are prefixed with `/api/v1/enrollment-keys` and require JWT authentication.
+
+| Method | Path | Permission | Description |
+|--------|------|------------|-------------|
+| `GET` | `/enrollment-keys` | `organizations:read` | List enrollment keys with pagination and filters. |
+| `POST` | `/enrollment-keys` | `organizations:write` + MFA | Create a new enrollment key. Returns the raw key once. |
+| `GET` | `/enrollment-keys/:id` | `organizations:read` | Get metadata for a single enrollment key (raw key not included). |
+| `POST` | `/enrollment-keys/:id/rotate` | `organizations:write` + MFA | Regenerate key material, reset usage count. Returns the new raw key. |
+| `DELETE` | `/enrollment-keys/:id` | `organizations:write` + MFA | Permanently delete an enrollment key. |
+
+The agent enrollment endpoint is separate:
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/api/v1/agents/enroll` | Enrollment secret + enrollment key | Register a new agent. No JWT required. |
+
+---
+
+## Troubleshooting
+
+### "Invalid or expired enrollment key" (401)
+
+The SHA-256 hash of the provided key did not match any active record, or the key has expired or reached its usage limit. Possible causes:
+
+- The key was rotated and the old value is being used in the installer.
+- The `expiresAt` timestamp has passed. The default TTL is 60 minutes.
+- `usageCount` has reached `maxUsage`. Check the key details via `GET /enrollment-keys/:id`.
+- The server pepper changed since the key was created. Rotate or recreate the key.
+
+### "Enrollment secret required" (403)
+
+The `AGENT_ENROLLMENT_SECRET` environment variable is set in production but the agent did not provide it. Pass the secret via the `enrollmentSecret` field in the JSON body or the `x-agent-enrollment-secret` HTTP header.
+
+### "Invalid enrollment secret" (403)
+
+The provided enrollment secret does not match the configured `AGENT_ENROLLMENT_SECRET`. The comparison uses timing-safe equality to prevent timing attacks. Verify the secret value in your deployment configuration.
+
+### "Enrollment key must be associated with a site" (400)
+
+The enrollment key was created without a `siteId`. The enrollment endpoint requires every key to specify which site agents should be placed into. Delete this key and create a new one with a `siteId`.
+
+### "Device has been decommissioned" (403)
+
+An agent with the same hostname exists in the same org and site, but its status is `decommissioned`. Contact an administrator to either remove the decommissioned record or assign the agent to a different site.
+
+### "Organization context required" (403)
+
+An organization-scoped user attempted a key management operation without a valid `orgId` in their session. This usually indicates a misconfigured user account.
+
+### "No enrollment key pepper configured" (server startup)
+
+In production, at least one of `ENROLLMENT_KEY_PEPPER`, `APP_ENCRYPTION_KEY`, `SECRET_ENCRYPTION_KEY`, or `JWT_SECRET` must be set. Without a pepper, enrollment key hashes are vulnerable to rainbow table attacks.
+
+### Key appears valid but agent fails to connect after enrollment
+
+- Verify the `authToken` returned by enrollment is stored correctly in the agent config file.
+- Check that file permissions are `0600` (owner read/write only).
+- Ensure the agent is connecting to the correct WebSocket URL (`/api/v1/agents/:id/ws`) with the `Authorization: Bearer brz_...` header.
