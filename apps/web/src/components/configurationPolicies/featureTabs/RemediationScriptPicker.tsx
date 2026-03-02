@@ -104,7 +104,7 @@ export default function RemediationScriptPicker({
 
       return matchesQuery && matchesCategory && matchesOs;
     });
-  }, [scripts, query, categoryFilter]);
+  }, [scripts, query, categoryFilter, osFilter]);
 
   const handleSelect = (script: ScriptRow) => {
     onSelect({

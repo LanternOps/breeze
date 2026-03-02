@@ -1624,13 +1624,21 @@ export async function evaluateDeviceComplianceFromConfigPolicy(
     let remediationTriggered = false;
     if (status === 'non_compliant' && complianceRule.enforcementLevel === 'enforce') {
       // Check per-rule remediation for individually failed rules (from rules JSONB)
+      // ruleDetails indices correspond to valid rules (parsePolicyRules skips invalid ones),
+      // so we track a separate detailIdx that only advances for valid rules.
       const rulesArray = Array.isArray(complianceRule.rules) ? complianceRule.rules as Record<string, unknown>[] : [];
+      let detailIdx = 0;
       for (let i = 0; i < rulesArray.length; i++) {
         const r = rulesArray[i];
+        // Skip rules that parsePolicyRules would filter out (null, non-object, no type)
+        if (!r || typeof r !== 'object') continue;
+        const ruleType = typeof r.type === 'string' ? r.type : typeof r.name === 'string' ? r.name : null;
+        if (!ruleType?.trim()) continue;
+
         const rem = r.remediation as Record<string, unknown> | undefined;
+        // Only remediate rules that actually failed evaluation and have remediation configured
+        const detail = ruleDetails[detailIdx++];
         if (!rem || rem.type === 'none') continue;
-        // Only remediate rules that actually failed evaluation
-        const detail = ruleDetails[i];
         if (!detail || detail.passed) continue;
 
         if (rem.type === 'script' && typeof rem.scriptId === 'string') {
