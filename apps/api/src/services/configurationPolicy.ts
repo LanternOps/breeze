@@ -264,15 +264,30 @@ async function decomposeInlineSettings(
         const VALID_ENFORCEMENT = ['monitor', 'warn', 'enforce'] as const;
         type Enforcement = (typeof VALID_ENFORCEMENT)[number];
         await tx.insert(configPolicyComplianceRules).values(
-          items.map((item: Record<string, unknown>, idx: number) => ({
-            featureLinkId: linkId,
-            name: String(item.name ?? `Compliance Rule ${idx + 1}`),
-            rules: item.rules ?? {},
-            enforcementLevel: (VALID_ENFORCEMENT.includes(item.enforcementLevel as Enforcement) ? item.enforcementLevel : 'monitor') as Enforcement,
-            checkIntervalMinutes: typeof item.checkIntervalMinutes === 'number' ? item.checkIntervalMinutes : 60,
-            remediationScriptId: typeof item.remediationScriptId === 'string' ? item.remediationScriptId : null,
-            sortOrder: typeof item.sortOrder === 'number' ? item.sortOrder : idx,
-          }))
+          items.map((item: Record<string, unknown>, idx: number) => {
+            // Extract remediationScriptId from per-rule remediation for backward compat
+            let scriptId: string | null = null;
+            if (typeof item.remediationScriptId === 'string') {
+              scriptId = item.remediationScriptId;
+            } else if (Array.isArray(item.rules)) {
+              const firstScript = (item.rules as Record<string, unknown>[]).find(
+                (r) => (r.remediation as Record<string, unknown>)?.type === 'script'
+              );
+              if (firstScript) {
+                const rem = firstScript.remediation as Record<string, unknown>;
+                if (typeof rem?.scriptId === 'string') scriptId = rem.scriptId;
+              }
+            }
+            return {
+              featureLinkId: linkId,
+              name: String(item.name ?? `Compliance Rule ${idx + 1}`),
+              rules: item.rules ?? {},
+              enforcementLevel: (VALID_ENFORCEMENT.includes(item.enforcementLevel as Enforcement) ? item.enforcementLevel : 'monitor') as Enforcement,
+              checkIntervalMinutes: typeof item.checkIntervalMinutes === 'number' ? item.checkIntervalMinutes : 60,
+              remediationScriptId: scriptId,
+              sortOrder: typeof item.sortOrder === 'number' ? item.sortOrder : idx,
+            };
+          })
         );
       }
       break;
