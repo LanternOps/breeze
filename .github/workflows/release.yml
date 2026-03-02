@@ -346,13 +346,13 @@ jobs:
     needs: [build-agent]
     steps:
       - name: Download darwin/amd64 artifact
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: breeze-agent-darwin-amd64
           path: staging/
 
       - name: Download darwin/arm64 artifact
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: breeze-agent-darwin-arm64
           path: staging/
@@ -825,13 +825,13 @@ jobs:
       name: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
     steps:
       - name: Download viewer Windows MSI
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: breeze-viewer-windows.msi
           path: staging/
 
       - name: Download helper Windows MSI
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: breeze-helper-windows.msi
           path: staging/
@@ -964,7 +964,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           pattern: '{api-dist,web-dist,breeze-agent-*,breeze-viewer-*,breeze-helper-*}'
@@ -1054,21 +1054,21 @@ jobs:
         run: mkdir -p staging/agent staging/viewer staging/helper
 
       - name: Download agent artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: staging/agent
           pattern: 'breeze-agent-*'
           merge-multiple: true
 
       - name: Download viewer artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: staging/viewer
           pattern: 'breeze-viewer-*'
           merge-multiple: true
 
       - name: Download helper artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: staging/helper
           pattern: 'breeze-helper-*'
@@ -1127,7 +1127,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Download API artifact
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: api-dist
           path: apps/api/dist
@@ -1177,7 +1177,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Download Web artifact
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: web-dist
           path: apps/web/dist
