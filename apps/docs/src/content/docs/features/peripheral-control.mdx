@@ -1,0 +1,344 @@
+---
+title: Peripheral Control
+description: Policy-based USB, Bluetooth, and Thunderbolt device management with exception rules, activity logging, and agent-side enforcement.
+sidebar:
+  order: 35
+  label: Peripheral Control
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Peripheral Control lets you define organization-wide policies for USB, Bluetooth, and Thunderbolt peripherals. Policies specify which device classes are allowed, blocked, set to read-only, or flagged for alerting. Exception rules override the default action for specific vendors, products, or serial numbers. The Breeze agent evaluates policies locally, logs every connect and disconnect event, and reports activity back to the API for centralized visibility and auditing.
+
+Policies are scoped through the multi-tenant hierarchy -- you can target an entire organization, individual sites, device groups, or specific devices. When a policy is created or updated, Breeze distributes it to agents through a BullMQ job pipeline. The agent stores the latest policies locally and evaluates them against each detected peripheral in real time.
+
+---
+
+## Key Concepts
+
+### Device Classes
+
+| Device Class | Description |
+|--------------|-------------|
+| `storage` | USB mass storage devices (flash drives, external hard drives, card readers) |
+| `all_usb` | All USB device classes including storage -- acts as a superset that covers both `storage` and generic USB peripherals |
+| `bluetooth` | Bluetooth adapters and peripherals |
+| `thunderbolt` | Thunderbolt-connected devices |
+
+<Aside>
+  The `all_usb` class is a superset of `storage`. A policy targeting `all_usb` will match any USB peripheral including storage devices. If you need to block only storage while allowing other USB devices (keyboards, mice), use the `storage` class instead.
+</Aside>
+
+### Policy Actions
+
+| Action | Description |
+|--------|-------------|
+| `allow` | Peripheral is permitted to connect and operate normally |
+| `block` | Peripheral connection is denied. The agent logs a `blocked` event |
+| `read_only` | Storage device is mounted in read-only mode (write operations are prevented) |
+| `alert` | Peripheral is allowed but an alert event is generated for review |
+
+### Event Types
+
+| Event Type | Description |
+|------------|-------------|
+| `connected` | A peripheral was detected connecting to the device |
+| `disconnected` | A peripheral was detected disconnecting from the device |
+| `blocked` | A peripheral was blocked by an active policy |
+| `mounted_read_only` | A storage peripheral was mounted in read-only mode per policy |
+| `policy_override` | An exception rule overrode the default policy action |
+
+### Policy Target Types
+
+| Target Type | Description |
+|-------------|-------------|
+| `organization` | Policy applies to all devices in the organization |
+| `site` | Policy applies to devices at specific sites (provide `siteIds`) |
+| `group` | Policy applies to specific device groups (provide `groupIds`) |
+| `device` | Policy applies to individual devices (provide `deviceIds`) |
+
+---
+
+## How It Works
+
+<Steps>
+1. **Create a policy** that targets a device class (e.g., `storage`) with an action (e.g., `block`) and scope it to your organization, a site, a device group, or specific devices.
+
+2. **Add exception rules** to allow specific peripherals that should bypass the policy -- for example, allowing approved encrypted USB drives by serial number.
+
+3. **Breeze distributes the policy** to agents through BullMQ. Agents receive the policy on next sync and store it locally.
+
+4. **The agent evaluates peripherals** as they connect. Policies are evaluated in order; the first matching policy wins. Exception rules are checked before the policy action is applied.
+
+5. **Events are reported back** to the API. Every connect, disconnect, block, and override is logged with full peripheral metadata (vendor, product, serial number) for auditing and compliance.
+</Steps>
+
+---
+
+## Managing Policies
+
+### Creating a Policy
+
+```bash
+POST /peripherals/policies
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "orgId": "uuid",
+  "name": "Block USB Storage",
+  "deviceClass": "storage",
+  "action": "block",
+  "targetType": "organization",
+  "targetIds": {},
+  "exceptions": [
+    {
+      "vendor": "Kingston",
+      "product": "DataTraveler",
+      "serialNumber": "ABC123",
+      "allow": true,
+      "reason": "Approved encrypted drive for field techs",
+      "expiresAt": "2027-01-01T00:00:00Z"
+    }
+  ],
+  "isActive": true
+}
+```
+
+### Policy Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `orgId` | UUID | No | Organization ID. Auto-resolved for org-scoped tokens |
+| `name` | string | Yes | Policy name (max 200 chars) |
+| `deviceClass` | string | Yes | `storage`, `all_usb`, `bluetooth`, or `thunderbolt` |
+| `action` | string | Yes | `allow`, `block`, `read_only`, or `alert` |
+| `targetType` | string | No | `organization` (default), `site`, `group`, or `device` |
+| `targetIds` | object | No | `{ siteIds: [], groupIds: [], deviceIds: [] }` -- IDs matching the target type |
+| `exceptions` | array | No | Exception rules (max 2,000). See Exception Rules below |
+| `isActive` | boolean | No | Whether the policy is active (default `true`) |
+
+<Aside type="caution">
+  Creating or updating a policy requires the `orgs:write` permission and MFA verification. The policy is distributed to agents asynchronously through BullMQ. If distribution scheduling fails, the policy is still saved and a `warning` field is returned in the response.
+</Aside>
+
+### Updating a Policy
+
+To update an existing policy, include the policy `id` in the request body:
+
+```bash
+POST /peripherals/policies
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "id": "existing-policy-uuid",
+  "name": "Block All USB (Updated)",
+  "deviceClass": "all_usb",
+  "action": "block",
+  "targetType": "organization",
+  "isActive": true
+}
+```
+
+### Disabling a Policy
+
+Disable a policy without deleting it. The policy remains in the database but is no longer enforced by agents:
+
+```bash
+POST /peripherals/policies/:id/disable
+```
+
+Disabling triggers a policy distribution job to notify agents that the policy is no longer active.
+
+---
+
+## Exception Rules
+
+Exception rules allow specific peripherals to bypass a policy's default action. Each rule matches on one or more of vendor, product, or serial number (at least one is required). Rules are evaluated before the policy action -- if a peripheral matches an exception with `allow: true`, it is permitted regardless of the policy action.
+
+### Adding an Exception
+
+```bash
+POST /peripherals/exceptions
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "policyId": "policy-uuid",
+  "operation": "add",
+  "exception": {
+    "vendor": "SanDisk",
+    "product": "Extreme Pro",
+    "allow": true,
+    "reason": "Approved for backup technicians",
+    "expiresAt": "2026-12-31T23:59:59Z"
+  }
+}
+```
+
+### Removing an Exception
+
+```bash
+POST /peripherals/exceptions
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "policyId": "policy-uuid",
+  "operation": "remove",
+  "match": {
+    "vendor": "SanDisk",
+    "product": "Extreme Pro"
+  }
+}
+```
+
+The `match` object uses the same vendor/product/serialNumber fields to identify which exception(s) to remove. All exceptions matching the provided fields are removed.
+
+### Exception Rule Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `vendor` | string | At least one of vendor, product, or serialNumber | Peripheral vendor name (case-insensitive match) |
+| `product` | string | At least one | Peripheral product name (case-insensitive match) |
+| `serialNumber` | string | At least one | Peripheral serial number (case-insensitive match) |
+| `allow` | boolean | No | Whether the exception allows the peripheral (default `true`) |
+| `reason` | string | No | Human-readable reason for the exception (max 2,000 chars) |
+| `expiresAt` | ISO 8601 | No | When the exception expires. Enforcement is agent-side -- the API stores but does not filter expired rules |
+
+<Aside>
+  Exception expiration is enforced by the agent at evaluation time. When the agent evaluates a peripheral against policies, it checks the `expiresAt` timestamp and skips expired exceptions. The API retains expired rules in the database for audit purposes.
+</Aside>
+
+---
+
+## Activity Log
+
+The activity log records every peripheral event reported by agents. Events include connections, disconnections, blocks, and policy overrides with full peripheral metadata.
+
+### Querying Activity
+
+```bash
+GET /peripherals/activity?orgId=uuid&eventType=blocked&start=2026-02-01T00:00:00Z&end=2026-02-15T00:00:00Z&limit=100
+```
+
+### Query Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `orgId` | UUID | Filter by organization |
+| `deviceId` | UUID | Filter by device |
+| `policyId` | UUID | Filter by triggering policy |
+| `eventType` | string | Filter by event type: `connected`, `disconnected`, `blocked`, `mounted_read_only`, `policy_override` |
+| `peripheralType` | string | Filter by peripheral type (e.g., `usb`, `bluetooth`) |
+| `vendor` | string | Filter by vendor name |
+| `product` | string | Filter by product name |
+| `serialNumber` | string | Filter by serial number |
+| `start` | ISO 8601 | Start of time window (defaults to 24 hours ago) |
+| `end` | ISO 8601 | End of time window (defaults to now) |
+| `limit` | integer | Results per page (1-1,000, default 200) |
+| `offset` | integer | Pagination offset (default 0) |
+
+<Aside type="caution">
+  The maximum query window is 90 days. Requests with a `start`-to-`end` range exceeding 90 days are rejected with a 400 error.
+</Aside>
+
+---
+
+## Agent-Side Enforcement
+
+The Breeze agent detects peripherals using platform-native APIs and evaluates them against locally cached policies.
+
+### Detection Methods
+
+<Tabs>
+  <TabItem label="Windows">
+    The agent enumerates USB and Thunderbolt devices through the Windows Device Manager APIs. Bluetooth devices are detected through the Windows Bluetooth stack. Each detected peripheral is identified by vendor, product, serial number, and device class.
+  </TabItem>
+  <TabItem label="macOS">
+    The agent uses IOKit to enumerate USB and Thunderbolt peripherals from the I/O Registry. Bluetooth devices are detected through the IOBluetooth framework. Vendor and product identifiers are extracted from the device descriptor.
+  </TabItem>
+  <TabItem label="Linux">
+    Peripheral detection on Linux uses a stub implementation. USB and Bluetooth enumeration is supported through sysfs and udev, but full enforcement requires the kernel-level driver module.
+  </TabItem>
+</Tabs>
+
+### Policy Evaluation Flow
+
+<Steps>
+1. The agent detects a peripheral connection event.
+2. Active policies are evaluated in order. The first policy whose `deviceClass` matches the peripheral wins.
+3. If the matching policy has exception rules, the agent checks whether the peripheral's vendor, product, or serial number matches any non-expired exception.
+4. If an exception matches with `allow: true`, the peripheral is allowed and a `policy_override` event is recorded.
+5. If no exception matches, the policy action (`allow`, `block`, `read_only`, `alert`) is applied.
+6. If no policy matches, the peripheral is implicitly allowed.
+7. The agent submits all peripheral events to the API via `PUT /agents/:id/peripherals/events`.
+</Steps>
+
+<Aside>
+  Block and read-only enforcement currently operates in alert-only mode on all platforms. The agent logs the policy decision and reports it to the server, but kernel-level enforcement (preventing device access or mounting read-only) requires a platform-specific driver that is not yet included. The `details` field on blocked events includes `"enforcement": "alert_only"` to indicate this.
+</Aside>
+
+### Event Submission
+
+Agents submit peripheral events in batches of up to 1,000 events per request. Events are deduplicated on the server using the `sourceEventId` field -- if an event with the same `orgId`, `deviceId`, and `sourceEventId` already exists, the duplicate is silently dropped.
+
+When a `blocked` event is received, the API publishes a high-priority `peripheral.blocked` event through the event bus for real-time alerting.
+
+---
+
+## API Reference
+
+### Policies
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/peripherals/policies` | List policies (filterable by `orgId`, `isActive`, `action`, `deviceClass`) |
+| GET | `/peripherals/policies/:id` | Get a single policy by ID |
+| POST | `/peripherals/policies` | Create or update a policy (requires MFA, `orgs:write`) |
+| POST | `/peripherals/policies/:id/disable` | Disable a policy (requires MFA, `orgs:write`) |
+
+### Exceptions
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/peripherals/exceptions` | Add or remove exception rules on a policy (requires MFA, `orgs:write`) |
+
+### Activity
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/peripherals/activity` | Query peripheral events with filtering and pagination |
+
+### Agent Endpoint
+
+| Method | Path | Description |
+|--------|------|-------------|
+| PUT | `/agents/:id/peripherals/events` | Agent submits peripheral events (agent auth required) |
+
+<Aside>
+  All management endpoints require authentication and one of these scopes: `organization`, `partner`, or `system`. Organization-scoped tokens are automatically restricted to their own organization's data. Write operations additionally require MFA verification.
+</Aside>
+
+---
+
+## Troubleshooting
+
+**Policy created but agents are not enforcing it.**
+After creating a policy, it is distributed to agents through BullMQ. If the response includes a `warning` field, the distribution scheduling failed -- verify that Redis and BullMQ workers are running. Agents receive updated policies on their next sync cycle. Check the agent logs for policy sync errors.
+
+**Blocked events showing `"enforcement": "alert_only"` in details.**
+Block and read-only enforcement currently operates in alert-only mode. The agent logs the policy decision and reports it to the API, but does not prevent the peripheral from being used at the kernel level. This is expected behavior in the current release. Full enforcement requires a platform-specific driver.
+
+**Exception rule not working for a specific peripheral.**
+Verify that the exception's vendor, product, or serial number matches the peripheral exactly (matching is case-insensitive). At least one field must match. Check the `expiresAt` field -- if the exception has expired, the agent skips it during evaluation. Review the activity log for the device to see the full peripheral metadata reported by the agent.
+
+**Duplicate events in the activity log.**
+Events are deduplicated using the `sourceEventId` field. If the agent submits events without a `sourceEventId`, deduplication does not apply and duplicate entries may appear. Ensure agents are running a version that includes event IDs in submissions.
+
+**Activity query rejected with time range error.**
+The maximum query window for the activity endpoint is 90 days. If your `start`-to-`end` range exceeds this limit, narrow the time range. Also verify that `start` is before `end` and both are valid ISO 8601 timestamps.
+
+**Policies not appearing for a specific organization.**
+Verify that the authenticated user has access to the target organization. Organization-scoped tokens can only see policies within their own organization. Partner and system-scoped tokens can filter by `orgId` query parameter.

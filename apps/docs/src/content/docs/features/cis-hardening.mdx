@@ -1,0 +1,469 @@
+---
+title: CIS Hardening
+description: CIS benchmark compliance scanning, scoring, and guided remediation for Windows, macOS, and Linux endpoints.
+sidebar:
+  order: 39
+  label: CIS Hardening
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+CIS Hardening evaluates your managed devices against Center for Internet Security (CIS) benchmarks and produces compliance scores, per-check findings, and remediation recommendations. You define baselines that specify a CIS benchmark version, security level, and optional exclusions. Breeze then scans devices against those baselines, producing a compliance score and a detailed list of passed and failed checks. When checks fail, you can request remediation actions that go through an approval workflow before being dispatched to the agent for execution.
+
+The system supports Windows, macOS, and Linux benchmarks at both Level 1 (essential security) and Level 2 (defense in depth) profiles, plus custom baselines with specific check exclusions. Scans can be triggered on demand or scheduled to run automatically at configurable intervals.
+
+---
+
+## Key Concepts
+
+### Operating System Types
+
+| OS Type | Description |
+|---------|-------------|
+| `windows` | Windows Server and Windows Desktop benchmarks |
+| `macos` | macOS benchmarks |
+| `linux` | Linux distribution benchmarks (Ubuntu, RHEL, CentOS, etc.) |
+
+### Baseline Levels
+
+| Level | Description |
+|-------|-------------|
+| `l1` | **Level 1** -- essential security settings that can be applied broadly with minimal impact on functionality. Recommended as a baseline for all systems |
+| `l2` | **Level 2** -- defense-in-depth settings that may restrict some functionality. Recommended for high-security environments |
+| `custom` | **Custom** -- based on L1 or L2 with specific checks excluded via `customExclusions` |
+
+### Check Statuses
+
+Each individual CIS check produces one of these results:
+
+| Status | Description |
+|--------|-------------|
+| `pass` | The device meets the benchmark requirement |
+| `fail` | The device does not meet the benchmark requirement -- remediation recommended |
+| `not_applicable` | The check does not apply to this device (e.g., a domain-specific check on a standalone workstation) |
+| `error` | The check could not be evaluated (e.g., insufficient permissions, missing utility) |
+
+### Check Severities
+
+| Severity | Description |
+|----------|-------------|
+| `low` | Informational or hardening recommendation with minimal security impact |
+| `medium` | Moderate security setting -- should be addressed in a reasonable timeframe |
+| `high` | Important security control -- failure represents a significant gap |
+| `critical` | Essential security control -- failure represents an immediate risk |
+
+### Remediation Statuses
+
+| Status | Description |
+|--------|-------------|
+| `pending_approval` | Remediation requested but awaiting administrator approval |
+| `queued` | Approved and queued for dispatch to the agent |
+| `in_progress` | Agent is executing the remediation |
+| `completed` | Remediation completed successfully |
+| `failed` | Remediation failed during execution |
+| `cancelled` | Remediation was rejected or cancelled |
+
+### Approval Statuses
+
+| Status | Description |
+|--------|-------------|
+| `pending` | Awaiting approval decision |
+| `approved` | Approved by an administrator -- remediation will proceed |
+| `rejected` | Rejected by an administrator -- remediation will not proceed |
+
+---
+
+## Baselines
+
+A baseline defines the CIS benchmark, security level, and optional exclusions for a set of devices. Each baseline is scoped to an organization and targets a specific operating system.
+
+### Creating a Baseline
+
+```bash
+POST /cis/baselines
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "orgId": "uuid",
+  "name": "Windows Server L1 Baseline",
+  "osType": "windows",
+  "benchmarkVersion": "3.0.0",
+  "level": "l1",
+  "customExclusions": [],
+  "scanSchedule": {
+    "enabled": true,
+    "intervalHours": 24,
+    "nextScanAt": null
+  },
+  "isActive": true
+}
+```
+
+### Baseline Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `orgId` | UUID | Yes | Organization ID (auto-resolved for org-scoped tokens) |
+| `name` | string | Yes | Baseline name (max 200 chars) |
+| `osType` | string | Yes | Target OS: `windows`, `macos`, `linux` |
+| `benchmarkVersion` | string | Yes | CIS benchmark version (e.g., `3.0.0`, `2.1.0`) |
+| `level` | string | Yes | Security level: `l1`, `l2`, `custom` |
+| `customExclusions` | string[] | No | Check IDs to exclude from evaluation (max 200) |
+| `scanSchedule` | object | No | Scan schedule configuration |
+| `isActive` | boolean | No | Whether the baseline is active (default `true`) |
+
+### Scan Schedule Configuration
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | boolean | Whether scheduled scanning is enabled |
+| `intervalHours` | integer | Scan interval in hours (1 to 168 / one week) |
+| `nextScanAt` | ISO 8601 | Next scheduled scan time (null to let the system calculate) |
+
+### Updating a Baseline
+
+To update an existing baseline, include the baseline `id` in the request body:
+
+```bash
+POST /cis/baselines
+Content-Type: application/json
+
+{
+  "id": "existing-baseline-uuid",
+  "orgId": "uuid",
+  "name": "Windows Server L1 Baseline (Updated)",
+  "osType": "windows",
+  "benchmarkVersion": "3.0.0",
+  "level": "l1",
+  "customExclusions": ["1.1.1", "1.1.2"],
+  "isActive": true
+}
+```
+
+### Listing Baselines
+
+```bash
+GET /cis/baselines?osType=windows&active=true&limit=50
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `orgId` | UUID | Filter by organization |
+| `osType` | string | Filter by OS type: `windows`, `macos`, `linux` |
+| `active` | boolean | Filter by active status |
+| `limit` | integer | Results per page (1-200, default 100) |
+| `offset` | integer | Pagination offset |
+
+---
+
+## Scanning
+
+### Triggering a Scan
+
+```bash
+POST /cis/scan
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "orgId": "uuid",
+  "baselineId": "baseline-uuid",
+  "deviceIds": ["device-uuid-1", "device-uuid-2"]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `orgId` | UUID | No | Organization ID (resolved from baseline if not provided) |
+| `baselineId` | UUID | Yes | Baseline to evaluate against |
+| `deviceIds` | UUID[] | No | Specific devices to scan (max 500). If omitted, scans all matching devices in the organization |
+
+<Aside>
+  If `deviceIds` is provided, every device must belong to the baseline's organization and match the baseline's `osType`. The API validates this before enqueuing the scan. The scan is dispatched through BullMQ and runs asynchronously on each target device.
+</Aside>
+
+The response includes the BullMQ job ID for tracking:
+
+```json
+{
+  "message": "CIS scan queued",
+  "jobId": "bullmq-job-id",
+  "baselineId": "baseline-uuid"
+}
+```
+
+---
+
+## Compliance Reports
+
+### Organization Compliance Overview
+
+Get a consolidated view of CIS compliance across all devices, including average scores, passing/failing device counts, and individual device results:
+
+```bash
+GET /cis/compliance?orgId=uuid&baselineId=uuid&minScore=0&maxScore=100&limit=100
+```
+
+### Compliance Query Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `orgId` | UUID | Filter by organization |
+| `baselineId` | UUID | Filter by baseline |
+| `osType` | string | Filter by OS type: `windows`, `macos`, `linux` |
+| `minScore` | integer | Minimum compliance score (0-100) |
+| `maxScore` | integer | Maximum compliance score (0-100) |
+| `limit` | integer | Results per page (1-500, default 200) |
+| `offset` | integer | Pagination offset |
+
+### Compliance Response
+
+The response includes a summary and per-device results. Only the most recent scan result per device/baseline combination is included:
+
+```json
+{
+  "data": [
+    {
+      "result": {
+        "id": "result-uuid",
+        "orgId": "uuid",
+        "deviceId": "device-uuid",
+        "baselineId": "baseline-uuid",
+        "checkedAt": "2026-02-15T10:00:00Z",
+        "totalChecks": 150,
+        "passedChecks": 138,
+        "failedChecks": 12,
+        "score": 92,
+        "findings": [],
+        "summary": {}
+      },
+      "baseline": {
+        "id": "baseline-uuid",
+        "name": "Windows Server L1 Baseline",
+        "osType": "windows",
+        "benchmarkVersion": "3.0.0",
+        "level": "l1",
+        "isActive": true
+      },
+      "device": {
+        "id": "device-uuid",
+        "hostname": "SERVER-01",
+        "osType": "windows",
+        "status": "online"
+      }
+    }
+  ],
+  "summary": {
+    "devicesAudited": 45,
+    "averageScore": 87,
+    "failingDevices": 12,
+    "compliantDevices": 33
+  },
+  "pagination": {
+    "limit": 200,
+    "offset": 0,
+    "total": 45
+  }
+}
+```
+
+<Aside type="tip">
+  Use the `minScore` and `maxScore` filters to focus on devices that need attention. For example, `maxScore=69` shows all devices with a D or F grade, while `minScore=90` shows only devices with an A grade.
+</Aside>
+
+### Device-Level Report
+
+Get the CIS scan history for a specific device with full findings detail:
+
+```bash
+GET /cis/devices/:deviceId/report?baselineId=uuid&limit=10
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `baselineId` | UUID | Filter results to a specific baseline |
+| `limit` | integer | Number of recent results to return (1-200, default 50) |
+
+The response includes the device information and a list of scan results paired with their baseline definitions. Each result contains the full `findings` array with individual check details.
+
+### Finding Detail
+
+Each finding in a scan result contains:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `checkId` | string | CIS check identifier (e.g., `1.1.1`, `2.3.17.1`) |
+| `title` | string | Human-readable check title |
+| `severity` | string | `low`, `medium`, `high`, `critical` |
+| `status` | string | `pass`, `fail`, `not_applicable`, `error` |
+| `evidence` | object | Platform-specific evidence of the check result |
+| `remediation` | object | Recommended remediation (action, command type, payload, rollback hint) |
+| `message` | string | Additional context or error message |
+
+---
+
+## Remediation
+
+When CIS checks fail, you can request remediation actions that are dispatched to the agent after approval. This two-step workflow (request then approve) prevents accidental system changes from being applied without review.
+
+### Requesting Remediation
+
+```bash
+POST /cis/remediate
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "orgId": "uuid",
+  "deviceId": "device-uuid",
+  "baselineId": "baseline-uuid",
+  "baselineResultId": "result-uuid",
+  "checkIds": ["2.3.17.1", "2.3.17.2", "18.9.4.1"],
+  "action": "apply",
+  "reason": "Quarterly hardening pass for production servers"
+}
+```
+
+### Remediation Request Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `orgId` | UUID | No | Organization ID (resolved from device if not provided) |
+| `deviceId` | UUID | Yes | Target device |
+| `baselineId` | UUID | No | Baseline to reference (resolved from latest result if not provided) |
+| `baselineResultId` | UUID | No | Specific scan result to remediate against (uses latest if not provided) |
+| `checkIds` | string[] | Yes | CIS check IDs to remediate (1-100). Must be currently failing checks |
+| `action` | string | No | `apply` (default) or `rollback` |
+| `reason` | string | No | Reason for the remediation request (max 1,000 chars) |
+
+<Aside type="caution">
+  The requested `checkIds` must all be currently failing in the referenced baseline result. If any check ID is passing or not found in the result, the request is rejected with the list of invalid check IDs.
+</Aside>
+
+The response creates one remediation action per check ID, all in `pending_approval` status:
+
+```json
+{
+  "message": "Created 3 CIS remediation action(s) pending approval",
+  "deviceId": "device-uuid",
+  "baselineId": "baseline-uuid",
+  "baselineResultId": "result-uuid",
+  "actionIds": ["action-uuid-1", "action-uuid-2", "action-uuid-3"],
+  "approvalStatus": "pending"
+}
+```
+
+### Approving or Rejecting Remediations
+
+```bash
+POST /cis/remediate/approve
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "actionIds": ["action-uuid-1", "action-uuid-2"],
+  "approved": true,
+  "note": "Approved for production hardening window"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `actionIds` | UUID[] | Yes | Remediation action IDs to approve or reject (1-500) |
+| `approved` | boolean | Yes | `true` to approve (queue for execution), `false` to reject (cancel) |
+| `note` | string | No | Approval or rejection note (max 1,000 chars) |
+
+**When approved:**
+- Status changes from `pending_approval` to `queued`
+- Approval status changes from `pending` to `approved`
+- Actions are dispatched to the agent through BullMQ
+- If any individual action fails to queue, it is rolled back to `pending_approval`
+
+**When rejected:**
+- Status changes from `pending_approval` to `cancelled`
+- Approval status changes from `pending` to `rejected`
+- No commands are sent to the agent
+
+<Aside>
+  Only actions in `pending_approval` status with `pending` approval status can be approved or rejected. Actions that have already been approved, rejected, queued, or completed are skipped. The response includes both the processed and skipped action IDs.
+</Aside>
+
+### Listing Remediation Actions
+
+```bash
+GET /cis/remediations?status=pending_approval&deviceId=uuid&limit=50
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `orgId` | UUID | Filter by organization |
+| `status` | string | Filter by status: `pending_approval`, `queued`, `in_progress`, `completed`, `failed`, `cancelled` |
+| `approvalStatus` | string | Filter by approval status: `pending`, `approved`, `rejected` |
+| `deviceId` | UUID | Filter by device |
+| `baselineId` | UUID | Filter by baseline |
+| `limit` | integer | Results per page (1-200, default 100) |
+| `offset` | integer | Pagination offset |
+
+Each remediation action in the response includes the device hostname, baseline name, check ID, status, approval details, and execution timestamps.
+
+---
+
+## API Reference
+
+### Baselines
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/cis/baselines` | List baselines (requires `devices:read`) |
+| POST | `/cis/baselines` | Create or update a baseline (requires `orgs:write`) |
+
+### Scanning
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/cis/scan` | Trigger a CIS scan (requires `devices:write`) |
+
+### Compliance
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/cis/compliance` | Organization compliance overview with device results (requires `devices:read`) |
+| GET | `/cis/devices/:deviceId/report` | Device-level scan history with findings detail (requires `devices:read`) |
+
+### Remediation
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/cis/remediate` | Request remediation for failing checks (requires `orgs:write`) |
+| POST | `/cis/remediate/approve` | Approve or reject pending remediation actions (requires `orgs:write`) |
+| GET | `/cis/remediations` | List remediation actions with filtering (requires `devices:read`) |
+
+<Aside>
+  All CIS hardening endpoints require authentication and one of these scopes: `organization`, `partner`, or `system`. Organization-scoped tokens are automatically restricted to their own organization's data.
+</Aside>
+
+---
+
+## Troubleshooting
+
+**Scan queued but no results appearing.**
+After triggering a scan, the BullMQ job dispatches the baseline configuration to the agent. If results do not appear, verify the target device is online and the agent is connected. Check that the baseline's `osType` matches the device's operating system. Review BullMQ dashboard for failed jobs in the CIS scan queue.
+
+**Compliance score is 100 but device has known security gaps.**
+A score of 100 means all checks in the baseline passed. Verify that the baseline uses the correct benchmark version and level for your requirements. If you are using a `custom` level with `customExclusions`, the excluded checks are not counted and do not affect the score. Consider using the `l2` level for more comprehensive coverage.
+
+**Remediation request rejected with "checkIds are not currently failing."**
+The requested check IDs must be present in the referenced baseline result's `findings` array with a `fail` status. If the checks were passing, not applicable, or errored, they cannot be remediated. Get the device report to see the current check statuses: `GET /cis/devices/:deviceId/report`.
+
+**Approved remediation stuck in `queued` status.**
+After approval, remediation actions are dispatched through BullMQ. If the action remains in `queued` status, verify that the CIS remediation worker is running and processing jobs. Check Redis connectivity and BullMQ queue health.
+
+**Remediation approval rolled back after queue failure.**
+If the BullMQ dispatch fails for approved actions, their status is automatically rolled back to `pending_approval` with `pending` approval status. The response includes a `failedActionIds` array listing the affected actions. Resolve the BullMQ issue and retry the approval.
+
+**Baseline scan schedule not triggering.**
+Verify the `scanSchedule.enabled` field is `true` and `intervalHours` is set to a valid value (1-168). The `nextScanAt` timestamp indicates when the next scan is expected. If the scan scheduler is not running, scans will not trigger automatically -- check that the BullMQ scheduler worker is active.
+
+**Device report shows old results but device was recently scanned.**
+The device report returns results ordered by `checkedAt` descending. If the latest scan failed or is still in progress, results from previous scans will be shown. Check `GET /cis/compliance` to see the latest result status for the device.

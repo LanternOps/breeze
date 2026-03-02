@@ -1,0 +1,391 @@
+---
+title: User Risk Scoring
+description: AI-powered risk scoring, behavior analytics, access reviews, and automated security training for users.
+sidebar:
+  order: 47
+  label: User Risk Scoring
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+User Risk Scoring provides a composite risk score for every user in your organization, calculated from behavioral signals, security events, and access patterns. Scores range from 0 (lowest risk) to 100 (highest risk) and update continuously as new events occur. When a user's score crosses a configurable threshold, Breeze can automatically assign security training, send notifications, and flag the user for access review.
+
+This feature combines three related capabilities:
+- **Risk scoring** -- numeric scores with factor breakdowns and trend tracking
+- **Risk events** -- a timeline of security-relevant user activities
+- **Access reviews** -- periodic certification of user permissions with automated revocation
+
+---
+
+## Key Concepts
+
+### Risk Score Ranges
+
+| Score Range | Level | Description |
+|-------------|-------|-------------|
+| 0 - 39 | Low | Normal user behavior, no action needed |
+| 40 - 69 | Medium | Some risk indicators present, monitor closely |
+| 70 - 84 | High | Elevated risk, consider intervention |
+| 85 - 100 | Critical | Immediate attention required |
+
+<Aside>
+  The threshold boundaries between medium, high, and critical are configurable through the risk policy. The values above are the defaults.
+</Aside>
+
+### Trend Directions
+
+Each risk score includes a trend indicator showing how the score has changed over time.
+
+| Trend | Meaning |
+|-------|---------|
+| `up` | Score is increasing (risk is growing) |
+| `down` | Score is decreasing (risk is declining) |
+| `stable` | Score has remained steady |
+
+### Risk Event Severities
+
+| Severity | Description |
+|----------|-------------|
+| `low` | Minor event with minimal risk impact |
+| `medium` | Moderate event that contributes to risk |
+| `high` | Significant event that notably increases risk |
+| `critical` | Severe event requiring immediate investigation |
+
+### Factor Breakdown
+
+Each risk score includes a `factors` object that breaks down the score by contributing category. The keys are factor names and the values are the weighted contribution of each factor to the total score.
+
+Common factor categories include:
+- Failed login attempts
+- Access from unusual locations
+- Privilege escalation events
+- Policy violations
+- Overdue security training
+- Stale credentials
+
+---
+
+## Risk Scores
+
+### Viewing Risk Scores
+
+Navigate to the **User Risk** section in the Breeze dashboard to see a paginated list of all users ranked by their current risk score.
+
+The scores list includes summary statistics:
+
+| Metric | Description |
+|--------|-------------|
+| `averageScore` | Mean score across the current result set |
+| `highRiskUsers` | Count of users with a score of 70 or above |
+| `criticalRiskUsers` | Count of users with a score of 85 or above |
+
+### Filtering Scores
+
+| Filter | Type | Description |
+|--------|------|-------------|
+| `orgId` | UUID | Filter by organization |
+| `siteId` | UUID | Filter by site |
+| `minScore` | Number (0-100) | Minimum score threshold |
+| `maxScore` | Number (0-100) | Maximum score threshold |
+| `trendDirection` | `up`, `down`, `stable` | Filter by score trend |
+| `search` | String | Search by user name or email |
+| `page` | Number | Page number (default: 1) |
+| `limit` | Number | Results per page (1-200, default: 25) |
+
+### User Risk Detail
+
+Click on any user to view their full risk profile, including:
+- Current score with factor breakdown
+- Score history and trend
+- Recent risk events
+- Organization membership details
+
+---
+
+## Risk Events
+
+Risk events are individual security-relevant activities associated with a user. Each event has a severity level and a `scoreImpact` value indicating how much it affects the user's risk score.
+
+### Event Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `eventType` | String | Category of the event (max 60 chars) |
+| `severity` | Enum | `low`, `medium`, `high`, or `critical` |
+| `scoreImpact` | Integer | Point value added to the user's risk score |
+| `description` | Text | Human-readable description of the event |
+| `details` | JSON | Structured data about the event |
+| `occurredAt` | Timestamp | When the event occurred |
+
+### Filtering Events
+
+| Filter | Type | Description |
+|--------|------|-------------|
+| `orgId` | UUID | Filter by organization |
+| `userId` | UUID | Filter by specific user |
+| `eventType` | String | Filter by event type |
+| `severity` | Enum | Filter by severity level |
+| `from` | ISO datetime | Events on or after this time |
+| `to` | ISO datetime | Events on or before this time |
+| `page` | Number | Page number (default: 1) |
+| `limit` | Number | Results per page (1-500, default: 50) |
+
+---
+
+## Risk Policy
+
+Each organization has a configurable risk policy that controls how scores are calculated, what thresholds trigger interventions, and what automated actions are taken.
+
+### Policy Components
+
+<Tabs>
+<TabItem label="Weights">
+
+Weights determine how much each risk factor contributes to the total score. They are expressed as a key-value map where keys are factor names and values are numeric multipliers.
+
+```json
+{
+  "failedLogins": 2.5,
+  "unusualLocation": 3.0,
+  "privilegeEscalation": 5.0,
+  "policyViolation": 4.0,
+  "overdueTraining": 1.5,
+  "staleCredentials": 2.0
+}
+```
+
+Higher weights mean that factor has a greater impact on the overall score.
+
+</TabItem>
+<TabItem label="Thresholds">
+
+Thresholds define the score boundaries for each risk level and configure spike detection.
+
+| Threshold | Type | Description |
+|-----------|------|-------------|
+| `medium` | Number | Score at which a user enters medium risk |
+| `high` | Number | Score at which a user enters high risk |
+| `critical` | Number | Score at which a user enters critical risk |
+| `spikeDelta` | Number | Score increase that constitutes a "spike" (triggers notifications) |
+| `autoAssignTrainingAtOrAbove` | Number | Score threshold for automatic training assignment |
+
+</TabItem>
+<TabItem label="Interventions">
+
+Interventions are automated actions triggered by risk conditions.
+
+| Setting | Type | Description |
+|---------|------|-------------|
+| `autoAssignTraining` | Boolean | Automatically assign security training when score exceeds threshold |
+| `trainingModuleId` | String | ID of the training module to assign |
+| `notifyOnHighRisk` | Boolean | Send a notification when a user enters high risk |
+| `notifyOnRiskSpike` | Boolean | Send a notification when a score spike is detected |
+
+</TabItem>
+</Tabs>
+
+### Updating the Policy
+
+<Steps>
+1. Navigate to **Settings > User Risk > Policy**.
+2. Adjust weights, thresholds, or intervention settings.
+3. Click **Save**. Changes take effect immediately for future score calculations.
+</Steps>
+
+---
+
+## Security Training Assignment
+
+When a user's risk score exceeds the configured threshold, Breeze can automatically assign security training. You can also manually assign training to any user.
+
+### Assigning Training
+
+<Steps>
+1. Navigate to the user's risk detail page.
+2. Click **Assign Training**.
+3. Optionally select a specific training module and provide a reason.
+4. Click **Assign**. The assignment is recorded as a risk event.
+</Steps>
+
+### Assignment Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `userId` | Yes | Target user ID |
+| `orgId` | No | Organization ID (resolved from auth context if omitted) |
+| `moduleId` | No | Specific training module to assign |
+| `reason` | No | Reason for the assignment (max 500 chars) |
+
+### Deduplication
+
+If the same training module is already assigned to a user and has not been completed, the assignment is deduplicated. The API response includes a `deduplicated: true` flag to indicate this.
+
+---
+
+## Access Reviews
+
+Access reviews provide a structured process for periodically certifying that users have the correct permissions. A reviewer examines each user's role and permissions, then makes a decision to approve or revoke access. When the review is completed, revocations are automatically applied.
+
+### Review Statuses
+
+| Status | Description |
+|--------|-------------|
+| `pending` | Review created, no decisions made yet |
+| `in_progress` | At least one item has been reviewed |
+| `completed` | All items decided and revocations applied |
+
+### Item Decisions
+
+| Decision | Description |
+|----------|-------------|
+| `pending` | Not yet reviewed |
+| `approved` | Access confirmed as appropriate |
+| `revoked` | Access flagged for removal |
+
+### Creating an Access Review
+
+<Steps>
+1. Navigate to **Settings > Access Reviews**.
+2. Click **New Access Review**.
+3. Provide a name, optional description, and due date.
+4. Optionally assign a reviewer (defaults to the current user).
+5. Click **Create**. Breeze automatically generates review items for every user in the current scope (partner or organization) with their current role assignments.
+</Steps>
+
+<Aside>
+  Access reviews can be created at the partner level (covers all partner users) or the organization level (covers organization users). Partner-level reviews require full access to all organizations under the partner.
+</Aside>
+
+### Reviewing Items
+
+<Steps>
+1. Open the access review from the list.
+2. For each user, review their role, permissions, last login date, and email.
+3. Set the decision to **Approved** or **Revoked**. Optionally add notes.
+4. Repeat for all users.
+</Steps>
+
+Each review item shows:
+- User name and email
+- Assigned role name
+- Detailed permissions list (e.g., `devices:read`, `scripts:execute`)
+- Last active date
+- Current decision status
+
+### Completing a Review
+
+<Steps>
+1. Ensure all items have a decision (no pending items remain).
+2. Click **Complete Review**.
+3. Breeze automatically removes access for all revoked users:
+   - **Partner reviews**: Revoked users are removed from `partner_users`
+   - **Organization reviews**: Revoked users are removed from `organization_users`
+4. The review is marked as completed with a timestamp.
+</Steps>
+
+<Aside type="caution">
+  Completing a review with revoked items permanently removes those users' access to the partner or organization. This action cannot be undone through the review -- you would need to re-invite the users.
+</Aside>
+
+---
+
+## API Reference
+
+### User Risk Scoring
+
+All endpoints require authentication with `organization`, `partner`, or `system` scope. Mounted at `/api/v1/user-risk`.
+
+| Method | Path | Permission | Description |
+|--------|------|------------|-------------|
+| `GET` | `/scores` | `users:read` | List risk scores with filters and summary stats |
+| `GET` | `/users/:userId` | `users:read` | Get detailed risk profile for a specific user |
+| `GET` | `/events` | `users:read` | List risk events with filters |
+| `GET` | `/policy` | `users:read` | Get the current risk policy for the organization |
+| `PUT` | `/policy` | `users:write` | Update the risk policy (weights, thresholds, interventions) |
+| `POST` | `/assign-training` | `users:write` | Assign security training to a user |
+
+### Access Reviews
+
+All endpoints require authentication. Mounted at `/api/v1/access-reviews`.
+
+| Method | Path | Permission | Description |
+|--------|------|------------|-------------|
+| `GET` | `/` | `users:read` | List all access reviews for the current scope |
+| `POST` | `/` | `users:write` | Create a new access review with auto-generated items |
+| `GET` | `/:id` | `users:read` | Get review details with all items, roles, and permissions |
+| `PATCH` | `/:id/items/:itemId` | `users:write` | Update the decision on a review item |
+| `POST` | `/:id/complete` | `users:write` | Complete the review and apply revocations |
+
+---
+
+## Database Schema
+
+### Risk Score Table
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `orgId` | UUID | Organization reference |
+| `userId` | UUID | User reference |
+| `score` | Integer | Composite risk score (0-100) |
+| `factors` | JSONB | Breakdown of contributing factors and their values |
+| `trendDirection` | String | Score trend: `up`, `down`, or `stable` |
+| `calculatedAt` | Timestamp | When this score was computed |
+
+### Risk Event Table
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `orgId` | UUID | Organization reference |
+| `userId` | UUID | User reference |
+| `eventType` | String | Event category identifier |
+| `severity` | String | `low`, `medium`, `high`, or `critical` |
+| `scoreImpact` | Integer | Points added to the user's score |
+| `description` | Text | Human-readable event description |
+| `details` | JSONB | Structured event data |
+| `occurredAt` | Timestamp | When the event happened |
+
+### Risk Policy Table
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `orgId` | UUID | Organization reference (unique) |
+| `weights` | JSONB | Factor weight multipliers |
+| `thresholds` | JSONB | Score thresholds for risk levels |
+| `interventions` | JSONB | Automated intervention settings |
+| `updatedBy` | UUID | User who last updated the policy |
+| `updatedAt` | Timestamp | Last update timestamp |
+
+---
+
+## Troubleshooting
+
+### "Organization context required" errors
+
+Risk scoring endpoints require an organization context. If you are using a partner or system scope, include the `orgId` query parameter to specify which organization to query.
+
+### "User not found in accessible organizations" (404)
+
+When viewing a user's risk detail, the user must exist in at least one organization that your account has access to. If the user exists in multiple organizations, include the `orgId` parameter to specify which one.
+
+### Training assignment returns `deduplicated: true`
+
+This means the same training module was already assigned to the user and has not been completed. No duplicate assignment was created. This is expected behavior, not an error.
+
+### "Cannot complete review with pending items" (400)
+
+All review items must have a decision (`approved` or `revoked`) before the review can be completed. Review the items list and make decisions on any remaining `pending` entries.
+
+### "Cannot modify completed review" (400)
+
+Once a review is completed, its items cannot be changed. Create a new access review if additional changes are needed.
+
+### Risk scores not updating
+
+Risk scores are recalculated when new events occur. If scores appear stale, check that risk events are being generated correctly and that the risk policy has weights configured for the relevant factor types.
+
+### Access review missing users
+
+Access reviews generate items based on the users in the current scope at the time of creation. Users added after the review was created will not appear. Create a new review to include recently added users.

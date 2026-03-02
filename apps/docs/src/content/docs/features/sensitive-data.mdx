@@ -1,0 +1,436 @@
+---
+title: Sensitive Data Discovery
+description: Scan endpoints for PII, credentials, financial data, and protected health information with automated remediation and compliance reporting.
+sidebar:
+  order: 37
+  label: Sensitive Data
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Sensitive Data Discovery scans your managed devices for files containing personally identifiable information (PII), payment card data (PCI), protected health information (PHI), credentials, and financial records. The system uses pattern-based detection to identify sensitive content, assigns risk scores and confidence levels to each finding, and provides remediation workflows to encrypt, quarantine, or securely delete the offending files. A centralized dashboard tracks open findings, risk distribution, and remediation progress across your fleet.
+
+Scans can be triggered manually for specific devices or scheduled through scan policies. Each scan runs on the agent side, and results are reported back to the API where findings are stored, deduplicated across scans, and made available for reporting and remediation.
+
+---
+
+## Key Concepts
+
+### Data Classification Types
+
+| Type | Description |
+|------|-------------|
+| `pii` | Personally identifiable information -- names, addresses, phone numbers, email addresses, government IDs (SSN, passport numbers) |
+| `pci` | Payment card industry data -- credit/debit card numbers, CVVs, cardholder data |
+| `phi` | Protected health information -- medical records, insurance IDs, health conditions, prescription data |
+| `credential` | Stored credentials -- API keys, passwords, tokens, private keys, connection strings |
+| `financial` | Financial records -- bank account numbers, routing numbers, tax documents, financial statements |
+
+### Risk Levels
+
+| Risk | Description |
+|------|-------------|
+| `low` | Finding has limited exposure potential -- low match count, non-sensitive file location, or low confidence |
+| `medium` | Finding warrants review -- moderate match count or sensitive file type |
+| `high` | Finding requires attention -- multiple matches in an accessible location or high-confidence detection |
+| `critical` | Finding demands immediate action -- credentials in plaintext, unprotected PCI data, or high match count with high confidence |
+
+### Finding Statuses
+
+| Status | Description |
+|--------|-------------|
+| `open` | Active finding that has not been addressed |
+| `remediated` | Finding has been remediated (encrypted, quarantined, deleted, or manually marked) |
+| `accepted` | Risk has been explicitly accepted by an administrator |
+| `false_positive` | Finding has been determined to be a false positive |
+
+### Remediation Actions
+
+| Action | Destructive | Description |
+|--------|-------------|-------------|
+| `encrypt` | Yes | Encrypt the file in place using the configured encryption key |
+| `quarantine` | Yes | Move the file to a quarantine directory on the device |
+| `secure_delete` | Yes | Permanently and securely delete the file |
+| `accept_risk` | No | Acknowledge the finding and accept the risk |
+| `false_positive` | No | Mark the finding as a false positive |
+| `mark_remediated` | No | Manually mark the finding as remediated |
+
+<Aside type="caution">
+  Destructive actions (`encrypt`, `quarantine`, `secure_delete`) require `confirm: true` in the request body. The `secure_delete` action additionally requires a valid `secondApprovalToken` when the `SENSITIVE_DATA_REQUIRE_SECOND_APPROVAL` environment variable is enabled.
+</Aside>
+
+---
+
+## Scan Policies
+
+Scan policies define the detection configuration, file scope, and schedule for sensitive data scans. Each policy is scoped to an organization and specifies which data types to detect, which paths to scan, and how often to run.
+
+### Creating a Policy
+
+```bash
+POST /sensitive-data/policies
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "orgId": "uuid",
+  "name": "Weekly PII & Credential Scan",
+  "scope": {
+    "includePaths": ["/Users", "/home", "C:\\Users"],
+    "excludePaths": ["/Users/*/Library", "C:\\Windows"],
+    "fileTypes": [".txt", ".csv", ".xlsx", ".json", ".env", ".conf"],
+    "maxFileSizeBytes": 104857600,
+    "workers": 4,
+    "timeoutSeconds": 600
+  },
+  "detectionClasses": ["pii", "credential"],
+  "schedule": {
+    "enabled": true,
+    "type": "interval",
+    "intervalMinutes": 10080,
+    "timezone": "America/Chicago"
+  },
+  "isActive": true
+}
+```
+
+### Policy Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `orgId` | UUID | No | Organization ID. Auto-resolved for org-scoped tokens |
+| `name` | string | Yes | Policy name (max 200 chars) |
+| `scope` | object | No | Scan scope configuration (see below) |
+| `detectionClasses` | string[] | Yes | Data types to detect: `pii`, `pci`, `phi`, `credential`, `financial` (1-5) |
+| `schedule` | object | No | Scan schedule configuration (see below) |
+| `isActive` | boolean | No | Whether the policy is active (default `true`) |
+
+### Scope Configuration
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `includePaths` | string[] | Paths to scan (max 256, each up to 2,048 chars) |
+| `excludePaths` | string[] | Paths to exclude from scanning (max 256) |
+| `fileTypes` | string[] | File extensions to scan (max 128, each up to 32 chars) |
+| `maxFileSizeBytes` | integer | Maximum file size to scan (1 KB to 1 GB) |
+| `workers` | integer | Concurrent scan workers (1-32) |
+| `timeoutSeconds` | integer | Scan timeout in seconds (5-1,800) |
+| `suppressPaths` | string[] | Paths to suppress in findings (max 256) |
+| `suppressPatternIds` | string[] | Pattern IDs to suppress (max 200) |
+| `suppressFilePathRegex` | string[] | Regex patterns for file paths to suppress (max 80) |
+| `ruleToggles` | object | Per-rule enable/disable overrides (key: rule ID, value: boolean) |
+
+### Schedule Configuration
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | boolean | Whether the schedule is active (default `true`) |
+| `type` | string | Schedule type: `manual`, `interval`, or `cron` |
+| `intervalMinutes` | integer | Scan interval in minutes (5 to 10,080 / one week) |
+| `cron` | string | Cron expression (when type is `cron`) |
+| `timezone` | string | Timezone for scheduled scans |
+| `deviceIds` | UUID[] | Specific devices to scan (max 1,000). If omitted, scans all devices in the org |
+
+### Updating a Policy
+
+```bash
+PUT /sensitive-data/policies/:id
+Content-Type: application/json
+
+{
+  "name": "Updated Scan Policy",
+  "detectionClasses": ["pii", "credential", "pci"],
+  "isActive": true
+}
+```
+
+### Deleting a Policy
+
+```bash
+DELETE /sensitive-data/policies/:id
+```
+
+---
+
+## Running Scans
+
+### Triggering a Manual Scan
+
+```bash
+POST /sensitive-data/scan
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "deviceIds": ["device-uuid-1", "device-uuid-2"],
+  "policyId": "policy-uuid",
+  "detectionClasses": ["pii", "credential"],
+  "scope": {
+    "includePaths": ["/home"],
+    "fileTypes": [".txt", ".csv", ".env"],
+    "maxFileSizeBytes": 52428800
+  },
+  "idempotencyKey": "scan-2026-02-15-batch-1"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `deviceIds` | UUID[] | Yes | Devices to scan (1-200) |
+| `policyId` | UUID | No | Use an existing policy's scope and detection classes |
+| `scope` | object | No | Override the scan scope (takes precedence over policy scope) |
+| `detectionClasses` | string[] | No | Override detection classes (takes precedence over policy) |
+| `idempotencyKey` | string | No | Client-provided idempotency key (8-128 chars). Also accepted via `Idempotency-Key` header |
+
+The API creates one scan record per device and enqueues each scan through BullMQ. Decommissioned devices are excluded. The response includes the created scans, the count of successfully queued jobs, and any skipped device IDs.
+
+<Aside>
+  Idempotency protection prevents duplicate scan submissions. If a scan with the same idempotency key and request fingerprint (based on device IDs, policy, scope, and detection classes) was created within the last 24 hours, the API returns the existing scans instead of creating new ones. The `idempotentReuse` field in the response indicates whether reuse occurred.
+</Aside>
+
+### Scan Statuses
+
+| Status | Description |
+|--------|-------------|
+| `queued` | Scan created and enqueued for the agent |
+| `running` | Agent is actively scanning the device |
+| `completed` | Scan finished -- results include findings summary |
+| `failed` | Scan encountered an error |
+
+### Listing Recent Scans
+
+```bash
+GET /sensitive-data/scans?limit=50
+```
+
+Returns recent scans ordered by creation time, with device hostname, policy reference, status, and timing information.
+
+### Getting Scan Details
+
+```bash
+GET /sensitive-data/scans/:id
+```
+
+Returns full scan details including a findings summary with counts by risk level and status. If the scan has pre-computed summary counters in its `summary` JSONB, those are returned directly. Otherwise, findings are aggregated on the fly.
+
+---
+
+## Findings and Reports
+
+### Querying Findings
+
+```bash
+GET /sensitive-data/report?status=open&risk=critical&dataType=credential&page=1&limit=50
+```
+
+### Report Query Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `status` | string | Filter by status: `open`, `remediated`, `accepted`, `false_positive` |
+| `risk` | string | Filter by risk level: `low`, `medium`, `high`, `critical` |
+| `dataType` | string | Filter by data type: `pii`, `pci`, `phi`, `credential`, `financial` |
+| `deviceId` | UUID | Filter findings for a specific device |
+| `scanId` | UUID | Filter findings from a specific scan |
+| `page` | integer | Page number for pagination |
+| `limit` | integer | Results per page (default 200) |
+
+### Finding Response Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Unique finding identifier |
+| `orgId` | UUID | Organization ID |
+| `deviceId` | UUID | Device where the file was found |
+| `deviceName` | string | Hostname of the device |
+| `scanId` | UUID | Scan that discovered the finding |
+| `filePath` | string | Full path to the file containing sensitive data |
+| `dataType` | string | Classification type: `pii`, `pci`, `phi`, `credential`, `financial` |
+| `patternId` | string | Identifier of the detection pattern that matched |
+| `matchCount` | integer | Number of matches found in the file |
+| `risk` | string | Risk level: `low`, `medium`, `high`, `critical` |
+| `confidence` | float | Detection confidence score (0.0 to 1.0) |
+| `fileOwner` | string | File owner on the device |
+| `fileModifiedAt` | ISO 8601 | When the file was last modified |
+| `firstSeenAt` | ISO 8601 | When this finding was first detected |
+| `lastSeenAt` | ISO 8601 | When this finding was last confirmed |
+| `occurrenceCount` | integer | Number of scans that have found this file |
+| `status` | string | Current status: `open`, `remediated`, `accepted`, `false_positive` |
+| `remediationAction` | string | Action taken (if any) |
+| `remediatedAt` | ISO 8601 | When remediation occurred |
+
+---
+
+## Dashboard
+
+The dashboard endpoint aggregates all findings data into a single response for the sensitive data overview:
+
+```bash
+GET /sensitive-data/dashboard
+```
+
+### Dashboard Response
+
+```json
+{
+  "data": {
+    "totals": {
+      "findings": 1250,
+      "open": 842,
+      "criticalOpen": 23,
+      "remediated24h": 45,
+      "averageOpenAgeHours": 168.5
+    },
+    "byDataType": {
+      "pii": 520,
+      "credential": 380,
+      "pci": 200,
+      "phi": 100,
+      "financial": 50
+    },
+    "byRisk": {
+      "low": 600,
+      "medium": 350,
+      "high": 200,
+      "critical": 100
+    }
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `totals.findings` | Total number of findings across all statuses |
+| `totals.open` | Number of findings in `open` status |
+| `totals.criticalOpen` | Number of critical-risk findings that are still open |
+| `totals.remediated24h` | Number of findings remediated in the last 24 hours |
+| `totals.averageOpenAgeHours` | Average age of open findings in hours |
+| `byDataType` | Finding count broken down by data classification |
+| `byRisk` | Finding count broken down by risk level |
+
+---
+
+## Remediation
+
+### Remediating Findings
+
+```bash
+POST /sensitive-data/remediate
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "findingIds": ["finding-uuid-1", "finding-uuid-2"],
+  "action": "quarantine",
+  "confirm": true,
+  "quarantineDir": "/var/lib/breeze/quarantine/sensitive",
+  "dryRun": false
+}
+```
+
+### Remediation Request Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `findingIds` | UUID[] | Yes | Findings to remediate (1-250) |
+| `action` | string | Yes | `encrypt`, `quarantine`, `secure_delete`, `accept_risk`, `false_positive`, `mark_remediated` |
+| `confirm` | boolean | Conditional | Required for destructive actions (`encrypt`, `quarantine`, `secure_delete`) |
+| `dryRun` | boolean | No | Preview which findings would be affected without making changes (default `false`) |
+| `secondApprovalToken` | string | Conditional | Required for `secure_delete` when second approval is enabled |
+| `encryptionKeyRef` | string | No | Reference to the encryption key (for `encrypt` action) |
+| `encryptionKeyVersion` | string | No | Version of the encryption key |
+| `quarantineDir` | string | No | Custom quarantine directory path on the device |
+
+### How Remediation Works
+
+<Steps>
+1. **Non-destructive actions** (`accept_risk`, `false_positive`, `mark_remediated`) update the finding status directly in the database. No command is sent to the agent.
+
+2. **Destructive actions** (`encrypt`, `quarantine`, `secure_delete`) queue a command to the target device's agent via the command queue. Each finding becomes a separate command targeting the specific file path.
+
+3. **Dry run mode** returns the list of eligible findings and their file paths without making any changes, allowing you to preview the impact before committing.
+
+4. **Second approval** can be required for `secure_delete` operations by setting the `SENSITIVE_DATA_REQUIRE_SECOND_APPROVAL` environment variable. When enabled, a valid `secondApprovalToken` must be provided.
+</Steps>
+
+### Remediation Response
+
+For destructive actions, the response includes queued commands and any failures:
+
+```json
+{
+  "data": {
+    "queued": [
+      { "findingId": "uuid", "commandId": "uuid" }
+    ],
+    "failed": [
+      { "findingId": "uuid", "error": "Device is offline" }
+    ],
+    "updated": 5
+  }
+}
+```
+
+<Aside>
+  When findings are remediated with `mark_remediated`, a `compliance.sensitive_data_remediated` event is published through the event bus for integration with alerting and compliance tracking systems.
+</Aside>
+
+---
+
+## API Reference
+
+### Scans
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/sensitive-data/scan` | Trigger a manual scan on one or more devices |
+| GET | `/sensitive-data/scans` | List recent scans with status and summary |
+| GET | `/sensitive-data/scans/:id` | Get scan details with findings breakdown |
+
+### Findings and Reports
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/sensitive-data/report` | Query findings with filtering and pagination |
+| GET | `/sensitive-data/dashboard` | Aggregated dashboard with totals, risk, and data type distribution |
+
+### Remediation
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/sensitive-data/remediate` | Remediate findings (destructive or non-destructive) |
+
+### Policies
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/sensitive-data/policies` | List all scan policies for the organization |
+| POST | `/sensitive-data/policies` | Create a new scan policy |
+| PUT | `/sensitive-data/policies/:id` | Update an existing policy |
+| DELETE | `/sensitive-data/policies/:id` | Delete a policy |
+
+<Aside>
+  All sensitive data endpoints require authentication and one of these scopes: `organization`, `partner`, or `system`. Organization-scoped tokens are automatically restricted to their own organization's data.
+</Aside>
+
+---
+
+## Troubleshooting
+
+**Scan stuck in `queued` status.**
+The scan was created but the agent has not started processing it. Verify that the target device is online and the agent is connected. Check that BullMQ workers are running and processing the sensitive data scan queue. If the scan enqueue failed, the creation response includes an `enqueueFailures` count greater than zero.
+
+**No findings returned after a completed scan.**
+The scan completed but did not detect any sensitive data matching the configured detection classes and scope. Verify the `detectionClasses` include the types you expect to find. Check the `scope.includePaths` to ensure the correct directories are being scanned. Review `scope.excludePaths` and `suppressPaths` to make sure the target files are not being excluded. Also check `scope.maxFileSizeBytes` -- files larger than the limit are skipped.
+
+**Duplicate scan created despite idempotency key.**
+Idempotency checks match on both the key and the request fingerprint (a SHA-256 hash of device IDs, policy, scope, and detection classes). If any of these values differ between requests, the fingerprint will not match and a new scan will be created. Idempotency protection also only applies to scans created within the last 24 hours.
+
+**Destructive remediation rejected with `confirm=true` error.**
+Destructive actions (`encrypt`, `quarantine`, `secure_delete`) require `confirm: true` in the request body. If the `secure_delete` action is rejected despite confirmation, check whether the `SENSITIVE_DATA_REQUIRE_SECOND_APPROVAL` environment variable is enabled -- if so, a valid `secondApprovalToken` must also be provided.
+
+**Remediation command failed to queue for a device.**
+When a destructive remediation command fails to queue, the finding ID appears in the `failed` array of the response with an error message. Common causes include the device being offline or the command queue being unavailable. The finding's `remediationAction` and `remediationMetadata` are still updated to reflect the attempted action, but the agent will not receive the command until it is re-queued.
+
+**Dashboard shows stale totals.**
+The dashboard computes totals by scanning all findings in real time. If the finding count is large, the response may take a moment to compute. The `averageOpenAgeHours` is calculated from each open finding's `lastSeenAt` timestamp. If scans are not running regularly, the age values may appear inflated.

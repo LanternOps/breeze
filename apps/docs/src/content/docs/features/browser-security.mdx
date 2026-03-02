@@ -1,0 +1,280 @@
+---
+title: Browser Security
+description: Browser extension inventory, risk assessment, policy-based compliance, and violation tracking across your managed fleet.
+sidebar:
+  order: 36
+  label: Browser Security
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Browser Security gives you visibility into every browser extension installed across your managed devices. The Breeze agent inventories extensions from Chrome, Edge, Firefox, and other browsers, reporting each extension's name, version, source, permissions, and risk level. You can create policies that define which extensions are allowed, blocked, or required, and Breeze tracks violations when devices fall out of compliance. The risk summary dashboard aggregates extension data across the fleet so you can quickly identify high-risk or unauthorized extensions.
+
+---
+
+## Key Concepts
+
+### Extension Risk Levels
+
+Each browser extension is assigned a risk level based on its permissions, source, and known threat intelligence:
+
+| Risk Level | Description |
+|------------|-------------|
+| `low` | Extension requests minimal permissions and comes from a trusted source |
+| `medium` | Extension requests moderate permissions (e.g., read browsing history) |
+| `high` | Extension requests sensitive permissions (e.g., read/modify all site data, access cookies) |
+| `critical` | Extension is flagged as malicious, known malware, or requests excessive permissions |
+
+### Extension Sources
+
+| Source | Description |
+|--------|-------------|
+| `webstore` | Installed from the official browser web store (Chrome Web Store, Firefox Add-ons, etc.) |
+| `sideloaded` | Installed manually outside the official store (developer mode, enterprise deployment) |
+| `policy` | Installed or enforced by a browser management policy (Group Policy, MDM) |
+| `unknown` | Source could not be determined |
+
+### Policy Target Types
+
+Policies can be scoped to different levels of your organizational hierarchy:
+
+| Target Type | Description |
+|-------------|-------------|
+| `org` | Policy applies to all devices in the organization |
+| `site` | Policy applies to devices at specific sites |
+| `group` | Policy applies to specific device groups |
+| `device` | Policy applies to individual devices |
+| `tag` | Policy applies to devices with specific tags |
+
+---
+
+## How It Works
+
+<Steps>
+1. **The agent scans browsers** on each device, collecting extension inventory data including extension IDs, names, versions, permissions, and enabled state.
+
+2. **Extension data is reported** to the API via `PUT /browser-security/inventory/:deviceId`. Extensions are upserted -- new extensions are added, and existing ones are updated with the latest version and state.
+
+3. **Create browser policies** to define allowed, blocked, and required extension lists. Policies are scoped to your organization, sites, groups, devices, or tags.
+
+4. **Breeze evaluates compliance** automatically when inventory data arrives or policies change. Policy violations are detected and tracked in the `browser_policy_violations` table.
+
+5. **Review violations and risk** through the API. Unresolved violations surface devices that are out of compliance. The extension summary dashboard shows risk distribution across your fleet.
+</Steps>
+
+---
+
+## Extension Inventory
+
+### How the Agent Reports Extensions
+
+The agent periodically scans installed browser extensions and submits the inventory to the API. Each extension submission includes:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `browser` | string | Browser name (e.g., `chrome`, `edge`, `firefox`) |
+| `extensionId` | string | Unique extension identifier from the browser |
+| `name` | string | Human-readable extension name |
+| `version` | string | Extension version string |
+| `source` | string | Installation source: `webstore`, `sideloaded`, `policy`, `unknown` |
+| `permissions` | string[] | Requested permissions (e.g., `tabs`, `cookies`, `webRequest`) |
+| `riskLevel` | string | Assessed risk: `low`, `medium`, `high`, `critical` |
+| `enabled` | boolean | Whether the extension is currently enabled |
+
+Extensions are uniquely identified by the combination of organization, device, browser, and extension ID. When the agent reports an extension that already exists, the existing record is updated with the latest version, permissions, risk level, and enabled state. The `firstSeenAt` timestamp is preserved while `lastSeenAt` is updated.
+
+### Querying Extensions
+
+```bash
+GET /browser-security/extensions?riskLevel=critical&browser=chrome&limit=100
+```
+
+### Extension Query Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `deviceId` | UUID | Filter extensions for a specific device |
+| `browser` | string | Filter by browser (e.g., `chrome`, `edge`, `firefox`) |
+| `riskLevel` | string | Filter by risk level: `low`, `medium`, `high`, `critical` |
+| `limit` | integer | Results per page (1-500, default 100) |
+
+The response includes both a risk summary and the list of matching extensions:
+
+```json
+{
+  "summary": {
+    "total": 342,
+    "low": 280,
+    "medium": 45,
+    "high": 12,
+    "critical": 5
+  },
+  "extensions": [
+    {
+      "id": "uuid",
+      "orgId": "uuid",
+      "deviceId": "uuid",
+      "deviceName": "DESKTOP-ABC123",
+      "browser": "chrome",
+      "extensionId": "abc123def456",
+      "name": "Suspicious Extension",
+      "version": "1.2.3",
+      "source": "sideloaded",
+      "riskLevel": "critical",
+      "enabled": true,
+      "lastSeenAt": "2026-02-15T10:30:00Z"
+    }
+  ]
+}
+```
+
+<Aside type="tip">
+  The risk summary counts are computed across all matching extensions, giving you an at-a-glance view of the risk distribution. Use the `riskLevel` filter to drill down into specific categories.
+</Aside>
+
+---
+
+## Browser Policies
+
+Browser policies define which extensions are allowed, blocked, or required across your fleet. When a device's extension inventory violates a policy, a violation record is created for tracking and remediation.
+
+### Creating a Policy
+
+```bash
+POST /browser-security/policies
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "name": "Standard Browser Policy",
+  "targetType": "org",
+  "allowedExtensions": ["ublock-origin", "lastpass"],
+  "blockedExtensions": ["hola-vpn", "web-of-trust"],
+  "requiredExtensions": ["ublock-origin"],
+  "settings": {
+    "blockSideloaded": true,
+    "maxRiskLevel": "medium"
+  },
+  "isActive": true
+}
+```
+
+### Policy Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Policy name (max 200 chars) |
+| `targetType` | string | Yes | `org`, `site`, `group`, `device`, or `tag` |
+| `targetIds` | string[] | No | IDs matching the target type (omit for org-wide policies) |
+| `allowedExtensions` | string[] | No | Extension IDs that are explicitly permitted |
+| `blockedExtensions` | string[] | No | Extension IDs that are explicitly prohibited |
+| `requiredExtensions` | string[] | No | Extension IDs that must be installed |
+| `settings` | object | No | Additional policy settings (e.g., `blockSideloaded`, `maxRiskLevel`) |
+| `isActive` | boolean | No | Whether the policy is active (default `true`) |
+
+<Aside>
+  When a policy is created or updated, Breeze automatically triggers a policy evaluation job through BullMQ. The evaluation checks all devices in the policy's scope against the updated rules and creates or resolves violation records as needed.
+</Aside>
+
+### Updating a Policy
+
+```bash
+PUT /browser-security/policies/:policyId
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "blockedExtensions": ["hola-vpn", "web-of-trust", "suspicious-toolbar"],
+  "isActive": true
+}
+```
+
+All fields are optional in updates -- only the provided fields are changed. The policy evaluation is re-triggered after every update.
+
+### Deleting a Policy
+
+```bash
+DELETE /browser-security/policies/:policyId
+```
+
+Deleting a policy removes the policy record. Associated violation records reference the policy by ID and retain a `policyId` foreign key, but they remain in the database for historical tracking.
+
+---
+
+## Policy Violations
+
+Violations are created when a device's installed extensions conflict with an active policy. Each violation record tracks the device, the policy that was violated, the type of violation, and when it was detected.
+
+### Querying Violations
+
+```bash
+GET /browser-security/violations?deviceId=uuid&policyId=uuid
+```
+
+The violations endpoint returns only unresolved violations (where `resolvedAt` is null), sorted by detection time with the most recent first.
+
+### Violation Response Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Unique violation identifier |
+| `orgId` | UUID | Organization ID |
+| `deviceId` | UUID | Device that is out of compliance |
+| `deviceName` | string | Hostname of the device |
+| `policyId` | UUID | Policy that was violated |
+| `violationType` | string | Type of violation (e.g., `blocked_extension_installed`, `required_extension_missing`, `sideloaded_extension`) |
+| `details` | object | Additional details about the violation (extension name, ID, etc.) |
+| `detectedAt` | ISO 8601 | When the violation was first detected |
+
+<Aside type="tip">
+  Violations are automatically resolved when the underlying condition is corrected -- for example, when a blocked extension is uninstalled or a required extension is installed. The `resolvedAt` timestamp is set and the violation no longer appears in the unresolved violations query.
+</Aside>
+
+---
+
+## API Reference
+
+### Extensions
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/browser-security/extensions` | List extensions with risk summary (requires `devices:read`) |
+| PUT | `/browser-security/inventory/:deviceId` | Agent reports extension inventory (requires `devices:write`) |
+
+### Policies
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/browser-security/policies` | List all browser policies for the organization (requires `devices:read`) |
+| POST | `/browser-security/policies` | Create a new browser policy (requires `devices:write`) |
+| PUT | `/browser-security/policies/:policyId` | Update an existing policy (requires `devices:write`) |
+| DELETE | `/browser-security/policies/:policyId` | Delete a policy (requires `devices:write`) |
+
+### Violations
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/browser-security/violations` | List unresolved policy violations (requires `devices:read`) |
+
+<Aside>
+  All browser security endpoints require authentication and one of these scopes: `organization`, `partner`, or `system`. Organization-scoped tokens are automatically restricted to their own organization's data.
+</Aside>
+
+---
+
+## Troubleshooting
+
+**Extensions not appearing for a device.**
+The agent must submit an extension inventory via `PUT /browser-security/inventory/:deviceId` before extensions appear in the API. Verify the agent is running and has completed at least one browser scan cycle. Check agent logs for errors during browser extension enumeration.
+
+**Risk level shows `low` for a known malicious extension.**
+Risk levels are assigned by the agent during scanning based on the extension's permissions and source. If the agent's risk assessment does not match your expectations, you can enforce compliance through browser policies by adding the extension to the `blockedExtensions` list.
+
+**Violation not created for a blocked extension.**
+Policy evaluation runs asynchronously through BullMQ when a policy is created or updated. If the BullMQ worker is not running, violations will not be generated. Verify that Redis is connected and the browser security worker is processing jobs. Also check that the policy's `isActive` field is `true` and the `targetType` and `targetIds` correctly scope the device.
+
+**Extensions showing stale data.**
+Extensions are updated on upsert when the agent reports inventory. The `lastSeenAt` timestamp indicates when the agent last reported the extension. If this timestamp is old, the agent may not be running or may be having connectivity issues. Extensions that are uninstalled are not automatically removed -- they retain their last known state until the agent reports a new inventory that excludes them.
+
+**Policy evaluation not triggering after update.**
+Policy evaluation is triggered through BullMQ when a policy is created or updated. If the evaluation job fails to enqueue (e.g., Redis is unavailable), the policy is still saved but compliance will not be evaluated until the next trigger. Check the BullMQ dashboard for failed jobs in the browser security queue.
