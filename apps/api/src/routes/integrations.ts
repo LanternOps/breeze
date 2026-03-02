@@ -41,7 +41,7 @@ function resolveOrgId(
       return { orgId: onlyOrgId };
     }
 
-    return { error: 'orgId is required for partner scope', status: 400 };
+    return { error: 'orgId is required when partner has multiple organizations', status: 400 };
   }
 
   if (requestedOrgId) {

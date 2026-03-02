@@ -87,7 +87,9 @@ vi.mock('../db/schema', () => ({
   securityScans: {},
   deviceSessions: {},
   agentVersions: {},
-  organizations: {}
+  organizations: {},
+  peripheralEventTypeEnum: { enumValues: ['connected', 'disconnected', 'blocked', 'allowed'] },
+  backupJobs: {},
 }));
 
 vi.mock('../services/enrollmentKeySecurity', () => ({

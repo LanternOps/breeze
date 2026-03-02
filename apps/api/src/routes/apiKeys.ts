@@ -191,7 +191,8 @@ apiKeyRoutes.get(
 
     return c.json({
       data: keyList,
-      pagination: { page, limit, total }
+      pagination: { page, limit, total },
+      isAdmin: auth.scope === 'system' || auth.scope === 'partner'
     });
   }
 );

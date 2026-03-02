@@ -45,7 +45,7 @@ function resolveOrgId(
     if (!requireForNonOrg && accessibleOrgIds.length === 1) {
       return { orgId: accessibleOrgIds[0] } as const;
     }
-    return { error: 'orgId is required for partner scope', status: 400 } as const;
+    return { error: 'orgId is required when partner has multiple organizations', status: 400 } as const;
   }
 
   if (auth.scope === 'system' && !requestedOrgId) {

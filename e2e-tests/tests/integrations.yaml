@@ -1,0 +1,344 @@
+# Integrations E2E Tests
+# Tests Webhooks (/integrations/webhooks) and PSA Integrations (/integrations/psa)
+# Covers page load, list rendering, modal open/cancel flows, and API verification.
+# Webhook event options verified from WebhookForm: device.online, device.offline,
+# alert.created, alert.resolved, script.completed, ticket.created
+
+tests:
+  - id: webhooks_page_loads
+    name: "Webhooks Page Loads"
+    description: "Verify the Webhooks page renders with header, New Webhook button, and empty/list state"
+    tags: [integrations, webhooks, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_webhooks
+        action: ui
+        description: "Navigate to /integrations/webhooks"
+        playwright:
+          - goto: "/integrations/webhooks"
+          - waitFor: "h1:has-text('Webhooks')"
+            timeout: 15000
+
+      - id: verify_webhooks_controls
+        action: ui
+        description: "Verify page subtitle and New Webhook button"
+        playwright:
+          - waitFor: "text=Deliver events to external systems"
+            timeout: 10000
+          - waitFor: "button:has-text('New Webhook')"
+            timeout: 5000
+
+      - id: verify_webhooks_api
+        action: api
+        description: "Verify webhooks API endpoint returns expected structure"
+        request:
+          method: GET
+          path: "/api/v1/webhooks"
+        assert:
+          status: 200
+        expect:
+          pagination: {}
+
+  - id: webhooks_create_webhook
+    name: "Create Webhook Flow"
+    description: "Open the Create Webhook modal, fill in all fields, verify event checkboxes and auth options, then cancel"
+    tags: [integrations, webhooks, forms]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_webhooks
+        action: ui
+        description: "Navigate to /integrations/webhooks"
+        playwright:
+          - goto: "/integrations/webhooks"
+          - waitFor: "h1:has-text('Webhooks')"
+            timeout: 15000
+
+      - id: click_new_webhook
+        action: ui
+        description: "Click New Webhook to open the creation form"
+        playwright:
+          - click: "button:has-text('New Webhook')"
+          - waitFor: "text=Create Webhook"
+            timeout: 10000
+
+      - id: verify_create_form_fields
+        action: ui
+        description: "Verify the Webhook name, URL, event checkboxes, and auth section fields"
+        playwright:
+          - waitFor: "#webhook-name"
+            timeout: 5000
+          - waitFor: "#webhook-url"
+            timeout: 5000
+          - waitFor: "text=Device Online"
+            timeout: 5000
+          - waitFor: "text=Device Offline"
+            timeout: 5000
+          - waitFor: "text=Alert Created"
+            timeout: 5000
+          - waitFor: "text=Alert Resolved"
+            timeout: 5000
+          - waitFor: "text=Script Completed"
+            timeout: 5000
+          - waitFor: "text=Ticket Created"
+            timeout: 5000
+          - waitFor: "text=HMAC signature"
+            timeout: 5000
+          - waitFor: "text=Bearer token"
+            timeout: 5000
+
+      - id: fill_webhook_name_and_url
+        action: ui
+        description: "Fill webhook name and URL fields"
+        playwright:
+          - fill:
+              "#webhook-name": "E2E Test Webhook"
+          - fill:
+              "#webhook-url": "https://example.com/webhook/test"
+
+      - id: verify_hmac_signing_secret_field
+        action: ui
+        description: "Verify HMAC secret field is visible (default auth type)"
+        playwright:
+          - waitFor: "#webhook-secret"
+            timeout: 5000
+          - waitFor: "text=Auto-generate"
+            timeout: 5000
+
+      - id: switch_to_bearer_auth
+        action: ui
+        description: "Select Bearer token auth type and verify token field appears"
+        playwright:
+          - click: "input[value='bearer']"
+          - waitFor: "#webhook-token"
+            timeout: 5000
+          - waitFor: "text=Auto-generate"
+            timeout: 5000
+
+      - id: verify_payload_template_section
+        action: ui
+        description: "Verify the Payload template textarea and JSON preview panel"
+        playwright:
+          - waitFor: "#payload-template"
+            timeout: 5000
+          - waitFor: "text=JSON preview"
+            timeout: 5000
+          - waitFor: "text=Custom Headers"
+            timeout: 5000
+
+      - id: cancel_webhook_form
+        action: ui
+        description: "Cancel the form to avoid creating test data"
+        optional: true
+        playwright:
+          - click: "button:has-text('Cancel')"
+
+  - id: webhooks_delivery_history_panel
+    name: "Webhook Delivery History Panel"
+    description: "If a webhook exists, verify the detail panel and delivery history section"
+    tags: [integrations, webhooks]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_webhooks
+        action: ui
+        description: "Navigate to /integrations/webhooks"
+        playwright:
+          - goto: "/integrations/webhooks"
+          - waitFor: "h1:has-text('Webhooks')"
+            timeout: 15000
+
+      - id: verify_detail_panel_or_empty_state
+        action: ui
+        description: "Verify either webhook details panel is shown or the select-a-webhook empty state"
+        playwright:
+          - waitFor: "text=Webhooks"
+            timeout: 10000
+
+      - id: verify_webhooks_list_api
+        action: api
+        description: "Verify the webhooks list API"
+        request:
+          method: GET
+          path: "/api/v1/webhooks"
+        assert:
+          status: 200
+        expect:
+          pagination: {}
+
+  - id: psa_integrations_page_loads
+    name: "PSA Integrations Page Loads"
+    description: "Verify the PSA Integrations page renders with the connections list and Add connection button"
+    tags: [integrations, psa, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_psa
+        action: ui
+        description: "Navigate to /integrations/psa"
+        playwright:
+          - goto: "/integrations/psa"
+          - waitFor: "h1:has-text('PSA Integrations')"
+            timeout: 15000
+
+      - id: verify_psa_controls
+        action: ui
+        description: "Verify page subtitle and Add connection button"
+        playwright:
+          - waitFor: "text=Connect your PSA to sync tickets"
+            timeout: 10000
+          - waitFor: "button:has-text('Add connection')"
+            timeout: 5000
+
+      - id: verify_psa_api
+        action: api
+        description: "Verify PSA connections API is reachable"
+        request:
+          method: GET
+          path: "/api/v1/psa/connections"
+        assert:
+          status: 200
+        expect:
+          pagination: {}
+
+  - id: psa_add_connection_modal
+    name: "PSA Add Connection Modal"
+    description: "Open the Add PSA Connection modal and verify provider form fields, then cancel"
+    tags: [integrations, psa, forms]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_psa
+        action: ui
+        description: "Navigate to /integrations/psa"
+        playwright:
+          - goto: "/integrations/psa"
+          - waitFor: "h1:has-text('PSA Integrations')"
+            timeout: 15000
+
+      - id: open_add_connection_modal
+        action: ui
+        description: "Click Add connection to open the PSA connection form"
+        playwright:
+          - click: "button:has-text('Add connection')"
+          - waitFor: "text=Add PSA Connection"
+            timeout: 10000
+
+      - id: verify_connection_form_fields
+        action: ui
+        description: "Verify the PSA connection form has connection name and provider fields"
+        playwright:
+          - waitFor: "text=Add PSA Connection"
+            timeout: 5000
+
+      - id: cancel_add_connection
+        action: ui
+        description: "Cancel the PSA connection form"
+        optional: true
+        playwright:
+          - click: "button:has-text('Cancel')"
+
+  - id: psa_tickets_list
+    name: "PSA Tickets List"
+    description: "Verify the PSA tickets section renders (even when empty) on the integrations page"
+    tags: [integrations, psa]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_psa
+        action: ui
+        description: "Navigate to /integrations/psa"
+        playwright:
+          - goto: "/integrations/psa"
+          - waitFor: "h1:has-text('PSA Integrations')"
+            timeout: 15000
+
+      - id: verify_psa_tickets_api
+        action: api
+        description: "Verify PSA tickets API is reachable"
+        request:
+          method: GET
+          path: "/api/v1/psa/tickets"
+        assert:
+          status: 200
+        expect:
+          pagination: {}

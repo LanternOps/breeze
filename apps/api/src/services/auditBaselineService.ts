@@ -289,16 +289,31 @@ export async function seedDefaultAuditBaselines(): Promise<{ created: number }> 
     return { created: 0 };
   }
 
+  // Check which org+osType+profile combos already have baselines
+  const existing = await db
+    .select({
+      orgId: auditBaselines.orgId,
+      osType: auditBaselines.osType,
+      profile: auditBaselines.profile,
+    })
+    .from(auditBaselines);
+
+  const existingKeys = new Set(
+    existing.map((e) => `${e.orgId}:${e.osType}:${e.profile}`)
+  );
+
   const values = orgRows.flatMap((org) =>
-    DEFAULT_AUDIT_BASELINE_TEMPLATES.map((template) => ({
-      orgId: org.id,
-      name: template.name,
-      osType: template.osType,
-      profile: template.profile,
-      settings: template.settings,
-      isActive: false,
-      createdBy: null,
-    }))
+    DEFAULT_AUDIT_BASELINE_TEMPLATES
+      .filter((template) => !existingKeys.has(`${org.id}:${template.osType}:${template.profile}`))
+      .map((template) => ({
+        orgId: org.id,
+        name: template.name,
+        osType: template.osType,
+        profile: template.profile,
+        settings: template.settings,
+        isActive: false,
+        createdBy: null,
+      }))
   );
 
   if (values.length === 0) {
@@ -308,7 +323,6 @@ export async function seedDefaultAuditBaselines(): Promise<{ created: number }> 
   const inserted = await db
     .insert(auditBaselines)
     .values(values)
-    .onConflictDoNothing()
     .returning({ id: auditBaselines.id });
 
   return { created: inserted.length };

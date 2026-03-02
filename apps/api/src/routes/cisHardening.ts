@@ -377,19 +377,19 @@ cisHardeningRoutes.get(
         score: cisBaselineResults.score,
         findings: cisBaselineResults.findings,
         summary: cisBaselineResults.summary,
-        resultCreatedAt: cisBaselineResults.createdAt,
+        resultCreatedAt: sql<Date>`${cisBaselineResults.createdAt}`.as('result_created_at'),
         baselineName: cisBaselines.name,
-        baselineOsType: cisBaselines.osType,
+        baselineOsType: sql<string>`${cisBaselines.osType}`.as('baseline_os_type'),
         baselineBenchmarkVersion: cisBaselines.benchmarkVersion,
         baselineLevel: cisBaselines.level,
         baselineCustomExclusions: cisBaselines.customExclusions,
         baselineScanSchedule: cisBaselines.scanSchedule,
         baselineIsActive: cisBaselines.isActive,
-        baselineCreatedAt: cisBaselines.createdAt,
+        baselineCreatedAt: sql<Date>`${cisBaselines.createdAt}`.as('baseline_created_at'),
         baselineUpdatedAt: cisBaselines.updatedAt,
         deviceHostname: devices.hostname,
         deviceStatus: devices.status,
-        deviceOsType: devices.osType,
+        deviceOsType: sql<string>`${devices.osType}`.as('device_os_type'),
         rn: sql<number>`row_number() over (partition by ${cisBaselineResults.deviceId}, ${cisBaselineResults.baselineId} order by ${cisBaselineResults.checkedAt} desc)`.as('rn'),
       })
       .from(cisBaselineResults)
@@ -455,6 +455,9 @@ cisHardeningRoutes.get(
     const averageScore = Number(summaryRow?.averageScore ?? 100);
     const failingDevices = Number(summaryRow?.failingDevices ?? 0);
 
+    const toISO = (v: unknown): string =>
+      v instanceof Date ? v.toISOString() : String(v ?? '');
+
     return c.json({
       data: rows.map((row) => ({
         result: {
@@ -462,14 +465,14 @@ cisHardeningRoutes.get(
           orgId: row.orgId,
           deviceId: row.deviceId,
           baselineId: row.baselineId,
-          checkedAt: row.checkedAt.toISOString(),
+          checkedAt: toISO(row.checkedAt),
           totalChecks: row.totalChecks,
           passedChecks: row.passedChecks,
           failedChecks: row.failedChecks,
           score: row.score,
           findings: row.findings ?? [],
           summary: row.summary ?? {},
-          createdAt: row.resultCreatedAt.toISOString(),
+          createdAt: toISO(row.resultCreatedAt),
         },
         baseline: {
           id: row.baselineId,
@@ -481,8 +484,8 @@ cisHardeningRoutes.get(
           customExclusions: row.baselineCustomExclusions ?? [],
           scanSchedule: row.baselineScanSchedule,
           isActive: row.baselineIsActive,
-          createdAt: row.baselineCreatedAt.toISOString(),
-          updatedAt: row.baselineUpdatedAt.toISOString(),
+          createdAt: toISO(row.baselineCreatedAt),
+          updatedAt: toISO(row.baselineUpdatedAt),
         },
         device: {
           id: row.deviceId,

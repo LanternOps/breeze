@@ -90,7 +90,7 @@ async function processAnomalyScan(_data: AnomalyScanJobData): Promise<{ alerts: 
     .having(sql`count(*) >= ${threshold}`);
 
   if (rows.length === 0) {
-    return { alerts: 0 };
+    return { alerts: 0, failed: 0 };
   }
 
   let alerts = 0;

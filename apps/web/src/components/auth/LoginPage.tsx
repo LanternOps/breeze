@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import LoginForm from './LoginForm';
 import MFAVerifyForm from './MFAVerifyForm';
-import { useAuthStore, apiLogin, apiVerifyMFA, apiSendSmsMfaCode } from '../../stores/auth';
+import { useAuthStore, apiLogin, apiVerifyMFA, apiSendSmsMfaCode, fetchAndApplyPreferences } from '../../stores/auth';
 import type { MfaMethod } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
 
@@ -50,6 +50,7 @@ export default function LoginPage() {
 
     if (result.user && result.tokens) {
       login(result.user, result.tokens);
+      fetchAndApplyPreferences();
       await navigateTo(result.requiresSetup ? '/setup' : '/');
       return;
     }
@@ -73,6 +74,7 @@ export default function LoginPage() {
 
     if (result.user && result.tokens) {
       login(result.user, result.tokens);
+      fetchAndApplyPreferences();
       await navigateTo(result.requiresSetup ? '/setup' : '/');
       return;
     }

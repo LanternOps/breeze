@@ -1,8 +1,9 @@
 import { SignJWT, jwtVerify } from 'jose';
 import { randomUUID } from 'crypto';
 
-const ACCESS_TOKEN_EXPIRY = '15m';
-const REFRESH_TOKEN_EXPIRY = '7d';
+const e2eMode = process.env.E2E_MODE === '1' || process.env.E2E_MODE === 'true';
+const ACCESS_TOKEN_EXPIRY = e2eMode ? '24h' : '15m';
+const REFRESH_TOKEN_EXPIRY = e2eMode ? '30d' : '7d';
 
 function getSecretKey(): Uint8Array {
   const secret = process.env.JWT_SECRET;
@@ -88,6 +89,6 @@ export async function createTokenPair(
   return {
     accessToken,
     refreshToken,
-    expiresInSeconds: 15 * 60 // 15 minutes
+    expiresInSeconds: e2eMode ? 24 * 60 * 60 : 15 * 60
   };
 }

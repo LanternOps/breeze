@@ -406,9 +406,15 @@ scriptRoutes.post(
       orgId = auth.orgId;
     } else if (auth.scope === 'partner') {
       if (!orgId) {
-        return c.json({ error: 'orgId is required for partner scope' }, 400);
+        // Auto-select if partner only has one org
+        const singleOrg = auth.accessibleOrgIds?.[0];
+        if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
+          orgId = singleOrg;
+        } else {
+          return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
+        }
       }
-      const hasAccess = ensureOrgAccess(orgId, auth);
+      const hasAccess = ensureOrgAccess(orgId!, auth);
       if (!hasAccess) {
         return c.json({ error: 'Access to this organization denied' }, 403);
       }

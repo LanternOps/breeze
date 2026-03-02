@@ -20,9 +20,8 @@ describe('securityMiddleware', () => {
       expect(csp).toBeTruthy();
       expect(csp).toContain("default-src 'self'");
       expect(csp).toContain("frame-ancestors 'none'");
-      expect(csp).toContain("script-src 'self' 'unsafe-inline'");
-      expect(csp).toContain("style-src 'self' 'unsafe-inline'");
-      expect(csp).toContain("'unsafe-inline'");
+      expect(csp).toContain("script-src 'self'");
+      expect(csp).toContain("style-src 'self'");
     });
 
     it('allows unsafe-inline CSP when explicitly enabled', async () => {

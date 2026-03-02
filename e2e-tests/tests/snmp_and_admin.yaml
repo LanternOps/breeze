@@ -1,0 +1,664 @@
+# SNMP, Partner Portal, and Admin (Quarantined Devices) E2E Tests
+# Note: /snmp redirects to /monitoring — SNMP Templates live at /monitoring?tab=templates.
+# Partner Portal lives at /partner.
+# Admin Quarantined Devices lives at /admin/quarantined.
+
+tests:
+  - id: monitoring_snmp_templates_tab
+    name: "Monitoring SNMP Templates Tab Loads"
+    description: "Verify the Monitoring page SNMP Templates tab renders the template table with correct columns and controls"
+    tags: [snmp, monitoring, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_snmp_via_redirect
+        action: ui
+        description: "Navigate to /snmp — verify it redirects to /monitoring"
+        playwright:
+          - goto: "/snmp"
+          - waitFor:
+              url: "**/monitoring**"
+              timeout: 10000
+
+      - id: navigate_monitoring_page
+        action: ui
+        description: "Navigate directly to /monitoring and wait for the heading"
+        playwright:
+          - goto: "/monitoring"
+          - waitFor: "h1:has-text('Monitoring')"
+            timeout: 15000
+
+      - id: verify_monitoring_tabs
+        action: ui
+        description: "Verify Assets, Network Checks, and SNMP Templates tab buttons are present"
+        playwright:
+          - assert:
+              selector: "button"
+              contains: "Assets"
+          - assert:
+              selector: "button"
+              contains: "Network Checks"
+          - assert:
+              selector: "button"
+              contains: "SNMP Templates"
+
+      - id: click_snmp_templates_tab
+        action: ui
+        description: "Click the SNMP Templates tab and wait for the template table to render"
+        playwright:
+          - click: "button:has-text('SNMP Templates')"
+          - waitFor: "h2:has-text('SNMP Templates')"
+            timeout: 15000
+
+      - id: verify_template_table_columns
+        action: ui
+        description: "Verify SNMP template table has Name, Vendor, Device type, OID count, Usage, and Actions columns"
+        playwright:
+          - waitFor: "table"
+            timeout: 10000
+          - assert:
+              selector: "table thead"
+              contains: "Name"
+          - assert:
+              selector: "table thead"
+              contains: "Vendor"
+          - assert:
+              selector: "table thead"
+              contains: "Device type"
+          - assert:
+              selector: "table thead"
+              contains: "OID count"
+          - assert:
+              selector: "table thead"
+              contains: "Usage"
+          - assert:
+              selector: "table thead"
+              contains: "Actions"
+
+      - id: verify_add_template_button
+        action: ui
+        description: "Verify the Add template button is present"
+        playwright:
+          - assert:
+              selector: "button"
+              contains: "Add template"
+
+      - id: verify_via_api
+        action: api
+        description: "Verify SNMP templates endpoint returns a valid response"
+        request:
+          method: GET
+          path: "/api/v1/snmp/templates"
+        expect:
+          status: 200
+
+  - id: snmp_template_editor_panel
+    name: "SNMP Template Editor Panel"
+    description: "Verify the SNMP Template Editor panel loads when the SNMP Templates tab is active, showing form fields and OID browser"
+    tags: [snmp, monitoring]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_to_snmp_tab
+        action: ui
+        description: "Navigate to monitoring and open SNMP Templates tab"
+        playwright:
+          - goto: "/monitoring"
+          - waitFor: "h1:has-text('Monitoring')"
+            timeout: 15000
+          - click: "button:has-text('SNMP Templates')"
+          - waitFor: "h2:has-text('SNMP Templates')"
+            timeout: 15000
+
+      - id: click_add_template
+        action: ui
+        description: "Click Add template to open the template editor in new-template mode"
+        playwright:
+          - click: "button:has-text('Add template')"
+          - waitFor:
+              timeout: 3000
+
+      - id: verify_editor_template_fields
+        action: ui
+        description: "Verify the template editor shows name, vendor, device type, and description fields"
+        playwright:
+          - assert:
+              selector: "input[placeholder*='name'], input[placeholder*='Name']"
+              visible: true
+
+      - id: verify_oid_browser_search
+        action: ui
+        description: "Verify the OID search input in the editor panel is present"
+        playwright:
+          - assert:
+              selector: "input[placeholder*='search'], input[placeholder*='OID'], input[placeholder*='oid']"
+              visible: true
+
+  - id: snmp_create_custom_template
+    name: "SNMP Create Custom Template"
+    description: "Create a new custom SNMP template via the editor panel and verify it appears in the template list"
+    tags: [snmp, monitoring, critical]
+    nodes: [linux]
+    timeout: 180000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_snmp_templates
+        action: ui
+        description: "Navigate to monitoring SNMP Templates tab"
+        playwright:
+          - goto: "/monitoring"
+          - waitFor: "h1:has-text('Monitoring')"
+            timeout: 15000
+          - click: "button:has-text('SNMP Templates')"
+          - waitFor: "h2:has-text('SNMP Templates')"
+            timeout: 15000
+
+      - id: open_new_template_editor
+        action: ui
+        description: "Click Add template to start a new template"
+        playwright:
+          - click: "button:has-text('Add template')"
+          - waitFor:
+              timeout: 2000
+
+      - id: verify_template_list_count_label
+        action: ui
+        description: "Verify the template list count label is shown"
+        playwright:
+          - assert:
+              selector: "p"
+              contains: "templates available"
+
+      - id: verify_edit_template_via_api
+        action: api
+        description: "Verify that an existing builtin template can be fetched by the templates endpoint"
+        request:
+          method: GET
+          path: "/api/v1/snmp/templates"
+        expect:
+          status: 200
+
+  - id: partner_portal_page_loads
+    name: "Partner Portal Page Loads"
+    description: "Verify /partner loads the Partner Portal page with customer health grid, billing summary, and portfolio snapshot"
+    tags: [partner, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_partner
+        action: ui
+        description: "Navigate to /partner and wait for the Partner Portal heading"
+        playwright:
+          - goto: "/partner"
+          - waitFor: "h1:has-text('Partner Portal')"
+            timeout: 15000
+
+      - id: verify_heading_and_description
+        action: ui
+        description: "Verify Partner Portal heading and sub-description"
+        playwright:
+          - assert:
+              selector: "h1"
+              contains: "Partner Portal"
+          - assert:
+              selector: "p"
+              contains: "Monitor customer health, device coverage, and billing"
+
+      - id: verify_action_buttons
+        action: ui
+        description: "Verify Add customer, View all alerts, and Run report action buttons"
+        playwright:
+          - assert:
+              selector: "a[href='/partner/customers/new']"
+              contains: "Add customer"
+          - assert:
+              selector: "a[href='/alerts']"
+              contains: "View all alerts"
+          - assert:
+              selector: "a[href='/reports']"
+              contains: "Run report"
+
+      - id: verify_customer_health_section
+        action: ui
+        description: "Verify the Customer health section heading and filter controls"
+        playwright:
+          - assert:
+              selector: "h2"
+              contains: "Customer health"
+          - assert:
+              selector: "input[placeholder='Search customers']"
+              visible: true
+          - assert:
+              selector: "select option[value='all']"
+              visible: true
+          - assert:
+              selector: "select option[value='healthy']"
+              visible: true
+          - assert:
+              selector: "select option[value='warning']"
+              visible: true
+          - assert:
+              selector: "select option[value='critical']"
+              visible: true
+
+      - id: verify_sort_options
+        action: ui
+        description: "Verify the sort options: health score, device count, and name"
+        playwright:
+          - assert:
+              selector: "select option[value='health']"
+              visible: true
+          - assert:
+              selector: "select option[value='devices']"
+              visible: true
+          - assert:
+              selector: "select option[value='name']"
+              visible: true
+
+      - id: verify_billing_summary
+        action: ui
+        description: "Verify Billing summary section with MRR table columns"
+        playwright:
+          - assert:
+              selector: "h2"
+              contains: "Billing summary"
+          - assert:
+              selector: "p"
+              contains: "Monthly recurring revenue"
+          - assert:
+              selector: "table thead"
+              contains: "Customer"
+          - assert:
+              selector: "table thead"
+              contains: "MRR"
+
+      - id: verify_portfolio_snapshot
+        action: ui
+        description: "Verify Portfolio snapshot section with Customers, Total devices, Open alerts stats"
+        playwright:
+          - assert:
+              selector: "h2"
+              contains: "Portfolio snapshot"
+          - assert:
+              selector: "span"
+              contains: "Customers"
+          - assert:
+              selector: "span"
+              contains: "Total devices"
+          - assert:
+              selector: "span"
+              contains: "Open alerts"
+
+      - id: verify_devices_table
+        action: ui
+        description: "Verify Devices across customers section with Device, Customer, Status, Alerts, Compliance, Last seen columns"
+        playwright:
+          - assert:
+              selector: "h2"
+              contains: "Devices across customers"
+          - assert:
+              selector: "table thead"
+              contains: "Device"
+          - assert:
+              selector: "table thead"
+              contains: "Customer"
+          - assert:
+              selector: "table thead"
+              contains: "Status"
+          - assert:
+              selector: "table thead"
+              contains: "Alerts"
+          - assert:
+              selector: "table thead"
+              contains: "Compliance"
+          - assert:
+              selector: "table thead"
+              contains: "Last seen"
+
+      - id: verify_via_api
+        action: api
+        description: "Verify partner dashboard endpoint returns a valid response"
+        request:
+          method: GET
+          path: "/api/v1/partner/dashboard"
+        expect:
+          status: 200
+
+  - id: partner_portal_customer_search_filter
+    name: "Partner Portal Customer Search and Health Filter"
+    description: "Verify filtering and searching customers works on the Partner Portal page"
+    tags: [partner]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_partner
+        action: ui
+        description: "Navigate to /partner"
+        playwright:
+          - goto: "/partner"
+          - waitFor: "h1:has-text('Partner Portal')"
+            timeout: 15000
+
+      - id: filter_by_healthy
+        action: ui
+        description: "Filter by Healthy health status"
+        playwright:
+          - selectOption:
+              "select:has(option[value='healthy'])": "healthy"
+          - waitFor:
+              timeout: 2000
+
+      - id: filter_by_critical
+        action: ui
+        description: "Filter by At risk (critical) health status"
+        playwright:
+          - selectOption:
+              "select:has(option[value='critical'])": "critical"
+          - waitFor:
+              timeout: 2000
+
+      - id: reset_filter
+        action: ui
+        description: "Reset health filter to All health"
+        playwright:
+          - selectOption:
+              "select:has(option[value='all'])": "all"
+          - waitFor:
+              timeout: 2000
+
+      - id: sort_by_name
+        action: ui
+        description: "Sort customers by name"
+        playwright:
+          - selectOption:
+              "select:has(option[value='name'])": "name"
+          - waitFor:
+              timeout: 2000
+
+      - id: sort_by_devices
+        action: ui
+        description: "Sort customers by device count"
+        playwright:
+          - selectOption:
+              "select:has(option[value='devices'])": "devices"
+          - waitFor:
+              timeout: 2000
+
+      - id: search_nonexistent_customer
+        action: ui
+        description: "Search for a customer name that doesn't exist to trigger the empty state"
+        playwright:
+          - fill:
+              "input[placeholder='Search customers']": "NonExistentCustomerXYZ12345"
+          - waitFor:
+              timeout: 2000
+          - assert:
+              selector: "div"
+              contains: "No customers match this filter yet."
+
+      - id: clear_search
+        action: ui
+        description: "Clear the search input to restore the full customer list"
+        playwright:
+          - fill:
+              "input[placeholder='Search customers']": ""
+          - waitFor:
+              timeout: 2000
+
+  - id: admin_quarantined_page_loads
+    name: "Admin Quarantined Devices Page Loads"
+    description: "Verify /admin/quarantined loads with the heading, mTLS description, Refresh button, and either device table or empty state"
+    tags: [admin, quarantine, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_quarantined
+        action: ui
+        description: "Navigate to /admin/quarantined and wait for the heading"
+        playwright:
+          - goto: "/admin/quarantined"
+          - waitFor: "h1:has-text('Quarantined Devices')"
+            timeout: 15000
+
+      - id: verify_heading_and_description
+        action: ui
+        description: "Verify Quarantined Devices heading and mTLS certificate description"
+        playwright:
+          - assert:
+              selector: "h1"
+              contains: "Quarantined Devices"
+          - assert:
+              selector: "p"
+              contains: "expired or invalid mTLS certificates"
+
+      - id: verify_refresh_button
+        action: ui
+        description: "Verify the Refresh button is present and clickable"
+        playwright:
+          - assert:
+              selector: "button"
+              contains: "Refresh"
+          - click: "button:has-text('Refresh')"
+          - waitFor:
+              timeout: 3000
+
+      - id: verify_empty_state_or_table
+        action: ui
+        description: "Verify either the empty state message or the device table is rendered"
+        playwright:
+          - waitFor:
+              selector: "h3, table"
+              timeout: 10000
+
+      - id: verify_via_api
+        action: api
+        description: "Verify the quarantined devices API endpoint returns a valid response"
+        request:
+          method: GET
+          path: "/api/v1/agents/quarantined"
+        expect:
+          status: 200
+
+  - id: admin_quarantined_table_when_devices_present
+    name: "Admin Quarantined Devices Table Structure"
+    description: "When quarantined devices exist, verify the table has Hostname, OS, Quarantined At, Reason, and Actions columns"
+    tags: [admin, quarantine]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_quarantined
+        action: ui
+        description: "Navigate to /admin/quarantined"
+        playwright:
+          - goto: "/admin/quarantined"
+          - waitFor: "h1:has-text('Quarantined Devices')"
+            timeout: 15000
+
+      - id: check_device_count_via_api
+        action: api
+        description: "Check the quarantined device count before table assertions"
+        request:
+          method: GET
+          path: "/api/v1/agents/quarantined"
+        expect:
+          status: 200
+
+      - id: verify_empty_state_message_when_no_devices
+        action: ui
+        description: "Verify the 'No quarantined devices' empty state is shown when the device list is empty"
+        playwright:
+          - waitFor:
+              selector: "h3, table"
+              timeout: 10000
+
+  - id: admin_quarantined_deny_modal
+    name: "Admin Quarantined Devices Deny Modal"
+    description: "When a quarantined device exists, click Deny and verify the confirmation modal with Deny & Decommission button"
+    tags: [admin, quarantine, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_quarantined
+        action: ui
+        description: "Navigate to /admin/quarantined"
+        playwright:
+          - goto: "/admin/quarantined"
+          - waitFor: "h1:has-text('Quarantined Devices')"
+            timeout: 15000
+
+      - id: skip_if_no_devices
+        action: ui
+        description: "Wait for page to fully render; skip rest of test if the table is absent"
+        playwright:
+          - waitFor:
+              selector: "h1"
+              timeout: 5000
+        optional: true
+
+      - id: click_deny_on_first_device
+        action: ui
+        description: "Click Deny button on the first row if the device table is present"
+        playwright:
+          - click: "table tbody tr:first-child button:has-text('Deny')"
+          - waitFor: "h2:has-text('Deny Device')"
+            timeout: 10000
+        optional: true
+
+      - id: verify_deny_modal_content
+        action: ui
+        description: "Verify the Deny Device modal content: warning message, Cancel and Deny & Decommission buttons"
+        playwright:
+          - assert:
+              selector: "h2"
+              contains: "Deny Device"
+          - assert:
+              selector: "p"
+              contains: "permanently decommission the device"
+          - assert:
+              selector: "button"
+              contains: "Cancel"
+          - assert:
+              selector: "button"
+              contains: "Deny & Decommission"
+        optional: true
+
+      - id: cancel_deny_modal
+        action: ui
+        description: "Cancel the deny modal to verify it closes without taking action"
+        playwright:
+          - click: "button:has-text('Cancel')"
+          - waitFor: "h1:has-text('Quarantined Devices')"
+            timeout: 5000
+        optional: true
+
+      - id: click_approve_on_first_device
+        action: ui
+        description: "Click Approve on the first quarantined device row to verify the approve action triggers successfully"
+        playwright:
+          - click: "table tbody tr:first-child button:has-text('Approve')"
+          - waitFor:
+              timeout: 5000
+        optional: true

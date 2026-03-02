@@ -54,7 +54,14 @@ crudRoutes.post(
       if (!auth.orgId) return c.json({ error: 'Organization context required' }, 403);
       orgId = auth.orgId;
     } else if (auth.scope === 'partner') {
-      if (!orgId) return c.json({ error: 'orgId is required for partner scope' }, 400);
+      if (!orgId) {
+        const singleOrg = auth.accessibleOrgIds?.[0];
+        if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
+          orgId = singleOrg;
+        } else {
+          return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
+        }
+      }
       if (!auth.canAccessOrg(orgId)) return c.json({ error: 'Access to this organization denied' }, 403);
     } else if (auth.scope === 'system' && !orgId) {
       return c.json({ error: 'orgId is required' }, 400);

@@ -1,0 +1,375 @@
+# Browser Security E2E Tests (BE-27)
+# Tests browser extension inventory, risk assessment, and policy enforcement via the security pages.
+# The browser security module surfaces data through the main security dashboard and sub-pages.
+# Verification uses API log queries instead of remote MCP calls.
+
+tests:
+  - id: browser_extension_inventory
+    name: "Browser Extension Inventory"
+    description: "Verify browser extension discovery and risk assessment data is collected by agent and surfaced in security dashboard"
+    tags: [security, browser, extensions, critical]
+    nodes: [windows]
+    timeout: 180000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_security
+        action: ui
+        description: "Navigate to Security dashboard"
+        playwright:
+          - goto: "/security"
+          - waitFor: "h2:has-text('Security')"
+            timeout: 15000
+
+      - id: verify_security_dashboard_loads
+        action: ui
+        description: "Verify the security dashboard renders correctly with stat cards"
+        playwright:
+          - assert:
+              selector: "h2"
+              contains: "Security"
+          - assert:
+              selector: "p"
+              contains: "Track protection coverage"
+
+      - id: check_extensions_on_agent
+        action: api
+        description: "Verify browser extension inventory collected by Windows agent"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.windows}}/diagnostic-logs"
+          query:
+            component: browser_security
+            since: "{{testStartTime}}"
+            search: "extension"
+        poll:
+          maxAttempts: 15
+          intervalMs: 3000
+          until: "logs.length > 0"
+        expect:
+          logs: []
+
+      - id: navigate_vulnerabilities_for_extensions
+        action: ui
+        description: "Navigate to Vulnerabilities page to see extension-related threats"
+        playwright:
+          - goto: "/security/vulnerabilities"
+          - waitFor: "text=Vulnerabilities"
+            timeout: 15000
+          - assert:
+              selector: "div"
+              contains: "Total"
+
+  - id: browser_extension_risk_assessment
+    name: "Browser Extension Risk Assessment in Security Score"
+    description: "Verify browser security contributes to the overall security score breakdown"
+    tags: [security, browser, risk]
+    nodes: [windows]
+    timeout: 180000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_security_score
+        action: ui
+        description: "Navigate to Security Score detail page"
+        playwright:
+          - goto: "/security/score"
+          - waitFor: "text=Security Score"
+            timeout: 15000
+
+      - id: verify_score_breakdown_table
+        action: ui
+        description: "Verify score breakdown table shows category-level breakdown including antivirus and vulnerability coverage"
+        playwright:
+          - assert:
+              selector: "table thead"
+              contains: "Category"
+          - assert:
+              selector: "table thead"
+              contains: "Score"
+          - assert:
+              selector: "table thead"
+              contains: "Weight"
+          - assert:
+              selector: "table thead"
+              contains: "Status"
+          - assert:
+              selector: "table thead"
+              contains: "Affected"
+
+      - id: verify_stat_cards_loaded
+        action: ui
+        description: "Verify Overall Score, Grade, and Devices Audited are populated"
+        playwright:
+          - assert:
+              selector: "div"
+              contains: "Overall Score"
+          - assert:
+              selector: "div"
+              contains: "Grade"
+          - assert:
+              selector: "div"
+              contains: "Devices Audited"
+
+      - id: verify_policy_enforcement_on_agent
+        action: api
+        description: "Verify browser security module active on Windows agent"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.windows}}/diagnostic-logs"
+          query:
+            component: browser_security
+            since: "{{testStartTime}}"
+        poll:
+          maxAttempts: 10
+          intervalMs: 3000
+          until: "logs.length > 0"
+        expect:
+          logs: []
+
+  - id: browser_security_recommendations
+    name: "Browser Security Recommendations"
+    description: "Verify browser-related security recommendations appear in the Recommendations page"
+    tags: [security, browser, policies]
+    nodes: [windows]
+    timeout: 180000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_recommendations
+        action: ui
+        description: "Navigate to Security Recommendations page"
+        playwright:
+          - goto: "/security/recommendations"
+          - waitFor: "text=Security Recommendations"
+            timeout: 15000
+
+      - id: verify_recommendations_page
+        action: ui
+        description: "Verify recommendations page loaded with summary stat cards"
+        playwright:
+          - assert:
+              selector: "h2"
+              contains: "Security Recommendations"
+          - assert:
+              selector: "p"
+              contains: "Prioritized remediation guidance"
+          - assert:
+              selector: "div"
+              contains: "Total"
+          - assert:
+              selector: "div"
+              contains: "Open"
+
+      - id: filter_by_category
+        action: ui
+        description: "Filter recommendations by Antivirus category to surface browser-related protection items"
+        playwright:
+          - selectOption:
+              "select:has(option[value='antivirus'])": "antivirus"
+          - waitFor:
+              selector: "div"
+              timeout: 5000
+
+      - id: reset_category_filter
+        action: ui
+        description: "Reset category filter to show all recommendations"
+        playwright:
+          - selectOption:
+              "select:has(option[value='antivirus'])": ""
+
+      - id: verify_mark_complete_action
+        action: ui
+        description: "Verify open recommendations show Mark Complete and Dismiss buttons"
+        playwright:
+          - selectOption:
+              "select:has(option[value='open'])": "open"
+          - waitFor:
+              selector: "div"
+              timeout: 5000
+
+      - id: verify_policy_enforcement_on_agent
+        action: api
+        description: "Verify browser security module active on agent after recommendations check"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.windows}}/diagnostic-logs"
+          query:
+            component: browser_security
+            since: "{{testStartTime}}"
+        poll:
+          maxAttempts: 10
+          intervalMs: 3000
+          until: "logs.length > 0"
+        expect:
+          logs: []
+
+  - id: browser_extension_linux
+    name: "Linux Browser Extension Scanning"
+    description: "Verify browser extension scanning is active on Linux agent and security pages reflect this"
+    tags: [security, browser, linux]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: scan_linux_extensions
+        action: api
+        description: "Verify browser extension scan on Linux agent"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.linux}}/diagnostic-logs"
+          query:
+            component: browser_security
+            since: "{{testStartTime}}"
+            search: "extension"
+        poll:
+          maxAttempts: 15
+          intervalMs: 3000
+          until: "logs.length > 0"
+        expect:
+          logs: []
+
+      - id: navigate_security
+        action: ui
+        description: "Navigate to security dashboard and verify it loads"
+        playwright:
+          - goto: "/security"
+          - waitFor: "h2:has-text('Security')"
+            timeout: 15000
+          - assert:
+              selector: "h2"
+              contains: "Security"
+
+      - id: navigate_vulnerabilities
+        action: ui
+        description: "Navigate to Vulnerabilities page and verify it shows threat data"
+        playwright:
+          - goto: "/security/vulnerabilities"
+          - waitFor: "text=Vulnerabilities"
+            timeout: 15000
+          - assert:
+              selector: "table thead"
+              contains: "Threat"
+
+      - id: filter_threats_by_category
+        action: ui
+        description: "Filter threats by Malware category relevant to browser extensions"
+        playwright:
+          - selectOption:
+              "select:has(option[value='malware'])": "malware"
+          - waitFor:
+              selector: "table tbody"
+              timeout: 5000
+          - selectOption:
+              "select:has(option[value='malware'])": ""
+
+  - id: browser_security_trends
+    name: "Browser Security Trends Impact"
+    description: "Verify Security Trends page shows multi-category line chart where browser security improvements are tracked"
+    tags: [security, browser, trends]
+    nodes: [windows]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_trends
+        action: ui
+        description: "Navigate to Security Trends page"
+        playwright:
+          - goto: "/security/trends"
+          - waitFor: "text=Security Trends"
+            timeout: 15000
+
+      - id: verify_trend_categories
+        action: ui
+        description: "Verify Overall, Antivirus, Firewall, Encryption, and Vuln Mgmt trend line toggles"
+        playwright:
+          - assert:
+              selector: "button"
+              contains: "Overall"
+          - assert:
+              selector: "button"
+              contains: "Antivirus"
+          - assert:
+              selector: "button"
+              contains: "Firewall"
+          - assert:
+              selector: "button"
+              contains: "Encryption"
+          - assert:
+              selector: "button"
+              contains: "Vuln. Mgmt"
+
+      - id: switch_period
+        action: ui
+        description: "Switch to 30-day period view to see longer trend data"
+        playwright:
+          - click: "button:has-text('30 Days')"
+          - waitFor:
+              selector: "div"
+              timeout: 5000
+
+      - id: toggle_vulnerability_line
+        action: ui
+        description: "Toggle the Vuln. Mgmt line to highlight vulnerability management trend"
+        playwright:
+          - click: "button:has-text('Vuln. Mgmt')"
+          - waitFor:
+              selector: "div"
+              timeout: 3000

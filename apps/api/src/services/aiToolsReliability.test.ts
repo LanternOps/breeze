@@ -7,23 +7,20 @@ vi.mock('../db', () => ({
   db: {},
 }));
 
-vi.mock('../db/schema', () => ({
+vi.mock('../db/schema', () => new Proxy({
   dnsActionEnum: { enumValues: ['allow', 'block', 'log'] },
   dnsThreatCategoryEnum: { enumValues: ['malware', 'phishing', 'botnet', 'cryptomining'] },
   discoveredAssetTypeEnum: { enumValues: ['workstation', 'server', 'printer', 'router', 'switch', 'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'] },
-  devices: {},
-  deviceHardware: {},
-  deviceNetwork: {},
-  deviceDisks: {},
-  deviceMetrics: {},
-  deviceBootMetrics: {},
-  alerts: {},
-  sites: {},
-  organizations: {},
-  auditLogs: {},
-  deviceCommands: {},
-  deviceFilesystemCleanupRuns: {},
-  deviceSessions: {},
+  peripheralEventTypeEnum: { enumValues: ['connected', 'disconnected', 'blocked', 'allowed'] },
+  peripheralDeviceClassEnum: { enumValues: ['storage', 'all_usb', 'bluetooth', 'thunderbolt'] },
+  peripheralPolicyActionEnum: { enumValues: ['allow', 'block', 'read_only', 'alert'] },
+  peripheralPolicyTargetTypeEnum: { enumValues: ['organization', 'site', 'group', 'device'] },
+}, {
+  get(target, prop) {
+    if (prop in target) return target[prop as keyof typeof target];
+    // Return empty object for any un-mocked table/export
+    return {};
+  },
 }));
 
 vi.mock('./aiToolSchemas', () => ({

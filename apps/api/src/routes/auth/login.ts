@@ -47,18 +47,22 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
   const normalizedEmail = email.toLowerCase();
 
   // Rate limit by IP + email combination - fail closed for security
-  const redis = getRedis();
-  if (!redis) {
-    return c.json({ error: 'Service temporarily unavailable' }, 503);
-  }
-  const rateKey = `login:${rateLimitClient}:${normalizedEmail}`;
-  const rateCheck = await rateLimiter(redis, rateKey, loginLimiter.limit, loginLimiter.windowSeconds);
+  // In E2E mode, skip rate limiting entirely
+  const e2eMode = process.env.E2E_MODE === '1' || process.env.E2E_MODE === 'true';
+  if (!e2eMode) {
+    const redis = getRedis();
+    if (!redis) {
+      return c.json({ error: 'Service temporarily unavailable' }, 503);
+    }
+    const rateKey = `login:${rateLimitClient}:${normalizedEmail}`;
+    const rateCheck = await rateLimiter(redis, rateKey, loginLimiter.limit, loginLimiter.windowSeconds);
 
-  if (!rateCheck.allowed) {
-    return c.json({
-      error: 'Too many login attempts. Please try again later.',
-      retryAfter: Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)
-    }, 429);
+    if (!rateCheck.allowed) {
+      return c.json({
+        error: 'Too many login attempts. Please try again later.',
+        retryAfter: Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)
+      }, 429);
+    }
   }
 
   // Find user
@@ -112,7 +116,7 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     // Create a temporary token for MFA verification
     const tempToken = nanoid(32);
     const mfaMethod = user.mfaMethod || 'totp';
-    await redis.setex(`mfa:pending:${tempToken}`, 300, JSON.stringify({
+    await getRedis()!.setex(`mfa:pending:${tempToken}`, 300, JSON.stringify({
       userId: user.id,
       mfaMethod
     }));
@@ -135,6 +139,8 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
   const scope = context.scope;
 
   // Create tokens with user's context
+  // MFA is vacuously satisfied when the user hasn't enrolled in MFA
+  const mfaSatisfied = !(ENABLE_2FA && user.mfaEnabled);
   const tokens = await createTokenPair({
     sub: user.id,
     email: user.email,
@@ -142,7 +148,7 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     orgId,
     partnerId,
     scope,
-    mfa: false
+    mfa: mfaSatisfied
   });
 
   // Update last login

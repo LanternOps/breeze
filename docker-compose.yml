@@ -118,6 +118,7 @@ services:
       TURN_HOST: ${TURN_HOST:-}
       TURN_PORT: ${TURN_PORT:-3478}
       TURN_SECRET: ${TURN_SECRET:-}
+      E2E_MODE: ${E2E_MODE:-}
     volumes:
       - api_data:/data
       - binaries:/data/binaries:ro
@@ -179,7 +180,7 @@ services:
     image: redis:7-alpine
     container_name: breeze-redis
     restart: unless-stopped
-    command: redis-server --appendonly yes --maxmemory ${REDIS_MAXMEMORY:-256mb} --maxmemory-policy noeviction
+    command: redis-server --appendonly yes --maxmemory ${REDIS_MAXMEMORY:-256mb} --maxmemory-policy noeviction --maxclients 10000
     volumes:
       - redis_data:/data
     healthcheck:

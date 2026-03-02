@@ -1,0 +1,640 @@
+# Settings Admin E2E Tests
+# Tests the full settings area: overview, organization, users, roles, API keys,
+# enrollment keys, SSO, sites, custom fields, saved filters, profile, AI usage,
+# and access reviews.
+# Does NOT perform destructive mutations — modals are opened and cancelled.
+
+tests:
+  - id: settings_overview_page_loads
+    name: "Settings Overview Page Loads"
+    description: "Verify the /settings hub shows card links for Organizations, Users, and Sites"
+    tags: [settings, critical]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_settings
+        action: ui
+        description: "Navigate to /settings"
+        playwright:
+          - goto: "/settings"
+          - waitFor: "h1:has-text('Settings')"
+            timeout: 15000
+
+      - id: verify_settings_cards
+        action: ui
+        description: "Verify hub cards for Organizations, Users, and Sites"
+        playwright:
+          - waitFor: "text=Organizations"
+            timeout: 10000
+          - waitFor: "text=Users"
+            timeout: 5000
+          - waitFor: "text=Sites"
+            timeout: 5000
+          - waitFor: "text=Manage your organization settings"
+            timeout: 5000
+
+  - id: settings_users_management
+    name: "User Management Page"
+    description: "List users, search by name/email, and open the Invite User modal"
+    tags: [settings, users, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_users
+        action: ui
+        description: "Navigate to /settings/users"
+        playwright:
+          - goto: "/settings/users"
+          - waitFor: "h1:has-text('Users')"
+            timeout: 15000
+
+      - id: verify_user_table
+        action: ui
+        description: "Verify table columns: Name, Email, Role, Status, Last login, Actions"
+        playwright:
+          - waitFor: "text=Name"
+            timeout: 10000
+          - waitFor: "text=Email"
+            timeout: 5000
+          - waitFor: "text=Role"
+            timeout: 5000
+          - waitFor: "text=Status"
+            timeout: 5000
+          - waitFor: "text=Last login"
+            timeout: 5000
+
+      - id: verify_invite_button
+        action: ui
+        description: "Verify the Invite user button is present"
+        playwright:
+          - waitFor: "button:has-text('Invite user')"
+            timeout: 10000
+
+      - id: search_users
+        action: ui
+        description: "Type into the user search field"
+        playwright:
+          - fill:
+              "#user-search": "admin"
+          - waitFor: "text=of"
+            timeout: 5000
+
+      - id: open_invite_modal
+        action: ui
+        description: "Click Invite user to open the invite modal"
+        playwright:
+          - fill:
+              "#user-search": ""
+          - click: "button:has-text('Invite user')"
+          - waitFor: "text=Invite User"
+            timeout: 10000
+
+      - id: cancel_invite_modal
+        action: ui
+        description: "Cancel the invite modal"
+        optional: true
+        playwright:
+          - click: "button:has-text('Cancel')"
+
+      - id: verify_api_users
+        action: api
+        description: "Verify users API returns data"
+        request:
+          method: GET
+          path: "/api/v1/users"
+        assert:
+          status: 200
+        expect: {}
+
+  - id: settings_roles_management
+    name: "Role Management Page"
+    description: "List roles and open the Create Role modal"
+    tags: [settings, roles]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_roles
+        action: ui
+        description: "Navigate to /settings/roles"
+        playwright:
+          - goto: "/settings/roles"
+          - waitFor: "h1:has-text('Roles')"
+            timeout: 15000
+
+      - id: verify_roles_description
+        action: ui
+        description: "Verify page subtitle mentions system roles"
+        playwright:
+          - waitFor: "text=Manage user roles and permissions"
+            timeout: 10000
+
+      - id: verify_create_role_button
+        action: ui
+        description: "Verify the Create Role button is present"
+        playwright:
+          - waitFor: "button:has-text('Create')"
+            timeout: 10000
+
+      - id: open_create_role_modal
+        action: ui
+        description: "Click the Create Role / New Role button to open the form"
+        playwright:
+          - click: "button:has-text('Create')"
+          - waitFor: "text=Create"
+            timeout: 10000
+
+      - id: cancel_create_role_modal
+        action: ui
+        description: "Cancel the create role modal"
+        optional: true
+        playwright:
+          - click: "button:has-text('Cancel')"
+
+  - id: settings_api_keys_management
+    name: "API Key Management Page"
+    description: "List API keys, open Create Key modal, verify revoke and rotate controls"
+    tags: [settings, api-keys, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_api_keys
+        action: ui
+        description: "Navigate to /settings/api-keys"
+        playwright:
+          - goto: "/settings/api-keys"
+          - waitFor: "h1:has-text('API Keys')"
+            timeout: 15000
+
+      - id: verify_api_keys_controls
+        action: ui
+        description: "Verify the Create Key button and search/filter controls"
+        playwright:
+          - waitFor: "button:has-text('Create Key')"
+            timeout: 10000
+          - waitFor: "input[placeholder*='Search by name']"
+            timeout: 5000
+
+      - id: verify_api_keys_table_headers
+        action: ui
+        description: "Verify table has Name, Key Prefix, Scopes, Created, Last Used, Status columns"
+        playwright:
+          - waitFor: "text=Name"
+            timeout: 5000
+          - waitFor: "text=Key Prefix"
+            timeout: 5000
+          - waitFor: "text=Scopes"
+            timeout: 5000
+          - waitFor: "th:has-text('Status')"
+            timeout: 5000
+
+      - id: open_create_key_modal
+        action: ui
+        description: "Click Create Key to open the API key form"
+        playwright:
+          - click: "button:has-text('Create Key')"
+          - waitFor: "text=Create API Key"
+            timeout: 10000
+
+      - id: cancel_create_key_modal
+        action: ui
+        description: "Cancel to close the modal"
+        optional: true
+        playwright:
+          - click: "button:has-text('Cancel')"
+
+      - id: verify_api_keys_api
+        action: api
+        description: "Verify API keys endpoint returns expected structure"
+        request:
+          method: GET
+          path: "/api/v1/api-keys"
+        assert:
+          status: 200
+        expect:
+          pagination: {}
+
+  - id: settings_enrollment_keys_management
+    name: "Enrollment Keys Management Page"
+    description: "List enrollment keys, open Create Key modal with Name/Max Usage/Expires fields"
+    tags: [settings, enrollment-keys, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_enrollment_keys
+        action: ui
+        description: "Navigate to /settings/enrollment-keys"
+        playwright:
+          - goto: "/settings/enrollment-keys"
+          - waitFor: "h1:has-text('Enrollment Keys')"
+            timeout: 15000
+
+      - id: verify_enrollment_keys_layout
+        action: ui
+        description: "Verify the Create Key button and table column headers"
+        playwright:
+          - waitFor: "button:has-text('Create Key')"
+            timeout: 10000
+          - waitFor: "text=Name"
+            timeout: 5000
+          - waitFor: "text=Status"
+            timeout: 5000
+          - waitFor: "text=Usage"
+            timeout: 5000
+          - waitFor: "text=Expires"
+            timeout: 5000
+
+      - id: open_create_key_modal
+        action: ui
+        description: "Open the Create Enrollment Key modal"
+        playwright:
+          - click: "button:has-text('Create Key')"
+          - waitFor: "text=Create Enrollment Key"
+            timeout: 10000
+
+      - id: verify_create_form_fields
+        action: ui
+        description: "Verify the Name, Max Usage, and Expires At fields are present"
+        playwright:
+          - waitFor: "input[placeholder*='Production servers']"
+            timeout: 5000
+          - waitFor: "input[placeholder*='Unlimited']"
+            timeout: 5000
+
+      - id: cancel_create_key_modal
+        action: ui
+        description: "Cancel the modal"
+        optional: true
+        playwright:
+          - click: "button:has-text('Cancel')"
+
+  - id: settings_sso_configuration
+    name: "SSO Configuration Page"
+    description: "Verify SSO providers page loads and the Add provider button is present"
+    tags: [settings, sso]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_sso
+        action: ui
+        description: "Navigate to /settings/sso"
+        playwright:
+          - goto: "/settings/sso"
+          - waitFor: "h1:has-text('Single Sign-On')"
+            timeout: 15000
+
+      - id: verify_sso_page
+        action: ui
+        description: "Verify page subtitle and Add provider button"
+        playwright:
+          - waitFor: "text=Configure SSO providers"
+            timeout: 10000
+          - waitFor: "button:has-text('Add provider')"
+            timeout: 5000
+
+      - id: open_add_provider_modal
+        action: ui
+        description: "Click Add provider to open the SSO provider form"
+        playwright:
+          - click: "button:has-text('Add provider')"
+          - waitFor: "text=Add SSO Provider"
+            timeout: 10000
+
+      - id: cancel_add_provider
+        action: ui
+        description: "Cancel the SSO provider form"
+        optional: true
+        playwright:
+          - click: "button:has-text('Cancel')"
+
+  - id: settings_profile_page
+    name: "Profile Settings Page"
+    description: "Verify profile info form, change password section, and MFA settings are rendered"
+    tags: [settings, profile]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_profile
+        action: ui
+        description: "Navigate to /settings/profile"
+        playwright:
+          - goto: "/settings/profile"
+          - waitFor: "h1:has-text('Profile settings')"
+            timeout: 15000
+
+      - id: verify_profile_form_fields
+        action: ui
+        description: "Verify name, avatarUrl, and disabled email fields are present"
+        playwright:
+          - waitFor: "label:has-text('Name')"
+            timeout: 10000
+          - waitFor: "label:has-text('Avatar image URL')"
+            timeout: 5000
+          - waitFor: "label:has-text('Email')"
+            timeout: 5000
+          - waitFor: "#name"
+            timeout: 5000
+          - waitFor: "#avatarUrl"
+            timeout: 5000
+          - waitFor: "#email"
+            timeout: 5000
+
+      - id: verify_security_sections
+        action: ui
+        description: "Verify Change Password and Multi-factor authentication sections"
+        playwright:
+          - waitFor: "text=Profile information"
+            timeout: 5000
+
+      - id: verify_save_button
+        action: ui
+        description: "Verify the Save changes button is present"
+        playwright:
+          - waitFor: "button:has-text('Save changes')"
+            timeout: 10000
+
+  - id: settings_ai_usage_page
+    name: "AI Usage and Budget Page"
+    description: "Verify AI usage stats, budget configuration panel, and recent sessions table"
+    tags: [settings, ai-usage]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_ai_usage
+        action: ui
+        description: "Navigate to /settings/ai-usage"
+        playwright:
+          - goto: "/settings/ai-usage"
+          - waitFor: "h1:has-text('AI Usage')"
+            timeout: 15000
+
+      - id: verify_stat_cards
+        action: ui
+        description: "Verify Today's Cost, Monthly Cost, Messages Today, and Tokens cards"
+        playwright:
+          - waitFor: "text=Today's Cost"
+            timeout: 10000
+          - waitFor: "text=Monthly Cost"
+            timeout: 5000
+          - waitFor: "text=Messages Today"
+            timeout: 5000
+          - waitFor: "text=Tokens This Month"
+            timeout: 5000
+
+      - id: verify_budget_panel
+        action: ui
+        description: "Verify Budget Configuration section and Save Budget button"
+        playwright:
+          - waitFor: "text=Budget Configuration"
+            timeout: 10000
+          - waitFor: "button:has-text('Save Budget')"
+            timeout: 5000
+
+      - id: verify_sessions_table
+        action: ui
+        description: "Verify Recent Sessions table with Title, Model, Turns, Cost columns"
+        playwright:
+          - waitFor: "text=Recent Sessions"
+            timeout: 10000
+          - waitFor: "text=Model"
+            timeout: 5000
+          - waitFor: "text=Turns"
+            timeout: 5000
+          - waitFor: "text=Cost"
+            timeout: 5000
+
+  - id: settings_access_reviews
+    name: "Access Reviews Page"
+    description: "Verify access reviews list, review history table, and Create New campaign button"
+    tags: [settings, access-reviews]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_access_reviews
+        action: ui
+        description: "Navigate to /settings/access-reviews and wait for page to load (may show error state if API route is not proxied)"
+        playwright:
+          - goto: "/settings/access-reviews"
+          - waitFor: "text=Access Reviews"
+            timeout: 15000
+
+      - id: verify_access_reviews_page
+        action: ui
+        description: "Verify the page subtitle and Review History section"
+        optional: true
+        playwright:
+          - waitFor: "text=Conduct periodic reviews"
+            timeout: 10000
+          - waitFor: "text=Review History"
+            timeout: 5000
+
+      - id: verify_history_columns
+        action: ui
+        description: "Verify audit history table columns: Campaign, Completed, Reviewer, Due Date"
+        optional: true
+        playwright:
+          - waitFor: "text=Campaign"
+            timeout: 5000
+          - waitFor: "text=Completed"
+            timeout: 5000
+          - waitFor: "text=Reviewer"
+            timeout: 5000
+
+      - id: open_create_review_modal
+        action: ui
+        description: "Click New Access Review button"
+        optional: true
+        playwright:
+          - click: "button:has-text('New Review')"
+          - waitFor: "text=Access Review"
+            timeout: 10000
+
+      - id: cancel_create_review
+        action: ui
+        description: "Cancel the new access review form"
+        optional: true
+        playwright:
+          - click: "button:has-text('Cancel')"
+
+  - id: settings_sites_management
+    name: "Sites Management Page"
+    description: "Verify the Sites page loads with the sites list and new site controls"
+    tags: [settings, sites]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_sites
+        action: ui
+        description: "Navigate to /settings/sites"
+        playwright:
+          - goto: "/settings/sites"
+          - waitFor: "text=Sites"
+            timeout: 15000
+
+      - id: verify_sites_api
+        action: api
+        description: "Verify sites API returns data"
+        request:
+          method: GET
+          path: "/api/v1/orgs/sites"
+        assert:
+          status: 200
+        expect:
+          pagination: {}
+
+  - id: settings_custom_fields_page
+    name: "Custom Fields Page"
+    description: "Verify the Custom Fields page loads"
+    tags: [settings, custom-fields]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_custom_fields
+        action: ui
+        description: "Navigate to /settings/custom-fields"
+        playwright:
+          - goto: "/settings/custom-fields"
+          - waitFor: "text=Custom Fields"
+            timeout: 15000

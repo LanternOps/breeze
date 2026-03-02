@@ -57,6 +57,8 @@ var allCommandTypes = []string{
 	tools.CmdSecurityCollectStatus, tools.CmdSecurityScan,
 	tools.CmdSecurityThreatQuarantine, tools.CmdSecurityThreatRemove,
 	tools.CmdSecurityThreatRestore,
+	tools.CmdSensitiveDataScan, tools.CmdQuarantineFile,
+	tools.CmdEncryptFile, tools.CmdSecureDeleteFile,
 
 	// handlers_patch.go init() — backup
 	tools.CmdBackupRun, tools.CmdBackupList, tools.CmdBackupStop, tools.CmdBackupRestore,
@@ -75,6 +77,12 @@ var allCommandTypes = []string{
 
 	// handlers_desktop.go init() — session management
 	tools.CmdListSessions,
+
+	// handlers_cis.go init()
+	tools.CmdCisBenchmark, tools.CmdApplyCisRemediation,
+
+	// handlers_peripheral.go init()
+	tools.CmdPeripheralPolicySync,
 }
 
 func TestHandlerRegistryCompleteness(t *testing.T) {

@@ -1,0 +1,296 @@
+- generic [active] [ref=e23]:
+  - generic [ref=e24]:
+    - complementary [ref=e26]:
+      - generic [ref=e27]:
+        - generic [ref=e28]: Breeze
+        - button [ref=e29] [cursor=pointer]:
+          - img [ref=e30]
+      - navigation [ref=e32]:
+        - link "Dashboard" [ref=e33] [cursor=pointer]:
+          - /url: /
+          - img [ref=e34]
+          - generic [ref=e39]: Dashboard
+        - link "Devices" [ref=e40] [cursor=pointer]:
+          - /url: /devices
+          - img [ref=e41]
+          - generic [ref=e43]: Devices
+        - link "Discovery" [ref=e44] [cursor=pointer]:
+          - /url: /discovery
+          - img [ref=e45]
+          - generic [ref=e50]: Discovery
+        - link "Scripts" [ref=e51] [cursor=pointer]:
+          - /url: /scripts
+          - img [ref=e52]
+          - generic [ref=e57]: Scripts
+        - link "Alerts" [ref=e58] [cursor=pointer]:
+          - /url: /alerts
+          - img [ref=e59]
+          - generic [ref=e62]: Alerts
+        - link "Reports" [ref=e63] [cursor=pointer]:
+          - /url: /reports
+          - img [ref=e64]
+          - generic [ref=e67]: Reports
+        - link "Analytics" [ref=e68] [cursor=pointer]:
+          - /url: /analytics
+          - img [ref=e69]
+          - generic [ref=e71]: Analytics
+        - link "Fleet" [ref=e72] [cursor=pointer]:
+          - /url: /fleet
+          - img [ref=e73]
+          - generic [ref=e85]: Fleet
+        - link "Remote Access" [ref=e86] [cursor=pointer]:
+          - /url: /remote
+          - img [ref=e87]
+          - generic [ref=e89]: Remote Access
+        - text: Monitoring
+        - link "Monitoring" [ref=e91] [cursor=pointer]:
+          - /url: /monitoring
+          - img [ref=e92]
+          - generic [ref=e94]: Monitoring
+        - link "Security" [ref=e95] [cursor=pointer]:
+          - /url: /security
+          - img [ref=e96]
+          - generic [ref=e99]: Security
+        - link "Data Discovery" [ref=e100] [cursor=pointer]:
+          - /url: /sensitive-data
+          - img [ref=e101]
+          - generic [ref=e108]: Data Discovery
+        - link "Peripherals" [ref=e109] [cursor=pointer]:
+          - /url: /peripherals
+          - img [ref=e110]
+          - generic [ref=e118]: Peripherals
+        - link "AI Risk Engine" [ref=e119] [cursor=pointer]:
+          - /url: /ai-risk
+          - img [ref=e120]
+          - generic [ref=e132]: AI Risk Engine
+        - link "CIS Benchmarks" [ref=e133] [cursor=pointer]:
+          - /url: /cis-hardening
+          - img [ref=e134]
+          - generic [ref=e138]: CIS Benchmarks
+        - text: Operations
+        - link "Updates" [ref=e140] [cursor=pointer]:
+          - /url: /patches
+          - img [ref=e141]
+          - generic [ref=e144]: Updates
+        - link "Backup" [ref=e145] [cursor=pointer]:
+          - /url: /backup
+          - img [ref=e146]
+          - generic [ref=e148]: Backup
+        - link "Audit Logs" [ref=e149] [cursor=pointer]:
+          - /url: /audit
+          - img [ref=e150]
+          - generic [ref=e153]: Audit Logs
+        - link "Event Logs" [ref=e154] [cursor=pointer]:
+          - /url: /logs
+          - img [ref=e155]
+          - generic [ref=e158]: Event Logs
+        - link "Audit Baselines" [ref=e159] [cursor=pointer]:
+          - /url: /audit-baselines
+          - img [ref=e160]
+          - generic [ref=e163]: Audit Baselines
+        - text: Integrations
+        - link "Webhooks" [ref=e165] [cursor=pointer]:
+          - /url: /integrations/webhooks
+          - img [ref=e166]
+          - generic [ref=e170]: Webhooks
+        - link "PSA Connections" [ref=e171] [cursor=pointer]:
+          - /url: /integrations/psa
+          - img [ref=e172]
+          - generic [ref=e174]: PSA Connections
+        - text: Management
+        - link "App Library" [ref=e176] [cursor=pointer]:
+          - /url: /software
+          - img [ref=e177]
+          - generic [ref=e181]: App Library
+        - link "App Policies" [ref=e182] [cursor=pointer]:
+          - /url: /software-inventory
+          - img [ref=e183]
+          - generic [ref=e187]: App Policies
+        - link "Config Policies" [ref=e188] [cursor=pointer]:
+          - /url: /configuration-policies
+          - img [ref=e189]
+          - generic [ref=e193]: Config Policies
+        - link "Organizations" [ref=e194] [cursor=pointer]:
+          - /url: /settings/organizations
+          - img [ref=e195]
+          - generic [ref=e199]: Organizations
+        - link "Users" [ref=e200] [cursor=pointer]:
+          - /url: /settings/users
+          - img [ref=e201]
+          - generic [ref=e206]: Users
+        - link "Roles" [ref=e207] [cursor=pointer]:
+          - /url: /settings/roles
+          - img [ref=e208]
+          - generic [ref=e211]: Roles
+        - link "Settings" [ref=e212] [cursor=pointer]:
+          - /url: /settings
+          - img [ref=e213]
+          - generic [ref=e216]: Settings
+        - text: Settings
+        - link "Organization" [ref=e218] [cursor=pointer]:
+          - /url: /settings/organization
+          - img [ref=e219]
+          - generic [ref=e222]: Organization
+        - link "Custom Fields" [ref=e223] [cursor=pointer]:
+          - /url: /settings/custom-fields
+          - img [ref=e224]
+          - generic [ref=e227]: Custom Fields
+        - link "Saved Filters" [ref=e228] [cursor=pointer]:
+          - /url: /settings/filters
+          - img [ref=e229]
+          - generic [ref=e231]: Saved Filters
+        - link "Integrations" [ref=e232] [cursor=pointer]:
+          - /url: /integrations/webhooks
+          - img [ref=e233]
+          - generic [ref=e235]: Integrations
+    - generic [ref=e236]:
+      - banner [ref=e238]:
+        - generic [ref=e239]:
+          - button "Default Organization active" [ref=e241] [cursor=pointer]:
+            - img [ref=e242]
+            - generic [ref=e246]: Default Organization
+            - generic [ref=e247]: active
+            - img [ref=e248]
+          - button "Search devices, scripts, alerts, users, settings Cmd+K" [ref=e250] [cursor=pointer]:
+            - img [ref=e251]
+            - generic [ref=e254]: Search devices, scripts, alerts, users, settings
+            - generic [ref=e255]: Cmd+K
+        - generic [ref=e256]:
+          - button "Notifications" [ref=e258] [cursor=pointer]:
+            - img [ref=e259]
+          - button "Switch to dark mode" [ref=e262] [cursor=pointer]:
+            - img [ref=e263]
+          - button "T" [ref=e266] [cursor=pointer]:
+            - generic [ref=e267]: T
+            - img [ref=e268]
+      - main [ref=e270]:
+        - generic [ref=e271]:
+          - generic [ref=e272]:
+            - heading "Dashboard" [level=1] [ref=e273]
+            - paragraph [ref=e274]: Overview of your managed devices and alerts
+          - generic [ref=e276]:
+            - generic [ref=e277]:
+              - img [ref=e279]
+              - generic [ref=e281]:
+                - generic [ref=e282]: "2"
+                - generic [ref=e283]: Total Devices
+            - generic [ref=e284]:
+              - generic [ref=e285]:
+                - img [ref=e286]
+                - generic [ref=e289]: 100%
+              - generic [ref=e290]:
+                - generic [ref=e291]: "2"
+                - generic [ref=e292]: Online
+            - generic [ref=e293]:
+              - img [ref=e295]
+              - generic [ref=e297]:
+                - generic [ref=e298]: "0"
+                - generic [ref=e299]: Warnings
+            - generic [ref=e300]:
+              - img [ref=e302]
+              - generic [ref=e306]:
+                - generic [ref=e307]: "0"
+                - generic [ref=e308]: Critical
+          - generic [ref=e309]:
+            - generic [ref=e311]:
+              - heading "Device Status" [level=3] [ref=e312]
+              - generic [ref=e315]:
+                - img [ref=e316]:
+                  - img [ref=e321]
+                - list [ref=e323]:
+                  - listitem [ref=e324]:
+                    - img [ref=e325]
+                    - text: Online
+            - generic [ref=e328]:
+              - generic [ref=e329]:
+                - heading "Recent Alerts" [level=3] [ref=e330]
+                - link "View all" [ref=e331] [cursor=pointer]:
+                  - /url: /alerts
+              - generic [ref=e333]: No recent alerts
+          - generic [ref=e335]:
+            - generic [ref=e336]:
+              - heading "Recent Activity" [level=3] [ref=e337]
+              - link "View audit log" [ref=e338] [cursor=pointer]:
+                - /url: /audit
+            - table [ref=e340]:
+              - rowgroup [ref=e341]:
+                - row "User Action Target Time" [ref=e342]:
+                  - columnheader "User" [ref=e343]
+                  - columnheader "Action" [ref=e344]
+                  - columnheader "Target" [ref=e345]
+                  - columnheader "Time" [ref=e346]
+              - rowgroup [ref=e347]:
+                - row "Agent f0608509 agent.security_status.submit - Just now" [ref=e348]:
+                  - cell "Agent f0608509" [ref=e349]
+                  - cell "agent.security_status.submit" [ref=e350]
+                  - cell "-" [ref=e351]:
+                    - generic [ref=e352]:
+                      - img [ref=e353]
+                      - generic [ref=e355]: "-"
+                  - cell "Just now" [ref=e356]
+                - row "Agent api.put.agents.:id.sessions - 1 minute ago" [ref=e357]:
+                  - cell "Agent" [ref=e358]
+                  - cell "api.put.agents.:id.sessions" [ref=e359]
+                  - cell "-" [ref=e360]:
+                    - generic [ref=e361]:
+                      - img [ref=e362]
+                      - generic [ref=e364]: "-"
+                  - cell "1 minute ago" [ref=e365]
+                - row "Agent f0608509 agent.sessions.submit - 1 minute ago" [ref=e366]:
+                  - cell "Agent f0608509" [ref=e367]
+                  - cell "agent.sessions.submit" [ref=e368]
+                  - cell "-" [ref=e369]:
+                    - generic [ref=e370]:
+                      - img [ref=e371]
+                      - generic [ref=e373]: "-"
+                  - cell "1 minute ago" [ref=e374]
+                - row "Agent 0aec6bff agent.filesystem.threshold_scan.queued - 2 minutes ago" [ref=e375]:
+                  - cell "Agent 0aec6bff" [ref=e376]
+                  - cell "agent.filesystem.threshold_scan.queued" [ref=e377]
+                  - cell "-" [ref=e378]:
+                    - generic [ref=e379]:
+                      - img [ref=e380]
+                      - generic [ref=e382]: "-"
+                  - cell "2 minutes ago" [ref=e383]
+                - row "Agent f0608509 agent.patches.submit - 2 minutes ago" [ref=e384]:
+                  - cell "Agent f0608509" [ref=e385]
+                  - cell "agent.patches.submit" [ref=e386]
+                  - cell "-" [ref=e387]:
+                    - generic [ref=e388]:
+                      - img [ref=e389]
+                      - generic [ref=e391]: "-"
+                  - cell "2 minutes ago" [ref=e392]
+  - generic [ref=e393]:
+    - button "Open AI Assistant (Cmd+Shift+A)" [ref=e394] [cursor=pointer]:
+      - img [ref=e395]
+    - generic [ref=e397]:
+      - generic [ref=e398]:
+        - generic [ref=e399]:
+          - img [ref=e400]
+          - generic [ref=e402]: Breeze AI
+        - generic [ref=e403]:
+          - button "Conversation history" [ref=e404] [cursor=pointer]:
+            - img [ref=e405]
+          - button "Close (Cmd+Shift+A)" [ref=e409] [cursor=pointer]:
+            - img [ref=e410]
+      - generic [ref=e414]:
+        - img [ref=e415]
+        - generic [ref=e420]: Dashboard
+      - generic [ref=e421]:
+        - img [ref=e422]
+        - heading "Breeze AI Assistant" [level=3] [ref=e425]
+        - paragraph [ref=e426]: Ask about your devices, alerts, metrics, or troubleshoot issues.
+        - generic [ref=e427]:
+          - button "Check server health" [ref=e428] [cursor=pointer]
+          - button "Show critical alerts" [ref=e429] [cursor=pointer]
+          - button "Find offline devices" [ref=e430] [cursor=pointer]
+          - button "Security overview" [ref=e431] [cursor=pointer]
+          - button "Disk space report" [ref=e432] [cursor=pointer]
+          - button "Recent activity" [ref=e433] [cursor=pointer]
+      - generic [ref=e434]:
+        - generic [ref=e435]:
+          - textbox "Ask about your devices..." [ref=e436]
+          - button [disabled] [ref=e437]:
+            - img [ref=e438]
+        - paragraph [ref=e441]: Cmd+Enter to send
+  - generic [ref=e442]: Dashboard | Breeze RMM

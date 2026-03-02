@@ -905,18 +905,14 @@ export async function listUserRiskScores(filter: UserRiskScoreListFilter): Promi
     .select({
       orgId: userRiskScores.orgId,
       userId: userRiskScores.userId,
-      calculatedAt: sql<Date>`max(${userRiskScores.calculatedAt})`.as('calculated_at')
+      calculatedAt: sql<Date>`max(${userRiskScores.calculatedAt})`.as('latest_calculated_at')
     })
     .from(userRiskScores)
     .where(scopeConditions.length > 0 ? and(...scopeConditions) : undefined)
     .groupBy(userRiskScores.orgId, userRiskScores.userId)
     .as('latest_user_risk_scores');
 
-  const conditions: SQL[] = [
-    eq(userRiskScores.orgId, latestByUser.orgId),
-    eq(userRiskScores.userId, latestByUser.userId),
-    eq(userRiskScores.calculatedAt, latestByUser.calculatedAt)
-  ];
+  const conditions: SQL[] = [];
   if (filter.minScore !== undefined) conditions.push(gte(userRiskScores.score, clampScore(filter.minScore)));
   if (filter.maxScore !== undefined) conditions.push(lte(userRiskScores.score, clampScore(filter.maxScore)));
   if (filter.trendDirection) conditions.push(eq(userRiskScores.trendDirection, filter.trendDirection));
@@ -941,7 +937,11 @@ export async function listUserRiskScores(filter: UserRiskScoreListFilter): Promi
     db
       .select({ count: sql<number>`count(*)::int` })
       .from(userRiskScores)
-      .innerJoin(latestByUser, eq(userRiskScores.orgId, latestByUser.orgId))
+      .innerJoin(latestByUser, and(
+        eq(userRiskScores.orgId, latestByUser.orgId),
+        eq(userRiskScores.userId, latestByUser.userId),
+        eq(userRiskScores.calculatedAt, latestByUser.calculatedAt)
+      ))
       .innerJoin(users, eq(userRiskScores.userId, users.id))
       .innerJoin(
         organizationUsers,
@@ -964,7 +964,11 @@ export async function listUserRiskScores(filter: UserRiskScoreListFilter): Promi
         factors: userRiskScores.factors
       })
       .from(userRiskScores)
-      .innerJoin(latestByUser, eq(userRiskScores.orgId, latestByUser.orgId))
+      .innerJoin(latestByUser, and(
+        eq(userRiskScores.orgId, latestByUser.orgId),
+        eq(userRiskScores.userId, latestByUser.userId),
+        eq(userRiskScores.calculatedAt, latestByUser.calculatedAt)
+      ))
       .innerJoin(users, eq(userRiskScores.userId, users.id))
       .innerJoin(
         organizationUsers,
@@ -1081,7 +1085,7 @@ export async function getUserRiskDetail(orgId: string, userId: string): Promise<
 
   if (history.length === 0) return null;
 
-  const latest = history[0];
+  const latest = history[0]!;
   const previous = history[1] ?? null;
   const deltaFromPrevious = previous ? latest.score - previous.score : 0;
 

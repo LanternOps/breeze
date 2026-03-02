@@ -24,57 +24,29 @@ export default function ScansTab() {
   const [error, setError] = useState<string>();
   const [showCreateModal, setShowCreateModal] = useState(false);
 
-  // Track scan IDs we've loaded details for
-  const [detailCache, setDetailCache] = useState<Record<string, Scan>>({});
-
   const fetchRecentScans = useCallback(async () => {
     try {
       setLoading(true);
       setError(undefined);
 
-      // There is no list-scans endpoint yet, so we fetch the dashboard which
-      // gives us aggregate counts.  In the future a dedicated GET /scans
-      // endpoint should be added.  For now show a helpful empty state.
-      const res = await fetchWithAuth('/sensitive-data/dashboard');
-      if (!res.ok) throw new Error('Failed to fetch scan data');
-
-      // We don't get individual scans from the dashboard endpoint,
-      // so we'll show scans from the detailCache or an empty state.
-      setScans(Object.values(detailCache));
+      const res = await fetchWithAuth('/sensitive-data/scans');
+      if (!res.ok) throw new Error('Failed to fetch scans');
+      const json = await res.json();
+      setScans(json.data ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
       setLoading(false);
     }
-  }, [detailCache]);
+  }, []);
 
   useEffect(() => {
     fetchRecentScans();
   }, []);
 
-  const handleScanCreated = (newScans: Array<{ id: string; deviceId: string; orgId: string }>) => {
-    // Fetch details for each created scan
-    Promise.all(
-      newScans.map(async (s) => {
-        try {
-          const res = await fetchWithAuth(`/sensitive-data/scans/${s.id}`);
-          if (!res.ok) return null;
-          const json = await res.json();
-          return json.data as Scan;
-        } catch {
-          return null;
-        }
-      })
-    ).then((results) => {
-      const valid = results.filter(Boolean) as Scan[];
-      setDetailCache((prev) => {
-        const next = { ...prev };
-        for (const scan of valid) next[scan.id] = scan;
-        return next;
-      });
-      setScans((prev) => [...valid, ...prev]);
-    });
+  const handleScanCreated = (_scans: Array<{ id: string; deviceId: string; orgId: string }>) => {
     setShowCreateModal(false);
+    fetchRecentScans();
   };
 
   const formatDuration = (start: string | null, end: string | null): string => {

@@ -2,6 +2,29 @@
 
 This document summarizes Breeze compliance controls and API surfaces used for audit workflows.
 
+## SOC Program Walkthrough
+
+- Remaining controls walkthrough (Security, PI, Privacy assumptions):
+  - `docs/notes/SOC_REMAINING_CONTROLS_WALKTHROUGH.md`
+
+## SOC 2 Availability (A1.1-A1.3)
+
+- Evidence index and monthly tracker:
+  - `docs/notes/SOC_AVAILABILITY_EVIDENCE_INDEX.md`
+- Processing capacity notes for Breeze application infrastructure:
+  - `docs/notes/SOC_A1.1_CAPACITY_NOTES.md`
+- Recovery objectives notes (DigitalOcean-focused planning):
+  - `docs/notes/SOC_A1.2_RECOVERY_OBJECTIVES_NOTES.md`
+- Recovery testing notes (DigitalOcean-focused planning):
+  - `docs/notes/SOC_A1.3_RECOVERY_TESTING_NOTES.md`
+
+## SOC 2 Confidentiality (C1.1-C1.2)
+
+- Confidential data identification notes:
+  - `docs/notes/SOC_C1.1_CONFIDENTIAL_DATA_IDENTIFICATION_NOTES.md`
+- Confidential data disposal notes:
+  - `docs/notes/SOC_C1.2_CONFIDENTIAL_DATA_DISPOSAL_NOTES.md`
+
 ## CIS Configuration Hardening
 
 Breeze supports CIS benchmark posture tracking and controlled remediation through `/api/v1/cis/*`.

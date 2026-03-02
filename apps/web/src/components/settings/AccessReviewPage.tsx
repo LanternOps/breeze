@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { cn, widthPercentClass } from '@/lib/utils';
+import { fetchWithAuth } from '@/stores/auth';
 import AccessReviewList, { type AccessReview } from './AccessReviewList';
 import AccessReviewForm from './AccessReviewForm';
 
@@ -160,7 +161,7 @@ export default function AccessReviewPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/access-reviews');
+      const response = await fetchWithAuth('/access-reviews');
       if (!response.ok) {
         throw new Error('Failed to fetch access reviews');
       }
@@ -176,7 +177,7 @@ export default function AccessReviewPage() {
   const fetchReviewers = useCallback(async () => {
     try {
       setReviewersError(undefined);
-      const response = await fetch('/api/users');
+      const response = await fetchWithAuth('/users');
       if (!response.ok) {
         throw new Error('Failed to fetch reviewers');
       }
@@ -197,7 +198,7 @@ export default function AccessReviewPage() {
   const fetchReviewDetail = useCallback(async (reviewId: string) => {
     try {
       setError(undefined);
-      const response = await fetch(`/api/access-reviews/${reviewId}`);
+      const response = await fetchWithAuth(`/access-reviews/${reviewId}`);
       if (!response.ok) {
         throw new Error('Failed to fetch review details');
       }
@@ -245,9 +246,8 @@ export default function AccessReviewPage() {
       setNotifying(true);
       setError(undefined);
       try {
-        const response = await fetch(`/api/access-reviews/${context.id}/notify`, {
+        const response = await fetchWithAuth(`/access-reviews/${context.id}/notify`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ reviewerIds: context.reviewerIds, name: context.name })
         });
 
@@ -287,9 +287,8 @@ export default function AccessReviewPage() {
   const handleCreateSubmit = async (values: AccessReviewFormValues) => {
     setSubmitting(true);
     try {
-      const response = await fetch('/api/access-reviews', {
+      const response = await fetchWithAuth('/access-reviews', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: values.name,
           description: values.description,
@@ -333,11 +332,10 @@ export default function AccessReviewPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetch(
-        `/api/access-reviews/${selectedReview.id}/items/${itemId}`,
+      const response = await fetchWithAuth(
+        `/access-reviews/${selectedReview.id}/items/${itemId}`,
         {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ decision, notes })
         }
       );
@@ -363,11 +361,10 @@ export default function AccessReviewPage() {
       await Promise.all(
         selectedItemIds.map(async (itemId) => {
           const notes = bulkReason || itemNotes[itemId];
-          const response = await fetch(
-            `/api/access-reviews/${selectedReview.id}/items/${itemId}`,
+          const response = await fetchWithAuth(
+            `/access-reviews/${selectedReview.id}/items/${itemId}`,
             {
               method: 'PATCH',
-              headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ decision, notes })
             }
           );
@@ -398,7 +395,7 @@ export default function AccessReviewPage() {
       try {
         let detail = review as AccessReviewDetail | null;
         if (!detail?.items) {
-          const response = await fetch(`/api/access-reviews/${reviewId}`);
+          const response = await fetchWithAuth(`/access-reviews/${reviewId}`);
           if (!response.ok) {
             throw new Error('Failed to fetch review for report');
           }
@@ -445,9 +442,8 @@ export default function AccessReviewPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/access-reviews/${selectedReview.id}/complete`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+      const response = await fetchWithAuth(`/access-reviews/${selectedReview.id}/complete`, {
+        method: 'POST'
       });
 
       if (!response.ok) {

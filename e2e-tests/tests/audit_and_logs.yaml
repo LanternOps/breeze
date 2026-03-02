@@ -1,0 +1,416 @@
+# Audit Log and Event Log E2E Tests
+# Tests the Audit Log viewer (filtering, sorting, export, detail modal)
+# and the Event Logs search page (query, level filters, date range, export)
+# UI selectors are derived from AuditLogViewer.tsx, AuditFilters.tsx, and LogSearch.tsx
+# Verification uses API calls, not remote MCP calls
+
+tests:
+  - id: audit_log_page_loads
+    name: "Audit Log Page Loads with Table and Actions"
+    description: "Verify the Audit Log page loads with the correct heading, Export Logs button, Filters button, and table column headers"
+    tags: [audit, smoke, critical]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - waitFor: "button[type='submit']"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_audit
+        action: ui
+        description: "Navigate to Audit Log page and verify heading"
+        playwright:
+          - goto: "/audit"
+          - waitFor: "text=Audit Log"
+            timeout: 15000
+          - waitFor: "text=Track user actions, sensitive operations, and system changes."
+
+      - id: verify_action_buttons
+        action: ui
+        description: "Verify Filters and Export Logs buttons are present after loading completes"
+        playwright:
+          - waitFor: "button:has-text('Filters')"
+            timeout: 20000
+          - waitFor: "button:has-text('Export Logs')"
+
+      - id: verify_table_columns
+        action: ui
+        description: "Verify audit log table has correct column headers"
+        playwright:
+          - waitFor: "th button:has-text('Timestamp')"
+          - waitFor: "th button:has-text('User')"
+          - waitFor: "th button:has-text('Action')"
+          - waitFor: "th button:has-text('Resource')"
+          - waitFor: "th button:has-text('Details')"
+          - waitFor: "th button:has-text('IP')"
+
+  - id: audit_log_filter_panel
+    name: "Audit Log Filter Panel Opens and Closes"
+    description: "Click Filters to open the AuditFilters panel, verify all filter sections, apply filters, and clear them"
+    tags: [audit, filters]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - waitFor: "button[type='submit']"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_audit
+        action: ui
+        description: "Navigate to Audit Log page and wait for loading to complete"
+        playwright:
+          - goto: "/audit"
+          - waitFor: "text=Audit Log"
+            timeout: 15000
+          - waitFor: "button:has-text('Filters')"
+            timeout: 20000
+
+      - id: open_filter_panel
+        action: ui
+        description: "Click Filters button to open the filter panel"
+        playwright:
+          - click: "button:has-text('Filters')"
+          - waitFor: "text=Audit Filters"
+            timeout: 5000
+          - waitFor: "text=Refine audit entries by user, action, and resource."
+
+      - id: verify_filter_sections
+        action: ui
+        description: "Verify Date Range, User, Action Types, Resource Types, and Search Details sections are present"
+        playwright:
+          - waitFor: "text=Date Range"
+          - waitFor: "button:has-text('Today')"
+          - waitFor: "button:has-text('Last 7 days')"
+          - waitFor: "button:has-text('Last 30 days')"
+          - waitFor: "button:has-text('Custom')"
+          - waitFor: "text=User"
+          - waitFor: "input[placeholder='Search users']"
+          - waitFor: "text=Action Types"
+          - waitFor: "text=Resource Types"
+          - waitFor: "text=Search Details"
+          - waitFor: "input[placeholder='Search activity details']"
+
+      - id: select_action_filter
+        action: ui
+        description: "Select the 'login' action type checkbox"
+        playwright:
+          - click: "label:has-text('login') input[type='checkbox']"
+
+      - id: apply_filters
+        action: ui
+        description: "Click Apply Filters to submit the filter selection"
+        playwright:
+          - click: "button:has-text('Apply Filters')"
+          - waitFor: "text=Audit Log"
+            timeout: 10000
+
+      - id: verify_clear_button_appears
+        action: ui
+        description: "Verify the Clear button appears when filters are active"
+        playwright:
+          - waitFor: "button:has-text('Clear')"
+
+      - id: clear_filters
+        action: ui
+        description: "Click the Clear button to remove all active filters"
+        playwright:
+          - click: "button:has-text('Clear')"
+          - waitFor: "text=Audit Log"
+            timeout: 5000
+
+  - id: audit_log_sorting
+    name: "Audit Log Column Sorting"
+    description: "Click sortable column headers and verify sort indicators change"
+    tags: [audit, sorting]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - waitFor: "button[type='submit']"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_audit
+        action: ui
+        description: "Navigate to Audit Log page and wait for table to load"
+        playwright:
+          - goto: "/audit"
+          - waitFor: "text=Audit Log"
+            timeout: 15000
+          - waitFor: "table"
+            timeout: 20000
+
+      - id: sort_by_user
+        action: ui
+        description: "Click the User column header to sort by user"
+        playwright:
+          - click: "th button:has-text('User')"
+          - waitFor: "table"
+            timeout: 5000
+
+      - id: sort_by_action
+        action: ui
+        description: "Click the Action column header to sort by action"
+        playwright:
+          - click: "th button:has-text('Action')"
+          - waitFor: "table"
+            timeout: 5000
+
+      - id: sort_by_timestamp_desc
+        action: ui
+        description: "Click the Timestamp column again to reverse sort direction"
+        playwright:
+          - click: "th button:has-text('Timestamp')"
+          - waitFor: "table"
+            timeout: 5000
+
+  - id: audit_log_entry_detail
+    name: "Audit Log Entry Detail Expansion and Modal"
+    description: "Expand a row inline and open the detail modal via View details link"
+    tags: [audit, detail]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - waitFor: "button[type='submit']"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_audit
+        action: ui
+        description: "Navigate to Audit Log page and wait for entries"
+        playwright:
+          - goto: "/audit"
+          - waitFor: "text=Audit Log"
+            timeout: 15000
+          - waitFor: "tbody tr"
+            timeout: 20000
+
+      - id: expand_first_row
+        action: ui
+        description: "Click the chevron expand button on the first row"
+        playwright:
+          - click: "tbody tr:first-child button:first-child"
+          - waitFor: "text=Full Details"
+            timeout: 5000
+          - waitFor: "text=Session"
+          - waitFor: "text=Changes"
+          - waitFor: "text=Review full snapshot"
+
+      - id: open_detail_modal
+        action: ui
+        description: "Click View details on the first row to open the full detail modal"
+        playwright:
+          - click: "tbody tr:first-child button:has-text('View details')"
+          - waitFor: "text=Audit Log Detail"
+            timeout: 5000
+
+      - id: verify_audit_api
+        action: api
+        description: "Verify the audit logs API returns entries"
+        request:
+          method: GET
+          path: "/api/v1/audit-logs"
+          query:
+            limit: "25"
+            page: "1"
+        expect:
+          pagination: {}
+
+  - id: event_logs_page_loads
+    name: "Event Logs Page Loads with Search Interface"
+    description: "Verify the Logs page loads with the search form, level checkboxes, and results table"
+    tags: [logs, smoke, critical]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - waitFor: "button[type='submit']"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_logs
+        action: ui
+        description: "Navigate to Event Logs page and verify search form"
+        playwright:
+          - goto: "/logs"
+          - waitFor: "input[placeholder='error code, source, stack trace...']"
+            timeout: 20000
+
+      - id: verify_search_form_fields
+        action: ui
+        description: "Verify all search form fields are present"
+        timeout: 20000
+        playwright:
+          - waitFor: "section label:has-text('Search')"
+          - waitFor: "section label:has-text('Source')"
+          - waitFor: "input[placeholder='e.g. kernel']"
+          - waitFor: "section label:has-text('Start')"
+          - waitFor: "section label:has-text('End')"
+          - waitFor: "section label:has-text('Rows')"
+
+      - id: verify_level_checkboxes
+        action: ui
+        description: "Verify the Info, Warning, Error, Critical level checkboxes are present"
+        playwright:
+          - waitFor: "label:has-text('Info')"
+          - waitFor: "label:has-text('Warning')"
+          - waitFor: "label:has-text('Error')"
+          - waitFor: "label:has-text('Critical')"
+
+      - id: verify_action_buttons
+        action: ui
+        description: "Verify Search Fleet Logs, Save Query, and Export CSV buttons"
+        playwright:
+          - waitFor: "button:has-text('Search Fleet Logs')"
+          - waitFor: "button:has-text('Save Query')"
+          - waitFor: "button:has-text('Export CSV')"
+
+      - id: verify_results_section
+        action: ui
+        description: "Verify the Search Results panel renders with correct table columns"
+        playwright:
+          - waitFor: "h2:has-text('Search Results')"
+          - waitFor: "th:has-text('Timestamp')"
+          - waitFor: "th:has-text('Level')"
+          - waitFor: "th:has-text('Category')"
+          - waitFor: "th:has-text('Source')"
+          - waitFor: "th:has-text('Message')"
+          - waitFor: "th:has-text('Device')"
+
+  - id: event_logs_search_and_filter
+    name: "Event Logs Search with Level Filters"
+    description: "Enter a search query, select level filters, and trigger a search"
+    tags: [logs, search, filters]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - waitFor: "button[type='submit']"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_logs
+        action: ui
+        description: "Navigate to Event Logs page and wait for hydration"
+        playwright:
+          - goto: "/logs"
+          - waitFor: "input[placeholder='error code, source, stack trace...']"
+            timeout: 20000
+          - waitFor: "button:has-text('Search Fleet Logs')"
+            timeout: 10000
+
+      - id: enter_search_query
+        action: ui
+        description: "Enter a search query in the Search input"
+        playwright:
+          - fill:
+              "input[placeholder='error code, source, stack trace...']": "error"
+
+      - id: filter_by_error_level
+        action: ui
+        description: "Check the Error level checkbox"
+        playwright:
+          - click: "label:has-text('Error') input[type='checkbox']"
+
+      - id: filter_by_warning_level
+        action: ui
+        description: "Check the Warning level checkbox"
+        playwright:
+          - click: "label:has-text('Warning') input[type='checkbox']"
+
+      - id: enter_source_filter
+        action: ui
+        description: "Enter a source filter"
+        playwright:
+          - fill:
+              "input[placeholder='e.g. kernel']": "system"
+
+      - id: run_search
+        action: ui
+        description: "Click Search Fleet Logs to execute the filtered search"
+        playwright:
+          - click: "button:has-text('Search Fleet Logs')"
+          - waitFor: "text=shown of"
+            timeout: 20000
+
+      - id: verify_search_api
+        action: api
+        description: "Verify the log search API endpoint works correctly"
+        request:
+          method: POST
+          path: "/api/v1/logs/search"
+          body:
+            query: "error"
+            level: ["error", "warning"]
+            timeRange:
+              start: "{{testStartTime}}"
+            limit: 50
+            offset: 0
+            countMode: estimated
+            sortBy: timestamp
+            sortOrder: desc
+        expect:
+          offset: 0

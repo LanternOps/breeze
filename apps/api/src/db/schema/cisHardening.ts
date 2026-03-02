@@ -63,7 +63,7 @@ export const cisBaselines = pgTable('cis_baselines', {
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   name: varchar('name', { length: 200 }).notNull(),
   osType: cisOsTypeEnum('os_type').notNull(),
-  benchmarkVersion: varchar('benchmark_version', { length: 40 }).notNull(),
+  benchmarkVersion: varchar('benchmark_version', { length: 200 }).notNull(),
   level: cisBaselineLevelEnum('level').notNull(),
   customExclusions: jsonb('custom_exclusions').$type<string[]>().notNull().default([]),
   scanSchedule: jsonb('scan_schedule').$type<CisScanSchedule>(),
@@ -98,7 +98,7 @@ export const cisBaselineResults = pgTable('cis_baseline_results', {
 export const cisCheckCatalog = pgTable('cis_check_catalog', {
   id: uuid('id').primaryKey().defaultRandom(),
   osType: cisOsTypeEnum('os_type').notNull(),
-  benchmarkVersion: varchar('benchmark_version', { length: 40 }).notNull(),
+  benchmarkVersion: varchar('benchmark_version', { length: 200 }).notNull(),
   level: cisBaselineLevelEnum('level').notNull(),
   checkId: varchar('check_id', { length: 120 }).notNull(),
   title: varchar('title', { length: 400 }).notNull(),

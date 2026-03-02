@@ -272,7 +272,12 @@ groupRoutes.post(
       orgId = auth.orgId;
     } else if (auth.scope === 'partner') {
       if (!orgId) {
-        return c.json({ error: 'orgId is required for partner scope' }, 400);
+        const singleOrg = auth.accessibleOrgIds?.[0];
+        if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
+          orgId = singleOrg;
+        } else {
+          return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
+        }
       }
       const hasAccess = await ensureOrgAccess(orgId, auth);
       if (!hasAccess) {

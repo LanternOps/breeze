@@ -1,0 +1,357 @@
+# Auth Flows E2E Tests
+# Tests for password reset, registration, invite acceptance, and initial setup flows.
+# These tests verify page renders and client-side validation only —
+# they do NOT actually submit forms to the API.
+
+tests:
+  - id: forgot_password_page_loads
+    name: "Forgot Password Page Loads"
+    description: "Verify the forgot password page renders with the email form and correct UI elements"
+    tags: [auth, password-reset]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: navigate_forgot_password
+        action: ui
+        description: "Navigate to forgot password page"
+        playwright:
+          - goto: "/forgot-password"
+          - waitFor: "text=Breeze RMM"
+            timeout: 15000
+
+      - id: verify_form_elements
+        action: ui
+        description: "Verify email input and submit button are present"
+        playwright:
+          - waitFor: "input#email"
+            timeout: 10000
+          - assert:
+              selector: "input#email"
+              attribute: "type"
+              equals: "email"
+          - assert:
+              selector: "input#email"
+              attribute: "placeholder"
+              equals: "you@company.com"
+          - assert:
+              selector: "button[type='submit']"
+              contains: "Send reset link"
+
+      - id: verify_sign_in_link
+        action: ui
+        description: "Verify back to sign in link is present"
+        playwright:
+          - assert:
+              selector: "a[href='/login']"
+              contains: "Sign in"
+
+  - id: forgot_password_client_validation
+    name: "Forgot Password Client-Side Validation"
+    description: "Verify that submitting an invalid email triggers client-side validation error"
+    tags: [auth, password-reset, validation]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: navigate_forgot_password
+        action: ui
+        description: "Navigate to forgot password page"
+        playwright:
+          - goto: "/forgot-password"
+          - waitFor: "input#email"
+            timeout: 15000
+
+      - id: submit_invalid_email
+        action: ui
+        description: "Fill an invalid email and submit to trigger validation"
+        playwright:
+          - fill:
+              "input#email": "not-an-email"
+          - click: "button[type='submit']"
+          - waitFor: "text=Enter a valid email address"
+            timeout: 5000
+
+      - id: submit_empty_form
+        action: ui
+        description: "Clear the field and submit empty to trigger required validation"
+        playwright:
+          - fill:
+              "input#email": ""
+          - click: "button[type='submit']"
+          - waitFor: "text=Enter a valid email address"
+            timeout: 5000
+
+  - id: reset_password_invalid_token
+    name: "Reset Password Page Without Token Shows Invalid Link"
+    description: "Verify that visiting /reset-password without a token shows the invalid link state"
+    tags: [auth, password-reset]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: navigate_reset_password_no_token
+        action: ui
+        description: "Navigate to reset password page without token query param"
+        playwright:
+          - goto: "/reset-password"
+          - waitFor: "text=Invalid Link"
+            timeout: 15000
+
+      - id: verify_invalid_state_ui
+        action: ui
+        description: "Verify the invalid link message and the request-new-link CTA are shown"
+        playwright:
+          - assert:
+              selector: "h2"
+              contains: "Invalid Link"
+          - assert:
+              selector: "p.text-sm"
+              contains: "invalid or has expired"
+          - assert:
+              selector: "a[href='/forgot-password']"
+              contains: "Request a new link"
+
+  - id: reset_password_with_token
+    name: "Reset Password Form Renders With Token"
+    description: "Verify the reset password form renders correctly when a valid-format token is present"
+    tags: [auth, password-reset]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: navigate_reset_password_with_token
+        action: ui
+        description: "Navigate to reset password page with a token query parameter"
+        playwright:
+          - goto: "/reset-password?token=test-token-abc123"
+          - waitFor: "input#password"
+            timeout: 15000
+
+      - id: verify_form_fields
+        action: ui
+        description: "Verify both password fields are present with correct labels"
+        playwright:
+          - assert:
+              selector: "label[for='password']"
+              contains: "New password"
+          - assert:
+              selector: "input#password"
+              attribute: "type"
+              equals: "password"
+          - assert:
+              selector: "label[for='confirmPassword']"
+              contains: "Confirm password"
+          - assert:
+              selector: "input#confirmPassword"
+              attribute: "type"
+              equals: "password"
+          - assert:
+              selector: "button[type='submit']"
+              contains: "Reset password"
+
+      - id: verify_password_mismatch_validation
+        action: ui
+        description: "Verify client-side validation fires when passwords do not match"
+        playwright:
+          - fill:
+              "input#password": "NewPass123!"
+              "input#confirmPassword": "DifferentPass456!"
+          - click: "button[type='submit']"
+          - waitFor: "text=Passwords do not match"
+            timeout: 5000
+
+      - id: verify_short_password_validation
+        action: ui
+        description: "Verify client-side validation fires for passwords under 8 characters"
+        playwright:
+          - fill:
+              "input#password": "short"
+              "input#confirmPassword": "short"
+          - click: "button[type='submit']"
+          - waitFor: "text=Password must be at least 8 characters"
+            timeout: 5000
+
+  - id: register_partner_page_loads
+    name: "Register Partner Page Loads"
+    description: "Verify the partner registration page renders with all required form fields"
+    tags: [auth, registration]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: navigate_register_partner
+        action: ui
+        description: "Navigate to the partner registration page"
+        playwright:
+          - goto: "/register-partner"
+          - waitFor: "text=Register your company"
+            timeout: 15000
+
+      - id: verify_all_fields_present
+        action: ui
+        description: "Verify all registration form fields are rendered"
+        playwright:
+          - assert:
+              selector: "input#companyName"
+              attribute: "placeholder"
+              equals: "Acme IT Services"
+          - assert:
+              selector: "input#name"
+              attribute: "placeholder"
+              equals: "Jane Doe"
+          - assert:
+              selector: "input#email"
+              attribute: "type"
+              equals: "email"
+          - assert:
+              selector: "input#password"
+              attribute: "type"
+              equals: "password"
+          - assert:
+              selector: "input#confirmPassword"
+              attribute: "type"
+              equals: "password"
+          - assert:
+              selector: "input#acceptTerms"
+              attribute: "type"
+              equals: "checkbox"
+          - assert:
+              selector: "button[type='submit']"
+              contains: "Create company account"
+
+      - id: verify_terms_links
+        action: ui
+        description: "Verify terms of service and privacy policy links are present"
+        playwright:
+          - assert:
+              selector: "a[href='/terms']"
+              contains: "Terms of Service"
+          - assert:
+              selector: "a[href='/privacy']"
+              contains: "Privacy Policy"
+
+  - id: register_partner_form_validation
+    name: "Register Partner Form Validation"
+    description: "Verify client-side validation for empty fields and password mismatch"
+    tags: [auth, registration, validation]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: navigate_register_partner
+        action: ui
+        description: "Navigate to the partner registration page"
+        playwright:
+          - goto: "/register-partner"
+          - waitFor: "input#companyName"
+            timeout: 15000
+
+      - id: submit_empty_form
+        action: ui
+        description: "Submit with all fields empty to trigger required field validation"
+        playwright:
+          - click: "button[type='submit']"
+          - waitFor: "text=Company name must be at least 2 characters"
+            timeout: 5000
+
+      - id: test_password_mismatch
+        action: ui
+        description: "Fill valid fields but enter mismatched passwords"
+        playwright:
+          - fill:
+              "input#companyName": "Acme IT"
+              "input#name": "Jane Doe"
+              "input#email": "jane@acmeit.com"
+              "input#password": "SecurePass123!"
+              "input#confirmPassword": "DifferentPass456!"
+          - click: "button[type='submit']"
+          - waitFor: "text=Passwords do not match"
+            timeout: 5000
+
+      - id: test_terms_not_accepted
+        action: ui
+        description: "Verify that not accepting terms blocks submission"
+        playwright:
+          - fill:
+              "input#companyName": "Acme IT"
+              "input#name": "Jane Doe"
+              "input#email": "jane@acmeit.com"
+              "input#password": "SecurePass123!"
+              "input#confirmPassword": "SecurePass123!"
+          - click: "button[type='submit']"
+          - waitFor: "text=You must accept the terms of service"
+            timeout: 5000
+
+  - id: accept_invite_invalid_token
+    name: "Accept Invite Page Without Token Shows Invalid Link"
+    description: "Verify that visiting /accept-invite without a token renders the invalid link state"
+    tags: [auth, invite]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: navigate_accept_invite_no_token
+        action: ui
+        description: "Navigate to accept invite page without token"
+        playwright:
+          - goto: "/accept-invite"
+          - waitFor: "text=Invalid Link"
+            timeout: 15000
+
+      - id: verify_invalid_invite_ui
+        action: ui
+        description: "Verify the invalid invite state is shown correctly"
+        playwright:
+          - assert:
+              selector: "h2"
+              contains: "Invalid Link"
+          - assert:
+              selector: "p.text-sm"
+              contains: "invite link is invalid or has expired"
+
+  - id: accept_invite_with_token
+    name: "Accept Invite Form Renders With Token"
+    description: "Verify the set-password form renders when a valid-format invite token is provided"
+    tags: [auth, invite]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: navigate_accept_invite_with_token
+        action: ui
+        description: "Navigate to accept invite page with a token query parameter"
+        playwright:
+          - goto: "/accept-invite?token=invite-token-xyz789"
+          - waitFor: "input#password"
+            timeout: 15000
+
+      - id: verify_set_password_form
+        action: ui
+        description: "Verify the set password form fields and submit label are present"
+        playwright:
+          - assert:
+              selector: "label[for='password']"
+              contains: "New password"
+          - assert:
+              selector: "input#password"
+              attribute: "type"
+              equals: "password"
+          - assert:
+              selector: "label[for='confirmPassword']"
+              contains: "Confirm password"
+          - assert:
+              selector: "input#confirmPassword"
+              attribute: "type"
+              equals: "password"
+          - assert:
+              selector: "button[type='submit']"
+              contains: "Set password & sign in"
+
+  - id: register_redirects_to_partner
+    name: "/register Redirects to /register-partner"
+    description: "Verify that the /register route redirects to /register-partner"
+    tags: [auth, registration, redirect]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: navigate_register
+        action: ui
+        description: "Navigate to /register and expect redirect to /register-partner or /login"
+        playwright:
+          - goto: "/register"
+          - waitFor:
+              url: "**/register-partner**"
+              timeout: 10000

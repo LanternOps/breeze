@@ -1,4 +1,5 @@
 import { type DragEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { fetchWithAuth } from '@/stores/auth';
 import {
   AlertTriangle,
   BarChart3,
@@ -452,11 +453,8 @@ export default function DashboardCustomizer() {
   const handleSave = useCallback(async () => {
     setSaveStatus('saving');
     try {
-      const response = await fetch('/api/dashboards', {
+      const response = await fetchWithAuth('/dashboards', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
         body: JSON.stringify({
           dashboards,
           defaultDashboardByRole: defaultByRole

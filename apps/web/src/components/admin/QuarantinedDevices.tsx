@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { ShieldAlert, CheckCircle, XCircle, RefreshCw, AlertTriangle, X } from 'lucide-react';
+import { fetchWithAuth } from '@/stores/auth';
 
 type QuarantinedDevice = {
   id: string;
@@ -45,7 +46,7 @@ export default function QuarantinedDevices() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/v1/agents/quarantined');
+      const response = await fetchWithAuth('/agents/quarantined');
       if (!response.ok) {
         throw new Error('Failed to fetch quarantined devices');
       }
@@ -66,9 +67,8 @@ export default function QuarantinedDevices() {
     setActionLoading(device.id);
     setError(undefined);
     try {
-      const response = await fetch(`/api/v1/agents/${device.id}/approve`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+      const response = await fetchWithAuth(`/agents/${device.id}/approve`, {
+        method: 'POST'
       });
       if (!response.ok) {
         throw new Error('Failed to approve device');
@@ -86,9 +86,8 @@ export default function QuarantinedDevices() {
     setActionLoading(modal.device.id);
     setError(undefined);
     try {
-      const response = await fetch(`/api/v1/agents/${modal.device.id}/deny`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+      const response = await fetchWithAuth(`/agents/${modal.device.id}/deny`, {
+        method: 'POST'
       });
       if (!response.ok) {
         throw new Error('Failed to deny device');

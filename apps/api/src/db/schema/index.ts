@@ -47,3 +47,4 @@ export * from './sentinelOne';
 export * from './huntress';
 export * from './sensitiveData';
 export * from './peripheralControl';
+export * from './browserSecurity';

@@ -8,7 +8,6 @@ type PeripheralPolicy = {
   name: string;
   deviceClass: string;
   action: string;
-  targetType: string;
   isActive: boolean;
   exceptions?: Array<Record<string, unknown>>;
   createdAt?: string;
@@ -39,8 +38,6 @@ export default function PeripheralPoliciesList() {
   const [filterClass, setFilterClass] = useState('');
   const [filterAction, setFilterAction] = useState('');
   const [filterActive, setFilterActive] = useState('');
-  const [filterTarget, setFilterTarget] = useState('');
-
   const fetchPolicies = useCallback(async () => {
     setLoading(true);
     setError(undefined);
@@ -49,7 +46,6 @@ export default function PeripheralPoliciesList() {
       if (filterClass) params.set('deviceClass', filterClass);
       if (filterAction) params.set('action', filterAction);
       if (filterActive) params.set('isActive', filterActive);
-      if (filterTarget) params.set('targetType', filterTarget);
       const qs = params.toString();
       const response = await fetchWithAuth(`/peripherals/policies${qs ? `?${qs}` : ''}`);
       if (!response.ok) throw new Error('Failed to fetch policies');
@@ -60,7 +56,7 @@ export default function PeripheralPoliciesList() {
     } finally {
       setLoading(false);
     }
-  }, [filterClass, filterAction, filterActive, filterTarget]);
+  }, [filterClass, filterAction, filterActive]);
 
   useEffect(() => {
     fetchPolicies();
@@ -112,17 +108,6 @@ export default function PeripheralPoliciesList() {
           <option value="true">Active</option>
           <option value="false">Inactive</option>
         </select>
-        <select
-          value={filterTarget}
-          onChange={(e) => setFilterTarget(e.target.value)}
-          className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-        >
-          <option value="">All Targets</option>
-          <option value="organization">Organization</option>
-          <option value="site">Site</option>
-          <option value="group">Group</option>
-          <option value="device">Device</option>
-        </select>
         <div className="ml-auto flex gap-2">
           <button
             type="button"
@@ -166,7 +151,6 @@ export default function PeripheralPoliciesList() {
                   <th className="px-4 py-3">Name</th>
                   <th className="px-4 py-3">Device Class</th>
                   <th className="px-4 py-3">Action</th>
-                  <th className="px-4 py-3">Target Type</th>
                   <th className="px-4 py-3">Active</th>
                   <th className="px-4 py-3">Exceptions</th>
                   <th className="px-4 py-3">Created</th>
@@ -190,7 +174,6 @@ export default function PeripheralPoliciesList() {
                         {policy.action.replace('_', ' ')}
                       </span>
                     </td>
-                    <td className="px-4 py-3 capitalize text-muted-foreground">{policy.targetType}</td>
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${policy.isActive ? 'bg-green-500/20 text-green-700 border-green-500/40' : 'bg-gray-500/20 text-gray-700 border-gray-500/40'}`}>
                         {policy.isActive ? 'Yes' : 'No'}

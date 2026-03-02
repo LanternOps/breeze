@@ -24,8 +24,14 @@ interface GlobalRateLimitOptions {
 export function globalRateLimit(options?: GlobalRateLimitOptions): MiddlewareHandler {
   const limit = options?.limit ?? 300;
   const windowSeconds = options?.windowSeconds ?? 60;
+  const e2eMode = process.env.E2E_MODE === '1' || process.env.E2E_MODE === 'true';
 
   return async (c: Context, next: Next) => {
+    // In E2E testing mode, skip all rate limiting to avoid test flakiness
+    if (e2eMode) {
+      return next();
+    }
+
     // Skip health checks — used by load balancers / k8s probes
     if (SKIP_PATHS.has(c.req.path)) {
       return next();
