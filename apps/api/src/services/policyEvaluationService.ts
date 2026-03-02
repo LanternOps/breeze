@@ -1623,22 +1623,23 @@ export async function evaluateDeviceComplianceFromConfigPolicy(
     // Trigger remediation if enforcement is 'enforce'
     let remediationTriggered = false;
     if (status === 'non_compliant' && complianceRule.enforcementLevel === 'enforce') {
-      // Check per-rule remediation first (from rules JSONB)
+      // Check per-rule remediation for individually failed rules (from rules JSONB)
       const rulesArray = Array.isArray(complianceRule.rules) ? complianceRule.rules as Record<string, unknown>[] : [];
-      const failedRulesWithRemediation = rulesArray.filter((r) => {
+      for (let i = 0; i < rulesArray.length; i++) {
+        const r = rulesArray[i];
         const rem = r.remediation as Record<string, unknown> | undefined;
-        return rem && rem.type !== 'none';
-      });
+        if (!rem || rem.type === 'none') continue;
+        // Only remediate rules that actually failed evaluation
+        const detail = ruleDetails[i];
+        if (!detail || detail.passed) continue;
 
-      for (const failedRule of failedRulesWithRemediation) {
-        const rem = failedRule.remediation as Record<string, unknown>;
         if (rem.type === 'script' && typeof rem.scriptId === 'string') {
-          const tempRule = { ...complianceRule, remediationScriptId: rem.scriptId as string };
+          // Bridge: pass scriptId via legacy field until triggerConfigPolicyRemediation is refactored
+          const tempRule = { ...complianceRule, remediationScriptId: rem.scriptId };
           const triggered = await triggerConfigPolicyRemediation(tempRule, targetDevice);
           if (triggered) remediationTriggered = true;
-        }
-        if (rem.type === 'software_deploy' && typeof rem.catalogId === 'string') {
-          console.log(`[ConfigPolicyCompliance] Software deploy remediation for catalogId=${rem.catalogId} on device=${device.id} — not yet implemented`);
+        } else if (rem.type === 'software_deploy' && typeof rem.catalogId === 'string') {
+          console.warn(`[ConfigPolicyCompliance] Software deploy remediation for rule="${complianceRule.name}" catalogId=${rem.catalogId} on device=${targetDevice.id} — not yet implemented`);
         }
       }
 
