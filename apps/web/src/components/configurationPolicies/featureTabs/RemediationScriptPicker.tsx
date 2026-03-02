@@ -22,6 +22,7 @@ type RemediationScriptPickerProps = {
   isOpen: boolean;
   onClose: () => void;
   onSelect: (script: SelectedScript) => void;
+  osFilter?: OSType[];
 };
 
 const languageConfig: Record<ScriptLanguage, { label: string; color: string; icon: string }> = {
@@ -35,6 +36,7 @@ export default function RemediationScriptPicker({
   isOpen,
   onClose,
   onSelect,
+  osFilter,
 }: RemediationScriptPickerProps) {
   const [scripts, setScripts] = useState<ScriptRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -44,6 +46,8 @@ export default function RemediationScriptPicker({
 
   useEffect(() => {
     if (isOpen) {
+      setQuery('');
+      setCategoryFilter('all');
       fetchScripts();
     }
   }, [isOpen]);
@@ -96,8 +100,9 @@ export default function RemediationScriptPicker({
             (script.description?.toLowerCase().includes(normalizedQuery) ?? false);
       const matchesCategory =
         categoryFilter === 'all' ? true : script.category === categoryFilter;
+      const matchesOs = !osFilter || osFilter.some((os) => script.osTypes.includes(os));
 
-      return matchesQuery && matchesCategory;
+      return matchesQuery && matchesCategory && matchesOs;
     });
   }, [scripts, query, categoryFilter]);
 
