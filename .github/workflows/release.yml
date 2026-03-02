@@ -91,7 +91,7 @@ jobs:
           - goos: linux
             goarch: amd64
             suffix: ''
-            cgo: '1'
+            cgo: '0'
           - goos: darwin
             goarch: amd64
             suffix: ''
@@ -108,10 +108,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
-      - name: Install libpcap (Linux)
-        if: matrix.goos == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y libpcap-dev libx11-dev libxext-dev
 
       - name: Setup Go
         uses: actions/setup-go@v6
