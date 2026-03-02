@@ -1,30 +1,24 @@
 import { useState } from 'react';
 import {
   Activity,
-  MessageSquare,
   Plug,
   Shield,
-  Ticket,
   Webhook
 } from 'lucide-react';
 import WebhooksPage from '../webhooks/WebhooksPage';
 import PsaConnectionsPage from '../psa/PsaConnectionsPage';
 import SecurityIntegration from './SecurityIntegration';
 import HuntressIntegration from './HuntressIntegration';
-import CommunicationIntegrations from './CommunicationIntegrations';
 import MonitoringIntegration from './MonitoringIntegration';
-import TicketingIntegration from './TicketingIntegration';
 
-type TabId = 'webhooks' | 'psa' | 'security' | 'communication' | 'monitoring' | 'ticketing';
+type TabId = 'webhooks' | 'psa' | 'security' | 'monitoring';
 type SecuritySubTab = 'sentinelone' | 'huntress';
 
 const tabs: { id: TabId; label: string; icon: typeof Activity }[] = [
   { id: 'webhooks', label: 'Webhooks', icon: Webhook },
   { id: 'psa', label: 'PSA', icon: Plug },
   { id: 'security', label: 'Security', icon: Shield },
-  { id: 'communication', label: 'Communication', icon: MessageSquare },
   { id: 'monitoring', label: 'Monitoring', icon: Activity },
-  { id: 'ticketing', label: 'Ticketing', icon: Ticket },
 ];
 
 const securitySubTabs: { id: SecuritySubTab; label: string }[] = [
@@ -102,9 +96,7 @@ export default function IntegrationsPage({ initialTab = 'webhooks' }: Integratio
       {activeTab === 'psa' && <PsaConnectionsPage />}
       {activeTab === 'security' && securitySubTab === 'sentinelone' && <SecurityIntegration />}
       {activeTab === 'security' && securitySubTab === 'huntress' && <HuntressIntegration />}
-      {activeTab === 'communication' && <CommunicationIntegrations />}
       {activeTab === 'monitoring' && <MonitoringIntegration />}
-      {activeTab === 'ticketing' && <TicketingIntegration />}
     </div>
   );
 }

@@ -105,8 +105,7 @@ const managementNav = [
 const settingsNav = [
   { name: 'Organization', href: '/settings/organization', icon: Building },
   { name: 'Custom Fields', href: '/settings/custom-fields', icon: ListChecks },
-  { name: 'Saved Filters', href: '/settings/filters', icon: Filter },
-  { name: 'Integrations', href: '/integrations', icon: Plug }
+  { name: 'Saved Filters', href: '/settings/filters', icon: Filter }
 ];
 
 export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps) {
