@@ -1,0 +1,275 @@
+---
+title: Network Baselines
+description: Establish subnet baselines and detect new, changed, disappeared, or rogue devices on your network.
+sidebar:
+  order: 40
+  label: Network Baselines
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Network Baselines let you snapshot the devices on a subnet and continuously compare future scans against that snapshot. When something changes -- a new device appears, a known device disappears, a host swaps MAC address, or an unauthorized device joins the network -- Breeze records a change event and optionally raises an alert. Baselines are scoped to a specific organization, site, and CIDR subnet, and they integrate directly with the Network Discovery engine so that scan results automatically feed into baseline comparisons.
+
+Each baseline stores a list of known devices with their IP, MAC, hostname, asset type, manufacturer, and first/last-seen timestamps. A background worker (BullMQ) periodically rescans the subnet on a configurable schedule, compares the results, deduplicates events within a 24-hour window, and updates the known-device list. Alerts are created using the platform's alert template system with severity mapped to event type, and events are published to the real-time event bus.
+
+---
+
+## Key Concepts
+
+### Event Types
+
+| Event Type | Description | Default Alert Severity |
+|---|---|---|
+| `new_device` | A device was found at an IP address not present in the baseline | Medium |
+| `device_disappeared` | A previously known device was not seen for more than 24 hours | Low |
+| `device_changed` | A known device changed its MAC address, hostname, or asset type | Medium |
+| `rogue_device` | A device matches a blocked manufacturer or is an unauthorized asset type per org policy | High |
+
+### Alert Settings
+
+Each baseline has independent alert toggles that control which event types generate alerts:
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `newDevice` | boolean | `true` | Alert when a previously unseen device joins the subnet |
+| `disappeared` | boolean | `true` | Alert when a known device is no longer found |
+| `changed` | boolean | `true` | Alert when a known device changes characteristics |
+| `rogueDevice` | boolean | `false` | Alert when an unauthorized device is detected by org policy |
+
+### Scan Schedule
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | boolean | `true` | Whether automatic rescans are active |
+| `intervalHours` | integer | `4` | Hours between scans (1 -- 168) |
+| `nextScanAt` | ISO 8601 datetime | Now + interval | When the next automatic scan will run |
+
+### Rogue Device Detection
+
+Rogue detection is policy-driven at the organization level. Two org-level settings control which devices are flagged:
+
+- **Blocked Manufacturers** -- A list of manufacturer names. Any device whose manufacturer matches (case-insensitive) is flagged as rogue.
+- **Allowed Asset Types** -- A whitelist of asset types. If set, any device whose type is not in the list is flagged as rogue.
+
+These policies are configured in the organization's settings under the `network` or `networkBaseline` key.
+
+---
+
+## Creating a Baseline
+
+<Steps>
+
+1. **Pick a site and subnet.** Baselines require a `siteId` and a CIDR subnet (e.g., `192.168.1.0/24`). Optionally, reference an existing discovery profile to validate that the subnet is included.
+
+2. **Create the baseline.**
+
+   ```bash
+   curl -X POST /api/v1/network/baselines \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "siteId": "SITE_UUID",
+       "subnet": "192.168.1.0/24",
+       "scanSchedule": {
+         "enabled": true,
+         "intervalHours": 4
+       },
+       "alertSettings": {
+         "newDevice": true,
+         "disappeared": true,
+         "changed": true,
+         "rogueDevice": false
+       }
+     }'
+   ```
+
+   The response includes the created baseline with an empty `knownDevices` list.
+
+3. **Trigger an initial scan.** The first scan populates the known-device list.
+
+   ```bash
+   curl -X POST /api/v1/network/baselines/:id/scan \
+     -H "Authorization: Bearer $TOKEN"
+   ```
+
+   This enqueues a BullMQ job. The response includes the `queueJobId` for tracking.
+
+4. **Review results.** After the scan completes, the baseline's `knownDevices` array contains every host found. Subsequent scans compare against this list.
+
+</Steps>
+
+<Aside type="caution">
+  Triggering a scan requires Redis to be available. If Redis is down, the API returns HTTP 503 with the message "Background job service unavailable."
+</Aside>
+
+---
+
+## How Baseline Comparison Works
+
+When a scan completes, the `compareBaselineScan` function runs inside a database transaction with a row-level lock on the baseline to prevent concurrent scans from overwriting each other.
+
+<Steps>
+
+1. **Lock the baseline row** using `SELECT ... FOR UPDATE`.
+
+2. **Enrich scan results** by cross-referencing discovered assets in the database, filling in linked device IDs, MAC addresses, and manufacturer data.
+
+3. **Detect new devices** -- any IP in the scan results not present in `knownDevices`.
+
+4. **Detect changed devices** -- any IP in both the scan and `knownDevices` where the MAC, hostname, or asset type differs.
+
+5. **Detect disappeared devices** -- any IP in `knownDevices` not in the scan results and last seen more than 24 hours ago.
+
+6. **Check rogue policy** -- new devices are evaluated against the org's blocked manufacturers and allowed asset types.
+
+7. **Deduplicate events** -- events matching the same fingerprint (event type + IP + MAC + hostname + asset type + state) within the past 24 hours are suppressed.
+
+8. **Insert change events** and create alerts for each enabled event type.
+
+9. **Merge known devices** -- the baseline's `knownDevices` list is updated with the combined set of existing and newly scanned hosts.
+
+</Steps>
+
+---
+
+## Known Guests
+
+Partners (MSPs) can maintain a **known guests list** of MAC addresses that should be recognized across all their managed organizations. This is useful for shared equipment like vendor laptops or printers that appear at multiple customer sites.
+
+```bash
+# List known guests
+curl /api/v1/partner/known-guests \
+  -H "Authorization: Bearer $TOKEN"
+
+# Add a known guest
+curl -X POST /api/v1/partner/known-guests \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "macAddress": "aa:bb:cc:dd:ee:ff",
+    "label": "Vendor Printer"
+  }'
+
+# Remove a known guest
+curl -X DELETE /api/v1/partner/known-guests/:id \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Known guests are scoped to the partner and stored with a unique constraint on `(partnerId, macAddress)`.
+
+---
+
+## Viewing Change Events
+
+Change events are available both scoped to a single baseline and across all baselines in an organization.
+
+<Tabs>
+  <TabItem label="Per-Baseline">
+    ```bash
+    curl "/api/v1/network/baselines/:id/changes?eventType=new_device&acknowledged=false&limit=50" \
+      -H "Authorization: Bearer $TOKEN"
+    ```
+
+    Filters: `eventType`, `acknowledged`, `limit`, `offset`.
+  </TabItem>
+  <TabItem label="Cross-Baseline">
+    ```bash
+    curl "/api/v1/network/changes?orgId=ORG_UUID&since=2026-01-01T00:00:00Z&eventType=rogue_device" \
+      -H "Authorization: Bearer $TOKEN"
+    ```
+
+    Requires at least one filter (`orgId`, `siteId`, or `baselineId`). Additional filters: `eventType`, `acknowledged`, `since`, `limit`, `offset`.
+  </TabItem>
+</Tabs>
+
+### Acknowledging Events
+
+Individual events:
+
+```bash
+curl -X POST /api/v1/network/changes/:id/acknowledge \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "notes": "Known vendor equipment" }'
+```
+
+Bulk acknowledge (up to 200 events):
+
+```bash
+curl -X POST /api/v1/network/changes/bulk-acknowledge \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "eventIds": ["UUID1", "UUID2"],
+    "notes": "Reviewed during maintenance window"
+  }'
+```
+
+### Linking Events to Devices
+
+If a change event cannot be automatically linked to a managed device, you can manually associate it:
+
+```bash
+curl -X POST /api/v1/network/changes/:id/link-device \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "deviceId": "DEVICE_UUID" }'
+```
+
+This also updates the associated alert's device reference.
+
+---
+
+## API Reference
+
+### Baselines
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/network/baselines` | List baselines with optional org, site, and subnet filters |
+| `POST` | `/api/v1/network/baselines` | Create a new baseline for an org/site/subnet |
+| `GET` | `/api/v1/network/baselines/:id` | Get a single baseline by ID |
+| `PATCH` | `/api/v1/network/baselines/:id` | Update scan schedule or alert settings |
+| `DELETE` | `/api/v1/network/baselines/:id` | Delete a baseline (optionally with its change events) |
+| `POST` | `/api/v1/network/baselines/:id/scan` | Trigger an immediate baseline scan |
+| `GET` | `/api/v1/network/baselines/:id/changes` | List change events for a specific baseline |
+
+### Network Changes
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/network/changes` | List change events across baselines with filters |
+| `GET` | `/api/v1/network/changes/:id` | Get a single change event with baseline subnet |
+| `POST` | `/api/v1/network/changes/:id/acknowledge` | Acknowledge a change event |
+| `POST` | `/api/v1/network/changes/:id/link-device` | Link a change event to a managed device |
+| `POST` | `/api/v1/network/changes/bulk-acknowledge` | Bulk acknowledge up to 200 events |
+
+### Known Guests
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/partner/known-guests` | List known guest MAC addresses for the partner |
+| `POST` | `/api/v1/partner/known-guests` | Add a known guest MAC address |
+| `DELETE` | `/api/v1/partner/known-guests/:id` | Remove a known guest |
+
+---
+
+## Troubleshooting
+
+**Scan returns 503 "Background job service unavailable"**
+Redis is required for the BullMQ job queue. Verify Redis is running and accessible.
+
+**Duplicate baseline error (409)**
+A baseline already exists for the combination of org, site, and subnet. Each subnet can only have one baseline per site.
+
+**Events are not being created for known changes**
+Events are deduplicated within a 24-hour window. If an identical event (same type, IP, MAC, hostname, asset type, and state) was already created in the past 24 hours, it will be suppressed.
+
+**Disappeared devices not detected**
+A device must have a `lastSeen` timestamp older than 24 hours and not appear in the latest scan results to be flagged as disappeared. If the baseline was just created, devices will not be marked as disappeared until they have been known for at least one full scan cycle plus the 24-hour threshold.
+
+**Alerts not created for rogue devices**
+Rogue device alerting is disabled by default (`rogueDevice: false`). Enable it in the baseline's alert settings, and ensure the organization has `blockedManufacturers` or `allowedAssetTypes` configured in its settings.
+
+**Delete fails with 409 "Cannot delete baseline without deleting associated change events"**
+By default, deleting a baseline also deletes its change events. If you passed `?deleteChanges=false`, the foreign key constraint prevents deletion. Use `?deleteChanges=true` or delete the change events first.

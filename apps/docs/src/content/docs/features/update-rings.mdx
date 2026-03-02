@@ -1,0 +1,289 @@
+---
+title: Update Rings
+description: Control patch rollout velocity with staged deployment rings, deferral periods, and per-category approval rules.
+sidebar:
+  order: 42
+  label: Update Rings
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Update Rings let you stage patch deployments across your fleet by grouping devices into ordered rings with different deferral periods, approval policies, and deadlines. Instead of pushing every patch to every device on the same day, you can let a small pilot group receive patches first, observe the results, and then widen the rollout to the rest of your organization. This is the standard approach for managing Patch Tuesday updates and reduces the blast radius of a bad patch.
+
+Rings are built on top of the patch policy system. Each ring is a `patchPolicies` record with ordering, deferral, and deadline fields. Patches flow through rings in order: Ring 0 (Default) receives patches immediately, Ring 1 defers for a few days, Ring 2 defers longer, and so on. Each ring can auto-approve certain categories and severities, or require manual approval before patches are deployed.
+
+---
+
+## Key Concepts
+
+### Ring Configuration Fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | -- | Human-readable name (e.g., "Pilot", "Early Adopters", "Production") |
+| `description` | string | null | Optional description of the ring's purpose |
+| `enabled` | boolean | `true` | Whether the ring is active |
+| `ringOrder` | integer | `0` | Position in the deployment sequence (0 = first, higher = later) |
+| `deferralDays` | integer | `0` | Days to wait after a patch is released before it becomes eligible for this ring (0 -- 365) |
+| `deadlineDays` | integer | null | Days after deferral ends by which the patch must be installed. Null means no deadline |
+| `gracePeriodHours` | integer | `4` | Hours after deadline before the device is marked non-compliant (0 -- 168) |
+| `categories` | string[] | `[]` | Patch categories to include (empty means all categories) |
+| `excludeCategories` | string[] | `[]` | Patch categories to explicitly exclude |
+| `sources` | enum[] | null | Patch sources to include: `microsoft`, `apple`, `linux`, `third_party`, `custom` |
+| `categoryRules` | object[] | `[]` | Per-category auto-approval and deferral override rules |
+| `autoApprove` | JSON | `{}` | Auto-approval configuration |
+| `targets` | JSON | `{}` | Device targeting rules (device groups, tags, sites, etc.) |
+
+### Patch Sources
+
+| Source | Description |
+|---|---|
+| `microsoft` | Windows Update, WSUS, Microsoft Defender definition updates |
+| `apple` | macOS software updates and security patches |
+| `linux` | Distribution package manager updates (apt, yum, dnf) |
+| `third_party` | Third-party application patches (browsers, runtimes, productivity apps) |
+| `custom` | Custom patches uploaded by administrators |
+
+### Patch Severities
+
+| Severity | Description |
+|---|---|
+| `critical` | Actively exploited vulnerabilities or remote code execution |
+| `important` | Privilege escalation, denial of service, or significant security fixes |
+| `moderate` | Defense-in-depth fixes or moderate-impact vulnerabilities |
+| `low` | Minor fixes or informational updates |
+| `unknown` | Severity not classified by the vendor |
+
+### Approval Statuses
+
+| Status | Description |
+|---|---|
+| `pending` | Patch has not been reviewed for this ring |
+| `approved` | Patch is approved for deployment in this ring |
+| `rejected` | Patch is explicitly blocked from deployment in this ring |
+| `deferred` | Patch is deferred to a later date with a `deferUntil` timestamp |
+
+---
+
+## Setting Up Update Rings
+
+<Steps>
+
+1. **The Default ring is created automatically.** When you first list rings for an organization, Breeze auto-creates a "Default" ring at order 0 with no deferral and manual approval required for all patches.
+
+2. **Create a Pilot ring.**
+
+   ```bash
+   curl -X POST /api/v1/update-rings \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "name": "Pilot",
+       "description": "IT team devices — receive patches immediately",
+       "ringOrder": 0,
+       "deferralDays": 0,
+       "deadlineDays": 7,
+       "gracePeriodHours": 4,
+       "categoryRules": [
+         {
+           "category": "Security Updates",
+           "autoApprove": true,
+           "autoApproveSeverities": ["critical", "important"]
+         }
+       ]
+     }'
+   ```
+
+3. **Create an Early Adopters ring.**
+
+   ```bash
+   curl -X POST /api/v1/update-rings \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "name": "Early Adopters",
+       "description": "Power users — 3-day deferral after Pilot",
+       "ringOrder": 1,
+       "deferralDays": 3,
+       "deadlineDays": 14,
+       "gracePeriodHours": 8
+     }'
+   ```
+
+4. **Create a Production ring.**
+
+   ```bash
+   curl -X POST /api/v1/update-rings \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "name": "Production",
+       "description": "General fleet — 7-day deferral after Pilot",
+       "ringOrder": 2,
+       "deferralDays": 7,
+       "deadlineDays": 30,
+       "gracePeriodHours": 4
+     }'
+   ```
+
+5. **Configure device targets.** Assign device groups, tags, or sites to each ring using the `targets` field so the platform knows which devices belong to which ring.
+
+</Steps>
+
+<Aside type="note">
+  Rings are sorted by `ringOrder` first, then by `createdAt` as a tiebreaker. The Default ring always has `ringOrder: 0`. Customize ring ordering by setting different `ringOrder` values for each ring.
+</Aside>
+
+---
+
+## Category Rules
+
+Category rules let you set per-category auto-approval behavior within a ring. This is useful for automatically approving critical security updates while requiring manual review for feature updates.
+
+```json
+{
+  "categoryRules": [
+    {
+      "category": "Security Updates",
+      "autoApprove": true,
+      "autoApproveSeverities": ["critical", "important"]
+    },
+    {
+      "category": "Feature Packs",
+      "autoApprove": false,
+      "deferralDaysOverride": 14
+    },
+    {
+      "category": "Definition Updates",
+      "autoApprove": true
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `category` | string | The patch category name to match |
+| `autoApprove` | boolean | Whether matching patches are auto-approved |
+| `autoApproveSeverities` | string[] | If set, only auto-approve patches with these severities |
+| `deferralDaysOverride` | integer or null | Override the ring's default deferral for this category |
+
+---
+
+## Ring Compliance
+
+Each ring provides a compliance summary showing how many approved patches have been successfully installed across the organization's devices.
+
+```bash
+curl /api/v1/update-rings/:id/compliance \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Response
+
+```json
+{
+  "data": {
+    "ringId": "uuid",
+    "ringName": "Production",
+    "summary": {
+      "total": 4500,
+      "pending": 200,
+      "installed": 4100,
+      "failed": 50,
+      "missing": 100,
+      "skipped": 50
+    },
+    "compliancePercent": 91,
+    "approvedPatches": 45,
+    "totalDevices": 100
+  }
+}
+```
+
+### Device Patch Statuses
+
+| Status | Description |
+|---|---|
+| `pending` | Patch is approved but not yet attempted on this device |
+| `installed` | Patch was successfully installed |
+| `failed` | Installation was attempted but failed |
+| `skipped` | Patch was skipped (not applicable or superseded) |
+| `missing` | Patch is required but has not been detected as installed |
+
+Compliance percentage is calculated as: `installed / total * 100`. A ring with no approved patches reports 100% compliance.
+
+---
+
+## Ring Detail and Job History
+
+```bash
+curl /api/v1/update-rings/:id \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+The detail endpoint returns the full ring configuration plus:
+
+- **Approval summary** -- counts of patches in each approval status (`pending`, `approved`, `rejected`, `deferred`)
+- **Recent jobs** -- the five most recent patch deployment jobs for this ring, including status, device counts, and timestamps
+
+### Patch Job Statuses
+
+| Status | Description |
+|---|---|
+| `scheduled` | Job is queued for execution |
+| `running` | Job is actively deploying patches |
+| `completed` | All targeted devices have been processed |
+| `failed` | Job encountered an unrecoverable error |
+| `cancelled` | Job was manually cancelled |
+
+---
+
+## Viewing Ring Patches
+
+List all patches with their ring-scoped approval status:
+
+```bash
+curl "/api/v1/update-rings/:id/patches?source=microsoft&severity=critical&page=1&limit=50" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Filters: `source`, `severity`, `page`, `limit`.
+
+Each patch in the response includes an `approvalStatus` field showing its status within this specific ring (defaulting to `pending` if no explicit approval record exists).
+
+---
+
+## API Reference
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/update-rings` | List all enabled rings for the organization, sorted by ring order |
+| `POST` | `/api/v1/update-rings` | Create a new update ring |
+| `GET` | `/api/v1/update-rings/:id` | Get ring detail with approval summary and recent jobs |
+| `PATCH` | `/api/v1/update-rings/:id` | Update ring configuration |
+| `DELETE` | `/api/v1/update-rings/:id` | Soft-delete a ring (sets `enabled: false`) |
+| `GET` | `/api/v1/update-rings/:id/patches` | List patches with ring-scoped approval status |
+| `GET` | `/api/v1/update-rings/:id/compliance` | Get compliance summary for a ring |
+
+---
+
+## Troubleshooting
+
+**Default ring not appearing**
+The Default ring is auto-created on first `GET /update-rings`. If it does not appear, verify the user has organization-scoped access and the `orgId` is correctly resolved.
+
+**Ring order not respected**
+Rings are sorted by `ringOrder` ascending, then `createdAt` ascending. If two rings have the same `ringOrder`, they are treated as peers. Assign distinct `ringOrder` values to enforce strict sequencing.
+
+**Patches stuck at "pending" in a ring**
+Patches require explicit approval per ring. If auto-approval is not configured via `categoryRules` or `autoApprove`, patches remain in `pending` status until a user approves them. Check the ring's approval summary for `pending` counts.
+
+**Compliance shows 100% with no patches**
+This is correct behavior. If a ring has zero approved patches, there is nothing to be non-compliant about, so compliance is reported as 100%.
+
+**Deleting a ring does not remove patches**
+Ring deletion is a soft delete -- it sets `enabled: false`. The ring's approval records and job history are preserved. Patches approved in other rings are unaffected.
+
+**Category rules not auto-approving**
+Verify the `category` string in category rules exactly matches the patch category reported by the vendor. Category matching is case-sensitive. Also check that `autoApproveSeverities` includes the severity of the patches you expect to be auto-approved.
