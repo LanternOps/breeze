@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import { X, Search, Package, Loader2, ChevronLeft, CheckCircle } from 'lucide-react';
+import { X, Search, Package, Loader2, ChevronLeft, ChevronRight, CheckCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../../stores/auth';
 
@@ -299,7 +299,7 @@ export default function SoftwareCatalogPicker({
                   <button
                     key={ver.id}
                     type="button"
-                    onClick={() => handleVersionSelect(ver.id, `v${ver.version}`)}
+                    onClick={() => handleVersionSelect(ver.id, ver.version.startsWith('v') ? ver.version : `v${ver.version}`)}
                     className="flex w-full items-center gap-3 rounded-lg border p-4 text-left transition hover:bg-muted/50"
                   >
                     <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-muted text-xs font-bold text-muted-foreground">
@@ -393,7 +393,7 @@ export default function SoftwareCatalogPicker({
                       )}
                     </div>
                   </div>
-                  <Package className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
                 </button>
               ))}
             </div>
