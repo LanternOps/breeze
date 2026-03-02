@@ -10,6 +10,7 @@ import {
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import DeploymentWizard from './DeploymentWizard';
+import SoftwareVersionManager from './SoftwareVersionManager';
 
 type SoftwareItem = {
   id: string;
@@ -37,6 +38,7 @@ export default function SoftwareCatalog() {
   const [selectedSoftware, setSelectedSoftware] = useState<SoftwareItem | null>(null);
   const [showDeployWizard, setShowDeployWizard] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [detailTab, setDetailTab] = useState<'details' | 'versions'>('details');
   const [catalogItems, setCatalogItems] = useState<SoftwareItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -222,9 +224,10 @@ export default function SoftwareCatalog() {
               className="group rounded-lg border bg-card p-5 shadow-sm transition hover:-translate-y-1 hover:shadow-md"
               role="button"
               tabIndex={0}
-              onClick={() => setSelectedSoftware(item)}
+              onClick={() => { setDetailTab('details'); setSelectedSoftware(item); }}
               onKeyDown={event => {
                 if (event.key === 'Enter' || event.key === ' ') {
+                  setDetailTab('details');
                   setSelectedSoftware(item);
                 }
               }}
@@ -274,8 +277,8 @@ export default function SoftwareCatalog() {
 
       {/* Detail modal */}
       {selectedSoftware && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-2xl rounded-lg border bg-card p-6 shadow-lg">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 overflow-y-auto">
+          <div className="w-full max-w-5xl rounded-lg border bg-card p-6 shadow-lg my-8">
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-3">
                 <div className="flex h-12 w-12 items-center justify-center rounded-md bg-muted">
@@ -285,6 +288,16 @@ export default function SoftwareCatalog() {
                   <h2 className="text-lg font-semibold">{selectedSoftware.name}</h2>
                   <p className="text-sm text-muted-foreground">{selectedSoftware.vendor || 'Unknown vendor'}</p>
                 </div>
+                {selectedSoftware.category && (
+                  <span
+                    className={cn(
+                      'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium',
+                      categoryStyles[selectedSoftware.category] ?? 'bg-muted text-muted-foreground'
+                    )}
+                  >
+                    {selectedSoftware.category.charAt(0).toUpperCase() + selectedSoftware.category.slice(1)}
+                  </span>
+                )}
               </div>
               <button
                 type="button"
@@ -295,36 +308,60 @@ export default function SoftwareCatalog() {
               </button>
             </div>
 
-            {selectedSoftware.description && (
-              <div className="mt-4 rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
-                {selectedSoftware.description}
+            <div className="mt-4 flex items-center gap-1 border-b">
+              <button
+                type="button"
+                onClick={() => setDetailTab('details')}
+                className={cn(
+                  'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors',
+                  detailTab === 'details'
+                    ? 'border-primary text-primary'
+                    : 'border-transparent text-muted-foreground hover:text-foreground'
+                )}
+              >
+                Details
+              </button>
+              <button
+                type="button"
+                onClick={() => setDetailTab('versions')}
+                className={cn(
+                  'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors',
+                  detailTab === 'versions'
+                    ? 'border-primary text-primary'
+                    : 'border-transparent text-muted-foreground hover:text-foreground'
+                )}
+              >
+                Versions
+              </button>
+            </div>
+
+            {detailTab === 'details' && (
+              <div className="mt-4">
+                {selectedSoftware.description && (
+                  <div className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
+                    {selectedSoftware.description}
+                  </div>
+                )}
+                <div className="mt-5 flex items-center justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedSoftware(null);
+                      setShowDeployWizard(true);
+                    }}
+                    className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                  >
+                    Deploy
+                  </button>
+                </div>
               </div>
             )}
 
-            <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              {selectedSoftware.category && (
-                <span
-                  className={cn(
-                    'inline-flex w-fit items-center rounded-full border px-3 py-1 text-xs font-medium',
-                    categoryStyles[selectedSoftware.category] ?? 'bg-muted text-muted-foreground'
-                  )}
-                >
-                  {selectedSoftware.category.charAt(0).toUpperCase() + selectedSoftware.category.slice(1)}
-                </span>
-              )}
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedSoftware(null);
-                    setShowDeployWizard(true);
-                  }}
-                  className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-                >
-                  Deploy
-                </button>
+            {detailTab === 'versions' && (
+              <div className="mt-4">
+                <SoftwareVersionManager catalogId={selectedSoftware.id} />
               </div>
-            </div>
+            )}
           </div>
         </div>
       )}
