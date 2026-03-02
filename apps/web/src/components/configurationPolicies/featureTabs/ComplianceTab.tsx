@@ -73,15 +73,15 @@ const versionOperators = [
 
 const osTypes = ['windows', 'macos', 'linux', 'any'];
 
-function defaultRemediationType(ruleType: RuleType): RemediationAction['type'] {
+function buildDefaultRemediation(ruleType: RuleType): RemediationAction {
   switch (ruleType) {
-    case 'required_software': return 'software_deploy';
+    case 'required_software': return { type: 'software_deploy', catalogId: '' };
     case 'prohibited_software':
     case 'registry_check':
     case 'config_check':
-      return 'script';
+      return { type: 'script', scriptId: '' };
     default:
-      return 'none';
+      return { type: 'none' };
   }
 }
 
@@ -174,17 +174,11 @@ export default function ComplianceTab({ policyId, existingLink, onLinkChanged, l
       prev.map((item, i) => {
         if (i !== itemIndex) return item;
         const ruleType: RuleType = 'required_software';
-        const remType = defaultRemediationType(ruleType);
-        const remediation: RemediationAction = remType === 'software_deploy'
-          ? { type: 'software_deploy', catalogId: '' }
-          : remType === 'script'
-            ? { type: 'script', scriptId: '' }
-            : { type: 'none' };
         return {
           ...item,
           rules: [
             ...item.rules,
-            { type: ruleType, softwareName: '', softwareVersion: '', versionOperator: 'gte', remediation },
+            { type: ruleType, softwareName: '', softwareVersion: '', versionOperator: 'gte', remediation: buildDefaultRemediation(ruleType) },
           ],
         };
       })
@@ -262,7 +256,7 @@ export default function ComplianceTab({ policyId, existingLink, onLinkChanged, l
     const newItem: ComplianceItem = {
       ...defaultItem,
       name: `Compliance Rule Set ${items.length + 1}`,
-      rules: [{ ...defaultItem.rules[0], remediation: { type: defaultRemediationType(ruleType) } as RemediationAction }],
+      rules: [{ ...defaultItem.rules[0], remediation: buildDefaultRemediation(ruleType) }],
     };
     setItems((prev) => [...prev, newItem]);
     setExpandedIndex(items.length);
@@ -434,7 +428,18 @@ export default function ComplianceTab({ policyId, existingLink, onLinkChanged, l
                                 <label className="text-xs font-medium text-muted-foreground">Rule Type</label>
                                 <select
                                   value={rule.type}
-                                  onChange={(e) => updateRule(index, ri, { type: e.target.value as RuleType })}
+                                  onChange={(e) => {
+                                    const newType = e.target.value as RuleType;
+                                    const patch: Partial<ComplianceRule> = { type: newType };
+                                    const cur = rule.remediation;
+                                    const hasConcreteSelection =
+                                      (cur?.type === 'script' && 'scriptId' in cur && cur.scriptId) ||
+                                      (cur?.type === 'software_deploy' && 'catalogId' in cur && cur.catalogId);
+                                    if (!hasConcreteSelection) {
+                                      patch.remediation = buildDefaultRemediation(newType);
+                                    }
+                                    updateRule(index, ri, patch);
+                                  }}
                                   className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
                                 >
                                   {ruleTypeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
