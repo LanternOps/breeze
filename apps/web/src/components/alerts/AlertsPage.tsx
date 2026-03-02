@@ -285,7 +285,6 @@ export default function AlertsPage() {
         onChange={setDeviceFilter}
         collapsible
         defaultExpanded={false}
-        showPreview
       />
 
       <AlertList
