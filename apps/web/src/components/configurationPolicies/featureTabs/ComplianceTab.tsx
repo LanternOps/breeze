@@ -258,7 +258,12 @@ export default function ComplianceTab({ policyId, existingLink, onLinkChanged, l
   };
 
   const addItem = () => {
-    const newItem: ComplianceItem = { ...defaultItem, name: `Compliance Rule Set ${items.length + 1}`, rules: [{ ...defaultItem.rules[0] }] };
+    const ruleType: RuleType = 'required_software';
+    const newItem: ComplianceItem = {
+      ...defaultItem,
+      name: `Compliance Rule Set ${items.length + 1}`,
+      rules: [{ ...defaultItem.rules[0], remediation: { type: defaultRemediationType(ruleType) } as RemediationAction }],
+    };
     setItems((prev) => [...prev, newItem]);
     setExpandedIndex(items.length);
   };
