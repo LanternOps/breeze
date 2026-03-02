@@ -217,6 +217,9 @@ const httpRequestState = new Map<string, CounterValue>();
 const agentHeartbeatState = new Map<string, CounterValue>();
 const softwarePolicyEvaluationState = new Map<string, CounterValue>();
 const softwareRemediationDecisionState = new Map<string, CounterValue>();
+const sensitiveDataFindingState = new Map<string, CounterValue>();
+const sensitiveDataRemediationState = new Map<string, CounterValue>();
+let sensitiveDataScansQueuedTotal = 0;
 
 let devicesActive = 0;
 let organizationsTotal = 0;
@@ -344,19 +347,19 @@ export function recordSoftwarePolicyViolation(
 export function recordSensitiveDataFinding(dataType: string, risk: string, count = 1): void {
   const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
   if (safeCount === 0) return;
-  // Placeholder — wire up a Counter when prom-client dashboards need it
+  upsertCounterState(sensitiveDataFindingState, { data_type: dataType, risk }, safeCount);
 }
 
 export function recordSensitiveDataRemediationDecision(decision: string, count = 1): void {
   const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
   if (safeCount === 0) return;
-  // Placeholder — wire up a Counter when prom-client dashboards need it
+  upsertCounterState(sensitiveDataRemediationState, { decision }, safeCount);
 }
 
 export function recordSensitiveDataScanQueued(count = 1): void {
   const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
   if (safeCount === 0) return;
-  // Placeholder — wire up a Counter when prom-client dashboards need it
+  sensitiveDataScansQueuedTotal += safeCount;
 }
 
 export function recordSoftwareRemediationDecision(decision: string, count = 1): void {
@@ -544,7 +547,8 @@ metricsRoutes.get('/json', authMiddleware, requireScope('system'), async (c) => 
       breeze_alerts_total: alertsTotal,
       alert_queue_length: alertQueueLength,
       scripts_executed_total: scriptsExecutedCount,
-      software_policy_violations_total: softwarePolicyViolationsCount
+      software_policy_violations_total: softwarePolicyViolationsCount,
+      sensitive_data_scans_queued_total: sensitiveDataScansQueuedTotal
     },
     software_policy: {
       evaluations: Array.from(softwarePolicyEvaluationState.values()),
@@ -555,6 +559,11 @@ metricsRoutes.get('/json', authMiddleware, requireScope('system'), async (c) => 
       sync_runs: s1Snapshot.syncRuns,
       action_dispatches: s1Snapshot.actionDispatches,
       action_poll_transitions: s1Snapshot.actionPollTransitions,
+    },
+    sensitive_data: {
+      scans_queued_total: sensitiveDataScansQueuedTotal,
+      findings: Array.from(sensitiveDataFindingState.values()),
+      remediation_decisions: Array.from(sensitiveDataRemediationState.values()),
     },
     agent_heartbeats: Array.from(agentHeartbeatState.values()),
     process: {
