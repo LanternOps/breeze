@@ -17,7 +17,6 @@ import {
   ShieldCheck,
   KeyRound,
   Package,
-  Webhook,
   Plug,
   Network,
   HardDrive,
@@ -73,8 +72,7 @@ const navigation = [
 ];
 
 const integrationsNav = [
-  { name: 'Webhooks', href: '/integrations/webhooks', icon: Webhook },
-  { name: 'PSA Connections', href: '/integrations/psa', icon: Plug }
+  { name: 'Integrations', href: '/integrations', icon: Plug }
 ];
 
 const monitoringNav = [
@@ -107,8 +105,7 @@ const managementNav = [
 const settingsNav = [
   { name: 'Organization', href: '/settings/organization', icon: Building },
   { name: 'Custom Fields', href: '/settings/custom-fields', icon: ListChecks },
-  { name: 'Saved Filters', href: '/settings/filters', icon: Filter },
-  { name: 'Integrations', href: '/integrations/webhooks', icon: Plug }
+  { name: 'Saved Filters', href: '/settings/filters', icon: Filter }
 ];
 
 export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps) {
