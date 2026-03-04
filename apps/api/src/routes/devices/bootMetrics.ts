@@ -2,7 +2,8 @@ import { Hono } from 'hono';
 import { db } from '../../db';
 import { deviceBootMetrics } from '../../db/schema';
 import { eq, desc } from 'drizzle-orm';
-import { authMiddleware, requireScope } from '../../middleware/auth';
+import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
+import { PERMISSIONS } from '../../services/permissions';
 import { getDeviceWithOrgCheck } from './helpers';
 import {
   normalizeStartupItems,
@@ -93,6 +94,7 @@ bootMetricsRoutes.get(
 bootMetricsRoutes.post(
   '/:id/collect-boot-metrics',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   async (c) => {
     const deviceId = c.req.param('id');
     try {
@@ -167,6 +169,7 @@ bootMetricsRoutes.get(
 bootMetricsRoutes.post(
   '/:id/startup-items/:itemName/disable',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   async (c) => {
     const deviceId = c.req.param('id');
     try {
@@ -257,6 +260,7 @@ bootMetricsRoutes.post(
 bootMetricsRoutes.post(
   '/:id/startup-items/:itemName/enable',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   async (c) => {
     const deviceId = c.req.param('id');
     try {

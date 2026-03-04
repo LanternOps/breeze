@@ -3,7 +3,8 @@ import { zValidator } from '@hono/zod-validator';
 import { eq, sql, desc, and } from 'drizzle-orm';
 import { db } from '../../db';
 import { deviceCommands, devices } from '../../db/schema';
-import { authMiddleware, requireScope } from '../../middleware/auth';
+import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
+import { PERMISSIONS } from '../../services/permissions';
 import { getPagination, getDeviceWithOrgCheck } from './helpers';
 import { createCommandSchema, bulkCommandSchema, maintenanceModeSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -23,6 +24,7 @@ function hasScriptId(payload: unknown): boolean {
 commandsRoutes.post(
   '/bulk/commands',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   zValidator('json', bulkCommandSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -96,6 +98,7 @@ commandsRoutes.post(
 commandsRoutes.post(
   '/:id/commands',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   zValidator('json', createCommandSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -158,6 +161,7 @@ commandsRoutes.post(
 commandsRoutes.post(
   '/:id/maintenance',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action),
   zValidator('json', maintenanceModeSchema),
   async (c) => {
     const auth = c.get('auth');
