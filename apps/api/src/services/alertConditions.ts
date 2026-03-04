@@ -1,8 +1,10 @@
 /**
  * Alert Condition Evaluator
  *
- * Parses and evaluates JSONB conditions from alert templates against device metrics.
- * Supports threshold conditions, offline detection, and compound AND/OR logic.
+ * Parses and evaluates JSONB conditions from alert templates against device metrics
+ * and service/process monitoring data. Supports threshold conditions, offline detection,
+ * event log conditions, service/process stopped conditions, process resource conditions
+ * (CPU/memory), and compound AND/OR logic.
  */
 
 import { db } from '../db';

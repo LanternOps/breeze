@@ -93,7 +93,8 @@ func (m *Monitor) Start() {
 
 	interval := m.config.CheckIntervalSeconds
 	if interval < 10 {
-		interval = 60
+		log.Warn("check interval below minimum, clamping to 10s", "requested", interval)
+		interval = 10
 	}
 
 	m.stopCh = make(chan struct{})
@@ -149,15 +150,15 @@ func (m *Monitor) runChecks() {
 		var result CheckResult
 
 		switch w.WatchType {
-		case "service":
+		case WatchTypeService:
 			result = checkService(w.Name)
-		case "process":
+		case WatchTypeProcess:
 			result = checkProcess(w.Name, w.CpuThresholdPercent, w.MemoryThresholdMb)
 		default:
 			result = CheckResult{
 				WatchType: w.WatchType,
 				Name:      w.Name,
-				Status:    "error",
+				Status:    StatusError,
 				Details:   map[string]any{"error": "unsupported watch type"},
 			}
 		}
@@ -165,11 +166,10 @@ func (m *Monitor) runChecks() {
 		result.WatchType = w.WatchType
 		result.Name = w.Name
 
-		// Handle auto-restart
-		if result.Status != "running" && w.AutoRestart {
-			attempted, succeeded := m.maybeAutoRestart(w, &result)
+		// Handle auto-restart (maybeAutoRestart sets AutoRestartSucceeded on result directly)
+		if result.Status != StatusRunning && w.AutoRestart {
+			attempted, _ := m.maybeAutoRestart(w, &result)
 			result.AutoRestartAttempted = attempted
-			result.AutoRestartSucceeded = succeeded
 		}
 
 		// Track consecutive failures
@@ -181,7 +181,7 @@ func (m *Monitor) runChecks() {
 			m.states[key] = state
 		}
 
-		if result.Status != "running" {
+		if result.Status != StatusRunning {
 			state.consecutiveFailures++
 		} else {
 			state.consecutiveFailures = 0
@@ -229,15 +229,19 @@ func (m *Monitor) maybeAutoRestart(w WatchConfig, result *CheckResult) (attempte
 	case "service":
 		err = restartService(w.Name)
 	case "process":
-		err = restartProcess(w.Name)
+		err = killProcess(w.Name)
 	}
 
 	if err != nil {
 		log.Warn("auto-restart failed", "watchType", w.WatchType, "name", w.Name, "error", err.Error())
+		f := false
+		result.AutoRestartSucceeded = &f
 		return true, false
 	}
 
 	log.Info("auto-restart succeeded", "watchType", w.WatchType, "name", w.Name)
+	t := true
+	result.AutoRestartSucceeded = &t
 	return true, true
 }
 
@@ -256,9 +260,8 @@ func ParseMonitorConfig(raw any) (MonitorConfig, bool) {
 		return cfg, false
 	}
 
-	if len(cfg.Watches) == 0 {
-		return cfg, false
-	}
-
+	// Return true even for empty watches — ApplyConfig handles stopping
+	// the monitor when no watches are configured. Returning false here
+	// would be indistinguishable from a parse failure.
 	return cfg, true
 }

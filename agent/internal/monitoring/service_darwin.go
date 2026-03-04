@@ -12,14 +12,14 @@ func checkService(name string) CheckResult {
 	info, err := svcquery.GetStatus(name)
 	if err != nil {
 		return CheckResult{
-			Status:  "not_found",
+			Status:  StatusNotFound,
 			Details: map[string]any{"error": err.Error()},
 		}
 	}
 
-	status := "stopped"
+	status := CheckStatus(StatusStopped)
 	if info.IsActive() {
-		status = "running"
+		status = StatusRunning
 	}
 
 	return CheckResult{

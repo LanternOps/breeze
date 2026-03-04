@@ -1050,8 +1050,10 @@ function installSignalHandlers(): void {
   // This is a benign race condition — log it instead of crashing the process.
   process.on('unhandledRejection', (reason) => {
     const message = reason instanceof Error ? reason.message : String(reason);
+    // Only suppress SDK-specific benign rejections from session cleanup
     if (message.includes('ProcessTransport is not ready for writing') ||
-        message.includes('Operation aborted')) {
+        (reason instanceof Error && reason.name === 'AbortError') ||
+        (message.includes('Operation aborted') && message.includes('Transport'))) {
       console.warn('[SDK] Suppressed benign unhandled rejection (session already closed):', message);
       return;
     }

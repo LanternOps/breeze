@@ -62,6 +62,7 @@ export async function closeRedis(): Promise<void> {
 }
 
 let bullmqConnection: Redis | null = null;
+let bullmqAvailable = false;
 
 /**
  * Get a shared Redis connection for BullMQ queues and workers.
@@ -86,13 +87,23 @@ export function getRedisConnection(): Redis {
     });
 
     bullmqConnection.on('error', (err: Error) => {
-      console.error('BullMQ Redis connection error:', err.message);
+      if (bullmqAvailable) {
+        console.error('BullMQ Redis connection lost — background jobs may stall:', err.message);
+      }
+      bullmqAvailable = false;
     });
 
     bullmqConnection.on('connect', () => {
-      console.log('[BullMQ Redis] Connected');
+      if (!bullmqAvailable) {
+        console.log('[BullMQ Redis] Connected');
+      }
+      bullmqAvailable = true;
     });
   }
 
   return bullmqConnection;
+}
+
+export function isBullMQAvailable(): boolean {
+  return bullmqAvailable;
 }

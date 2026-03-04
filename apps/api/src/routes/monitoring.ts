@@ -618,8 +618,11 @@ monitoringRoutes.get(
         .where(and(eq(deviceChangeLog.orgId, orgId), eq(deviceChangeLog.changeType, 'service')))
         .groupBy(deviceChangeLog.subject)
         .limit(1000);
-    } catch {
-      // Table may not exist — gracefully continue
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('does not exist')) {
+        console.error(`[monitoring] Failed to query change log for org ${orgId}:`, err);
+      }
     }
 
     // Source 2: Distinct service/process names from monitoring check results
@@ -634,8 +637,11 @@ monitoringRoutes.get(
         .where(eq(serviceProcessCheckResults.orgId, orgId))
         .groupBy(serviceProcessCheckResults.name, serviceProcessCheckResults.watchType)
         .limit(500);
-    } catch {
-      // Table may not exist yet — gracefully continue
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('does not exist')) {
+        console.error(`[monitoring] Failed to query check results for org ${orgId}:`, err);
+      }
     }
 
     // Normalize service names by stripping per-user/per-device hex suffixes
@@ -745,6 +751,15 @@ monitoringRoutes.get(
     const auth = c.get('auth') as AuthContext;
     const deviceId = c.req.param('deviceId');
 
+    // Verify device access before querying results
+    const [device] = await db
+      .select({ orgId: devices.orgId })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
+    if (!device) return c.json({ error: 'Device not found' }, 404);
+    if (!auth.canAccessOrg(device.orgId)) return c.json({ error: 'Access denied' }, 403);
+
     // Get all distinct watch names, then latest result for each
     const allResults = await db
       .select()
@@ -752,12 +767,6 @@ monitoringRoutes.get(
       .where(eq(serviceProcessCheckResults.deviceId, deviceId))
       .orderBy(desc(serviceProcessCheckResults.timestamp))
       .limit(500);
-
-    // Verify org access from first result
-    const firstResult = allResults[0];
-    if (firstResult && !auth.canAccessOrg(firstResult.orgId)) {
-      return c.json({ error: 'Access denied' }, 403);
-    }
 
     // Deduplicate to latest per (watchType, name)
     const seen = new Set<string>();
@@ -791,7 +800,17 @@ monitoringRoutes.get(
   '/status/:deviceId',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
+    const auth = c.get('auth') as AuthContext;
     const deviceId = c.req.param('deviceId');
+
+    // Verify device access before querying results
+    const [device] = await db
+      .select({ orgId: devices.orgId })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
+    if (!device) return c.json({ error: 'Device not found' }, 404);
+    if (!auth.canAccessOrg(device.orgId)) return c.json({ error: 'Access denied' }, 403);
 
     // Get recent results and deduplicate to latest per (watchType, name)
     const allResults = await db

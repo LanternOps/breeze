@@ -95,7 +95,7 @@ const featureTabIcons: Partial<Record<FeatureType, React.ReactNode>> = {
   monitoring: <Activity className="h-4 w-4" />,
 };
 
-const FEATURE_TYPES: FeatureType[] = ['patch', 'backup', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control'];
+const FEATURE_TYPES: FeatureType[] = ['patch', 'alert_rule', 'backup', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control'];
 
 type ConfigPolicyDetailPageProps = {
   policyId?: string;

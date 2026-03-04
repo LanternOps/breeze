@@ -168,7 +168,7 @@ func (c *ChangeTrackerCollector) CollectChanges() ([]ChangeRecord, error) {
 // snapshot so the API has full visibility into the device's initial state.
 func (c *ChangeTrackerCollector) initialInventory(snap *Snapshot) []ChangeRecord {
 	now := c.now()
-	records := make([]ChangeRecord, 0, len(snap.Services)+len(snap.Software))
+	records := make([]ChangeRecord, 0, len(snap.Services)+len(snap.Software)+len(snap.StartupItems)+len(snap.NetworkAdapters)+len(snap.ScheduledTasks)+len(snap.UserAccounts))
 
 	for _, svc := range snap.Services {
 		records = append(records, ChangeRecord{

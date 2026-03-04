@@ -6,7 +6,7 @@ import "fmt"
 
 func checkService(name string) CheckResult {
 	return CheckResult{
-		Status:  "error",
+		Status:  StatusError,
 		Details: map[string]any{"error": "service monitoring not supported on this platform"},
 	}
 }

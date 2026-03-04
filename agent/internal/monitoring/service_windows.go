@@ -4,6 +4,7 @@ package monitoring
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/breeze-rmm/agent/internal/svcquery"
 )
@@ -12,14 +13,14 @@ func checkService(name string) CheckResult {
 	info, err := svcquery.GetStatus(name)
 	if err != nil {
 		return CheckResult{
-			Status:  "not_found",
+			Status:  StatusNotFound,
 			Details: map[string]any{"error": err.Error()},
 		}
 	}
 
-	status := "stopped"
+	status := CheckStatus(StatusStopped)
 	if info.IsActive() {
-		status = "running"
+		status = StatusRunning
 	}
 
 	return CheckResult{
@@ -33,10 +34,14 @@ func checkService(name string) CheckResult {
 }
 
 func restartService(name string) error {
-	// Use the existing svcquery/tools restart mechanism
+	// Stop then start via "net" commands
 	if err := runCommand("net", "stop", name); err != nil {
-		// Ignore stop errors — service may already be stopped
-		_ = err
+		// Only ignore "not started" errors — log all other stop failures
+		errMsg := err.Error()
+		if !strings.Contains(errMsg, "not started") &&
+			!strings.Contains(errMsg, "service has not been started") {
+			log.Warn("service stop failed (non-fatal)", "name", name, "error", errMsg)
+		}
 	}
 	if err := runCommand("net", "start", name); err != nil {
 		return fmt.Errorf("failed to start service %s: %w", name, err)

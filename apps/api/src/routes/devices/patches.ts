@@ -54,8 +54,11 @@ function safeParsePatchResult(result: unknown): unknown {
       if (obj && typeof obj === 'object') {
         parsed = obj as Record<string, unknown>;
       }
-    } catch {
-      // Leave as-is if not valid JSON
+    } catch (parseErr) {
+      // Log a warning when stdout looks like JSON but fails to parse
+      if (raw.stdout && (raw.stdout as string).trimStart().startsWith('{')) {
+        console.warn('[patches] Failed to parse agent stdout as JSON:', parseErr instanceof Error ? parseErr.message : parseErr);
+      }
     }
   } else if (raw.stdout && typeof raw.stdout === 'object') {
     parsed = raw.stdout as Record<string, unknown>;

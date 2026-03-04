@@ -277,12 +277,13 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'status') {
         if (!input.deviceId) return JSON.stringify({ error: 'deviceId is required for status action' });
+        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
         const deviceId = input.deviceId as string;
 
         const allResults = await db
           .select({ watchType: serviceProcessCheckResults.watchType, name: serviceProcessCheckResults.name, status: serviceProcessCheckResults.status })
           .from(serviceProcessCheckResults)
-          .where(eq(serviceProcessCheckResults.deviceId, deviceId))
+          .where(and(eq(serviceProcessCheckResults.deviceId, deviceId), eq(serviceProcessCheckResults.orgId, orgId)))
           .orderBy(desc(serviceProcessCheckResults.timestamp))
           .limit(500);
 
@@ -309,12 +310,13 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'summary') {
         if (!input.deviceId) return JSON.stringify({ error: 'deviceId is required for summary action' });
+        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
         const deviceId = input.deviceId as string;
 
         const allResults = await db
           .select()
           .from(serviceProcessCheckResults)
-          .where(eq(serviceProcessCheckResults.deviceId, deviceId))
+          .where(and(eq(serviceProcessCheckResults.deviceId, deviceId), eq(serviceProcessCheckResults.orgId, orgId)))
           .orderBy(desc(serviceProcessCheckResults.timestamp))
           .limit(500);
 
@@ -399,7 +401,12 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
             .where(and(eq(deviceChangeLog.orgId, orgId), eq(deviceChangeLog.changeType, 'service')))
             .groupBy(deviceChangeLog.subject)
             .limit(1000);
-        } catch { /* table may not exist */ }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!msg.includes('does not exist')) {
+            console.error(`[monitoring:known_services] Failed to query change log for org ${orgId}:`, err);
+          }
+        }
 
         // Source 2: Distinct service/process names from check results
         let checkNames: { name: string; watchType: string }[] = [];
@@ -413,7 +420,12 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
             .where(eq(serviceProcessCheckResults.orgId, orgId))
             .groupBy(serviceProcessCheckResults.name, serviceProcessCheckResults.watchType)
             .limit(500);
-        } catch { /* table may not exist */ }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!msg.includes('does not exist')) {
+            console.error(`[monitoring:known_services] Failed to query check results for org ${orgId}:`, err);
+          }
+        }
 
         const seen = new Set<string>();
         const results: { name: string; source: string; watchType: string | null }[] = [];

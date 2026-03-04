@@ -517,7 +517,7 @@ async function processResults(data: ProcessResultsJobData): Promise<{
       }
     }
   } catch (baselineErr) {
-    console.warn('[DiscoveryWorker] Failed to resolve/create baseline:', baselineErr instanceof Error ? baselineErr.message : baselineErr);
+    console.error('[DiscoveryWorker] Failed to resolve/create baseline — network change events for this scan will be dropped:', baselineErr instanceof Error ? baselineErr.message : baselineErr);
   }
 
   let newCount = 0;

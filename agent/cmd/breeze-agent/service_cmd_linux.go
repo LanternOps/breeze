@@ -44,8 +44,8 @@ ProtectHome=read-only
 ReadWritePaths=/etc/breeze /var/lib/breeze /var/log/breeze /var/cache/apt /var/lib/apt /var/lib/dpkg /var/log/apt
 PrivateTmp=true
 NoNewPrivileges=false
-CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
-AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_FOWNER
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_FOWNER
 
 # Logging (stdout goes to journald)
 StandardOutput=journal

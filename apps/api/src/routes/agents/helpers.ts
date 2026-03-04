@@ -1916,7 +1916,7 @@ export async function buildMonitoringConfigUpdate(deviceId: string): Promise<Mon
 
   const settings = await resolveDeviceMonitoringSettings(deviceId);
 
-  // Cache the result (even null, as a short-lived negative cache)
+  // Cache the result when non-null (null results are not cached to allow quick policy activation)
   if (redis && settings) {
     try {
       await redis.set(cacheKey, JSON.stringify(settings), 'EX', MONITORING_CACHE_TTL_SECONDS);

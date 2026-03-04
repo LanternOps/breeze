@@ -7,11 +7,13 @@ func ClassifyDeviceRole(sysInfo *SystemInfo, hw *HardwareInfo) string {
 	// 1. Chassis type (DMI SMBIOS codes)
 	if hw != nil && hw.ChassisType != "" {
 		switch hw.ChassisType {
-		case "3", "4", "6", "7", "13", "35", "8", "9", "10", "14", "31", "32", "30":
+		case "3", "4", "6", "7", "13", "35", // Desktop, Low-Profile Desktop, Mini Tower, Tower, All-in-One, Mini PC
+			"8", "9", "10", "14",            // Portable, Laptop, Notebook, Sub-Notebook
+			"31", "32", "30":                 // Convertible, Detachable, Tablet
 			return "workstation"
-		case "17", "23", "28", "29":
+		case "17", "23", "28", "29": // Rack Mount Chassis, Main Server, Blade, Blade Enclosure
 			return "server"
-		case "11":
+		case "11": // Hand Held
 			return "phone"
 		}
 	}
@@ -41,6 +43,5 @@ func ClassifyDeviceRole(sysInfo *SystemInfo, hw *HardwareInfo) string {
 		return "server"
 	}
 
-	// 4. Default
 	return "workstation"
 }

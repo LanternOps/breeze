@@ -15,7 +15,7 @@ func checkProcess(name string, cpuThreshold, memThreshold float64) CheckResult {
 	procs, err := process.Processes()
 	if err != nil {
 		return CheckResult{
-			Status:  "error",
+			Status:  StatusError,
 			Details: map[string]any{"error": err.Error()},
 		}
 	}
@@ -23,6 +23,7 @@ func checkProcess(name string, cpuThreshold, memThreshold float64) CheckResult {
 	for _, p := range procs {
 		pName, err := p.Name()
 		if err != nil {
+			log.Warn("failed to read process name", "pid", p.Pid, "error", err.Error())
 			continue
 		}
 
@@ -31,19 +32,23 @@ func checkProcess(name string, cpuThreshold, memThreshold float64) CheckResult {
 		}
 
 		result := CheckResult{
-			Status: "running",
+			Status: StatusRunning,
 			Pid:    int(p.Pid),
 		}
 
-		// Collect CPU usage (percentage over a short interval)
+		// Collect CPU usage (instantaneous — based on cumulative CPU time, not averaged over an interval)
 		cpu, err := p.CPUPercent()
-		if err == nil {
+		if err != nil {
+			log.Warn("failed to read CPU percent for process", "name", name, "pid", p.Pid, "error", err.Error())
+		} else {
 			result.CpuPercent = cpu
 		}
 
 		// Collect memory usage
 		memInfo, err := p.MemoryInfo()
-		if err == nil && memInfo != nil {
+		if err != nil {
+			log.Warn("failed to read memory info for process", "name", name, "pid", p.Pid, "error", err.Error())
+		} else if memInfo != nil {
 			result.MemoryMb = float64(memInfo.RSS) / (1024 * 1024)
 		}
 
@@ -51,12 +56,12 @@ func checkProcess(name string, cpuThreshold, memThreshold float64) CheckResult {
 	}
 
 	return CheckResult{
-		Status: "not_found",
+		Status: StatusNotFound,
 	}
 }
 
 // matchesProcessName checks if a running process name matches the watch pattern.
-// Supports exact match and suffix match (e.g., "nginx" matches "nginx.exe" on Windows).
+// Supports exact match and .exe-agnostic match (e.g., "nginx" matches "nginx.exe" on Windows).
 func matchesProcessName(actual, pattern string) bool {
 	actual = strings.ToLower(actual)
 	pattern = strings.ToLower(pattern)
@@ -73,10 +78,11 @@ func matchesProcessName(actual, pattern string) bool {
 	return false
 }
 
-// restartProcess attempts to restart a process by name.
-// This kills the existing process and relies on the service manager or init system
-// to restart it. For standalone processes, this is a best-effort kill.
-func restartProcess(name string) error {
+// killProcess kills a process by name. For processes managed by a service manager
+// (systemd, launchd), the manager will typically respawn the process automatically.
+// For unmanaged processes, this effectively stops them permanently — there is no
+// spawn/re-launch logic here.
+func killProcess(name string) error {
 	procs, err := process.Processes()
 	if err != nil {
 		return fmt.Errorf("failed to list processes: %w", err)
@@ -86,6 +92,7 @@ func restartProcess(name string) error {
 	for _, p := range procs {
 		pName, err := p.Name()
 		if err != nil {
+			log.Warn("failed to read process name during kill scan", "pid", p.Pid, "error", err.Error())
 			continue
 		}
 		if matchesProcessName(pName, name) {
@@ -104,7 +111,7 @@ func restartProcess(name string) error {
 	return nil
 }
 
-// runCommand is a helper to run a shell command with a timeout.
+// runCommand is a helper to run an OS command directly (no shell) with a 30-second timeout.
 func runCommand(name string, args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

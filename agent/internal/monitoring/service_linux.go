@@ -20,12 +20,12 @@ func checkService(name string) CheckResult {
 
 	switch statusStr {
 	case "active":
-		return CheckResult{Status: "running"}
+		return CheckResult{Status: StatusRunning}
 	case "inactive", "deactivating":
-		return CheckResult{Status: "stopped"}
+		return CheckResult{Status: StatusStopped}
 	case "failed":
 		return CheckResult{
-			Status:  "stopped",
+			Status:  StatusStopped,
 			Details: map[string]any{"systemctlStatus": "failed"},
 		}
 	default:
@@ -34,7 +34,7 @@ func checkService(name string) CheckResult {
 			checkCmd := exec.CommandContext(ctx, "systemctl", "cat", name)
 			if checkErr := checkCmd.Run(); checkErr != nil {
 				return CheckResult{
-					Status:  "not_found",
+					Status:  StatusNotFound,
 					Details: map[string]any{"error": fmt.Sprintf("unit %s not found", name)},
 				}
 			}

@@ -1025,7 +1025,8 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 		h.applyEventLogConfig(elRaw)
 	}
 
-	// Apply monitoring_settings if present
+	// Apply monitoring_settings if present.
+	// The API may send config keys in either snake_case or camelCase; check both.
 	monRaw, hasMon := update["monitoring_settings"]
 	if !hasMon {
 		monRaw, hasMon = update["monitoringSettings"]
