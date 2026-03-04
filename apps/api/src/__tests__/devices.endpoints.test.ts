@@ -15,7 +15,7 @@ vi.mock('../services/auditEvents', () => ({
 }));
 
 vi.mock('../services/permissions', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import('../services/permissions')>();
   return {
     ...actual,
     getUserPermissions: vi.fn(async () => ({ permissions: [{ resource: '*', action: '*' }] })),
