@@ -19,6 +19,7 @@ import {
   compareAgentVersions,
   getOrgHelperSettings,
   buildEventLogConfigUpdate,
+  buildMonitoringConfigUpdate,
 } from './helpers';
 import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
 
@@ -38,16 +39,23 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     return c.json({ error: 'Device not found' }, 404);
   }
 
+  const deviceUpdates: Record<string, unknown> = {
+    lastSeenAt: new Date(),
+    status: 'online',
+    agentVersion: data.agentVersion,
+    lastUser: data.lastUser ?? null,
+    uptimeSeconds: data.uptime ?? null,
+    updatedAt: new Date()
+  };
+
+  // Only update deviceRole if agent provides one and current source is 'auto'
+  if (data.deviceRole && device.deviceRoleSource === 'auto') {
+    deviceUpdates.deviceRole = data.deviceRole;
+  }
+
   await db
     .update(devices)
-    .set({
-      lastSeenAt: new Date(),
-      status: 'online',
-      agentVersion: data.agentVersion,
-      lastUser: data.lastUser ?? null,
-      uptimeSeconds: data.uptime ?? null,
-      updatedAt: new Date()
-    })
+    .set(deviceUpdates)
     .where(eq(devices.id, device.id));
 
   if (data.metrics) {
@@ -199,11 +207,21 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     console.error(`[agents] failed to build event log config update for ${agentId}:`, err);
   }
 
+  let monitoringSettings: Record<string, unknown> | null = null;
+  try {
+    monitoringSettings = await buildMonitoringConfigUpdate(device.id) as Record<string, unknown> | null;
+  } catch (err) {
+    console.error(`[agents] failed to build monitoring config update for ${agentId}:`, err);
+  }
+
   let mergedConfigUpdate: Record<string, unknown> | null = null;
-  if (configUpdate || eventLogSettings) {
+  if (configUpdate || eventLogSettings || monitoringSettings) {
     mergedConfigUpdate = { ...(configUpdate ?? {}) };
     if (eventLogSettings) {
       mergedConfigUpdate.event_log_settings = eventLogSettings;
+    }
+    if (monitoringSettings) {
+      mergedConfigUpdate.monitoring_settings = monitoringSettings;
     }
   }
 
@@ -218,6 +236,103 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     renewCert: renewCert || undefined,
     helperEnabled,
   });
+});
+
+// Receive service/process monitoring check results from agent
+heartbeatRoutes.put('/:id/monitoring-results', bodyLimit({ maxSize: 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }), async (c) => {
+  const agentId = c.req.param('id');
+
+  const [device] = await db
+    .select()
+    .from(devices)
+    .where(eq(devices.agentId, agentId))
+    .limit(1);
+
+  if (!device) {
+    return c.json({ error: 'Device not found' }, 404);
+  }
+
+  let body: { results: Array<Record<string, unknown>> };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  if (!Array.isArray(body?.results) || body.results.length === 0) {
+    return c.json({ error: 'results array required' }, 400);
+  }
+
+  const { serviceProcessCheckResults } = await import('../../db/schema');
+  const { getRedis } = await import('../../services/redis');
+  const { publishEvent } = await import('../../services/eventBus');
+
+  const insertValues = body.results.map((r) => ({
+    orgId: device.orgId,
+    deviceId: device.id,
+    watchType: (r.watchType === 'service' ? 'service' : 'process') as 'service' | 'process',
+    name: String(r.name ?? ''),
+    status: (['running', 'stopped', 'not_found', 'error'].includes(r.status as string) ? r.status : 'error') as 'running' | 'stopped' | 'not_found' | 'error',
+    cpuPercent: typeof r.cpuPercent === 'number' ? r.cpuPercent : null,
+    memoryMb: typeof r.memoryMb === 'number' ? r.memoryMb : null,
+    pid: typeof r.pid === 'number' ? r.pid : null,
+    details: (r.details && typeof r.details === 'object') ? r.details : null,
+    autoRestartAttempted: r.autoRestartAttempted === true,
+    autoRestartSucceeded: typeof r.autoRestartSucceeded === 'boolean' ? r.autoRestartSucceeded : null,
+  }));
+
+  // Batch insert results
+  try {
+    await db.insert(serviceProcessCheckResults).values(insertValues);
+  } catch (err) {
+    console.error(`[monitoring] failed to insert check results for device ${device.id}:`, err);
+    return c.json({ error: 'Failed to store results' }, 500);
+  }
+
+  // Track consecutive failures in Redis and manage alerts
+  const redis = getRedis();
+  for (const result of insertValues) {
+    const failureKey = `svc-mon:${device.id}:${result.name}:failures`;
+
+    if (result.status !== 'running') {
+      // Increment consecutive failure counter
+      if (redis) {
+        try {
+          const count = await redis.incr(failureKey);
+          await redis.expire(failureKey, 3600); // TTL 1h
+          // Publish event for real-time UI updates
+          publishEvent(
+            'monitoring.check_failed',
+            device.orgId,
+            { deviceId: device.id, name: result.name, watchType: result.watchType, status: result.status, consecutiveFailures: count },
+            'agent-monitoring'
+          );
+        } catch (err) {
+          console.warn(`[monitoring] Redis failure counter error for ${device.id}/${result.name}:`, err);
+        }
+      }
+    } else {
+      // Reset failure counter on recovery
+      if (redis) {
+        try {
+          const prevCount = await redis.get(failureKey);
+          await redis.del(failureKey);
+          if (prevCount && Number(prevCount) > 0) {
+            publishEvent(
+              'monitoring.check_recovered',
+              device.orgId,
+              { deviceId: device.id, name: result.name, watchType: result.watchType, previousFailures: Number(prevCount) },
+              'agent-monitoring'
+            );
+          }
+        } catch (err) {
+          console.warn(`[monitoring] Redis failure reset error for ${device.id}/${result.name}:`, err);
+        }
+      }
+    }
+  }
+
+  return c.json({ accepted: insertValues.length });
 });
 
 // Get agent config

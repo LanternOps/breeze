@@ -1,16 +1,19 @@
 import { useState } from 'react';
 import { X, Filter, ChevronDown, ChevronUp, Tag } from 'lucide-react';
 import type { DeviceStatus, OSType } from './DeviceList';
+import { DEVICE_ROLES, getDeviceRoleLabel, getDeviceRoleIcon, type DeviceRole } from '@/lib/deviceRoles';
 
 type DeviceFiltersProps = {
   statusFilter: DeviceStatus[];
   osFilter: OSType[];
+  roleFilter?: DeviceRole[];
   siteFilter: string | null;
   tagsFilter: string[];
   sites: { id: string; name: string }[];
   availableTags: string[];
   onStatusChange: (statuses: DeviceStatus[]) => void;
   onOsChange: (os: OSType[]) => void;
+  onRoleChange?: (roles: DeviceRole[]) => void;
   onSiteChange: (siteId: string | null) => void;
   onTagsChange: (tags: string[]) => void;
   onClearAll: () => void;
@@ -29,15 +32,22 @@ const osOptions: { value: OSType; label: string }[] = [
   { value: 'linux', label: 'Linux' }
 ];
 
+const roleOptions: { value: DeviceRole; label: string }[] = DEVICE_ROLES.map(role => ({
+  value: role,
+  label: getDeviceRoleLabel(role),
+}));
+
 export default function DeviceFilters({
   statusFilter,
   osFilter,
+  roleFilter = [],
   siteFilter,
   tagsFilter,
   sites,
   availableTags,
   onStatusChange,
   onOsChange,
+  onRoleChange,
   onSiteChange,
   onTagsChange,
   onClearAll,
@@ -46,6 +56,7 @@ export default function DeviceFilters({
   const [expandedSections, setExpandedSections] = useState({
     status: true,
     os: true,
+    role: true,
     site: true,
     tags: true
   });
@@ -70,6 +81,15 @@ export default function DeviceFilters({
     }
   };
 
+  const handleRoleToggle = (role: DeviceRole) => {
+    if (!onRoleChange) return;
+    if (roleFilter.includes(role)) {
+      onRoleChange(roleFilter.filter(r => r !== role));
+    } else {
+      onRoleChange([...roleFilter, role]);
+    }
+  };
+
   const handleTagToggle = (tag: string) => {
     if (tagsFilter.includes(tag)) {
       onTagsChange(tagsFilter.filter(t => t !== tag));
@@ -78,7 +98,7 @@ export default function DeviceFilters({
     }
   };
 
-  const hasActiveFilters = statusFilter.length > 0 || osFilter.length > 0 || siteFilter !== null || tagsFilter.length > 0;
+  const hasActiveFilters = statusFilter.length > 0 || osFilter.length > 0 || roleFilter.length > 0 || siteFilter !== null || tagsFilter.length > 0;
 
   if (layout === 'header') {
     return (
@@ -140,6 +160,40 @@ export default function DeviceFilters({
             </div>
           </details>
         </div>
+
+        {/* Device Role Filter Dropdown */}
+        {onRoleChange && (
+          <div className="relative">
+            <details className="group">
+              <summary className="flex cursor-pointer items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium hover:bg-muted">
+                Device Role
+                {roleFilter.length > 0 && (
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary text-xs text-primary-foreground">
+                    {roleFilter.length}
+                  </span>
+                )}
+                <ChevronDown className="h-4 w-4 transition group-open:rotate-180" />
+              </summary>
+              <div className="absolute left-0 top-full z-10 mt-1 max-h-64 w-48 overflow-y-auto rounded-md border bg-card p-2 shadow-lg">
+                {roleOptions.map(option => {
+                  const RoleIcon = getDeviceRoleIcon(option.value);
+                  return (
+                    <label key={option.value} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 hover:bg-muted">
+                      <input
+                        type="checkbox"
+                        checked={roleFilter.includes(option.value)}
+                        onChange={() => handleRoleToggle(option.value)}
+                        className="h-4 w-4 rounded border-gray-300"
+                      />
+                      <RoleIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                      <span className="text-sm">{option.label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </details>
+          </div>
+        )}
 
         {/* Site Filter Dropdown */}
         {sites.length > 0 && (
@@ -280,6 +334,43 @@ export default function DeviceFilters({
         )}
       </div>
 
+      {/* Device Role Section */}
+      {onRoleChange && (
+        <div className="mt-4 border-t pt-4">
+          <button
+            type="button"
+            onClick={() => toggleSection('role')}
+            className="flex w-full items-center justify-between text-sm font-medium"
+          >
+            Device Role
+            {expandedSections.role ? (
+              <ChevronUp className="h-4 w-4" />
+            ) : (
+              <ChevronDown className="h-4 w-4" />
+            )}
+          </button>
+          {expandedSections.role && (
+            <div className="mt-2 max-h-48 space-y-2 overflow-y-auto">
+              {roleOptions.map(option => {
+                const RoleIcon = getDeviceRoleIcon(option.value);
+                return (
+                  <label key={option.value} className="flex cursor-pointer items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={roleFilter.includes(option.value)}
+                      onChange={() => handleRoleToggle(option.value)}
+                      className="h-4 w-4 rounded border-gray-300"
+                    />
+                    <RoleIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                    <span className="text-sm">{option.label}</span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Site Section */}
       {sites.length > 0 && (
         <div className="mt-4 border-t pt-4">
@@ -374,6 +465,21 @@ export default function DeviceFilters({
                 <button
                   type="button"
                   onClick={() => handleOsToggle(os)}
+                  className="hover:text-destructive"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ))}
+            {roleFilter.map(role => (
+              <span
+                key={role}
+                className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs"
+              >
+                {getDeviceRoleLabel(role)}
+                <button
+                  type="button"
+                  onClick={() => handleRoleToggle(role)}
                   className="hover:text-destructive"
                 >
                   <X className="h-3 w-3" />

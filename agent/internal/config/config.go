@@ -236,10 +236,10 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	}
 
 	// Allow the Breeze Helper (running as the logged-in user) to read the
-	// main config file. Secrets are stored separately in secrets.yaml with
-	// root-only permissions.
-	_ = os.Chmod(filepath.Dir(cfgPath), 0755)
-	if err := os.Chmod(cfgPath, 0644); err != nil {
+	// main config file via group access. Secrets are stored separately in
+	// secrets.yaml with root-only permissions.
+	_ = os.Chmod(filepath.Dir(cfgPath), 0750)
+	if err := os.Chmod(cfgPath, 0640); err != nil {
 		return err
 	}
 
@@ -286,13 +286,13 @@ func GetDataDir() string {
 func FixConfigPermissions() {
 	dir := configDir()
 	if info, err := os.Stat(dir); err == nil && info.IsDir() {
-		if err := os.Chmod(dir, 0755); err != nil {
+		if err := os.Chmod(dir, 0750); err != nil {
 			log.Warn("Failed to fix config directory permissions", "dir", dir, "error", err.Error())
 		}
 	}
 	cfgPath := filepath.Join(dir, "agent.yaml")
 	if _, err := os.Stat(cfgPath); err == nil {
-		if err := os.Chmod(cfgPath, 0644); err != nil {
+		if err := os.Chmod(cfgPath, 0640); err != nil {
 			log.Warn("Failed to fix config file permissions", "path", cfgPath, "error", err.Error())
 		}
 	}

@@ -425,6 +425,13 @@ export class StreamingSessionManager {
     try { session.inputController.close(); } catch (err) {
       captureException(err); console.error('[StreamingSessionManager] Failed to close input controller:', sessionId, err);
     }
+    // Abort the SDK's AbortController first to signal in-flight MCP tool
+    // handlers to stop. This prevents the race where handleControlRequest
+    // completes after the subprocess is killed and tries to write a response
+    // to the dead ProcessTransport — crashing the process.
+    try { session.abortController.abort(); } catch (err) {
+      captureException(err); console.error('[StreamingSessionManager] Failed to abort session controller:', sessionId, err);
+    }
     try { session.query.close(); } catch (err) {
       captureException(err); console.error('[StreamingSessionManager] Failed to close SDK query:', sessionId, err);
     }

@@ -1620,17 +1620,41 @@ export async function evaluateDeviceComplianceFromConfigPolicy(
         });
     }
 
-    // Trigger remediation if enforcement is 'enforce' and a remediation script is configured
+    // Trigger remediation if enforcement is 'enforce'
     let remediationTriggered = false;
-    if (
-      status === 'non_compliant'
-      && complianceRule.enforcementLevel === 'enforce'
-      && complianceRule.remediationScriptId
-    ) {
-      remediationTriggered = await triggerConfigPolicyRemediation(
-        complianceRule,
-        targetDevice
-      );
+    if (status === 'non_compliant' && complianceRule.enforcementLevel === 'enforce') {
+      // Check per-rule remediation for individually failed rules (from rules JSONB)
+      // ruleDetails indices correspond to valid rules (parsePolicyRules skips invalid ones),
+      // so we track a separate detailIdx that only advances for valid rules.
+      const rulesArray = Array.isArray(complianceRule.rules) ? complianceRule.rules as Record<string, unknown>[] : [];
+      let detailIdx = 0;
+      for (let i = 0; i < rulesArray.length; i++) {
+        const r = rulesArray[i];
+        // Skip rules that parsePolicyRules would filter out (null, non-object, no type)
+        if (!r || typeof r !== 'object') continue;
+        const ruleType = typeof r.type === 'string' ? r.type : typeof r.name === 'string' ? r.name : null;
+        if (!ruleType?.trim()) continue;
+
+        const rem = r.remediation as Record<string, unknown> | undefined;
+        // Only remediate rules that actually failed evaluation and have remediation configured
+        const detail = ruleDetails[detailIdx++];
+        if (!rem || rem.type === 'none') continue;
+        if (!detail || detail.passed) continue;
+
+        if (rem.type === 'script' && typeof rem.scriptId === 'string') {
+          // Bridge: pass scriptId via legacy field until triggerConfigPolicyRemediation is refactored
+          const tempRule = { ...complianceRule, remediationScriptId: rem.scriptId };
+          const triggered = await triggerConfigPolicyRemediation(tempRule, targetDevice);
+          if (triggered) remediationTriggered = true;
+        } else if (rem.type === 'software_deploy' && typeof rem.catalogId === 'string') {
+          console.warn(`[ConfigPolicyCompliance] Software deploy remediation for rule="${complianceRule.name}" catalogId=${rem.catalogId} on device=${targetDevice.id} — not yet implemented`);
+        }
+      }
+
+      // Fallback: check legacy remediationScriptId on the rule set
+      if (!remediationTriggered && complianceRule.remediationScriptId) {
+        remediationTriggered = await triggerConfigPolicyRemediation(complianceRule, targetDevice);
+      }
     }
 
     results.push({

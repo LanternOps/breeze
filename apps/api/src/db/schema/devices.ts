@@ -24,6 +24,8 @@ export const devices = pgTable('devices', {
   hostname: varchar('hostname', { length: 255 }).notNull(),
   displayName: varchar('display_name', { length: 255 }),
   osType: osTypeEnum('os_type').notNull(),
+  deviceRole: varchar('device_role', { length: 30 }).notNull().default('unknown'),
+  deviceRoleSource: varchar('device_role_source', { length: 20 }).notNull().default('auto'),
   osVersion: varchar('os_version', { length: 100 }).notNull(),
   osBuild: varchar('os_build', { length: 100 }),
   architecture: varchar('architecture', { length: 20 }).notNull(),

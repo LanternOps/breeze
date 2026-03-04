@@ -25,6 +25,8 @@ import {
   configurationPolicies,
   configPolicyFeatureLinks,
   configPolicyEventLogSettings,
+  configPolicyMonitoringSettings,
+  configPolicyMonitoringWatches,
 } from '../../db/schema';
 import { getRedis } from '../../services/redis';
 import { publishEvent } from '../../services/eventBus';
@@ -1765,6 +1767,165 @@ export async function getOrgEventLogRetentionDays(orgId: string): Promise<number
     .limit(1);
 
   return row?.retentionDays ?? 30;
+}
+
+// ============================================
+// Monitoring (Service & Process) Policy Settings
+// ============================================
+
+export interface MonitoringWatchConfig {
+  watch_type: 'service' | 'process';
+  name: string;
+  alert_on_stop: boolean;
+  alert_after_consecutive_failures: number;
+  auto_restart: boolean;
+  max_restart_attempts: number;
+  restart_cooldown_seconds: number;
+  cpu_threshold_percent?: number;
+  memory_threshold_mb?: number;
+  threshold_duration_seconds?: number;
+}
+
+export interface MonitoringConfigUpdate {
+  check_interval_seconds: number;
+  watches: MonitoringWatchConfig[];
+}
+
+async function resolveDeviceMonitoringSettings(deviceId: string): Promise<MonitoringConfigUpdate | null> {
+  // 1. Load device
+  const [device] = await db
+    .select({ orgId: devices.orgId, siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+
+  if (!device) return null;
+
+  // 2. Load org (for partnerId)
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, device.orgId))
+    .limit(1);
+
+  // 3. Load device group memberships
+  const groupRows = await db
+    .select({ groupId: deviceGroupMemberships.groupId })
+    .from(deviceGroupMemberships)
+    .where(eq(deviceGroupMemberships.deviceId, deviceId));
+  const groupIds = groupRows.map((r) => r.groupId);
+
+  // 4. Build target match conditions
+  const targetConditions = [
+    and(eq(configPolicyAssignments.level, 'device'), eq(configPolicyAssignments.targetId, deviceId)),
+    and(eq(configPolicyAssignments.level, 'site'), eq(configPolicyAssignments.targetId, device.siteId)),
+    and(eq(configPolicyAssignments.level, 'organization'), eq(configPolicyAssignments.targetId, device.orgId)),
+  ];
+  if (groupIds.length > 0) {
+    targetConditions.push(
+      and(eq(configPolicyAssignments.level, 'device_group'), inArray(configPolicyAssignments.targetId, groupIds))!
+    );
+  }
+  if (org?.partnerId) {
+    targetConditions.push(
+      and(eq(configPolicyAssignments.level, 'partner'), eq(configPolicyAssignments.targetId, org.partnerId))!
+    );
+  }
+
+  // 5. Single query: assignments → active policies → monitoring feature link → settings
+  const rows = await db
+    .select({
+      level: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      settingsId: configPolicyMonitoringSettings.id,
+      checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+    .innerJoin(configPolicyFeatureLinks, and(
+      eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+      eq(configPolicyFeatureLinks.featureType, 'monitoring'),
+    ))
+    .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyFeatureLinks.id))
+    .where(and(
+      eq(configurationPolicies.status, 'active'),
+      or(...targetConditions),
+    ));
+
+  if (rows.length === 0) return null;
+
+  // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
+  rows.sort((a, b) => {
+    const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
+    if (levelDiff !== 0) return levelDiff;
+    return a.assignmentPriority - b.assignmentPriority;
+  });
+
+  const winner = rows[0];
+  if (!winner) return null;
+
+  // 7. Load watches for the winning settings row
+  const watches = await db
+    .select()
+    .from(configPolicyMonitoringWatches)
+    .where(and(
+      eq(configPolicyMonitoringWatches.settingsId, winner.settingsId),
+      eq(configPolicyMonitoringWatches.enabled, true),
+    ))
+    .orderBy(configPolicyMonitoringWatches.sortOrder);
+
+  if (watches.length === 0) return null;
+
+  return {
+    check_interval_seconds: winner.checkIntervalSeconds,
+    watches: watches.map((w) => {
+      const entry: MonitoringWatchConfig = {
+        watch_type: w.watchType,
+        name: w.name,
+        alert_on_stop: w.alertOnStop,
+        alert_after_consecutive_failures: w.alertAfterConsecutiveFailures,
+        auto_restart: w.autoRestart,
+        max_restart_attempts: w.maxRestartAttempts,
+        restart_cooldown_seconds: w.restartCooldownSeconds,
+      };
+      if (w.cpuThresholdPercent != null) entry.cpu_threshold_percent = w.cpuThresholdPercent;
+      if (w.memoryThresholdMb != null) entry.memory_threshold_mb = w.memoryThresholdMb;
+      if (w.thresholdDurationSeconds) entry.threshold_duration_seconds = w.thresholdDurationSeconds;
+      return entry;
+    }),
+  };
+}
+
+const MONITORING_CACHE_TTL_SECONDS = 120; // 2 minutes
+
+export async function buildMonitoringConfigUpdate(deviceId: string): Promise<MonitoringConfigUpdate | null> {
+  const redis = getRedis();
+  const cacheKey = `monitoring:settings:device:${deviceId}`;
+
+  // Try cache first
+  if (redis) {
+    try {
+      const cached = await redis.get(cacheKey);
+      if (cached) {
+        return JSON.parse(cached) as MonitoringConfigUpdate;
+      }
+    } catch (cacheErr) {
+      console.warn(`[monitoring] Redis cache read failed for device ${deviceId}:`, cacheErr);
+    }
+  }
+
+  const settings = await resolveDeviceMonitoringSettings(deviceId);
+
+  // Cache the result when non-null (null results are not cached to allow quick policy activation)
+  if (redis && settings) {
+    try {
+      await redis.set(cacheKey, JSON.stringify(settings), 'EX', MONITORING_CACHE_TTL_SECONDS);
+    } catch (cacheErr) {
+      console.warn(`[monitoring] Redis cache write failed for device ${deviceId}:`, cacheErr);
+    }
+  }
+
+  return settings;
 }
 
 // ============================================

@@ -16,10 +16,12 @@ import {
   ScrollText,
   ScanSearch,
   Usb,
+  Activity,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import type { FeatureType, FeatureLink } from './featureTabs/types';
+import { DEVICE_ROLES, getDeviceRoleLabel } from '@/lib/deviceRoles';
 import { FEATURE_META } from './featureTabs/types';
 import PatchTab from './featureTabs/PatchTab';
 import AlertRuleTab from './featureTabs/AlertRuleTab';
@@ -32,6 +34,7 @@ import EventLogTab from './featureTabs/EventLogTab';
 import SoftwarePolicyTab from './featureTabs/SoftwarePolicyTab';
 import SensitiveDataTab from './featureTabs/SensitiveDataTab';
 import PeripheralControlTab from './featureTabs/PeripheralControlTab';
+import MonitoringTab from './featureTabs/MonitoringTab';
 
 type Tab = 'overview' | FeatureType | 'assignments';
 
@@ -40,6 +43,8 @@ type Assignment = {
   level: string;
   targetId: string;
   priority: number;
+  roleFilter?: string[] | null;
+  osFilter?: string[] | null;
   assignedBy?: string;
   createdAt?: string;
 };
@@ -69,6 +74,12 @@ const assignmentLevels = [
   { value: 'device', label: 'Device' },
 ];
 
+const osFilterOptions = [
+  { value: 'windows', label: 'Windows' },
+  { value: 'macos', label: 'macOS' },
+  { value: 'linux', label: 'Linux' },
+];
+
 const featureTabIcons: Partial<Record<FeatureType, React.ReactNode>> = {
   patch: <PackageCheck className="h-4 w-4" />,
   alert_rule: <Bell className="h-4 w-4" />,
@@ -81,9 +92,10 @@ const featureTabIcons: Partial<Record<FeatureType, React.ReactNode>> = {
   software_policy: <PackageCheck className="h-4 w-4" />,
   sensitive_data: <ScanSearch className="h-4 w-4" />,
   peripheral_control: <Usb className="h-4 w-4" />,
+  monitoring: <Activity className="h-4 w-4" />,
 };
 
-const FEATURE_TYPES: FeatureType[] = ['patch', 'alert_rule', 'backup', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control'];
+const FEATURE_TYPES: FeatureType[] = ['patch', 'alert_rule', 'backup', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control'];
 
 type ConfigPolicyDetailPageProps = {
   policyId?: string;
@@ -121,6 +133,8 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
   const [newLevel, setNewLevel] = useState('organization');
   const [newTargetId, setNewTargetId] = useState('');
   const [newPriority, setNewPriority] = useState('0');
+  const [newRoleFilter, setNewRoleFilter] = useState<string[]>([]);
+  const [newOsFilter, setNewOsFilter] = useState<string[]>([]);
   const [addingAssignment, setAddingAssignment] = useState(false);
 
   const fetchPolicy = useCallback(async () => {
@@ -272,6 +286,8 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
           level: newLevel,
           targetId: newTargetId.trim(),
           priority: Number(newPriority) || 0,
+          ...(newRoleFilter.length > 0 ? { roleFilter: newRoleFilter } : {}),
+          ...(newOsFilter.length > 0 ? { osFilter: newOsFilter } : {}),
         }),
       });
       if (!response.ok) {
@@ -280,6 +296,8 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
       }
       setNewTargetId('');
       setNewPriority('0');
+      setNewRoleFilter([]);
+      setNewOsFilter([]);
       await fetchAssignments();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
@@ -360,6 +378,7 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
       case 'event_log': return <EventLogTab {...props} />;
       case 'software_policy': return <SoftwarePolicyTab {...props} />;
       case 'sensitive_data': return <SensitiveDataTab {...props} />;
+      case 'monitoring': return <MonitoringTab {...props} />;
       case 'peripheral_control': return <PeripheralControlTab {...props} />;
     }
   };
@@ -537,6 +556,68 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
                 />
               </div>
             </div>
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="text-sm font-medium">Role Filter <span className="text-xs text-muted-foreground">(optional)</span></label>
+                <div className="mt-2 flex flex-wrap gap-2 rounded-md border bg-background p-2 min-h-[2.5rem]">
+                  {DEVICE_ROLES.map((role) => {
+                    const isSelected = newRoleFilter.includes(role);
+                    return (
+                      <button
+                        key={role}
+                        type="button"
+                        onClick={() => {
+                          setNewRoleFilter((prev) =>
+                            isSelected ? prev.filter((r) => r !== role) : [...prev, role]
+                          );
+                        }}
+                        className={cn(
+                          'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium transition',
+                          isSelected
+                            ? 'border-primary bg-primary/10 text-primary'
+                            : 'border-muted bg-muted/30 text-muted-foreground hover:bg-muted/60'
+                        )}
+                      >
+                        {getDeviceRoleLabel(role)}
+                      </button>
+                    );
+                  })}
+                </div>
+                {newRoleFilter.length === 0 && (
+                  <p className="mt-1 text-xs text-muted-foreground">No restriction - applies to all device roles</p>
+                )}
+              </div>
+              <div>
+                <label className="text-sm font-medium">OS Filter <span className="text-xs text-muted-foreground">(optional)</span></label>
+                <div className="mt-2 flex flex-wrap gap-2 rounded-md border bg-background p-2 min-h-[2.5rem]">
+                  {osFilterOptions.map((os) => {
+                    const isSelected = newOsFilter.includes(os.value);
+                    return (
+                      <button
+                        key={os.value}
+                        type="button"
+                        onClick={() => {
+                          setNewOsFilter((prev) =>
+                            isSelected ? prev.filter((o) => o !== os.value) : [...prev, os.value]
+                          );
+                        }}
+                        className={cn(
+                          'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium transition',
+                          isSelected
+                            ? 'border-primary bg-primary/10 text-primary'
+                            : 'border-muted bg-muted/30 text-muted-foreground hover:bg-muted/60'
+                        )}
+                      >
+                        {os.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {newOsFilter.length === 0 && (
+                  <p className="mt-1 text-xs text-muted-foreground">No restriction - applies to all operating systems</p>
+                )}
+              </div>
+            </div>
             <div className="mt-4 flex justify-end">
               <button
                 type="button"
@@ -569,6 +650,7 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
                       <th className="px-4 py-3">Level</th>
                       <th className="px-4 py-3">Target ID</th>
                       <th className="px-4 py-3">Priority</th>
+                      <th className="px-4 py-3">Filters</th>
                       <th className="px-4 py-3 text-right">Actions</th>
                     </tr>
                   </thead>
@@ -584,6 +666,34 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
                           {assignment.targetId}
                         </td>
                         <td className="px-4 py-3 text-muted-foreground">{assignment.priority}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex flex-wrap gap-1">
+                            {(!assignment.roleFilter || assignment.roleFilter.length === 0) &&
+                             (!assignment.osFilter || assignment.osFilter.length === 0) && (
+                              <span className="text-xs text-muted-foreground">All devices</span>
+                            )}
+                            {assignment.roleFilter && assignment.roleFilter.length > 0 && (
+                              assignment.roleFilter.map((role) => (
+                                <span
+                                  key={role}
+                                  className="inline-flex items-center rounded-full border border-purple-500/40 bg-purple-500/10 px-2 py-0.5 text-xs font-medium text-purple-700"
+                                >
+                                  {getDeviceRoleLabel(role)}
+                                </span>
+                              ))
+                            )}
+                            {assignment.osFilter && assignment.osFilter.length > 0 && (
+                              assignment.osFilter.map((os) => (
+                                <span
+                                  key={os}
+                                  className="inline-flex items-center rounded-full border border-blue-500/40 bg-blue-500/10 px-2 py-0.5 text-xs font-medium text-blue-700"
+                                >
+                                  {os === 'macos' ? 'macOS' : os.charAt(0).toUpperCase() + os.slice(1)}
+                                </span>
+                              ))
+                            )}
+                          </div>
+                        </td>
                         <td className="px-4 py-3">
                           <div className="flex justify-end">
                             <button

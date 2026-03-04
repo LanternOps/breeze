@@ -11,7 +11,9 @@ import {
   networkMonitorResults,
   networkMonitorAlertRules,
 } from '../db/schema/monitors';
-import { eq, and, desc, sql, SQL } from 'drizzle-orm';
+import { serviceProcessCheckResults } from '../db/schema/serviceProcessMonitoring';
+import { deviceChangeLog } from '../db/schema';
+import { eq, and, desc, gte, lte, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 
@@ -239,6 +241,229 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         // Cascade delete handles results and alert rules via FK onDelete: 'cascade'
         await db.delete(networkMonitors).where(eq(networkMonitors.id, existing.id));
         return JSON.stringify({ success: true, message: `Monitor "${existing.name}" deleted` });
+      }
+
+      return JSON.stringify({ error: `Unknown action: ${action}` });
+    }),
+  });
+
+  // ============================================
+  // 3. get_service_monitoring_status — Service/process watcher status
+  // ============================================
+
+  registerTool({
+    tier: 1,
+    definition: {
+      name: 'get_service_monitoring_status',
+      description: 'Query service and process monitoring status for managed devices. Actions: status (health overview), summary (latest result per watcher), results (check history), known_services (autocomplete).',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          action: { type: 'string', enum: ['status', 'summary', 'results', 'known_services'], description: 'The action to perform' },
+          deviceId: { type: 'string', description: 'Device UUID (required for status/summary)' },
+          watchType: { type: 'string', enum: ['service', 'process'], description: 'Filter by watch type (for results/known_services)' },
+          name: { type: 'string', description: 'Filter by service/process name (for results)' },
+          since: { type: 'string', description: 'ISO datetime — return results after this time (for results)' },
+          until: { type: 'string', description: 'ISO datetime — return results before this time (for results)' },
+          search: { type: 'string', description: 'Search by name (case-insensitive, for known_services)' },
+          limit: { type: 'number', description: 'Max results (default 100, max 500)' },
+        },
+        required: ['action'],
+      },
+    },
+    handler: safeHandler('get_service_monitoring_status', async (input, auth) => {
+      const action = input.action as string;
+      const orgId = getOrgId(auth);
+
+      if (action === 'status') {
+        if (!input.deviceId) return JSON.stringify({ error: 'deviceId is required for status action' });
+        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        const deviceId = input.deviceId as string;
+
+        const allResults = await db
+          .select({ watchType: serviceProcessCheckResults.watchType, name: serviceProcessCheckResults.name, status: serviceProcessCheckResults.status })
+          .from(serviceProcessCheckResults)
+          .where(and(eq(serviceProcessCheckResults.deviceId, deviceId), eq(serviceProcessCheckResults.orgId, orgId)))
+          .orderBy(desc(serviceProcessCheckResults.timestamp))
+          .limit(500);
+
+        const seen = new Set<string>();
+        const latestStatuses: string[] = [];
+        for (const r of allResults) {
+          const key = `${r.watchType}:${r.name}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          latestStatuses.push(r.status);
+        }
+
+        const runningCount = latestStatuses.filter(s => s === 'running').length;
+        const notRunningCount = latestStatuses.filter(s => s !== 'running').length;
+        const totalCount = latestStatuses.length;
+
+        let healthStatus = 'healthy';
+        if (totalCount === 0) healthStatus = 'unknown';
+        else if (notRunningCount > 0 && runningCount === 0) healthStatus = 'critical';
+        else if (notRunningCount > 0) healthStatus = 'degraded';
+
+        return JSON.stringify({ deviceId, healthStatus, runningCount, notRunningCount, totalCount });
+      }
+
+      if (action === 'summary') {
+        if (!input.deviceId) return JSON.stringify({ error: 'deviceId is required for summary action' });
+        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        const deviceId = input.deviceId as string;
+
+        const allResults = await db
+          .select()
+          .from(serviceProcessCheckResults)
+          .where(and(eq(serviceProcessCheckResults.deviceId, deviceId), eq(serviceProcessCheckResults.orgId, orgId)))
+          .orderBy(desc(serviceProcessCheckResults.timestamp))
+          .limit(500);
+
+        // Deduplicate to latest per (watchType, name)
+        const seen = new Set<string>();
+        const latest = allResults.filter(r => {
+          const key = `${r.watchType}:${r.name}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+
+        return JSON.stringify({
+          data: latest.map(r => ({
+            id: r.id,
+            deviceId: r.deviceId,
+            watchType: r.watchType,
+            name: r.name,
+            status: r.status,
+            cpuPercent: r.cpuPercent,
+            memoryMb: r.memoryMb,
+            pid: r.pid,
+            details: r.details,
+            autoRestartAttempted: r.autoRestartAttempted,
+            autoRestartSucceeded: r.autoRestartSucceeded,
+            timestamp: r.timestamp.toISOString(),
+          })),
+        });
+      }
+
+      if (action === 'results') {
+        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+
+        const conditions: SQL[] = [eq(serviceProcessCheckResults.orgId, orgId)];
+        if (typeof input.deviceId === 'string') conditions.push(eq(serviceProcessCheckResults.deviceId, input.deviceId));
+        if (typeof input.watchType === 'string') conditions.push(eq(serviceProcessCheckResults.watchType, input.watchType as 'service' | 'process'));
+        if (typeof input.name === 'string') conditions.push(eq(serviceProcessCheckResults.name, input.name));
+        if (typeof input.since === 'string') conditions.push(gte(serviceProcessCheckResults.timestamp, new Date(input.since)));
+        if (typeof input.until === 'string') conditions.push(lte(serviceProcessCheckResults.timestamp, new Date(input.until)));
+
+        const limit = Math.min(Math.max(1, Number(input.limit) || 100), 500);
+
+        const results = await db
+          .select()
+          .from(serviceProcessCheckResults)
+          .where(and(...conditions))
+          .orderBy(desc(serviceProcessCheckResults.timestamp))
+          .limit(limit);
+
+        return JSON.stringify({
+          data: results.map(r => ({
+            id: r.id,
+            deviceId: r.deviceId,
+            watchType: r.watchType,
+            name: r.name,
+            status: r.status,
+            cpuPercent: r.cpuPercent,
+            memoryMb: r.memoryMb,
+            pid: r.pid,
+            details: r.details,
+            autoRestartAttempted: r.autoRestartAttempted,
+            autoRestartSucceeded: r.autoRestartSucceeded,
+            timestamp: r.timestamp.toISOString(),
+          })),
+          showing: results.length,
+        });
+      }
+
+      if (action === 'known_services') {
+        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+
+        // Normalize service names by stripping per-user/per-device hex suffixes
+        const normalizeServiceName = (name: string): string =>
+          name.replace(/_[a-f0-9]{4,}$/i, '');
+
+        // Source 1: Distinct service names from device change log
+        let changeLogNames: { subject: string }[] = [];
+        try {
+          changeLogNames = await db
+            .select({ subject: deviceChangeLog.subject })
+            .from(deviceChangeLog)
+            .where(and(eq(deviceChangeLog.orgId, orgId), eq(deviceChangeLog.changeType, 'service')))
+            .groupBy(deviceChangeLog.subject)
+            .limit(1000);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!msg.includes('does not exist')) {
+            console.error(`[monitoring:known_services] Failed to query change log for org ${orgId}:`, err);
+          }
+        }
+
+        // Source 2: Distinct service/process names from check results
+        let checkNames: { name: string; watchType: string }[] = [];
+        try {
+          checkNames = await db
+            .select({
+              name: serviceProcessCheckResults.name,
+              watchType: serviceProcessCheckResults.watchType,
+            })
+            .from(serviceProcessCheckResults)
+            .where(eq(serviceProcessCheckResults.orgId, orgId))
+            .groupBy(serviceProcessCheckResults.name, serviceProcessCheckResults.watchType)
+            .limit(500);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!msg.includes('does not exist')) {
+            console.error(`[monitoring:known_services] Failed to query check results for org ${orgId}:`, err);
+          }
+        }
+
+        const seen = new Set<string>();
+        const results: { name: string; source: string; watchType: string | null }[] = [];
+
+        for (const row of changeLogNames) {
+          const normalized = normalizeServiceName(row.subject);
+          const key = normalized.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          results.push({ name: normalized, source: 'change_log', watchType: 'service' });
+        }
+
+        for (const row of checkNames) {
+          const normalized = normalizeServiceName(row.name);
+          const key = normalized.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          results.push({ name: normalized, source: 'check_results', watchType: row.watchType });
+        }
+
+        // Filter by watchType if provided
+        let filtered = results;
+        if (typeof input.watchType === 'string') {
+          filtered = filtered.filter(r => r.watchType === input.watchType);
+        }
+
+        // Filter by search term
+        if (typeof input.search === 'string' && input.search.trim()) {
+          const term = (input.search as string).toLowerCase();
+          filtered = filtered.filter(r => r.name.toLowerCase().includes(term));
+        }
+
+        // Sort alphabetically and limit
+        filtered.sort((a, b) => a.name.localeCompare(b.name));
+        const limit = Math.min(Math.max(1, Number(input.limit) || 200), 500);
+        if (filtered.length > limit) filtered = filtered.slice(0, limit);
+
+        return JSON.stringify({ data: filtered });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });

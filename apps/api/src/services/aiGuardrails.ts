@@ -273,6 +273,7 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
     update: { resource: 'devices', action: 'write' },
     delete: { resource: 'devices', action: 'write' },
   },
+  get_service_monitoring_status: { resource: 'devices', action: 'read' },
   // Integration & webhook tools
   query_webhooks: { resource: 'devices', action: 'read' },
   query_psa_status: { resource: 'devices', action: 'read' },
@@ -360,7 +361,9 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   trigger_backup: { limit: 5, windowSeconds: 600 },
   restore_snapshot: { limit: 3, windowSeconds: 600 },
   // Monitoring tools
+  query_monitors: { limit: 30, windowSeconds: 300 },
   manage_monitors: { limit: 10, windowSeconds: 300 },
+  get_service_monitoring_status: { limit: 30, windowSeconds: 300 },
   // Integration & webhook tools
   test_webhook: { limit: 5, windowSeconds: 300 },
   // Agent version & remote session tools

@@ -138,10 +138,14 @@ func (c *ChangeTrackerCollector) CollectChanges() ([]ChangeRecord, error) {
 		return nil, err
 	}
 
-	// First successful run establishes baseline.
+	// First successful run establishes baseline — emit all discovered items
+	// as "added" so they appear in the API (e.g. known-services autocomplete).
 	if c.lastSnapshot == nil {
 		c.lastSnapshot = currentSnapshot
-		return []ChangeRecord{}, c.saveSnapshot()
+		if err := c.saveSnapshot(); err != nil {
+			return nil, err
+		}
+		return c.initialInventory(currentSnapshot), nil
 	}
 
 	changes := make([]ChangeRecord, 0, 16)
@@ -158,6 +162,102 @@ func (c *ChangeTrackerCollector) CollectChanges() ([]ChangeRecord, error) {
 		return changes, err
 	}
 	return changes, nil
+}
+
+// initialInventory generates "added" records for every item in the baseline
+// snapshot so the API has full visibility into the device's initial state.
+func (c *ChangeTrackerCollector) initialInventory(snap *Snapshot) []ChangeRecord {
+	now := c.now()
+	records := make([]ChangeRecord, 0, len(snap.Services)+len(snap.Software)+len(snap.StartupItems)+len(snap.NetworkAdapters)+len(snap.ScheduledTasks)+len(snap.UserAccounts))
+
+	for _, svc := range snap.Services {
+		records = append(records, ChangeRecord{
+			Timestamp:    now,
+			ChangeType:   ChangeTypeService,
+			ChangeAction: ChangeActionAdded,
+			Subject:      serviceSubject(svc),
+			AfterValue: map[string]any{
+				"state":       svc.State,
+				"startupType": svc.StartupType,
+				"account":     svc.Account,
+			},
+		})
+	}
+
+	for _, sw := range snap.Software {
+		records = append(records, ChangeRecord{
+			Timestamp:    now,
+			ChangeType:   ChangeTypeSoftware,
+			ChangeAction: ChangeActionAdded,
+			Subject:      softwareSubject(sw),
+			AfterValue: map[string]any{
+				"name":            sw.Name,
+				"version":         sw.Version,
+				"vendor":          sw.Vendor,
+				"installLocation": sw.InstallLocation,
+			},
+		})
+	}
+
+	for _, item := range snap.StartupItems {
+		records = append(records, ChangeRecord{
+			Timestamp:    now,
+			ChangeType:   ChangeTypeStartup,
+			ChangeAction: ChangeActionAdded,
+			Subject:      startupSubject(item),
+			AfterValue: map[string]any{
+				"type":    item.Type,
+				"path":    item.Path,
+				"enabled": item.Enabled,
+			},
+		})
+	}
+
+	for _, adapter := range snap.NetworkAdapters {
+		records = append(records, ChangeRecord{
+			Timestamp:    now,
+			ChangeType:   ChangeTypeNetwork,
+			ChangeAction: ChangeActionAdded,
+			Subject:      adapter.InterfaceName,
+			AfterValue: map[string]any{
+				"ipAddress":  adapter.IPAddress,
+				"macAddress": adapter.MACAddress,
+				"ipType":     adapter.IPType,
+				"isPrimary":  adapter.IsPrimary,
+			},
+		})
+	}
+
+	for _, task := range snap.ScheduledTasks {
+		records = append(records, ChangeRecord{
+			Timestamp:    now,
+			ChangeType:   ChangeTypeTask,
+			ChangeAction: ChangeActionAdded,
+			Subject:      taskSubject(task),
+			AfterValue: map[string]any{
+				"path":     task.Path,
+				"status":   task.Status,
+				"schedule": task.Schedule,
+				"command":  task.Command,
+			},
+		})
+	}
+
+	for _, account := range snap.UserAccounts {
+		records = append(records, ChangeRecord{
+			Timestamp:    now,
+			ChangeType:   ChangeTypeUserAccount,
+			ChangeAction: ChangeActionAdded,
+			Subject:      account.Username,
+			AfterValue: map[string]any{
+				"fullName": account.FullName,
+				"disabled": account.Disabled,
+				"locked":   account.Locked,
+			},
+		})
+	}
+
+	return c.filterNoise(records)
 }
 
 func (c *ChangeTrackerCollector) gatherCurrentSnapshot() (*Snapshot, error) {

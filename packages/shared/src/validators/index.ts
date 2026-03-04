@@ -14,6 +14,16 @@ import {
 export * from './reliability';
 
 // ============================================
+// Device Roles
+// ============================================
+
+export const DEVICE_ROLES = [
+  'workstation', 'server', 'printer', 'router', 'switch',
+  'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'
+] as const;
+export type DeviceRole = typeof DEVICE_ROLES[number];
+
+// ============================================
 // Common Validators
 // ============================================
 
@@ -437,6 +447,51 @@ export const sensitiveDataInlineSettingsSchema = z.object({
   timezone: z.string().max(64).default('UTC'),
 });
 
+export const monitoringInlineSettingsSchema = z.object({
+  checkIntervalSeconds: z.number().int().min(10).max(3600).default(60),
+  watches: z.array(z.object({
+    watchType: z.enum(['service', 'process']),
+    name: z.string().min(1).max(255),
+    displayName: z.string().max(255).optional(),
+    enabled: z.boolean().default(true),
+    alertOnStop: z.boolean().default(true),
+    alertAfterConsecutiveFailures: z.number().int().min(1).max(100).default(2),
+    alertSeverity: z.enum(['critical', 'high', 'medium', 'low', 'info']).default('high'),
+    cpuThresholdPercent: z.number().min(0).max(100).optional(),
+    memoryThresholdMb: z.number().min(0).optional(),
+    thresholdDurationSeconds: z.number().int().min(0).max(86400).default(300),
+    autoRestart: z.boolean().default(false),
+    maxRestartAttempts: z.number().int().min(0).max(50).default(3),
+    restartCooldownSeconds: z.number().int().min(30).max(86400).default(300),
+  })).max(200).default([]),
+  eventLogAlerts: z.array(z.object({
+    name: z.string().min(1).max(255),
+    category: z.enum(['security', 'hardware', 'application', 'system']),
+    level: z.enum(['warning', 'error', 'critical']),
+    sourcePattern: z.string().max(500).optional(),
+    messagePattern: z.string().max(500).optional(),
+    countThreshold: z.number().int().min(1).max(10000).default(1),
+    windowMinutes: z.number().int().min(1).max(1440).default(15),
+    severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).default('high'),
+    enabled: z.boolean().default(true),
+  })).max(50).default([]),
+  alertRules: z.array(z.object({
+    name: z.string().min(1).max(255),
+    severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).default('medium'),
+    conditions: z.array(z.object({
+      type: z.enum(['metric', 'status', 'custom']),
+      metric: z.string().optional(),
+      operator: z.string().optional(),
+      value: z.number().optional(),
+      duration: z.number().optional(),
+      field: z.string().optional(),
+      customCondition: z.string().optional(),
+    })).min(1),
+    cooldownMinutes: z.number().int().min(1).max(1440).default(15),
+    autoResolve: z.boolean().default(false),
+  })).max(100).default([]),
+});
+
 export const updateFeatureLinkSchema = z.object({
   featurePolicyId: z.string().uuid().nullable().optional(),
   inlineSettings: z.record(z.unknown()).nullable().optional(),
@@ -446,6 +501,8 @@ export const assignPolicySchema = z.object({
   level: z.enum(['partner', 'organization', 'site', 'device_group', 'device']),
   targetId: z.string().uuid(),
   priority: z.number().int().min(0).max(1000).optional(),
+  roleFilter: z.array(z.enum(DEVICE_ROLES)).optional(),
+  osFilter: z.array(z.enum(['windows', 'macos', 'linux'])).optional(),
 });
 
 export const diffSchema = z.object({

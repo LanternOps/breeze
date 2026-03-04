@@ -17,7 +17,6 @@ import {
   ShieldCheck,
   KeyRound,
   Package,
-  Webhook,
   Plug,
   Network,
   HardDrive,
@@ -73,12 +72,11 @@ const navigation = [
 ];
 
 const integrationsNav = [
-  { name: 'Webhooks', href: '/integrations/webhooks', icon: Webhook },
-  { name: 'PSA Connections', href: '/integrations/psa', icon: Plug }
+  { name: 'Integrations', href: '/integrations', icon: Plug }
 ];
 
 const monitoringNav = [
-  { name: 'Monitoring', href: '/monitoring', icon: Activity },
+  { name: 'Network Monitoring', href: '/monitoring', icon: Activity },
   { name: 'Security', href: '/security', icon: ShieldCheck },
   { name: 'Data Discovery', href: '/sensitive-data', icon: ScanSearch },
   { name: 'Peripherals', href: '/peripherals', icon: Usb },
@@ -107,8 +105,7 @@ const managementNav = [
 const settingsNav = [
   { name: 'Organization', href: '/settings/organization', icon: Building },
   { name: 'Custom Fields', href: '/settings/custom-fields', icon: ListChecks },
-  { name: 'Saved Filters', href: '/settings/filters', icon: Filter },
-  { name: 'Integrations', href: '/integrations/webhooks', icon: Plug }
+  { name: 'Saved Filters', href: '/settings/filters', icon: Filter }
 ];
 
 export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps) {
@@ -188,7 +185,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
         {!collapsed && (
           <span className="px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Monitoring
+            Network Monitoring
           </span>
         )}
         {monitoringNav.map((item) => {

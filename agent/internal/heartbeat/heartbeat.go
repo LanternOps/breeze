@@ -31,6 +31,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/mgmtdetect"
+	"github.com/breeze-rmm/agent/internal/monitoring"
 	"github.com/breeze-rmm/agent/internal/mtls"
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/peripheral"
@@ -58,6 +59,7 @@ type HeartbeatPayload struct {
 	PendingReboot    bool                      `json:"pendingReboot,omitempty"`
 	LastUser         string                    `json:"lastUser,omitempty"`
 	UptimeSeconds    int64                     `json:"uptime,omitempty"`
+	DeviceRole       string                    `json:"deviceRole,omitempty"`
 	HealthStatus     map[string]any            `json:"healthStatus,omitempty"`
 	DroppedLogs      int64                     `json:"droppedLogs,omitempty"`
 }
@@ -137,6 +139,12 @@ type Heartbeat struct {
 
 	// Helper chat enabled flag from org settings
 	helperEnabled atomic.Bool
+
+	// Service & process monitoring
+	monitor *monitoring.Monitor
+
+	// Cached device role classification (computed once at startup)
+	cachedDeviceRole string
 }
 
 func New(cfg *config.Config) *Heartbeat {
@@ -195,6 +203,20 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	}
 	h.accepting.Store(true)
 	h.isService = cfg.IsService
+
+	// Classify device role once at startup
+	if sysInfo, err := h.hardwareCol.CollectSystemInfo(); err == nil {
+		if hwInfo, err := h.hardwareCol.CollectHardware(); err == nil {
+			h.cachedDeviceRole = collectors.ClassifyDeviceRole(sysInfo, hwInfo)
+		} else {
+			h.cachedDeviceRole = collectors.ClassifyDeviceRole(sysInfo, nil)
+		}
+	} else {
+		h.cachedDeviceRole = "workstation"
+	}
+
+	// Initialize service & process monitoring
+	h.monitor = monitoring.New(h.sendMonitoringResults)
 
 	// Trigger wallpaper crash recovery (restores wallpaper if agent crashed mid-session)
 	_ = desktop.GetWallpaperManager()
@@ -566,6 +588,9 @@ func (h *Heartbeat) Stop() {
 		if h.backupMgr != nil {
 			h.backupMgr.Stop()
 		}
+		if h.monitor != nil {
+			h.monitor.Stop()
+		}
 		if h.auditLog != nil {
 			h.auditLog.Log(audit.EventAgentStop, "", nil)
 			h.auditLog.Close()
@@ -574,6 +599,43 @@ func (h *Heartbeat) Stop() {
 		// internally. The broker's Close() is idempotent via its closed flag.
 		close(h.stopChan)
 	})
+}
+
+// sendMonitoringResults ships service/process check results to the API.
+func (h *Heartbeat) sendMonitoringResults(results []monitoring.CheckResult) {
+	if len(results) == 0 {
+		return
+	}
+
+	payload := map[string]any{
+		"results": results,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		log.Error("failed to marshal monitoring results", "error", err.Error())
+		return
+	}
+
+	url := fmt.Sprintf("%s/api/v1/agents/%s/monitoring-results", h.config.ServerURL, h.config.AgentID)
+	headers := http.Header{
+		"Content-Type":  {"application/json"},
+		"Authorization": {h.authHeader()},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	resp, err := httputil.Do(ctx, h.client, "PUT", url, body, headers, h.retryCfg)
+	if err != nil {
+		log.Warn("failed to send monitoring results", "error", err.Error(), "count", len(results))
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Warn("monitoring results returned non-OK status", "status", resp.StatusCode, "count", len(results))
+	}
 }
 
 // sendInventory collects and sends hardware, software, disk, network, connections, and patch inventory.
@@ -961,6 +1023,18 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	}
 	if hasEL {
 		h.applyEventLogConfig(elRaw)
+	}
+
+	// Apply monitoring_settings if present.
+	// The API may send config keys in either snake_case or camelCase; check both.
+	monRaw, hasMon := update["monitoring_settings"]
+	if !hasMon {
+		monRaw, hasMon = update["monitoringSettings"]
+	}
+	if hasMon && h.monitor != nil {
+		if cfg, ok := monitoring.ParseMonitorConfig(monRaw); ok {
+			h.monitor.ApplyConfig(cfg)
+		}
 	}
 
 	registryRaw, hasRegistry := update["policy_registry_state_probes"]
@@ -1533,6 +1607,7 @@ func (h *Heartbeat) sendHeartbeat() {
 		Status:       status,
 		AgentVersion: h.agentVersion,
 		HealthStatus: h.healthMon.Summary(),
+		DeviceRole:   h.cachedDeviceRole,
 	}
 	if metricsAvailable {
 		payload.Metrics = metrics

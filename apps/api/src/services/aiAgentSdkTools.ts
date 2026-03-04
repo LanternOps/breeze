@@ -9,7 +9,7 @@
 import { z } from 'zod';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { AuthContext } from '../middleware/auth';
-import { db, withSystemDbAccessContext } from '../db';
+import { db, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { eq } from 'drizzle-orm';
 import { executeTool } from './aiTools';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
@@ -114,6 +114,10 @@ export const TOOL_TIERS = {
   execute_playbook: 3,
   get_playbook_history: 1,
   propose_action_plan: 1,
+  // Monitoring tools
+  query_monitors: 1,
+  manage_monitors: 1,           // Action-level escalation in guardrails
+  get_service_monitoring_status: 1,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
 // All tool names, prefixed for SDK MCP format
@@ -171,8 +175,13 @@ function makeHandler(
       // Tool handlers query RLS-protected tables (e.g. devices via verifyDeviceAccess).
       // The background processor runs outside the request's DB context, so we must
       // wrap execution in withSystemDbAccessContext for RLS to pass.
+      // CRITICAL: runOutsideDbContext escapes any inherited AsyncLocalStorage context
+      // from the SDK's MCP callback chain. Without this, dbContextStorage.getStore()
+      // may return a stale/committed transaction from a prior withSystemDbAccessContext
+      // call on the same async chain, causing withDbAccessContext to bypass creating a
+      // new transaction and instead execute on the dead connection — which hangs forever.
       const result = await withTimeout(
-        withSystemDbAccessContext(() => executeTool(toolName, args, auth)),
+        runOutsideDbContext(() => withSystemDbAccessContext(() => executeTool(toolName, args, auth))),
         TOOL_EXECUTION_TIMEOUT_MS,
         toolName,
       );
@@ -809,7 +818,7 @@ export function createBreezeMcpServer(
 
     tool(
       'manage_alert_rules',
-      'Manage alert rules: list/get/create/update/delete rules, test rules, list channels, alert summary.',
+      'Manage alert rules: list/get/create/update/delete rules, test rules, list channels, alert summary. Supports condition types including service_stopped, process_stopped, process_cpu_high, and process_memory_high for service/process monitoring alerts.',
       {
         action: z.enum(['list_rules', 'get_rule', 'create_rule', 'update_rule', 'delete_rule', 'test_rule', 'list_channels', 'alert_summary']),
         ruleId: uuid.optional(),
@@ -1058,7 +1067,7 @@ export function createBreezeMcpServer(
 
     tool(
       'manage_configuration_policy',
-      'Create, update, activate, deactivate, or delete configuration policies. Configuration policies bundle feature settings (patch, alert, compliance, etc.) and are assigned to targets in the hierarchy.',
+      'Create, update, activate, deactivate, or delete configuration policies. Configuration policies bundle feature settings (patch, alert, compliance, monitoring, etc.) and are assigned to targets in the hierarchy.',
       {
         action: z.enum(['create', 'update', 'activate', 'deactivate', 'delete']),
         policyId: uuid.optional(),
@@ -1114,6 +1123,55 @@ export function createBreezeMcpServer(
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('get_playbook_history', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Monitoring tools
+
+    tool(
+      'query_monitors',
+      'List network monitors with their current status, uptime, and response time statistics. Filter by status, monitor type, active state, or search by name/target.',
+      {
+        status: z.enum(['online', 'offline', 'degraded', 'unknown']).optional(),
+        monitorType: z.string().max(50).optional(),
+        isActive: z.boolean().optional(),
+        search: z.string().max(200).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('query_monitors', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_monitors',
+      'Get monitor details with recent check history, or create/update/delete network monitors.',
+      {
+        action: z.enum(['get', 'create', 'update', 'delete']),
+        monitorId: uuid.optional(),
+        name: z.string().max(255).optional(),
+        monitorType: z.enum(['icmp_ping', 'tcp_port', 'http_check', 'dns_check']).optional(),
+        target: z.string().max(500).optional(),
+        pollingInterval: z.number().int().min(10).max(86400).optional(),
+        timeout: z.number().int().min(1).max(120).optional(),
+        config: z.record(z.unknown()).optional(),
+        isActive: z.boolean().optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('manage_monitors', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_service_monitoring_status',
+      'Query service and process monitoring status for managed devices. Use "status" for a health overview (healthy/degraded/critical), "summary" for latest result per watcher, "results" for check history with filters, or "known_services" to discover service/process names in the org.',
+      {
+        action: z.enum(['status', 'summary', 'results', 'known_services']),
+        deviceId: uuid.optional(),
+        watchType: z.enum(['service', 'process']).optional(),
+        name: z.string().max(255).optional(),
+        since: z.string().datetime({ offset: true }).optional(),
+        until: z.string().datetime({ offset: true }).optional(),
+        search: z.string().max(255).optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+      },
+      makeHandler('get_service_monitoring_status', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Action Plan tool (for action_plan and hybrid_plan modes)

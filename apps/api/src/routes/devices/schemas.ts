@@ -10,6 +10,11 @@ export const listDevicesSchema = z.object({
   search: z.string().optional()
 });
 
+const DEVICE_ROLES = [
+  'workstation', 'server', 'printer', 'router', 'switch',
+  'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'
+] as const;
+
 export const updateDeviceSchema = z.object({
   displayName: z.string().min(1).max(255).optional(),
   siteId: z.string().uuid().optional(),
@@ -17,7 +22,8 @@ export const updateDeviceSchema = z.object({
   customFields: z.record(
     z.string().max(100),
     z.union([z.string().max(10000), z.number(), z.boolean(), z.null()])
-  ).optional()
+  ).optional(),
+  deviceRole: z.enum(DEVICE_ROLES).optional()
 });
 
 export const metricsQuerySchema = z.object({

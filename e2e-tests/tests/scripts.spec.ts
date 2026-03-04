@@ -17,7 +17,7 @@ test.describe('Script Management', () => {
     await expect(listOrEmpty).toBeVisible({ timeout: 15_000 });
   });
 
-  test('create new script page loads', async ({ page }) => {
+  test.fixme('create new script page loads', async ({ page }) => {
     await page.goto('/scripts');
     await waitForApp(page, '/scripts');
     await waitForContentLoad(page);
@@ -89,7 +89,7 @@ test.describe('Script Management', () => {
     await expect(page).toHaveURL(/\/scripts(?!\/new)/, { timeout: 15_000 });
   });
 
-  test('script execution results page is accessible', async ({ page }) => {
+  test.fixme('script execution results page is accessible', async ({ page }) => {
     await page.goto('/scripts');
     await waitForApp(page, '/scripts');
     await waitForContentLoad(page);

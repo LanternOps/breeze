@@ -2,6 +2,13 @@ import { useCallback, useEffect, useState } from 'react';
 import { Monitor, Cpu, HardDrive, MemoryStick, Shield, Tag, Info, ListChecks, Pencil, Check, X } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatUptime } from '../../lib/utils';
+import {
+  DEVICE_ROLES,
+  getDeviceRoleLabel,
+  getDeviceRoleIcon,
+  getDeviceRoleSourceLabel,
+  getDeviceRoleSourceColor,
+} from '@/lib/deviceRoles';
 
 type DeviceInfoTabProps = {
   deviceId: string;
@@ -31,6 +38,8 @@ type DeviceInfo = {
   enrolledAt?: string | null;
   lastUser?: string | null;
   uptimeSeconds?: number | null;
+  deviceRole?: string | null;
+  deviceRoleSource?: string | null;
   tags?: string[];
   customFields?: Record<string, unknown>;
   hardware?: {
@@ -108,6 +117,9 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
   const [editValue, setEditValue] = useState<unknown>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [editingRole, setEditingRole] = useState(false);
+  const [selectedRole, setSelectedRole] = useState<string>('unknown');
+  const [savingRole, setSavingRole] = useState(false);
 
   const fetchInfo = useCallback(async () => {
     setLoading(true);
@@ -151,6 +163,33 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         console.error('Failed to load custom field definitions:', err);
       });
   }, []);
+
+  const handleSaveRole = async () => {
+    setSavingRole(true);
+    setSaveError(null);
+    try {
+      const response = await fetchWithAuth(`/devices/${deviceId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ deviceRole: selectedRole }),
+      });
+      if (response.ok) {
+        setInfo(prev => prev ? { ...prev, deviceRole: selectedRole, deviceRoleSource: 'manual' } : prev);
+        setEditingRole(false);
+      } else {
+        let detail = `Failed to save (HTTP ${response.status})`;
+        try {
+          const body = await response.json();
+          if (body.error) detail = body.error;
+        } catch { /* non-JSON response */ }
+        setSaveError(detail);
+      }
+    } catch (err) {
+      console.error('Failed to save device role:', err);
+      setSaveError('Network error. Please check your connection and try again.');
+    } finally {
+      setSavingRole(false);
+    }
+  };
 
   // Filter field definitions to those applicable to this device's OS type
   const applicableFields = fieldDefs.filter(def => {
@@ -305,6 +344,90 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         <InfoRow label="Manufacturer" value={hw?.manufacturer ?? '—'} />
         <InfoRow label="Model" value={hw?.model ?? '—'} />
       </Section>
+
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="flex items-center gap-2 mb-4">
+          {(() => {
+            const role = (info?.deviceRole ?? 'unknown') as string;
+            const RoleIcon = getDeviceRoleIcon(role);
+            return <RoleIcon className="h-4 w-4 text-muted-foreground" />;
+          })()}
+          <h3 className="font-semibold">Device Role</h3>
+        </div>
+        <dl className="divide-y">
+          <div className="flex items-center justify-between py-2">
+            <dt className="text-sm text-muted-foreground">Role</dt>
+            <dd className="text-sm font-medium text-right flex items-center gap-2">
+              {editingRole ? (
+                <>
+                  <select
+                    value={selectedRole}
+                    onChange={e => setSelectedRole(e.target.value)}
+                    className="h-8 w-40 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    autoFocus
+                  >
+                    {DEVICE_ROLES.map(role => (
+                      <option key={role} value={role}>
+                        {getDeviceRoleLabel(role)}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={handleSaveRole}
+                    disabled={savingRole}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded text-primary hover:bg-primary/10"
+                    title="Save"
+                  >
+                    <Check className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingRole(false)}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-muted"
+                    title="Cancel"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </>
+              ) : (
+                <>
+                  {(() => {
+                    const role = (info?.deviceRole ?? 'unknown') as string;
+                    const RoleIcon = getDeviceRoleIcon(role);
+                    return (
+                      <span className="inline-flex items-center gap-1.5 rounded-full border bg-muted/50 px-2.5 py-1 text-xs font-medium">
+                        <RoleIcon className="h-3 w-3" />
+                        {getDeviceRoleLabel(role)}
+                      </span>
+                    );
+                  })()}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedRole(info?.deviceRole ?? 'unknown');
+                      setEditingRole(true);
+                      setSaveError(null);
+                    }}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+                    title="Change role"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                </>
+              )}
+            </dd>
+          </div>
+          <div className="flex justify-between py-2">
+            <dt className="text-sm text-muted-foreground">Source</dt>
+            <dd>
+              <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${getDeviceRoleSourceColor(info?.deviceRoleSource ?? 'auto')}`}>
+                {getDeviceRoleSourceLabel(info?.deviceRoleSource ?? 'auto')}
+              </span>
+            </dd>
+          </div>
+        </dl>
+      </div>
 
       <Section title="Operating System" icon={<Info className="h-4 w-4 text-muted-foreground" />}>
         <InfoRow label="OS Type" value={info?.osType ?? '—'} />

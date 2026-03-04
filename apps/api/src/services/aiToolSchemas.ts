@@ -886,6 +886,51 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     includeExecutionStats: z.boolean().optional(),
   }),
 
+  // Monitoring tools
+  query_monitors: z.object({
+    status: z.enum(['online', 'offline', 'degraded', 'unknown']).optional(),
+    monitorType: z.string().max(50).optional(),
+    isActive: z.boolean().optional(),
+    search: z.string().max(200).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  manage_monitors: z.object({
+    action: z.enum(['get', 'create', 'update', 'delete']),
+    monitorId: uuid.optional(),
+    name: z.string().max(255).optional(),
+    monitorType: z.enum(['icmp_ping', 'tcp_port', 'http_check', 'dns_check']).optional(),
+    target: z.string().max(500).optional(),
+    pollingInterval: z.number().int().min(10).max(86400).optional(),
+    timeout: z.number().int().min(1).max(120).optional(),
+    config: z.record(z.unknown()).optional(),
+    isActive: z.boolean().optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }).refine(
+    (d) => {
+      const needsId = ['get', 'update', 'delete'];
+      return !needsId.includes(d.action) || !!d.monitorId;
+    },
+    { message: 'monitorId is required for get/update/delete actions' },
+  ).refine(
+    (d) => d.action !== 'create' || (!!d.name && !!d.monitorType && !!d.target),
+    { message: 'name, monitorType, and target are required for create' },
+  ),
+
+  get_service_monitoring_status: z.object({
+    action: z.enum(['status', 'summary', 'results', 'known_services']),
+    deviceId: uuid.optional(),
+    watchType: z.enum(['service', 'process']).optional(),
+    name: z.string().max(255).optional(),
+    since: z.string().datetime({ offset: true }).optional(),
+    until: z.string().datetime({ offset: true }).optional(),
+    search: z.string().max(255).optional(),
+    limit: z.number().int().min(1).max(500).optional(),
+  }).refine(
+    (d) => !['status', 'summary'].includes(d.action) || !!d.deviceId,
+    { message: 'deviceId is required for status/summary actions' },
+  ),
+
   // Fleet orchestration tools
   ...fleetToolInputSchemas,
 };

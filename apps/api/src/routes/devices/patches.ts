@@ -4,7 +4,8 @@ import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { db } from '../../db';
 import { patches, devicePatches, deviceCommands, users } from '../../db/schema';
-import { authMiddleware, requireScope } from '../../middleware/auth';
+import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
+import { PERMISSIONS } from '../../services/permissions';
 import { getDeviceWithOrgCheck } from './helpers';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -41,15 +42,61 @@ const TYPE_FILTER_MAP: Record<string, string[]> = {
 function safeParsePatchResult(result: unknown): unknown {
   if (!result || typeof result !== 'object') return result;
   const raw = result as Record<string, unknown>;
-  // The result field contains {status, stdout, stderr, durationMs} where stdout
-  // is often a JSON string with the actual patch results.
+
+  // The agent sends {status, exitCode, stdout, error, durationMs} where stdout
+  // is a JSON string containing the actual patch results (installedCount,
+  // failedCount, results[], rebootRequired, etc.).  The UI expects those fields
+  // directly on the result object, so we parse stdout and merge its contents up.
+  let parsed: Record<string, unknown> | null = null;
   if (typeof raw.stdout === 'string') {
     try {
-      raw.stdout = JSON.parse(raw.stdout);
-    } catch {
-      // Leave as string if not valid JSON
+      const obj = JSON.parse(raw.stdout);
+      if (obj && typeof obj === 'object') {
+        parsed = obj as Record<string, unknown>;
+      }
+    } catch (parseErr) {
+      // Log a warning when stdout looks like JSON but fails to parse
+      if (raw.stdout && (raw.stdout as string).trimStart().startsWith('{')) {
+        console.warn('[patches] Failed to parse agent stdout as JSON:', parseErr instanceof Error ? parseErr.message : parseErr);
+      }
+    }
+  } else if (raw.stdout && typeof raw.stdout === 'object') {
+    parsed = raw.stdout as Record<string, unknown>;
+  }
+
+  if (parsed) {
+    // Merge patch-specific fields up to the top level so the UI can find them
+    const { results, installedCount, failedCount, rebootRequired, success,
+            rolledBackCount, pendingCount, scannedCount, ...rest } = parsed;
+    if (results !== undefined) raw.results = results;
+    if (installedCount !== undefined) raw.installedCount = installedCount;
+    if (failedCount !== undefined) raw.failedCount = failedCount;
+    if (rebootRequired !== undefined) raw.rebootRequired = rebootRequired;
+    if (success !== undefined) raw.success = success;
+    if (rolledBackCount !== undefined) raw.rolledBackCount = rolledBackCount;
+    if (pendingCount !== undefined) raw.pendingCount = pendingCount;
+    if (scannedCount !== undefined) raw.scannedCount = scannedCount;
+    // Keep parsed stdout for debugging but don't overwrite merged fields
+    raw.stdout = parsed;
+  }
+
+  // Map agent's "error" field to "errorMessage" which the UI expects
+  if (raw.error && !raw.errorMessage) {
+    raw.errorMessage = raw.error;
+  }
+
+  // Also map per-patch "error" → "errorMessage" in the results array
+  if (Array.isArray(raw.results)) {
+    for (const item of raw.results) {
+      if (item && typeof item === 'object') {
+        const patch = item as Record<string, unknown>;
+        if (patch.error && !patch.errorMessage) {
+          patch.errorMessage = patch.error;
+        }
+      }
     }
   }
+
   return raw;
 }
 
@@ -252,6 +299,7 @@ patchesRoutes.get(
 patchesRoutes.post(
   '/:id/patches/install',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   zValidator('json', installPatchesSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -322,6 +370,7 @@ patchesRoutes.post(
 patchesRoutes.post(
   '/:id/patches/:patchId/rollback',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   zValidator('param', rollbackPatchParamsSchema),
   async (c) => {
     const auth = c.get('auth');

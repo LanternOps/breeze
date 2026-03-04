@@ -62,6 +62,8 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   { key: 'enrolledAt', label: 'Enrolled At', category: 'core', type: 'datetime', operators: OPERATORS_BY_TYPE.datetime },
   { key: 'lastSeenAt', label: 'Last Seen At', category: 'core', type: 'datetime', operators: OPERATORS_BY_TYPE.datetime },
   { key: 'tags', label: 'Tags', category: 'core', type: 'array', operators: OPERATORS_BY_TYPE.array },
+  { key: 'deviceRole', label: 'Device Role', category: 'core', type: 'enum', operators: OPERATORS_BY_TYPE.enum,
+    enumValues: ['workstation', 'server', 'printer', 'router', 'switch', 'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'] },
 
   // OS fields
   { key: 'osType', label: 'OS Type', category: 'os', type: 'enum', operators: OPERATORS_BY_TYPE.enum, enumValues: ['windows', 'macos', 'linux'] },

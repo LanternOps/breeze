@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"sync"
 
 	"github.com/breeze-rmm/agent/internal/logging"
@@ -239,19 +240,15 @@ func getDefaultShell() string {
 		return shell
 	}
 
-	// Fallback defaults
-	switch os := getOS(); os {
+	// Fallback defaults based on runtime OS
+	switch runtime.GOOS {
 	case "windows":
 		return "powershell.exe"
-	case "darwin", "linux":
+	case "darwin":
+		return "/bin/zsh"
+	case "linux":
 		return "/bin/bash"
 	default:
 		return "/bin/sh"
 	}
-}
-
-// getOS returns the current operating system
-func getOS() string {
-	// This will be replaced by build tags in platform-specific files
-	return "unix"
 }

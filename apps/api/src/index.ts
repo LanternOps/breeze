@@ -92,6 +92,7 @@ import { huntressRoutes } from './routes/huntress';
 import { sensitiveDataRoutes } from './routes/sensitiveData';
 import { peripheralControlRoutes } from './routes/peripheralControl';
 import { browserSecurityRoutes } from './routes/browserSecurity';
+import { captureException } from './services/sentry';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
@@ -1040,6 +1041,24 @@ function installSignalHandlers(): void {
 
   process.once('SIGTERM', () => {
     void shutdownRuntime('SIGTERM');
+  });
+
+  // Guard against unhandled rejections from the Claude Agent SDK's
+  // fire-and-forget handleControlRequest. When a session is closed while
+  // an MCP tool is still in-flight, the SDK tries to write a response to
+  // the dead subprocess and throws "ProcessTransport is not ready for writing".
+  // This is a benign race condition — log it instead of crashing the process.
+  process.on('unhandledRejection', (reason) => {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    // Only suppress SDK-specific benign rejections from session cleanup
+    if (message.includes('ProcessTransport is not ready for writing') ||
+        (reason instanceof Error && reason.name === 'AbortError') ||
+        (message.includes('Operation aborted') && message.includes('Transport'))) {
+      console.warn('[SDK] Suppressed benign unhandled rejection (session already closed):', message);
+      return;
+    }
+    console.error('[FATAL] Unhandled rejection:', reason);
+    captureException(reason instanceof Error ? reason : new Error(message));
   });
 }
 

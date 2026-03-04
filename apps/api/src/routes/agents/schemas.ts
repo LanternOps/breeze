@@ -5,6 +5,11 @@ import { isIP } from 'node:net';
 // Enrollment
 // ============================================
 
+const DEVICE_ROLES = [
+  'workstation', 'server', 'printer', 'router', 'switch',
+  'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'
+] as const;
+
 export const enrollSchema = z.object({
   enrollmentKey: z.string().min(1),
   enrollmentSecret: z.string().min(1).optional(),
@@ -13,6 +18,7 @@ export const enrollSchema = z.object({
   osVersion: z.string().min(1),
   architecture: z.string().min(1),
   agentVersion: z.string().min(1),
+  deviceRole: z.enum(DEVICE_ROLES).optional(),
   hardwareInfo: z.object({
     cpuModel: z.string().optional(),
     cpuCores: z.number().int().optional(),
@@ -126,7 +132,8 @@ export const heartbeatSchema = z.object({
   }).optional(),
   pendingReboot: z.boolean().optional(),
   lastUser: z.string().max(255).optional(),
-  uptime: z.number().int().min(0).optional()
+  uptime: z.number().int().min(0).optional(),
+  deviceRole: z.enum(DEVICE_ROLES).optional()
 });
 
 // ============================================

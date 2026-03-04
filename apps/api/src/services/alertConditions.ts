@@ -1,12 +1,14 @@
 /**
  * Alert Condition Evaluator
  *
- * Parses and evaluates JSONB conditions from alert templates against device metrics.
- * Supports threshold conditions, offline detection, and compound AND/OR logic.
+ * Parses and evaluates JSONB conditions from alert templates against device metrics
+ * and service/process monitoring data. Supports threshold conditions, offline detection,
+ * event log conditions, service/process stopped conditions, process resource conditions
+ * (CPU/memory), and compound AND/OR logic.
  */
 
 import { db } from '../db';
-import { deviceMetrics, devices, deviceEventLogs } from '../db/schema';
+import { deviceMetrics, devices, deviceEventLogs, serviceProcessCheckResults } from '../db/schema';
 import { eq, and, gte, desc, like, sql } from 'drizzle-orm';
 
 // Supported comparison operators
@@ -61,8 +63,32 @@ export interface EventLogCondition {
   windowMinutes: number;        // within this time window
 }
 
+// Service stopped condition
+export interface ServiceCondition {
+  type: 'service_stopped';
+  serviceName: string;
+  consecutiveFailures?: number; // default 2
+}
+
+// Process stopped condition
+export interface ProcessCondition {
+  type: 'process_stopped';
+  processName: string;
+  consecutiveFailures?: number;
+}
+
+// Process resource (CPU/memory) condition
+export interface ProcessResourceCondition {
+  type: 'process_cpu_high' | 'process_memory_high';
+  processName: string;
+  operator: ComparisonOperator;
+  value: number;
+  durationMinutes?: number;
+}
+
 // Union of all condition types
-export type AlertCondition = ThresholdCondition | OfflineCondition | EventLogCondition;
+export type AlertCondition = ThresholdCondition | OfflineCondition | EventLogCondition
+  | ServiceCondition | ProcessCondition | ProcessResourceCondition;
 
 /**
  * Check if a condition is a threshold/metric type
@@ -315,7 +341,155 @@ async function evaluateEventLogCondition(
 }
 
 /**
- * Evaluate a single condition (threshold/metric, offline, or event_log)
+ * Evaluate a service_stopped condition
+ */
+async function evaluateServiceCondition(
+  condition: ServiceCondition,
+  deviceId: string
+): Promise<{ passed: boolean; description: string; actualValue?: number }> {
+  const threshold = condition.consecutiveFailures ?? 2;
+
+  // Query the latest check result for this device + service
+  const [latest] = await db
+    .select()
+    .from(serviceProcessCheckResults)
+    .where(
+      and(
+        eq(serviceProcessCheckResults.deviceId, deviceId),
+        eq(serviceProcessCheckResults.watchType, 'service'),
+        eq(serviceProcessCheckResults.name, condition.serviceName)
+      )
+    )
+    .orderBy(desc(serviceProcessCheckResults.timestamp))
+    .limit(1);
+
+  if (!latest) {
+    return {
+      passed: false,
+      description: `No check results for service ${condition.serviceName}`
+    };
+  }
+
+  if (latest.status === 'running') {
+    return {
+      passed: false,
+      description: `Service ${condition.serviceName} is running`
+    };
+  }
+
+  // Count consecutive non-running results
+  const recentResults = await db
+    .select({ status: serviceProcessCheckResults.status })
+    .from(serviceProcessCheckResults)
+    .where(
+      and(
+        eq(serviceProcessCheckResults.deviceId, deviceId),
+        eq(serviceProcessCheckResults.watchType, 'service'),
+        eq(serviceProcessCheckResults.name, condition.serviceName)
+      )
+    )
+    .orderBy(desc(serviceProcessCheckResults.timestamp))
+    .limit(threshold);
+
+  const consecutiveFailures = recentResults.filter(r => r.status !== 'running').length;
+
+  return {
+    passed: consecutiveFailures >= threshold,
+    description: `Service ${condition.serviceName} stopped (${consecutiveFailures} consecutive failures, threshold: ${threshold})`,
+    actualValue: consecutiveFailures,
+  };
+}
+
+/**
+ * Evaluate a process_stopped condition
+ */
+async function evaluateProcessCondition(
+  condition: ProcessCondition,
+  deviceId: string
+): Promise<{ passed: boolean; description: string; actualValue?: number }> {
+  const threshold = condition.consecutiveFailures ?? 2;
+
+  const recentResults = await db
+    .select({ status: serviceProcessCheckResults.status })
+    .from(serviceProcessCheckResults)
+    .where(
+      and(
+        eq(serviceProcessCheckResults.deviceId, deviceId),
+        eq(serviceProcessCheckResults.watchType, 'process'),
+        eq(serviceProcessCheckResults.name, condition.processName)
+      )
+    )
+    .orderBy(desc(serviceProcessCheckResults.timestamp))
+    .limit(threshold);
+
+  if (recentResults.length === 0) {
+    return {
+      passed: false,
+      description: `No check results for process ${condition.processName}`
+    };
+  }
+
+  const consecutiveFailures = recentResults.filter(r => r.status !== 'running').length;
+
+  return {
+    passed: consecutiveFailures >= threshold,
+    description: `Process ${condition.processName} stopped (${consecutiveFailures} consecutive failures, threshold: ${threshold})`,
+    actualValue: consecutiveFailures,
+  };
+}
+
+/**
+ * Evaluate a process resource (CPU/memory) condition
+ */
+async function evaluateProcessResourceCondition(
+  condition: ProcessResourceCondition,
+  deviceId: string
+): Promise<{ passed: boolean; description: string; actualValue?: number }> {
+  const durationMinutes = condition.durationMinutes || 5;
+  const windowStart = new Date(Date.now() - durationMinutes * 60 * 1000);
+
+  const column = condition.type === 'process_cpu_high'
+    ? serviceProcessCheckResults.cpuPercent
+    : serviceProcessCheckResults.memoryMb;
+
+  const results = await db
+    .select({ value: column })
+    .from(serviceProcessCheckResults)
+    .where(
+      and(
+        eq(serviceProcessCheckResults.deviceId, deviceId),
+        eq(serviceProcessCheckResults.watchType, 'process'),
+        eq(serviceProcessCheckResults.name, condition.processName),
+        gte(serviceProcessCheckResults.timestamp, windowStart)
+      )
+    )
+    .orderBy(desc(serviceProcessCheckResults.timestamp));
+
+  if (results.length === 0) {
+    return {
+      passed: false,
+      description: `No recent results for process ${condition.processName}`
+    };
+  }
+
+  const allExceed = results.every(r => {
+    if (r.value === null) return false;
+    return compareValue(r.value, condition.operator, condition.value);
+  });
+
+  const latestValue = results[0]?.value ?? undefined;
+  const metricLabel = condition.type === 'process_cpu_high' ? 'CPU%' : 'Memory MB';
+  const operatorDisplay = getOperatorDisplay(condition.operator);
+
+  return {
+    passed: allExceed,
+    description: `Process ${condition.processName} ${metricLabel} ${operatorDisplay} ${condition.value} for ${durationMinutes}min`,
+    actualValue: latestValue ?? undefined,
+  };
+}
+
+/**
+ * Evaluate a single condition (threshold/metric, offline, event_log, or service/process)
  */
 async function evaluateSingleCondition(
   condition: AlertCondition,
@@ -329,6 +503,13 @@ async function evaluateSingleCondition(
       return evaluateOfflineCondition(condition, deviceId);
     case 'event_log':
       return evaluateEventLogCondition(condition as EventLogCondition, deviceId);
+    case 'service_stopped':
+      return evaluateServiceCondition(condition as ServiceCondition, deviceId);
+    case 'process_stopped':
+      return evaluateProcessCondition(condition as ProcessCondition, deviceId);
+    case 'process_cpu_high':
+    case 'process_memory_high':
+      return evaluateProcessResourceCondition(condition as ProcessResourceCondition, deviceId);
     default:
       return {
         passed: false,
@@ -552,6 +733,30 @@ export function validateConditions(conditions: unknown): string[] {
         }
         if (typeof c.windowMinutes !== 'number' || c.windowMinutes < 1) {
           errors.push(`${path}.windowMinutes: Must be a positive number`);
+        }
+      } else if (c.type === 'service_stopped') {
+        if (typeof c.serviceName !== 'string' || !c.serviceName) {
+          errors.push(`${path}.serviceName: Must be a non-empty string`);
+        }
+        if (c.consecutiveFailures !== undefined && (typeof c.consecutiveFailures !== 'number' || c.consecutiveFailures < 1)) {
+          errors.push(`${path}.consecutiveFailures: Must be a positive number`);
+        }
+      } else if (c.type === 'process_stopped') {
+        if (typeof c.processName !== 'string' || !c.processName) {
+          errors.push(`${path}.processName: Must be a non-empty string`);
+        }
+        if (c.consecutiveFailures !== undefined && (typeof c.consecutiveFailures !== 'number' || c.consecutiveFailures < 1)) {
+          errors.push(`${path}.consecutiveFailures: Must be a positive number`);
+        }
+      } else if (c.type === 'process_cpu_high' || c.type === 'process_memory_high') {
+        if (typeof c.processName !== 'string' || !c.processName) {
+          errors.push(`${path}.processName: Must be a non-empty string`);
+        }
+        if (!['gt', 'gte', 'lt', 'lte', 'eq', 'neq'].includes(c.operator as string)) {
+          errors.push(`${path}.operator: Invalid operator`);
+        }
+        if (typeof c.value !== 'number') {
+          errors.push(`${path}.value: Must be a number`);
         }
       } else {
         errors.push(`${path}.type: Unknown condition type '${c.type}'`);

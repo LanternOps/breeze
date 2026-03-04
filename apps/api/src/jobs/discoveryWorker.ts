@@ -476,6 +476,50 @@ async function processResults(data: ProcessResultsJobData): Promise<{
     : [];
   const existingByIp = new Map(existingAssets.map(a => [a.ipAddress, a]));
 
+  // ── Resolve or auto-create baseline for change event tracking ────────
+  let resolvedBaselineId: string | null = null;
+  try {
+    const [existing] = await db
+      .select({ id: networkBaselines.id })
+      .from(networkBaselines)
+      .where(and(eq(networkBaselines.orgId, data.orgId), eq(networkBaselines.siteId, data.siteId)))
+      .limit(1);
+
+    if (existing) {
+      resolvedBaselineId = existing.id;
+    } else if (profileId && data.hosts.length > 0) {
+      // Derive subnet from the first host's IP (assume /24)
+      const firstIp = data.hosts[0]!.ip;
+      const parts = firstIp.split('.');
+      const subnet = parts.length === 4 ? `${parts[0]}.${parts[1]}.${parts[2]}.0/24` : '0.0.0.0/0';
+
+      const [created] = await db
+        .insert(networkBaselines)
+        .values({
+          orgId: data.orgId,
+          siteId: data.siteId,
+          subnet,
+        })
+        .onConflictDoNothing()
+        .returning({ id: networkBaselines.id });
+
+      if (created) {
+        resolvedBaselineId = created.id;
+        console.log(`[DiscoveryWorker] Auto-created baseline ${resolvedBaselineId} for org=${data.orgId} site=${data.siteId} subnet=${subnet}`);
+      } else {
+        // Race: another process created it — re-fetch
+        const [refetched] = await db
+          .select({ id: networkBaselines.id })
+          .from(networkBaselines)
+          .where(and(eq(networkBaselines.orgId, data.orgId), eq(networkBaselines.siteId, data.siteId)))
+          .limit(1);
+        resolvedBaselineId = refetched?.id ?? null;
+      }
+    }
+  } catch (baselineErr) {
+    console.error('[DiscoveryWorker] Failed to resolve/create baseline — network change events for this scan will be dropped:', baselineErr instanceof Error ? baselineErr.message : baselineErr);
+  }
+
   let newCount = 0;
   let updatedCount = 0;
 
@@ -560,6 +604,21 @@ async function processResults(data: ProcessResultsJobData): Promise<{
               .update(discoveredAssets)
               .set({ linkedDeviceId: match.deviceId, approvalStatus: 'approved' })
               .where(eq(discoveredAssets.id, upsertedAssetId));
+
+            // Propagate asset type to linked device (discovery > auto, but not > manual)
+            if (assetData.assetType && assetData.assetType !== 'unknown') {
+              const [target] = await db
+                .select({ deviceRoleSource: devices.deviceRoleSource })
+                .from(devices)
+                .where(eq(devices.id, match.deviceId))
+                .limit(1);
+
+              if (target && target.deviceRoleSource !== 'manual') {
+                await db.update(devices)
+                  .set({ deviceRole: assetData.assetType, deviceRoleSource: 'discovery', updatedAt: new Date() })
+                  .where(eq(devices.id, match.deviceId));
+              }
+            }
           }
         }
       } catch (linkErr) {
@@ -589,34 +648,23 @@ async function processResults(data: ProcessResultsJobData): Promise<{
     }
 
     // Log change event if needed
-    if (decision.shouldAlert && decision.eventType && profileId) {
+    if (decision.shouldAlert && decision.eventType && profileId && resolvedBaselineId) {
       try {
-        // Look up baseline first — baseline_id is NOT NULL, so skip insert if none exists
-        const [baseline] = await db
-          .select({ id: networkBaselines.id })
-          .from(networkBaselines)
-          .where(and(eq(networkBaselines.orgId, data.orgId), eq(networkBaselines.siteId, data.siteId)))
-          .limit(1);
-
-        if (baseline) {
-          await db.insert(networkChangeEvents).values({
-            orgId: data.orgId,
-            siteId: data.siteId,
-            baselineId: baseline.id,
-            profileId: profileId,
-            eventType: decision.eventType,
-            ipAddress: host.ip,
-            macAddress: host.mac ?? null,
-            hostname: host.hostname ?? null,
-            assetType: mapAssetType(host.assetType),
-            previousState: existingForApproval
-              ? { macAddress: existingForApproval.macAddress, hostname: existingForApproval.hostname }
-              : null,
-            currentState: { macAddress: host.mac, hostname: host.hostname, assetType: host.assetType }
-          });
-        } else {
-          console.warn(`[DiscoveryWorker] No baseline found for org=${data.orgId} site=${data.siteId} — skipping ${decision.eventType} event for ${host.ip}`);
-        }
+        await db.insert(networkChangeEvents).values({
+          orgId: data.orgId,
+          siteId: data.siteId,
+          baselineId: resolvedBaselineId,
+          profileId: profileId,
+          eventType: decision.eventType,
+          ipAddress: host.ip,
+          macAddress: host.mac ?? null,
+          hostname: host.hostname ?? null,
+          assetType: mapAssetType(host.assetType),
+          previousState: existingForApproval
+            ? { macAddress: existingForApproval.macAddress, hostname: existingForApproval.hostname }
+            : null,
+          currentState: { macAddress: host.mac, hostname: host.hostname, assetType: host.assetType }
+        });
       } catch (changeErr) {
         console.warn(
           `[DiscoveryWorker] Failed to log change event for ${host.ip}:`,
@@ -636,30 +684,20 @@ async function processResults(data: ProcessResultsJobData): Promise<{
           .where(eq(discoveredAssets.id, asset.id));
 
         // Log disappeared event if configured
-        if (alertSettings.enabled && alertSettings.alertOnDisappeared && profileId) {
+        if (alertSettings.enabled && alertSettings.alertOnDisappeared && profileId && resolvedBaselineId) {
           try {
-            const [disappearedBaseline] = await db
-              .select({ id: networkBaselines.id })
-              .from(networkBaselines)
-              .where(and(eq(networkBaselines.orgId, data.orgId), eq(networkBaselines.siteId, data.siteId)))
-              .limit(1);
-
-            if (disappearedBaseline) {
-              await db.insert(networkChangeEvents).values({
-                orgId: data.orgId,
-                siteId: data.siteId,
-                baselineId: disappearedBaseline.id,
-                profileId,
-                eventType: 'device_disappeared',
-                ipAddress: asset.ipAddress,
-                macAddress: asset.macAddress ?? null,
-                hostname: asset.hostname ?? null,
-                previousState: { approvalStatus: asset.approvalStatus, isOnline: true },
-                currentState: { isOnline: false }
-              });
-            } else {
-              console.warn(`[DiscoveryWorker] No baseline found for org=${data.orgId} site=${data.siteId} — skipping device_disappeared event for ${asset.ipAddress}`);
-            }
+            await db.insert(networkChangeEvents).values({
+              orgId: data.orgId,
+              siteId: data.siteId,
+              baselineId: resolvedBaselineId,
+              profileId,
+              eventType: 'device_disappeared',
+              ipAddress: asset.ipAddress,
+              macAddress: asset.macAddress ?? null,
+              hostname: asset.hostname ?? null,
+              previousState: { approvalStatus: asset.approvalStatus, isOnline: true },
+              currentState: { isOnline: false }
+            });
           } catch (disappearedErr) {
             console.warn(
               `[DiscoveryWorker] Failed to log disappeared event for ${asset.ipAddress}:`,

@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, lte, sql } from 'drizzle-orm';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { db } from '../db';
-import { discoveredAssets, networkMonitors, snmpDevices, snmpMetrics } from '../db/schema';
+import { devices, deviceSoftware, deviceChangeLog, discoveredAssets, networkMonitors, snmpDevices, snmpMetrics, serviceProcessCheckResults } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
 import { isRedisAvailable } from '../services/redis';
 
@@ -582,5 +582,272 @@ monitoringRoutes.delete(
     });
 
     return c.json({ success: true });
+  }
+);
+
+// ============================================
+// Known Services Autocomplete
+// ============================================
+
+const knownServicesQuerySchema = z.object({
+  orgId: z.string().uuid().optional(),
+  search: z.string().max(255).optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(200),
+});
+
+monitoringRoutes.get(
+  '/known-services',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('query', knownServicesQuerySchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const query = c.req.valid('query');
+
+    const orgResult = resolveOrgId(auth, query.orgId);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const orgId = orgResult.orgId;
+    if (!orgId) return c.json({ error: 'Could not determine organization context' }, 400);
+
+    // Source 1: Distinct service names from device change log (change tracker
+    // already snapshots all services on every heartbeat cycle)
+    let changeLogNames: { subject: string }[] = [];
+    try {
+      changeLogNames = await db
+        .select({ subject: deviceChangeLog.subject })
+        .from(deviceChangeLog)
+        .where(and(eq(deviceChangeLog.orgId, orgId), eq(deviceChangeLog.changeType, 'service')))
+        .groupBy(deviceChangeLog.subject)
+        .limit(1000);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('does not exist')) {
+        console.error(`[monitoring] Failed to query change log for org ${orgId}:`, err);
+      }
+    }
+
+    // Source 2: Distinct service/process names from monitoring check results
+    let checkNames: { name: string; watchType: string }[] = [];
+    try {
+      checkNames = await db
+        .select({
+          name: serviceProcessCheckResults.name,
+          watchType: serviceProcessCheckResults.watchType,
+        })
+        .from(serviceProcessCheckResults)
+        .where(eq(serviceProcessCheckResults.orgId, orgId))
+        .groupBy(serviceProcessCheckResults.name, serviceProcessCheckResults.watchType)
+        .limit(500);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('does not exist')) {
+        console.error(`[monitoring] Failed to query check results for org ${orgId}:`, err);
+      }
+    }
+
+    // Normalize service names by stripping per-user/per-device hex suffixes
+    // (e.g. "Agent Activation Runtime_10cb30e4" → "Agent Activation Runtime")
+    const normalizeServiceName = (name: string): string =>
+      name.replace(/_[a-f0-9]{4,}$/i, '');
+
+    // Merge into a deduplicated list (by normalized name)
+    const seen = new Set<string>();
+    const results: { name: string; source: string; watchType: string | null }[] = [];
+
+    for (const row of changeLogNames) {
+      const normalized = normalizeServiceName(row.subject);
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      results.push({ name: normalized, source: 'change_log', watchType: 'service' });
+    }
+
+    for (const row of checkNames) {
+      const normalized = normalizeServiceName(row.name);
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      results.push({ name: normalized, source: 'check_results', watchType: row.watchType });
+    }
+
+    // Filter by search term if provided
+    let filtered = results;
+    if (query.search) {
+      const term = query.search.toLowerCase();
+      filtered = results.filter((r) => r.name.toLowerCase().includes(term));
+    }
+
+    // Sort alphabetically and limit
+    filtered.sort((a, b) => a.name.localeCompare(b.name));
+    if (filtered.length > query.limit) filtered = filtered.slice(0, query.limit);
+
+    return c.json({ data: filtered });
+  }
+);
+
+// ============================================
+// Service & Process Monitoring Endpoints
+// ============================================
+
+const checkResultsQuerySchema = z.object({
+  deviceId: z.string().uuid().optional(),
+  watchType: z.enum(['service', 'process']).optional(),
+  name: z.string().max(255).optional(),
+  since: z.coerce.date().optional(),
+  until: z.coerce.date().optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+  orgId: z.string().uuid().optional(),
+});
+
+monitoringRoutes.get(
+  '/results',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('query', checkResultsQuerySchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const query = c.req.valid('query');
+
+    const orgResult = resolveOrgId(auth, query.orgId);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const orgId = orgResult.orgId;
+    if (!orgId) return c.json({ error: 'Could not determine organization context' }, 400);
+
+    const conditions = [eq(serviceProcessCheckResults.orgId, orgId)];
+    if (query.deviceId) conditions.push(eq(serviceProcessCheckResults.deviceId, query.deviceId));
+    if (query.watchType) conditions.push(eq(serviceProcessCheckResults.watchType, query.watchType));
+    if (query.name) conditions.push(eq(serviceProcessCheckResults.name, query.name));
+    if (query.since) conditions.push(gte(serviceProcessCheckResults.timestamp, query.since));
+    if (query.until) conditions.push(lte(serviceProcessCheckResults.timestamp, query.until));
+
+    const results = await db
+      .select()
+      .from(serviceProcessCheckResults)
+      .where(and(...conditions))
+      .orderBy(desc(serviceProcessCheckResults.timestamp))
+      .limit(query.limit);
+
+    return c.json({
+      data: results.map(r => ({
+        id: r.id,
+        deviceId: r.deviceId,
+        watchType: r.watchType,
+        name: r.name,
+        status: r.status,
+        cpuPercent: r.cpuPercent,
+        memoryMb: r.memoryMb,
+        pid: r.pid,
+        details: r.details,
+        autoRestartAttempted: r.autoRestartAttempted,
+        autoRestartSucceeded: r.autoRestartSucceeded,
+        timestamp: r.timestamp.toISOString(),
+      })),
+    });
+  }
+);
+
+monitoringRoutes.get(
+  '/results/:deviceId/summary',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const deviceId = c.req.param('deviceId');
+
+    // Verify device access before querying results
+    const [device] = await db
+      .select({ orgId: devices.orgId })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
+    if (!device) return c.json({ error: 'Device not found' }, 404);
+    if (!auth.canAccessOrg(device.orgId)) return c.json({ error: 'Access denied' }, 403);
+
+    // Get all distinct watch names, then latest result for each
+    const allResults = await db
+      .select()
+      .from(serviceProcessCheckResults)
+      .where(eq(serviceProcessCheckResults.deviceId, deviceId))
+      .orderBy(desc(serviceProcessCheckResults.timestamp))
+      .limit(500);
+
+    // Deduplicate to latest per (watchType, name)
+    const seen = new Set<string>();
+    const latest = allResults.filter(r => {
+      const key = `${r.watchType}:${r.name}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    return c.json({
+      data: latest.map(r => ({
+        id: r.id,
+        deviceId: r.deviceId,
+        watchType: r.watchType,
+        name: r.name,
+        status: r.status,
+        cpuPercent: r.cpuPercent,
+        memoryMb: r.memoryMb,
+        pid: r.pid,
+        details: r.details,
+        autoRestartAttempted: r.autoRestartAttempted,
+        autoRestartSucceeded: r.autoRestartSucceeded,
+        timestamp: r.timestamp.toISOString(),
+      })),
+    });
+  }
+);
+
+monitoringRoutes.get(
+  '/status/:deviceId',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const deviceId = c.req.param('deviceId');
+
+    // Verify device access before querying results
+    const [device] = await db
+      .select({ orgId: devices.orgId })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
+    if (!device) return c.json({ error: 'Device not found' }, 404);
+    if (!auth.canAccessOrg(device.orgId)) return c.json({ error: 'Access denied' }, 403);
+
+    // Get recent results and deduplicate to latest per (watchType, name)
+    const allResults = await db
+      .select({ watchType: serviceProcessCheckResults.watchType, name: serviceProcessCheckResults.name, status: serviceProcessCheckResults.status })
+      .from(serviceProcessCheckResults)
+      .where(eq(serviceProcessCheckResults.deviceId, deviceId))
+      .orderBy(desc(serviceProcessCheckResults.timestamp))
+      .limit(500);
+
+    const seen = new Set<string>();
+    const latestStatuses: string[] = [];
+    for (const r of allResults) {
+      const key = `${r.watchType}:${r.name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      latestStatuses.push(r.status);
+    }
+
+    const runningCount = latestStatuses.filter(s => s === 'running').length;
+    const notRunningCount = latestStatuses.filter(s => s !== 'running').length;
+    const totalCount = latestStatuses.length;
+
+    let healthStatus = 'healthy';
+    if (totalCount === 0) {
+      healthStatus = 'unknown';
+    } else if (notRunningCount > 0 && runningCount === 0) {
+      healthStatus = 'critical';
+    } else if (notRunningCount > 0) {
+      healthStatus = 'degraded';
+    }
+
+    return c.json({
+      deviceId,
+      healthStatus,
+      runningCount,
+      notRunningCount,
+      totalCount,
+    });
   }
 );

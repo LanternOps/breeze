@@ -21,6 +21,7 @@ type HardwareInfo struct {
 	Manufacturer string `json:"manufacturer,omitempty"`
 	Model        string `json:"model,omitempty"`
 	BIOSVersion  string `json:"biosVersion,omitempty"`
+	ChassisType  string `json:"chassisType,omitempty"`
 }
 
 type SystemInfo struct {
@@ -94,6 +95,9 @@ func (c *HardwareCollector) CollectHardware() (*HardwareInfo, error) {
 	if err == nil {
 		hw.DiskTotalGB = diskUsage.Total / 1024 / 1024 / 1024
 	}
+
+	// Chassis type for role classification
+	hw.ChassisType = getChassisType()
 
 	// Platform-specific: serial number, manufacturer, model, BIOS, GPU
 	collectPlatformHardware(hw)

@@ -375,6 +375,9 @@ func enrollDevice(enrollmentKey string) {
 		secret = os.Getenv("BREEZE_AGENT_ENROLLMENT_SECRET")
 	}
 
+	deviceRole := collectors.ClassifyDeviceRole(systemInfo, hardwareInfo)
+	fmt.Printf("Device role: %s\n", deviceRole)
+
 	enrollReq := &api.EnrollRequest{
 		EnrollmentKey:    enrollmentKey,
 		EnrollmentSecret: secret,
@@ -383,6 +386,7 @@ func enrollDevice(enrollmentKey string) {
 		OSVersion:        systemInfo.OSVersion,
 		Architecture:     systemInfo.Architecture,
 		AgentVersion:     version,
+		DeviceRole:       deviceRole,
 		HardwareInfo: &api.HardwareInfo{
 			CPUModel:     hardwareInfo.CPUModel,
 			CPUCores:     hardwareInfo.CPUCores,
