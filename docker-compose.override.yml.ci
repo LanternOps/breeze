@@ -14,6 +14,7 @@ services:
       - '3001:3001'
     environment:
       BINARY_SOURCE: disabled
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
 
   web:
     build:
