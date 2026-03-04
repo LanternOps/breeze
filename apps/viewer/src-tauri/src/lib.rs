@@ -122,17 +122,22 @@ fn unregister_session(window: tauri::WebviewWindow, state: tauri::State<'_, Sess
 /// - If the main window is idle (no active session), route to it.
 /// - Otherwise, create a new window for the session.
 fn route_deep_link(app: &tauri::AppHandle, url: String) {
-    // Check if this session is already being viewed
+    // Check if this session is already being viewed.
+    // Clone the label and drop the lock BEFORE calling set_focus(),
+    // which on macOS pumps the AppKit run loop and can re-enter Tauri
+    // command handlers that also need the SessionMap lock.
     if let Some(session_id) = extract_session_id(&url) {
-        let sessions = app.state::<SessionMap>();
-        let map = lock_or_recover(&sessions.0, "session_map");
-        if let Some(existing_label) = map.get(&session_id) {
-            // Session already active — just focus that window
-            if let Some(window) = app.get_webview_window(existing_label) {
+        let existing_label = {
+            let sessions = app.state::<SessionMap>();
+            let map = lock_or_recover(&sessions.0, "session_map");
+            map.get(&session_id).cloned()
+        }; // lock released here
+        if let Some(label) = existing_label {
+            if let Some(window) = app.get_webview_window(&label) {
                 if let Err(err) = window.set_focus() {
                     eprintln!(
                         "Failed to focus existing session window {}: {}",
-                        existing_label, err
+                        label, err
                     );
                 }
             }

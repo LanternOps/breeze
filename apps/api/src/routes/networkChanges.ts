@@ -25,6 +25,7 @@ const listNetworkChangesSchema = z.object({
   orgId: z.string().uuid().optional(),
   siteId: z.string().uuid().optional(),
   baselineId: z.string().uuid().optional(),
+  profileId: z.string().uuid().optional(),
   eventType: z.enum(networkEventTypes).optional(),
   acknowledged: optionalQueryBooleanSchema,
   since: z.string().datetime().optional(),
@@ -112,6 +113,10 @@ networkChangeRoutes.get(
 
     if (query.baselineId) {
       conditions.push(eq(networkChangeEvents.baselineId, query.baselineId));
+    }
+
+    if (query.profileId) {
+      conditions.push(eq(networkChangeEvents.profileId, query.profileId));
     }
 
     if (query.eventType) {
