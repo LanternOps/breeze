@@ -1,11 +1,11 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
-import ScriptEditor from '../../components/scripts/ScriptEditor';
+import ScriptEditPage from '../../components/scripts/ScriptEditPage';
 
 const { id } = Astro.params;
 if (!id) return Astro.redirect('/scripts');
 ---
 
-<DashboardLayout title="Script Editor">
-  <ScriptEditor scriptId={id} client:load />
+<DashboardLayout title="Edit Script">
+  <ScriptEditPage scriptId={id} client:load />
 </DashboardLayout>

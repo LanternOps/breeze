@@ -79,6 +79,17 @@ function getStatusDescription(status: string, errorMessage?: string): string {
   }
 }
 
+function normalizeOutput(raw: string): string {
+  let s = raw;
+  // Strip surrounding quotes from double-serialized JSON strings
+  if (s.startsWith('"') && s.endsWith('"')) {
+    try { s = JSON.parse(s); } catch { /* not valid JSON, leave as-is */ }
+  }
+  // Convert literal escape sequences to actual characters
+  s = s.replace(/\\r\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+  return s;
+}
+
 function OutputSection({
   title,
   content,
@@ -94,11 +105,12 @@ function OutputSection({
 }) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
   const [copied, setCopied] = useState(false);
+  const normalized = content ? normalizeOutput(content) : content;
 
   const handleCopy = async () => {
-    if (!content) return;
+    if (!normalized) return;
     try {
-      await navigator.clipboard.writeText(content);
+      await navigator.clipboard.writeText(normalized);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (err) {
@@ -106,12 +118,12 @@ function OutputSection({
     }
   };
 
-  const isEmpty = !content || content.trim() === '';
+  const isEmpty = !normalized || normalized.trim() === '';
 
   return (
     <div className={cn(
       'rounded-md border',
-      variant === 'error' && content && 'border-red-500/40'
+      variant === 'error' && normalized && 'border-red-500/40'
     )}>
       <div
         role="button"
@@ -121,17 +133,17 @@ function OutputSection({
         className={cn(
           'flex w-full items-center justify-between px-4 py-3 text-left transition cursor-pointer',
           isOpen ? 'border-b' : '',
-          variant === 'error' && content ? 'bg-red-500/5' : 'bg-muted/20'
+          variant === 'error' && normalized ? 'bg-red-500/5' : 'bg-muted/20'
         )}
       >
         <div className="flex items-center gap-2">
           <Icon className={cn(
             'h-4 w-4',
-            variant === 'error' && content ? 'text-red-600' : 'text-muted-foreground'
+            variant === 'error' && normalized ? 'text-red-600' : 'text-muted-foreground'
           )} />
           <span className={cn(
             'text-sm font-medium',
-            variant === 'error' && content && 'text-red-700'
+            variant === 'error' && normalized && 'text-red-700'
           )}>
             {title}
           </span>
@@ -173,7 +185,7 @@ function OutputSection({
               'max-h-80 overflow-auto rounded-md p-4 text-sm font-mono whitespace-pre-wrap break-words',
               variant === 'error' ? 'bg-red-500/5 text-red-800' : 'bg-muted/40 text-foreground'
             )}>
-              {content}
+              {normalized}
             </pre>
           )}
         </div>
