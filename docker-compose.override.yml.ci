@@ -25,6 +25,14 @@ services:
     ports:
       - '4321:4321'
 
+  # Expose DB and Redis to host for integration tests
+  postgres:
+    ports:
+      - '5432:5432'
+  redis:
+    ports:
+      - '6379:6379'
+
   # Not needed for smoke test
   caddy:
     profiles: [disabled]
