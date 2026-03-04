@@ -335,7 +335,7 @@ jobs:
       - name: Login and export token
         id: login
         run: |
-          RESPONSE=$(curl -sf -X POST http://localhost:3001/api/auth/login \
+          RESPONSE=$(curl -sf -X POST http://localhost:3001/api/v1/auth/login \
             -H 'Content-Type: application/json' \
             -d '{"email":"admin@breeze.local","password":"BreezeAdmin123!"}')
           echo "Login response: ${RESPONSE}"
