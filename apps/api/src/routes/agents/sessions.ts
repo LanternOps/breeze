@@ -6,7 +6,7 @@ import { devices, deviceSessions } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { publishEvent } from '../../services/eventBus';
 import { submitSessionsSchema } from './schemas';
-import { parseDate } from './helpers';
+import { sanitizeTimestamp } from './helpers';
 
 export const sessionsRoutes = new Hono();
 
@@ -78,8 +78,8 @@ sessionsRoutes.put('/:id/sessions', zValidator('json', submitSessionsSchema), as
       });
       seenKeys.add(key);
 
-      const loginAt = parseDate(session.loginAt) ?? now;
-      const lastActivityAt = parseDate(session.lastActivityAt) ?? now;
+      const loginAt = sanitizeTimestamp(session.loginAt) ?? now;
+      const lastActivityAt = sanitizeTimestamp(session.lastActivityAt) ?? now;
       const existing = existingByKey.get(key);
 
       if (!existing) {

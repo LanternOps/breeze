@@ -1135,7 +1135,20 @@ func getFirewallStatusWindows() (bool, error) {
 }
 
 func getFirewallStatusDarwin() (bool, error) {
-	output, err := runCommand(5*time.Second, "/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate")
+	// Prefer locale-invariant numeric check via defaults read.
+	// globalstate: 0=off, 1=on, 2=on (essential services only).
+	output, err := runCommand(5*time.Second, "defaults", "read", "/Library/Preferences/com.apple.alf", "globalstate")
+	if err == nil {
+		switch strings.TrimSpace(output) {
+		case "1", "2":
+			return true, nil
+		case "0":
+			return false, nil
+		}
+	}
+
+	// Fallback: socketfilterfw text output (locale-dependent, English-only match).
+	output, err = runCommand(5*time.Second, "/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate")
 	if err == nil {
 		lower := strings.ToLower(output)
 		if strings.Contains(lower, "enabled") {
@@ -1146,20 +1159,7 @@ func getFirewallStatusDarwin() (bool, error) {
 		}
 	}
 
-	output, err = runCommand(5*time.Second, "defaults", "read", "/Library/Preferences/com.apple.alf", "globalstate")
-	if err != nil {
-		return false, err
-	}
-
-	state := strings.TrimSpace(output)
-	switch state {
-	case "1", "2":
-		return true, nil
-	case "0":
-		return false, nil
-	default:
-		return false, fmt.Errorf("unexpected firewall state: %s", state)
-	}
+	return false, fmt.Errorf("unable to determine firewall state")
 }
 
 func getFirewallStatusLinux() (bool, error) {

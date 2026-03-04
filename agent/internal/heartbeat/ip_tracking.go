@@ -246,34 +246,22 @@ func macOSDHCPLeaseEvidence(ifaceName, ipAddress string) bool {
 }
 
 func windowsDHCPLeaseEvidence(ifaceName, ipAddress string) bool {
-	out, err := commandOutput(1500*time.Millisecond, "ipconfig", "/all")
+	// Use PowerShell Get-NetIPInterface which returns .NET enum values
+	// ("Enabled"/"Disabled") that are always English regardless of OS locale.
+	// This avoids parsing ipconfig /all which is fully localized.
+	out, err := commandOutput(2*time.Second, "powershell", "-NoProfile", "-NonInteractive", "-Command",
+		`Get-NetIPInterface -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.Dhcp -eq 'Enabled' } | Select-Object -ExpandProperty InterfaceAlias`)
 	if err != nil || len(out) == 0 {
 		return false
 	}
 
-	section := windowsInterfaceSection(strings.ToLower(string(out)), strings.ToLower(strings.TrimSpace(ifaceName)))
-	if section == "" {
-		return false
+	target := strings.ToLower(strings.TrimSpace(ifaceName))
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.ToLower(strings.TrimSpace(line)) == target {
+			return true
+		}
 	}
-
-	if !strings.Contains(section, "dhcp enabled") || !strings.Contains(section, "yes") {
-		return false
-	}
-	return strings.Contains(section, strings.ToLower(strings.TrimSpace(ipAddress)))
-}
-
-func windowsInterfaceSection(output, ifaceName string) string {
-	idx := strings.Index(output, ifaceName)
-	if idx < 0 {
-		return ""
-	}
-
-	rest := output[idx:]
-	next := strings.Index(rest, "\n\n")
-	if next < 0 {
-		return rest
-	}
-	return rest[:next]
+	return false
 }
 
 // isLinkLocal checks if an IP is link-local.

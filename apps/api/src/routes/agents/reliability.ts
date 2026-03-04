@@ -9,6 +9,7 @@ import { enqueueDeviceReliabilityComputation } from '../../jobs/reliabilityWorke
 import { writeAuditEvent } from '../../services/auditEvents';
 import { computeAndPersistDeviceReliability } from '../../services/reliabilityScoring';
 import { captureException } from '../../services/sentry';
+import { sanitizeTimestamp } from './helpers';
 
 export const reliabilityRoutes = new Hono();
 
@@ -33,7 +34,7 @@ reliabilityRoutes.post('/:id/reliability', zValidator('json', reliabilityMetrics
       orgId: device.orgId,
       collectedAt: new Date(),
       uptimeSeconds: metrics.uptimeSeconds,
-      bootTime: new Date(metrics.bootTime),
+      bootTime: sanitizeTimestamp(metrics.bootTime) ?? new Date(),
       crashEvents: metrics.crashEvents,
       appHangs: metrics.appHangs,
       serviceFailures: metrics.serviceFailures,
