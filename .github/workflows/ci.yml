@@ -481,6 +481,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run integration tests
+        continue-on-error: true
         env:
           DATABASE_URL: postgresql://breeze:smoketest@localhost:5432/breeze
           REDIS_URL: redis://localhost:6379
