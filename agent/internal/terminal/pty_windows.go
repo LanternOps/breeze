@@ -6,14 +6,26 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 )
 
 // start starts the terminal session (Windows implementation using pipes)
 // Note: This is a simplified implementation. For full PTY support on Windows,
 // you would need to use ConPTY (available in Windows 10 1809+)
 func (s *Session) start() error {
-	// Create the shell command
-	cmd := exec.Command(s.Shell)
+	// Build command with appropriate arguments for the shell.
+	// For PowerShell, configure colors for a dark terminal background since
+	// its default ANSI colors assume a light/blue Windows console.
+	var cmd *exec.Cmd
+	shellBase := strings.ToLower(filepath.Base(s.Shell))
+	if shellBase == "powershell.exe" || shellBase == "pwsh.exe" {
+		cmd = exec.Command(s.Shell, "-NoExit", "-Command",
+			"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "+
+				"$Host.UI.RawUI.ForegroundColor = 'Gray'")
+	} else {
+		cmd = exec.Command(s.Shell)
+	}
 	cmd.Env = append(os.Environ(),
 		"TERM=xterm-256color",
 	)

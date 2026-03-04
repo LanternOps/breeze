@@ -26,6 +26,8 @@ services:
       TURN_HOST: ${TURN_HOST:-}
       TURN_PORT: ${TURN_PORT:-3478}
       TURN_SECRET: ${TURN_SECRET:-}
+      DEV_PUSH_ENABLED: "true"
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-https://2breeze.app}
 
   caddy:
     command: |
