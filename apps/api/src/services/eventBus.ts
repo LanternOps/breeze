@@ -72,7 +72,10 @@ export type EventType =
   | 'user.training_assigned'
   // Device user-session events (BE-8)
   | 'session.login'
-  | 'session.logout';
+  | 'session.logout'
+  // Service & process monitoring events
+  | 'monitoring.check_failed'
+  | 'monitoring.check_recovered';
 
 export type EventPriority = 'low' | 'normal' | 'high' | 'critical';
 

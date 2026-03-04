@@ -48,3 +48,4 @@ export * from './huntress';
 export * from './sensitiveData';
 export * from './peripheralControl';
 export * from './browserSecurity';
+export * from './serviceProcessMonitoring';

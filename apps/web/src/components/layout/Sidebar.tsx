@@ -76,7 +76,7 @@ const integrationsNav = [
 ];
 
 const monitoringNav = [
-  { name: 'Monitoring', href: '/monitoring', icon: Activity },
+  { name: 'Network Monitoring', href: '/monitoring', icon: Activity },
   { name: 'Security', href: '/security', icon: ShieldCheck },
   { name: 'Data Discovery', href: '/sensitive-data', icon: ScanSearch },
   { name: 'Peripherals', href: '/peripherals', icon: Usb },
@@ -185,7 +185,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
         {!collapsed && (
           <span className="px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Monitoring
+            Network Monitoring
           </span>
         )}
         {monitoringNav.map((item) => {
