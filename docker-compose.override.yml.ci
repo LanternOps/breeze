@@ -1,0 +1,31 @@
+# CI smoke test — builds from production Dockerfiles on linux/amd64
+# Usage: docker compose -f docker-compose.yml -f docker-compose.override.yml.ci up --build -d
+
+services:
+  binaries-init:
+    image: alpine:3.19
+    entrypoint: ["sh", "-c", "mkdir -p /target/agent /target/viewer && echo '0.0.0-dev' > /target/VERSION"]
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    ports:
+      - '3001:3001'
+    environment:
+      BINARY_SOURCE: disabled
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+      args:
+        PUBLIC_API_URL: ""
+    ports:
+      - '4321:4321'
+
+  # Not needed for smoke test
+  caddy:
+    profiles: [disabled]
+  coturn:
+    profiles: [disabled]

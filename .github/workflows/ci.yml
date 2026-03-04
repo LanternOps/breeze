@@ -283,154 +283,224 @@ jobs:
           path: agent/coverage.out
           retention-days: 7
 
-  # ─── E2E Tests ────────────────────────────────────────────────────────
-  # Runs Playwright browser tests against the real API build artifact.
+  # ─── Smoke Test ───────────────────────────────────────────────────────
+  # Builds Docker images, starts the full stack, and verifies:
+  #   1. DB + Redis connectivity (health/ready)
+  #   2. Login + JWT issuance
+  #   3. Authenticated API endpoints (exercises core DB tables)
+  #   4. Web page loads (SSR rendering works)
   # Non-blocking on PRs (continue-on-error), required on main pushes.
-  e2e:
-    name: E2E Tests
-    runs-on: self-hosted
-    needs: [build-api]
+  smoke-test:
+    name: Smoke Test
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck]
     continue-on-error: ${{ github.event_name == 'pull_request' }}
-    timeout-minutes: 20
-
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: breeze
-          POSTGRES_PASSWORD: breeze_test
-          POSTGRES_DB: breeze_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U breeze"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 5
-
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 5
-
-    env:
-      DATABASE_URL: postgresql://breeze:breeze_test@localhost:5432/breeze_test
-      REDIS_URL: redis://localhost:6379
-      JWT_SECRET: e2e-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
-      APP_ENCRYPTION_KEY: e2e-Xz9Lm3Kp7Wn2Qr5Tv8Yb0Hd4Fg6Jc1Ae3
-      MFA_ENCRYPTION_KEY: e2e-Nm4Rp8Ws2Kv6Tq0Yh3Bd7Fg1Jc5Le9Ax2
-      NODE_ENV: test
-      E2E_BASE_URL: http://localhost:4321
-      E2E_API_URL: http://localhost:3001
-      E2E_ADMIN_EMAIL: admin@breeze.local
-      E2E_ADMIN_PASSWORD: BreezeAdmin123!
-      PUBLIC_API_URL: http://localhost:3001
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: ${{ env.PNPM_VERSION }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'pnpm'
-
-      - name: Install workspace dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Download API artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: api-dist
-          path: apps/api/dist
-
-      - name: Build Web (E2E)
-        run: pnpm build --filter=@breeze/web
-
-      - name: Install E2E dependencies
-        working-directory: e2e-tests
-        run: npm install
-
-      - name: Cache Playwright browsers
-        id: playwright-cache
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('e2e-tests/package.json') }}
-
-      - name: Install Playwright browsers
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        working-directory: e2e-tests
-        run: npx playwright install --with-deps chromium
-
-      - name: Install Playwright system deps (cache hit)
-        if: steps.playwright-cache.outputs.cache-hit == 'true'
-        working-directory: e2e-tests
-        run: npx playwright install-deps chromium
-
-      - name: Push database schema
-        run: pnpm db:push
-
-      - name: Seed test data
-        run: pnpm db:seed
-
-      - name: Start API server
-        run: node apps/api/dist/index.cjs &
-        env:
-          PORT: 3001
-
-      - name: Start Web server
+      - name: Create .env
         run: |
-          cd apps/web
-          HOST=0.0.0.0 PORT=4321 node dist/server/entry.mjs &
+          cat > .env <<'EOF'
+          POSTGRES_PASSWORD=smoketest
+          JWT_SECRET=ci-smoke-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
+          AGENT_ENROLLMENT_SECRET=ci-smoke-enrollment-secret
+          APP_ENCRYPTION_KEY=ci-smoke-Xz9Lm3Kp7Wn2Qr5Tv8Yb0Hd4Fg6Jc1Ae3
+          MFA_ENCRYPTION_KEY=ci-smoke-Nm4Rp8Ws2Kv6Tq0Yh3Bd7Fg1Jc5Le9Ax2
+          BREEZE_DOMAIN=localhost
+          ACME_EMAIL=ci@breeze.local
+          TURN_SECRET=ci-smoke-turn-secret
+          TURN_HOST=127.0.0.1
+          EOF
 
-      - name: Wait for services
+      - name: Build and start containers
+        run: docker compose -f docker-compose.yml -f docker-compose.override.yml.ci up --build -d
+
+      - name: Wait for API ready (DB + Redis)
         run: |
-          echo "Waiting for API on :3001..."
-          timeout 30 bash -c 'until curl -sf http://localhost:3001/health 2>/dev/null; do sleep 1; done'
-          echo "API is up."
+          echo "Waiting for API readiness (DB + Redis)..."
+          timeout 120 bash -c 'until curl -sf http://localhost:3001/health/ready 2>/dev/null; do sleep 2; done'
+          curl -s http://localhost:3001/health/ready | jq .
+          echo "API is ready."
+
+      - name: Wait for Web health
+        run: |
           echo "Waiting for Web on :4321..."
-          timeout 30 bash -c 'until curl -sf http://localhost:4321 2>/dev/null; do sleep 1; done'
-          echo "Web is up."
+          timeout 120 bash -c 'until curl -sf http://localhost:4321/ 2>/dev/null; do sleep 2; done'
+          echo "Web is healthy."
 
-      - name: Run Playwright tests
-        working-directory: e2e-tests
-        run: npx playwright test --reporter=list
+      - name: Login and export token
+        id: login
+        run: |
+          RESPONSE=$(curl -sf -X POST http://localhost:3001/api/auth/login \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"admin@breeze.local","password":"BreezeAdmin123!"}')
+          echo "Login response: ${RESPONSE}"
+          TOKEN=$(echo "${RESPONSE}" | jq -r '.token // .accessToken // empty')
+          if [ -z "${TOKEN}" ]; then
+            echo "Login failed — no token in response"
+            exit 1
+          fi
+          echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
+          echo "Login successful."
+
+      - name: Smoke test API endpoints
         env:
-          CI: true
+          TOKEN: ${{ steps.login.outputs.token }}
+          API: http://localhost:3001/api/v1
+        run: |
+          FAIL=0
+          PASS_COUNT=0
+          FAIL_COUNT=0
+          smoke() {
+            local name=$1 url=$2 expected_status=${3:-200}
+            STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer ${TOKEN}" "${url}")
+            if [ "${STATUS}" = "${expected_status}" ]; then
+              echo "  PASS  ${name} (${STATUS})"
+              PASS_COUNT=$((PASS_COUNT + 1))
+            else
+              echo "  FAIL  ${name} — expected ${expected_status}, got ${STATUS}"
+              FAIL=1
+              FAIL_COUNT=$((FAIL_COUNT + 1))
+            fi
+          }
 
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: playwright-report
-          path: e2e-tests/playwright-report/
-          retention-days: 14
+          echo "=== API Endpoint Smoke Tests ==="
 
-      - name: Upload test results
-        uses: actions/upload-artifact@v7
+          # ── Devices & Hardware ──
+          smoke "GET /devices"                  "${API}/devices"
+          smoke "GET /device-groups"            "${API}/device-groups"
+          smoke "GET /tags"                     "${API}/tags"
+          smoke "GET /custom-fields"            "${API}/custom-fields"
+          smoke "GET /filters"                  "${API}/filters"
+
+          # ── Monitoring & Alerts ──
+          smoke "GET /alerts"                   "${API}/alerts"
+          smoke "GET /alert-templates"          "${API}/alert-templates"
+          smoke "GET /monitors"                 "${API}/monitors"
+          smoke "GET /monitoring"               "${API}/monitoring"
+          smoke "GET /snmp"                     "${API}/snmp"
+
+          # ── Organizations & Users ──
+          smoke "GET /orgs"                     "${API}/orgs"
+          smoke "GET /users"                    "${API}/users"
+          smoke "GET /roles"                    "${API}/roles"
+          smoke "GET /api-keys"                 "${API}/api-keys"
+          smoke "GET /enrollment-keys"          "${API}/enrollment-keys"
+
+          # ── Scripts & Automation ──
+          smoke "GET /scripts"                  "${API}/scripts"
+          smoke "GET /script-library"           "${API}/script-library"
+          smoke "GET /automations"              "${API}/automations"
+          smoke "GET /playbooks"                "${API}/playbooks"
+
+          # ── Patching & Policies ──
+          smoke "GET /patches"                  "${API}/patches"
+          smoke "GET /patch-policies"           "${API}/patch-policies"
+          smoke "GET /update-rings"             "${API}/update-rings"
+          smoke "GET /policies"                 "${API}/policies"
+          smoke "GET /configuration-policies"   "${API}/configuration-policies"
+
+          # ── Software & Inventory ──
+          smoke "GET /software"                 "${API}/software"
+          smoke "GET /software-policies"        "${API}/software-policies"
+          smoke "GET /software-inventory"       "${API}/software-inventory"
+
+          # ── Security & Compliance ──
+          smoke "GET /security"                 "${API}/security"
+          smoke "GET /cis"                      "${API}/cis"
+          smoke "GET /audit-logs"               "${API}/audit-logs"
+          smoke "GET /audit-baselines"          "${API}/audit-baselines"
+          smoke "GET /access-reviews"           "${API}/access-reviews"
+          smoke "GET /sensitive-data"           "${API}/sensitive-data"
+          smoke "GET /browser-security"         "${API}/browser-security"
+          smoke "GET /dns-security"             "${API}/dns-security"
+          smoke "GET /user-risk"                "${API}/user-risk"
+          smoke "GET /reliability"              "${API}/reliability"
+          smoke "GET /peripherals"              "${API}/peripherals"
+
+          # ── Network & Discovery ──
+          smoke "GET /discovery"                "${API}/discovery"
+          smoke "GET /network/baselines"        "${API}/network/baselines"
+          smoke "GET /network/changes"          "${API}/network/changes"
+
+          # ── Deployment & Agents ──
+          smoke "GET /deployments"              "${API}/deployments"
+          smoke "GET /agent-versions"           "${API}/agent-versions"
+          smoke "GET /viewers"                  "${API}/viewers"
+
+          # ── Integrations & Webhooks ──
+          smoke "GET /integrations"             "${API}/integrations"
+          smoke "GET /webhooks"                 "${API}/webhooks"
+
+          # ── Reports & Notifications ──
+          smoke "GET /reports"                  "${API}/reports"
+          smoke "GET /notifications"            "${API}/notifications"
+          smoke "GET /changes"                  "${API}/changes"
+
+          # ── System & Maintenance ──
+          smoke "GET /maintenance"              "${API}/maintenance"
+          smoke "GET /plugins"                  "${API}/plugins"
+          smoke "GET /analytics"                "${API}/analytics"
+
+          echo ""
+          echo "Results: ${PASS_COUNT} passed, ${FAIL_COUNT} failed"
+          if [ "${FAIL}" -ne 0 ]; then
+            echo "One or more API smoke tests failed"
+            exit 1
+          fi
+          echo "All API smoke tests passed."
+
+      - name: Smoke test web pages
+        run: |
+          FAIL=0
+          smoke_page() {
+            local name=$1 path=$2
+            STATUS=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:4321${path}")
+            if [ "${STATUS}" = "200" ]; then
+              echo "  PASS  ${name} (${STATUS})"
+            else
+              echo "  FAIL  ${name} — expected 200, got ${STATUS}"
+              FAIL=1
+            fi
+          }
+
+          echo "=== Web Page Smoke Tests ==="
+
+          smoke_page "Dashboard"     "/"
+          smoke_page "Login"         "/login"
+          smoke_page "Devices"       "/devices"
+          smoke_page "Alerts"        "/alerts"
+          smoke_page "Scripts"       "/scripts"
+          smoke_page "Automations"   "/automations"
+          smoke_page "Patches"       "/patches"
+          smoke_page "Policies"      "/policies"
+          smoke_page "Discovery"     "/discovery"
+          smoke_page "Reports"       "/reports"
+          smoke_page "Settings"      "/settings"
+
+          if [ "${FAIL}" -ne 0 ]; then
+            echo "One or more page smoke tests failed"
+            exit 1
+          fi
+          echo "All page smoke tests passed."
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yml -f docker-compose.override.yml.ci logs --tail=200
+
+      - name: Teardown
         if: always()
-        with:
-          name: e2e-test-results
-          path: e2e-tests/test-results/
-          retention-days: 7
+        run: docker compose -f docker-compose.yml -f docker-compose.override.yml.ci down -v
 
   # Summary job that depends on all other jobs for branch protection
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test-api, test-web, build-api, build-web, build-agent, test-agent, e2e]
+    needs: [lint, typecheck, test-api, test-web, build-api, build-web, build-agent, test-agent, smoke-test]
     if: always()
     steps:
       - name: Check all jobs passed
@@ -443,7 +513,7 @@ jobs:
           BUILD_WEB_RESULT: ${{ needs.build-web.result }}
           BUILD_AGENT_RESULT: ${{ needs.build-agent.result }}
           TEST_AGENT_RESULT: ${{ needs.test-agent.result }}
-          E2E_RESULT: ${{ needs.e2e.result }}
+          SMOKE_TEST_RESULT: ${{ needs.smoke-test.result }}
           IS_PR: ${{ github.event_name == 'pull_request' }}
         run: |
           if [[ "${LINT_RESULT}" != "success" ]] || \
@@ -457,9 +527,9 @@ jobs:
             echo "One or more required jobs failed"
             exit 1
           fi
-          # E2E: non-blocking on PRs, required on main
-          if [[ "${IS_PR}" != "true" ]] && [[ "${E2E_RESULT}" != "success" ]]; then
-            echo "E2E tests failed on main branch push"
+          # Smoke test: non-blocking on PRs, required on main
+          if [[ "${IS_PR}" != "true" ]] && [[ "${SMOKE_TEST_RESULT}" != "success" ]]; then
+            echo "Smoke test failed on main branch push"
             exit 1
           fi
           echo "All required jobs passed!"
