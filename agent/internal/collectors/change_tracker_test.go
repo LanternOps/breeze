@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func TestChangeTrackerCollectChanges_FirstRunCreatesBaseline(t *testing.T) {
+func TestChangeTrackerCollectChanges_FirstRunEmitsInitialInventory(t *testing.T) {
 	snapshotPath := filepath.Join(t.TempDir(), "snapshot.json")
 	collector := NewChangeTrackerCollector(snapshotPath)
 
@@ -18,9 +18,22 @@ func TestChangeTrackerCollectChanges_FirstRunCreatesBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CollectChanges returned error: %v", err)
 	}
-	if len(changes) != 0 {
-		t.Fatalf("expected no changes on first run, got %d", len(changes))
+	// Baseline has 6 items (1 sw, 1 svc, 1 startup, 1 net, 1 task, 1 user) —
+	// all emitted as "added" so the API has initial inventory.
+	if len(changes) != 6 {
+		t.Fatalf("expected 6 initial-inventory changes, got %d: %#v", len(changes), changes)
 	}
+	for _, ch := range changes {
+		if ch.ChangeAction != ChangeActionAdded {
+			t.Errorf("expected all initial-inventory changes to be 'added', got %s for %q", ch.ChangeAction, ch.Subject)
+		}
+	}
+	expectChange(t, changes, ChangeTypeService, ChangeActionAdded, "Print Spooler")
+	expectChange(t, changes, ChangeTypeSoftware, ChangeActionAdded, "Google Chrome")
+	expectChange(t, changes, ChangeTypeStartup, ChangeActionAdded, "Slack")
+	expectChange(t, changes, ChangeTypeNetwork, ChangeActionAdded, "eth0")
+	expectChange(t, changes, ChangeTypeTask, ChangeActionAdded, "backup")
+	expectChange(t, changes, ChangeTypeUserAccount, ChangeActionAdded, "alice")
 }
 
 func TestChangeTrackerCollectChanges_DetectsDrift(t *testing.T) {
