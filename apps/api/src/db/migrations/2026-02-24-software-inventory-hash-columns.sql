@@ -1,5 +1,5 @@
 -- Add file_hash and hash_algorithm columns to software_inventory
--- These columns were added to the Drizzle schema but missing from full-schema.sql
+-- These columns were added to the Drizzle schema via manual migration
 
 ALTER TABLE public.software_inventory
   ADD COLUMN IF NOT EXISTS file_hash character varying(128),
