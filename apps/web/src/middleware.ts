@@ -39,7 +39,7 @@ function buildFallbackCspDirectives(options: {
     "default-src 'self'",
     "base-uri 'self'",
     "form-action 'self'",
-    "frame-ancestors 'none'",
+    "frame-ancestors 'self'",
     "object-src 'none'",
     options.allowInlineScript
       ? "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://static.cloudflareinsights.com"
@@ -129,7 +129,7 @@ export const onRequest = defineMiddleware(async (_context, next) => {
     headers.delete('Content-Security-Policy');
     headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
     headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
-    headers.set('X-Frame-Options', 'DENY');
+    headers.set('X-Frame-Options', 'SAMEORIGIN');
     headers.set('X-Content-Type-Options', 'nosniff');
 
     return new Response(response.body, {
@@ -172,7 +172,7 @@ export const onRequest = defineMiddleware(async (_context, next) => {
     }
     headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
     headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
-    headers.set('X-Frame-Options', 'DENY');
+    headers.set('X-Frame-Options', 'SAMEORIGIN');
     headers.set('X-Content-Type-Options', 'nosniff');
 
     return new Response(response.body, {

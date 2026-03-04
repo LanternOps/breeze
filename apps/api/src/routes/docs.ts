@@ -24,7 +24,7 @@ const swaggerUIHtml = `<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Breeze RMM API Documentation</title>
-  <link rel="stylesheet" type="text/css" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+  <link rel="stylesheet" type="text/css" href="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui.css">
   <style>
     html {
       box-sizing: border-box;
@@ -99,8 +99,8 @@ const swaggerUIHtml = `<!DOCTYPE html>
     <p>Modern Remote Monitoring and Management Platform</p>
   </div>
   <div id="swagger-ui"></div>
-  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
-  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-standalone-preset.js"></script>
+  <script src="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui-bundle.js"></script>
+  <script src="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui-standalone-preset.js"></script>
   <script>
     window.onload = function() {
       const ui = SwaggerUIBundle({
@@ -115,7 +115,7 @@ const swaggerUIHtml = `<!DOCTYPE html>
           SwaggerUIBundle.plugins.DownloadUrl
         ],
         layout: "StandaloneLayout",
-        persistAuthorization: true,
+        persistAuthorization: false,
         filter: true,
         tagsSorter: "alpha",
         operationsSorter: "alpha",
