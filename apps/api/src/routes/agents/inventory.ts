@@ -17,6 +17,18 @@ import {
   updateNetworkSchema,
 } from './schemas';
 
+// Validates that a string is a valid ISO 8601 date (YYYY-MM-DD).
+// Returns the date string if valid, null otherwise.
+function sanitizeInstallDate(dateStr: string | undefined): string | null {
+  if (!dateStr) return null;
+  const match = /^\d{4}-\d{2}-\d{2}$/.exec(dateStr);
+  if (!match) return null;
+  // Verify it's an actual valid date (e.g. reject 2024-13-40)
+  const d = new Date(dateStr + 'T00:00:00Z');
+  if (isNaN(d.getTime())) return null;
+  return dateStr;
+}
+
 export const inventoryRoutes = new Hono();
 
 inventoryRoutes.put('/:id/hardware', bodyLimit({ maxSize: 5 * 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }), zValidator('json', updateHardwareSchema), async (c) => {
@@ -78,7 +90,7 @@ inventoryRoutes.put('/:id/software', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
           name: item.name,
           version: item.version || null,
           vendor: item.vendor || null,
-          installDate: item.installDate || null,
+          installDate: sanitizeInstallDate(item.installDate),
           installLocation: item.installLocation || null,
           uninstallString: item.uninstallString || null,
           fileHash: item.fileHash || null,
