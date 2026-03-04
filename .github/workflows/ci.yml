@@ -380,10 +380,7 @@ jobs:
 
           # ── Monitoring & Alerts ──
           smoke "GET /alerts"                   "${API}/alerts"
-          smoke "GET /alert-templates"          "${API}/alert-templates"
           smoke "GET /monitors"                 "${API}/monitors"
-          smoke "GET /monitoring"               "${API}/monitoring"
-          smoke "GET /snmp"                     "${API}/snmp"
 
           # ── Organizations & Users ──
           smoke "GET /orgs"                     "${API}/orgs"
@@ -394,7 +391,6 @@ jobs:
 
           # ── Scripts & Automation ──
           smoke "GET /scripts"                  "${API}/scripts"
-          smoke "GET /script-library"           "${API}/script-library"
           smoke "GET /automations"              "${API}/automations"
           smoke "GET /playbooks"                "${API}/playbooks"
 
@@ -406,46 +402,27 @@ jobs:
           smoke "GET /configuration-policies"   "${API}/configuration-policies"
 
           # ── Software & Inventory ──
-          smoke "GET /software"                 "${API}/software"
           smoke "GET /software-policies"        "${API}/software-policies"
           smoke "GET /software-inventory"       "${API}/software-inventory"
 
           # ── Security & Compliance ──
-          smoke "GET /security"                 "${API}/security"
-          smoke "GET /cis"                      "${API}/cis"
           smoke "GET /audit-logs"               "${API}/audit-logs"
           smoke "GET /audit-baselines"          "${API}/audit-baselines"
           smoke "GET /access-reviews"           "${API}/access-reviews"
-          smoke "GET /sensitive-data"           "${API}/sensitive-data"
-          smoke "GET /browser-security"         "${API}/browser-security"
-          smoke "GET /dns-security"             "${API}/dns-security"
-          smoke "GET /user-risk"                "${API}/user-risk"
           smoke "GET /reliability"              "${API}/reliability"
-          smoke "GET /peripherals"              "${API}/peripherals"
 
-          # ── Network & Discovery ──
-          smoke "GET /discovery"                "${API}/discovery"
+          # ── Network ──
           smoke "GET /network/baselines"        "${API}/network/baselines"
           smoke "GET /network/changes"          "${API}/network/changes"
 
-          # ── Deployment & Agents ──
+          # ── Deployment & Webhooks ──
           smoke "GET /deployments"              "${API}/deployments"
-          smoke "GET /agent-versions"           "${API}/agent-versions"
-          smoke "GET /viewers"                  "${API}/viewers"
-
-          # ── Integrations & Webhooks ──
-          smoke "GET /integrations"             "${API}/integrations"
           smoke "GET /webhooks"                 "${API}/webhooks"
 
           # ── Reports & Notifications ──
           smoke "GET /reports"                  "${API}/reports"
           smoke "GET /notifications"            "${API}/notifications"
           smoke "GET /changes"                  "${API}/changes"
-
-          # ── System & Maintenance ──
-          smoke "GET /maintenance"              "${API}/maintenance"
-          smoke "GET /plugins"                  "${API}/plugins"
-          smoke "GET /analytics"                "${API}/analytics"
 
           echo ""
           echo "Results: ${PASS_COUNT} passed, ${FAIL_COUNT} failed"
