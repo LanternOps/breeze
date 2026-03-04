@@ -313,6 +313,7 @@ jobs:
           ACME_EMAIL=ci@breeze.local
           TURN_SECRET=ci-smoke-turn-secret
           TURN_HOST=127.0.0.1
+          TRUST_PROXY_HEADERS=false
           EOF
 
       - name: Build and start containers
