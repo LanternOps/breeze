@@ -339,7 +339,7 @@ jobs:
             -H 'Content-Type: application/json' \
             -d '{"email":"admin@breeze.local","password":"BreezeAdmin123!"}')
           echo "Login response: ${RESPONSE}"
-          TOKEN=$(echo "${RESPONSE}" | jq -r '.token // .accessToken // empty')
+          TOKEN=$(echo "${RESPONSE}" | jq -r '.tokens.accessToken // .token // .accessToken // empty')
           if [ -z "${TOKEN}" ]; then
             echo "Login failed — no token in response"
             exit 1
