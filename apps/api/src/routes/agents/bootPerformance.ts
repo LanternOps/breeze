@@ -3,6 +3,7 @@ import { eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, deviceBootMetrics } from '../../db/schema';
 import { normalizeStartupItems } from '../../services/startupItems';
+import { sanitizeTimestamp } from './helpers';
 
 export const bootPerformanceRoutes = new Hono();
 
@@ -30,7 +31,7 @@ bootPerformanceRoutes.post('/:id/boot-performance', async (c) => {
       return c.json({ error: 'Device not found' }, 404);
     }
 
-    const bootTimestamp = body.bootTimestamp ? new Date(body.bootTimestamp as string) : new Date();
+    const bootTimestamp = sanitizeTimestamp(body.bootTimestamp) ?? new Date();
     if (isNaN(bootTimestamp.getTime())) {
       return c.json({ error: 'Invalid bootTimestamp' }, 400);
     }
