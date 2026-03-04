@@ -489,7 +489,7 @@ async function processResults(data: ProcessResultsJobData): Promise<{
       resolvedBaselineId = existing.id;
     } else if (profileId && data.hosts.length > 0) {
       // Derive subnet from the first host's IP (assume /24)
-      const firstIp = data.hosts[0].ip;
+      const firstIp = data.hosts[0]!.ip;
       const parts = firstIp.split('.');
       const subnet = parts.length === 4 ? `${parts[0]}.${parts[1]}.${parts[2]}.0/24` : '0.0.0.0/0';
 
