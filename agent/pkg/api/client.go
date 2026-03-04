@@ -25,6 +25,7 @@ type EnrollRequest struct {
 	OSVersion        string        `json:"osVersion"`
 	Architecture     string        `json:"architecture"`
 	AgentVersion     string        `json:"agentVersion,omitempty"`
+	DeviceRole       string        `json:"deviceRole,omitempty"`
 	HardwareInfo     *HardwareInfo `json:"hardwareInfo,omitempty"`
 }
 

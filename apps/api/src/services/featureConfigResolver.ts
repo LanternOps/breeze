@@ -78,12 +78,14 @@ interface DeviceHierarchy {
   siteId: string;
   partnerId: string | null;
   groupIds: string[];
+  deviceRole: string;
+  osType: string;
 }
 
 async function loadDeviceHierarchy(deviceId: string): Promise<DeviceHierarchy | null> {
   // 1. Load device
   const [device] = await db
-    .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
+    .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId, deviceRole: devices.deviceRole, osType: devices.osType })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
@@ -109,7 +111,20 @@ async function loadDeviceHierarchy(deviceId: string): Promise<DeviceHierarchy | 
     siteId: device.siteId,
     partnerId: org?.partnerId ?? null,
     groupIds: groupRows.map((r) => r.groupId),
+    deviceRole: device.deviceRole,
+    osType: device.osType,
   };
+}
+
+/**
+ * Build SQL conditions that enforce roleFilter and osFilter on assignments.
+ * NULL filter = match all (backward compatible).
+ */
+function buildRoleOsFilterConditions(hierarchy: DeviceHierarchy): SQL[] {
+  return [
+    sql`(${configPolicyAssignments.roleFilter} IS NULL OR ${sql.param(hierarchy.deviceRole)} = ANY(${configPolicyAssignments.roleFilter}))`,
+    sql`(${configPolicyAssignments.osFilter} IS NULL OR ${sql.param(hierarchy.osType)} = ANY(${configPolicyAssignments.osFilter}))`,
+  ];
 }
 
 function buildTargetConditions(hierarchy: DeviceHierarchy): SQL[] {
@@ -195,6 +210,7 @@ export async function resolveAlertRulesForDevice(
   if (!hierarchy) return [];
 
   const targetConditions = buildTargetConditions(hierarchy);
+  const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
 
   const rows = await db
     .select({
@@ -216,14 +232,14 @@ export async function resolveAlertRulesForDevice(
       configPolicyFeatureLinks,
       and(
         eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'alert_rule')
+        inArray(configPolicyFeatureLinks.featureType, ['alert_rule', 'monitoring'])
       )
     )
     .innerJoin(
       configPolicyAlertRules,
       eq(configPolicyAlertRules.featureLinkId, configPolicyFeatureLinks.id)
     )
-    .where(sql`(${sql.join(targetConditions, sql` OR `)})`)
+    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
     .orderBy(
       configPolicyAssignments.level,
       configPolicyAssignments.priority,
@@ -254,6 +270,7 @@ export async function resolveAutomationsForDevice(
   if (!hierarchy) return [];
 
   const targetConditions = buildTargetConditions(hierarchy);
+  const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
 
   const rows = await db
     .select({
@@ -282,7 +299,7 @@ export async function resolveAutomationsForDevice(
       configPolicyAutomations,
       eq(configPolicyAutomations.featureLinkId, configPolicyFeatureLinks.id)
     )
-    .where(sql`(${sql.join(targetConditions, sql` OR `)})`)
+    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
     .orderBy(
       configPolicyAssignments.level,
       configPolicyAssignments.priority,
@@ -311,6 +328,7 @@ export async function resolvePatchConfigForDevice(
   if (!hierarchy) return null;
 
   const targetConditions = buildTargetConditions(hierarchy);
+  const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
 
   const rows = await db
     .select({
@@ -339,7 +357,7 @@ export async function resolvePatchConfigForDevice(
       configPolicyPatchSettings,
       eq(configPolicyPatchSettings.featureLinkId, configPolicyFeatureLinks.id)
     )
-    .where(sql`(${sql.join(targetConditions, sql` OR `)})`)
+    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
     .orderBy(
       configPolicyAssignments.level,
       configPolicyAssignments.priority,
@@ -363,6 +381,7 @@ export async function resolveMaintenanceConfigForDevice(
   if (!hierarchy) return null;
 
   const targetConditions = buildTargetConditions(hierarchy);
+  const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
 
   const rows = await db
     .select({
@@ -391,7 +410,7 @@ export async function resolveMaintenanceConfigForDevice(
       configPolicyMaintenanceSettings,
       eq(configPolicyMaintenanceSettings.featureLinkId, configPolicyFeatureLinks.id)
     )
-    .where(sql`(${sql.join(targetConditions, sql` OR `)})`)
+    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
     .orderBy(
       configPolicyAssignments.level,
       configPolicyAssignments.priority,
@@ -415,6 +434,7 @@ export async function resolveComplianceRulesForDevice(
   if (!hierarchy) return [];
 
   const targetConditions = buildTargetConditions(hierarchy);
+  const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
 
   const rows = await db
     .select({
@@ -443,7 +463,7 @@ export async function resolveComplianceRulesForDevice(
       configPolicyComplianceRules,
       eq(configPolicyComplianceRules.featureLinkId, configPolicyFeatureLinks.id)
     )
-    .where(sql`(${sql.join(targetConditions, sql` OR `)})`)
+    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
     .orderBy(
       configPolicyAssignments.level,
       configPolicyAssignments.priority,
@@ -472,6 +492,7 @@ export async function resolveSoftwarePolicyForDevice(
   if (!hierarchy) return null;
 
   const targetConditions = buildTargetConditions(hierarchy);
+  const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
 
   const rows = await db
     .select({
@@ -496,7 +517,7 @@ export async function resolveSoftwarePolicyForDevice(
         eq(configPolicyFeatureLinks.featureType, 'software_policy')
       )
     )
-    .where(sql`(${sql.join(targetConditions, sql` OR `)})`)
+    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
     .orderBy(
       configPolicyAssignments.level,
       configPolicyAssignments.priority,

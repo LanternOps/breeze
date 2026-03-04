@@ -98,6 +98,8 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             osVersion: data.osVersion,
             architecture: data.architecture,
             agentVersion: data.agentVersion,
+            deviceRole: data.deviceRole || 'unknown',
+            deviceRoleSource: 'auto',
             status: 'online',
             lastSeenAt: new Date(),
             updatedAt: new Date(),
@@ -117,6 +119,8 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             osVersion: data.osVersion,
             architecture: data.architecture,
             agentVersion: data.agentVersion,
+            deviceRole: data.deviceRole || 'unknown',
+            deviceRoleSource: 'auto',
             status: 'online',
             lastSeenAt: new Date(),
             tags: []

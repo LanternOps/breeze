@@ -168,6 +168,8 @@ coreRoutes.get(
         hostname: devices.hostname,
         displayName: devices.displayName,
         osType: devices.osType,
+        deviceRole: devices.deviceRole,
+        deviceRoleSource: devices.deviceRoleSource,
         osVersion: devices.osVersion,
         osBuild: devices.osBuild,
         architecture: devices.architecture,
@@ -440,6 +442,10 @@ coreRoutes.patch(
     if (data.displayName !== undefined) updates.displayName = data.displayName;
     if (data.siteId !== undefined) updates.siteId = data.siteId;
     if (data.tags !== undefined) updates.tags = data.tags;
+    if (data.deviceRole !== undefined) {
+      updates.deviceRole = data.deviceRole;
+      updates.deviceRoleSource = 'manual';
+    }
     if (data.customFields !== undefined) {
       // Merge with existing custom fields rather than replacing
       const raw = device.customFields;

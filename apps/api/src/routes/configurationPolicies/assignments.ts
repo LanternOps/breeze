@@ -56,7 +56,9 @@ assignmentRoutes.post(
         data.level,
         data.targetId,
         data.priority ?? 0,
-        auth.user.id
+        auth.user.id,
+        data.roleFilter,
+        data.osFilter
       );
 
       writeRouteAudit(c, {
