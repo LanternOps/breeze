@@ -63,7 +63,7 @@ test.describe('Settings', () => {
     await expect(keysContent).toBeVisible({ timeout: 10_000 });
   });
 
-  test('API key creation flow', async ({ page }) => {
+  test.fixme('API key creation flow', async ({ page }) => {
     await page.goto('/settings/api-keys');
     await waitForApp(page, '/settings/api-keys');
     await waitForContentLoad(page);

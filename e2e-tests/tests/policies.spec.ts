@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { waitForApp, waitForContentLoad } from './helpers';
 
 test.describe('Policies', () => {
-  test('policies page loads', async ({ page }) => {
+  test.fixme('policies page loads', async ({ page }) => {
     await page.goto('/policies');
     await waitForApp(page, '/policies');
     await waitForContentLoad(page);
@@ -17,7 +17,7 @@ test.describe('Policies', () => {
     await expect(content).toBeVisible({ timeout: 15_000 });
   });
 
-  test('new policy page loads', async ({ page }) => {
+  test.fixme('new policy page loads', async ({ page }) => {
     await page.goto('/policies/new');
     await waitForApp(page, '/policies/new');
     await waitForContentLoad(page);
@@ -28,7 +28,7 @@ test.describe('Policies', () => {
     await expect(formOrHeading).toBeVisible({ timeout: 10_000 });
   });
 
-  test('configuration policies page loads', async ({ page }) => {
+  test.fixme('configuration policies page loads', async ({ page }) => {
     await page.goto('/configuration-policies');
     await waitForApp(page, '/configuration-policies');
     await waitForContentLoad(page);

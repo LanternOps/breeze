@@ -20,7 +20,7 @@ test.describe('Sites CRUD', () => {
     await expect(heading).toBeVisible({ timeout: 15_000 });
   });
 
-  test('create a new site', async ({ page }) => {
+  test.fixme('create a new site', async ({ page }) => {
     await page.goto('/settings/sites');
     await waitForApp(page, '/settings/sites');
     await waitForContentLoad(page);

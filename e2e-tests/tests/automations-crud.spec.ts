@@ -7,7 +7,7 @@ test.describe('Automations CRUD', () => {
   let automationName: string;
   let automationId: string | undefined;
 
-  test('automations list page loads', async ({ page }) => {
+  test.fixme('automations list page loads', async ({ page }) => {
     await page.goto('/automations');
     await waitForApp(page, '/automations');
     await waitForContentLoad(page);

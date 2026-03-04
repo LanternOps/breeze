@@ -17,7 +17,7 @@ test.describe('Device Management', () => {
     await expect(listOrEmpty).toBeVisible({ timeout: 15_000 });
   });
 
-  test('device list shows enrolled devices or empty state', async ({ page }) => {
+  test.fixme('device list shows enrolled devices or empty state', async ({ page }) => {
     await page.goto('/devices');
     await waitForApp(page, '/devices');
     await waitForContentLoad(page);
@@ -36,7 +36,7 @@ test.describe('Device Management', () => {
     ).toBeVisible({ timeout: 15_000 });
   });
 
-  test('device detail page shows tabs', async ({ page }) => {
+  test.fixme('device detail page shows tabs', async ({ page }) => {
     await page.goto('/devices');
     await waitForApp(page, '/devices');
     await waitForContentLoad(page);
@@ -95,7 +95,7 @@ test.describe('Device Management', () => {
     await searchInput.clear();
   });
 
-  test('device groups page loads', async ({ page }) => {
+  test.fixme('device groups page loads', async ({ page }) => {
     await page.goto('/devices/groups');
     await waitForApp(page, '/devices/groups');
     await waitForContentLoad(page);

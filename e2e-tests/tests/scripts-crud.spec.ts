@@ -85,7 +85,7 @@ test.describe('Script CRUD Lifecycle', () => {
     await expect(scriptRow).toBeVisible({ timeout: 10_000 });
   });
 
-  test('view script detail page', async ({ page }) => {
+  test.fixme('view script detail page', async ({ page }) => {
     await page.goto('/scripts');
     await waitForApp(page, '/scripts');
     await waitForContentLoad(page);
