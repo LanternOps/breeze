@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict pG7mrjKd5jh3TbL2FdsVt23GPeUtF6jfPgtkPrKgug12iZCuMsiIhgWnRI7Yry4
+\restrict TIioLQuzpEIsq13X27971KsXiEaN7qgOcnHHe9K5GtKQtIA0uWx661SzAI0F1NF
 
 -- Dumped from database version 16.12
 -- Dumped by pg_dump version 16.12
@@ -320,6 +320,18 @@ CREATE TYPE public.change_type AS ENUM (
 
 
 --
+-- Name: check_result_status; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.check_result_status AS ENUM (
+    'running',
+    'stopped',
+    'not_found',
+    'error'
+);
+
+
+--
 -- Name: compliance_status; Type: TYPE; Schema: public; Owner: -
 --
 
@@ -358,7 +370,9 @@ CREATE TYPE public.config_feature_type AS ENUM (
     'compliance',
     'automation',
     'event_log',
-    'software_policy'
+    'software_policy',
+    'sensitive_data',
+    'peripheral_control'
 );
 
 
@@ -744,6 +758,88 @@ CREATE TYPE public.group_membership_log_reason AS ENUM (
 
 
 --
+-- Name: incident_action_actor; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.incident_action_actor AS ENUM (
+    'user',
+    'brain',
+    'system'
+);
+
+
+--
+-- Name: incident_action_status; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.incident_action_status AS ENUM (
+    'pending',
+    'in_progress',
+    'completed',
+    'failed',
+    'cancelled'
+);
+
+
+--
+-- Name: incident_collected_by; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.incident_collected_by AS ENUM (
+    'user',
+    'brain',
+    'system'
+);
+
+
+--
+-- Name: incident_evidence_type; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.incident_evidence_type AS ENUM (
+    'file',
+    'log',
+    'screenshot',
+    'memory',
+    'network'
+);
+
+
+--
+-- Name: incident_hash_algorithm; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.incident_hash_algorithm AS ENUM (
+    'sha256'
+);
+
+
+--
+-- Name: incident_severity; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.incident_severity AS ENUM (
+    'p1',
+    'p2',
+    'p3',
+    'p4'
+);
+
+
+--
+-- Name: incident_status; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.incident_status AS ENUM (
+    'detected',
+    'analyzing',
+    'contained',
+    'recovering',
+    'closed'
+);
+
+
+--
 -- Name: initiated_by_type; Type: TYPE; Schema: public; Owner: -
 --
 
@@ -861,6 +957,38 @@ CREATE TYPE public.monitor_type AS ENUM (
     'tcp_port',
     'http_check',
     'dns_check'
+);
+
+
+--
+-- Name: monitoring_watch_type; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.monitoring_watch_type AS ENUM (
+    'service',
+    'process'
+);
+
+
+--
+-- Name: network_config_risk_level; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.network_config_risk_level AS ENUM (
+    'low',
+    'medium',
+    'high',
+    'critical'
+);
+
+
+--
+-- Name: network_config_type; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.network_config_type AS ENUM (
+    'running',
+    'startup'
 );
 
 
@@ -1068,6 +1196,55 @@ CREATE TYPE public.patch_source AS ENUM (
     'linux',
     'third_party',
     'custom'
+);
+
+
+--
+-- Name: peripheral_device_class; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.peripheral_device_class AS ENUM (
+    'storage',
+    'all_usb',
+    'bluetooth',
+    'thunderbolt'
+);
+
+
+--
+-- Name: peripheral_event_type; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.peripheral_event_type AS ENUM (
+    'connected',
+    'disconnected',
+    'blocked',
+    'mounted_read_only',
+    'policy_override'
+);
+
+
+--
+-- Name: peripheral_policy_action; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.peripheral_policy_action AS ENUM (
+    'allow',
+    'block',
+    'read_only',
+    'alert'
+);
+
+
+--
+-- Name: peripheral_policy_target_type; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.peripheral_policy_target_type AS ENUM (
+    'organization',
+    'site',
+    'group',
+    'device'
 );
 
 
@@ -1787,7 +1964,8 @@ CREATE TABLE public.ai_sessions (
     flagged_at timestamp with time zone,
     flagged_by uuid,
     flag_reason text,
-    device_id uuid
+    device_id uuid,
+    type text DEFAULT 'general'::text NOT NULL
 );
 
 ALTER TABLE ONLY public.ai_sessions FORCE ROW LEVEL SECURITY;
@@ -1985,6 +2163,68 @@ ALTER TABLE ONLY public.asset_checkouts FORCE ROW LEVEL SECURITY;
 
 
 --
+-- Name: audit_baseline_apply_approvals; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.audit_baseline_apply_approvals (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    baseline_id uuid NOT NULL,
+    requested_by uuid NOT NULL,
+    approved_by uuid,
+    status character varying(20) DEFAULT 'pending'::character varying NOT NULL,
+    request_payload jsonb NOT NULL,
+    expires_at timestamp without time zone NOT NULL,
+    approved_at timestamp without time zone,
+    consumed_at timestamp without time zone,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.audit_baseline_apply_approvals FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: audit_baseline_results; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.audit_baseline_results (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    device_id uuid NOT NULL,
+    baseline_id uuid NOT NULL,
+    compliant boolean NOT NULL,
+    score integer NOT NULL,
+    deviations jsonb NOT NULL,
+    checked_at timestamp without time zone NOT NULL,
+    remediated_at timestamp without time zone,
+    created_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.audit_baseline_results FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: audit_baselines; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.audit_baselines (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    name character varying(200) NOT NULL,
+    os_type character varying(20) NOT NULL,
+    profile character varying(20) NOT NULL,
+    settings jsonb NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    created_by uuid,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.audit_baselines FORCE ROW LEVEL SECURITY;
+
+
+--
 -- Name: audit_logs; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2009,6 +2249,24 @@ CREATE TABLE public.audit_logs (
 );
 
 ALTER TABLE ONLY public.audit_logs FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: audit_policy_states; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.audit_policy_states (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    device_id uuid NOT NULL,
+    os_type character varying(20) NOT NULL,
+    settings jsonb NOT NULL,
+    raw jsonb,
+    collected_at timestamp without time zone NOT NULL,
+    created_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.audit_policy_states FORCE ROW LEVEL SECURITY;
 
 
 --
@@ -2133,7 +2391,8 @@ CREATE TABLE public.backup_configs (
     encryption boolean DEFAULT true NOT NULL,
     encryption_key text,
     is_active boolean DEFAULT true NOT NULL,
-    created_at timestamp without time zone DEFAULT now() NOT NULL
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 ALTER TABLE ONLY public.backup_configs FORCE ROW LEVEL SECURITY;
@@ -2156,7 +2415,11 @@ CREATE TABLE public.backup_jobs (
     file_count integer,
     error_count integer,
     error_log text,
-    snapshot_id character varying(200)
+    snapshot_id character varying(200),
+    org_id uuid NOT NULL,
+    policy_id uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -2167,11 +2430,14 @@ CREATE TABLE public.backup_jobs (
 CREATE TABLE public.backup_policies (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     config_id uuid NOT NULL,
-    target_type character varying(50) NOT NULL,
-    target_id uuid NOT NULL,
-    includes jsonb DEFAULT '[]'::jsonb NOT NULL,
-    excludes jsonb DEFAULT '[]'::jsonb NOT NULL,
-    priority integer DEFAULT 50 NOT NULL
+    org_id uuid NOT NULL,
+    name character varying(200) NOT NULL,
+    enabled boolean DEFAULT true NOT NULL,
+    schedule jsonb DEFAULT '{}'::jsonb NOT NULL,
+    retention jsonb DEFAULT '{}'::jsonb NOT NULL,
+    targets jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -2190,7 +2456,34 @@ CREATE TABLE public.backup_snapshots (
     is_incremental boolean DEFAULT false NOT NULL,
     parent_snapshot_id uuid,
     expires_at timestamp without time zone,
-    metadata jsonb
+    metadata jsonb,
+    org_id uuid NOT NULL,
+    config_id uuid,
+    label character varying(200),
+    location text
+);
+
+
+--
+-- Name: backup_verifications; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.backup_verifications (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    device_id uuid NOT NULL,
+    backup_job_id uuid NOT NULL,
+    snapshot_id uuid,
+    verification_type character varying(30) NOT NULL,
+    status character varying(20) NOT NULL,
+    started_at timestamp without time zone NOT NULL,
+    completed_at timestamp without time zone,
+    restore_time_seconds integer,
+    files_verified integer DEFAULT 0,
+    files_failed integer DEFAULT 0,
+    size_bytes bigint,
+    details jsonb,
+    created_at timestamp without time zone DEFAULT now() NOT NULL
 );
 
 
@@ -2209,6 +2502,70 @@ CREATE TABLE public.brain_device_context (
     expires_at timestamp with time zone,
     resolved_at timestamp with time zone
 );
+
+
+--
+-- Name: browser_extensions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.browser_extensions (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    device_id uuid NOT NULL,
+    browser character varying(20) NOT NULL,
+    extension_id character varying(255) NOT NULL,
+    name character varying(255) NOT NULL,
+    version character varying(80),
+    source character varying(30) NOT NULL,
+    permissions jsonb NOT NULL,
+    risk_level character varying(20) NOT NULL,
+    enabled boolean DEFAULT true NOT NULL,
+    first_seen_at timestamp without time zone NOT NULL,
+    last_seen_at timestamp without time zone NOT NULL
+);
+
+ALTER TABLE ONLY public.browser_extensions FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: browser_policies; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.browser_policies (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    name character varying(200) NOT NULL,
+    allowed_extensions jsonb,
+    blocked_extensions jsonb,
+    required_extensions jsonb,
+    settings jsonb,
+    target_type character varying(30) NOT NULL,
+    target_ids jsonb,
+    is_active boolean DEFAULT true NOT NULL,
+    created_by uuid,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.browser_policies FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: browser_policy_violations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.browser_policy_violations (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    device_id uuid NOT NULL,
+    policy_id uuid,
+    violation_type character varying(40) NOT NULL,
+    details jsonb NOT NULL,
+    detected_at timestamp without time zone NOT NULL,
+    resolved_at timestamp without time zone
+);
+
+ALTER TABLE ONLY public.browser_policy_violations FORCE ROW LEVEL SECURITY;
 
 
 --
@@ -2260,6 +2617,101 @@ ALTER TABLE ONLY public.capacity_thresholds FORCE ROW LEVEL SECURITY;
 
 
 --
+-- Name: cis_baseline_results; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.cis_baseline_results (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    device_id uuid NOT NULL,
+    baseline_id uuid NOT NULL,
+    checked_at timestamp without time zone NOT NULL,
+    total_checks integer NOT NULL,
+    passed_checks integer NOT NULL,
+    failed_checks integer NOT NULL,
+    score integer NOT NULL,
+    findings jsonb DEFAULT '[]'::jsonb NOT NULL,
+    summary jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.cis_baseline_results FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: cis_baselines; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.cis_baselines (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    name character varying(200) NOT NULL,
+    os_type character varying(20) NOT NULL,
+    benchmark_version character varying(200) NOT NULL,
+    level character varying(20) NOT NULL,
+    custom_exclusions jsonb DEFAULT '[]'::jsonb NOT NULL,
+    scan_schedule jsonb,
+    is_active boolean DEFAULT true NOT NULL,
+    created_by uuid,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.cis_baselines FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: cis_check_catalog; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.cis_check_catalog (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    os_type character varying(20) NOT NULL,
+    benchmark_version character varying(200) NOT NULL,
+    level character varying(20) NOT NULL,
+    check_id character varying(120) NOT NULL,
+    title character varying(400) NOT NULL,
+    severity character varying(20) NOT NULL,
+    default_action character varying(80) NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.cis_check_catalog FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: cis_remediation_actions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.cis_remediation_actions (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    device_id uuid NOT NULL,
+    baseline_id uuid,
+    baseline_result_id uuid,
+    check_id character varying(120) NOT NULL,
+    action character varying(40) NOT NULL,
+    status character varying(20) DEFAULT 'pending_approval'::character varying NOT NULL,
+    approval_status character varying(20) DEFAULT 'pending'::character varying NOT NULL,
+    approved_by uuid,
+    approved_at timestamp without time zone,
+    approval_note text,
+    requested_by uuid,
+    command_id uuid,
+    executed_at timestamp without time zone,
+    details jsonb,
+    before_state jsonb,
+    after_state jsonb,
+    rollback_hint text,
+    created_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.cis_remediation_actions FORCE ROW LEVEL SECURITY;
+
+
+--
 -- Name: config_policy_alert_rules; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2291,7 +2743,9 @@ CREATE TABLE public.config_policy_assignments (
     target_id uuid NOT NULL,
     priority integer DEFAULT 0 NOT NULL,
     assigned_by uuid,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    role_filter character varying(30)[],
+    os_filter character varying(10)[]
 );
 
 
@@ -2393,6 +2847,45 @@ CREATE TABLE public.config_policy_maintenance_settings (
 
 
 --
+-- Name: config_policy_monitoring_settings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.config_policy_monitoring_settings (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    feature_link_id uuid NOT NULL,
+    check_interval_seconds integer DEFAULT 60 NOT NULL,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: config_policy_monitoring_watches; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.config_policy_monitoring_watches (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    settings_id uuid NOT NULL,
+    watch_type public.monitoring_watch_type NOT NULL,
+    name character varying(255) NOT NULL,
+    display_name character varying(255),
+    enabled boolean DEFAULT true NOT NULL,
+    alert_on_stop boolean DEFAULT true NOT NULL,
+    alert_after_consecutive_failures integer DEFAULT 2 NOT NULL,
+    alert_severity public.alert_severity DEFAULT 'high'::public.alert_severity NOT NULL,
+    cpu_threshold_percent real,
+    memory_threshold_mb real,
+    threshold_duration_seconds integer DEFAULT 300 NOT NULL,
+    auto_restart boolean DEFAULT false NOT NULL,
+    max_restart_attempts integer DEFAULT 3 NOT NULL,
+    restart_cooldown_seconds integer DEFAULT 300 NOT NULL,
+    sort_order integer DEFAULT 0 NOT NULL,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+
+--
 -- Name: config_policy_patch_settings; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2409,6 +2902,30 @@ CREATE TABLE public.config_policy_patch_settings (
     reboot_policy character varying(20) DEFAULT 'if_required'::character varying NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: config_policy_sensitive_data_settings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.config_policy_sensitive_data_settings (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    feature_link_id uuid NOT NULL,
+    detection_classes text[] DEFAULT ARRAY['credential'::text] NOT NULL,
+    include_paths text[] DEFAULT ARRAY[]::text[] NOT NULL,
+    exclude_paths text[] DEFAULT ARRAY[]::text[] NOT NULL,
+    file_types text[] DEFAULT ARRAY[]::text[] NOT NULL,
+    max_file_size_bytes integer DEFAULT 104857600 NOT NULL,
+    workers integer DEFAULT 4 NOT NULL,
+    timeout_seconds integer DEFAULT 300 NOT NULL,
+    suppress_pattern_ids text[] DEFAULT ARRAY[]::text[] NOT NULL,
+    schedule_type character varying(20) DEFAULT 'manual'::character varying NOT NULL,
+    interval_minutes integer,
+    cron character varying(120),
+    timezone character varying(64) DEFAULT 'UTC'::character varying NOT NULL,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL
 );
 
 
@@ -3031,7 +3548,9 @@ CREATE TABLE public.devices (
     updated_at timestamp without time zone DEFAULT now() NOT NULL,
     last_user character varying(255),
     uptime_seconds integer,
-    management_posture jsonb
+    management_posture jsonb,
+    device_role character varying(30) DEFAULT 'unknown'::character varying NOT NULL,
+    device_role_source character varying(20) DEFAULT 'auto'::character varying NOT NULL
 );
 
 ALTER TABLE ONLY public.devices FORCE ROW LEVEL SECURITY;
@@ -3344,6 +3863,151 @@ CREATE TABLE public.group_membership_log (
 
 
 --
+-- Name: huntress_agents; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.huntress_agents (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    integration_id uuid NOT NULL,
+    huntress_agent_id character varying(128) NOT NULL,
+    device_id uuid,
+    hostname character varying(255),
+    platform character varying(32),
+    status character varying(20),
+    last_seen_at timestamp without time zone,
+    metadata jsonb,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.huntress_agents FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: huntress_incidents; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.huntress_incidents (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    integration_id uuid NOT NULL,
+    device_id uuid,
+    huntress_incident_id character varying(128) NOT NULL,
+    severity character varying(20),
+    category character varying(60),
+    title text NOT NULL,
+    description text,
+    recommendation text,
+    status character varying(30) NOT NULL,
+    reported_at timestamp without time zone,
+    resolved_at timestamp without time zone,
+    details jsonb,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.huntress_incidents FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: huntress_integrations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.huntress_integrations (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    name character varying(200) NOT NULL,
+    api_key_encrypted text NOT NULL,
+    account_id character varying(120),
+    api_base_url character varying(300) DEFAULT 'https://api.huntress.io/v1'::character varying NOT NULL,
+    webhook_secret_encrypted text,
+    is_active boolean DEFAULT true NOT NULL,
+    last_sync_at timestamp without time zone,
+    last_sync_status character varying(20),
+    last_sync_error text,
+    created_by uuid,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.huntress_integrations FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: incident_actions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.incident_actions (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    incident_id uuid NOT NULL,
+    org_id uuid NOT NULL,
+    action_type character varying(40) NOT NULL,
+    description text NOT NULL,
+    executed_by public.incident_action_actor DEFAULT 'user'::public.incident_action_actor NOT NULL,
+    status public.incident_action_status DEFAULT 'completed'::public.incident_action_status NOT NULL,
+    result jsonb,
+    reversible boolean DEFAULT false NOT NULL,
+    reversed boolean DEFAULT false NOT NULL,
+    approval_ref character varying(128),
+    executed_at timestamp without time zone NOT NULL,
+    created_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.incident_actions FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: incident_evidence; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.incident_evidence (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    incident_id uuid NOT NULL,
+    org_id uuid NOT NULL,
+    evidence_type public.incident_evidence_type NOT NULL,
+    description text,
+    collected_at timestamp without time zone NOT NULL,
+    collected_by public.incident_collected_by DEFAULT 'user'::public.incident_collected_by NOT NULL,
+    hash character varying(64),
+    storage_path text NOT NULL,
+    metadata jsonb,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    hash_algorithm public.incident_hash_algorithm DEFAULT 'sha256'::public.incident_hash_algorithm NOT NULL,
+    CONSTRAINT incident_evidence_hash_sha256_chk CHECK (((hash IS NULL) OR ((hash)::text ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT incident_evidence_storage_path_scheme_chk CHECK ((storage_path ~ '^[a-z][a-z0-9+.-]*://.+'::text))
+);
+
+ALTER TABLE ONLY public.incident_evidence FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: incidents; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.incidents (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    title text NOT NULL,
+    classification character varying(40) NOT NULL,
+    severity public.incident_severity NOT NULL,
+    status public.incident_status DEFAULT 'detected'::public.incident_status NOT NULL,
+    summary text,
+    related_alerts jsonb DEFAULT '[]'::jsonb NOT NULL,
+    affected_devices jsonb DEFAULT '[]'::jsonb NOT NULL,
+    timeline jsonb DEFAULT '[]'::jsonb NOT NULL,
+    assigned_to uuid,
+    detected_at timestamp without time zone NOT NULL,
+    contained_at timestamp without time zone,
+    resolved_at timestamp without time zone,
+    closed_at timestamp without time zone,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.incidents FORCE ROW LEVEL SECURITY;
+
+
+--
 -- Name: log_correlation_rules; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -3569,6 +4233,63 @@ CREATE TABLE public.network_change_events (
 );
 
 ALTER TABLE ONLY public.network_change_events FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: network_config_diffs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.network_config_diffs (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    asset_id uuid NOT NULL,
+    previous_config_id uuid NOT NULL,
+    current_config_id uuid NOT NULL,
+    summary text,
+    diff text NOT NULL,
+    risk_level public.network_config_risk_level DEFAULT 'low'::public.network_config_risk_level NOT NULL,
+    created_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.network_config_diffs FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: network_device_configs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.network_device_configs (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    asset_id uuid NOT NULL,
+    config_type public.network_config_type NOT NULL,
+    config_encrypted text NOT NULL,
+    hash character varying(128) NOT NULL,
+    changed_from_previous boolean DEFAULT false NOT NULL,
+    captured_at timestamp without time zone NOT NULL,
+    metadata jsonb
+);
+
+ALTER TABLE ONLY public.network_device_configs FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: network_device_firmware; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.network_device_firmware (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    asset_id uuid NOT NULL,
+    current_version character varying(80),
+    latest_version character varying(80),
+    eol_date timestamp without time zone,
+    cve_count integer DEFAULT 0 NOT NULL,
+    last_checked_at timestamp without time zone,
+    metadata jsonb
+);
+
+ALTER TABLE ONLY public.network_device_firmware FORCE ROW LEVEL SECURITY;
 
 
 --
@@ -3972,6 +4693,51 @@ CREATE TABLE public.patches (
 
 
 --
+-- Name: peripheral_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.peripheral_events (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    device_id uuid NOT NULL,
+    policy_id uuid,
+    source_event_id character varying(255),
+    event_type public.peripheral_event_type NOT NULL,
+    peripheral_type character varying(40) NOT NULL,
+    vendor character varying(255),
+    product character varying(255),
+    serial_number character varying(255),
+    details jsonb,
+    occurred_at timestamp without time zone NOT NULL,
+    created_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.peripheral_events FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: peripheral_policies; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.peripheral_policies (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    name character varying(200) NOT NULL,
+    device_class public.peripheral_device_class NOT NULL,
+    action public.peripheral_policy_action NOT NULL,
+    target_type public.peripheral_policy_target_type NOT NULL,
+    target_ids jsonb DEFAULT '{}'::jsonb,
+    exceptions jsonb DEFAULT '[]'::jsonb,
+    is_active boolean DEFAULT true NOT NULL,
+    created_by uuid,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.peripheral_policies FORCE ROW LEVEL SECURITY;
+
+
+--
 -- Name: permissions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -4359,6 +5125,22 @@ CREATE TABLE public.push_notifications (
 
 
 --
+-- Name: recovery_readiness; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.recovery_readiness (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    device_id uuid NOT NULL,
+    readiness_score integer NOT NULL,
+    estimated_rto_minutes integer,
+    estimated_rpo_minutes integer,
+    risk_factors jsonb,
+    calculated_at timestamp without time zone NOT NULL
+);
+
+
+--
 -- Name: remote_sessions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -4434,7 +5216,10 @@ CREATE TABLE public.restore_jobs (
     completed_at timestamp without time zone,
     restored_size bigint,
     restored_files integer,
-    initiated_by uuid
+    initiated_by uuid,
+    org_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -4467,6 +5252,114 @@ CREATE TABLE public.roles (
 );
 
 ALTER TABLE ONLY public.roles FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: s1_actions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.s1_actions (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    device_id uuid,
+    requested_by uuid,
+    action character varying(40) NOT NULL,
+    payload jsonb,
+    status character varying(20) DEFAULT 'queued'::character varying NOT NULL,
+    provider_action_id character varying(128),
+    requested_at timestamp without time zone DEFAULT now() NOT NULL,
+    completed_at timestamp without time zone,
+    error text
+);
+
+ALTER TABLE ONLY public.s1_actions FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: s1_agents; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.s1_agents (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    integration_id uuid NOT NULL,
+    s1_agent_id character varying(128) NOT NULL,
+    device_id uuid,
+    status character varying(30),
+    infected boolean DEFAULT false,
+    threat_count integer DEFAULT 0,
+    policy_name character varying(200),
+    last_seen_at timestamp without time zone,
+    metadata jsonb,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.s1_agents FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: s1_integrations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.s1_integrations (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    name character varying(200) NOT NULL,
+    api_token_encrypted text NOT NULL,
+    management_url text NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    last_sync_at timestamp without time zone,
+    last_sync_status character varying(20),
+    last_sync_error text,
+    created_by uuid,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.s1_integrations FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: s1_site_mappings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.s1_site_mappings (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    integration_id uuid NOT NULL,
+    site_name character varying(200) NOT NULL,
+    org_id uuid NOT NULL,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.s1_site_mappings FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: s1_threats; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.s1_threats (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    integration_id uuid NOT NULL,
+    device_id uuid,
+    s1_threat_id character varying(128) NOT NULL,
+    classification character varying(60),
+    severity character varying(20),
+    threat_name text,
+    process_name text,
+    file_path text,
+    mitre_tactics jsonb,
+    status character varying(30) NOT NULL,
+    detected_at timestamp without time zone,
+    resolved_at timestamp without time zone,
+    details jsonb,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.s1_threats FORCE ROW LEVEL SECURITY;
 
 
 --
@@ -4790,6 +5683,93 @@ CREATE TABLE public.security_threats (
 
 
 --
+-- Name: sensitive_data_findings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sensitive_data_findings (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    device_id uuid NOT NULL,
+    scan_id uuid NOT NULL,
+    file_path text NOT NULL,
+    data_type character varying(20) NOT NULL,
+    pattern_id character varying(80) NOT NULL,
+    match_count integer DEFAULT 1 NOT NULL,
+    risk character varying(20) NOT NULL,
+    confidence real DEFAULT 0.5 NOT NULL,
+    file_owner character varying(255),
+    file_modified_at timestamp with time zone,
+    first_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    occurrence_count integer DEFAULT 1 NOT NULL,
+    status character varying(20) DEFAULT 'open'::character varying NOT NULL,
+    remediation_action character varying(40),
+    remediation_metadata jsonb,
+    remediated_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: sensitive_data_policies; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sensitive_data_policies (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    name character varying(200) NOT NULL,
+    scope jsonb DEFAULT '{}'::jsonb NOT NULL,
+    detection_classes jsonb DEFAULT '[]'::jsonb NOT NULL,
+    schedule jsonb,
+    is_active boolean DEFAULT true NOT NULL,
+    created_by uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: sensitive_data_scans; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sensitive_data_scans (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    device_id uuid NOT NULL,
+    policy_id uuid,
+    requested_by uuid,
+    status character varying(20) DEFAULT 'queued'::character varying NOT NULL,
+    started_at timestamp with time zone,
+    completed_at timestamp with time zone,
+    idempotency_key character varying(128),
+    request_fingerprint character varying(64),
+    summary jsonb,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: service_process_check_results; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.service_process_check_results (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    device_id uuid NOT NULL,
+    watch_type public.monitoring_watch_type NOT NULL,
+    name character varying(255) NOT NULL,
+    status public.check_result_status NOT NULL,
+    cpu_percent real,
+    memory_mb real,
+    pid integer,
+    details jsonb,
+    auto_restart_attempted boolean DEFAULT false NOT NULL,
+    auto_restart_succeeded boolean,
+    "timestamp" timestamp without time zone DEFAULT now() NOT NULL
+);
+
+
+--
 -- Name: sessions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -4964,8 +5944,11 @@ CREATE TABLE public.software_catalog (
     icon_url text,
     website_url text,
     is_managed boolean DEFAULT false NOT NULL,
-    created_at timestamp without time zone DEFAULT now() NOT NULL
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    org_id uuid NOT NULL
 );
+
+ALTER TABLE ONLY public.software_catalog FORCE ROW LEVEL SECURITY;
 
 
 --
@@ -5094,7 +6077,10 @@ CREATE TABLE public.software_versions (
     silent_uninstall_args text,
     pre_install_script text,
     post_install_script text,
-    is_latest boolean DEFAULT false NOT NULL
+    is_latest boolean DEFAULT false NOT NULL,
+    s3_key text,
+    file_type character varying(20),
+    original_file_name character varying(500)
 );
 
 
@@ -5240,6 +6226,59 @@ ALTER TABLE ONLY public.user_notifications FORCE ROW LEVEL SECURITY;
 
 
 --
+-- Name: user_risk_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_risk_events (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    event_type character varying(60) NOT NULL,
+    severity character varying(20),
+    score_impact integer DEFAULT 0 NOT NULL,
+    description text NOT NULL,
+    details jsonb,
+    occurred_at timestamp without time zone NOT NULL
+);
+
+ALTER TABLE ONLY public.user_risk_events FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: user_risk_policies; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_risk_policies (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    weights jsonb DEFAULT '{}'::jsonb NOT NULL,
+    thresholds jsonb DEFAULT '{}'::jsonb NOT NULL,
+    interventions jsonb DEFAULT '{}'::jsonb NOT NULL,
+    updated_by uuid,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.user_risk_policies FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: user_risk_scores; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_risk_scores (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    score integer NOT NULL,
+    factors jsonb DEFAULT '{}'::jsonb NOT NULL,
+    trend_direction character varying(20),
+    calculated_at timestamp without time zone NOT NULL
+);
+
+ALTER TABLE ONLY public.user_risk_scores FORCE ROW LEVEL SECURITY;
+
+
+--
 -- Name: user_sso_identities; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -5280,7 +6319,8 @@ CREATE TABLE public.users (
     password_changed_at timestamp without time zone,
     created_at timestamp without time zone DEFAULT now() NOT NULL,
     updated_at timestamp without time zone DEFAULT now() NOT NULL,
-    setup_completed_at timestamp with time zone
+    setup_completed_at timestamp with time zone,
+    preferences jsonb
 );
 
 
@@ -5516,11 +6556,43 @@ ALTER TABLE ONLY public.asset_checkouts
 
 
 --
+-- Name: audit_baseline_apply_approvals audit_baseline_apply_approvals_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.audit_baseline_apply_approvals
+    ADD CONSTRAINT audit_baseline_apply_approvals_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: audit_baseline_results audit_baseline_results_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.audit_baseline_results
+    ADD CONSTRAINT audit_baseline_results_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: audit_baselines audit_baselines_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.audit_baselines
+    ADD CONSTRAINT audit_baselines_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: audit_logs audit_logs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.audit_logs
     ADD CONSTRAINT audit_logs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: audit_policy_states audit_policy_states_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.audit_policy_states
+    ADD CONSTRAINT audit_policy_states_pkey PRIMARY KEY (id);
 
 
 --
@@ -5596,11 +6668,43 @@ ALTER TABLE ONLY public.backup_snapshots
 
 
 --
+-- Name: backup_verifications backup_verifications_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backup_verifications
+    ADD CONSTRAINT backup_verifications_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: brain_device_context brain_device_context_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.brain_device_context
     ADD CONSTRAINT brain_device_context_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: browser_extensions browser_extensions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.browser_extensions
+    ADD CONSTRAINT browser_extensions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: browser_policies browser_policies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.browser_policies
+    ADD CONSTRAINT browser_policies_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: browser_policy_violations browser_policy_violations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.browser_policy_violations
+    ADD CONSTRAINT browser_policy_violations_pkey PRIMARY KEY (id);
 
 
 --
@@ -5617,6 +6721,46 @@ ALTER TABLE ONLY public.capacity_predictions
 
 ALTER TABLE ONLY public.capacity_thresholds
     ADD CONSTRAINT capacity_thresholds_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: cis_baseline_results cis_baseline_results_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cis_baseline_results
+    ADD CONSTRAINT cis_baseline_results_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: cis_baselines cis_baselines_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cis_baselines
+    ADD CONSTRAINT cis_baselines_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: cis_check_catalog cis_check_catalog_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cis_check_catalog
+    ADD CONSTRAINT cis_check_catalog_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: cis_check_catalog cis_check_catalog_unique_idx; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cis_check_catalog
+    ADD CONSTRAINT cis_check_catalog_unique_idx UNIQUE (os_type, benchmark_version, level, check_id);
+
+
+--
+-- Name: cis_remediation_actions cis_remediation_actions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cis_remediation_actions
+    ADD CONSTRAINT cis_remediation_actions_pkey PRIMARY KEY (id);
 
 
 --
@@ -5692,6 +6836,30 @@ ALTER TABLE ONLY public.config_policy_maintenance_settings
 
 
 --
+-- Name: config_policy_monitoring_settings config_policy_monitoring_settings_feature_link_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.config_policy_monitoring_settings
+    ADD CONSTRAINT config_policy_monitoring_settings_feature_link_id_key UNIQUE (feature_link_id);
+
+
+--
+-- Name: config_policy_monitoring_settings config_policy_monitoring_settings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.config_policy_monitoring_settings
+    ADD CONSTRAINT config_policy_monitoring_settings_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: config_policy_monitoring_watches config_policy_monitoring_watches_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.config_policy_monitoring_watches
+    ADD CONSTRAINT config_policy_monitoring_watches_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: config_policy_patch_settings config_policy_patch_settings_feature_link_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -5705,6 +6873,22 @@ ALTER TABLE ONLY public.config_policy_patch_settings
 
 ALTER TABLE ONLY public.config_policy_patch_settings
     ADD CONSTRAINT config_policy_patch_settings_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: config_policy_sensitive_data_settings config_policy_sensitive_data_settings_feature_link_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.config_policy_sensitive_data_settings
+    ADD CONSTRAINT config_policy_sensitive_data_settings_feature_link_id_key UNIQUE (feature_link_id);
+
+
+--
+-- Name: config_policy_sensitive_data_settings config_policy_sensitive_data_settings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.config_policy_sensitive_data_settings
+    ADD CONSTRAINT config_policy_sensitive_data_settings_pkey PRIMARY KEY (id);
 
 
 --
@@ -6060,6 +7244,54 @@ ALTER TABLE ONLY public.group_membership_log
 
 
 --
+-- Name: huntress_agents huntress_agents_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.huntress_agents
+    ADD CONSTRAINT huntress_agents_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: huntress_incidents huntress_incidents_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.huntress_incidents
+    ADD CONSTRAINT huntress_incidents_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: huntress_integrations huntress_integrations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.huntress_integrations
+    ADD CONSTRAINT huntress_integrations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: incident_actions incident_actions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.incident_actions
+    ADD CONSTRAINT incident_actions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: incident_evidence incident_evidence_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.incident_evidence
+    ADD CONSTRAINT incident_evidence_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: incidents incidents_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.incidents
+    ADD CONSTRAINT incidents_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: log_correlation_rules log_correlation_rules_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6153,6 +7385,30 @@ ALTER TABLE ONLY public.network_baselines
 
 ALTER TABLE ONLY public.network_change_events
     ADD CONSTRAINT network_change_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: network_config_diffs network_config_diffs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.network_config_diffs
+    ADD CONSTRAINT network_config_diffs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: network_device_configs network_device_configs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.network_device_configs
+    ADD CONSTRAINT network_device_configs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: network_device_firmware network_device_firmware_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.network_device_firmware
+    ADD CONSTRAINT network_device_firmware_pkey PRIMARY KEY (id);
 
 
 --
@@ -6305,6 +7561,22 @@ ALTER TABLE ONLY public.patch_rollbacks
 
 ALTER TABLE ONLY public.patches
     ADD CONSTRAINT patches_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: peripheral_events peripheral_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.peripheral_events
+    ADD CONSTRAINT peripheral_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: peripheral_policies peripheral_policies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.peripheral_policies
+    ADD CONSTRAINT peripheral_policies_pkey PRIMARY KEY (id);
 
 
 --
@@ -6468,6 +7740,14 @@ ALTER TABLE ONLY public.push_notifications
 
 
 --
+-- Name: recovery_readiness recovery_readiness_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.recovery_readiness
+    ADD CONSTRAINT recovery_readiness_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: remote_sessions remote_sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6505,6 +7785,46 @@ ALTER TABLE ONLY public.restore_jobs
 
 ALTER TABLE ONLY public.roles
     ADD CONSTRAINT roles_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: s1_actions s1_actions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.s1_actions
+    ADD CONSTRAINT s1_actions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: s1_agents s1_agents_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.s1_agents
+    ADD CONSTRAINT s1_agents_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: s1_integrations s1_integrations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.s1_integrations
+    ADD CONSTRAINT s1_integrations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: s1_site_mappings s1_site_mappings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.s1_site_mappings
+    ADD CONSTRAINT s1_site_mappings_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: s1_threats s1_threats_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.s1_threats
+    ADD CONSTRAINT s1_threats_pkey PRIMARY KEY (id);
 
 
 --
@@ -6633,6 +7953,38 @@ ALTER TABLE ONLY public.security_status
 
 ALTER TABLE ONLY public.security_threats
     ADD CONSTRAINT security_threats_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: sensitive_data_findings sensitive_data_findings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sensitive_data_findings
+    ADD CONSTRAINT sensitive_data_findings_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: sensitive_data_policies sensitive_data_policies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sensitive_data_policies
+    ADD CONSTRAINT sensitive_data_policies_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: sensitive_data_scans sensitive_data_scans_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sensitive_data_scans
+    ADD CONSTRAINT sensitive_data_scans_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: service_process_check_results service_process_check_results_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_process_check_results
+    ADD CONSTRAINT service_process_check_results_pkey PRIMARY KEY (id);
 
 
 --
@@ -6809,6 +8161,30 @@ ALTER TABLE ONLY public.tickets
 
 ALTER TABLE ONLY public.user_notifications
     ADD CONSTRAINT user_notifications_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: user_risk_events user_risk_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_risk_events
+    ADD CONSTRAINT user_risk_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: user_risk_policies user_risk_policies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_risk_policies
+    ADD CONSTRAINT user_risk_policies_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: user_risk_scores user_risk_scores_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_risk_scores
+    ADD CONSTRAINT user_risk_scores_pkey PRIMARY KEY (id);
 
 
 --
@@ -7027,6 +8403,83 @@ CREATE INDEX apc_config_policy_id_idx ON public.automation_policy_compliance USI
 
 
 --
+-- Name: audit_baseline_apply_approvals_baseline_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX audit_baseline_apply_approvals_baseline_idx ON public.audit_baseline_apply_approvals USING btree (baseline_id);
+
+
+--
+-- Name: audit_baseline_apply_approvals_expires_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX audit_baseline_apply_approvals_expires_at_idx ON public.audit_baseline_apply_approvals USING btree (expires_at);
+
+
+--
+-- Name: audit_baseline_apply_approvals_org_status_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX audit_baseline_apply_approvals_org_status_idx ON public.audit_baseline_apply_approvals USING btree (org_id, status);
+
+
+--
+-- Name: audit_baselines_org_active_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX audit_baselines_org_active_idx ON public.audit_baselines USING btree (org_id, is_active);
+
+
+--
+-- Name: audit_baselines_org_os_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX audit_baselines_org_os_idx ON public.audit_baselines USING btree (org_id, os_type);
+
+
+--
+-- Name: audit_policy_states_device_collected_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX audit_policy_states_device_collected_idx ON public.audit_policy_states USING btree (device_id, collected_at);
+
+
+--
+-- Name: audit_policy_states_org_collected_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX audit_policy_states_org_collected_idx ON public.audit_policy_states USING btree (org_id, collected_at);
+
+
+--
+-- Name: audit_policy_states_org_device_collected_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX audit_policy_states_org_device_collected_idx ON public.audit_policy_states USING btree (org_id, device_id, collected_at);
+
+
+--
+-- Name: audit_results_baseline_checked_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX audit_results_baseline_checked_idx ON public.audit_baseline_results USING btree (baseline_id, checked_at);
+
+
+--
+-- Name: audit_results_checked_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX audit_results_checked_at_idx ON public.audit_baseline_results USING btree (checked_at);
+
+
+--
+-- Name: audit_results_org_device_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX audit_results_org_device_idx ON public.audit_baseline_results USING btree (org_id, device_id);
+
+
+--
 -- Name: backup_configs_active_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -7062,10 +8515,31 @@ CREATE INDEX backup_jobs_config_id_idx ON public.backup_jobs USING btree (config
 
 
 --
+-- Name: backup_jobs_created_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX backup_jobs_created_at_idx ON public.backup_jobs USING btree (created_at);
+
+
+--
 -- Name: backup_jobs_device_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX backup_jobs_device_id_idx ON public.backup_jobs USING btree (device_id);
+
+
+--
+-- Name: backup_jobs_org_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX backup_jobs_org_id_idx ON public.backup_jobs USING btree (org_id);
+
+
+--
+-- Name: backup_jobs_policy_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX backup_jobs_policy_id_idx ON public.backup_jobs USING btree (policy_id);
 
 
 --
@@ -7090,10 +8564,17 @@ CREATE INDEX backup_policies_config_id_idx ON public.backup_policies USING btree
 
 
 --
--- Name: backup_policies_target_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: backup_policies_enabled_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX backup_policies_target_idx ON public.backup_policies USING btree (target_type, target_id);
+CREATE INDEX backup_policies_enabled_idx ON public.backup_policies USING btree (enabled);
+
+
+--
+-- Name: backup_policies_org_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX backup_policies_org_id_idx ON public.backup_policies USING btree (org_id);
 
 
 --
@@ -7111,6 +8592,13 @@ CREATE INDEX backup_snapshots_job_id_idx ON public.backup_snapshots USING btree 
 
 
 --
+-- Name: backup_snapshots_org_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX backup_snapshots_org_id_idx ON public.backup_snapshots USING btree (org_id);
+
+
+--
 -- Name: backup_snapshots_parent_snapshot_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -7122,6 +8610,20 @@ CREATE INDEX backup_snapshots_parent_snapshot_id_idx ON public.backup_snapshots 
 --
 
 CREATE INDEX backup_snapshots_snapshot_id_idx ON public.backup_snapshots USING btree (snapshot_id);
+
+
+--
+-- Name: backup_verify_org_device_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX backup_verify_org_device_idx ON public.backup_verifications USING btree (org_id, device_id);
+
+
+--
+-- Name: backup_verify_status_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX backup_verify_status_idx ON public.backup_verifications USING btree (status);
 
 
 --
@@ -7150,6 +8652,132 @@ CREATE INDEX brain_device_context_device_type_idx ON public.brain_device_context
 --
 
 CREATE INDEX brain_device_context_org_id_idx ON public.brain_device_context USING btree (org_id);
+
+
+--
+-- Name: browser_ext_extension_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX browser_ext_extension_id_idx ON public.browser_extensions USING btree (extension_id);
+
+
+--
+-- Name: browser_ext_org_device_browser_ext_uniq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX browser_ext_org_device_browser_ext_uniq ON public.browser_extensions USING btree (org_id, device_id, browser, extension_id);
+
+
+--
+-- Name: browser_ext_org_device_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX browser_ext_org_device_idx ON public.browser_extensions USING btree (org_id, device_id);
+
+
+--
+-- Name: browser_ext_risk_level_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX browser_ext_risk_level_idx ON public.browser_extensions USING btree (org_id, risk_level);
+
+
+--
+-- Name: browser_policy_org_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX browser_policy_org_idx ON public.browser_policies USING btree (org_id);
+
+
+--
+-- Name: browser_policy_violations_org_device_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX browser_policy_violations_org_device_idx ON public.browser_policy_violations USING btree (org_id, device_id);
+
+
+--
+-- Name: browser_policy_violations_policy_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX browser_policy_violations_policy_idx ON public.browser_policy_violations USING btree (policy_id);
+
+
+--
+-- Name: browser_policy_violations_unresolved_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX browser_policy_violations_unresolved_idx ON public.browser_policy_violations USING btree (org_id, resolved_at);
+
+
+--
+-- Name: cis_baselines_org_active_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cis_baselines_org_active_idx ON public.cis_baselines USING btree (org_id, is_active);
+
+
+--
+-- Name: cis_baselines_org_os_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cis_baselines_org_os_idx ON public.cis_baselines USING btree (org_id, os_type);
+
+
+--
+-- Name: cis_check_catalog_os_benchmark_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cis_check_catalog_os_benchmark_idx ON public.cis_check_catalog USING btree (os_type, benchmark_version);
+
+
+--
+-- Name: cis_remediation_check_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cis_remediation_check_idx ON public.cis_remediation_actions USING btree (check_id);
+
+
+--
+-- Name: cis_remediation_org_approval_status_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cis_remediation_org_approval_status_idx ON public.cis_remediation_actions USING btree (org_id, approval_status, status);
+
+
+--
+-- Name: cis_remediation_org_device_status_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cis_remediation_org_device_status_idx ON public.cis_remediation_actions USING btree (org_id, device_id, status);
+
+
+--
+-- Name: cis_remediation_result_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cis_remediation_result_idx ON public.cis_remediation_actions USING btree (baseline_result_id);
+
+
+--
+-- Name: cis_results_baseline_checked_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cis_results_baseline_checked_idx ON public.cis_baseline_results USING btree (baseline_id, checked_at DESC);
+
+
+--
+-- Name: cis_results_org_device_checked_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cis_results_org_device_checked_idx ON public.cis_baseline_results USING btree (org_id, device_id, checked_at DESC);
+
+
+--
+-- Name: cis_results_score_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cis_results_score_idx ON public.cis_baseline_results USING btree (score);
 
 
 --
@@ -7241,6 +8869,13 @@ CREATE INDEX cpcr_feature_link_id_idx ON public.config_policy_compliance_rules U
 --
 
 CREATE INDEX cpels_feature_link_id_idx ON public.config_policy_event_log_settings USING btree (feature_link_id);
+
+
+--
+-- Name: cpmon_watches_settings_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cpmon_watches_settings_id_idx ON public.config_policy_monitoring_watches USING btree (settings_id);
 
 
 --
@@ -7524,6 +9159,13 @@ CREATE INDEX device_sessions_org_active_idx ON public.device_sessions USING btre
 
 
 --
+-- Name: devices_device_role_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX devices_device_role_idx ON public.devices USING btree (device_role);
+
+
+--
 -- Name: devices_management_posture_categories_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -7671,6 +9313,41 @@ CREATE INDEX dns_security_events_provider_id_idx ON public.dns_security_events U
 
 
 --
+-- Name: huntress_agents_agent_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX huntress_agents_agent_id_idx ON public.huntress_agents USING btree (integration_id, huntress_agent_id);
+
+
+--
+-- Name: huntress_agents_org_device_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX huntress_agents_org_device_idx ON public.huntress_agents USING btree (org_id, device_id);
+
+
+--
+-- Name: huntress_incidents_external_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX huntress_incidents_external_idx ON public.huntress_incidents USING btree (integration_id, huntress_incident_id);
+
+
+--
+-- Name: huntress_incidents_org_status_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX huntress_incidents_org_status_idx ON public.huntress_incidents USING btree (org_id, status);
+
+
+--
+-- Name: huntress_integrations_org_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX huntress_integrations_org_idx ON public.huntress_integrations USING btree (org_id);
+
+
+--
 -- Name: idx_audit_logs_initiated_by; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -7720,6 +9397,104 @@ CREATE INDEX idx_patch_policies_ring_order ON public.patch_policies USING btree 
 
 
 --
+-- Name: incident_actions_action_type_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX incident_actions_action_type_idx ON public.incident_actions USING btree (action_type);
+
+
+--
+-- Name: incident_actions_executed_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX incident_actions_executed_at_idx ON public.incident_actions USING btree (executed_at);
+
+
+--
+-- Name: incident_actions_incident_executed_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX incident_actions_incident_executed_at_idx ON public.incident_actions USING btree (incident_id, executed_at);
+
+
+--
+-- Name: incident_actions_incident_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX incident_actions_incident_idx ON public.incident_actions USING btree (incident_id);
+
+
+--
+-- Name: incident_actions_org_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX incident_actions_org_idx ON public.incident_actions USING btree (org_id);
+
+
+--
+-- Name: incident_actions_org_status_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX incident_actions_org_status_idx ON public.incident_actions USING btree (org_id, status);
+
+
+--
+-- Name: incident_actions_status_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX incident_actions_status_idx ON public.incident_actions USING btree (status);
+
+
+--
+-- Name: incident_evidence_collected_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX incident_evidence_collected_at_idx ON public.incident_evidence USING btree (collected_at);
+
+
+--
+-- Name: incident_evidence_incident_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX incident_evidence_incident_idx ON public.incident_evidence USING btree (incident_id);
+
+
+--
+-- Name: incident_evidence_org_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX incident_evidence_org_idx ON public.incident_evidence USING btree (org_id);
+
+
+--
+-- Name: incidents_assigned_to_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX incidents_assigned_to_idx ON public.incidents USING btree (assigned_to);
+
+
+--
+-- Name: incidents_detected_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX incidents_detected_at_idx ON public.incidents USING btree (detected_at);
+
+
+--
+-- Name: incidents_org_status_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX incidents_org_status_idx ON public.incidents USING btree (org_id, status);
+
+
+--
+-- Name: incidents_severity_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX incidents_severity_idx ON public.incidents USING btree (severity);
+
+
+--
 -- Name: log_correlation_rules_active_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -7766,6 +9541,48 @@ CREATE INDEX log_search_queries_created_by_idx ON public.log_search_queries USIN
 --
 
 CREATE INDEX log_search_queries_org_id_idx ON public.log_search_queries USING btree (org_id);
+
+
+--
+-- Name: net_cfg_diff_current_cfg_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX net_cfg_diff_current_cfg_idx ON public.network_config_diffs USING btree (current_config_id);
+
+
+--
+-- Name: net_cfg_diff_org_asset_created_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX net_cfg_diff_org_asset_created_idx ON public.network_config_diffs USING btree (org_id, asset_id, created_at);
+
+
+--
+-- Name: net_cfg_org_asset_captured_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX net_cfg_org_asset_captured_idx ON public.network_device_configs USING btree (org_id, asset_id, captured_at);
+
+
+--
+-- Name: net_cfg_org_asset_type_captured_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX net_cfg_org_asset_type_captured_idx ON public.network_device_configs USING btree (org_id, asset_id, config_type, captured_at);
+
+
+--
+-- Name: net_fw_org_asset_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX net_fw_org_asset_idx ON public.network_device_firmware USING btree (org_id, asset_id);
+
+
+--
+-- Name: net_fw_org_last_checked_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX net_fw_org_last_checked_idx ON public.network_device_firmware USING btree (org_id, last_checked_at);
 
 
 --
@@ -7902,6 +9719,55 @@ CREATE UNIQUE INDEX patches_source_external_id_unique ON public.patches USING bt
 
 
 --
+-- Name: peripheral_events_org_device_time_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX peripheral_events_org_device_time_idx ON public.peripheral_events USING btree (org_id, device_id, occurred_at DESC);
+
+
+--
+-- Name: peripheral_events_org_policy_time_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX peripheral_events_org_policy_time_idx ON public.peripheral_events USING btree (org_id, policy_id, occurred_at DESC);
+
+
+--
+-- Name: peripheral_events_source_event_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX peripheral_events_source_event_idx ON public.peripheral_events USING btree (org_id, device_id, source_event_id);
+
+
+--
+-- Name: peripheral_events_source_evt_uniq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX peripheral_events_source_evt_uniq ON public.peripheral_events USING btree (org_id, device_id, source_event_id);
+
+
+--
+-- Name: peripheral_events_type_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX peripheral_events_type_idx ON public.peripheral_events USING btree (event_type);
+
+
+--
+-- Name: peripheral_policy_org_active_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX peripheral_policy_org_active_idx ON public.peripheral_policies USING btree (org_id, is_active);
+
+
+--
+-- Name: peripheral_policy_org_class_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX peripheral_policy_org_class_idx ON public.peripheral_policies USING btree (org_id, device_class);
+
+
+--
 -- Name: playbook_definitions_active_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -8021,6 +9887,20 @@ CREATE INDEX policy_versions_policy_id_idx ON public.policy_versions USING btree
 
 
 --
+-- Name: recovery_readiness_org_device_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX recovery_readiness_org_device_unique ON public.recovery_readiness USING btree (org_id, device_id);
+
+
+--
+-- Name: recovery_readiness_org_score_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX recovery_readiness_org_score_idx ON public.recovery_readiness USING btree (org_id, readiness_score);
+
+
+--
 -- Name: reliability_history_device_collected_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -8063,6 +9943,13 @@ CREATE INDEX restore_jobs_device_id_idx ON public.restore_jobs USING btree (devi
 
 
 --
+-- Name: restore_jobs_org_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX restore_jobs_org_id_idx ON public.restore_jobs USING btree (org_id);
+
+
+--
 -- Name: restore_jobs_snapshot_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -8074,6 +9961,104 @@ CREATE INDEX restore_jobs_snapshot_id_idx ON public.restore_jobs USING btree (sn
 --
 
 CREATE INDEX restore_jobs_status_idx ON public.restore_jobs USING btree (status);
+
+
+--
+-- Name: s1_actions_org_status_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX s1_actions_org_status_idx ON public.s1_actions USING btree (org_id, status);
+
+
+--
+-- Name: s1_actions_provider_action_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX s1_actions_provider_action_idx ON public.s1_actions USING btree (provider_action_id);
+
+
+--
+-- Name: s1_agents_external_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX s1_agents_external_idx ON public.s1_agents USING btree (integration_id, s1_agent_id);
+
+
+--
+-- Name: s1_agents_integration_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX s1_agents_integration_idx ON public.s1_agents USING btree (integration_id);
+
+
+--
+-- Name: s1_agents_org_device_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX s1_agents_org_device_idx ON public.s1_agents USING btree (org_id, device_id);
+
+
+--
+-- Name: s1_integrations_org_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX s1_integrations_org_idx ON public.s1_integrations USING btree (org_id);
+
+
+--
+-- Name: s1_site_mappings_integration_site_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX s1_site_mappings_integration_site_idx ON public.s1_site_mappings USING btree (integration_id, site_name);
+
+
+--
+-- Name: s1_site_mappings_org_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX s1_site_mappings_org_idx ON public.s1_site_mappings USING btree (org_id);
+
+
+--
+-- Name: s1_threats_device_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX s1_threats_device_idx ON public.s1_threats USING btree (device_id);
+
+
+--
+-- Name: s1_threats_external_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX s1_threats_external_idx ON public.s1_threats USING btree (integration_id, s1_threat_id);
+
+
+--
+-- Name: s1_threats_integration_detected_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX s1_threats_integration_detected_idx ON public.s1_threats USING btree (integration_id, detected_at);
+
+
+--
+-- Name: s1_threats_integration_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX s1_threats_integration_idx ON public.s1_threats USING btree (integration_id);
+
+
+--
+-- Name: s1_threats_org_severity_status_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX s1_threats_org_severity_status_idx ON public.s1_threats USING btree (org_id, severity, status);
+
+
+--
+-- Name: s1_threats_org_status_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX s1_threats_org_status_idx ON public.s1_threats USING btree (org_id, status);
 
 
 --
@@ -8252,6 +10237,62 @@ CREATE INDEX security_threats_status_idx ON public.security_threats USING btree 
 
 
 --
+-- Name: sensitive_findings_open_dedupe_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX sensitive_findings_open_dedupe_idx ON public.sensitive_data_findings USING btree (org_id, device_id, file_path, data_type, pattern_id) WHERE ((status)::text = 'open'::text);
+
+
+--
+-- Name: sensitive_findings_org_last_seen_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX sensitive_findings_org_last_seen_idx ON public.sensitive_data_findings USING btree (org_id, last_seen_at);
+
+
+--
+-- Name: sensitive_findings_org_risk_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX sensitive_findings_org_risk_idx ON public.sensitive_data_findings USING btree (org_id, risk);
+
+
+--
+-- Name: sensitive_findings_scan_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX sensitive_findings_scan_idx ON public.sensitive_data_findings USING btree (scan_id);
+
+
+--
+-- Name: sensitive_policy_org_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX sensitive_policy_org_idx ON public.sensitive_data_policies USING btree (org_id);
+
+
+--
+-- Name: sensitive_scan_org_device_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX sensitive_scan_org_device_idx ON public.sensitive_data_scans USING btree (org_id, device_id);
+
+
+--
+-- Name: sensitive_scan_org_idempotency_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX sensitive_scan_org_idempotency_idx ON public.sensitive_data_scans USING btree (org_id, idempotency_key);
+
+
+--
+-- Name: sensitive_scan_status_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX sensitive_scan_status_idx ON public.sensitive_data_scans USING btree (status);
+
+
+--
 -- Name: snmp_devices_asset_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -8291,6 +10332,13 @@ CREATE INDEX software_catalog_category_idx ON public.software_catalog USING btre
 --
 
 CREATE INDEX software_catalog_name_idx ON public.software_catalog USING btree (name);
+
+
+--
+-- Name: software_catalog_org_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX software_catalog_org_id_idx ON public.software_catalog USING btree (org_id);
 
 
 --
@@ -8448,6 +10496,27 @@ CREATE INDEX software_versions_latest_idx ON public.software_versions USING btre
 
 
 --
+-- Name: spc_results_device_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX spc_results_device_id_idx ON public.service_process_check_results USING btree (device_id);
+
+
+--
+-- Name: spc_results_device_name_ts_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX spc_results_device_name_ts_idx ON public.service_process_check_results USING btree (device_id, name, "timestamp");
+
+
+--
+-- Name: spc_results_org_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX spc_results_org_id_idx ON public.service_process_check_results USING btree (org_id);
+
+
+--
 -- Name: time_series_metrics_device_timestamp_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -8480,6 +10549,55 @@ CREATE INDEX user_notifications_user_id_idx ON public.user_notifications USING b
 --
 
 CREATE INDEX user_notifications_user_read_idx ON public.user_notifications USING btree (user_id, read);
+
+
+--
+-- Name: user_risk_events_org_event_type_time_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX user_risk_events_org_event_type_time_idx ON public.user_risk_events USING btree (org_id, event_type, occurred_at);
+
+
+--
+-- Name: user_risk_events_org_user_time_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX user_risk_events_org_user_time_idx ON public.user_risk_events USING btree (org_id, user_id, occurred_at);
+
+
+--
+-- Name: user_risk_org_score_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX user_risk_org_score_idx ON public.user_risk_scores USING btree (org_id, score);
+
+
+--
+-- Name: user_risk_org_user_calc_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX user_risk_org_user_calc_idx ON public.user_risk_scores USING btree (org_id, user_id, calculated_at);
+
+
+--
+-- Name: user_risk_org_user_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX user_risk_org_user_idx ON public.user_risk_scores USING btree (org_id, user_id);
+
+
+--
+-- Name: user_risk_policy_org_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX user_risk_policy_org_idx ON public.user_risk_policies USING btree (org_id);
+
+
+--
+-- Name: user_risk_score_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX user_risk_score_idx ON public.user_risk_scores USING btree (score);
 
 
 --
@@ -8843,11 +10961,99 @@ ALTER TABLE ONLY public.asset_checkouts
 
 
 --
+-- Name: audit_baseline_apply_approvals audit_baseline_apply_approvals_approved_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.audit_baseline_apply_approvals
+    ADD CONSTRAINT audit_baseline_apply_approvals_approved_by_fkey FOREIGN KEY (approved_by) REFERENCES public.users(id);
+
+
+--
+-- Name: audit_baseline_apply_approvals audit_baseline_apply_approvals_baseline_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.audit_baseline_apply_approvals
+    ADD CONSTRAINT audit_baseline_apply_approvals_baseline_id_fkey FOREIGN KEY (baseline_id) REFERENCES public.audit_baselines(id) ON DELETE CASCADE;
+
+
+--
+-- Name: audit_baseline_apply_approvals audit_baseline_apply_approvals_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.audit_baseline_apply_approvals
+    ADD CONSTRAINT audit_baseline_apply_approvals_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: audit_baseline_apply_approvals audit_baseline_apply_approvals_requested_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.audit_baseline_apply_approvals
+    ADD CONSTRAINT audit_baseline_apply_approvals_requested_by_fkey FOREIGN KEY (requested_by) REFERENCES public.users(id);
+
+
+--
+-- Name: audit_baseline_results audit_baseline_results_baseline_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.audit_baseline_results
+    ADD CONSTRAINT audit_baseline_results_baseline_id_fkey FOREIGN KEY (baseline_id) REFERENCES public.audit_baselines(id) ON DELETE CASCADE;
+
+
+--
+-- Name: audit_baseline_results audit_baseline_results_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.audit_baseline_results
+    ADD CONSTRAINT audit_baseline_results_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.devices(id);
+
+
+--
+-- Name: audit_baseline_results audit_baseline_results_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.audit_baseline_results
+    ADD CONSTRAINT audit_baseline_results_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: audit_baselines audit_baselines_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.audit_baselines
+    ADD CONSTRAINT audit_baselines_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- Name: audit_baselines audit_baselines_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.audit_baselines
+    ADD CONSTRAINT audit_baselines_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
 -- Name: audit_logs audit_logs_org_id_organizations_id_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.audit_logs
     ADD CONSTRAINT audit_logs_org_id_organizations_id_fk FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: audit_policy_states audit_policy_states_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.audit_policy_states
+    ADD CONSTRAINT audit_policy_states_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.devices(id);
+
+
+--
+-- Name: audit_policy_states audit_policy_states_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.audit_policy_states
+    ADD CONSTRAINT audit_policy_states_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
 
 
 --
@@ -8947,11 +11153,43 @@ ALTER TABLE ONLY public.backup_jobs
 
 
 --
+-- Name: backup_jobs backup_jobs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backup_jobs
+    ADD CONSTRAINT backup_jobs_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: backup_jobs backup_jobs_policy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backup_jobs
+    ADD CONSTRAINT backup_jobs_policy_id_fkey FOREIGN KEY (policy_id) REFERENCES public.backup_policies(id);
+
+
+--
 -- Name: backup_policies backup_policies_config_id_backup_configs_id_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.backup_policies
     ADD CONSTRAINT backup_policies_config_id_backup_configs_id_fk FOREIGN KEY (config_id) REFERENCES public.backup_configs(id);
+
+
+--
+-- Name: backup_policies backup_policies_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backup_policies
+    ADD CONSTRAINT backup_policies_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: backup_snapshots backup_snapshots_config_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backup_snapshots
+    ADD CONSTRAINT backup_snapshots_config_id_fkey FOREIGN KEY (config_id) REFERENCES public.backup_configs(id);
 
 
 --
@@ -8971,11 +11209,51 @@ ALTER TABLE ONLY public.backup_snapshots
 
 
 --
+-- Name: backup_snapshots backup_snapshots_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backup_snapshots
+    ADD CONSTRAINT backup_snapshots_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
 -- Name: backup_snapshots backup_snapshots_parent_snapshot_id_backup_snapshots_id_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.backup_snapshots
     ADD CONSTRAINT backup_snapshots_parent_snapshot_id_backup_snapshots_id_fk FOREIGN KEY (parent_snapshot_id) REFERENCES public.backup_snapshots(id);
+
+
+--
+-- Name: backup_verifications backup_verifications_backup_job_id_backup_jobs_id_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backup_verifications
+    ADD CONSTRAINT backup_verifications_backup_job_id_backup_jobs_id_fk FOREIGN KEY (backup_job_id) REFERENCES public.backup_jobs(id);
+
+
+--
+-- Name: backup_verifications backup_verifications_device_id_devices_id_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backup_verifications
+    ADD CONSTRAINT backup_verifications_device_id_devices_id_fk FOREIGN KEY (device_id) REFERENCES public.devices(id);
+
+
+--
+-- Name: backup_verifications backup_verifications_org_id_organizations_id_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backup_verifications
+    ADD CONSTRAINT backup_verifications_org_id_organizations_id_fk FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: backup_verifications backup_verifications_snapshot_id_backup_snapshots_id_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backup_verifications
+    ADD CONSTRAINT backup_verifications_snapshot_id_backup_snapshots_id_fk FOREIGN KEY (snapshot_id) REFERENCES public.backup_snapshots(id);
 
 
 --
@@ -8992,6 +11270,62 @@ ALTER TABLE ONLY public.brain_device_context
 
 ALTER TABLE ONLY public.brain_device_context
     ADD CONSTRAINT brain_device_context_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: browser_extensions browser_extensions_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.browser_extensions
+    ADD CONSTRAINT browser_extensions_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.devices(id);
+
+
+--
+-- Name: browser_extensions browser_extensions_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.browser_extensions
+    ADD CONSTRAINT browser_extensions_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: browser_policies browser_policies_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.browser_policies
+    ADD CONSTRAINT browser_policies_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- Name: browser_policies browser_policies_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.browser_policies
+    ADD CONSTRAINT browser_policies_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: browser_policy_violations browser_policy_violations_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.browser_policy_violations
+    ADD CONSTRAINT browser_policy_violations_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.devices(id);
+
+
+--
+-- Name: browser_policy_violations browser_policy_violations_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.browser_policy_violations
+    ADD CONSTRAINT browser_policy_violations_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: browser_policy_violations browser_policy_violations_policy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.browser_policy_violations
+    ADD CONSTRAINT browser_policy_violations_policy_id_fkey FOREIGN KEY (policy_id) REFERENCES public.browser_policies(id);
 
 
 --
@@ -9016,6 +11350,94 @@ ALTER TABLE ONLY public.capacity_predictions
 
 ALTER TABLE ONLY public.capacity_thresholds
     ADD CONSTRAINT capacity_thresholds_org_id_organizations_id_fk FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: cis_baseline_results cis_baseline_results_baseline_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cis_baseline_results
+    ADD CONSTRAINT cis_baseline_results_baseline_id_fkey FOREIGN KEY (baseline_id) REFERENCES public.cis_baselines(id) ON DELETE CASCADE;
+
+
+--
+-- Name: cis_baseline_results cis_baseline_results_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cis_baseline_results
+    ADD CONSTRAINT cis_baseline_results_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.devices(id);
+
+
+--
+-- Name: cis_baseline_results cis_baseline_results_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cis_baseline_results
+    ADD CONSTRAINT cis_baseline_results_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: cis_baselines cis_baselines_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cis_baselines
+    ADD CONSTRAINT cis_baselines_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- Name: cis_baselines cis_baselines_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cis_baselines
+    ADD CONSTRAINT cis_baselines_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: cis_remediation_actions cis_remediation_actions_approved_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cis_remediation_actions
+    ADD CONSTRAINT cis_remediation_actions_approved_by_fkey FOREIGN KEY (approved_by) REFERENCES public.users(id);
+
+
+--
+-- Name: cis_remediation_actions cis_remediation_actions_baseline_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cis_remediation_actions
+    ADD CONSTRAINT cis_remediation_actions_baseline_id_fkey FOREIGN KEY (baseline_id) REFERENCES public.cis_baselines(id) ON DELETE SET NULL;
+
+
+--
+-- Name: cis_remediation_actions cis_remediation_actions_baseline_result_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cis_remediation_actions
+    ADD CONSTRAINT cis_remediation_actions_baseline_result_id_fkey FOREIGN KEY (baseline_result_id) REFERENCES public.cis_baseline_results(id) ON DELETE SET NULL;
+
+
+--
+-- Name: cis_remediation_actions cis_remediation_actions_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cis_remediation_actions
+    ADD CONSTRAINT cis_remediation_actions_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.devices(id);
+
+
+--
+-- Name: cis_remediation_actions cis_remediation_actions_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cis_remediation_actions
+    ADD CONSTRAINT cis_remediation_actions_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: cis_remediation_actions cis_remediation_actions_requested_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cis_remediation_actions
+    ADD CONSTRAINT cis_remediation_actions_requested_by_fkey FOREIGN KEY (requested_by) REFERENCES public.users(id);
 
 
 --
@@ -9091,11 +11513,35 @@ ALTER TABLE ONLY public.config_policy_maintenance_settings
 
 
 --
+-- Name: config_policy_monitoring_settings config_policy_monitoring_settings_feature_link_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.config_policy_monitoring_settings
+    ADD CONSTRAINT config_policy_monitoring_settings_feature_link_id_fkey FOREIGN KEY (feature_link_id) REFERENCES public.config_policy_feature_links(id) ON DELETE CASCADE;
+
+
+--
+-- Name: config_policy_monitoring_watches config_policy_monitoring_watches_settings_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.config_policy_monitoring_watches
+    ADD CONSTRAINT config_policy_monitoring_watches_settings_id_fkey FOREIGN KEY (settings_id) REFERENCES public.config_policy_monitoring_settings(id) ON DELETE CASCADE;
+
+
+--
 -- Name: config_policy_patch_settings config_policy_patch_settings_feature_link_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.config_policy_patch_settings
     ADD CONSTRAINT config_policy_patch_settings_feature_link_id_fkey FOREIGN KEY (feature_link_id) REFERENCES public.config_policy_feature_links(id) ON DELETE CASCADE;
+
+
+--
+-- Name: config_policy_sensitive_data_settings config_policy_sensitive_data_settings_feature_link_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.config_policy_sensitive_data_settings
+    ADD CONSTRAINT config_policy_sensitive_data_settings_feature_link_id_fkey FOREIGN KEY (feature_link_id) REFERENCES public.config_policy_feature_links(id) ON DELETE CASCADE;
 
 
 --
@@ -9747,6 +12193,118 @@ ALTER TABLE ONLY public.group_membership_log
 
 
 --
+-- Name: huntress_agents huntress_agents_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.huntress_agents
+    ADD CONSTRAINT huntress_agents_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.devices(id);
+
+
+--
+-- Name: huntress_agents huntress_agents_integration_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.huntress_agents
+    ADD CONSTRAINT huntress_agents_integration_id_fkey FOREIGN KEY (integration_id) REFERENCES public.huntress_integrations(id);
+
+
+--
+-- Name: huntress_agents huntress_agents_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.huntress_agents
+    ADD CONSTRAINT huntress_agents_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: huntress_incidents huntress_incidents_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.huntress_incidents
+    ADD CONSTRAINT huntress_incidents_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.devices(id);
+
+
+--
+-- Name: huntress_incidents huntress_incidents_integration_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.huntress_incidents
+    ADD CONSTRAINT huntress_incidents_integration_id_fkey FOREIGN KEY (integration_id) REFERENCES public.huntress_integrations(id);
+
+
+--
+-- Name: huntress_incidents huntress_incidents_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.huntress_incidents
+    ADD CONSTRAINT huntress_incidents_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: huntress_integrations huntress_integrations_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.huntress_integrations
+    ADD CONSTRAINT huntress_integrations_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- Name: huntress_integrations huntress_integrations_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.huntress_integrations
+    ADD CONSTRAINT huntress_integrations_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: incident_actions incident_actions_incident_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.incident_actions
+    ADD CONSTRAINT incident_actions_incident_id_fkey FOREIGN KEY (incident_id) REFERENCES public.incidents(id);
+
+
+--
+-- Name: incident_actions incident_actions_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.incident_actions
+    ADD CONSTRAINT incident_actions_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: incident_evidence incident_evidence_incident_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.incident_evidence
+    ADD CONSTRAINT incident_evidence_incident_id_fkey FOREIGN KEY (incident_id) REFERENCES public.incidents(id);
+
+
+--
+-- Name: incident_evidence incident_evidence_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.incident_evidence
+    ADD CONSTRAINT incident_evidence_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: incidents incidents_assigned_to_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.incidents
+    ADD CONSTRAINT incidents_assigned_to_fkey FOREIGN KEY (assigned_to) REFERENCES public.users(id);
+
+
+--
+-- Name: incidents incidents_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.incidents
+    ADD CONSTRAINT incidents_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
 -- Name: log_correlation_rules log_correlation_rules_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -9928,6 +12486,70 @@ ALTER TABLE ONLY public.network_change_events
 
 ALTER TABLE ONLY public.network_change_events
     ADD CONSTRAINT network_change_events_site_id_fkey FOREIGN KEY (site_id) REFERENCES public.sites(id);
+
+
+--
+-- Name: network_config_diffs network_config_diffs_asset_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.network_config_diffs
+    ADD CONSTRAINT network_config_diffs_asset_id_fkey FOREIGN KEY (asset_id) REFERENCES public.discovered_assets(id) ON DELETE CASCADE;
+
+
+--
+-- Name: network_config_diffs network_config_diffs_current_config_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.network_config_diffs
+    ADD CONSTRAINT network_config_diffs_current_config_id_fkey FOREIGN KEY (current_config_id) REFERENCES public.network_device_configs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: network_config_diffs network_config_diffs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.network_config_diffs
+    ADD CONSTRAINT network_config_diffs_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: network_config_diffs network_config_diffs_previous_config_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.network_config_diffs
+    ADD CONSTRAINT network_config_diffs_previous_config_id_fkey FOREIGN KEY (previous_config_id) REFERENCES public.network_device_configs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: network_device_configs network_device_configs_asset_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.network_device_configs
+    ADD CONSTRAINT network_device_configs_asset_id_fkey FOREIGN KEY (asset_id) REFERENCES public.discovered_assets(id) ON DELETE CASCADE;
+
+
+--
+-- Name: network_device_configs network_device_configs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.network_device_configs
+    ADD CONSTRAINT network_device_configs_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: network_device_firmware network_device_firmware_asset_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.network_device_firmware
+    ADD CONSTRAINT network_device_firmware_asset_id_fkey FOREIGN KEY (asset_id) REFERENCES public.discovered_assets(id) ON DELETE CASCADE;
+
+
+--
+-- Name: network_device_firmware network_device_firmware_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.network_device_firmware
+    ADD CONSTRAINT network_device_firmware_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
 
 
 --
@@ -10251,6 +12873,46 @@ ALTER TABLE ONLY public.patch_rollbacks
 
 
 --
+-- Name: peripheral_events peripheral_events_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.peripheral_events
+    ADD CONSTRAINT peripheral_events_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.devices(id);
+
+
+--
+-- Name: peripheral_events peripheral_events_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.peripheral_events
+    ADD CONSTRAINT peripheral_events_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: peripheral_events peripheral_events_policy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.peripheral_events
+    ADD CONSTRAINT peripheral_events_policy_id_fkey FOREIGN KEY (policy_id) REFERENCES public.peripheral_policies(id);
+
+
+--
+-- Name: peripheral_policies peripheral_policies_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.peripheral_policies
+    ADD CONSTRAINT peripheral_policies_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- Name: peripheral_policies peripheral_policies_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.peripheral_policies
+    ADD CONSTRAINT peripheral_policies_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
 -- Name: playbook_definitions playbook_definitions_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -10499,6 +13161,22 @@ ALTER TABLE ONLY public.push_notifications
 
 
 --
+-- Name: recovery_readiness recovery_readiness_device_id_devices_id_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.recovery_readiness
+    ADD CONSTRAINT recovery_readiness_device_id_devices_id_fk FOREIGN KEY (device_id) REFERENCES public.devices(id);
+
+
+--
+-- Name: recovery_readiness recovery_readiness_org_id_organizations_id_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.recovery_readiness
+    ADD CONSTRAINT recovery_readiness_org_id_organizations_id_fk FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
 -- Name: remote_sessions remote_sessions_device_id_devices_id_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -10555,6 +13233,14 @@ ALTER TABLE ONLY public.restore_jobs
 
 
 --
+-- Name: restore_jobs restore_jobs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.restore_jobs
+    ADD CONSTRAINT restore_jobs_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
 -- Name: restore_jobs restore_jobs_snapshot_id_backup_snapshots_id_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -10592,6 +13278,110 @@ ALTER TABLE ONLY public.roles
 
 ALTER TABLE ONLY public.roles
     ADD CONSTRAINT roles_partner_id_partners_id_fk FOREIGN KEY (partner_id) REFERENCES public.partners(id);
+
+
+--
+-- Name: s1_actions s1_actions_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.s1_actions
+    ADD CONSTRAINT s1_actions_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.devices(id);
+
+
+--
+-- Name: s1_actions s1_actions_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.s1_actions
+    ADD CONSTRAINT s1_actions_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: s1_actions s1_actions_requested_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.s1_actions
+    ADD CONSTRAINT s1_actions_requested_by_fkey FOREIGN KEY (requested_by) REFERENCES public.users(id);
+
+
+--
+-- Name: s1_agents s1_agents_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.s1_agents
+    ADD CONSTRAINT s1_agents_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.devices(id);
+
+
+--
+-- Name: s1_agents s1_agents_integration_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.s1_agents
+    ADD CONSTRAINT s1_agents_integration_id_fkey FOREIGN KEY (integration_id) REFERENCES public.s1_integrations(id);
+
+
+--
+-- Name: s1_agents s1_agents_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.s1_agents
+    ADD CONSTRAINT s1_agents_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: s1_integrations s1_integrations_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.s1_integrations
+    ADD CONSTRAINT s1_integrations_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- Name: s1_integrations s1_integrations_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.s1_integrations
+    ADD CONSTRAINT s1_integrations_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: s1_site_mappings s1_site_mappings_integration_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.s1_site_mappings
+    ADD CONSTRAINT s1_site_mappings_integration_id_fkey FOREIGN KEY (integration_id) REFERENCES public.s1_integrations(id);
+
+
+--
+-- Name: s1_site_mappings s1_site_mappings_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.s1_site_mappings
+    ADD CONSTRAINT s1_site_mappings_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: s1_threats s1_threats_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.s1_threats
+    ADD CONSTRAINT s1_threats_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.devices(id);
+
+
+--
+-- Name: s1_threats s1_threats_integration_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.s1_threats
+    ADD CONSTRAINT s1_threats_integration_id_fkey FOREIGN KEY (integration_id) REFERENCES public.s1_integrations(id);
+
+
+--
+-- Name: s1_threats s1_threats_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.s1_threats
+    ADD CONSTRAINT s1_threats_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
 
 
 --
@@ -10803,6 +13593,94 @@ ALTER TABLE ONLY public.security_threats
 
 
 --
+-- Name: sensitive_data_findings sensitive_data_findings_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sensitive_data_findings
+    ADD CONSTRAINT sensitive_data_findings_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.devices(id);
+
+
+--
+-- Name: sensitive_data_findings sensitive_data_findings_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sensitive_data_findings
+    ADD CONSTRAINT sensitive_data_findings_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: sensitive_data_findings sensitive_data_findings_scan_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sensitive_data_findings
+    ADD CONSTRAINT sensitive_data_findings_scan_id_fkey FOREIGN KEY (scan_id) REFERENCES public.sensitive_data_scans(id);
+
+
+--
+-- Name: sensitive_data_policies sensitive_data_policies_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sensitive_data_policies
+    ADD CONSTRAINT sensitive_data_policies_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- Name: sensitive_data_policies sensitive_data_policies_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sensitive_data_policies
+    ADD CONSTRAINT sensitive_data_policies_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: sensitive_data_scans sensitive_data_scans_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sensitive_data_scans
+    ADD CONSTRAINT sensitive_data_scans_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.devices(id);
+
+
+--
+-- Name: sensitive_data_scans sensitive_data_scans_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sensitive_data_scans
+    ADD CONSTRAINT sensitive_data_scans_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: sensitive_data_scans sensitive_data_scans_policy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sensitive_data_scans
+    ADD CONSTRAINT sensitive_data_scans_policy_id_fkey FOREIGN KEY (policy_id) REFERENCES public.sensitive_data_policies(id);
+
+
+--
+-- Name: sensitive_data_scans sensitive_data_scans_requested_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sensitive_data_scans
+    ADD CONSTRAINT sensitive_data_scans_requested_by_fkey FOREIGN KEY (requested_by) REFERENCES public.users(id);
+
+
+--
+-- Name: service_process_check_results service_process_check_results_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_process_check_results
+    ADD CONSTRAINT service_process_check_results_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.devices(id);
+
+
+--
+-- Name: service_process_check_results service_process_check_results_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_process_check_results
+    ADD CONSTRAINT service_process_check_results_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
 -- Name: sessions sessions_user_id_users_id_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -10880,6 +13758,14 @@ ALTER TABLE ONLY public.snmp_devices
 
 ALTER TABLE ONLY public.snmp_metrics
     ADD CONSTRAINT snmp_metrics_device_id_snmp_devices_id_fk FOREIGN KEY (device_id) REFERENCES public.snmp_devices(id);
+
+
+--
+-- Name: software_catalog software_catalog_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.software_catalog
+    ADD CONSTRAINT software_catalog_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
 
 
 --
@@ -11115,6 +14001,54 @@ ALTER TABLE ONLY public.user_notifications
 
 
 --
+-- Name: user_risk_events user_risk_events_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_risk_events
+    ADD CONSTRAINT user_risk_events_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: user_risk_events user_risk_events_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_risk_events
+    ADD CONSTRAINT user_risk_events_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id);
+
+
+--
+-- Name: user_risk_policies user_risk_policies_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_risk_policies
+    ADD CONSTRAINT user_risk_policies_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: user_risk_policies user_risk_policies_updated_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_risk_policies
+    ADD CONSTRAINT user_risk_policies_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id);
+
+
+--
+-- Name: user_risk_scores user_risk_scores_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_risk_scores
+    ADD CONSTRAINT user_risk_scores_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: user_risk_scores user_risk_scores_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_risk_scores
+    ADD CONSTRAINT user_risk_scores_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id);
+
+
+--
 -- Name: user_sso_identities user_sso_identities_provider_id_sso_providers_id_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -11254,10 +14188,34 @@ ALTER TABLE public.api_keys ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.asset_checkouts ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: audit_baseline_apply_approvals; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.audit_baseline_apply_approvals ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: audit_baseline_results; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.audit_baseline_results ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: audit_baselines; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.audit_baselines ENABLE ROW LEVEL SECURITY;
+
+--
 -- Name: audit_logs; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
 ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: audit_policy_states; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.audit_policy_states ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: audit_retention_policies; Type: ROW SECURITY; Schema: public; Owner: -
@@ -11367,10 +14325,38 @@ CREATE POLICY breeze_org_isolation_delete ON public.asset_checkouts FOR DELETE U
 
 
 --
+-- Name: audit_baseline_apply_approvals breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.audit_baseline_apply_approvals FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: audit_baseline_results breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.audit_baseline_results FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: audit_baselines breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.audit_baselines FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
 -- Name: audit_logs breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY breeze_org_isolation_delete ON public.audit_logs FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: audit_policy_states breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.audit_policy_states FOR DELETE USING (public.breeze_has_org_access(org_id));
 
 
 --
@@ -11402,6 +14388,27 @@ CREATE POLICY breeze_org_isolation_delete ON public.backup_configs FOR DELETE US
 
 
 --
+-- Name: browser_extensions breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.browser_extensions FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: browser_policies breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.browser_policies FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: browser_policy_violations breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.browser_policy_violations FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
 -- Name: capacity_predictions breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -11413,6 +14420,34 @@ CREATE POLICY breeze_org_isolation_delete ON public.capacity_predictions FOR DEL
 --
 
 CREATE POLICY breeze_org_isolation_delete ON public.capacity_thresholds FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: cis_baseline_results breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.cis_baseline_results FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: cis_baselines breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.cis_baselines FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: cis_check_catalog breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.cis_check_catalog FOR DELETE USING (true);
+
+
+--
+-- Name: cis_remediation_actions breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.cis_remediation_actions FOR DELETE USING (public.breeze_has_org_access(org_id));
 
 
 --
@@ -11563,6 +14598,48 @@ CREATE POLICY breeze_org_isolation_delete ON public.executive_summaries FOR DELE
 
 
 --
+-- Name: huntress_agents breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.huntress_agents FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: huntress_incidents breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.huntress_incidents FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: huntress_integrations breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.huntress_integrations FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: incident_actions breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.incident_actions FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: incident_evidence breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.incident_evidence FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: incidents breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.incidents FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
 -- Name: log_correlation_rules breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -11602,6 +14679,27 @@ CREATE POLICY breeze_org_isolation_delete ON public.network_baselines FOR DELETE
 --
 
 CREATE POLICY breeze_org_isolation_delete ON public.network_change_events FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: network_config_diffs breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.network_config_diffs FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: network_device_configs breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.network_device_configs FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: network_device_firmware breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.network_device_firmware FOR DELETE USING (public.breeze_has_org_access(org_id));
 
 
 --
@@ -11668,6 +14766,20 @@ CREATE POLICY breeze_org_isolation_delete ON public.patch_policies FOR DELETE US
 
 
 --
+-- Name: peripheral_events breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.peripheral_events FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: peripheral_policies breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.peripheral_policies FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
 -- Name: plugin_installations breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -11728,6 +14840,41 @@ CREATE POLICY breeze_org_isolation_delete ON public.reports FOR DELETE USING (pu
 --
 
 CREATE POLICY breeze_org_isolation_delete ON public.roles FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: s1_actions breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.s1_actions FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: s1_agents breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.s1_agents FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: s1_integrations breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.s1_integrations FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: s1_site_mappings breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.s1_site_mappings FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: s1_threats breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.s1_threats FOR DELETE USING (public.breeze_has_org_access(org_id));
 
 
 --
@@ -11815,6 +14962,13 @@ CREATE POLICY breeze_org_isolation_delete ON public.snmp_devices FOR DELETE USIN
 
 
 --
+-- Name: software_catalog breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.software_catalog FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
 -- Name: software_compliance_status breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -11870,6 +15024,27 @@ CREATE POLICY breeze_org_isolation_delete ON public.time_series_metrics FOR DELE
 --
 
 CREATE POLICY breeze_org_isolation_delete ON public.user_notifications FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: user_risk_events breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.user_risk_events FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: user_risk_policies breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.user_risk_policies FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: user_risk_scores breeze_org_isolation_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_delete ON public.user_risk_scores FOR DELETE USING (public.breeze_has_org_access(org_id));
 
 
 --
@@ -11950,10 +15125,38 @@ CREATE POLICY breeze_org_isolation_insert ON public.asset_checkouts FOR INSERT W
 
 
 --
+-- Name: audit_baseline_apply_approvals breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.audit_baseline_apply_approvals FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: audit_baseline_results breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.audit_baseline_results FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: audit_baselines breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.audit_baselines FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
 -- Name: audit_logs breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY breeze_org_isolation_insert ON public.audit_logs FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: audit_policy_states breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.audit_policy_states FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
 
 
 --
@@ -11985,6 +15188,27 @@ CREATE POLICY breeze_org_isolation_insert ON public.backup_configs FOR INSERT WI
 
 
 --
+-- Name: browser_extensions breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.browser_extensions FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: browser_policies breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.browser_policies FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: browser_policy_violations breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.browser_policy_violations FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
 -- Name: capacity_predictions breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -11996,6 +15220,34 @@ CREATE POLICY breeze_org_isolation_insert ON public.capacity_predictions FOR INS
 --
 
 CREATE POLICY breeze_org_isolation_insert ON public.capacity_thresholds FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: cis_baseline_results breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.cis_baseline_results FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: cis_baselines breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.cis_baselines FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: cis_check_catalog breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.cis_check_catalog FOR INSERT WITH CHECK (true);
+
+
+--
+-- Name: cis_remediation_actions breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.cis_remediation_actions FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
 
 
 --
@@ -12146,6 +15398,48 @@ CREATE POLICY breeze_org_isolation_insert ON public.executive_summaries FOR INSE
 
 
 --
+-- Name: huntress_agents breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.huntress_agents FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: huntress_incidents breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.huntress_incidents FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: huntress_integrations breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.huntress_integrations FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: incident_actions breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.incident_actions FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: incident_evidence breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.incident_evidence FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: incidents breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.incidents FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
 -- Name: log_correlation_rules breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -12185,6 +15479,27 @@ CREATE POLICY breeze_org_isolation_insert ON public.network_baselines FOR INSERT
 --
 
 CREATE POLICY breeze_org_isolation_insert ON public.network_change_events FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: network_config_diffs breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.network_config_diffs FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: network_device_configs breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.network_device_configs FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: network_device_firmware breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.network_device_firmware FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
 
 
 --
@@ -12251,6 +15566,20 @@ CREATE POLICY breeze_org_isolation_insert ON public.patch_policies FOR INSERT WI
 
 
 --
+-- Name: peripheral_events breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.peripheral_events FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: peripheral_policies breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.peripheral_policies FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
 -- Name: plugin_installations breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -12311,6 +15640,41 @@ CREATE POLICY breeze_org_isolation_insert ON public.reports FOR INSERT WITH CHEC
 --
 
 CREATE POLICY breeze_org_isolation_insert ON public.roles FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: s1_actions breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.s1_actions FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: s1_agents breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.s1_agents FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: s1_integrations breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.s1_integrations FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: s1_site_mappings breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.s1_site_mappings FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: s1_threats breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.s1_threats FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
 
 
 --
@@ -12398,6 +15762,13 @@ CREATE POLICY breeze_org_isolation_insert ON public.snmp_devices FOR INSERT WITH
 
 
 --
+-- Name: software_catalog breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.software_catalog FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
 -- Name: software_compliance_status breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -12453,6 +15824,27 @@ CREATE POLICY breeze_org_isolation_insert ON public.time_series_metrics FOR INSE
 --
 
 CREATE POLICY breeze_org_isolation_insert ON public.user_notifications FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: user_risk_events breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.user_risk_events FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: user_risk_policies breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.user_risk_policies FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: user_risk_scores breeze_org_isolation_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_insert ON public.user_risk_scores FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
 
 
 --
@@ -12533,10 +15925,38 @@ CREATE POLICY breeze_org_isolation_select ON public.asset_checkouts FOR SELECT U
 
 
 --
+-- Name: audit_baseline_apply_approvals breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.audit_baseline_apply_approvals FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: audit_baseline_results breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.audit_baseline_results FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: audit_baselines breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.audit_baselines FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
 -- Name: audit_logs breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY breeze_org_isolation_select ON public.audit_logs FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: audit_policy_states breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.audit_policy_states FOR SELECT USING (public.breeze_has_org_access(org_id));
 
 
 --
@@ -12568,6 +15988,27 @@ CREATE POLICY breeze_org_isolation_select ON public.backup_configs FOR SELECT US
 
 
 --
+-- Name: browser_extensions breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.browser_extensions FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: browser_policies breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.browser_policies FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: browser_policy_violations breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.browser_policy_violations FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
 -- Name: capacity_predictions breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -12579,6 +16020,34 @@ CREATE POLICY breeze_org_isolation_select ON public.capacity_predictions FOR SEL
 --
 
 CREATE POLICY breeze_org_isolation_select ON public.capacity_thresholds FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: cis_baseline_results breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.cis_baseline_results FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: cis_baselines breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.cis_baselines FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: cis_check_catalog breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.cis_check_catalog FOR SELECT USING (true);
+
+
+--
+-- Name: cis_remediation_actions breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.cis_remediation_actions FOR SELECT USING (public.breeze_has_org_access(org_id));
 
 
 --
@@ -12729,6 +16198,48 @@ CREATE POLICY breeze_org_isolation_select ON public.executive_summaries FOR SELE
 
 
 --
+-- Name: huntress_agents breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.huntress_agents FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: huntress_incidents breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.huntress_incidents FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: huntress_integrations breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.huntress_integrations FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: incident_actions breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.incident_actions FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: incident_evidence breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.incident_evidence FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: incidents breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.incidents FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
 -- Name: log_correlation_rules breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -12768,6 +16279,27 @@ CREATE POLICY breeze_org_isolation_select ON public.network_baselines FOR SELECT
 --
 
 CREATE POLICY breeze_org_isolation_select ON public.network_change_events FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: network_config_diffs breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.network_config_diffs FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: network_device_configs breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.network_device_configs FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: network_device_firmware breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.network_device_firmware FOR SELECT USING (public.breeze_has_org_access(org_id));
 
 
 --
@@ -12834,6 +16366,20 @@ CREATE POLICY breeze_org_isolation_select ON public.patch_policies FOR SELECT US
 
 
 --
+-- Name: peripheral_events breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.peripheral_events FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: peripheral_policies breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.peripheral_policies FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
 -- Name: plugin_installations breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -12894,6 +16440,41 @@ CREATE POLICY breeze_org_isolation_select ON public.reports FOR SELECT USING (pu
 --
 
 CREATE POLICY breeze_org_isolation_select ON public.roles FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: s1_actions breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.s1_actions FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: s1_agents breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.s1_agents FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: s1_integrations breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.s1_integrations FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: s1_site_mappings breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.s1_site_mappings FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: s1_threats breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.s1_threats FOR SELECT USING (public.breeze_has_org_access(org_id));
 
 
 --
@@ -12981,6 +16562,13 @@ CREATE POLICY breeze_org_isolation_select ON public.snmp_devices FOR SELECT USIN
 
 
 --
+-- Name: software_catalog breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.software_catalog FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
 -- Name: software_compliance_status breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -13036,6 +16624,27 @@ CREATE POLICY breeze_org_isolation_select ON public.time_series_metrics FOR SELE
 --
 
 CREATE POLICY breeze_org_isolation_select ON public.user_notifications FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: user_risk_events breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.user_risk_events FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: user_risk_policies breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.user_risk_policies FOR SELECT USING (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: user_risk_scores breeze_org_isolation_select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_select ON public.user_risk_scores FOR SELECT USING (public.breeze_has_org_access(org_id));
 
 
 --
@@ -13116,10 +16725,38 @@ CREATE POLICY breeze_org_isolation_update ON public.asset_checkouts FOR UPDATE U
 
 
 --
+-- Name: audit_baseline_apply_approvals breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.audit_baseline_apply_approvals FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: audit_baseline_results breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.audit_baseline_results FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: audit_baselines breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.audit_baselines FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
 -- Name: audit_logs breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY breeze_org_isolation_update ON public.audit_logs FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: audit_policy_states breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.audit_policy_states FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
 
 
 --
@@ -13151,6 +16788,27 @@ CREATE POLICY breeze_org_isolation_update ON public.backup_configs FOR UPDATE US
 
 
 --
+-- Name: browser_extensions breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.browser_extensions FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: browser_policies breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.browser_policies FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: browser_policy_violations breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.browser_policy_violations FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
 -- Name: capacity_predictions breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -13162,6 +16820,34 @@ CREATE POLICY breeze_org_isolation_update ON public.capacity_predictions FOR UPD
 --
 
 CREATE POLICY breeze_org_isolation_update ON public.capacity_thresholds FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: cis_baseline_results breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.cis_baseline_results FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: cis_baselines breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.cis_baselines FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: cis_check_catalog breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.cis_check_catalog FOR UPDATE USING (true) WITH CHECK (true);
+
+
+--
+-- Name: cis_remediation_actions breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.cis_remediation_actions FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
 
 
 --
@@ -13312,6 +16998,48 @@ CREATE POLICY breeze_org_isolation_update ON public.executive_summaries FOR UPDA
 
 
 --
+-- Name: huntress_agents breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.huntress_agents FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: huntress_incidents breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.huntress_incidents FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: huntress_integrations breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.huntress_integrations FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: incident_actions breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.incident_actions FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: incident_evidence breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.incident_evidence FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: incidents breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.incidents FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
 -- Name: log_correlation_rules breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -13351,6 +17079,27 @@ CREATE POLICY breeze_org_isolation_update ON public.network_baselines FOR UPDATE
 --
 
 CREATE POLICY breeze_org_isolation_update ON public.network_change_events FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: network_config_diffs breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.network_config_diffs FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: network_device_configs breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.network_device_configs FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: network_device_firmware breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.network_device_firmware FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
 
 
 --
@@ -13417,6 +17166,20 @@ CREATE POLICY breeze_org_isolation_update ON public.patch_policies FOR UPDATE US
 
 
 --
+-- Name: peripheral_events breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.peripheral_events FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: peripheral_policies breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.peripheral_policies FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
 -- Name: plugin_installations breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -13477,6 +17240,41 @@ CREATE POLICY breeze_org_isolation_update ON public.reports FOR UPDATE USING (pu
 --
 
 CREATE POLICY breeze_org_isolation_update ON public.roles FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: s1_actions breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.s1_actions FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: s1_agents breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.s1_agents FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: s1_integrations breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.s1_integrations FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: s1_site_mappings breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.s1_site_mappings FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: s1_threats breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.s1_threats FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
 
 
 --
@@ -13564,6 +17362,13 @@ CREATE POLICY breeze_org_isolation_update ON public.snmp_devices FOR UPDATE USIN
 
 
 --
+-- Name: software_catalog breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.software_catalog FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
 -- Name: software_compliance_status breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -13624,6 +17429,27 @@ CREATE POLICY breeze_org_isolation_update ON public.user_notifications FOR UPDAT
 
 
 --
+-- Name: user_risk_events breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.user_risk_events FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: user_risk_policies breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.user_risk_policies FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
+-- Name: user_risk_scores breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY breeze_org_isolation_update ON public.user_risk_scores FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+
+
+--
 -- Name: webhooks breeze_org_isolation_update; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -13669,6 +17495,24 @@ CREATE POLICY breeze_partner_isolation_update ON public.network_known_guests FOR
 
 
 --
+-- Name: browser_extensions; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.browser_extensions ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: browser_policies; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.browser_policies ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: browser_policy_violations; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.browser_policy_violations ENABLE ROW LEVEL SECURITY;
+
+--
 -- Name: capacity_predictions; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -13679,6 +17523,30 @@ ALTER TABLE public.capacity_predictions ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE public.capacity_thresholds ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: cis_baseline_results; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.cis_baseline_results ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: cis_baselines; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.cis_baselines ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: cis_check_catalog; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.cis_check_catalog ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: cis_remediation_actions; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.cis_remediation_actions ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: config_policy_alert_rules; Type: ROW SECURITY; Schema: public; Owner: -
@@ -13959,6 +17827,42 @@ ALTER TABLE public.event_bus_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.executive_summaries ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: huntress_agents; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.huntress_agents ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: huntress_incidents; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.huntress_incidents ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: huntress_integrations; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.huntress_integrations ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: incident_actions; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.incident_actions ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: incident_evidence; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.incident_evidence ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: incidents; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.incidents ENABLE ROW LEVEL SECURITY;
+
+--
 -- Name: log_correlation_rules; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -13993,6 +17897,24 @@ ALTER TABLE public.network_baselines ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE public.network_change_events ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: network_config_diffs; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.network_config_diffs ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: network_device_configs; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.network_device_configs ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: network_device_firmware; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.network_device_firmware ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: network_known_guests; Type: ROW SECURITY; Schema: public; Owner: -
@@ -14053,6 +17975,18 @@ ALTER TABLE public.patch_jobs ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE public.patch_policies ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: peripheral_events; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.peripheral_events ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: peripheral_policies; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.peripheral_policies ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: playbook_definitions; Type: ROW SECURITY; Schema: public; Owner: -
@@ -14177,6 +18111,36 @@ ALTER TABLE public.reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.roles ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: s1_actions; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.s1_actions ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: s1_agents; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.s1_agents ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: s1_integrations; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.s1_integrations ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: s1_site_mappings; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.s1_site_mappings ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: s1_threats; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.s1_threats ENABLE ROW LEVEL SECURITY;
+
+--
 -- Name: saved_filters; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -14225,6 +18189,45 @@ ALTER TABLE public.security_posture_org_snapshots ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.security_posture_snapshots ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: sensitive_data_findings; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.sensitive_data_findings ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: sensitive_data_findings sensitive_data_findings_org_isolation; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY sensitive_data_findings_org_isolation ON public.sensitive_data_findings USING (((public.breeze_current_scope() = 'system'::text) OR public.breeze_has_org_access(org_id)));
+
+
+--
+-- Name: sensitive_data_policies; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.sensitive_data_policies ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: sensitive_data_policies sensitive_data_policies_org_isolation; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY sensitive_data_policies_org_isolation ON public.sensitive_data_policies USING (((public.breeze_current_scope() = 'system'::text) OR public.breeze_has_org_access(org_id)));
+
+
+--
+-- Name: sensitive_data_scans; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.sensitive_data_scans ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: sensitive_data_scans sensitive_data_scans_org_isolation; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY sensitive_data_scans_org_isolation ON public.sensitive_data_scans USING (((public.breeze_current_scope() = 'system'::text) OR public.breeze_has_org_access(org_id)));
+
+
+--
 -- Name: sites; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -14247,6 +18250,12 @@ ALTER TABLE public.sla_definitions ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE public.snmp_devices ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: software_catalog; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.software_catalog ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: software_compliance_status; Type: ROW SECURITY; Schema: public; Owner: -
@@ -14297,6 +18306,24 @@ ALTER TABLE public.time_series_metrics ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_notifications ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: user_risk_events; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.user_risk_events ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: user_risk_policies; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.user_risk_policies ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: user_risk_scores; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.user_risk_scores ENABLE ROW LEVEL SECURITY;
+
+--
 -- Name: webhooks; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -14306,5 +18333,5 @@ ALTER TABLE public.webhooks ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict pG7mrjKd5jh3TbL2FdsVt23GPeUtF6jfPgtkPrKgug12iZCuMsiIhgWnRI7Yry4
+\unrestrict TIioLQuzpEIsq13X27971KsXiEaN7qgOcnHHe9K5GtKQtIA0uWx661SzAI0F1NF
 
