@@ -28,6 +28,31 @@ const (
 	maxFSWorkers                 = 32
 )
 
+// virtualFSPaths contains top-level paths for virtual/pseudo filesystems
+// that should be skipped during scanning. These paths do not represent real
+// disk usage (e.g. /proc/kcore reports ~140 TB which is the kernel address space).
+var virtualFSPaths = map[string]struct{}{
+	"/proc": {},
+	"/sys":  {},
+	"/dev":  {},
+	"/run":  {},
+}
+
+// isVirtualFilesystem returns true if the path is or lives under a virtual
+// filesystem mount point that should be excluded from disk usage scanning.
+func isVirtualFilesystem(path string) bool {
+	if runtime.GOOS == "windows" {
+		return false
+	}
+	cleaned := filepath.Clean(path)
+	for vfs := range virtualFSPaths {
+		if cleaned == vfs || strings.HasPrefix(cleaned, vfs+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 type scanDirFrame struct {
 	path  string
 	depth int
@@ -238,6 +263,9 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 			}
 
 			if isDir {
+				if isVirtualFilesystem(entryPath) {
+					continue
+				}
 				childDepth := frame.depth + 1
 				normalizedPath := entryPath
 				shouldQueue := false
@@ -270,6 +298,11 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 					queueCond.Signal()
 					queueMu.Unlock()
 				}
+				continue
+			}
+
+			// Skip files in virtual filesystems (e.g. /proc/kcore reports ~140 TB).
+			if isVirtualFilesystem(entryPath) {
 				continue
 			}
 
