@@ -103,6 +103,33 @@ export function parseDate(value: unknown): Date | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+/**
+ * Validates a string is a valid ISO 8601 date (YYYY-MM-DD) suitable for a
+ * PostgreSQL `date` column.  Returns the date string or null.
+ */
+export function sanitizeDate(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return null;
+  const d = new Date(trimmed + 'T00:00:00Z');
+  return Number.isNaN(d.getTime()) ? null : trimmed;
+}
+
+/**
+ * Strict timestamp parser that requires ISO 8601 / RFC 3339 format before
+ * accepting — rejects ambiguous locale-dependent strings that `new Date()`
+ * might parse inconsistently across JS engines.
+ * Returns a Date or null (never throws).
+ */
+export function sanitizeTimestamp(value: unknown): Date | null {
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  const trimmed = value.trim();
+  // Must start with an ISO date prefix to rule out locale strings
+  if (!/^\d{4}-\d{2}-\d{2}[T ]/.test(trimmed)) return null;
+  const parsed = new Date(trimmed);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 export function normalizeStateValue(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   if (typeof value === 'string') {

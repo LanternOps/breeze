@@ -36,15 +36,37 @@ func collectIdentityStatus() IdentityStatus {
 		}
 	}
 
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	// Detect MDM enrollment using locale-invariant methods first, then fall
+	// back to English text matching on older macOS versions.
+
+	// Method 1: Check for MDM client preferences (locale-invariant).
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel2()
-	profOutput, err := exec.CommandContext(ctx2, "profiles", "status", "-type", "enrollment").CombinedOutput()
-	if err != nil {
-		log.Debug("profiles status command failed", "error", err)
-	} else {
-		profText := strings.ToLower(string(profOutput))
-		if strings.Contains(profText, "enrolled to an mdm server") || strings.Contains(profText, "mdm enrollment: yes") {
+	mdmPref, err := exec.CommandContext(ctx2, "defaults", "read", "/Library/Preferences/com.apple.mdmclient").CombinedOutput()
+	if err == nil && len(mdmPref) > 0 && !strings.Contains(string(mdmPref), "does not exist") {
+		id.MdmUrl = "enrolled"
+	}
+
+	// Method 2: Check profiles list XML output for com.apple.mdm payload (locale-invariant).
+	if id.MdmUrl == "" {
+		ctx3, cancel3 := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel3()
+		profXml, err := exec.CommandContext(ctx3, "profiles", "list", "-output", "stdout-xml").CombinedOutput()
+		if err == nil && strings.Contains(string(profXml), "com.apple.mdm") {
 			id.MdmUrl = "enrolled"
+		}
+	}
+
+	// Method 3: Fallback to profiles status text (English-only, for older macOS).
+	if id.MdmUrl == "" {
+		ctx4, cancel4 := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel4()
+		profOutput, err := exec.CommandContext(ctx4, "profiles", "status", "-type", "enrollment").CombinedOutput()
+		if err == nil {
+			profText := strings.ToLower(string(profOutput))
+			if strings.Contains(profText, "enrolled to an mdm server") || strings.Contains(profText, "mdm enrollment: yes") {
+				id.MdmUrl = "enrolled"
+			}
 		}
 	}
 

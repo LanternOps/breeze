@@ -7,7 +7,7 @@ import { writeAuditEvent } from '../../services/auditEvents';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
 import { submitEventLogsSchema } from './schemas';
-import { getDeviceEventLogSettings, EVENT_LOG_DEFAULTS, type EventLogSettings } from './helpers';
+import { getDeviceEventLogSettings, EVENT_LOG_DEFAULTS, sanitizeTimestamp, type EventLogSettings } from './helpers';
 import { enqueueLogForwarding } from '../../jobs/logForwardingWorker';
 import { getOrgForwardingConfig } from '../../services/logForwarding';
 
@@ -79,10 +79,11 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
     }
   }
 
+  const now = new Date();
   const rows = filteredEvents.map((event: any) => ({
     deviceId: device.id,
     orgId: device.orgId,
-    timestamp: new Date(event.timestamp),
+    timestamp: sanitizeTimestamp(event.timestamp) ?? now,
     level: event.level,
     category: event.category,
     source: event.source,
