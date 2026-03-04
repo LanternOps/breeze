@@ -1,6 +1,11 @@
 -- Device Role Classification: Add deviceRole and deviceRoleSource to devices,
 -- roleFilter and osFilter to config_policy_assignments.
--- Run AFTER pnpm db:push has created the columns.
+
+-- DDL: Add columns
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS device_role VARCHAR(30) NOT NULL DEFAULT 'unknown';
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS device_role_source VARCHAR(20) NOT NULL DEFAULT 'auto';
+ALTER TABLE config_policy_assignments ADD COLUMN IF NOT EXISTS role_filter VARCHAR(30)[];
+ALTER TABLE config_policy_assignments ADD COLUMN IF NOT EXISTS os_filter VARCHAR(10)[];
 
 -- Phase 1: Classify Windows Server editions
 UPDATE devices d

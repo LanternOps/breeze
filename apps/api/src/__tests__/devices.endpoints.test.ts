@@ -14,6 +14,13 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
 
+vi.mock('../services/permissions', () => ({
+  getUserPermissions: vi.fn(async () => ({ permissions: [{ resource: '*', action: '*' }] })),
+  hasPermission: vi.fn(() => true),
+  canAccessOrg: vi.fn(() => true),
+  canAccessSite: vi.fn(() => true),
+}));
+
 vi.mock('../services/enrollmentKeySecurity', () => ({
   hashEnrollmentKey: vi.fn((key: string) => `hashed-${key}`),
   generateEnrollmentKey: vi.fn(() => 'ek_test123')
