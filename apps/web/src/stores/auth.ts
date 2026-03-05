@@ -267,7 +267,20 @@ export async function fetchWithAuth(url: string, options: RequestInit = {}): Pro
 
   headers.set('Content-Type', 'application/json');
 
-  let response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include' });
+  // Use caller-provided signal or create a 30-second timeout to prevent indefinite hangs
+  const externalSignal = options.signal;
+  const controller = !externalSignal ? new AbortController() : null;
+  const timeout = controller ? setTimeout(() => controller.abort(), 30_000) : null;
+  const signal = externalSignal ?? controller!.signal;
+
+  let response: Response;
+  try {
+    response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include', signal });
+  } catch (err) {
+    if (timeout) clearTimeout(timeout);
+    throw err;
+  }
+  if (timeout) clearTimeout(timeout);
 
   // If unauthorized, attempt cookie-backed refresh once
   if (response.status === 401) {
