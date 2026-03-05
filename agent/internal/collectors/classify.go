@@ -38,9 +38,14 @@ func ClassifyDeviceRole(sysInfo *SystemInfo, hw *HardwareInfo) string {
 		}
 	}
 
-	// 3. OS edition: Windows Server
-	if sysInfo != nil && strings.Contains(strings.ToLower(sysInfo.OSVersion), "server") {
-		return "server"
+	// 3. OS edition: Windows Server / Datacenter
+	if sysInfo != nil {
+		osLower := strings.ToLower(sysInfo.OSVersion)
+		for _, kw := range []string{"server", "datacenter"} {
+			if strings.Contains(osLower, kw) {
+				return "server"
+			}
+		}
 	}
 
 	return "workstation"
