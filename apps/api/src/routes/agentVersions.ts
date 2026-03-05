@@ -27,7 +27,7 @@ const ASSET_TARGETS = [
 export const agentVersionRoutes = new Hono();
 
 // Validation schemas
-const platformEnum = z.enum(['windows', 'macos', 'linux']);
+const platformEnum = z.enum(['windows', 'macos', 'linux', 'darwin']);
 const architectureEnum = z.enum(['amd64', 'arm64']);
 
 const latestQuerySchema = z.object({
@@ -61,7 +61,8 @@ agentVersionRoutes.get(
   '/latest',
   zValidator('query', latestQuerySchema),
   async (c) => {
-    const { platform, arch } = c.req.valid('query');
+    const { platform: rawPlatform, arch } = c.req.valid('query');
+    const platform = PLATFORM_MAP[rawPlatform] ?? rawPlatform;
 
     const [latestVersion] = await db
       .select({
@@ -103,7 +104,8 @@ agentVersionRoutes.get(
   zValidator('query', downloadQuerySchema),
   async (c) => {
     const { version } = c.req.valid('param');
-    const { platform, arch } = c.req.valid('query');
+    const { platform: rawPlatform, arch } = c.req.valid('query');
+    const platform = PLATFORM_MAP[rawPlatform] ?? rawPlatform;
 
     const [versionInfo] = await db
       .select({

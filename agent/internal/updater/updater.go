@@ -285,6 +285,14 @@ func (u *Updater) replaceBinary(newPath string) error {
 		}
 	}
 
+	// macOS requires ad-hoc codesigning after binary replacement
+	if runtime.GOOS == "darwin" {
+		cmd := exec.Command("codesign", "--force", "--sign", "-", u.config.BinaryPath)
+		if err := cmd.Run(); err != nil {
+			log.Warn("ad-hoc codesign failed, binary may not launch", "error", err.Error())
+		}
+	}
+
 	return nil
 }
 
