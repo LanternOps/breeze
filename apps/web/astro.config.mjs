@@ -40,14 +40,15 @@ export default defineConfig({
   ],
   server: {
     port: 4321,
-    host: '0.0.0.0'
+    host: '0.0.0.0',
+    allowedHosts: ['2breeze.app']
   },
   vite: {
     ssr: {
       noExternal: ['@tanstack/react-query']
     },
     server: {
-      allowedHosts: true,
+      allowedHosts: 'all',
       proxy: {
         '/api': {
           target: process.env.API_URL || 'http://localhost:3001',
