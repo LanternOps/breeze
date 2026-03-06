@@ -254,6 +254,8 @@ coreRoutes.get(
         hostname: d.hostname,
         displayName: d.displayName,
         osType: d.osType,
+        deviceRole: d.deviceRole,
+        deviceRoleSource: d.deviceRoleSource,
         osVersion: d.osVersion,
         osBuild: d.osBuild,
         architecture: d.architecture,

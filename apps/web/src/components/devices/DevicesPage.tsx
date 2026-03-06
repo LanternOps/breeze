@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { List, Grid, Plus, CheckCircle, XCircle, Copy, Loader2, X } from 'lucide-react';
 import type { FilterConditionGroup } from '@breeze/shared';
 import DeviceList, { type Device, type DeviceStatus, type OSType } from './DeviceList';
+import type { DeviceRole } from '@/lib/deviceRoles';
 import DeviceCard from './DeviceCard';
 import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
 import DeviceSettingsModal from './DeviceSettingsModal';
@@ -121,7 +122,8 @@ export default function DevicesPage() {
           siteId: (d.siteId ?? '') as string,
           siteName: '', // Will be resolved from sites
           agentVersion: (d.agentVersion ?? '') as string,
-          tags: (d.tags ?? []) as string[]
+          tags: (d.tags ?? []) as string[],
+          deviceRole: (d.deviceRole as DeviceRole | undefined) ?? undefined
         };
       });
 
