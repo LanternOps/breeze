@@ -18,7 +18,6 @@ StartLimitBurst=5
 # script execution, patching, and self-update. ProtectSystem=strict/full
 # breaks sudo in child shells and prevents writes to /usr/local/bin.
 PrivateTmp=true
-NoNewPrivileges=false
 
 # Logging (stdout goes to journald)
 StandardOutput=journal

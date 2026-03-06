@@ -123,7 +123,8 @@ export default function DevicesPage() {
           siteName: '', // Will be resolved from sites
           agentVersion: (d.agentVersion ?? '') as string,
           tags: (d.tags ?? []) as string[],
-          deviceRole: (d.deviceRole as DeviceRole | undefined) ?? undefined
+          deviceRole: d.deviceRole as DeviceRole | undefined,
+          deviceRoleSource: d.deviceRoleSource as string | undefined
         };
       });
 
