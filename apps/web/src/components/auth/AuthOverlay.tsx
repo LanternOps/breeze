@@ -18,6 +18,19 @@ export default function AuthOverlay() {
     return () => clearTimeout(timer);
   }, []);
 
+  // Safety net: if the overlay is still visible after 10 seconds, force redirect to login.
+  // This prevents the user from being stuck on "Loading..." indefinitely.
+  useEffect(() => {
+    const safetyTimer = setTimeout(() => {
+      const state = useAuthStore.getState();
+      if (!state.isAuthenticated || !state.tokens?.accessToken) {
+        redirectToLogin();
+      }
+    }, 10_000);
+
+    return () => clearTimeout(safetyTimer);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 

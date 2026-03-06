@@ -390,13 +390,19 @@ const listOrganizationsSchema = z.object({
   limit: z.string().optional()
 });
 
-orgRoutes.get('/organizations', requireScope('partner', 'system'), zValidator('query', listOrganizationsSchema), async (c) => {
+orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'), zValidator('query', listOrganizationsSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const { partnerId: queryPartnerId, ...pagination } = c.req.valid('query');
   const { page, limit, offset } = getPagination(pagination);
 
   let conditions;
-  if (auth.scope === 'partner') {
+  if (auth.scope === 'organization') {
+    // Organization-scoped users can only see their own organization
+    if (!auth.orgId) {
+      return c.json({ data: [], pagination: { page, limit, total: 0 } });
+    }
+    conditions = and(eq(organizations.id, auth.orgId), isNull(organizations.deletedAt));
+  } else if (auth.scope === 'partner') {
     const orgIds = auth.accessibleOrgIds ?? [];
     if (orgIds.length === 0) {
       return c.json({
