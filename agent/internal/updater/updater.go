@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"runtime"
 	"time"
 
@@ -282,6 +283,14 @@ func (u *Updater) replaceBinary(newPath string) error {
 	if runtime.GOOS != "windows" {
 		if err := os.Chmod(u.config.BinaryPath, 0755); err != nil {
 			return err
+		}
+	}
+
+	// macOS requires ad-hoc codesigning after binary replacement
+	if runtime.GOOS == "darwin" {
+		cmd := exec.Command("codesign", "--force", "--sign", "-", u.config.BinaryPath)
+		if err := cmd.Run(); err != nil {
+			log.Warn("ad-hoc codesign failed, binary may not launch", "error", err.Error())
 		}
 	}
 

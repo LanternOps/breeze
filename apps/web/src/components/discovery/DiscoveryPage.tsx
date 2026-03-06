@@ -42,6 +42,7 @@ type ApiDiscoveryProfile = {
   snmpCommunities?: string[];
   snmpCredentials?: ApiSnmpCredentials | null;
   alertSettings?: ProfileAlertSettings | null;
+  lastRunAt?: string | null;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -204,6 +205,20 @@ function formScheduleToApi(schedule: DiscoverySchedule): ApiDiscoverySchedule {
   return { type: 'cron', cron, timezone: schedule.timezone || 'UTC' };
 }
 
+function formatRelativeTime(isoDate: string): string {
+  const diff = Date.now() - new Date(isoDate).getTime();
+  const seconds = Math.floor(diff / 1000);
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.floor(days / 30);
+  return `${months}mo ago`;
+}
+
 function mapProfileToDisplay(profile: ApiDiscoveryProfile): DiscoveryProfile {
   const schedule = scheduleToDisplay(profile.schedule);
   return {
@@ -212,7 +227,8 @@ function mapProfileToDisplay(profile: ApiDiscoveryProfile): DiscoveryProfile {
     subnets: profile.subnets ?? [],
     methods: profile.methods ?? [],
     schedule: schedule.label,
-    status: schedule.status
+    status: schedule.status,
+    lastRun: profile.lastRunAt ? formatRelativeTime(profile.lastRunAt) : undefined
   };
 }
 
@@ -318,6 +334,14 @@ export default function DiscoveryPage() {
   }, [fetchProfiles]);
 
   const displayProfiles = useMemo(() => profiles.map(mapProfileToDisplay), [profiles]);
+
+  const profileSubnets = useMemo(() => {
+    const map: Record<string, string[]> = {};
+    for (const p of profiles) {
+      if (p.subnets?.length) map[p.id] = p.subnets;
+    }
+    return map;
+  }, [profiles]);
 
   const { currentOrgId, currentSiteId, sites } = useOrgStore();
   const siteOptions = useMemo(() => sites.map(s => ({ id: s.id, name: s.name })), [sites]);
@@ -593,6 +617,7 @@ export default function DiscoveryPage() {
       {activeTab === 'jobs' && (
         <DiscoveryJobList
           profileFilter={jobsProfileFilter}
+          profileSubnets={profileSubnets}
           onClearFilter={() => setJobsProfileFilter(null)}
           onViewProfile={handleNavigateToProfiles}
           onViewAssets={handleNavigateToAssets}

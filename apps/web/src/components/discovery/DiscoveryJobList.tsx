@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { CheckCircle, Clock, AlertTriangle, PlayCircle, X, ArrowRight, CalendarClock } from 'lucide-react';
+import { CheckCircle, Clock, AlertTriangle, PlayCircle, X, ArrowRight, CalendarClock, Filter } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 
 export type DiscoveryJobStatus = 'scheduled' | 'running' | 'completed' | 'failed' | 'cancelled' | 'pending';
@@ -134,19 +134,26 @@ function mapJob(job: ApiDiscoveryJob): DiscoveryJob {
   };
 }
 
+type ProfileSubnetMap = Record<string, string[]>;
+
 interface DiscoveryJobListProps {
   timezone?: string;
   profileFilter?: string | null;
+  profileSubnets?: ProfileSubnetMap;
   onClearFilter?: () => void;
   onViewProfile?: () => void;
   onViewAssets?: () => void;
 }
 
-export default function DiscoveryJobList({ timezone, profileFilter, onClearFilter, onViewProfile, onViewAssets }: DiscoveryJobListProps) {
+const STATUS_FILTERS: DiscoveryJobStatus[] = ['running', 'scheduled', 'completed', 'failed', 'cancelled', 'pending'];
+
+export default function DiscoveryJobList({ timezone, profileFilter, profileSubnets, onClearFilter, onViewProfile, onViewAssets }: DiscoveryJobListProps) {
   const [jobs, setJobs] = useState<DiscoveryJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<DiscoveryJobStatus | null>(null);
+  const [subnetFilter, setSubnetFilter] = useState<string | null>(null);
 
   const fetchJobs = useCallback(async (showLoading = true) => {
     try {
@@ -202,14 +209,54 @@ export default function DiscoveryJobList({ timezone, profileFilter, onClearFilte
     return () => clearInterval(interval);
   }, [fetchJobs, jobs]);
 
-  const filteredJobs = useMemo(() => {
-    if (!profileFilter) return jobs;
-    return jobs.filter(job => job.profileId === profileFilter);
+  // Collect unique subnets from profile data for filter chips
+  const availableSubnets = useMemo(() => {
+    if (!profileSubnets) return [];
+    const allSubnets = new Set<string>();
+    // Only include subnets for profiles that have jobs
+    const profileIdsWithJobs = new Set(jobs.map(j => j.profileId).filter(Boolean));
+    for (const [profileId, subnets] of Object.entries(profileSubnets)) {
+      if (profileIdsWithJobs.has(profileId)) {
+        for (const s of subnets) allSubnets.add(s);
+      }
+    }
+    return Array.from(allSubnets).sort();
+  }, [profileSubnets, jobs]);
+
+  // Collect status counts for filter chips
+  const statusCounts = useMemo(() => {
+    const counts: Partial<Record<DiscoveryJobStatus, number>> = {};
+    const base = profileFilter ? jobs.filter(j => j.profileId === profileFilter) : jobs;
+    for (const job of base) {
+      counts[job.status] = (counts[job.status] ?? 0) + 1;
+    }
+    return counts;
   }, [jobs, profileFilter]);
+
+  const filteredJobs = useMemo(() => {
+    let result = jobs;
+    if (profileFilter) {
+      result = result.filter(job => job.profileId === profileFilter);
+    }
+    if (statusFilter) {
+      result = result.filter(job => job.status === statusFilter);
+    }
+    if (subnetFilter && profileSubnets) {
+      const matchingProfileIds = new Set(
+        Object.entries(profileSubnets)
+          .filter(([, subnets]) => subnets.includes(subnetFilter))
+          .map(([id]) => id)
+      );
+      result = result.filter(job => job.profileId && matchingProfileIds.has(job.profileId));
+    }
+    return result;
+  }, [jobs, profileFilter, statusFilter, subnetFilter, profileSubnets]);
 
   const filterProfileName = profileFilter
     ? filteredJobs[0]?.profileName ?? jobs.find(j => j.profileId === profileFilter)?.profileName
     : null;
+
+  const hasActiveQuickFilters = statusFilter !== null || subnetFilter !== null;
 
   if (loading && jobs.length === 0) {
     return (
@@ -257,6 +304,76 @@ export default function DiscoveryJobList({ timezone, profileFilter, onClearFilte
           </button>
         </div>
       )}
+
+      {/* Quick filters */}
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-2">
+          <Filter className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Status</span>
+          <div className="flex flex-wrap gap-1">
+            {STATUS_FILTERS.map(s => {
+              const count = statusCounts[s] ?? 0;
+              if (count === 0) return null;
+              const cfg = statusConfig[s];
+              const isActive = statusFilter === s;
+              return (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setStatusFilter(isActive ? null : s)}
+                  className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium transition ${
+                    isActive ? cfg.color : 'border-transparent text-muted-foreground hover:bg-muted'
+                  }`}
+                >
+                  {cfg.label}
+                  <span className="opacity-60">{count}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {availableSubnets.length > 0 && (
+          <>
+            <div className="h-4 w-px bg-border" />
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Subnet</span>
+              <div className="flex flex-wrap gap-1">
+                {availableSubnets.map(subnet => {
+                  const isActive = subnetFilter === subnet;
+                  return (
+                    <button
+                      key={subnet}
+                      type="button"
+                      onClick={() => setSubnetFilter(isActive ? null : subnet)}
+                      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium transition ${
+                        isActive
+                          ? 'border-primary/40 bg-primary/10 text-primary'
+                          : 'border-transparent text-muted-foreground hover:bg-muted'
+                      }`}
+                    >
+                      {subnet}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </>
+        )}
+
+        {hasActiveQuickFilters && (
+          <>
+            <div className="h-4 w-px bg-border" />
+            <button
+              type="button"
+              onClick={() => { setStatusFilter(null); setSubnetFilter(null); }}
+              className="text-xs text-muted-foreground hover:text-foreground"
+            >
+              Clear all
+            </button>
+          </>
+        )}
+      </div>
 
       {error && jobs.length > 0 && (
         <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">

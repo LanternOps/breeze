@@ -237,26 +237,38 @@ discoveryRoutes.get(
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const where = orgResult.orgId ? eq(discoveryProfiles.orgId, orgResult.orgId) : undefined;
-    const results = await db.select().from(discoveryProfiles)
+    const results = await db.select({
+      profile: discoveryProfiles,
+      lastRunAt: sql<string | null>`(
+        select max(${discoveryJobs.completedAt})
+        from ${discoveryJobs}
+        where ${discoveryJobs.profileId} = ${discoveryProfiles.id}
+          and ${discoveryJobs.status} = 'completed'
+      )`.as('last_run_at')
+    }).from(discoveryProfiles)
       .where(where)
       .orderBy(desc(discoveryProfiles.createdAt));
 
     return c.json({
-      data: results.map((p) => ({
-        id: p.id,
-        orgId: p.orgId,
-        siteId: p.siteId,
-        name: p.name,
-        description: p.description,
-        enabled: p.enabled,
-        subnets: p.subnets,
-        methods: p.methods,
-        schedule: p.schedule,
-        deepScan: p.deepScan,
-        resolveHostnames: p.resolveHostnames,
-        createdAt: p.createdAt.toISOString(),
-        updatedAt: p.updatedAt.toISOString()
-      }))
+      data: results.map((row) => {
+        const p = row.profile;
+        return {
+          id: p.id,
+          orgId: p.orgId,
+          siteId: p.siteId,
+          name: p.name,
+          description: p.description,
+          enabled: p.enabled,
+          subnets: p.subnets,
+          methods: p.methods,
+          schedule: p.schedule,
+          deepScan: p.deepScan,
+          resolveHostnames: p.resolveHostnames,
+          createdAt: p.createdAt.toISOString(),
+          updatedAt: p.updatedAt.toISOString(),
+          lastRunAt: row.lastRunAt ? new Date(row.lastRunAt).toISOString() : null
+        };
+      })
     });
   }
 );

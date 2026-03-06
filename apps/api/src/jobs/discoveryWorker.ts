@@ -522,6 +522,7 @@ async function processResults(data: ProcessResultsJobData): Promise<{
 
   let newCount = 0;
   let updatedCount = 0;
+  let changeEventsCreated = 0;
 
   for (const host of data.hosts) {
     if (!host.ip) continue;
@@ -665,12 +666,73 @@ async function processResults(data: ProcessResultsJobData): Promise<{
             : null,
           currentState: { macAddress: host.mac, hostname: host.hostname, assetType: host.assetType }
         });
+        changeEventsCreated++;
       } catch (changeErr) {
         console.warn(
           `[DiscoveryWorker] Failed to log change event for ${host.ip}:`,
           changeErr instanceof Error ? changeErr.message : changeErr
         );
       }
+    }
+  }
+
+  // ── Bootstrap change events when alerts are first enabled ────────────
+  // If alerts are enabled with alertOnNew, zero change events were created
+  // during this scan, and no events have EVER been created for this profile,
+  // generate new_device events for all hosts in this scan. This handles the
+  // case where alerts are enabled after assets already exist.
+  if (
+    alertSettings.enabled &&
+    alertSettings.alertOnNew &&
+    changeEventsCreated === 0 &&
+    profileId &&
+    resolvedBaselineId &&
+    data.hosts.length > 0
+  ) {
+    try {
+      const [anyExistingEvent] = await db
+        .select({ id: networkChangeEvents.id })
+        .from(networkChangeEvents)
+        .where(eq(networkChangeEvents.profileId, profileId))
+        .limit(1);
+
+      if (!anyExistingEvent) {
+        let bootstrapped = 0;
+        for (const host of data.hosts) {
+          if (!host.ip) continue;
+          try {
+            await db.insert(networkChangeEvents).values({
+              orgId: data.orgId,
+              siteId: data.siteId,
+              baselineId: resolvedBaselineId,
+              profileId,
+              eventType: 'new_device',
+              ipAddress: host.ip,
+              macAddress: host.mac ?? null,
+              hostname: host.hostname ?? null,
+              assetType: mapAssetType(host.assetType),
+              previousState: null,
+              currentState: { macAddress: host.mac, hostname: host.hostname, assetType: host.assetType }
+            });
+            bootstrapped++;
+          } catch (bootstrapErr) {
+            console.warn(
+              `[DiscoveryWorker] Failed to bootstrap change event for ${host.ip}:`,
+              bootstrapErr instanceof Error ? bootstrapErr.message : bootstrapErr
+            );
+          }
+        }
+        if (bootstrapped > 0) {
+          console.log(
+            `[DiscoveryWorker] Bootstrapped ${bootstrapped} new_device change event(s) for profile ${profileId} (first alert-enabled scan)`
+          );
+        }
+      }
+    } catch (bootstrapQueryErr) {
+      console.warn(
+        '[DiscoveryWorker] Failed to check for existing change events during bootstrap:',
+        bootstrapQueryErr instanceof Error ? bootstrapQueryErr.message : bootstrapQueryErr
+      );
     }
   }
 
