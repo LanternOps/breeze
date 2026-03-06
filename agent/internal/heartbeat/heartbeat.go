@@ -2311,7 +2311,12 @@ func (h *Heartbeat) handleUpgrade(targetVersion string) {
 		return
 	}
 
-	backupPath := binaryPath + ".backup"
+	backupDir := config.GetDataDir()
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		log.Error("failed to create backup directory", "path", backupDir, "error", err.Error())
+		return
+	}
+	backupPath := filepath.Join(backupDir, "breeze-agent.backup")
 
 	authToken := h.authTokenPlaintext()
 	updaterCfg := &updater.Config{
