@@ -27,6 +27,7 @@ export type Device = {
   lastUser?: string;
   uptimeSeconds?: number;
   deviceRole?: DeviceRole;
+  deviceRoleSource?: string;
 };
 
 type DeviceListProps = {
