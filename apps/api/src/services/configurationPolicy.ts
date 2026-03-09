@@ -33,7 +33,7 @@ import type { AuthContext } from '../middleware/auth';
 // Types
 // ============================================
 
-type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data' | 'peripheral_control' | 'warranty';
+type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data' | 'peripheral_control' | 'warranty' | 'helper';
 type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
 
 const LEVEL_PRIORITY: Record<ConfigAssignmentLevel, number> = {
@@ -431,6 +431,7 @@ async function decomposeInlineSettings(
     }
 
     case 'warranty':
+    case 'helper':
       // Pure JSONB — no normalized table needed
       break;
 
@@ -479,6 +480,7 @@ async function deleteNormalizedRows(
       break;
     }
     case 'warranty':
+    case 'helper':
       // Pure JSONB — no normalized table to delete
       break;
     default:
@@ -719,6 +721,7 @@ async function assembleInlineSettings(
     }
 
     case 'warranty':
+    case 'helper':
       // Pure JSONB — settings stored directly on feature link
       return null;
 

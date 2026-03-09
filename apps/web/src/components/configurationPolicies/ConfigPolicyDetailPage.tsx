@@ -18,6 +18,7 @@ import {
   ScanSearch,
   Usb,
   Activity,
+  LifeBuoy,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -37,6 +38,7 @@ import SensitiveDataTab from './featureTabs/SensitiveDataTab';
 import PeripheralControlTab from './featureTabs/PeripheralControlTab';
 import MonitoringTab from './featureTabs/MonitoringTab';
 import WarrantyTab from './featureTabs/WarrantyTab';
+import HelperTab from './featureTabs/HelperTab';
 
 type Tab = 'overview' | FeatureType | 'assignments';
 
@@ -96,9 +98,10 @@ const featureTabIcons: Partial<Record<FeatureType, React.ReactNode>> = {
   peripheral_control: <Usb className="h-4 w-4" />,
   monitoring: <Activity className="h-4 w-4" />,
   warranty: <ShieldCheck className="h-4 w-4" />,
+  helper: <LifeBuoy className="h-4 w-4" />,
 };
 
-const FEATURE_TYPES: FeatureType[] = ['patch', 'alert_rule', 'backup', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty'];
+const FEATURE_TYPES: FeatureType[] = ['patch', 'alert_rule', 'backup', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper'];
 
 type ConfigPolicyDetailPageProps = {
   policyId?: string;
@@ -384,6 +387,7 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
       case 'monitoring': return <MonitoringTab {...props} />;
       case 'peripheral_control': return <PeripheralControlTab {...props} />;
       case 'warranty': return <WarrantyTab {...props} />;
+      case 'helper': return <HelperTab {...props} />;
     }
   };
 

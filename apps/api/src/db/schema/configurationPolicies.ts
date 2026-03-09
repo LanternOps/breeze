@@ -39,6 +39,7 @@ export const configFeatureTypeEnum = pgEnum('config_feature_type', [
   'sensitive_data',
   'peripheral_control',
   'warranty',
+  'helper',
 ]);
 
 export const configAssignmentLevelEnum = pgEnum('config_assignment_level', [
