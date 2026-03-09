@@ -1101,7 +1101,7 @@ jobs:
             type=sha
 
       - name: Build and push binaries image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: staging/
           file: docker/Dockerfile.binaries
@@ -1151,7 +1151,7 @@ jobs:
             type=sha
 
       - name: Build and push API image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: apps/api/Dockerfile
@@ -1201,7 +1201,7 @@ jobs:
             type=sha
 
       - name: Build and push Web image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: apps/web/Dockerfile
