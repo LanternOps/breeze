@@ -1,6 +1,6 @@
 import { db } from '../db';
 import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignments, automationPolicyCompliance } from '../db/schema';
-import { eq, and, desc, sql, isNull, isNotNull, inArray, SQL } from 'drizzle-orm';
+import { eq, and, desc, isNull, isNotNull, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import {
@@ -88,7 +88,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
               featureType: configPolicyFeatureLinks.featureType,
             })
             .from(configPolicyFeatureLinks)
-            .where(sql`${configPolicyFeatureLinks.configPolicyId} = ANY(${policyIds})`)
+            .where(inArray(configPolicyFeatureLinks.configPolicyId, policyIds))
         : [];
 
       const linksByPolicy = new Map<string, string[]>();
@@ -324,6 +324,9 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       if (action === 'create') {
         const orgId = (input.orgId as string) || getOrgId(auth);
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        if (input.orgId && !auth.canAccessOrg(input.orgId as string)) {
+          return JSON.stringify({ error: 'Access denied to this organization' });
+        }
         if (!input.name) return JSON.stringify({ error: 'name is required for create' });
 
         const policy = await createConfigPolicy(orgId, {

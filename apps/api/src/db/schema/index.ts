@@ -49,3 +49,4 @@ export * from './sensitiveData';
 export * from './peripheralControl';
 export * from './browserSecurity';
 export * from './serviceProcessMonitoring';
+export * from './warranty';

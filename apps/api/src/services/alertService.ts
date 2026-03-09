@@ -13,15 +13,16 @@ import {
   alerts,
   alertRules,
   alertTemplates,
+  alertCorrelations,
   devices,
   deviceGroups,
   deviceGroupMemberships,
   sites,
   configPolicyAlertRules
 } from '../db/schema';
-import { eq, and, inArray, isNull, isNotNull, or } from 'drizzle-orm';
+import { eq, and, inArray, isNull, isNotNull, or, gte } from 'drizzle-orm';
 import { evaluateConditions, evaluateAutoResolveConditions, interpolateTemplate } from './alertConditions';
-import { isCooldownActive, setCooldown, isConfigPolicyRuleCooling, markConfigPolicyRuleCooldown } from './alertCooldown';
+import { isCooldownActive, setCooldown, isConfigPolicyRuleCooling, markConfigPolicyRuleCooldown, recordStateTransition, isFlapping } from './alertCooldown';
 import { resolveAlertRulesForDevice, resolveMaintenanceConfigForDevice, isInMaintenanceWindow } from './featureConfigResolver';
 import { publishEvent } from './eventBus';
 
@@ -109,6 +110,18 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
     return null;
   }
 
+  // Phase 6a: Flapping detection — suppress if rapid state changes detected
+  const flapping = await isFlapping(ruleId, deviceId);
+  if (flapping) {
+    console.log(`[AlertService] Flapping detected for rule=${ruleId} device=${deviceId}, suppressing alert`);
+    // Still set cooldown to prevent immediate re-evaluation
+    await setCooldown(ruleId, deviceId, cooldownMinutes);
+    return null;
+  }
+
+  // Record state transition for flapping detection
+  await recordStateTransition(ruleId, deviceId, 'triggered');
+
   // Create the alert
   const [newAlert] = await db
     .insert(alerts)
@@ -132,6 +145,9 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
 
   // Set cooldown
   await setCooldown(ruleId, deviceId, cooldownMinutes);
+
+  // Phase 6b: Auto-correlate with other recent alerts on the same device
+  await autoCorrelateAlert(newAlert.id, deviceId, orgId);
 
   // Publish event
   await publishEvent(
@@ -257,6 +273,17 @@ export async function resolveAlert(
       resolutionNote: resolutionNote ?? null
     })
     .where(eq(alerts.id, alertId));
+
+  // Phase 6a: Record resolution state transition for flapping detection
+  try {
+    if (alert.ruleId) {
+      await recordStateTransition(alert.ruleId, alert.deviceId, 'resolved');
+    } else if (alert.configPolicyId) {
+      await recordStateTransition(alert.configPolicyId, alert.deviceId, 'resolved');
+    }
+  } catch (error) {
+    console.error(`[AlertService] Failed to record state transition for resolved alert:`, error instanceof Error ? error.message : error);
+  }
 
   // Set a cooldown after resolution to prevent immediate re-trigger.
   // Uses the rule's configured cooldown so the condition must persist
@@ -589,6 +616,17 @@ export async function evaluateDeviceAlertsFromPolicy(deviceId: string): Promise<
       const result = await evaluateConditions(rule.conditions, deviceId);
 
       if (result.triggered) {
+        // Phase 6a: Flapping detection for config policy rules
+        const flapping = await isFlapping(rule.id, deviceId);
+        if (flapping) {
+          console.log(`[AlertService] Flapping detected for cpar=${rule.id} device=${deviceId}, suppressing alert`);
+          await markConfigPolicyRuleCooldown(rule.id, deviceId, rule.cooldownMinutes);
+          continue;
+        }
+
+        // Record state transition for flapping detection
+        await recordStateTransition(rule.id, deviceId, 'triggered');
+
         // 7. Build template context
         const templateContext: Record<string, unknown> = {
           deviceName: device.displayName || device.hostname,
@@ -631,6 +669,9 @@ export async function evaluateDeviceAlertsFromPolicy(deviceId: string): Promise<
         if (newAlert) {
           // 10. Set cooldown
           await markConfigPolicyRuleCooldown(rule.id, deviceId, rule.cooldownMinutes);
+
+          // Phase 6b: Auto-correlate with other recent alerts on the same device
+          await autoCorrelateAlert(newAlert.id, deviceId, device.orgId);
 
           // 11. Publish event
           await publishEvent(
@@ -780,6 +821,56 @@ export async function checkAllAutoResolve(orgId?: string): Promise<number> {
   }
 
   return resolvedCount;
+}
+
+/**
+ * Phase 6b: Auto-correlate a new alert with other recent alerts on the same device.
+ * Creates correlation links between alerts that occur close together in time.
+ */
+async function autoCorrelateAlert(alertId: string, deviceId: string, orgId: string): Promise<void> {
+  try {
+    const windowStart = new Date(Date.now() - 30 * 60 * 1000); // 30 minutes
+
+    const recentAlerts = await db
+      .select({ id: alerts.id, triggeredAt: alerts.triggeredAt })
+      .from(alerts)
+      .where(
+        and(
+          eq(alerts.deviceId, deviceId),
+          eq(alerts.orgId, orgId),
+          gte(alerts.triggeredAt, windowStart),
+          inArray(alerts.status, ['active', 'acknowledged'])
+        )
+      );
+
+    // Correlate with each recent alert on the same device (excluding self)
+    for (const recentAlert of recentAlerts) {
+      if (recentAlert.id === alertId) continue;
+
+      // Confidence based on time proximity (closer = higher)
+      const timeDiffMs = Math.abs(Date.now() - recentAlert.triggeredAt.getTime());
+      const maxWindowMs = 30 * 60 * 1000;
+      const confidence = Math.round((1 - timeDiffMs / maxWindowMs) * 100) / 100;
+
+      if (confidence < 0.3) continue; // Skip very weak correlations
+
+      await db
+        .insert(alertCorrelations)
+        .values({
+          parentAlertId: recentAlert.id,
+          childAlertId: alertId,
+          correlationType: 'same_device_temporal',
+          confidence: String(confidence),
+          metadata: {
+            timeDiffMinutes: Math.round(timeDiffMs / 60000),
+            deviceId,
+          },
+        });
+    }
+  } catch (error) {
+    // Non-critical — don't block alert creation
+    console.error(`[AlertService] Auto-correlation failed for alert ${alertId}:`, error);
+  }
 }
 
 /**

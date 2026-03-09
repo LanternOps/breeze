@@ -629,6 +629,10 @@ function processStreamEvent(
       return null;
     }
 
+    case 'warning':
+      console.warn(`[AI] ${event.message}${event.context ? ` (${event.context})` : ''}`);
+      return currentAssistantId;
+
     case 'error':
       set(() => ({ error: event.message, isStreaming: false }));
       return currentAssistantId;

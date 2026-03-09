@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useChatStore } from './stores/chatStore';
@@ -265,6 +265,105 @@ function ToolApprovalPopup({
   );
 }
 
+type DeviceInfo = {
+  hostname: string;
+  osType: string;
+  osVersion: string;
+  status: string;
+  lastSeenAt?: string;
+  agentVersion?: string;
+};
+
+function DeviceInfoView({ onClose }: { onClose: () => void }) {
+  const [device, setDevice] = useState<DeviceInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const { agentConfig } = useChatStore();
+
+  useEffect(() => {
+    if (!agentConfig) return;
+    setLoading(true);
+    setError(null);
+
+    (window as any).__TAURI__.core
+      .invoke('helper_fetch', {
+        request: {
+          url: `${agentConfig.api_url}/api/v1/devices/by-agent/${agentConfig.agent_id}`,
+          method: 'GET',
+        },
+      })
+      .then((res: { status: number; body: string }) => {
+        if (res.status >= 200 && res.status < 300) {
+          const data = JSON.parse(res.body);
+          setDevice({
+            hostname: data.hostname || data.displayName || 'Unknown',
+            osType: data.osType || 'Unknown',
+            osVersion: data.osVersion || '',
+            status: data.status || 'unknown',
+            lastSeenAt: data.lastSeenAt,
+            agentVersion: data.agentVersion,
+          });
+        } else {
+          setError('Failed to load device info');
+        }
+      })
+      .catch((e: Error) => setError(e.message || 'Failed to load device info'))
+      .finally(() => setLoading(false));
+  }, [agentConfig]);
+
+  return (
+    <div className="helper-container">
+      <div className="helper-header" data-tauri-drag-region>
+        <div className="helper-header-left" data-tauri-drag-region>
+          <span className="helper-title">Device Info</span>
+        </div>
+        <div className="helper-header-actions">
+          <button onClick={onClose} className="helper-btn helper-btn-sm">Back</button>
+        </div>
+      </div>
+      <div className="helper-messages" style={{ padding: '16px' }}>
+        {loading && (
+          <div className="helper-history-loading">
+            <span className="helper-spinner" />
+            <span>Loading...</span>
+          </div>
+        )}
+        {error && <div className="helper-error-banner"><span>{error}</span></div>}
+        {device && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ padding: '12px', border: '1px solid var(--helper-border, #e5e7eb)', borderRadius: '8px' }}>
+              <div style={{ fontSize: '13px', color: 'var(--helper-muted, #6b7280)' }}>Hostname</div>
+              <div style={{ fontSize: '15px', fontWeight: 600 }}>{device.hostname}</div>
+            </div>
+            <div style={{ padding: '12px', border: '1px solid var(--helper-border, #e5e7eb)', borderRadius: '8px' }}>
+              <div style={{ fontSize: '13px', color: 'var(--helper-muted, #6b7280)' }}>Operating System</div>
+              <div style={{ fontSize: '15px', fontWeight: 600 }}>{device.osType} {device.osVersion}</div>
+            </div>
+            <div style={{ padding: '12px', border: '1px solid var(--helper-border, #e5e7eb)', borderRadius: '8px' }}>
+              <div style={{ fontSize: '13px', color: 'var(--helper-muted, #6b7280)' }}>Status</div>
+              <div style={{ fontSize: '15px', fontWeight: 600, color: device.status === 'online' ? '#22c55e' : '#ef4444' }}>
+                {device.status}
+              </div>
+            </div>
+            {device.lastSeenAt && (
+              <div style={{ padding: '12px', border: '1px solid var(--helper-border, #e5e7eb)', borderRadius: '8px' }}>
+                <div style={{ fontSize: '13px', color: 'var(--helper-muted, #6b7280)' }}>Last Check-in</div>
+                <div style={{ fontSize: '15px', fontWeight: 600 }}>{formatDate(device.lastSeenAt)}</div>
+              </div>
+            )}
+            {device.agentVersion && (
+              <div style={{ padding: '12px', border: '1px solid var(--helper-border, #e5e7eb)', borderRadius: '8px' }}>
+                <div style={{ fontSize: '13px', color: 'var(--helper-muted, #6b7280)' }}>Agent Version</div>
+                <div style={{ fontSize: '15px', fontWeight: 600 }}>{device.agentVersion}</div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const {
     connectionState,
@@ -283,11 +382,24 @@ export default function App() {
 
   const [input, setInput] = useState('');
   const [showHistory, setShowHistory] = useState(false);
+  const [showDeviceInfo, setShowDeviceInfo] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     initialize();
   }, [initialize]);
+
+  // Listen for tray menu "Device Info" click
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    const tauriEvents = (window as any).__TAURI__?.event;
+    if (tauriEvents?.listen) {
+      tauriEvents.listen('show-device-info', () => {
+        setShowDeviceInfo(true);
+      }).then((fn: () => void) => { unlisten = fn; });
+    }
+    return () => { unlisten?.(); };
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -354,6 +466,11 @@ export default function App() {
         <SessionHistory onClose={() => setShowHistory(false)} />
       </div>
     );
+  }
+
+  // Device info view (triggered by tray menu)
+  if (showDeviceInfo) {
+    return <DeviceInfoView onClose={() => setShowDeviceInfo(false)} />;
   }
 
   return (

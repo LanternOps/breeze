@@ -291,7 +291,7 @@ patchRoutes.get(
       conditions.push(eq(patches.severity, query.severity));
     }
     if (query.os) {
-      conditions.push(sql`${query.os} = ANY(${patches.osTypes})`);
+      conditions.push(sql`${sql.param(query.os)} = ANY(${patches.osTypes})`);
     }
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;

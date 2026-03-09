@@ -44,7 +44,7 @@ type EventLogAlertEntry = {
   enabled: boolean;
 };
 
-type ConditionType = 'metric' | 'status' | 'custom';
+type ConditionType = 'metric' | 'status' | 'custom' | 'bandwidth_high' | 'disk_io_high' | 'network_errors' | 'patch_compliance' | 'cert_expiry';
 
 type Condition = {
   type: ConditionType;
@@ -54,6 +54,17 @@ type Condition = {
   duration?: number;
   field?: string;
   customCondition?: string;
+  // bandwidth_high / network_errors
+  networkDirection?: 'in' | 'out' | 'total';
+  // disk_io_high
+  diskDirection?: 'read' | 'write' | 'total';
+  durationMinutes?: number;
+  // network_errors
+  interfaceName?: string;
+  errorType?: 'in' | 'out' | 'total';
+  windowMinutes?: number;
+  // cert_expiry
+  withinDays?: number;
 };
 
 type AlertRuleItem = {
@@ -157,8 +168,13 @@ const operatorOptions = [
 ];
 
 const conditionTypeOptions = [
-  { value: 'metric', label: 'Metric' },
-  { value: 'status', label: 'Status' },
+  { value: 'metric', label: 'Metric Threshold' },
+  { value: 'status', label: 'Offline Status' },
+  { value: 'bandwidth_high', label: 'Bandwidth High' },
+  { value: 'disk_io_high', label: 'Disk I/O High' },
+  { value: 'network_errors', label: 'Network Errors' },
+  { value: 'patch_compliance', label: 'Patch Compliance' },
+  { value: 'cert_expiry', label: 'Certificate Expiry' },
   { value: 'custom', label: 'Custom' },
 ];
 
@@ -1036,6 +1052,104 @@ function AlertRuleCard({
                         <div className="sm:col-span-3">
                           <label className="text-xs font-medium text-muted-foreground">Offline Duration (min)</label>
                           <input type="number" min={1} value={condition.duration ?? 5} onChange={(e) => onUpdateCondition(ci, { duration: Number(e.target.value) })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm" />
+                        </div>
+                      )}
+                      {condition.type === 'bandwidth_high' && (
+                        <>
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground">Direction</label>
+                            <select value={condition.networkDirection ?? 'total'} onChange={(e) => onUpdateCondition(ci, { networkDirection: e.target.value as Condition['networkDirection'] })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm">
+                              <option value="in">Inbound</option>
+                              <option value="out">Outbound</option>
+                              <option value="total">Total</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground">Operator</label>
+                            <select value={condition.operator ?? 'gt'} onChange={(e) => onUpdateCondition(ci, { operator: e.target.value })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm">
+                              {operatorOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground">Threshold (Mbps)</label>
+                            <input type="number" min={0} step={0.1} value={condition.value ?? 100} onChange={(e) => onUpdateCondition(ci, { value: Number(e.target.value) })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm" />
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground">Duration (min)</label>
+                            <input type="number" min={1} value={condition.durationMinutes ?? 5} onChange={(e) => onUpdateCondition(ci, { durationMinutes: Number(e.target.value) })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm" />
+                          </div>
+                        </>
+                      )}
+                      {condition.type === 'disk_io_high' && (
+                        <>
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground">Direction</label>
+                            <select value={condition.diskDirection ?? 'total'} onChange={(e) => onUpdateCondition(ci, { diskDirection: e.target.value as Condition['diskDirection'] })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm">
+                              <option value="read">Read</option>
+                              <option value="write">Write</option>
+                              <option value="total">Total</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground">Operator</label>
+                            <select value={condition.operator ?? 'gt'} onChange={(e) => onUpdateCondition(ci, { operator: e.target.value })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm">
+                              {operatorOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground">Threshold (MB/s)</label>
+                            <input type="number" min={0} step={0.1} value={condition.value ?? 50} onChange={(e) => onUpdateCondition(ci, { value: Number(e.target.value) })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm" />
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground">Duration (min)</label>
+                            <input type="number" min={1} value={condition.durationMinutes ?? 5} onChange={(e) => onUpdateCondition(ci, { durationMinutes: Number(e.target.value) })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm" />
+                          </div>
+                        </>
+                      )}
+                      {condition.type === 'network_errors' && (
+                        <>
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground">Error Type</label>
+                            <select value={condition.errorType ?? 'total'} onChange={(e) => onUpdateCondition(ci, { errorType: e.target.value as Condition['errorType'] })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm">
+                              <option value="in">Inbound Errors</option>
+                              <option value="out">Outbound Errors</option>
+                              <option value="total">Total Errors</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground">Operator</label>
+                            <select value={condition.operator ?? 'gt'} onChange={(e) => onUpdateCondition(ci, { operator: e.target.value })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm">
+                              {operatorOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground">Threshold</label>
+                            <input type="number" min={0} value={condition.value ?? 10} onChange={(e) => onUpdateCondition(ci, { value: Number(e.target.value) })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm" />
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground">Window (min)</label>
+                            <input type="number" min={1} value={condition.windowMinutes ?? 5} onChange={(e) => onUpdateCondition(ci, { windowMinutes: Number(e.target.value) })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm" />
+                          </div>
+                        </>
+                      )}
+                      {condition.type === 'patch_compliance' && (
+                        <>
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground">Operator</label>
+                            <select value={condition.operator ?? 'lt'} onChange={(e) => onUpdateCondition(ci, { operator: e.target.value })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm">
+                              {operatorOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                            </select>
+                          </div>
+                          <div className="sm:col-span-2">
+                            <label className="text-xs font-medium text-muted-foreground">Compliance Score (%)</label>
+                            <input type="number" min={0} max={100} value={condition.value ?? 80} onChange={(e) => onUpdateCondition(ci, { value: Number(e.target.value) })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm" />
+                          </div>
+                        </>
+                      )}
+                      {condition.type === 'cert_expiry' && (
+                        <div className="sm:col-span-3">
+                          <label className="text-xs font-medium text-muted-foreground">Expires Within (days)</label>
+                          <input type="number" min={1} value={condition.withinDays ?? 30} onChange={(e) => onUpdateCondition(ci, { withinDays: Number(e.target.value) })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm" />
                         </div>
                       )}
                       {condition.type === 'custom' && (

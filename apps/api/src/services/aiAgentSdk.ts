@@ -396,10 +396,48 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     const parsedOutput = safeParseJson(output);
     const sessionId = session.breezeSessionId;
     const orgId = session.auth.orgId ?? undefined;
+    const guardrailCheck = checkGuardrails(toolName, input);
 
-    // 1. Save tool_result to aiMessages
-    // NOTE: Runs in background processor (outside request DB context).
-    // Wrap in withSystemDbAccessContext for RLS compliance.
+    // 1. Emit SSE events FIRST — these are synchronous and must not be blocked by DB writes.
+    //    This ensures the UI always receives tool results even if persistence fails.
+    session.eventBus.publish({
+      type: 'tool_result',
+      toolUseId: toolUseId ?? '',
+      output: parsedOutput,
+      isError,
+    });
+
+    // 1b. Plan step SSE events (also synchronous, emit before DB writes)
+    if (session.activePlanId) {
+      const planStepIdx = session.currentPlanStepIndex - 1;
+      if (planStepIdx >= 0) {
+        session.eventBus.publish({
+          type: 'plan_step_complete',
+          planId: session.activePlanId,
+          stepIndex: planStepIdx,
+          toolName,
+          isError,
+        });
+      }
+
+      const effectiveMode = session.isPaused ? 'per_step' : session.approvalMode;
+      if (effectiveMode === 'hybrid_plan' && planStepIdx >= 0) {
+        if (parsedOutput.imageBase64 && typeof parsedOutput.imageBase64 === 'string') {
+          session.eventBus.publish({
+            type: 'plan_screenshot',
+            planId: session.activePlanId,
+            stepIndex: planStepIdx,
+            imageBase64: parsedOutput.imageBase64 as string,
+          });
+        }
+      }
+    }
+
+    // 2. Persist to DB — best-effort with individual error handling.
+    //    If any write fails, we warn but don't block the conversation.
+    let persistenceError = false;
+
+    // 2a. Save tool_result to aiMessages
     try {
       await withSystemDbAccessContext(() =>
         db.insert(aiMessages).values({
@@ -411,11 +449,11 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
         })
       );
     } catch (err) {
-      console.error('[AI-SDK] Failed to save tool_result message:', err);
+      persistenceError = true;
+      console.error(`[AI-SDK] Failed to save tool_result message for ${toolName}:`, err instanceof Error ? err.message : err);
     }
 
-    // 2. Create/update aiToolExecutions record
-    const guardrailCheck = checkGuardrails(toolName, input);
+    // 2b. Create/update aiToolExecutions record
     if (guardrailCheck.tier < 2) {
       try {
         await withSystemDbAccessContext(() =>
@@ -431,7 +469,8 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
           })
         );
       } catch (err) {
-        console.error('[AI-SDK] Failed to save tool execution record:', err);
+        persistenceError = true;
+        console.error(`[AI-SDK] Failed to save tool execution record for ${toolName}:`, err instanceof Error ? err.message : err);
       }
     } else {
       try {
@@ -451,11 +490,12 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
             ))
         );
       } catch (err) {
-        console.error('[AI-SDK] Failed to update approval execution record:', err);
+        persistenceError = true;
+        console.error(`[AI-SDK] Failed to update approval execution record for ${toolName}:`, err instanceof Error ? err.message : err);
       }
     }
 
-    // 2b. Auto-flag session on tool failure (first failure only)
+    // 2c. Auto-flag session on tool failure (first failure only)
     if (isError) {
       try {
         const errorMsg = (typeof parsedOutput.error === 'string'
@@ -473,73 +513,36 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
             ))
         );
       } catch (err) {
-        console.error('[AI-SDK] Failed to auto-flag session:', sessionId, err);
+        console.error('[AI-SDK] Failed to auto-flag session:', sessionId, err instanceof Error ? err.message : err);
       }
     }
 
-    // 3. Emit tool_result SSE event via session event bus
-    session.eventBus.publish({
-      type: 'tool_result',
-      toolUseId: toolUseId ?? '',
-      output: parsedOutput,
-      isError,
-    });
-
-    // 4. Plan step tracking (action_plan and hybrid_plan modes)
-    if (session.activePlanId) {
-      const effectiveMode = session.isPaused ? 'per_step' : session.approvalMode;
-      const planStepIdx = session.currentPlanStepIndex - 1; // currentPlanStepIndex was already incremented in preToolUse
-
-      // Emit plan_step_complete event
-      if (planStepIdx >= 0) {
-        session.eventBus.publish({
-          type: 'plan_step_complete',
-          planId: session.activePlanId,
-          stepIndex: planStepIdx,
-          toolName,
-          isError,
-        });
+    // 2d. Plan completion DB update
+    if (session.activePlanId && session.currentPlanStepIndex >= session.approvedPlanSteps.size) {
+      const planId = session.activePlanId;
+      try {
+        await withSystemDbAccessContext(() =>
+          db.update(aiActionPlans)
+            .set({ status: 'completed', completedAt: new Date() })
+            .where(eq(aiActionPlans.id, planId))
+        );
+      } catch (err) {
+        persistenceError = true;
+        console.error('[AI-SDK] Failed to mark plan as completed:', planId, err instanceof Error ? err.message : err);
       }
 
-      // For hybrid_plan mode: emit screenshot if tool result contains imageBase64
-      if (effectiveMode === 'hybrid_plan' && planStepIdx >= 0) {
-        if (parsedOutput.imageBase64 && typeof parsedOutput.imageBase64 === 'string') {
-          session.eventBus.publish({
-            type: 'plan_screenshot',
-            planId: session.activePlanId,
-            stepIndex: planStepIdx,
-            imageBase64: parsedOutput.imageBase64 as string,
-          });
-        }
-      }
+      session.eventBus.publish({
+        type: 'plan_complete',
+        planId,
+        status: 'completed',
+      });
 
-      // Check if plan is fully executed
-      if (session.currentPlanStepIndex >= session.approvedPlanSteps.size) {
-        const planId = session.activePlanId;
-        try {
-          await withSystemDbAccessContext(() =>
-            db.update(aiActionPlans)
-              .set({ status: 'completed', completedAt: new Date() })
-              .where(eq(aiActionPlans.id, planId))
-          );
-        } catch (err) {
-          console.error('[AI-SDK] Failed to mark plan as completed:', planId, err);
-        }
-
-        session.eventBus.publish({
-          type: 'plan_complete',
-          planId,
-          status: 'completed',
-        });
-
-        // Clear session plan state
-        session.activePlanId = null;
-        session.approvedPlanSteps.clear();
-        session.currentPlanStepIndex = 0;
-      }
+      session.activePlanId = null;
+      session.approvedPlanSteps.clear();
+      session.currentPlanStepIndex = 0;
     }
 
-    // 5. Write audit event
+    // 2e. Write audit event (fire-and-forget, non-blocking)
     if (session.auditSnapshot) {
       writeAuditEvent(requestLikeFromSnapshot(session.auditSnapshot), {
         orgId,
@@ -557,6 +560,15 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
           tier: guardrailCheck.tier,
           ...(guardrailCheck.tier >= 2 ? { approved: true } : {}),
         },
+      });
+    }
+
+    // 3. Warn UI if any DB persistence failed
+    if (persistenceError) {
+      session.eventBus.publish({
+        type: 'warning',
+        message: 'Some tool execution data may not have been saved.',
+        context: `tool: ${toolName}`,
       });
     }
   };

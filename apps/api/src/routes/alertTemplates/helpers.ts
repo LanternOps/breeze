@@ -1,5 +1,6 @@
-import type { AlertRule } from './schemas';
-import { builtInTemplates, customTemplates, customTemplateOrgById, alertRules, correlationAlerts, correlationLinks, correlationGroups } from './data';
+import { db } from '../../db';
+import { alertTemplates, alertCorrelations, alerts } from '../../db/schema';
+import { eq, and, or, isNull, desc, gte, sql, inArray } from 'drizzle-orm';
 import { getPagination } from '../../utils/pagination';
 
 export { getPagination } from '../../utils/pagination';
@@ -38,92 +39,86 @@ export function resolveScopedOrgId(
   return null;
 }
 
-export function getAllTemplates(orgId: string) {
-  return [
-    ...builtInTemplates,
-    ...[...customTemplates.values()].filter((template) => customTemplateOrgById.get(template.id) === orgId)
-  ];
+/**
+ * Get all templates visible to an org: built-in (orgId IS NULL) + org's custom templates
+ */
+export async function getAllTemplates(orgId: string) {
+  return db
+    .select()
+    .from(alertTemplates)
+    .where(
+      or(
+        eq(alertTemplates.isBuiltIn, true),
+        eq(alertTemplates.orgId, orgId)
+      )
+    )
+    .orderBy(desc(alertTemplates.isBuiltIn), alertTemplates.name);
 }
 
-export function getTemplateById(templateId: string, orgId: string) {
-  const builtIn = builtInTemplates.find((template) => template.id === templateId);
-  if (builtIn) {
-    return builtIn;
-  }
+/**
+ * Get a template by ID, checking org access
+ */
+export async function getTemplateById(templateId: string, orgId: string) {
+  const [template] = await db
+    .select()
+    .from(alertTemplates)
+    .where(
+      and(
+        eq(alertTemplates.id, templateId),
+        or(
+          eq(alertTemplates.isBuiltIn, true),
+          eq(alertTemplates.orgId, orgId)
+        )
+      )
+    )
+    .limit(1);
 
-  const customTemplate = customTemplates.get(templateId);
-  if (!customTemplate) {
-    return null;
-  }
-
-  if (customTemplateOrgById.get(templateId) !== orgId) {
-    return null;
-  }
-
-  return customTemplate;
+  return template ?? null;
 }
 
-export function isBuiltInTemplate(templateId: string) {
-  return builtInTemplates.some((template) => template.id === templateId);
+/**
+ * Check if a template is built-in
+ */
+export async function isBuiltInTemplate(templateId: string): Promise<boolean> {
+  const [template] = await db
+    .select({ isBuiltIn: alertTemplates.isBuiltIn })
+    .from(alertTemplates)
+    .where(eq(alertTemplates.id, templateId))
+    .limit(1);
+
+  return template?.isBuiltIn === true;
 }
 
-export function getRuleForOrg(ruleId: string, orgId: string) {
-  const rule = alertRules.get(ruleId);
-  if (!rule || rule.orgId !== orgId) {
-    return null;
-  }
-  return rule;
+/**
+ * Get correlation links for an alert from the real DB
+ */
+export async function getCorrelationLinksForAlert(alertId: string) {
+  return db
+    .select()
+    .from(alertCorrelations)
+    .where(
+      or(
+        eq(alertCorrelations.parentAlertId, alertId),
+        eq(alertCorrelations.childAlertId, alertId)
+      )
+    );
 }
 
-export function matchesTargetFilter(rule: AlertRule, targetType?: string, targetValue?: string) {
-  if (!targetType) return true;
-
-  const targets = rule.targets;
-  if (targetType === 'tag') {
-    return Boolean(targetValue && targets.tags?.includes(targetValue));
-  }
-
-  if (targetType === 'device') {
-    return Boolean(targetValue && targets.deviceIds?.includes(targetValue));
-  }
-
-  if (targetType === 'site') {
-    return Boolean(targetValue && targets.siteIds?.includes(targetValue));
-  }
-
-  if (targetType === 'organization') {
-    if (!targetValue) {
-      return targets.scope === 'organization';
-    }
-    return targets.orgId === targetValue;
-  }
-
-  return true;
-}
-
-export function getScopedCorrelationAlerts(orgId: string) {
-  return correlationAlerts.filter((alert) => {
-    const rule = alertRules.get(alert.ruleId);
-    return rule?.orgId === orgId;
-  });
-}
-
-export function getCorrelationLinksForAlert(alertId: string) {
-  return correlationLinks.filter(
-    (link) => link.alertId === alertId || link.relatedAlertId === alertId
-  );
-}
-
-export function getRelatedAlerts(alertId: string) {
+/**
+ * Get related alerts via correlation links
+ */
+export async function getRelatedAlerts(alertId: string) {
+  const links = await getCorrelationLinksForAlert(alertId);
   const relatedIds = new Set<string>();
-  for (const link of getCorrelationLinksForAlert(alertId)) {
-    relatedIds.add(link.alertId === alertId ? link.relatedAlertId : link.alertId);
+  for (const link of links) {
+    relatedIds.add(link.parentAlertId === alertId ? link.childAlertId : link.parentAlertId);
   }
-  return correlationAlerts.filter((alert) => relatedIds.has(alert.id));
-}
 
-export function getCorrelationGroupsForAlert(alertId: string) {
-  return correlationGroups.filter((group) =>
-    group.alerts.some((alert) => alert.id === alertId)
-  );
+  if (relatedIds.size === 0) return [];
+
+  const ids = [...relatedIds];
+  return db
+    .select()
+    .from(alerts)
+    .where(inArray(alerts.id, ids));
 }

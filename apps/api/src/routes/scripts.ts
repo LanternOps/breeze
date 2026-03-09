@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, sql, desc, like, inArray, or, isNull } from 'drizzle-orm';
+import { escapeLike } from '../utils/sql';
 import { db } from '../db';
 import {
   scripts,
@@ -207,14 +208,14 @@ scriptRoutes.get(
 
     if (query.osType) {
       // Check if osType is in the osTypes array
-      conditions.push(sql`${query.osType} = ANY(${scripts.osTypes})` as ReturnType<typeof eq>);
+      conditions.push(sql`${sql.param(query.osType)} = ANY(${scripts.osTypes})` as ReturnType<typeof eq>);
     }
 
     if (query.search) {
       conditions.push(
         or(
-          like(scripts.name, `%${query.search}%`),
-          like(scripts.description, `%${query.search}%`)
+          like(scripts.name, `%${escapeLike(query.search)}%`),
+          like(scripts.description, `%${escapeLike(query.search)}%`)
         ) as ReturnType<typeof eq>
       );
     }

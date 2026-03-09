@@ -113,6 +113,88 @@ downloadRoutes.get('/download/:os/:arch', async (c) => {
 });
 
 // ============================================
+// Helper Binary Download (public, no auth)
+// ============================================
+
+downloadRoutes.get('/download/helper/:os/:arch', async (c) => {
+  const os = c.req.param('os');
+  const arch = c.req.param('arch');
+
+  if (!VALID_OS.has(os)) {
+    return c.json({ error: 'Invalid OS', message: `Supported values: linux, darwin, windows. Got: ${os}` }, 400);
+  }
+
+  if (!VALID_ARCH.has(arch)) {
+    return c.json({ error: 'Invalid architecture', message: `Supported values: amd64, arm64. Got: ${arch}` }, 400);
+  }
+
+  const extension = os === 'windows' ? '.exe' : '';
+  const filename = `breeze-helper-${os}-${arch}${extension}`;
+
+  if (getBinarySource() === 'github') {
+    return c.redirect(getGithubAgentUrl(os, arch).replace('breeze-agent', 'breeze-helper'), 302);
+  }
+
+  if (isS3Configured()) {
+    try {
+      const s3Key = `helper/${filename}`;
+      const url = await getPresignedUrl(s3Key);
+      return c.redirect(url, 302);
+    } catch (err) {
+      const errName = (err as { name?: string }).name;
+      const isNotFound = errName === 'NotFound' || errName === 'NoSuchKey';
+      const level = isNotFound ? 'warn' : 'error';
+      console[level](`[helper-download] S3 presign failed for ${filename}, falling back to disk:`, err);
+    }
+  }
+
+  const binaryDir = resolve(process.env.HELPER_BINARY_DIR || process.env.AGENT_BINARY_DIR || './agent/bin');
+  const filePath = join(binaryDir, filename);
+
+  let fileStat: ReturnType<typeof statSync>;
+  let stream: ReturnType<typeof createReadStream>;
+  try {
+    fileStat = statSync(filePath);
+    stream = createReadStream(filePath);
+  } catch (err) {
+    const isNotFound = err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT';
+    if (!isNotFound) {
+      console.error(`[helper-download] Failed to read binary ${filename}:`, err);
+      return c.json({ error: 'Internal server error', message: 'Failed to read binary file' }, 500);
+    }
+    return c.json({
+      error: 'Binary not found',
+      message: `Helper binary "${filename}" is not available.`,
+    }, 404);
+  }
+
+  const webStream = new ReadableStream({
+    start(controller) {
+      stream.on('data', (chunk: string | Buffer) => {
+        const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+        controller.enqueue(new Uint8Array(bytes));
+      });
+      stream.on('end', () => { controller.close(); });
+      stream.on('error', (err) => {
+        console.error(`[helper-download] Stream error while serving ${filename}:`, err);
+        controller.error(err);
+      });
+    },
+    cancel() { stream.destroy(); },
+  });
+
+  return new Response(webStream, {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/octet-stream',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Content-Length': String(fileStat.size),
+      'Cache-Control': 'no-cache',
+    },
+  });
+});
+
+// ============================================
 // Install Script (public, no auth)
 // ============================================
 

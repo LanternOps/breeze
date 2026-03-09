@@ -21,6 +21,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/audit"
 	"github.com/breeze-rmm/agent/internal/backup"
+	"github.com/breeze-rmm/agent/internal/helper"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
@@ -65,11 +66,20 @@ type HeartbeatPayload struct {
 }
 
 type HeartbeatResponse struct {
-	Commands      []Command      `json:"commands"`
-	ConfigUpdate  map[string]any `json:"configUpdate,omitempty"`
-	UpgradeTo     string         `json:"upgradeTo,omitempty"`
-	RenewCert     bool           `json:"renewCert,omitempty"`
-	HelperEnabled bool           `json:"helperEnabled,omitempty"`
+	Commands       []Command       `json:"commands"`
+	ConfigUpdate   map[string]any  `json:"configUpdate,omitempty"`
+	UpgradeTo      string          `json:"upgradeTo,omitempty"`
+	RenewCert      bool            `json:"renewCert,omitempty"`
+	HelperEnabled  bool            `json:"helperEnabled,omitempty"`
+	HelperSettings *HelperSettings `json:"helperSettings,omitempty"`
+}
+
+type HelperSettings struct {
+	Enabled            bool   `json:"enabled"`
+	ShowOpenPortal     bool   `json:"showOpenPortal"`
+	ShowDeviceInfo     bool   `json:"showDeviceInfo"`
+	ShowRequestSupport bool   `json:"showRequestSupport"`
+	PortalUrl          string `json:"portalUrl,omitempty"`
 }
 
 type Command struct {
@@ -139,6 +149,7 @@ type Heartbeat struct {
 
 	// Helper chat enabled flag from org settings
 	helperEnabled atomic.Bool
+	helperMgr     *helper.Manager
 
 	// Service & process monitoring
 	monitor *monitoring.Monitor
@@ -214,6 +225,13 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	} else {
 		h.cachedDeviceRole = "workstation"
 	}
+
+	// Initialize helper manager
+	authToken := ""
+	if ftToken != nil {
+		authToken = ftToken.Reveal()
+	}
+	h.helperMgr = helper.New(cfg.ServerURL, authToken, cfg.AgentID)
 
 	// Initialize service & process monitoring
 	h.monitor = monitoring.New(h.sendMonitoringResults)
@@ -1735,8 +1753,17 @@ func (h *Heartbeat) sendHeartbeat() {
 		go h.handleCertRenewal()
 	}
 
-	// Update helper enabled state from org settings
+	// Update helper enabled state and apply full settings
 	h.handleHelperEnabled(response.HelperEnabled)
+	if response.HelperSettings != nil {
+		h.helperMgr.Apply(&helper.Settings{
+			Enabled:            response.HelperSettings.Enabled,
+			ShowOpenPortal:     response.HelperSettings.ShowOpenPortal,
+			ShowDeviceInfo:     response.HelperSettings.ShowDeviceInfo,
+			ShowRequestSupport: response.HelperSettings.ShowRequestSupport,
+			PortalUrl:          response.HelperSettings.PortalUrl,
+		})
+	}
 }
 
 // IsHelperEnabled returns whether the helper chat is enabled for this device's org.

@@ -17,9 +17,9 @@ import {
   buildPolicyProbeConfigUpdate,
   normalizeAgentArchitecture,
   compareAgentVersions,
-  getOrgHelperSettings,
   buildEventLogConfigUpdate,
   buildMonitoringConfigUpdate,
+  buildHelperConfigUpdate,
 } from './helpers';
 import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
 
@@ -192,10 +192,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     }
   }
 
-  let helperEnabled = false;
+  let helperSettings: { enabled: boolean; showOpenPortal: boolean; showDeviceInfo: boolean; showRequestSupport: boolean; portalUrl?: string } | null = null;
   try {
-    const helperSettings = await getOrgHelperSettings(device.orgId);
-    helperEnabled = helperSettings.enabled;
+    helperSettings = await buildHelperConfigUpdate(device.id, device.orgId);
   } catch (err) {
     console.error(`[agents] failed to read helper settings for ${agentId}:`, err);
   }
@@ -234,7 +233,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     configUpdate: mergedConfigUpdate,
     upgradeTo,
     renewCert: renewCert || undefined,
-    helperEnabled,
+    helperEnabled: helperSettings?.enabled ?? false,
+    helperSettings: helperSettings ?? undefined,
   });
 });
 

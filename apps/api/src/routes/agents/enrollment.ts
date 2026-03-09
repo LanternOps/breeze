@@ -14,6 +14,7 @@ import { writeAuditEvent } from '../../services/auditEvents';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
 import { enrollSchema } from './schemas';
 import { generateAgentId, generateApiKey, issueMtlsCertForDevice } from './helpers';
+import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
 
 export const enrollmentRoutes = new Hono();
 
@@ -200,6 +201,11 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         reenrollment: Boolean(existingDevice),
         mtlsCertIssued: mtlsCert !== null,
       },
+    });
+
+    // Queue warranty lookup for the newly enrolled device (fire-and-forget)
+    queueWarrantySyncForDevice(device.id).catch((err) => {
+      console.error('[Enrollment] Failed to queue warranty sync:', err instanceof Error ? err.message : err);
     });
 
     return c.json({

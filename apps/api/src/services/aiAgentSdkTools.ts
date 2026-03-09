@@ -129,7 +129,38 @@ export const BREEZE_MCP_TOOL_NAMES = Object.keys(TOOL_TIERS).map(
 // Helper: Create tool handler that delegates to executeTool
 // ============================================
 
-const TOOL_EXECUTION_TIMEOUT_MS = 60_000; // 60s safety timeout
+const TOOL_EXECUTION_TIMEOUT_MS = 60_000; // 60s default safety timeout
+const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
+
+/**
+ * Per-tool timeout overrides for tools that legitimately need more (or less) time.
+ * Tools not listed here use TOOL_EXECUTION_TIMEOUT_MS (60s).
+ */
+const TOOL_TIMEOUT_OVERRIDES: Record<string, number> = {
+  // Command execution — waits for agent round-trip
+  execute_command: 120_000,
+  run_script: 120_000,
+  // Disk operations — can scan large filesystems
+  analyze_disk_usage: 90_000,
+  disk_cleanup: 90_000,
+  // Security scans — multi-step agent operations
+  security_scan: 120_000,
+  apply_cis_remediation: 120_000,
+  // Patching — downloads + installs
+  manage_patches: 180_000,
+  // Network discovery — port scanning is slow
+  network_discovery: 120_000,
+  // Desktop / vision — WebRTC setup + capture
+  take_screenshot: 30_000,
+  analyze_screen: 30_000,
+  computer_control: 30_000,
+  // Report generation — aggregates across many devices
+  generate_report: 90_000,
+};
+
+function getToolTimeout(toolName: string): number {
+  return TOOL_TIMEOUT_OVERRIDES[toolName] ?? TOOL_EXECUTION_TIMEOUT_MS;
+}
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -141,13 +172,52 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
+/**
+ * Fire postToolUse with a timeout — if DB writes hang, don't block the conversation.
+ * The postToolUse callback already emits SSE events synchronously before DB writes,
+ * so even on timeout the UI receives the tool_result event.
+ */
+async function safePostToolUse(
+  onPostToolUse: PostToolUseCallback | undefined,
+  toolName: string,
+  args: Record<string, unknown>,
+  output: string,
+  isError: boolean,
+  durationMs: number,
+): Promise<void> {
+  if (!onPostToolUse) return;
+  try {
+    await withTimeout(
+      onPostToolUse(toolName, args, output, isError, durationMs),
+      POST_TOOL_USE_TIMEOUT_MS,
+      `postToolUse:${toolName}`,
+    );
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : 'Unknown error';
+    console.error(`[AI-SDK] PostToolUse failed for ${toolName} (${durationMs}ms): ${reason}`);
+  }
+}
+
 function makeHandler(
   toolName: string,
   getAuth: () => AuthContext,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
 ) {
+  const toolTimeout = getToolTimeout(toolName);
+
   return async (args: Record<string, unknown>) => {
+    // CRITICAL: Escape any inherited AsyncLocalStorage DB context from the SDK's
+    // MCP callback chain. Without this, dbContextStorage.getStore() may return a
+    // stale/committed transaction from a prior withSystemDbAccessContext call,
+    // causing withDbAccessContext to skip creating a new transaction and execute
+    // on the dead connection — which hangs until the PostgreSQL idle timeout.
+    //
+    // This wraps the ENTIRE handler (preToolUse, executeTool, postToolUse) so all
+    // DB operations start with a clean context. Previously only executeTool was
+    // wrapped, leaving preToolUse (approval DB writes) and postToolUse (tool_result
+    // persistence) vulnerable to stale context hangs.
+    return runOutsideDbContext(async () => {
     const startTime = Date.now();
 
     // Pre-execution check (guardrails, RBAC, rate limits, approval)
@@ -156,14 +226,12 @@ function makeHandler(
       try {
         check = await onPreToolUse(toolName, args);
       } catch (err) {
-        console.error(`[AI-SDK] PreToolUse threw for ${toolName}:`, err);
-        check = { allowed: false, error: 'Internal guardrails error. Tool execution blocked.' };
+        const reason = err instanceof Error ? err.message : 'Unknown error';
+        console.error(`[AI-SDK] PreToolUse threw for ${toolName}: ${reason}`);
+        check = { allowed: false, error: `Guardrails check failed: ${reason}` };
       }
       if (!check.allowed) {
-        if (onPostToolUse) {
-          try { await onPostToolUse(toolName, args, JSON.stringify({ error: check.error }), true, 0); }
-          catch (err) { console.error('[AI-SDK] PostToolUse callback failed:', err); }
-        }
+        await safePostToolUse(onPostToolUse, toolName, args, JSON.stringify({ error: check.error }), true, 0);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({ error: check.error }) }],
           isError: true,
@@ -172,17 +240,9 @@ function makeHandler(
     }
     try {
       const auth = getAuth();
-      // Tool handlers query RLS-protected tables (e.g. devices via verifyDeviceAccess).
-      // The background processor runs outside the request's DB context, so we must
-      // wrap execution in withSystemDbAccessContext for RLS to pass.
-      // CRITICAL: runOutsideDbContext escapes any inherited AsyncLocalStorage context
-      // from the SDK's MCP callback chain. Without this, dbContextStorage.getStore()
-      // may return a stale/committed transaction from a prior withSystemDbAccessContext
-      // call on the same async chain, causing withDbAccessContext to bypass creating a
-      // new transaction and instead execute on the dead connection — which hangs forever.
       const result = await withTimeout(
-        runOutsideDbContext(() => withSystemDbAccessContext(() => executeTool(toolName, args, auth))),
-        TOOL_EXECUTION_TIMEOUT_MS,
+        withSystemDbAccessContext(() => executeTool(toolName, args, auth)),
+        toolTimeout,
         toolName,
       );
       const compactResult = compactToolResultForChat(toolName, result);
@@ -198,10 +258,7 @@ function makeHandler(
           } else if (parsed.imageBase64) {
             const imageBase64 = parsed.imageBase64;
             const durationMs = Date.now() - startTime;
-            if (onPostToolUse) {
-              try { await onPostToolUse(toolName, args, JSON.stringify({ actionExecuted: parsed.actionExecuted, width: parsed.width, height: parsed.height, format: parsed.format, sizeBytes: parsed.sizeBytes, capturedAt: parsed.capturedAt }), false, durationMs); }
-              catch (err) { console.error('[AI-SDK] PostToolUse callback failed:', err); }
-            }
+            await safePostToolUse(onPostToolUse, toolName, args, JSON.stringify({ actionExecuted: parsed.actionExecuted, width: parsed.width, height: parsed.height, format: parsed.format, sizeBytes: parsed.sizeBytes, capturedAt: parsed.capturedAt }), false, durationMs);
             // MCP ImageContent format: { type: 'image', data: base64, mimeType: string }
             const contentBlocks: Array<{ type: string; data?: string; mimeType?: string; text?: string }> = [
               {
@@ -253,24 +310,19 @@ function makeHandler(
       } catch { /* not JSON, treat as success */ }
 
       const durationMs = Date.now() - startTime;
-      if (onPostToolUse) {
-        try { await onPostToolUse(toolName, args, compactResult, isToolError, durationMs); }
-        catch (err) { console.error('[AI-SDK] PostToolUse callback failed:', err); }
-      }
+      await safePostToolUse(onPostToolUse, toolName, args, compactResult, isToolError, durationMs);
       return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Tool execution failed';
       const durationMs = Date.now() - startTime;
-      console.error(`[AI-SDK] Tool ${toolName} failed in ${durationMs}ms:`, message);
-      if (onPostToolUse) {
-        try { await onPostToolUse(toolName, args, JSON.stringify({ error: message }), true, durationMs); }
-        catch (cbErr) { console.error('[AI-SDK] PostToolUse callback failed:', cbErr); }
-      }
+      console.error(`[AI-SDK] Tool ${toolName} failed in ${durationMs}ms: ${message}`);
+      await safePostToolUse(onPostToolUse, toolName, args, JSON.stringify({ error: message }), true, durationMs);
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({ error: message }) }],
         isError: true,
       };
     }
+    }); // end runOutsideDbContext
   };
 }
 

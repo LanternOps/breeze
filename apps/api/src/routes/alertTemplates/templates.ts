@@ -1,12 +1,13 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { randomUUID } from 'crypto';
+import { db } from '../../db';
+import { alertTemplates } from '../../db/schema';
+import { eq, and, or, ilike, desc } from 'drizzle-orm';
 import { requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
-import type { AlertTemplateTarget, AlertTemplate } from './schemas';
 import { listTemplatesSchema, createTemplateSchema, updateTemplateSchema } from './schemas';
-import { builtInTemplates, customTemplates, customTemplateOrgById } from './data';
-import { resolveScopedOrgId, paginate, parseBoolean, getAllTemplates, getTemplateById, isBuiltInTemplate } from './helpers';
+import { resolveScopedOrgId, parseBoolean } from './helpers';
+import { getPagination } from '../../utils/pagination';
 
 export const templateRoutes = new Hono();
 
@@ -23,29 +24,50 @@ templateRoutes.get(
       }
 
       const query = c.req.valid('query');
-      let data = getAllTemplates(orgId);
+      const conditions: ReturnType<typeof eq>[] = [];
 
-      if (query.builtIn) {
-        const builtInFlag = parseBoolean(query.builtIn);
-        if (builtInFlag !== undefined) {
-          data = data.filter((template) => template.builtIn === builtInFlag);
-        }
+      // Built-in templates (orgId IS NULL) + org's custom templates
+      const scopeCondition = or(
+        eq(alertTemplates.isBuiltIn, true),
+        eq(alertTemplates.orgId, orgId)
+      );
+
+      const builtInFlag = parseBoolean(query.builtIn);
+      if (builtInFlag !== undefined) {
+        conditions.push(eq(alertTemplates.isBuiltIn, builtInFlag));
       }
 
       if (query.severity) {
-        data = data.filter((template) => template.severity === query.severity);
+        conditions.push(eq(alertTemplates.severity, query.severity));
       }
 
       if (query.search) {
-        const search = query.search.toLowerCase();
-        data = data.filter((template) =>
-          template.name.toLowerCase().includes(search) ||
-          (template.description ?? '').toLowerCase().includes(search)
+        const search = `%${query.search}%`;
+        conditions.push(
+          or(
+            ilike(alertTemplates.name, search),
+            ilike(alertTemplates.description, search)
+          )!
         );
       }
 
-      const result = paginate(data, query);
-      return c.json(result);
+      const allConditions = scopeCondition
+        ? [scopeCondition, ...conditions]
+        : conditions;
+
+      const rows = await db
+        .select()
+        .from(alertTemplates)
+        .where(and(...allConditions))
+        .orderBy(desc(alertTemplates.isBuiltIn), alertTemplates.name);
+
+      const { page, limit, offset } = getPagination(query);
+      return c.json({
+        data: rows.slice(offset, offset + limit),
+        page,
+        limit,
+        total: rows.length
+      });
     } catch {
       return c.json({ error: 'Failed to list templates' }, 500);
     }
@@ -58,29 +80,38 @@ templateRoutes.get(
   zValidator('query', listTemplatesSchema),
   async (c) => {
     try {
-      const auth = c.get('auth');
-      const orgId = resolveScopedOrgId(auth);
-      if (!orgId) {
-        return c.json({ error: 'orgId is required for this scope' }, 400);
-      }
-
       const query = c.req.valid('query');
-      let data = builtInTemplates;
+      const conditions: ReturnType<typeof eq>[] = [
+        eq(alertTemplates.isBuiltIn, true)
+      ];
 
       if (query.severity) {
-        data = data.filter((template) => template.severity === query.severity);
+        conditions.push(eq(alertTemplates.severity, query.severity));
       }
 
       if (query.search) {
-        const search = query.search.toLowerCase();
-        data = data.filter((template) =>
-          template.name.toLowerCase().includes(search) ||
-          (template.description ?? '').toLowerCase().includes(search)
+        const search = `%${query.search}%`;
+        conditions.push(
+          or(
+            ilike(alertTemplates.name, search),
+            ilike(alertTemplates.description, search)
+          )!
         );
       }
 
-      const result = paginate(data, query);
-      return c.json(result);
+      const rows = await db
+        .select()
+        .from(alertTemplates)
+        .where(and(...conditions))
+        .orderBy(alertTemplates.name);
+
+      const { page, limit, offset } = getPagination(query);
+      return c.json({
+        data: rows.slice(offset, offset + limit),
+        page,
+        limit,
+        total: rows.length
+      });
     } catch {
       return c.json({ error: 'Failed to list built-in templates' }, 500);
     }
@@ -100,25 +131,31 @@ templateRoutes.post(
       }
 
       const data = c.req.valid('json');
-      const targets: AlertTemplateTarget = data.targets && Object.keys(data.targets).length > 0
-        ? data.targets as AlertTemplateTarget
+      const targets = data.targets && Object.keys(data.targets).length > 0
+        ? data.targets
         : { scope: 'organization' };
-      const template: AlertTemplate = {
-        id: randomUUID(),
-        name: data.name.trim(),
-        description: data.description,
-        category: data.category ?? 'Custom',
-        severity: data.severity,
-        builtIn: false,
-        conditions: data.conditions ?? {},
-        targets,
-        defaultCooldownMinutes: data.defaultCooldownMinutes ?? 15,
-        createdAt: new Date(),
-        updatedAt: new Date()
-      };
 
-      customTemplates.set(template.id, template);
-      customTemplateOrgById.set(template.id, orgId);
+      const [template] = await db
+        .insert(alertTemplates)
+        .values({
+          orgId,
+          name: data.name.trim(),
+          description: data.description,
+          category: data.category ?? 'Custom',
+          conditions: data.conditions ?? {},
+          severity: data.severity,
+          titleTemplate: `{{deviceName}}: ${data.name.trim()}`,
+          messageTemplate: `Alert triggered: ${data.name.trim()} on {{deviceName}} ({{hostname}}).`,
+          targets,
+          cooldownMinutes: data.defaultCooldownMinutes ?? 15,
+          isBuiltIn: false,
+        })
+        .returning();
+
+      if (!template) {
+        return c.json({ error: 'Failed to create template' }, 500);
+      }
+
       writeRouteAudit(c, {
         orgId,
         action: 'alert_template.create',
@@ -149,7 +186,19 @@ templateRoutes.get(
       }
 
       const templateId = c.req.param('id');
-      const template = getTemplateById(templateId, orgId);
+      const [template] = await db
+        .select()
+        .from(alertTemplates)
+        .where(
+          and(
+            eq(alertTemplates.id, templateId),
+            or(
+              eq(alertTemplates.isBuiltIn, true),
+              eq(alertTemplates.orgId, orgId)
+            )
+          )
+        )
+        .limit(1);
 
       if (!template) {
         return c.json({ error: 'Template not found' }, 404);
@@ -177,15 +226,22 @@ templateRoutes.patch(
       const templateId = c.req.param('id');
       const updates = c.req.valid('json');
 
-      if (isBuiltInTemplate(templateId)) {
+      // Check if template exists and is accessible
+      const [existing] = await db
+        .select()
+        .from(alertTemplates)
+        .where(eq(alertTemplates.id, templateId))
+        .limit(1);
+
+      if (!existing) {
+        return c.json({ error: 'Template not found' }, 404);
+      }
+
+      if (existing.isBuiltIn) {
         return c.json({ error: 'Built-in templates cannot be modified' }, 403);
       }
 
-      const existing = customTemplates.get(templateId);
-      if (customTemplateOrgById.get(templateId) !== orgId) {
-        return c.json({ error: 'Template not found' }, 404);
-      }
-      if (!existing) {
+      if (existing.orgId !== orgId) {
         return c.json({ error: 'Template not found' }, 404);
       }
 
@@ -193,28 +249,28 @@ templateRoutes.patch(
         return c.json({ error: 'No updates provided' }, 400);
       }
 
-      const updated: AlertTemplate = {
-        ...existing,
-        name: updates.name?.trim() ?? existing.name,
-        description: updates.description ?? existing.description,
-        category: updates.category ?? existing.category,
-        severity: updates.severity ?? existing.severity,
-        conditions: updates.conditions ?? existing.conditions,
-        targets: (updates.targets as AlertTemplateTarget | undefined) ?? existing.targets,
-        defaultCooldownMinutes: updates.defaultCooldownMinutes ?? existing.defaultCooldownMinutes,
-        updatedAt: new Date()
-      };
+      const setValues: Record<string, unknown> = { updatedAt: new Date() };
+      if (updates.name !== undefined) setValues.name = updates.name.trim();
+      if (updates.description !== undefined) setValues.description = updates.description;
+      if (updates.category !== undefined) setValues.category = updates.category;
+      if (updates.severity !== undefined) setValues.severity = updates.severity;
+      if (updates.conditions !== undefined) setValues.conditions = updates.conditions;
+      if (updates.targets !== undefined) setValues.targets = updates.targets;
+      if (updates.defaultCooldownMinutes !== undefined) setValues.cooldownMinutes = updates.defaultCooldownMinutes;
 
-      customTemplates.set(templateId, updated);
+      const [updated] = await db
+        .update(alertTemplates)
+        .set(setValues)
+        .where(eq(alertTemplates.id, templateId))
+        .returning();
+
       writeRouteAudit(c, {
         orgId,
         action: 'alert_template.update',
         resourceType: 'alert_template',
-        resourceId: updated.id,
-        resourceName: updated.name,
-        details: {
-          updatedFields: Object.keys(updates),
-        },
+        resourceId: templateId,
+        resourceName: updated?.name ?? existing.name,
+        details: { updatedFields: Object.keys(updates) },
       });
       return c.json({ data: updated });
     } catch {
@@ -236,20 +292,28 @@ templateRoutes.delete(
 
       const templateId = c.req.param('id');
 
-      if (isBuiltInTemplate(templateId)) {
-        return c.json({ error: 'Built-in templates cannot be deleted' }, 403);
-      }
+      const [existing] = await db
+        .select()
+        .from(alertTemplates)
+        .where(eq(alertTemplates.id, templateId))
+        .limit(1);
 
-      const existing = customTemplates.get(templateId);
-      if (customTemplateOrgById.get(templateId) !== orgId) {
-        return c.json({ error: 'Template not found' }, 404);
-      }
       if (!existing) {
         return c.json({ error: 'Template not found' }, 404);
       }
 
-      customTemplates.delete(templateId);
-      customTemplateOrgById.delete(templateId);
+      if (existing.isBuiltIn) {
+        return c.json({ error: 'Built-in templates cannot be deleted' }, 403);
+      }
+
+      if (existing.orgId !== orgId) {
+        return c.json({ error: 'Template not found' }, 404);
+      }
+
+      await db
+        .delete(alertTemplates)
+        .where(eq(alertTemplates.id, templateId));
+
       writeRouteAudit(c, {
         orgId,
         action: 'alert_template.delete',
