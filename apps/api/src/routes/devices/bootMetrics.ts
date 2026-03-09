@@ -42,7 +42,7 @@ bootMetricsRoutes.get(
   '/:id/boot-metrics',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
     try {
       const auth = c.get('auth');
       const limit = Math.min(Number(c.req.query('limit')) || 30, 100);
@@ -96,7 +96,7 @@ bootMetricsRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   async (c) => {
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
     try {
       const auth = c.get('auth');
 
@@ -129,7 +129,7 @@ bootMetricsRoutes.get(
   '/:id/startup-items',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
     try {
       const auth = c.get('auth');
 
@@ -171,10 +171,10 @@ bootMetricsRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   async (c) => {
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
     try {
       const auth = c.get('auth');
-      const itemName = decodeURIComponent(c.req.param('itemName'));
+      const itemName = decodeURIComponent(c.req.param('itemName')!);
       let actionBody = parseActionBody({});
       try {
         actionBody = parseActionBody(await c.req.json());
@@ -262,10 +262,10 @@ bootMetricsRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   async (c) => {
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
     try {
       const auth = c.get('auth');
-      const itemName = decodeURIComponent(c.req.param('itemName'));
+      const itemName = decodeURIComponent(c.req.param('itemName')!);
       let actionBody = parseActionBody({});
       try {
         actionBody = parseActionBody(await c.req.json());

@@ -115,7 +115,7 @@ routingRoutes.patch(
         return c.json({ error: 'orgId is required' }, 400);
       }
 
-      const ruleId = c.req.param('id');
+      const ruleId = c.req.param('id')!;
       const updates = c.req.valid('json');
 
       const [existing] = await db
@@ -169,7 +169,7 @@ routingRoutes.delete(
         return c.json({ error: 'orgId is required' }, 400);
       }
 
-      const ruleId = c.req.param('id');
+      const ruleId = c.req.param('id')!;
 
       const [existing] = await db
         .select()

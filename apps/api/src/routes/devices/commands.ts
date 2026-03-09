@@ -102,7 +102,7 @@ commandsRoutes.post(
   zValidator('json', createCommandSchema),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
@@ -165,7 +165,7 @@ commandsRoutes.post(
   zValidator('json', maintenanceModeSchema),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
@@ -212,7 +212,7 @@ commandsRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
     const { page = '1', limit = '50' } = c.req.query();
     const pagination = getPagination({ page, limit });
 
@@ -252,8 +252,8 @@ commandsRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
-    const commandId = c.req.param('commandId');
+    const deviceId = c.req.param('id')!;
+    const commandId = c.req.param('commandId')!;
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {

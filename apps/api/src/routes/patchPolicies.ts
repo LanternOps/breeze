@@ -156,7 +156,7 @@ patchPolicyRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const policyId = c.req.param('id');
+    const policyId = c.req.param('id')!;
 
     const policy = await getPatchPolicyWithOrgCheck(policyId, auth);
     if (!policy) {

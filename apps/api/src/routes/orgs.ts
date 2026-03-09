@@ -199,7 +199,7 @@ orgRoutes.post('/partners', requireScope('system'), zValidator('json', createPar
 });
 
 orgRoutes.get('/partners/:id', requireScope('system'), async (c) => {
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
 
   const [partner] = await db
     .select()
@@ -216,7 +216,7 @@ orgRoutes.get('/partners/:id', requireScope('system'), async (c) => {
 
 orgRoutes.patch('/partners/:id', requireScope('system', 'partner'), zValidator('json', updatePartnerSchema), async (c) => {
   const auth = c.get('auth');
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
 
   // Partner-scoped users may only update their own partner
   if (auth.scope === 'partner' && auth.partnerId !== id) {
@@ -259,7 +259,7 @@ orgRoutes.patch('/partners/:id', requireScope('system', 'partner'), zValidator('
 
 orgRoutes.delete('/partners/:id', requireScope('system'), async (c) => {
   const auth = c.get('auth');
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
 
   const [partner] = await db
     .update(partners)
@@ -490,7 +490,7 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), zValidator('
 
 orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
 
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
     return c.json({ error: 'Organization not found' }, 404);
@@ -513,7 +513,7 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), async (c)
 
 const updateOrgHandler = [requireScope('partner', 'system'), zValidator('json', updateOrganizationSchema), async (c: any) => {
   const auth = c.get('auth') as AuthContext;
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
   const data = c.req.valid('json');
 
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
@@ -569,7 +569,7 @@ orgRoutes.put('/organizations/:id', ...updateOrgHandler);
 
 orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
 
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
     return c.json({ error: 'Organization not found' }, 404);
@@ -692,7 +692,7 @@ orgRoutes.post('/sites', requireScope('organization', 'partner', 'system'), zVal
 
 orgRoutes.get('/sites/:id', requireScope('organization', 'partner', 'system'), async (c) => {
   const auth = c.get('auth');
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
 
   const [site] = await db
     .select()
@@ -714,7 +714,7 @@ orgRoutes.get('/sites/:id', requireScope('organization', 'partner', 'system'), a
 
 orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'), zValidator('json', updateSiteSchema), async (c) => {
   const auth = c.get('auth');
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
   const data = c.req.valid('json');
 
   if (Object.keys(data).length === 0) {
@@ -756,7 +756,7 @@ orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'),
 
 orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system'), async (c) => {
   const auth = c.get('auth');
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
 
   const [site] = await db
     .select()

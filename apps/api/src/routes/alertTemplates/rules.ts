@@ -194,7 +194,7 @@ ruleRoutes.get(
         return c.json({ error: 'orgId is required for this scope' }, 400);
       }
 
-      const ruleId = c.req.param('id');
+      const ruleId = c.req.param('id')!;
       const [row] = await db
         .select({ rule: alertRules, templateName: alertTemplates.name })
         .from(alertRules)
@@ -225,7 +225,7 @@ ruleRoutes.patch(
         return c.json({ error: 'orgId is required for this scope' }, 400);
       }
 
-      const ruleId = c.req.param('id');
+      const ruleId = c.req.param('id')!;
       const updates = c.req.valid('json');
 
       const [existing] = await db
@@ -286,7 +286,7 @@ ruleRoutes.delete(
         return c.json({ error: 'orgId is required for this scope' }, 400);
       }
 
-      const ruleId = c.req.param('id');
+      const ruleId = c.req.param('id')!;
       const [existing] = await db
         .select()
         .from(alertRules)
@@ -325,7 +325,7 @@ ruleRoutes.post(
         return c.json({ error: 'orgId is required for this scope' }, 400);
       }
 
-      const ruleId = c.req.param('id');
+      const ruleId = c.req.param('id')!;
       const { enabled } = c.req.valid('json');
 
       const [existing] = await db

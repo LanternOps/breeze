@@ -277,7 +277,7 @@ scriptRoutes.post(
   zValidator('json', z.object({ orgId: z.string().uuid().optional() })),
   async (c) => {
     const auth = c.get('auth');
-    const sourceId = c.req.param('id');
+    const sourceId = c.req.param('id')!;
     const body = c.req.valid('json');
 
     // Fetch the system script
@@ -375,7 +375,7 @@ scriptRoutes.get(
   requirePermission(PERMISSIONS.SCRIPTS_READ.resource, PERMISSIONS.SCRIPTS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const scriptId = c.req.param('id');
+    const scriptId = c.req.param('id')!;
 
     const script = await getScriptWithOrgCheck(scriptId, auth);
     if (!script) {
@@ -470,7 +470,7 @@ scriptRoutes.put(
   zValidator('json', updateScriptSchema),
   async (c) => {
     const auth = c.get('auth');
-    const scriptId = c.req.param('id');
+    const scriptId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     if (Object.keys(data).length === 0) {
@@ -535,7 +535,7 @@ scriptRoutes.delete(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
-    const scriptId = c.req.param('id');
+    const scriptId = c.req.param('id')!;
 
     const script = await getScriptWithOrgCheck(scriptId, auth);
     if (!script) {
@@ -595,7 +595,7 @@ scriptRoutes.post(
   zValidator('json', executeScriptSchema),
   async (c) => {
     const auth = c.get('auth');
-    const scriptId = c.req.param('id');
+    const scriptId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     const script = await getScriptWithOrgCheck(scriptId, auth);
@@ -790,7 +790,7 @@ scriptRoutes.get(
   zValidator('query', listExecutionsSchema),
   async (c) => {
     const auth = c.get('auth');
-    const scriptId = c.req.param('id');
+    const scriptId = c.req.param('id')!;
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
@@ -858,7 +858,7 @@ scriptRoutes.get(
   requirePermission(PERMISSIONS.SCRIPTS_READ.resource, PERMISSIONS.SCRIPTS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const executionId = c.req.param('id');
+    const executionId = c.req.param('id')!;
 
     // Get execution with script and device info
     const [execution] = await db
@@ -913,7 +913,7 @@ scriptRoutes.post(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
-    const executionId = c.req.param('id');
+    const executionId = c.req.param('id')!;
 
     // Get execution
     const [execution] = await db

@@ -272,7 +272,7 @@ transferRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const transferId = c.req.param('id');
+    const transferId = c.req.param('id')!;
 
     const result = await getTransferWithOrgCheck(transferId, auth);
     if (!result) {
@@ -321,7 +321,7 @@ transferRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const transferId = c.req.param('id');
+    const transferId = c.req.param('id')!;
 
     const result = await getTransferWithOrgCheck(transferId, auth);
     if (!result) {
@@ -389,7 +389,7 @@ transferRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const transferId = c.req.param('id');
+    const transferId = c.req.param('id')!;
 
     const result = await getTransferWithOrgCheck(transferId, auth);
     if (!result) {
@@ -479,7 +479,7 @@ transferRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const transferId = c.req.param('id');
+    const transferId = c.req.param('id')!;
 
     const result = await getTransferWithOrgCheck(transferId, auth);
     if (!result) {

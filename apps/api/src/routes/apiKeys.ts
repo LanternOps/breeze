@@ -287,7 +287,7 @@ apiKeyRoutes.get(
   requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const keyId = c.req.param('id');
+    const keyId = c.req.param('id')!;
 
     // Get API key (excluding keyHash)
     const [apiKey] = await db
@@ -333,7 +333,7 @@ apiKeyRoutes.patch(
   zValidator('json', updateApiKeySchema),
   async (c) => {
     const auth = c.get('auth');
-    const keyId = c.req.param('id');
+    const keyId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     if (Object.keys(data).length === 0) {
@@ -415,7 +415,7 @@ apiKeyRoutes.delete(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
-    const keyId = c.req.param('id');
+    const keyId = c.req.param('id')!;
 
     // Get existing API key
     const [existingKey] = await db
@@ -484,7 +484,7 @@ apiKeyRoutes.post(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
-    const keyId = c.req.param('id');
+    const keyId = c.req.param('id')!;
 
     // Get existing API key
     const [existingKey] = await db

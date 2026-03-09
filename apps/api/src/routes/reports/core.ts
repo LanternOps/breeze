@@ -92,7 +92,7 @@ coreRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const reportId = c.req.param('id');
+    const reportId = c.req.param('id')!;
 
     // Skip if this is a route like /reports/runs, /reports/data, etc.
     if (['runs', 'data', 'generate'].includes(reportId)) {
@@ -186,7 +186,7 @@ coreRoutes.put(
   zValidator('json', updateReportSchema),
   async (c) => {
     const auth = c.get('auth');
-    const reportId = c.req.param('id');
+    const reportId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     if (Object.keys(data).length === 0) {
@@ -231,7 +231,7 @@ coreRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const reportId = c.req.param('id');
+    const reportId = c.req.param('id')!;
 
     const report = await getReportWithOrgCheck(reportId, auth);
     if (!report) {

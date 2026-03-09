@@ -87,7 +87,7 @@ scriptAiRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     try {
-      const session = await getScriptBuilderSession(c.req.param('id'), auth);
+      const session = await getScriptBuilderSession(c.req.param('id')!, auth);
       if (!session) return c.json({ error: 'Session not found' }, 404);
 
       const messages = await getScriptBuilderMessages(session.id);
@@ -106,7 +106,7 @@ scriptAiRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id');
+    const sessionId = c.req.param('id')!;
 
     try {
       await closeScriptBuilderSession(sessionId, auth);
@@ -142,7 +142,7 @@ scriptAiRoutes.post(
   })),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id');
+    const sessionId = c.req.param('id')!;
     const { content, editorContext } = c.req.valid('json');
 
     // Run pre-flight checks (rate limits, budget, session status)
@@ -287,7 +287,7 @@ scriptAiRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id');
+    const sessionId = c.req.param('id')!;
 
     // Verify session ownership
     const session = await getScriptBuilderSession(sessionId, auth);
@@ -331,8 +331,8 @@ scriptAiRoutes.post(
   zValidator('json', approveToolSchema),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id');
-    const executionId = c.req.param('executionId');
+    const sessionId = c.req.param('id')!;
+    const executionId = c.req.param('executionId')!;
     const { approved } = c.req.valid('json');
 
     // Verify session ownership

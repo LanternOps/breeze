@@ -72,7 +72,7 @@ networkKnownGuestsRoutes.delete('/:id', requireScope('partner', 'system'), async
   const auth = c.get('auth');
   if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
 
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
 
   const deleted = await db
     .delete(networkKnownGuests)

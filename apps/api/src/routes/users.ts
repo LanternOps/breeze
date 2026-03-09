@@ -526,7 +526,7 @@ userRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
-    const userId = c.req.param('id');
+    const userId = c.req.param('id')!;
 
     const record = await getScopedUser(userId, scopeContext);
 
@@ -745,7 +745,7 @@ userRoutes.patch(
   async (c) => {
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
-    const userId = c.req.param('id');
+    const userId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     if (!data.name && !data.status) {
@@ -807,7 +807,7 @@ userRoutes.delete(
   async (c) => {
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
-    const userId = c.req.param('id');
+    const userId = c.req.param('id')!;
 
     if (scopeContext.scope === 'partner') {
       const deleted = await db
@@ -854,7 +854,7 @@ userRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
-    const userId = c.req.param('id');
+    const userId = c.req.param('id')!;
     const { roleId } = c.req.valid('json');
 
     const role = await getScopedRole(roleId, scopeContext);

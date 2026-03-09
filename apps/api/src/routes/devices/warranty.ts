@@ -16,7 +16,7 @@ warrantyRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {
@@ -39,7 +39,7 @@ warrantyRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {

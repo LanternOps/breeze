@@ -191,7 +191,7 @@ browserSecurityRoutes.put(
   zValidator('json', policyCreateSchema.partial()),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const policyId = c.req.param('policyId');
+    const policyId = c.req.param('policyId')!;
 
     const conditions: SQL[] = [eq(browserPolicies.id, policyId)];
     if (auth.orgId) conditions.push(eq(browserPolicies.orgId, auth.orgId));
@@ -244,7 +244,7 @@ browserSecurityRoutes.delete(
   requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const policyId = c.req.param('policyId');
+    const policyId = c.req.param('policyId')!;
 
     const conditions: SQL[] = [eq(browserPolicies.id, policyId)];
     if (auth.orgId) conditions.push(eq(browserPolicies.orgId, auth.orgId));
@@ -273,7 +273,7 @@ browserSecurityRoutes.put(
   requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const deviceId = c.req.param('deviceId');
+    const deviceId = c.req.param('deviceId')!;
     if (!auth.orgId) return c.json({ error: 'Organization context required' }, 400);
 
     const body = await c.req.json();

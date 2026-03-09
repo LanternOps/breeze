@@ -331,7 +331,7 @@ dnsSecurityRoutes.delete(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
-    const integrationId = c.req.param('id');
+    const integrationId = c.req.param('id')!;
 
     const conditions: SQL[] = [eq(dnsFilterIntegrations.id, integrationId)];
     withOrgCondition(conditions, auth.orgCondition(dnsFilterIntegrations.orgId));
@@ -374,7 +374,7 @@ dnsSecurityRoutes.post(
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   async (c) => {
     const auth = c.get('auth');
-    const integrationId = c.req.param('id');
+    const integrationId = c.req.param('id')!;
 
     const conditions: SQL[] = [eq(dnsFilterIntegrations.id, integrationId)];
     withOrgCondition(conditions, auth.orgCondition(dnsFilterIntegrations.orgId));
@@ -939,7 +939,7 @@ dnsSecurityRoutes.patch(
   zValidator('json', patchPolicyDomainsSchema),
   async (c) => {
     const auth = c.get('auth');
-    const policyId = c.req.param('id');
+    const policyId = c.req.param('id')!;
     const body = c.req.valid('json');
 
     const conditions: SQL[] = [eq(dnsPolicies.id, policyId)];

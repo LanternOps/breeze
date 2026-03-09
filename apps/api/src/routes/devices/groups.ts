@@ -136,7 +136,7 @@ groupsRoutes.patch(
   zValidator('json', updateGroupSchema),
   async (c) => {
     const auth = c.get('auth');
-    const groupId = c.req.param('id');
+    const groupId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     if (Object.keys(data).length === 0) {
@@ -183,7 +183,7 @@ groupsRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const groupId = c.req.param('id');
+    const groupId = c.req.param('id')!;
 
     const [group] = await db
       .select()
@@ -228,7 +228,7 @@ groupsRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const groupId = c.req.param('id');
+    const groupId = c.req.param('id')!;
     const { deviceIds } = await c.req.json<{ deviceIds: string[] }>();
 
     if (!deviceIds || !Array.isArray(deviceIds) || deviceIds.length === 0) {
@@ -304,7 +304,7 @@ groupsRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const groupId = c.req.param('id');
+    const groupId = c.req.param('id')!;
     const { deviceIds } = await c.req.json<{ deviceIds: string[] }>();
 
     if (!deviceIds || !Array.isArray(deviceIds) || deviceIds.length === 0) {

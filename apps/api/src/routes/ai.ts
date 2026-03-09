@@ -136,7 +136,7 @@ aiRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id');
+    const sessionId = c.req.param('id')!;
 
     const result = await getSessionMessages(sessionId, auth);
     if (!result) {
@@ -153,7 +153,7 @@ aiRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id');
+    const sessionId = c.req.param('id')!;
 
     const closed = await closeSession(sessionId, auth);
     if (!closed) {
@@ -180,7 +180,7 @@ aiRoutes.patch(
   zValidator('json', z.object({ title: z.string().min(1).max(255) })),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id');
+    const sessionId = c.req.param('id')!;
     const { title } = c.req.valid('json');
 
     const session = await getSession(sessionId, auth);
@@ -203,7 +203,7 @@ aiRoutes.post(
   zValidator('json', z.object({ reason: z.string().max(1000).optional() }).optional()),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id');
+    const sessionId = c.req.param('id')!;
 
     const session = await getSession(sessionId, auth);
     if (!session) {
@@ -238,7 +238,7 @@ aiRoutes.delete(
   requireScope('partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id');
+    const sessionId = c.req.param('id')!;
 
     const session = await getSession(sessionId, auth);
     if (!session) {
@@ -276,7 +276,7 @@ aiRoutes.post(
   zValidator('json', sendAiMessageSchema),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id');
+    const sessionId = c.req.param('id')!;
     const body = c.req.valid('json');
 
     // Pre-flight checks (rate limits, budget, session status, input sanitization)
@@ -390,7 +390,7 @@ aiRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id');
+    const sessionId = c.req.param('id')!;
 
     const session = await getSession(sessionId, auth);
     if (!session) {
@@ -432,11 +432,11 @@ aiRoutes.post(
   zValidator('json', approveToolSchema),
   async (c) => {
     const auth = c.get('auth');
-    const executionId = c.req.param('executionId');
+    const executionId = c.req.param('executionId')!;
     const { approved } = c.req.valid('json');
 
     // Fetch session first for orgId (auth.orgId is null for partner/system users)
-    const sessionId = c.req.param('id');
+    const sessionId = c.req.param('id')!;
     const approvalSession = await getSession(sessionId, auth);
     if (!approvalSession) {
       return c.json({ error: 'Session not found' }, 404);
@@ -469,7 +469,7 @@ aiRoutes.post(
   zValidator('json', pauseAiSchema),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id');
+    const sessionId = c.req.param('id')!;
     const { paused } = c.req.valid('json');
 
     const session = await getSession(sessionId, auth);
@@ -514,7 +514,7 @@ aiRoutes.post(
   zValidator('json', approvePlanSchema),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id');
+    const sessionId = c.req.param('id')!;
     const { approved } = c.req.valid('json');
 
     const session = await getSession(sessionId, auth);
@@ -576,7 +576,7 @@ aiRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id');
+    const sessionId = c.req.param('id')!;
 
     const session = await getSession(sessionId, auth);
     if (!session) {

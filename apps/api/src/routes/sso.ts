@@ -313,7 +313,7 @@ ssoRoutes.get('/providers', authMiddleware, requireScope('organization', 'partne
 // Get SSO provider details
 ssoRoutes.get('/providers/:id', authMiddleware, requireScope('organization', 'partner', 'system'), async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const providerId = c.req.param('id');
+  const providerId = c.req.param('id')!;
 
   const [provider] = await db
     .select()
@@ -429,7 +429,7 @@ ssoRoutes.patch(
   zValidator('json', updateProviderSchema),
   async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const providerId = c.req.param('id');
+  const providerId = c.req.param('id')!;
   const body = c.req.valid('json');
 
   const [existing] = await db
@@ -488,7 +488,7 @@ ssoRoutes.delete(
   requireMfa(),
   async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const providerId = c.req.param('id');
+  const providerId = c.req.param('id')!;
 
   const [existing] = await db
     .select({ id: ssoProviders.id, orgId: ssoProviders.orgId })
@@ -539,7 +539,7 @@ ssoRoutes.post(
   zValidator('json', z.object({ status: z.enum(['active', 'inactive', 'testing']) })),
   async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const providerId = c.req.param('id');
+  const providerId = c.req.param('id')!;
   const { status } = c.req.valid('json');
 
   const [existing] = await db
@@ -588,7 +588,7 @@ ssoRoutes.post(
   requireMfa(),
   async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const providerId = c.req.param('id');
+  const providerId = c.req.param('id')!;
 
   const [provider] = await db
     .select()
@@ -655,7 +655,7 @@ ssoRoutes.post(
 
 // Initiate SSO login
 ssoRoutes.get('/login/:orgId', async (c) => {
-  const orgId = c.req.param('orgId');
+  const orgId = c.req.param('orgId')!;
   const redirectUrl = normalizeRedirectPath(c.req.query('redirect'));
 
   const [provider] = await db
@@ -968,7 +968,7 @@ ssoRoutes.post('/exchange', zValidator('json', tokenExchangeSchema), async (c) =
 
 // Get SSO login URL for organization (public endpoint for login page)
 ssoRoutes.get('/check/:orgId', async (c) => {
-  const orgId = c.req.param('orgId');
+  const orgId = c.req.param('orgId')!;
 
   const [provider] = await db
     .select({

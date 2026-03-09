@@ -533,7 +533,7 @@ roleRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
-    const roleId = c.req.param('id');
+    const roleId = c.req.param('id')!;
 
     // Get role
     const [role] = await db
@@ -642,7 +642,7 @@ roleRoutes.patch(
   async (c) => {
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
-    const roleId = c.req.param('id');
+    const roleId = c.req.param('id')!;
     const body = c.req.valid('json');
 
     // Get role
@@ -797,7 +797,7 @@ roleRoutes.delete(
   async (c) => {
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
-    const roleId = c.req.param('id');
+    const roleId = c.req.param('id')!;
 
     // Get role
     const [role] = await db
@@ -897,7 +897,7 @@ roleRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
-    const roleId = c.req.param('id');
+    const roleId = c.req.param('id')!;
     const { name } = c.req.valid('json');
 
     // Get source role
@@ -1030,7 +1030,7 @@ roleRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
-    const roleId = c.req.param('id');
+    const roleId = c.req.param('id')!;
 
     // Verify role exists and is accessible
     const [role] = await db
@@ -1113,7 +1113,7 @@ roleRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
-    const roleId = c.req.param('id');
+    const roleId = c.req.param('id')!;
 
     // Get role
     const [role] = await db

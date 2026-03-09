@@ -340,7 +340,7 @@ mobileRoutes.patch(
   zValidator('json', updateDeviceSettingsSchema),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     if (data.enabled === undefined && data.severities === undefined && data.quietHours === undefined) {
@@ -395,7 +395,7 @@ mobileRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
 
     const [deleted] = await db
       .delete(mobileDevices)
@@ -512,7 +512,7 @@ mobileRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const alertId = c.req.param('id');
+    const alertId = c.req.param('id')!;
 
     const alert = await getAlertWithOrgCheck(alertId, auth);
     if (!alert) {
@@ -569,7 +569,7 @@ mobileRoutes.post(
   zValidator('json', resolveAlertSchema),
   async (c) => {
     const auth = c.get('auth');
-    const alertId = c.req.param('id');
+    const alertId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     const alert = await getAlertWithOrgCheck(alertId, auth);
@@ -726,7 +726,7 @@ mobileRoutes.post(
   zValidator('json', deviceActionSchema),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
