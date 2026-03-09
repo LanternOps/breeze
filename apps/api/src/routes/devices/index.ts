@@ -15,6 +15,7 @@ import { sessionsRoutes } from './sessions';
 import { diagnosticLogsRoutes } from './diagnosticLogs';
 import { bootMetricsRoutes } from './bootMetrics';
 import { diagnoseRoutes } from './diagnose';
+import { warrantyRoutes } from './warranty';
 
 export const deviceRoutes = new Hono();
 
@@ -42,6 +43,7 @@ deviceRoutes.route('/', eventsRoutes);
 deviceRoutes.route('/', eventLogsRoutes);
 deviceRoutes.route('/', sessionsRoutes);
 deviceRoutes.route('/', diagnosticLogsRoutes);
+deviceRoutes.route('/', warrantyRoutes);
 deviceRoutes.route('/', bootMetricsRoutes);
 
 // Re-export helpers and schemas for potential use elsewhere

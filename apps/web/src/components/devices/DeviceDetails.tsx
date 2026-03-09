@@ -42,6 +42,7 @@ import DeviceIpHistoryTab from './DeviceIpHistoryTab';
 import DeviceBootPerformanceTab from './DeviceBootPerformanceTab';
 import DevicePlaybookHistory from './DevicePlaybookHistory';
 import DevicePeripheralsTab from './DevicePeripheralsTab';
+import DeviceWarrantyCard from './DeviceWarrantyCard';
 import { navigateTo } from '@/lib/navigation';
 
 type Tab =
@@ -233,6 +234,8 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
             </div>
 
             <DevicePerformanceGraphs deviceId={device.id} compact />
+
+            <DeviceWarrantyCard deviceId={device.id} compact />
           </div>
 
           <DeviceAlertHistory deviceId={device.id} timezone={effectiveTimezone} showFilters={false} limit={4} />

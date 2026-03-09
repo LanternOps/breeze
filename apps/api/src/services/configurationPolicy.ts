@@ -33,7 +33,7 @@ import type { AuthContext } from '../middleware/auth';
 // Types
 // ============================================
 
-type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data' | 'peripheral_control';
+type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data' | 'peripheral_control' | 'warranty';
 type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
 
 const LEVEL_PRIORITY: Record<ConfigAssignmentLevel, number> = {
@@ -430,6 +430,10 @@ async function decomposeInlineSettings(
       break;
     }
 
+    case 'warranty':
+      // Pure JSONB — no normalized table needed
+      break;
+
     default:
       // backup, security — no normalized tables yet
       break;
@@ -474,6 +478,9 @@ async function deleteNormalizedRows(
       await tx.delete(configPolicyAlertRules).where(eq(configPolicyAlertRules.featureLinkId, linkId));
       break;
     }
+    case 'warranty':
+      // Pure JSONB — no normalized table to delete
+      break;
     default:
       break;
   }
@@ -710,6 +717,10 @@ async function assembleInlineSettings(
         alertRules: metricAlertRules,
       };
     }
+
+    case 'warranty':
+      // Pure JSONB — settings stored directly on feature link
+      return null;
 
     default:
       return null;
