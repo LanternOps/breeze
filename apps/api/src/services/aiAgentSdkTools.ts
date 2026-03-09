@@ -207,6 +207,17 @@ function makeHandler(
   const toolTimeout = getToolTimeout(toolName);
 
   return async (args: Record<string, unknown>) => {
+    // CRITICAL: Escape any inherited AsyncLocalStorage DB context from the SDK's
+    // MCP callback chain. Without this, dbContextStorage.getStore() may return a
+    // stale/committed transaction from a prior withSystemDbAccessContext call,
+    // causing withDbAccessContext to skip creating a new transaction and execute
+    // on the dead connection — which hangs until the PostgreSQL idle timeout.
+    //
+    // This wraps the ENTIRE handler (preToolUse, executeTool, postToolUse) so all
+    // DB operations start with a clean context. Previously only executeTool was
+    // wrapped, leaving preToolUse (approval DB writes) and postToolUse (tool_result
+    // persistence) vulnerable to stale context hangs.
+    return runOutsideDbContext(async () => {
     const startTime = Date.now();
 
     // Pre-execution check (guardrails, RBAC, rate limits, approval)
@@ -229,16 +240,8 @@ function makeHandler(
     }
     try {
       const auth = getAuth();
-      // Tool handlers query RLS-protected tables (e.g. devices via verifyDeviceAccess).
-      // The background processor runs outside the request's DB context, so we must
-      // wrap execution in withSystemDbAccessContext for RLS to pass.
-      // CRITICAL: runOutsideDbContext escapes any inherited AsyncLocalStorage context
-      // from the SDK's MCP callback chain. Without this, dbContextStorage.getStore()
-      // may return a stale/committed transaction from a prior withSystemDbAccessContext
-      // call on the same async chain, causing withDbAccessContext to bypass creating a
-      // new transaction and instead execute on the dead connection — which hangs forever.
       const result = await withTimeout(
-        runOutsideDbContext(() => withSystemDbAccessContext(() => executeTool(toolName, args, auth))),
+        withSystemDbAccessContext(() => executeTool(toolName, args, auth)),
         toolTimeout,
         toolName,
       );
@@ -319,6 +322,7 @@ function makeHandler(
         isError: true,
       };
     }
+    }); // end runOutsideDbContext
   };
 }
 
