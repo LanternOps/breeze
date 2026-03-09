@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { db } from '../../db';
 import { alerts, alertCorrelations } from '../../db/schema';
-import { eq, and, or, gte, desc, sql } from 'drizzle-orm';
+import { eq, and, or, gte, desc, sql, inArray } from 'drizzle-orm';
 import { requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { listCorrelationsSchema, analyzeCorrelationsSchema } from './schemas';
@@ -31,27 +31,31 @@ correlationRoutes.get(
         .from(alerts)
         .where(eq(alerts.orgId, orgId));
 
-      const orgAlertIds = new Set(orgAlerts.map(a => a.id));
+      const orgAlertIds = orgAlerts.map(a => a.id);
 
-      if (orgAlertIds.size === 0) {
+      if (orgAlertIds.length === 0) {
         return c.json({ data: [], page: 1, limit: 20, total: 0 });
+      }
+
+      const filterConditions = [
+        inArray(alertCorrelations.parentAlertId, orgAlertIds),
+        inArray(alertCorrelations.childAlertId, orgAlertIds),
+      ];
+
+      if (query.alertId) {
+        filterConditions.push(
+          or(
+            eq(alertCorrelations.parentAlertId, query.alertId),
+            eq(alertCorrelations.childAlertId, query.alertId)
+          )!
+        );
       }
 
       let allCorrelations = await db
         .select()
         .from(alertCorrelations)
+        .where(and(...filterConditions))
         .orderBy(desc(alertCorrelations.createdAt));
-
-      // Scope to org's alerts
-      allCorrelations = allCorrelations.filter(
-        link => orgAlertIds.has(link.parentAlertId) && orgAlertIds.has(link.childAlertId)
-      );
-
-      if (query.alertId) {
-        allCorrelations = allCorrelations.filter(
-          link => link.parentAlertId === query.alertId || link.childAlertId === query.alertId
-        );
-      }
 
       if (query.minConfidence) {
         const minConfidence = Number.parseFloat(query.minConfidence);
@@ -69,7 +73,8 @@ correlationRoutes.get(
         limit,
         total: allCorrelations.length
       });
-    } catch {
+    } catch (error) {
+      console.error('[Correlations] Failed to list correlations', error);
       return c.json({ error: 'Failed to list correlations' }, 500);
     }
   }
@@ -93,18 +98,21 @@ correlationRoutes.get(
         .from(alerts)
         .where(eq(alerts.orgId, orgId));
 
-      const orgAlertIds = new Set(orgAlerts.map(a => a.id));
+      const orgAlertIds = orgAlerts.map(a => a.id);
       const alertMap = new Map(orgAlerts.map(a => [a.id, a]));
 
-      const correlations = await db
+      if (orgAlertIds.length === 0) {
+        return c.json({ data: [] });
+      }
+
+      const scopedCorrelations = await db
         .select()
         .from(alertCorrelations)
+        .where(and(
+          inArray(alertCorrelations.parentAlertId, orgAlertIds),
+          inArray(alertCorrelations.childAlertId, orgAlertIds)
+        ))
         .orderBy(desc(alertCorrelations.createdAt));
-
-      // Filter to org-scoped correlations
-      const scopedCorrelations = correlations.filter(
-        c => orgAlertIds.has(c.parentAlertId) && orgAlertIds.has(c.childAlertId)
-      );
 
       // Union-find to group correlated alerts
       const parent = new Map<string, string>();
@@ -151,7 +159,8 @@ correlationRoutes.get(
       });
 
       return c.json({ data: groups });
-    } catch {
+    } catch (error) {
+      console.error('[Correlations] Failed to list correlation groups', error);
       return c.json({ error: 'Failed to list correlation groups' }, 500);
     }
   }
@@ -173,27 +182,44 @@ correlationRoutes.post(
       const windowMinutes = data.windowMinutes ?? 60;
 
       const orgAlerts = await db
-        .select()
+        .select({ id: alerts.id })
         .from(alerts)
         .where(eq(alerts.orgId, orgId));
 
-      const orgAlertIds = new Set(orgAlerts.map(a => a.id));
-      const alertIds = (data.alertIds ?? []).filter(id => orgAlertIds.has(id));
+      const orgAlertIdList = orgAlerts.map(a => a.id);
+      const orgAlertIdSet = new Set(orgAlertIdList);
+      const alertIds = (data.alertIds ?? []).filter(id => orgAlertIdSet.has(id));
 
-      const correlations = await db
+      if (orgAlertIdList.length === 0) {
+        return c.json({
+          data: {
+            requestedAlertIds: alertIds,
+            windowMinutes,
+            links: [],
+            summary: 'No alerts found for this organization.'
+          }
+        });
+      }
+
+      const scopeConditions = [
+        inArray(alertCorrelations.parentAlertId, orgAlertIdList),
+        inArray(alertCorrelations.childAlertId, orgAlertIdList),
+      ];
+
+      if (alertIds.length) {
+        scopeConditions.push(
+          or(
+            inArray(alertCorrelations.parentAlertId, alertIds),
+            inArray(alertCorrelations.childAlertId, alertIds)
+          )!
+        );
+      }
+
+      const links = await db
         .select()
         .from(alertCorrelations)
+        .where(and(...scopeConditions))
         .orderBy(desc(alertCorrelations.createdAt));
-
-      const scopedLinks = correlations.filter(
-        link => orgAlertIds.has(link.parentAlertId) && orgAlertIds.has(link.childAlertId)
-      );
-
-      const links = alertIds.length
-        ? scopedLinks.filter(
-          link => alertIds.includes(link.parentAlertId) || alertIds.includes(link.childAlertId)
-        )
-        : scopedLinks;
 
       writeRouteAudit(c, {
         orgId,
@@ -216,7 +242,8 @@ correlationRoutes.post(
             : 'Returning all correlation data.'
         }
       });
-    } catch {
+    } catch (error) {
+      console.error('[Correlations] Failed to analyze correlations', error);
       return c.json({ error: 'Failed to analyze correlations' }, 500);
     }
   }
@@ -270,7 +297,7 @@ correlationRoutes.get(
           .where(
             and(
               eq(alerts.orgId, orgId),
-              sql`${alerts.id} = ANY(ARRAY[${sql.raw(ids.map(id => `'${id}'::uuid`).join(','))}])`
+              inArray(alerts.id, ids)
             )
           );
       }
@@ -282,7 +309,8 @@ correlationRoutes.get(
           relatedAlerts,
         }
       });
-    } catch {
+    } catch (error) {
+      console.error('[Correlations] Failed to fetch correlations for alert', error);
       return c.json({ error: 'Failed to fetch correlations' }, 500);
     }
   }

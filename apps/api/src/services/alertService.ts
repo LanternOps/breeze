@@ -275,10 +275,14 @@ export async function resolveAlert(
     .where(eq(alerts.id, alertId));
 
   // Phase 6a: Record resolution state transition for flapping detection
-  if (alert.ruleId) {
-    await recordStateTransition(alert.ruleId, alert.deviceId, 'resolved');
-  } else if (alert.configPolicyId) {
-    await recordStateTransition(alert.configPolicyId, alert.deviceId, 'resolved');
+  try {
+    if (alert.ruleId) {
+      await recordStateTransition(alert.ruleId, alert.deviceId, 'resolved');
+    } else if (alert.configPolicyId) {
+      await recordStateTransition(alert.configPolicyId, alert.deviceId, 'resolved');
+    }
+  } catch (error) {
+    console.error(`[AlertService] Failed to record state transition for resolved alert:`, error instanceof Error ? error.message : error);
   }
 
   // Set a cooldown after resolution to prevent immediate re-trigger.

@@ -108,12 +108,18 @@ export async function setCooldown(
     const existing = await redis.get(adaptiveKey);
     if (existing) {
       const parsed = JSON.parse(existing);
-      // If re-triggered within 1 hour of last resolution, double the multiplier (cap at 4x)
+      // If re-triggered within 1 hour of last cooldown set, double the multiplier (cap at 4x)
       if (parsed.multiplier && Date.now() - parsed.setAt < 3600_000) {
         multiplier = Math.min(parsed.multiplier * 2, 4);
       }
     }
-  } catch { /* ignore parse errors */ }
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      console.warn(`[AlertCooldown] Corrupt adaptive state for rule=${ruleId} device=${deviceId}, resetting multiplier`);
+    } else {
+      console.error(`[AlertCooldown] Failed to read adaptive state for rule=${ruleId} device=${deviceId}:`, error instanceof Error ? error.message : error);
+    }
+  }
 
   const effectiveMinutes = cooldownMinutes * multiplier;
   const ttlSeconds = effectiveMinutes * 60;
@@ -140,11 +146,15 @@ export async function setCooldown(
  */
 export async function clearCooldown(ruleId: string, deviceId: string): Promise<void> {
   if (!isRedisAvailable()) {
+    console.warn('[AlertCooldown] Redis unavailable, cannot clear cooldown');
     return;
   }
 
   const redis = getRedis();
-  if (!redis) return;
+  if (!redis) {
+    console.warn('[AlertCooldown] Redis client null, cannot clear cooldown');
+    return;
+  }
 
   const key = buildCooldownKey(ruleId, deviceId);
   await redis.del(key);
@@ -253,11 +263,15 @@ export async function extendCooldown(
   additionalMinutes: number
 ): Promise<void> {
   if (!isRedisAvailable()) {
+    console.warn('[AlertCooldown] Redis unavailable, cannot extend cooldown');
     return;
   }
 
   const redis = getRedis();
-  if (!redis) return;
+  if (!redis) {
+    console.warn('[AlertCooldown] Redis client null, cannot extend cooldown');
+    return;
+  }
 
   const key = buildCooldownKey(ruleId, deviceId);
   const currentTtl = await redis.ttl(key);
@@ -365,10 +379,16 @@ export async function recordStateTransition(
   deviceId: string,
   state: 'triggered' | 'resolved'
 ): Promise<void> {
-  if (!isRedisAvailable()) return;
+  if (!isRedisAvailable()) {
+    console.warn('[AlertCooldown] Redis unavailable, flapping detection disabled — state transition not recorded');
+    return;
+  }
 
   const redis = getRedis();
-  if (!redis) return;
+  if (!redis) {
+    console.warn('[AlertCooldown] Redis client null, flapping detection disabled — state transition not recorded');
+    return;
+  }
 
   const key = `${FLAP_PREFIX}:${ruleId}:${deviceId}`;
   const entry = JSON.stringify({ state, timestamp: Date.now() });
@@ -382,7 +402,8 @@ export async function recordStateTransition(
 
 /**
  * Check if a rule/device combination is flapping.
- * Returns true if there have been >= threshold state transitions in the window.
+ * Returns true if there have been >= threshold state change recordings in the window.
+ * Note: counts all recorded events, not only alternations between states.
  *
  * @param ruleId - Alert rule ID
  * @param deviceId - Device ID
@@ -395,10 +416,16 @@ export async function isFlapping(
   windowMinutes: number = 10,
   threshold: number = 4
 ): Promise<boolean> {
-  if (!isRedisAvailable()) return false;
+  if (!isRedisAvailable()) {
+    console.warn('[AlertCooldown] Redis unavailable, flapping detection disabled');
+    return false;
+  }
 
   const redis = getRedis();
-  if (!redis) return false;
+  if (!redis) {
+    console.warn('[AlertCooldown] Redis client null, flapping detection disabled');
+    return false;
+  }
 
   const key = `${FLAP_PREFIX}:${ruleId}:${deviceId}`;
   const entries = await redis.lrange(key, 0, -1);
@@ -414,7 +441,11 @@ export async function isFlapping(
       if (parsed.timestamp >= windowStart) {
         transitionCount++;
       }
-    } catch { /* ignore parse errors */ }
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) {
+        console.error(`[AlertCooldown] Failed to parse flapping entry for rule=${ruleId} device=${deviceId}:`, error instanceof Error ? error.message : error);
+      }
+    }
   }
 
   return transitionCount >= threshold;
@@ -444,7 +475,9 @@ export async function listActiveCooldowns(): Promise<Array<{
     const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
     cursor = nextCursor;
 
-    for (const key of keys) {
+    const filteredKeys = keys.filter(k => !k.includes(':adaptive:') && !k.includes(':cpar:'));
+
+    for (const key of filteredKeys) {
       const parts = key.split(':');
       if (parts.length >= 4) {
         const ruleId = parts[3];

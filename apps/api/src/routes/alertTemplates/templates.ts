@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { db } from '../../db';
 import { alertTemplates } from '../../db/schema';
-import { eq, and, or, like, desc } from 'drizzle-orm';
+import { eq, and, or, ilike, desc } from 'drizzle-orm';
 import { requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { listTemplatesSchema, createTemplateSchema, updateTemplateSchema } from './schemas';
@@ -42,11 +42,11 @@ templateRoutes.get(
       }
 
       if (query.search) {
-        const search = `%${query.search.toLowerCase()}%`;
+        const search = `%${query.search}%`;
         conditions.push(
           or(
-            like(alertTemplates.name, search),
-            like(alertTemplates.description, search)
+            ilike(alertTemplates.name, search),
+            ilike(alertTemplates.description, search)
           )!
         );
       }
@@ -90,11 +90,11 @@ templateRoutes.get(
       }
 
       if (query.search) {
-        const search = `%${query.search.toLowerCase()}%`;
+        const search = `%${query.search}%`;
         conditions.push(
           or(
-            like(alertTemplates.name, search),
-            like(alertTemplates.description, search)
+            ilike(alertTemplates.name, search),
+            ilike(alertTemplates.description, search)
           )!
         );
       }

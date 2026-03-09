@@ -15,6 +15,9 @@ export const bandwidthHighHandler: ConditionHandler = {
       return { passed: false, description: 'No metrics available for bandwidth' };
     }
 
+    // cond.value is in Mbps (user-friendly); convert to bps for DB comparison
+    const thresholdBps = cond.value * 1_000_000;
+
     const allExceed = metrics.every(m => {
       let value: number;
       const inBps = m.bandwidthInBps !== null ? Number(m.bandwidthInBps) : 0;
@@ -24,7 +27,7 @@ export const bandwidthHighHandler: ConditionHandler = {
       else if (cond.direction === 'out') value = outBps;
       else value = inBps + outBps;
 
-      return compareValue(value, cond.operator, cond.value);
+      return compareValue(value, cond.operator, thresholdBps);
     });
 
     const latest = metrics[0];
@@ -36,7 +39,7 @@ export const bandwidthHighHandler: ConditionHandler = {
 
     return {
       passed: allExceed,
-      description: `Bandwidth ${cond.direction} ${operatorDisplay} ${cond.value} bps for ${durationMinutes}min`,
+      description: `Bandwidth ${cond.direction} ${operatorDisplay} ${cond.value} Mbps for ${durationMinutes}min`,
       actualValue: latestValue,
     };
   },

@@ -15,6 +15,9 @@ export const diskIoHighHandler: ConditionHandler = {
       return { passed: false, description: 'No metrics available for disk I/O' };
     }
 
+    // cond.value is in MB/s (user-friendly); convert to Bps for DB comparison
+    const thresholdBps = cond.value * 1_000_000;
+
     const allExceed = metrics.every(m => {
       let value: number;
       const readBps = m.diskReadBps !== null ? Number(m.diskReadBps) : 0;
@@ -24,7 +27,7 @@ export const diskIoHighHandler: ConditionHandler = {
       else if (cond.direction === 'write') value = writeBps;
       else value = readBps + writeBps;
 
-      return compareValue(value, cond.operator, cond.value);
+      return compareValue(value, cond.operator, thresholdBps);
     });
 
     const latest = metrics[0];
@@ -36,7 +39,7 @@ export const diskIoHighHandler: ConditionHandler = {
 
     return {
       passed: allExceed,
-      description: `Disk I/O ${cond.direction} ${operatorDisplay} ${cond.value} bps for ${durationMinutes}min`,
+      description: `Disk I/O ${cond.direction} ${operatorDisplay} ${cond.value} MB/s for ${durationMinutes}min`,
       actualValue: latestValue,
     };
   },

@@ -1,6 +1,6 @@
 import type { ConditionHandler } from '../registry';
 import type { ThresholdCondition, ConditionResult } from '../types';
-import { normalizeMetricName, compareValue, getOperatorDisplay, getRecentMetrics } from '../utils';
+import { normalizeMetricName, compareValue, getOperatorDisplay, getRecentMetrics, METRIC_NAME_MAP } from '../utils';
 
 export const thresholdHandler: ConditionHandler = {
   type: 'threshold',
@@ -41,7 +41,8 @@ export const thresholdHandler: ConditionHandler = {
     const errors: string[] = [];
     const c = condition as Record<string, unknown>;
 
-    if (!['cpuPercent', 'ramPercent', 'diskPercent', 'processCount'].includes(c.metric as string)) {
+    const validMetrics = [...Object.keys(METRIC_NAME_MAP), ...Object.values(METRIC_NAME_MAP)];
+    if (!validMetrics.includes(c.metric as string)) {
       errors.push(`${path}.metric: Invalid metric name`);
     }
     if (!['gt', 'gte', 'lt', 'lte', 'eq', 'neq'].includes(c.operator as string)) {

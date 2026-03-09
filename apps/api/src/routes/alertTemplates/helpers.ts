@@ -1,6 +1,6 @@
 import { db } from '../../db';
 import { alertTemplates, alertCorrelations, alerts } from '../../db/schema';
-import { eq, and, or, isNull, desc, gte, sql } from 'drizzle-orm';
+import { eq, and, or, isNull, desc, gte, sql, inArray } from 'drizzle-orm';
 import { getPagination } from '../../utils/pagination';
 
 export { getPagination } from '../../utils/pagination';
@@ -120,5 +120,5 @@ export async function getRelatedAlerts(alertId: string) {
   return db
     .select()
     .from(alerts)
-    .where(sql`${alerts.id} = ANY(ARRAY[${sql.raw(ids.map(id => `'${id}'::uuid`).join(','))}])`);
+    .where(inArray(alerts.id, ids));
 }

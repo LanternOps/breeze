@@ -1,8 +1,12 @@
 import { db } from '../../../db';
 import { deviceEventLogs } from '../../../db/schema';
-import { eq, and, gte, like, sql } from 'drizzle-orm';
+import { eq, and, gte, ilike, sql } from 'drizzle-orm';
 import type { ConditionHandler } from '../registry';
 import type { EventLogCondition, ConditionResult } from '../types';
+
+function escapeLikePattern(pattern: string): string {
+  return pattern.replace(/[%_\\]/g, '\\$&');
+}
 
 export const eventLogHandler: ConditionHandler = {
   type: 'event_log',
@@ -27,11 +31,11 @@ export const eventLogHandler: ConditionHandler = {
     }
 
     if (cond.sourcePattern) {
-      conditions.push(like(deviceEventLogs.source, `%${cond.sourcePattern}%`));
+      conditions.push(ilike(deviceEventLogs.source, `%${escapeLikePattern(cond.sourcePattern)}%`));
     }
 
     if (cond.messagePattern) {
-      conditions.push(like(deviceEventLogs.message, `%${cond.messagePattern}%`));
+      conditions.push(ilike(deviceEventLogs.message, `%${escapeLikePattern(cond.messagePattern)}%`));
     }
 
     const countResult = await db

@@ -166,7 +166,7 @@ async function processAlertNotifications(data: ProcessAlertJobData): Promise<{
     }
   }
 
-  // Phase 5: Severity-based notification routing
+  // Phase 5: Notification routing rules (currently evaluates severity; conditionTypes/deviceTags/siteIds matching planned)
   // Check routing rules before falling back to all channels
   if (channelIds.length === 0) {
     const routedChannelIds = await resolveRoutingRules(alert.orgId, alert.severity);
@@ -229,7 +229,7 @@ async function processAlertNotifications(data: ProcessAlertJobData): Promise<{
     },
     opts: {
       attempts: 3,
-      backoff: { type: 'exponential' as const, delay: 30_000 }, // 30s, 60s, 120s
+      backoff: { type: 'exponential' as const, delay: 30_000 }, // 30s, 60s (2 retries)
       removeOnComplete: true,
       removeOnFail: { count: 100 },
     }
@@ -334,11 +334,20 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
 
   // Phase 4b: Notification rate limiting
   const redis = isRedisAvailable() ? getRedis() : null;
+  if (!redis) {
+    console.warn(`[NotificationDispatcher] Redis unavailable — notification rate limiting DISABLED for org ${alert.orgId}`);
+  }
   if (redis) {
     const rateKey = `notify:${alert.orgId}:${channel.type}`;
     const rateLimitResult = await rateLimiter(redis, rateKey, 60, 300); // 60 per 5 min
     if (!rateLimitResult.allowed) {
       console.warn(`[NotificationDispatcher] Rate limited for ${channel.type} channel in org ${alert.orgId}. Remaining: ${rateLimitResult.remaining}`);
+      // Update pending record to reflect rate limiting
+      if (notificationRecord?.id) {
+        await db.update(alertNotifications)
+          .set({ status: 'failed', errorMessage: 'Rate limited' })
+          .where(eq(alertNotifications.id, notificationRecord.id));
+      }
       return {
         success: false,
         channelType: channel.type,
@@ -363,6 +372,11 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
     });
   }
 
+  // Use the per-channel template message body if available
+  const alertForSend = messageBody !== (alert.message || alert.title)
+    ? { ...alert, message: messageBody }
+    : alert;
+
   // Send notification based on channel type
   let success = false;
   let error: string | undefined;
@@ -372,7 +386,7 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
       case 'email':
         const emailResult = await sendEmailChannelNotification(
           channel.config as Record<string, unknown>,
-          alert,
+          alertForSend,
           device,
           org
         );
@@ -383,7 +397,7 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
       case 'webhook':
         const webhookResult = await sendWebhookChannelNotification(
           channel.config as WebhookConfig,
-          alert,
+          alertForSend,
           device,
           org
         );
@@ -394,7 +408,7 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
       case 'sms':
         const smsResult = await sendSmsChannelNotification(
           channel.config as SmsChannelConfig,
-          alert,
+          alertForSend,
           device,
           org
         );
@@ -406,7 +420,7 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
         const slackResult = await sendChatWebhookChannelNotification(
           'slack',
           channel.config as Record<string, unknown>,
-          alert,
+          alertForSend,
           device,
           org
         );
@@ -418,7 +432,7 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
         const teamsResult = await sendChatWebhookChannelNotification(
           'teams',
           channel.config as Record<string, unknown>,
-          alert,
+          alertForSend,
           device,
           org
         );
@@ -429,7 +443,7 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
       case 'pagerduty':
         const pagerDutyResult = await sendPagerDutyChannelNotification(
           channel.config as PagerDutyConfig,
-          alert,
+          alertForSend,
           device,
           org
         );

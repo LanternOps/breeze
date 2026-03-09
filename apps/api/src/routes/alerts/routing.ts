@@ -53,7 +53,8 @@ routingRoutes.get(
         .orderBy(asc(notificationRoutingRules.priority));
 
       return c.json({ data: rules });
-    } catch {
+    } catch (error) {
+      console.error('[RoutingRules] Failed to list routing rules', error);
       return c.json({ error: 'Failed to list routing rules' }, 500);
     }
   }
@@ -95,7 +96,8 @@ routingRoutes.post(
       });
 
       return c.json({ data: rule }, 201);
-    } catch {
+    } catch (error) {
+      console.error('[RoutingRules] Failed to create routing rule', error);
       return c.json({ error: 'Failed to create routing rule' }, 500);
     }
   }
@@ -149,7 +151,8 @@ routingRoutes.patch(
       });
 
       return c.json({ data: updated });
-    } catch {
+    } catch (error) {
+      console.error('[RoutingRules] Failed to update routing rule', error);
       return c.json({ error: 'Failed to update routing rule' }, 500);
     }
   }
@@ -189,7 +192,8 @@ routingRoutes.delete(
       });
 
       return c.json({ data: { id: ruleId, deleted: true } });
-    } catch {
+    } catch (error) {
+      console.error('[RoutingRules] Failed to delete routing rule', error);
       return c.json({ error: 'Failed to delete routing rule' }, 500);
     }
   }

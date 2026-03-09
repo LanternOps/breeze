@@ -7,13 +7,13 @@
 // Supported comparison operators
 export type ComparisonOperator = 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'neq';
 
-// Metric types that can be monitored (internal names match DB column names)
+// Metric types that can be monitored (names match Drizzle ORM property names on deviceMetrics)
 export type MetricName = 'cpuPercent' | 'ramPercent' | 'diskPercent' | 'processCount';
 
 // Single threshold condition (also accepts type: 'metric' for backwards compatibility)
 export interface ThresholdCondition {
   type: 'threshold' | 'metric';
-  metric: MetricName | string;
+  metric: string;
   operator: ComparisonOperator;
   value: number;
   durationMinutes?: number;
@@ -64,7 +64,7 @@ export interface BandwidthHighCondition {
   type: 'bandwidth_high';
   direction: 'in' | 'out' | 'total';
   operator: ComparisonOperator;
-  value: number; // bps
+  value: number; // Mbps (converted to bps internally)
   durationMinutes?: number;
 }
 
@@ -73,7 +73,7 @@ export interface DiskIoHighCondition {
   type: 'disk_io_high';
   direction: 'read' | 'write' | 'total';
   operator: ComparisonOperator;
-  value: number; // bps
+  value: number; // MB/s (converted to Bps internally)
   durationMinutes?: number;
 }
 

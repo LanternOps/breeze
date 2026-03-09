@@ -54,8 +54,10 @@ type Condition = {
   duration?: number;
   field?: string;
   customCondition?: string;
-  // bandwidth_high / disk_io_high
-  direction?: 'in' | 'out' | 'total' | 'read' | 'write';
+  // bandwidth_high / network_errors
+  networkDirection?: 'in' | 'out' | 'total';
+  // disk_io_high
+  diskDirection?: 'read' | 'write' | 'total';
   durationMinutes?: number;
   // network_errors
   interfaceName?: string;
@@ -1056,10 +1058,16 @@ function AlertRuleCard({
                         <>
                           <div>
                             <label className="text-xs font-medium text-muted-foreground">Direction</label>
-                            <select value={condition.direction ?? 'total'} onChange={(e) => onUpdateCondition(ci, { direction: e.target.value as Condition['direction'] })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm">
+                            <select value={condition.networkDirection ?? 'total'} onChange={(e) => onUpdateCondition(ci, { networkDirection: e.target.value as Condition['networkDirection'] })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm">
                               <option value="in">Inbound</option>
                               <option value="out">Outbound</option>
                               <option value="total">Total</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground">Operator</label>
+                            <select value={condition.operator ?? 'gt'} onChange={(e) => onUpdateCondition(ci, { operator: e.target.value })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm">
+                              {operatorOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                             </select>
                           </div>
                           <div>
@@ -1076,10 +1084,16 @@ function AlertRuleCard({
                         <>
                           <div>
                             <label className="text-xs font-medium text-muted-foreground">Direction</label>
-                            <select value={condition.direction ?? 'total'} onChange={(e) => onUpdateCondition(ci, { direction: e.target.value as Condition['direction'] })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm">
+                            <select value={condition.diskDirection ?? 'total'} onChange={(e) => onUpdateCondition(ci, { diskDirection: e.target.value as Condition['diskDirection'] })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm">
                               <option value="read">Read</option>
                               <option value="write">Write</option>
                               <option value="total">Total</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground">Operator</label>
+                            <select value={condition.operator ?? 'gt'} onChange={(e) => onUpdateCondition(ci, { operator: e.target.value })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm">
+                              {operatorOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                             </select>
                           </div>
                           <div>
@@ -1100,6 +1114,12 @@ function AlertRuleCard({
                               <option value="in">Inbound Errors</option>
                               <option value="out">Outbound Errors</option>
                               <option value="total">Total Errors</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground">Operator</label>
+                            <select value={condition.operator ?? 'gt'} onChange={(e) => onUpdateCondition(ci, { operator: e.target.value })} className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm">
+                              {operatorOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                             </select>
                           </div>
                           <div>

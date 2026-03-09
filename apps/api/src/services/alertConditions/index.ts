@@ -72,16 +72,10 @@ import type {
   ThresholdCondition,
 } from './types';
 
-/**
- * Check if a value is a condition group (has logic property)
- */
 function isConditionGroup(condition: RootCondition): condition is ConditionGroup {
   return 'logic' in condition && 'conditions' in condition;
 }
 
-/**
- * Recursively evaluate a condition or condition group
- */
 async function evaluateConditionRecursive(
   condition: RootCondition,
   deviceId: string,
@@ -195,7 +189,7 @@ export async function evaluateConditions(
 }
 
 /**
- * Evaluate auto-resolve conditions (inverse of trigger conditions)
+ * Evaluate explicit auto-resolve conditions. Returns shouldResolve: true when the specified conditions are met.
  */
 export async function evaluateAutoResolveConditions(
   conditions: unknown,
