@@ -24,15 +24,18 @@ export const alertTemplates = pgTable('alert_templates', {
   orgId: uuid('org_id').references(() => organizations.id),
   name: varchar('name', { length: 200 }).notNull(),
   description: text('description'),
+  category: varchar('category', { length: 100 }),
   conditions: jsonb('conditions').notNull(),
   severity: alertSeverityEnum('severity').notNull(),
   titleTemplate: text('title_template').notNull(),
   messageTemplate: text('message_template').notNull(),
+  targets: jsonb('targets'),
   autoResolve: boolean('auto_resolve').notNull().default(false),
   autoResolveConditions: jsonb('auto_resolve_conditions'),
   cooldownMinutes: integer('cooldown_minutes').notNull().default(5),
   isBuiltIn: boolean('is_built_in').notNull().default(false),
-  createdAt: timestamp('created_at').defaultNow().notNull()
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
 
 export const alertRules = pgTable('alert_rules', {
@@ -91,10 +94,26 @@ export const notificationChannels = pgTable('notification_channels', {
   name: varchar('name', { length: 255 }).notNull(),
   type: notificationChannelTypeEnum('type').notNull(),
   config: jsonb('config').notNull(),
+  templates: jsonb('templates').default({}),
   enabled: boolean('enabled').notNull().default(true),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
+
+export const notificationRoutingRules = pgTable('notification_routing_rules', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  name: varchar('name', { length: 255 }).notNull(),
+  priority: integer('priority').notNull(),
+  conditions: jsonb('conditions').notNull(), // { severities?, conditionTypes?, deviceTags?, siteIds? }
+  channelIds: jsonb('channel_ids').notNull().$type<string[]>(),
+  enabled: boolean('enabled').notNull().default(true),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+}, (table) => ({
+  orgIdIdx: index('notification_routing_rules_org_id_idx').on(table.orgId),
+  priorityIdx: index('notification_routing_rules_priority_idx').on(table.orgId, table.priority)
+}));
 
 export const escalationPolicies = pgTable('escalation_policies', {
   id: uuid('id').primaryKey().defaultRandom(),

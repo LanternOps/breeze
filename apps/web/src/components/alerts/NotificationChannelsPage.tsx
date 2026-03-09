@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Plus } from 'lucide-react';
+import { Plus, Trash2, GripVertical, ArrowUpDown, ChevronDown, ChevronRight } from 'lucide-react';
 import NotificationChannelList, { type NotificationChannel } from './NotificationChannelList';
 import NotificationChannelForm, { type NotificationChannelFormValues } from './NotificationChannelForm';
 import { fetchWithAuth } from '../../stores/auth';
@@ -7,6 +7,18 @@ import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
+
+type RoutingRule = {
+  id: string;
+  name: string;
+  priority: number;
+  conditions: {
+    severities?: string[];
+    conditionTypes?: string[];
+  };
+  channelIds: string[];
+  enabled: boolean;
+};
 
 export default function NotificationChannelsPage() {
   const [channels, setChannels] = useState<NotificationChannel[]>([]);
@@ -16,6 +28,21 @@ export default function NotificationChannelsPage() {
   const [selectedChannel, setSelectedChannel] = useState<NotificationChannel | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const { currentOrgId } = useOrgStore();
+
+  // Routing rules state
+  const [routingRules, setRoutingRules] = useState<RoutingRule[]>([]);
+  const [routingExpanded, setRoutingExpanded] = useState(false);
+  const [editingRule, setEditingRule] = useState<RoutingRule | null>(null);
+  const [showRuleForm, setShowRuleForm] = useState(false);
+
+  const fetchRoutingRules = useCallback(async () => {
+    try {
+      const response = await fetchWithAuth('/alerts/routing-rules');
+      if (!response.ok) return;
+      const data = await response.json();
+      setRoutingRules(data.rules ?? data.data ?? (Array.isArray(data) ? data : []));
+    } catch { /* non-critical */ }
+  }, []);
 
   const fetchChannels = useCallback(async () => {
     try {
@@ -40,7 +67,8 @@ export default function NotificationChannelsPage() {
 
   useEffect(() => {
     fetchChannels();
-  }, [fetchChannels]);
+    fetchRoutingRules();
+  }, [fetchChannels, fetchRoutingRules]);
 
   const handleCreate = () => {
     setSelectedChannel(null);
@@ -141,7 +169,16 @@ export default function NotificationChannelsPage() {
         break;
     }
 
-    return { ...base, config };
+    // Per-channel templates
+    const templates: Record<string, string> = {};
+    if (values.templateTriggered?.trim()) {
+      templates.alert_triggered = values.templateTriggered.trim();
+    }
+    if (values.templateResolved?.trim()) {
+      templates.alert_resolved = values.templateResolved.trim();
+    }
+
+    return { ...base, config, ...(Object.keys(templates).length > 0 ? { templates } : {}) };
   };
 
   const transformChannelToForm = (channel: NotificationChannel): Partial<NotificationChannelFormValues> => {
@@ -150,6 +187,13 @@ export default function NotificationChannelsPage() {
       type: channel.type,
       enabled: channel.enabled
     };
+
+    // Per-channel templates
+    const channelTemplates = (channel as NotificationChannel & { templates?: Record<string, string> }).templates;
+    if (channelTemplates) {
+      base.templateTriggered = channelTemplates.alert_triggered ?? '';
+      base.templateResolved = channelTemplates.alert_resolved ?? '';
+    }
 
     const config = channel.config;
 
@@ -258,6 +302,43 @@ export default function NotificationChannelsPage() {
     }
   };
 
+  const handleSaveRoutingRule = async (rule: Omit<RoutingRule, 'id'> & { id?: string }) => {
+    try {
+      const isEdit = !!rule.id;
+      const url = isEdit ? `/alerts/routing-rules/${rule.id}` : '/alerts/routing-rules';
+      const method = isEdit ? 'PATCH' : 'POST';
+      const response = await fetchWithAuth(url, {
+        method,
+        body: JSON.stringify({
+          name: rule.name,
+          priority: rule.priority,
+          conditions: rule.conditions,
+          channelIds: rule.channelIds,
+          enabled: rule.enabled,
+        }),
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to save routing rule');
+      }
+      await fetchRoutingRules();
+      setShowRuleForm(false);
+      setEditingRule(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save routing rule');
+    }
+  };
+
+  const handleDeleteRoutingRule = async (ruleId: string) => {
+    try {
+      const response = await fetchWithAuth(`/alerts/routing-rules/${ruleId}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error('Failed to delete routing rule');
+      await fetchRoutingRules();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete routing rule');
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -324,6 +405,116 @@ export default function NotificationChannelsPage() {
         onTest={handleTest}
       />
 
+      {/* Routing Rules Section */}
+      <div className="rounded-lg border bg-card">
+        <button
+          type="button"
+          onClick={() => setRoutingExpanded(!routingExpanded)}
+          className="flex w-full items-center justify-between px-6 py-4 text-left hover:bg-muted/50"
+        >
+          <div className="flex items-center gap-3">
+            <ArrowUpDown className="h-5 w-5 text-muted-foreground" />
+            <div>
+              <h2 className="text-lg font-semibold">Notification Routing Rules</h2>
+              <p className="text-sm text-muted-foreground">
+                Route alerts to specific channels based on severity. First matching rule wins.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium">{routingRules.length} rule{routingRules.length !== 1 ? 's' : ''}</span>
+            {routingExpanded ? <ChevronDown className="h-5 w-5 text-muted-foreground" /> : <ChevronRight className="h-5 w-5 text-muted-foreground" />}
+          </div>
+        </button>
+
+        {routingExpanded && (
+          <div className="border-t px-6 pb-6 pt-4">
+            {routingRules.length === 0 && !showRuleForm ? (
+              <div className="rounded-md border border-dashed py-8 text-center">
+                <p className="text-sm text-muted-foreground">No routing rules configured. All alerts go to all enabled channels.</p>
+                <button
+                  type="button"
+                  onClick={() => { setEditingRule(null); setShowRuleForm(true); }}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90"
+                >
+                  <Plus className="h-3.5 w-3.5" /> Add Routing Rule
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="space-y-2">
+                  {routingRules
+                    .sort((a, b) => a.priority - b.priority)
+                    .map((rule) => (
+                      <div key={rule.id} className="flex items-center gap-3 rounded-md border bg-muted/20 px-4 py-3">
+                        <GripVertical className="h-4 w-4 shrink-0 text-muted-foreground/50" />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium">{rule.name}</span>
+                            {!rule.enabled && (
+                              <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">Disabled</span>
+                            )}
+                          </div>
+                          <div className="mt-0.5 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
+                            <span>Priority: {rule.priority}</span>
+                            {rule.conditions.severities && rule.conditions.severities.length > 0 && (
+                              <span>
+                                Severities: {rule.conditions.severities.join(', ')}
+                              </span>
+                            )}
+                            <span>
+                              Channels: {rule.channelIds.length === 0
+                                ? 'None'
+                                : rule.channelIds
+                                    .map(id => channels.find(c => c.id === id)?.name ?? id.slice(0, 8))
+                                    .join(', ')}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => { setEditingRule(rule); setShowRuleForm(true); }}
+                            className="rounded-md px-2 py-1 text-xs font-medium hover:bg-muted"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteRoutingRule(rule.id)}
+                            className="rounded-md p-1 text-destructive hover:bg-muted"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+                {!showRuleForm && (
+                  <button
+                    type="button"
+                    onClick={() => { setEditingRule(null); setShowRuleForm(true); }}
+                    className="mt-3 inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
+                  >
+                    <Plus className="h-3.5 w-3.5" /> Add Rule
+                  </button>
+                )}
+              </>
+            )}
+
+            {/* Inline Routing Rule Form */}
+            {showRuleForm && (
+              <RoutingRuleForm
+                rule={editingRule}
+                channels={channels}
+                onSave={handleSaveRoutingRule}
+                onCancel={() => { setShowRuleForm(false); setEditingRule(null); }}
+              />
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Create/Edit Modal */}
       {(modalMode === 'create' || modalMode === 'edit') && (
         <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-background/80 px-4 py-8">
@@ -383,6 +574,153 @@ export default function NotificationChannelsPage() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ============================================
+// Routing Rule Inline Form
+// ============================================
+
+const SEVERITY_OPTIONS = ['critical', 'high', 'medium', 'low', 'info'];
+
+function RoutingRuleForm({
+  rule,
+  channels,
+  onSave,
+  onCancel,
+}: {
+  rule: RoutingRule | null;
+  channels: NotificationChannel[];
+  onSave: (rule: Omit<RoutingRule, 'id'> & { id?: string }) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState(rule?.name ?? '');
+  const [priority, setPriority] = useState(rule?.priority ?? 10);
+  const [severities, setSeverities] = useState<string[]>(rule?.conditions.severities ?? []);
+  const [channelIds, setChannelIds] = useState<string[]>(rule?.channelIds ?? []);
+  const [enabled, setEnabled] = useState(rule?.enabled ?? true);
+
+  const toggleSeverity = (sev: string) => {
+    setSeverities((prev) =>
+      prev.includes(sev) ? prev.filter((s) => s !== sev) : [...prev, sev]
+    );
+  };
+
+  const toggleChannel = (id: string) => {
+    setChannelIds((prev) =>
+      prev.includes(id) ? prev.filter((c) => c !== id) : [...prev, id]
+    );
+  };
+
+  const handleSubmit = () => {
+    if (!name.trim()) return;
+    onSave({
+      ...(rule?.id ? { id: rule.id } : {}),
+      name: name.trim(),
+      priority,
+      conditions: { severities: severities.length > 0 ? severities : undefined },
+      channelIds,
+      enabled,
+    });
+  };
+
+  return (
+    <div className="mt-4 rounded-md border bg-card p-4 space-y-4">
+      <h3 className="text-sm font-semibold">{rule ? 'Edit Routing Rule' : 'New Routing Rule'}</h3>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div>
+          <label className="text-xs font-medium text-muted-foreground">Name</label>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Critical to PagerDuty"
+            className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+        </div>
+        <div>
+          <label className="text-xs font-medium text-muted-foreground">Priority (lower = higher)</label>
+          <input
+            type="number"
+            min={1}
+            max={100}
+            value={priority}
+            onChange={(e) => setPriority(Number(e.target.value) || 10)}
+            className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+        </div>
+      </div>
+
+      <div>
+        <label className="text-xs font-medium text-muted-foreground">Match Severities</label>
+        <p className="text-xs text-muted-foreground mb-2">Leave empty to match all severities.</p>
+        <div className="flex flex-wrap gap-2">
+          {SEVERITY_OPTIONS.map((sev) => (
+            <button
+              key={sev}
+              type="button"
+              onClick={() => toggleSeverity(sev)}
+              className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
+                severities.includes(sev)
+                  ? 'border-primary bg-primary/10 text-primary'
+                  : 'hover:bg-muted'
+              }`}
+            >
+              {sev}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <label className="text-xs font-medium text-muted-foreground">Route to Channels</label>
+        <div className="mt-2 space-y-1">
+          {channels.map((ch) => (
+            <label key={ch.id} className="flex items-center gap-2 cursor-pointer rounded-md px-2 py-1 hover:bg-muted">
+              <input
+                type="checkbox"
+                checked={channelIds.includes(ch.id)}
+                onChange={() => toggleChannel(ch.id)}
+                className="h-4 w-4 rounded border-muted"
+              />
+              <span className="text-sm">{ch.name}</span>
+              <span className="text-xs text-muted-foreground">({ch.type})</span>
+            </label>
+          ))}
+          {channels.length === 0 && (
+            <p className="text-xs text-muted-foreground">No channels configured yet.</p>
+          )}
+        </div>
+      </div>
+
+      <label className="flex items-center gap-2 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => setEnabled(e.target.checked)}
+          className="h-4 w-4 rounded border-muted"
+        />
+        <span className="text-sm">Enabled</span>
+      </label>
+
+      <div className="flex justify-end gap-2">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="h-9 rounded-md border px-4 text-sm font-medium text-muted-foreground hover:text-foreground"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={handleSubmit}
+          disabled={!name.trim() || channelIds.length === 0}
+          className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {rule ? 'Save Rule' : 'Create Rule'}
+        </button>
+      </div>
     </div>
   );
 }

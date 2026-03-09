@@ -1,10 +1,13 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
+import { db } from '../../db';
+import { alerts, alertCorrelations } from '../../db/schema';
+import { eq, and, or, gte, desc, sql } from 'drizzle-orm';
 import { requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { listCorrelationsSchema, analyzeCorrelationsSchema } from './schemas';
-import { correlationLinks, correlationGroups } from './data';
-import { resolveScopedOrgId, paginate, getScopedCorrelationAlerts, getCorrelationLinksForAlert, getRelatedAlerts, getCorrelationGroupsForAlert } from './helpers';
+import { resolveScopedOrgId } from './helpers';
+import { getPagination } from '../../utils/pagination';
 
 export const correlationRoutes = new Hono();
 
@@ -20,28 +23,52 @@ correlationRoutes.get(
         return c.json({ error: 'orgId is required for this scope' }, 400);
       }
 
-      const scopedAlerts = getScopedCorrelationAlerts(orgId);
-      const scopedAlertIds = new Set(scopedAlerts.map((alert) => alert.id));
       const query = c.req.valid('query');
-      let data = correlationLinks.filter(
-        (link) => scopedAlertIds.has(link.alertId) && scopedAlertIds.has(link.relatedAlertId)
+
+      // Get all alert IDs for this org to scope correlations
+      const orgAlerts = await db
+        .select({ id: alerts.id })
+        .from(alerts)
+        .where(eq(alerts.orgId, orgId));
+
+      const orgAlertIds = new Set(orgAlerts.map(a => a.id));
+
+      if (orgAlertIds.size === 0) {
+        return c.json({ data: [], page: 1, limit: 20, total: 0 });
+      }
+
+      let allCorrelations = await db
+        .select()
+        .from(alertCorrelations)
+        .orderBy(desc(alertCorrelations.createdAt));
+
+      // Scope to org's alerts
+      allCorrelations = allCorrelations.filter(
+        link => orgAlertIds.has(link.parentAlertId) && orgAlertIds.has(link.childAlertId)
       );
 
       if (query.alertId) {
-        data = data.filter(
-          (link) => link.alertId === query.alertId || link.relatedAlertId === query.alertId
+        allCorrelations = allCorrelations.filter(
+          link => link.parentAlertId === query.alertId || link.childAlertId === query.alertId
         );
       }
 
       if (query.minConfidence) {
         const minConfidence = Number.parseFloat(query.minConfidence);
         if (!Number.isNaN(minConfidence)) {
-          data = data.filter((link) => link.confidence >= minConfidence);
+          allCorrelations = allCorrelations.filter(
+            link => Number(link.confidence) >= minConfidence
+          );
         }
       }
 
-      const result = paginate(data, query);
-      return c.json(result);
+      const { page, limit, offset } = getPagination(query);
+      return c.json({
+        data: allCorrelations.slice(offset, offset + limit),
+        page,
+        limit,
+        total: allCorrelations.length
+      });
     } catch {
       return c.json({ error: 'Failed to list correlations' }, 500);
     }
@@ -59,13 +86,70 @@ correlationRoutes.get(
         return c.json({ error: 'orgId is required for this scope' }, 400);
       }
 
-      const scopedAlertIds = new Set(getScopedCorrelationAlerts(orgId).map((alert) => alert.id));
-      const groups = correlationGroups
-        .map((group) => ({
-          ...group,
-          alerts: group.alerts.filter((alert) => scopedAlertIds.has(alert.id))
-        }))
-        .filter((group) => group.alerts.length > 0);
+      // Build correlation groups from real data:
+      // Group alerts that share correlation links into clusters
+      const orgAlerts = await db
+        .select()
+        .from(alerts)
+        .where(eq(alerts.orgId, orgId));
+
+      const orgAlertIds = new Set(orgAlerts.map(a => a.id));
+      const alertMap = new Map(orgAlerts.map(a => [a.id, a]));
+
+      const correlations = await db
+        .select()
+        .from(alertCorrelations)
+        .orderBy(desc(alertCorrelations.createdAt));
+
+      // Filter to org-scoped correlations
+      const scopedCorrelations = correlations.filter(
+        c => orgAlertIds.has(c.parentAlertId) && orgAlertIds.has(c.childAlertId)
+      );
+
+      // Union-find to group correlated alerts
+      const parent = new Map<string, string>();
+      const find = (id: string): string => {
+        if (!parent.has(id)) parent.set(id, id);
+        if (parent.get(id) !== id) parent.set(id, find(parent.get(id)!));
+        return parent.get(id)!;
+      };
+      const union = (a: string, b: string) => {
+        parent.set(find(a), find(b));
+      };
+
+      for (const corr of scopedCorrelations) {
+        union(corr.parentAlertId, corr.childAlertId);
+      }
+
+      // Build groups
+      const groupMap = new Map<string, string[]>();
+      for (const corr of scopedCorrelations) {
+        const root = find(corr.parentAlertId);
+        if (!groupMap.has(root)) groupMap.set(root, []);
+        const group = groupMap.get(root)!;
+        if (!group.includes(corr.parentAlertId)) group.push(corr.parentAlertId);
+        if (!group.includes(corr.childAlertId)) group.push(corr.childAlertId);
+      }
+
+      const groups = [...groupMap.entries()].map(([rootId, alertIds]) => {
+        const groupAlerts = alertIds.map(id => alertMap.get(id)).filter(Boolean);
+        const groupCorrelations = scopedCorrelations.filter(
+          c => alertIds.includes(c.parentAlertId) || alertIds.includes(c.childAlertId)
+        );
+        const avgConfidence = groupCorrelations.length > 0
+          ? groupCorrelations.reduce((sum, c) => sum + Number(c.confidence ?? 0), 0) / groupCorrelations.length
+          : 0;
+
+        return {
+          id: rootId,
+          title: `Correlated Alert Group (${groupAlerts.length} alerts)`,
+          summary: `${groupAlerts.length} alerts correlated on the same device within a time window.`,
+          correlationScore: Math.round(avgConfidence * 100) / 100,
+          alerts: groupAlerts,
+          createdAt: groupCorrelations[0]?.createdAt ?? new Date(),
+        };
+      });
+
       return c.json({ data: groups });
     } catch {
       return c.json({ error: 'Failed to list correlation groups' }, 500);
@@ -85,28 +169,29 @@ correlationRoutes.post(
         return c.json({ error: 'orgId is required for this scope' }, 400);
       }
 
-      const scopedAlerts = getScopedCorrelationAlerts(orgId);
-      const scopedAlertIds = new Set(scopedAlerts.map((alert) => alert.id));
       const data = c.req.valid('json');
-      const alertIds = (data.alertIds ?? []).filter((alertId) => scopedAlertIds.has(alertId));
       const windowMinutes = data.windowMinutes ?? 60;
 
-      const baseGroups = correlationGroups
-        .map((group) => ({
-          ...group,
-          alerts: group.alerts.filter((alert) => scopedAlertIds.has(alert.id))
-        }))
-        .filter((group) => group.alerts.length > 0);
-      const groups = alertIds.length
-        ? baseGroups.filter((group) => group.alerts.some((alert) => alertIds.includes(alert.id)))
-        : baseGroups;
+      const orgAlerts = await db
+        .select()
+        .from(alerts)
+        .where(eq(alerts.orgId, orgId));
 
-      const scopedLinks = correlationLinks.filter(
-        (link) => scopedAlertIds.has(link.alertId) && scopedAlertIds.has(link.relatedAlertId)
+      const orgAlertIds = new Set(orgAlerts.map(a => a.id));
+      const alertIds = (data.alertIds ?? []).filter(id => orgAlertIds.has(id));
+
+      const correlations = await db
+        .select()
+        .from(alertCorrelations)
+        .orderBy(desc(alertCorrelations.createdAt));
+
+      const scopedLinks = correlations.filter(
+        link => orgAlertIds.has(link.parentAlertId) && orgAlertIds.has(link.childAlertId)
       );
+
       const links = alertIds.length
         ? scopedLinks.filter(
-          (link) => alertIds.includes(link.alertId) || alertIds.includes(link.relatedAlertId)
+          link => alertIds.includes(link.parentAlertId) || alertIds.includes(link.childAlertId)
         )
         : scopedLinks;
 
@@ -116,7 +201,6 @@ correlationRoutes.post(
         resourceType: 'alert_correlation',
         details: {
           requestedAlertCount: alertIds.length,
-          groupCount: groups.length,
           linkCount: links.length,
           windowMinutes,
         },
@@ -126,11 +210,10 @@ correlationRoutes.post(
         data: {
           requestedAlertIds: alertIds,
           windowMinutes,
-          groups,
           links,
           summary: alertIds.length
             ? 'Correlation analysis complete for requested alerts.'
-            : 'Returning sample correlation analysis.'
+            : 'Returning all correlation data.'
         }
       });
     } catch {
@@ -150,28 +233,53 @@ correlationRoutes.get(
         return c.json({ error: 'orgId is required for this scope' }, 400);
       }
 
-      const scopedAlerts = getScopedCorrelationAlerts(orgId);
-      const scopedAlertIds = new Set(scopedAlerts.map((item) => item.id));
       const alertId = c.req.param('alertId');
-      const alert = scopedAlerts.find((item) => item.id === alertId);
+
+      const [alert] = await db
+        .select()
+        .from(alerts)
+        .where(and(eq(alerts.id, alertId), eq(alerts.orgId, orgId)))
+        .limit(1);
 
       if (!alert) {
         return c.json({ error: 'Alert not found' }, 404);
       }
 
+      const correlations = await db
+        .select()
+        .from(alertCorrelations)
+        .where(
+          or(
+            eq(alertCorrelations.parentAlertId, alertId),
+            eq(alertCorrelations.childAlertId, alertId)
+          )
+        );
+
+      // Get related alert IDs
+      const relatedIds = new Set<string>();
+      for (const corr of correlations) {
+        relatedIds.add(corr.parentAlertId === alertId ? corr.childAlertId : corr.parentAlertId);
+      }
+
+      let relatedAlerts: typeof alerts.$inferSelect[] = [];
+      if (relatedIds.size > 0) {
+        const ids = [...relatedIds];
+        relatedAlerts = await db
+          .select()
+          .from(alerts)
+          .where(
+            and(
+              eq(alerts.orgId, orgId),
+              sql`${alerts.id} = ANY(ARRAY[${sql.raw(ids.map(id => `'${id}'::uuid`).join(','))}])`
+            )
+          );
+      }
+
       return c.json({
         data: {
           alert,
-          correlations: getCorrelationLinksForAlert(alertId).filter(
-            (link) => scopedAlertIds.has(link.alertId) && scopedAlertIds.has(link.relatedAlertId)
-          ),
-          relatedAlerts: getRelatedAlerts(alertId).filter((item) => scopedAlertIds.has(item.id)),
-          groups: getCorrelationGroupsForAlert(alertId)
-            .map((group) => ({
-              ...group,
-              alerts: group.alerts.filter((item) => scopedAlertIds.has(item.id))
-            }))
-            .filter((group) => group.alerts.length > 0)
+          correlations,
+          relatedAlerts,
         }
       });
     } catch {

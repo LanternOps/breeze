@@ -4,6 +4,7 @@ import { rulesRoutes } from './rules';
 import { alertsRoutes } from './alerts';
 import { channelsRoutes } from './channels';
 import { policiesRoutes } from './policies';
+import { routingRoutes } from './routing';
 
 export const alertRoutes = new Hono();
 
@@ -14,5 +15,6 @@ alertRoutes.use('*', authMiddleware);
 alertRoutes.route('/', rulesRoutes);
 alertRoutes.route('/', channelsRoutes);
 alertRoutes.route('/', policiesRoutes);
+alertRoutes.route('/', routingRoutes);
 alertRoutes.route('/', alertsRoutes);
 

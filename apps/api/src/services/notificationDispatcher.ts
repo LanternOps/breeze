@@ -13,11 +13,14 @@ import {
   notificationChannels,
   alertNotifications,
   escalationPolicies,
+  notificationRoutingRules,
   devices,
   organizations
 } from '../db/schema';
-import { eq, and, inArray } from 'drizzle-orm';
-import { getRedisConnection } from './redis';
+import { eq, and, inArray, asc } from 'drizzle-orm';
+import { getRedis, getRedisConnection, isRedisAvailable } from './redis';
+import { rateLimiter } from './rate-limit';
+import { interpolateTemplate } from './alertConditions';
 import {
   sendEmailNotification,
   getEmailRecipients,
@@ -163,7 +166,16 @@ async function processAlertNotifications(data: ProcessAlertJobData): Promise<{
     }
   }
 
-  // For config policy alerts (no ruleId) or rules without channel overrides,
+  // Phase 5: Severity-based notification routing
+  // Check routing rules before falling back to all channels
+  if (channelIds.length === 0) {
+    const routedChannelIds = await resolveRoutingRules(alert.orgId, alert.severity);
+    if (routedChannelIds.length > 0) {
+      channelIds = routedChannelIds;
+    }
+  }
+
+  // For config policy alerts (no ruleId) or rules without channel overrides and no routing rules,
   // fall back to all enabled channels for the org
   if (channelIds.length === 0) {
     const orgChannels = await db
@@ -206,7 +218,7 @@ async function processAlertNotifications(data: ProcessAlertJobData): Promise<{
     return { queued: 0, inAppSent, durationMs: Date.now() - startTime };
   }
 
-  // Queue notification jobs for each channel
+  // Queue notification jobs for each channel with retry + exponential backoff (Phase 4a)
   const queue = getNotificationQueue();
   const jobs = channelIds.map(channelId => ({
     name: 'send',
@@ -214,6 +226,12 @@ async function processAlertNotifications(data: ProcessAlertJobData): Promise<{
       type: 'send' as const,
       alertId: data.alertId,
       channelId
+    },
+    opts: {
+      attempts: 3,
+      backoff: { type: 'exponential' as const, delay: 30_000 }, // 30s, 60s, 120s
+      removeOnComplete: true,
+      removeOnFail: { count: 100 },
     }
   }));
 
@@ -313,6 +331,37 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
     .from(organizations)
     .where(eq(organizations.id, alert.orgId))
     .limit(1);
+
+  // Phase 4b: Notification rate limiting
+  const redis = isRedisAvailable() ? getRedis() : null;
+  if (redis) {
+    const rateKey = `notify:${alert.orgId}:${channel.type}`;
+    const rateLimitResult = await rateLimiter(redis, rateKey, 60, 300); // 60 per 5 min
+    if (!rateLimitResult.allowed) {
+      console.warn(`[NotificationDispatcher] Rate limited for ${channel.type} channel in org ${alert.orgId}. Remaining: ${rateLimitResult.remaining}`);
+      return {
+        success: false,
+        channelType: channel.type,
+        error: `Rate limited (resets at ${rateLimitResult.resetAt.toISOString()})`,
+        durationMs: Date.now() - startTime
+      };
+    }
+  }
+
+  // Phase 4c: Per-channel notification templates
+  const channelTemplates = channel.templates as Record<string, string> | null;
+  let messageBody = alert.message || alert.title;
+  if (channelTemplates?.alert_triggered) {
+    messageBody = interpolateTemplate(channelTemplates.alert_triggered, {
+      alertName: alert.title,
+      severity: alert.severity,
+      message: alert.message || '',
+      deviceId: alert.deviceId,
+      deviceName: device?.displayName || device?.hostname || '',
+      orgName: org?.name || '',
+      triggeredAt: alert.triggeredAt.toISOString(),
+    });
+  }
 
   // Send notification based on channel type
   let success = false;
@@ -595,6 +644,49 @@ async function sendPagerDutyChannelNotification(
     success: result.success,
     error: result.error
   };
+}
+
+/**
+ * Phase 5: Resolve notification routing rules for an alert.
+ * Returns channel IDs from the first matching routing rule (by priority).
+ * Returns empty array if no routing rules match (falls through to default behavior).
+ */
+async function resolveRoutingRules(orgId: string, severity: string): Promise<string[]> {
+  const rules = await db
+    .select()
+    .from(notificationRoutingRules)
+    .where(
+      and(
+        eq(notificationRoutingRules.orgId, orgId),
+        eq(notificationRoutingRules.enabled, true)
+      )
+    )
+    .orderBy(asc(notificationRoutingRules.priority));
+
+  for (const rule of rules) {
+    const conditions = rule.conditions as {
+      severities?: string[];
+      conditionTypes?: string[];
+      deviceTags?: string[];
+      siteIds?: string[];
+    };
+
+    // Check severity match
+    if (conditions.severities && conditions.severities.length > 0) {
+      if (!conditions.severities.includes(severity)) {
+        continue;
+      }
+    }
+
+    // First matching rule wins
+    const channelIds = rule.channelIds;
+    if (channelIds && channelIds.length > 0) {
+      console.log(`[NotificationDispatcher] Routing rule "${rule.name}" matched for severity=${severity}`);
+      return channelIds;
+    }
+  }
+
+  return [];
 }
 
 /**

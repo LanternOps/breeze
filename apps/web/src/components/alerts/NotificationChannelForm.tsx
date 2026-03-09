@@ -63,7 +63,10 @@ const notificationChannelSchema = z.object({
   webhookAuthToken: z.string().optional(),
   smsPhoneNumbers: z.array(z.object({ value: z.string().trim() })).optional(),
   smsFrom: z.string().optional(),
-  smsMessagingServiceSid: z.string().optional()
+  smsMessagingServiceSid: z.string().optional(),
+  // Per-channel templates
+  templateTriggered: z.string().optional(),
+  templateResolved: z.string().optional(),
 }).superRefine((data, ctx) => {
   if (data.type !== 'sms') {
     return;
@@ -166,6 +169,8 @@ export default function NotificationChannelForm({
       smsPhoneNumbers: [{ value: '' }],
       smsFrom: '',
       smsMessagingServiceSid: '',
+      templateTriggered: '',
+      templateResolved: '',
       ...defaultValues
     }
   });
@@ -624,6 +629,42 @@ export default function NotificationChannelForm({
           )}
         </div>
       )}
+
+      {/* Per-Channel Message Templates */}
+      <div className="rounded-md border bg-muted/20 p-4">
+        <h3 className="text-sm font-semibold mb-1">Custom Message Templates</h3>
+        <p className="text-xs text-muted-foreground mb-4">
+          Override default notification messages. Use {'{{variable}}'} syntax for dynamic values:
+          {' '}{'{{deviceName}}'}, {'{{severity}}'}, {'{{metric}}'}, {'{{actualValue}}'}, {'{{threshold}}'}, {'{{operator}}'}.
+          Leave blank to use defaults.
+        </p>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <label htmlFor="template-triggered" className="text-sm font-medium">
+              Alert Triggered Template
+            </label>
+            <textarea
+              id="template-triggered"
+              rows={3}
+              placeholder="Alert: {{deviceName}} - {{metric}} is {{actualValue}} (threshold: {{operator}} {{threshold}})"
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              {...register('templateTriggered')}
+            />
+          </div>
+          <div className="space-y-2">
+            <label htmlFor="template-resolved" className="text-sm font-medium">
+              Alert Resolved Template
+            </label>
+            <textarea
+              id="template-resolved"
+              rows={3}
+              placeholder="Resolved: {{deviceName}} - {{metric}} has returned to normal"
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              {...register('templateResolved')}
+            />
+          </div>
+        </div>
+      </div>
 
       {/* Form Actions */}
       <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
