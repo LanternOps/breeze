@@ -131,6 +131,7 @@ import { initializeHuntressSyncJob, shutdownHuntressSyncJob } from './jobs/huntr
 import { initializeSensitiveDataWorkers, shutdownSensitiveDataWorkers } from './jobs/sensitiveDataJobs';
 import { initializePeripheralJobs, shutdownPeripheralJobs } from './jobs/peripheralJobs';
 import { initializeBrowserSecurityJobs, shutdownBrowserSecurityJobs } from './jobs/browserSecurityJobs';
+import { initializeWarrantyWorker, shutdownWarrantyWorker } from './services/warrantyWorker';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -886,6 +887,7 @@ async function initializeWorkers(): Promise<void> {
     ['sensitiveDataWorker', initializeSensitiveDataWorkers],
     ['peripheralJobs', initializePeripheralJobs],
     ['browserSecurityWorker', initializeBrowserSecurityJobs],
+    ['warrantyWorker', initializeWarrantyWorker],
   ];
 
   await Promise.allSettled(
@@ -975,6 +977,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownPatchSchedulerWorker,
     shutdownSensitiveDataWorkers,
     shutdownPeripheralJobs,
+    shutdownWarrantyWorker,
     shutdownBrowserSecurityJobs,
     shutdownPatchComplianceReportWorker,
     shutdownDnsSyncJob,

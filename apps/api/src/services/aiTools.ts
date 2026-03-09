@@ -7122,7 +7122,7 @@ registerTool({
     }
     if (category) conditions.push(eq(scripts.category, category));
     if (language) conditions.push(eq(scripts.language, language as typeof scripts.language.enumValues[number]));
-    if (osType) conditions.push(sql`${osType} = ANY(${scripts.osTypes})`);
+    if (osType) conditions.push(sql`${sql.param(osType)} = ANY(${scripts.osTypes})`);
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
