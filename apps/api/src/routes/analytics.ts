@@ -434,7 +434,7 @@ analyticsRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const dashboardId = c.req.param('id');
+    const dashboardId = c.req.param('id')!;
     const rows = await db
       .select({
         dashboardId: analyticsDashboards.id,
@@ -513,7 +513,7 @@ analyticsRoutes.patch(
   zValidator('json', updateDashboardSchema),
   async (c) => {
     const auth = c.get('auth');
-    const dashboardId = c.req.param('id');
+    const dashboardId = c.req.param('id')!;
     const updates = c.req.valid('json');
 
     if (Object.keys(updates).length === 0) {
@@ -585,7 +585,7 @@ analyticsRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const dashboardId = c.req.param('id');
+    const dashboardId = c.req.param('id')!;
     const [dashboard] = await db
       .select()
       .from(analyticsDashboards)
@@ -622,7 +622,7 @@ analyticsRoutes.post(
   zValidator('json', createWidgetSchema),
   async (c) => {
     const auth = c.get('auth');
-    const dashboardId = c.req.param('id');
+    const dashboardId = c.req.param('id')!;
     const data = c.req.valid('json');
     const [dashboard] = await db
       .select()
@@ -679,7 +679,7 @@ analyticsRoutes.patch(
   zValidator('json', updateWidgetSchema),
   async (c) => {
     const auth = c.get('auth');
-    const widgetId = c.req.param('id');
+    const widgetId = c.req.param('id')!;
     const updates = c.req.valid('json');
 
     if (Object.keys(updates).length === 0) {
@@ -756,7 +756,7 @@ analyticsRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const widgetId = c.req.param('id');
+    const widgetId = c.req.param('id')!;
     const [widgetRecord] = await db
       .select({
         id: dashboardWidgets.id,
@@ -1104,7 +1104,7 @@ analyticsRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const slaId = c.req.param('id');
+    const slaId = c.req.param('id')!;
     const [sla] = await db
       .select()
       .from(slaDefinitionsTable)

@@ -108,7 +108,7 @@ rulesRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const ruleId = c.req.param('id');
+    const ruleId = c.req.param('id')!;
 
     const rule = await getAlertRuleWithOrgCheck(ruleId, auth);
     if (!rule) {
@@ -254,7 +254,7 @@ rulesRoutes.put(
   zValidator('json', updateAlertRuleSchema),
   async (c) => {
     const auth = c.get('auth');
-    const ruleId = c.req.param('id');
+    const ruleId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     if (Object.keys(data).length === 0) {
@@ -433,7 +433,7 @@ rulesRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const ruleId = c.req.param('id');
+    const ruleId = c.req.param('id')!;
 
     const rule = await getAlertRuleWithOrgCheck(ruleId, auth);
     if (!rule) {
@@ -485,7 +485,7 @@ rulesRoutes.post(
   zValidator('json', testAlertRuleSchema),
   async (c) => {
     const auth = c.get('auth');
-    const ruleId = c.req.param('id');
+    const ruleId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     const rule = await getAlertRuleWithOrgCheck(ruleId, auth);

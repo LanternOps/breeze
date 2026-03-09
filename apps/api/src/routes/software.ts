@@ -451,7 +451,7 @@ softwareRoutes.post(
       return c.json({ error: 'S3 storage is not configured' }, 503);
     }
 
-    const catalogId = c.req.param('id');
+    const catalogId = c.req.param('id')!;
     const [catalogItem] = await db.select().from(softwareCatalog)
       .where(and(eq(softwareCatalog.id, catalogId), eq(softwareCatalog.orgId, orgId)));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
@@ -570,8 +570,8 @@ softwareRoutes.get(
     const orgId = resolveScopedOrgId(auth);
     if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
 
-    const catalogId = c.req.param('id');
-    const versionId = c.req.param('versionId');
+    const catalogId = c.req.param('id')!;
+    const versionId = c.req.param('versionId')!;
 
     // Verify catalog belongs to org
     const [catalogItem] = await db.select().from(softwareCatalog)

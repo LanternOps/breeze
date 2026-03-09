@@ -398,7 +398,7 @@ webhookRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
-    const webhookId = c.req.param('id');
+    const webhookId = c.req.param('id')!;
 
     const webhook = await getWebhookWithOrgCheck(webhookId, auth);
     if (!webhook) {
@@ -423,7 +423,7 @@ webhookRoutes.patch(
   zValidator('json', updateWebhookSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
-    const webhookId = c.req.param('id');
+    const webhookId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     if (Object.keys(data).length === 0) {
@@ -486,7 +486,7 @@ webhookRoutes.delete(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
-    const webhookId = c.req.param('id');
+    const webhookId = c.req.param('id')!;
 
     const webhook = await getWebhookWithOrgCheck(webhookId, auth);
     if (!webhook) {
@@ -520,7 +520,7 @@ webhookRoutes.get(
   zValidator('query', listDeliveriesSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
-    const webhookId = c.req.param('id');
+    const webhookId = c.req.param('id')!;
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
@@ -570,7 +570,7 @@ webhookRoutes.post(
   zValidator('json', testWebhookSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
-    const webhookId = c.req.param('id');
+    const webhookId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     const webhook = await getWebhookWithOrgCheck(webhookId, auth);
@@ -666,8 +666,8 @@ webhookRoutes.post(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
-    const webhookId = c.req.param('id');
-    const deliveryId = c.req.param('deliveryId');
+    const webhookId = c.req.param('id')!;
+    const deliveryId = c.req.param('deliveryId')!;
 
     const webhook = await getWebhookWithOrgCheck(webhookId, auth);
     if (!webhook) {

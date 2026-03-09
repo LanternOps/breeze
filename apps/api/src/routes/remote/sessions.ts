@@ -441,7 +441,7 @@ sessionRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id');
+    const sessionId = c.req.param('id')!;
 
     // Skip reserved routes
     if (['history'].includes(sessionId)) {
@@ -497,7 +497,7 @@ sessionRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id');
+    const sessionId = c.req.param('id')!;
 
     const result = await getSessionWithOrgCheck(sessionId, auth);
     if (!result) {
@@ -540,7 +540,7 @@ sessionRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id');
+    const sessionId = c.req.param('id')!;
 
     const result = await getSessionWithOrgCheck(sessionId, auth);
     if (!result) {
@@ -602,7 +602,7 @@ sessionRoutes.post(
   zValidator('json', webrtcOfferSchema),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id');
+    const sessionId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     const result = await getSessionWithOrgCheck(sessionId, auth);
@@ -677,7 +677,7 @@ sessionRoutes.post(
   zValidator('json', webrtcAnswerSchema),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id');
+    const sessionId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     const result = await getSessionWithOrgCheck(sessionId, auth);
@@ -737,7 +737,7 @@ sessionRoutes.post(
   zValidator('json', iceCandidateSchema),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id');
+    const sessionId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     const result = await getSessionWithOrgCheck(sessionId, auth);
@@ -787,7 +787,7 @@ sessionRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id');
+    const sessionId = c.req.param('id')!;
     const body = await c.req.json<{ bytesTransferred?: number; recordingUrl?: string }>().catch(() => ({}));
 
     const result = await getSessionWithOrgCheck(sessionId, auth);

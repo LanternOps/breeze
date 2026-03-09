@@ -260,7 +260,7 @@ correlationRoutes.get(
         return c.json({ error: 'orgId is required for this scope' }, 400);
       }
 
-      const alertId = c.req.param('alertId');
+      const alertId = c.req.param('alertId')!;
 
       const [alert] = await db
         .select()

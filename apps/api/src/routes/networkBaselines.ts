@@ -291,7 +291,7 @@ networkBaselineRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const baselineId = c.req.param('id');
+    const baselineId = c.req.param('id')!;
 
     const baseline = await getBaselineWithAccess(baselineId, auth);
     if (!baseline) {
@@ -309,7 +309,7 @@ networkBaselineRoutes.patch(
   zValidator('json', updateBaselineSchema),
   async (c) => {
     const auth = c.get('auth');
-    const baselineId = c.req.param('id');
+    const baselineId = c.req.param('id')!;
     const body = c.req.valid('json');
 
     const baseline = await getBaselineWithAccess(baselineId, auth);
@@ -365,7 +365,7 @@ networkBaselineRoutes.post(
   requirePermission('devices', 'write'),
   async (c) => {
     const auth = c.get('auth');
-    const baselineId = c.req.param('id');
+    const baselineId = c.req.param('id')!;
 
     const baseline = await getBaselineWithAccess(baselineId, auth);
     if (!baseline) {
@@ -406,7 +406,7 @@ networkBaselineRoutes.get(
   zValidator('query', baselineChangesQuerySchema),
   async (c) => {
     const auth = c.get('auth');
-    const baselineId = c.req.param('id');
+    const baselineId = c.req.param('id')!;
     const query = c.req.valid('query');
 
     const baseline = await getBaselineWithAccess(baselineId, auth);
@@ -459,7 +459,7 @@ networkBaselineRoutes.delete(
   zValidator('query', deleteBaselineQuerySchema),
   async (c) => {
     const auth = c.get('auth');
-    const baselineId = c.req.param('id');
+    const baselineId = c.req.param('id')!;
     const query = c.req.valid('query');
 
     const baseline = await getBaselineWithAccess(baselineId, auth);

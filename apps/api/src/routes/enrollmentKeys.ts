@@ -269,7 +269,7 @@ enrollmentKeyRoutes.get(
   requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const keyId = c.req.param('id');
+    const keyId = c.req.param('id')!;
 
     const [enrollmentKey] = await db
       .select()
@@ -299,7 +299,7 @@ enrollmentKeyRoutes.post(
   zValidator('json', rotateEnrollmentKeySchema),
   async (c) => {
     const auth = c.get('auth');
-    const keyId = c.req.param('id');
+    const keyId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     const [existingKey] = await db
@@ -366,7 +366,7 @@ enrollmentKeyRoutes.delete(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
-    const keyId = c.req.param('id');
+    const keyId = c.req.param('id')!;
 
     const [existingKey] = await db
       .select()

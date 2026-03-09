@@ -177,7 +177,7 @@ networkChangeRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const eventId = c.req.param('id');
+    const eventId = c.req.param('id')!;
 
     const event = await getChangeEventWithAccess(eventId, auth);
     if (!event) {
@@ -204,7 +204,7 @@ networkChangeRoutes.post(
   zValidator('json', acknowledgeChangeSchema),
   async (c) => {
     const auth = c.get('auth');
-    const eventId = c.req.param('id');
+    const eventId = c.req.param('id')!;
     const body = c.req.valid('json');
 
     const event = await getChangeEventWithAccess(eventId, auth);
@@ -254,7 +254,7 @@ networkChangeRoutes.post(
   zValidator('json', linkDeviceSchema),
   async (c) => {
     const auth = c.get('auth');
-    const eventId = c.req.param('id');
+    const eventId = c.req.param('id')!;
     const body = c.req.valid('json');
 
     const event = await getChangeEventWithAccess(eventId, auth);

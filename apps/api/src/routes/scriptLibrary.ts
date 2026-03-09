@@ -503,7 +503,7 @@ scriptLibraryRoutes.get(
         return c.json({ error: 'orgId is required for this scope' }, 400);
       }
 
-      const id = c.req.param('id');
+      const id = c.req.param('id')!;
       const category = categories.get(id);
 
       if (!category || categoryOrgById.get(id) !== orgId) {
@@ -529,7 +529,7 @@ scriptLibraryRoutes.patch(
         return c.json({ error: 'orgId is required for this scope' }, 400);
       }
 
-      const id = c.req.param('id');
+      const id = c.req.param('id')!;
       const data = c.req.valid('json');
 
       if (Object.keys(data).length === 0) {
@@ -595,7 +595,7 @@ scriptLibraryRoutes.delete(
         return c.json({ error: 'orgId is required for this scope' }, 400);
       }
 
-      const id = c.req.param('id');
+      const id = c.req.param('id')!;
       const category = categories.get(id);
 
       if (!category || categoryOrgById.get(id) !== orgId) {
@@ -712,7 +712,7 @@ scriptLibraryRoutes.delete(
         return c.json({ error: 'orgId is required for this scope' }, 400);
       }
 
-      const id = c.req.param('id');
+      const id = c.req.param('id')!;
       const tag = tags.get(id);
 
       if (!tag || tagOrgById.get(id) !== orgId) {
@@ -766,7 +766,7 @@ scriptLibraryRoutes.get(
         return c.json({ error: 'orgId is required for this scope' }, 400);
       }
 
-      const scriptId = c.req.param('id');
+      const scriptId = c.req.param('id')!;
       const script = scripts.get(scriptId);
 
       if (!script || scriptOrgById.get(scriptId) !== orgId) {
@@ -792,7 +792,7 @@ scriptLibraryRoutes.post(
         return c.json({ error: 'orgId is required for this scope' }, 400);
       }
 
-      const scriptId = c.req.param('id');
+      const scriptId = c.req.param('id')!;
       const data = c.req.valid('json');
       const script = scripts.get(scriptId);
 
@@ -851,8 +851,8 @@ scriptLibraryRoutes.post(
         return c.json({ error: 'orgId is required for this scope' }, 400);
       }
 
-      const scriptId = c.req.param('id');
-      const versionId = c.req.param('versionId');
+      const scriptId = c.req.param('id')!;
+      const versionId = c.req.param('versionId')!;
       const script = scripts.get(scriptId);
 
       if (!script || scriptOrgById.get(scriptId) !== orgId) {
@@ -948,7 +948,7 @@ scriptLibraryRoutes.post(
         return c.json({ error: 'orgId is required for this scope' }, 400);
       }
 
-      const templateId = c.req.param('templateId');
+      const templateId = c.req.param('templateId')!;
       const template = templates.get(templateId);
 
       if (!template || templateOrgById.get(templateId) !== orgId) {
@@ -1007,7 +1007,7 @@ scriptLibraryRoutes.get(
         return c.json({ error: 'orgId is required for this scope' }, 400);
       }
 
-      const scriptId = c.req.param('id');
+      const scriptId = c.req.param('id')!;
       const script = scripts.get(scriptId);
 
       if (!script || scriptOrgById.get(scriptId) !== orgId) {

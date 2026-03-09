@@ -239,7 +239,7 @@ monitoringRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const assetId = c.req.param('id');
+    const assetId = c.req.param('id')!;
 
     const orgResult = await resolveOrgIdForAsset(auth, assetId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
@@ -349,7 +349,7 @@ monitoringRoutes.put(
   zValidator('json', upsertSnmpSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const assetId = c.req.param('id');
+    const assetId = c.req.param('id')!;
     const body = c.req.valid('json');
 
     const orgResult = await resolveOrgIdForAsset(auth, assetId);
@@ -478,7 +478,7 @@ monitoringRoutes.patch(
   zValidator('json', patchSnmpSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const assetId = c.req.param('id');
+    const assetId = c.req.param('id')!;
     const body = c.req.valid('json');
 
     const orgResult = await resolveOrgIdForAsset(auth, assetId);
@@ -542,7 +542,7 @@ monitoringRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const assetId = c.req.param('id');
+    const assetId = c.req.param('id')!;
 
     const orgResult = await resolveOrgIdForAsset(auth, assetId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
@@ -749,7 +749,7 @@ monitoringRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const deviceId = c.req.param('deviceId');
+    const deviceId = c.req.param('deviceId')!;
 
     // Verify device access before querying results
     const [device] = await db
@@ -801,7 +801,7 @@ monitoringRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const deviceId = c.req.param('deviceId');
+    const deviceId = c.req.param('deviceId')!;
 
     // Verify device access before querying results
     const [device] = await db

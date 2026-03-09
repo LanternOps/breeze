@@ -342,7 +342,7 @@ alertsRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const alertId = c.req.param('id');
+    const alertId = c.req.param('id')!;
 
     const alert = await getAlertWithOrgCheck(alertId, auth);
     if (!alert) {
@@ -406,7 +406,7 @@ alertsRoutes.post(
   zValidator('json', resolveAlertSchema),
   async (c) => {
     const auth = c.get('auth');
-    const alertId = c.req.param('id');
+    const alertId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     const alert = await getAlertWithOrgCheck(alertId, auth);
@@ -501,7 +501,7 @@ alertsRoutes.post(
   zValidator('json', suppressAlertSchema),
   async (c) => {
     const auth = c.get('auth');
-    const alertId = c.req.param('id');
+    const alertId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     const alert = await getAlertWithOrgCheck(alertId, auth);
@@ -553,7 +553,7 @@ alertsRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const alertId = c.req.param('id');
+    const alertId = c.req.param('id')!;
 
     // Skip if this is a route like /alerts/rules, /alerts/channels, etc.
     if (['rules', 'channels', 'policies', 'summary'].includes(alertId)) {

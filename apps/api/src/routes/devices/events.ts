@@ -15,7 +15,7 @@ eventsRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
     const search = c.req.query('search');
     const category = c.req.query('category');
     const result = c.req.query('result');

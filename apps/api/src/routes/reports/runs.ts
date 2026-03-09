@@ -18,7 +18,7 @@ runsRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const reportId = c.req.param('id');
+    const reportId = c.req.param('id')!;
 
     const report = await getReportWithOrgCheck(reportId, auth);
     if (!report) {
@@ -172,7 +172,7 @@ runsRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const runId = c.req.param('id');
+    const runId = c.req.param('id')!;
 
     const run = await getReportRunWithOrgCheck(runId, auth);
     if (!run) {

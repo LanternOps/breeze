@@ -185,7 +185,7 @@ templateRoutes.get(
         return c.json({ error: 'orgId is required for this scope' }, 400);
       }
 
-      const templateId = c.req.param('id');
+      const templateId = c.req.param('id')!;
       const [template] = await db
         .select()
         .from(alertTemplates)
@@ -223,7 +223,7 @@ templateRoutes.patch(
         return c.json({ error: 'orgId is required for this scope' }, 400);
       }
 
-      const templateId = c.req.param('id');
+      const templateId = c.req.param('id')!;
       const updates = c.req.valid('json');
 
       // Check if template exists and is accessible
@@ -290,7 +290,7 @@ templateRoutes.delete(
         return c.json({ error: 'orgId is required for this scope' }, 400);
       }
 
-      const templateId = c.req.param('id');
+      const templateId = c.req.param('id')!;
 
       const [existing] = await db
         .select()

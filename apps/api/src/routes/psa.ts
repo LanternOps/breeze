@@ -386,7 +386,7 @@ psaRoutes.get(
   requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const connectionId = c.req.param('id');
+    const connectionId = c.req.param('id')!;
 
     const connection = await getConnectionById(connectionId);
     if (!connection) {
@@ -409,7 +409,7 @@ psaRoutes.patch(
   zValidator('json', updateConnectionSchema),
   async (c) => {
     const auth = c.get('auth');
-    const connectionId = c.req.param('id');
+    const connectionId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     if (Object.keys(data).length === 0) {
@@ -486,7 +486,7 @@ psaRoutes.delete(
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   async (c) => {
     const auth = c.get('auth');
-    const connectionId = c.req.param('id');
+    const connectionId = c.req.param('id')!;
 
     const existing = await getConnectionById(connectionId);
     if (!existing) {
@@ -519,7 +519,7 @@ psaRoutes.post(
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   async (c) => {
     const auth = c.get('auth');
-    const connectionId = c.req.param('id');
+    const connectionId = c.req.param('id')!;
 
     const existing = await getConnectionById(connectionId);
     if (!existing) {
@@ -560,7 +560,7 @@ psaRoutes.post(
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   async (c) => {
     const auth = c.get('auth');
-    const connectionId = c.req.param('id');
+    const connectionId = c.req.param('id')!;
 
     const existing = await getConnectionById(connectionId);
     if (!existing) {
@@ -606,7 +606,7 @@ psaRoutes.post(
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   async (c) => {
     const auth = c.get('auth');
-    const connectionId = c.req.param('id');
+    const connectionId = c.req.param('id')!;
 
     const existing = await getConnectionById(connectionId);
     if (!existing) {
@@ -704,7 +704,7 @@ psaRoutes.get(
   zValidator('query', listTicketsSchema),
   async (c) => {
     const auth = c.get('auth');
-    const connectionId = c.req.param('id');
+    const connectionId = c.req.param('id')!;
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 

@@ -174,7 +174,7 @@ pluginRoutes.get(
 
 // GET /catalog/:slug - Get plugin details by slug
 pluginRoutes.get('/catalog/:slug', async (c) => {
-  const slug = c.req.param('slug');
+  const slug = c.req.param('slug')!;
 
   const [plugin] = await db
     .select()
@@ -378,7 +378,7 @@ pluginRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const installationId = c.req.param('id');
+    const installationId = c.req.param('id')!;
 
     const [installation] = await db
       .select({
@@ -434,7 +434,7 @@ pluginRoutes.patch(
   zValidator('json', updatePluginSchema),
   async (c) => {
     const auth = c.get('auth');
-    const installationId = c.req.param('id');
+    const installationId = c.req.param('id')!;
     const updates = c.req.valid('json');
 
     if (Object.keys(updates).length === 0) {
@@ -504,7 +504,7 @@ pluginRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const installationId = c.req.param('id');
+    const installationId = c.req.param('id')!;
 
     const [installation] = await db
       .select({
@@ -572,7 +572,7 @@ pluginRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const installationId = c.req.param('id');
+    const installationId = c.req.param('id')!;
 
     const [installation] = await db
       .select()
@@ -629,7 +629,7 @@ pluginRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const installationId = c.req.param('id');
+    const installationId = c.req.param('id')!;
 
     const [installation] = await db
       .select()
@@ -691,7 +691,7 @@ pluginRoutes.get(
   zValidator('query', logsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
-    const installationId = c.req.param('id');
+    const installationId = c.req.param('id')!;
     const query = c.req.valid('query');
 
     // First check installation exists and user has access

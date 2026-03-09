@@ -210,7 +210,7 @@ accessReviewRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
-    const reviewId = c.req.param('id');
+    const reviewId = c.req.param('id')!;
 
     // Get the review
     let whereClause;
@@ -305,8 +305,8 @@ accessReviewRoutes.patch(
   async (c) => {
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
-    const reviewId = c.req.param('id');
-    const itemId = c.req.param('itemId');
+    const reviewId = c.req.param('id')!;
+    const itemId = c.req.param('itemId')!;
     const data = c.req.valid('json');
 
     // Verify the review belongs to this scope
@@ -393,7 +393,7 @@ accessReviewRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
-    const reviewId = c.req.param('id');
+    const reviewId = c.req.param('id')!;
 
     // Verify the review belongs to this scope
     let whereClause;

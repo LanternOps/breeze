@@ -300,7 +300,7 @@ coreRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {
@@ -387,7 +387,7 @@ coreRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {
@@ -410,7 +410,7 @@ coreRoutes.patch(
   zValidator('json', updateDeviceSchema),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     if (Object.keys(data).length === 0) {
@@ -485,7 +485,7 @@ coreRoutes.post(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {
@@ -530,7 +530,7 @@ coreRoutes.delete(
   requirePermission(PERMISSIONS.DEVICES_DELETE.resource, PERMISSIONS.DEVICES_DELETE.action),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {

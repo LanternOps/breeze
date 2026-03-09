@@ -164,7 +164,7 @@ channelsRoutes.put(
   zValidator('json', updateChannelSchema),
   async (c) => {
     const auth = c.get('auth');
-    const channelId = c.req.param('id');
+    const channelId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     if (Object.keys(data).length === 0) {
@@ -223,7 +223,7 @@ channelsRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const channelId = c.req.param('id');
+    const channelId = c.req.param('id')!;
 
     const channel = await getNotificationChannelWithOrgCheck(channelId, auth);
     if (!channel) {
@@ -252,7 +252,7 @@ channelsRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const channelId = c.req.param('id');
+    const channelId = c.req.param('id')!;
 
     const channel = await getNotificationChannelWithOrgCheck(channelId, auth);
     if (!channel) {

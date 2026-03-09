@@ -107,7 +107,7 @@ patchesRoutes.get(
   zValidator('query', patchHistoryQuerySchema),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
     const { limit, offset, type, status } = c.req.valid('query');
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
@@ -173,7 +173,7 @@ patchesRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {
@@ -303,7 +303,7 @@ patchesRoutes.post(
   zValidator('json', installPatchesSchema),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);

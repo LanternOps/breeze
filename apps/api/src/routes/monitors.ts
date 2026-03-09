@@ -385,7 +385,7 @@ monitorRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const monitorId = c.req.param('id');
+    const monitorId = c.req.param('id')!;
     const monitorResult = await requireMonitorAccess(auth, monitorId);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
     const monitor = monitorResult.monitor;
@@ -420,7 +420,7 @@ monitorRoutes.patch(
   zValidator('json', updateMonitorSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const monitorId = c.req.param('id');
+    const monitorId = c.req.param('id')!;
     const payload = c.req.valid('json');
     const monitorResult = await requireMonitorAccess(auth, monitorId);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
@@ -451,7 +451,7 @@ monitorRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const monitorId = c.req.param('id');
+    const monitorId = c.req.param('id')!;
     const monitorResult = await requireMonitorAccess(auth, monitorId);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
 
@@ -479,7 +479,7 @@ monitorRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const monitorId = c.req.param('id');
+    const monitorId = c.req.param('id')!;
     const monitorResult = await requireMonitorAccess(auth, monitorId);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
     const monitor = monitorResult.monitor;
@@ -506,7 +506,7 @@ monitorRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const monitorId = c.req.param('id');
+    const monitorId = c.req.param('id')!;
     const monitorResult = await requireMonitorAccess(auth, monitorId);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
     const monitor = monitorResult.monitor;
@@ -556,7 +556,7 @@ monitorRoutes.get(
   zValidator('query', resultsQuerySchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const monitorId = c.req.param('id');
+    const monitorId = c.req.param('id')!;
     const query = c.req.valid('query');
     const monitorResult = await requireMonitorAccess(auth, monitorId);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
@@ -621,7 +621,7 @@ monitorRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const monitorId = c.req.param('monitorId');
+    const monitorId = c.req.param('monitorId')!;
     const monitorResult = await requireMonitorAccess(auth, monitorId);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
 
@@ -638,7 +638,7 @@ monitorRoutes.patch(
   zValidator('json', updateAlertRuleSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const ruleId = c.req.param('id');
+    const ruleId = c.req.param('id')!;
     const payload = c.req.valid('json');
     const accessResult = await requireAlertRuleAccess(auth, ruleId);
     if ('error' in accessResult) return c.json({ error: accessResult.error }, accessResult.status);
@@ -668,7 +668,7 @@ monitorRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const ruleId = c.req.param('id');
+    const ruleId = c.req.param('id')!;
     const accessResult = await requireAlertRuleAccess(auth, ruleId);
     if ('error' in accessResult) return c.json({ error: accessResult.error }, accessResult.status);
 

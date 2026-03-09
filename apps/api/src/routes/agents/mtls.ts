@@ -168,7 +168,7 @@ mtlsRoutes.get('/quarantined', authMiddleware, requirePermission('devices', 'rea
 });
 
 mtlsRoutes.post('/:id/approve', authMiddleware, requirePermission('devices', 'write'), async (c) => {
-  const deviceId = c.req.param('id');
+  const deviceId = c.req.param('id')!;
   const auth = c.get('auth') as { orgId?: string; user?: { id: string }; canAccessOrg?: (id: string) => boolean };
 
   const [device] = await db
@@ -219,7 +219,7 @@ mtlsRoutes.post('/:id/approve', authMiddleware, requirePermission('devices', 'wr
 });
 
 mtlsRoutes.post('/:id/deny', authMiddleware, requirePermission('devices', 'write'), async (c) => {
-  const deviceId = c.req.param('id');
+  const deviceId = c.req.param('id')!;
   const auth = c.get('auth') as { orgId?: string; user?: { id: string }; canAccessOrg?: (id: string) => boolean };
 
   const [device] = await db
@@ -271,7 +271,7 @@ mtlsRoutes.patch(
   requirePermission('orgs', 'write'),
   zValidator('json', orgMtlsSettingsSchema),
   async (c) => {
-    const orgId = c.req.param('orgId');
+    const orgId = c.req.param('orgId')!;
     const data = c.req.valid('json');
     const auth = c.get('auth') as { user?: { id: string }; canAccessOrg?: (id: string) => boolean };
 
@@ -329,7 +329,7 @@ mtlsRoutes.get(
   authMiddleware,
   requirePermission('orgs', 'read'),
   async (c) => {
-    const orgId = c.req.param('orgId');
+    const orgId = c.req.param('orgId')!;
     const auth = c.get('auth') as { canAccessOrg?: (id: string) => boolean };
 
     if (auth.canAccessOrg && !auth.canAccessOrg(orgId)) {
@@ -347,7 +347,7 @@ mtlsRoutes.patch(
   requirePermission('orgs', 'write'),
   zValidator('json', orgHelperSettingsSchema),
   async (c) => {
-    const orgId = c.req.param('orgId');
+    const orgId = c.req.param('orgId')!;
     const data = c.req.valid('json');
     const auth = c.get('auth') as { user?: { id: string }; canAccessOrg?: (id: string) => boolean };
 
@@ -404,7 +404,7 @@ mtlsRoutes.get(
   authMiddleware,
   requirePermission('orgs', 'read'),
   async (c) => {
-    const orgId = c.req.param('orgId');
+    const orgId = c.req.param('orgId')!;
     const auth = c.get('auth') as { canAccessOrg?: (id: string) => boolean };
 
     if (auth.canAccessOrg && !auth.canAccessOrg(orgId)) {
@@ -439,7 +439,7 @@ mtlsRoutes.patch(
   requirePermission('orgs', 'write'),
   zValidator('json', orgLogForwardingSettingsSchema),
   async (c) => {
-    const orgId = c.req.param('orgId');
+    const orgId = c.req.param('orgId')!;
     const data = c.req.valid('json');
     const auth = c.get('auth') as { user?: { id: string }; canAccessOrg?: (id: string) => boolean };
 

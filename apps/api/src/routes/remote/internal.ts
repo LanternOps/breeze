@@ -13,7 +13,7 @@ internalRoutes.patch(
   requireScope('system'),
   async (c) => {
     const auth = c.get('auth');
-    const transferId = c.req.param('id');
+    const transferId = c.req.param('id')!;
     const body = await c.req.json<{
       progressPercent?: number;
       status?: 'transferring' | 'completed' | 'failed';

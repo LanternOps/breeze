@@ -811,7 +811,7 @@ patchRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const reportId = c.req.param('id');
+    const reportId = c.req.param('id')!;
 
     const [report] = await db
       .select({
@@ -868,7 +868,7 @@ patchRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const reportId = c.req.param('id');
+    const reportId = c.req.param('id')!;
 
     const [report] = await db
       .select({

@@ -320,7 +320,7 @@ discoveryRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const profileId = c.req.param('id');
+    const profileId = c.req.param('id')!;
     const orgResult = resolveOrgId(auth);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
@@ -341,7 +341,7 @@ discoveryRoutes.patch(
   zValidator('json', updateProfileSchema),
   async (c) => {
     const auth = c.get('auth');
-    const profileId = c.req.param('id');
+    const profileId = c.req.param('id')!;
     const updates = c.req.valid('json');
     const orgResult = resolveOrgId(auth);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
@@ -398,7 +398,7 @@ discoveryRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const profileId = c.req.param('id');
+    const profileId = c.req.param('id')!;
     const orgResult = resolveOrgId(auth);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
@@ -635,7 +635,7 @@ discoveryRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const jobId = c.req.param('id');
+    const jobId = c.req.param('id')!;
     const orgResult = resolveOrgId(auth);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
@@ -666,7 +666,7 @@ discoveryRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const jobId = c.req.param('id');
+    const jobId = c.req.param('id')!;
     const orgResult = resolveOrgId(auth);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
@@ -860,7 +860,7 @@ discoveryRoutes.patch(
   zValidator('json', updateAssetSchema),
   async (c) => {
     const auth = c.get('auth');
-    const assetId = c.req.param('id');
+    const assetId = c.req.param('id')!;
     const updates = c.req.valid('json');
     const orgResult = await resolveOrgIdForAsset(auth, assetId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
@@ -903,7 +903,7 @@ discoveryRoutes.post(
   zValidator('json', linkAssetSchema),
   async (c) => {
     const auth = c.get('auth');
-    const assetId = c.req.param('id');
+    const assetId = c.req.param('id')!;
     const body = c.req.valid('json');
     const orgResult = await resolveOrgIdForAsset(auth, assetId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
@@ -943,7 +943,7 @@ discoveryRoutes.patch(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     const orgResult = await resolveOrgIdForAsset(auth, id);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
@@ -971,7 +971,7 @@ discoveryRoutes.patch(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     const orgResult = await resolveOrgIdForAsset(auth, id);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
@@ -998,7 +998,7 @@ discoveryRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const assetId = c.req.param('id');
+    const assetId = c.req.param('id')!;
     const orgResult = await resolveOrgIdForAsset(auth, assetId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
