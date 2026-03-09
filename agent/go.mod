@@ -1,6 +1,6 @@
 module github.com/breeze-rmm/agent
 
-go 1.24.0
+go 1.25.0
 
 require (
 	github.com/Microsoft/go-winio v0.6.2
@@ -19,7 +19,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
 	golang.org/x/net v0.50.0
-	golang.org/x/sys v0.41.0
+	golang.org/x/sys v0.42.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
