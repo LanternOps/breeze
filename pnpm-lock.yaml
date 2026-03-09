@@ -48,6 +48,9 @@ importers:
       '@hono/zod-validator':
         specifier: ^0.7.6
         version: 0.7.6(hono@4.12.3)(zod@3.25.76)
+      '@network-utils/vendor-lookup':
+        specifier: ^1.0.12
+        version: 1.0.12
       '@sentry/node':
         specifier: ^8.0.0
         version: 8.55.0
@@ -2980,6 +2983,9 @@ packages:
 
   '@napi-rs/wasm-runtime@0.2.12':
     resolution: {integrity: sha512-ZVWUcfwY4E/yPitQJl481FjFo3K22D6qF0DuFH6Y/nbnE11GY5uguDxZMGXPQ8WQ0128MXQD7TnfHyK4oWoIJQ==}
+
+  '@network-utils/vendor-lookup@1.0.12':
+    resolution: {integrity: sha512-iBCFDdbYOyfqm9rjCRptzmFJgBe8k4BqW0/2d+po9PP/jkZmTpst+k6vt4QVt3yVd6DP95vRJG7wtGUJEgrmzw==}
 
   '@noble/hashes@2.0.1':
     resolution: {integrity: sha512-XlOlEbQcE9fmuXxrVTXCTlG2nlRXa9Rj3rr5Ue/+tX+nmkgbX720YHh0VR3hBF9xDvwnb8D2shVGOwNx+ulArw==}
@@ -13783,6 +13789,8 @@ snapshots:
       '@emnapi/runtime': 1.8.1
       '@tybys/wasm-util': 0.10.1
     optional: true
+
+  '@network-utils/vendor-lookup@1.0.12': {}
 
   '@noble/hashes@2.0.1': {}
 

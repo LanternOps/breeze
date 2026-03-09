@@ -25,6 +25,7 @@ import { normalizeMac, buildApprovalDecision } from '../services/assetApproval';
 import { getRedisConnection } from '../services/redis';
 import { sendCommandToAgent, isAgentConnected, type AgentCommand } from '../routes/agentWs';
 import { isCronDue } from '../services/automationRuntime';
+import { lookupMacVendor, inferAssetTypeFromVendor } from '../services/macVendorLookup';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -539,13 +540,25 @@ async function processResults(data: ProcessResultsJobData): Promise<{
       )
       .limit(1);
 
+    // Use agent-provided manufacturer (SNMP); fall back to OUI lookup
+    let resolvedManufacturer = host.manufacturer ?? null;
+    if (!resolvedManufacturer && host.mac) {
+      resolvedManufacturer = lookupMacVendor(host.mac);
+    }
+
+    // Infer asset type from vendor when agent classification returned unknown
+    let resolvedAssetType = mapAssetType(host.assetType);
+    if (resolvedAssetType === 'unknown' && resolvedManufacturer) {
+      resolvedAssetType = inferAssetTypeFromVendor(resolvedManufacturer) ?? 'unknown';
+    }
+
     const assetData = {
       ipAddress: host.ip,
       macAddress: host.mac ?? null,
       hostname: host.hostname ?? null,
       netbiosName: host.netbiosName ?? null,
-      assetType: mapAssetType(host.assetType),
-      manufacturer: host.manufacturer ?? null,
+      assetType: resolvedAssetType,
+      manufacturer: resolvedManufacturer,
       model: host.model ?? null,
       openPorts: host.openPorts ?? null,
       osFingerprint: host.osFingerprint ? { os: host.osFingerprint } : null,
