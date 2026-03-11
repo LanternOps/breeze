@@ -559,7 +559,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	captureImagePool.Put(img)
 
 	if err != nil {
-		slog.Warn("H264 encode error", "session", s.id, "error", err)
+		slog.Warn("H264 encode error", "session", s.id, "error", err.Error())
 		return
 	}
 	if h264Data == nil {
@@ -728,7 +728,7 @@ func (s *Session) handleDesktopSwitch() {
 func applyDisplayOffset(handler InputHandler, displayIndex int, cursorOffX, cursorOffY *atomic.Int32) {
 	monitors, err := ListMonitors()
 	if err != nil {
-		slog.Warn("applyDisplayOffset: ListMonitors failed", "error", err)
+		slog.Warn("applyDisplayOffset: ListMonitors failed", "error", err.Error())
 		handler.SetDisplayOffset(0, 0)
 		cursorOffX.Store(0)
 		cursorOffY.Store(0)

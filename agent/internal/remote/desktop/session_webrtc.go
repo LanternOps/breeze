@@ -175,8 +175,11 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		}
 		captureImagePool.Put(probeImg)
 	} else if probeErr != nil {
-		slog.Warn("Probe capture failed, using GetScreenBounds dimensions",
-			"session", sessionID, "error", probeErr.Error())
+		// If the probe capture fails, the display is inaccessible (e.g. the
+		// helper is in a disconnected Windows session with no active display).
+		// Abort instead of returning a WebRTC answer that will stream zero frames.
+		capturer.Close()
+		return "", fmt.Errorf("screen capture failed (display may be unavailable): %w", probeErr)
 	}
 
 	// Start at 2.5Mbps — matches the viewer's default max-bitrate slider.

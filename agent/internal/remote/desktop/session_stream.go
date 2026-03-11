@@ -21,7 +21,7 @@ func (s *Session) startStreaming() {
 		}
 
 		if err := GetWallpaperManager().Suppress(); err != nil {
-			slog.Warn("Failed to suppress wallpaper", "session", s.id, "error", err)
+			slog.Warn("Failed to suppress wallpaper", "session", s.id, "error", err.Error())
 		}
 
 		// Best-effort: request an IDR immediately for fast viewer startup.
@@ -71,7 +71,7 @@ func (s *Session) startStreaming() {
 					})
 				})
 				if err != nil {
-					slog.Warn("Failed to start audio capture", "session", s.id, "error", err)
+					slog.Warn("Failed to start audio capture", "session", s.id, "error", err.Error())
 					ac.Stop() // release partially-initialized COM resources
 					s.audioCapturer = nil
 				} else {

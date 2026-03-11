@@ -100,7 +100,7 @@ func (s *Session) handleControlMessage(data []byte) {
 	case "list_monitors":
 		monitors, err := ListMonitors()
 		if err != nil {
-			slog.Warn("Failed to list monitors", "session", s.id, "error", err)
+			slog.Warn("Failed to list monitors", "session", s.id, "error", err.Error())
 			return
 		}
 		resp, _ := json.Marshal(map[string]any{

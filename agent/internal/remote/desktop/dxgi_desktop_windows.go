@@ -51,7 +51,7 @@ func (c *dxgiCapturer) switchToInputDesktop() bool {
 		uintptr(desktopGenericAll), // dwDesiredAccess
 	)
 	if hDesk == 0 {
-		slog.Warn("OpenInputDesktop failed", "error", err)
+		slog.Warn("OpenInputDesktop failed", "error", err.Error())
 		return false
 	}
 
@@ -63,7 +63,7 @@ func (c *dxgiCapturer) switchToInputDesktop() bool {
 		// Fails with ERROR_INVALID_PARAMETER if already on this desktop,
 		// or ACCESS_DENIED if the thread owns windows. Either way, clean up.
 		procCloseDesktop.Call(hDesk)
-		slog.Debug("SetThreadDesktop failed (may already be on input desktop)", "error", err)
+		slog.Debug("SetThreadDesktop failed (may already be on input desktop)", "error", err.Error())
 		return false
 	}
 
@@ -166,7 +166,7 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 			c.gdiFallback.releaseHandles()
 			c.gdiFallback = nil
 			if err := c.initDXGI(); err != nil {
-				slog.Warn("DXGI reinit failed while leaving fallback mode", "error", err)
+				slog.Warn("DXGI reinit failed while leaving fallback mode", "error", err.Error())
 				c.switchToGDI()
 			}
 		}
@@ -216,7 +216,7 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 		}
 
 		if err := c.initDXGI(); err != nil {
-			slog.Warn("DXGI reinit failed after SetThreadDesktop failure", "error", err)
+			slog.Warn("DXGI reinit failed after SetThreadDesktop failure", "error", err.Error())
 			c.switchToGDI()
 		}
 		slog.Warn("SetThreadDesktop failed during desktop switch; capture fallback active on current desktop",
@@ -238,7 +238,7 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 		c.gdiNoFrameCount = 0
 		slog.Info("Switched back to Default desktop, reinitializing DXGI")
 		if err := c.initDXGI(); err != nil {
-			slog.Warn("DXGI reinit failed after desktop switch", "error", err)
+			slog.Warn("DXGI reinit failed after desktop switch", "error", err.Error())
 			c.switchToGDI()
 		}
 	} else {

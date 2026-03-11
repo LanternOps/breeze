@@ -40,6 +40,17 @@ func (h *Heartbeat) handleSASFromHelper(session *sessionbroker.Session, env *ipc
 // spawnGuard prevents concurrent helper spawns for the same target session.
 var spawnGuard sync.Mutex
 
+// isWinSessionDisconnected checks whether the given Windows session ID is
+// disconnected (no active display). Helpers in disconnected sessions cannot
+// capture the screen. Returns false on non-Windows or if the state can't be
+// determined.
+func isWinSessionDisconnected(winSessionID string) bool {
+	if winSessionID == "" || winSessionID == "0" {
+		return false
+	}
+	return sessionbroker.IsSessionDisconnected(winSessionID)
+}
+
 // serviceUnavailable returns a failed CommandResult for commands that cannot
 // operate from Session 0 (Windows service mode).
 func serviceUnavailable(command string, start time.Time) tools.CommandResult {
@@ -155,11 +166,24 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 	}
 
 	session := h.sessionBroker.FindCapableSession("capture", targetSession)
+
+	// Validate the helper's Windows session is still active. A helper in a
+	// disconnected session (e.g. closed RDP) can't capture the display.
+	if session != nil && isWinSessionDisconnected(session.WinSessionID) {
+		log.Warn("helper is in a disconnected Windows session, spawning new helper",
+			"helperSession", session.SessionID,
+			"winSession", session.WinSessionID)
+		session = nil
+	}
+
 	if session == nil {
 		// Serialize spawns to prevent duplicate helpers for the same session
 		spawnGuard.Lock()
 		// Re-check after acquiring lock — another goroutine may have spawned it
 		session = h.sessionBroker.FindCapableSession("capture", targetSession)
+		if session != nil && isWinSessionDisconnected(session.WinSessionID) {
+			session = nil
+		}
 		if session == nil {
 			if err := h.spawnHelperForDesktop(targetSession); err != nil {
 				spawnGuard.Unlock()
