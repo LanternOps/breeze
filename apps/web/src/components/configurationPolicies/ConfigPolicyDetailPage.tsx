@@ -3,8 +3,6 @@ import {
   ArrowLeft,
   Layers,
   Target,
-  Trash2,
-  Plus,
   Bell,
   Wrench,
   ClipboardCheck,
@@ -23,8 +21,8 @@ import {
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import type { FeatureType, FeatureLink } from './featureTabs/types';
-import { DEVICE_ROLES, getDeviceRoleLabel } from '@/lib/deviceRoles';
 import { FEATURE_META } from './featureTabs/types';
+import AssignmentsTab from './AssignmentsTab';
 import PatchTab from './featureTabs/PatchTab';
 import AlertRuleTab from './featureTabs/AlertRuleTab';
 import BackupTab from './featureTabs/BackupTab';
@@ -42,17 +40,6 @@ import HelperTab from './featureTabs/HelperTab';
 
 type Tab = 'overview' | FeatureType | 'assignments';
 
-type Assignment = {
-  id: string;
-  level: string;
-  targetId: string;
-  priority: number;
-  roleFilter?: string[] | null;
-  osFilter?: string[] | null;
-  assignedBy?: string;
-  createdAt?: string;
-};
-
 type PolicyDetail = {
   id: string;
   name: string;
@@ -69,20 +56,6 @@ const statusConfig: Record<string, { label: string; color: string }> = {
   inactive: { label: 'Inactive', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40' },
   archived: { label: 'Archived', color: 'bg-gray-500/20 text-gray-700 border-gray-500/40' },
 };
-
-const assignmentLevels = [
-  { value: 'partner', label: 'Partner' },
-  { value: 'organization', label: 'Organization' },
-  { value: 'site', label: 'Site' },
-  { value: 'device_group', label: 'Device Group' },
-  { value: 'device', label: 'Device' },
-];
-
-const osFilterOptions = [
-  { value: 'windows', label: 'Windows' },
-  { value: 'macos', label: 'macOS' },
-  { value: 'linux', label: 'Linux' },
-];
 
 const featureTabIcons: Partial<Record<FeatureType, React.ReactNode>> = {
   patch: <PackageCheck className="h-4 w-4" />,
@@ -133,16 +106,6 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
   const [linkedPolicyName, setLinkedPolicyName] = useState<string | null>(null);
   const [parentFeatureLinks, setParentFeatureLinks] = useState<FeatureLink[]>([]);
 
-  // Assignments state
-  const [assignments, setAssignments] = useState<Assignment[]>([]);
-  const [assignmentsLoading, setAssignmentsLoading] = useState(false);
-  const [newLevel, setNewLevel] = useState('organization');
-  const [newTargetId, setNewTargetId] = useState('');
-  const [newPriority, setNewPriority] = useState('0');
-  const [newRoleFilter, setNewRoleFilter] = useState<string[]>([]);
-  const [newOsFilter, setNewOsFilter] = useState<string[]>([]);
-  const [addingAssignment, setAddingAssignment] = useState(false);
-
   const fetchPolicy = useCallback(async () => {
     if (!policyId) return;
     try {
@@ -172,21 +135,6 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
       setFeatureLinks(Array.isArray(data.data) ? data.data : []);
     } catch {
       // silent — feature links already loaded from policy fetch
-    }
-  }, [policyId]);
-
-  const fetchAssignments = useCallback(async () => {
-    if (!policyId) return;
-    try {
-      setAssignmentsLoading(true);
-      const response = await fetchWithAuth(`/configuration-policies/${policyId}/assignments`);
-      if (!response.ok) throw new Error('Failed to fetch assignments');
-      const data = await response.json();
-      setAssignments(Array.isArray(data.data) ? data.data : []);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
-    } finally {
-      setAssignmentsLoading(false);
     }
   }, [policyId]);
 
@@ -226,10 +174,6 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [linkedPolicyId]);
-
-  useEffect(() => {
-    if (activeTab === 'assignments') fetchAssignments();
-  }, [activeTab, fetchAssignments]);
 
   const handleSaveOverview = async () => {
     if (!policyId) return;
@@ -280,52 +224,6 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
 
   const linkFor = (t: FeatureType) => featureLinks.find((l) => l.featureType === t);
   const parentLinkFor = (t: FeatureType) => parentFeatureLinks.find((l) => l.featureType === t);
-
-  const handleAddAssignment = async () => {
-    if (!policyId || !newTargetId.trim()) return;
-    setAddingAssignment(true);
-    setError(undefined);
-    try {
-      const response = await fetchWithAuth(`/configuration-policies/${policyId}/assignments`, {
-        method: 'POST',
-        body: JSON.stringify({
-          level: newLevel,
-          targetId: newTargetId.trim(),
-          priority: Number(newPriority) || 0,
-          ...(newRoleFilter.length > 0 ? { roleFilter: newRoleFilter } : {}),
-          ...(newOsFilter.length > 0 ? { osFilter: newOsFilter } : {}),
-        }),
-      });
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to add assignment');
-      }
-      setNewTargetId('');
-      setNewPriority('0');
-      setNewRoleFilter([]);
-      setNewOsFilter([]);
-      await fetchAssignments();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
-    } finally {
-      setAddingAssignment(false);
-    }
-  };
-
-  const handleRemoveAssignment = async (assignmentId: string) => {
-    if (!policyId) return;
-    setError(undefined);
-    try {
-      const response = await fetchWithAuth(
-        `/configuration-policies/${policyId}/assignments/${assignmentId}`,
-        { method: 'DELETE' }
-      );
-      if (!response.ok) throw new Error('Failed to remove assignment');
-      await fetchAssignments();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
-    }
-  };
 
   const tabs: { id: Tab; label: string; icon: React.ReactNode; dot?: boolean }[] = [
     { id: 'overview', label: 'Overview', icon: <Layers className="h-4 w-4" /> },
@@ -523,204 +421,8 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
       {FEATURE_TYPES.includes(activeTab as FeatureType) && renderFeatureTab(activeTab as FeatureType)}
 
       {/* Assignments Tab */}
-      {activeTab === 'assignments' && (
-        <div className="space-y-6">
-          {/* Add Assignment Form */}
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
-            <h2 className="text-lg font-semibold">Add Assignment</h2>
-            <div className="mt-4 grid gap-4 sm:grid-cols-3">
-              <div>
-                <label className="text-sm font-medium">Level</label>
-                <select
-                  value={newLevel}
-                  onChange={(e) => setNewLevel(e.target.value)}
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                >
-                  {assignmentLevels.map((level) => (
-                    <option key={level.value} value={level.value}>
-                      {level.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="text-sm font-medium">Target ID</label>
-                <input
-                  value={newTargetId}
-                  onChange={(e) => setNewTargetId(e.target.value)}
-                  placeholder="UUID of the target"
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                />
-              </div>
-              <div>
-                <label className="text-sm font-medium">Priority</label>
-                <input
-                  type="number"
-                  min={0}
-                  max={1000}
-                  value={newPriority}
-                  onChange={(e) => setNewPriority(e.target.value)}
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                />
-              </div>
-            </div>
-            <div className="mt-4 grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="text-sm font-medium">Role Filter <span className="text-xs text-muted-foreground">(optional)</span></label>
-                <div className="mt-2 flex flex-wrap gap-2 rounded-md border bg-background p-2 min-h-[2.5rem]">
-                  {DEVICE_ROLES.map((role) => {
-                    const isSelected = newRoleFilter.includes(role);
-                    return (
-                      <button
-                        key={role}
-                        type="button"
-                        onClick={() => {
-                          setNewRoleFilter((prev) =>
-                            isSelected ? prev.filter((r) => r !== role) : [...prev, role]
-                          );
-                        }}
-                        className={cn(
-                          'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium transition',
-                          isSelected
-                            ? 'border-primary bg-primary/10 text-primary'
-                            : 'border-muted bg-muted/30 text-muted-foreground hover:bg-muted/60'
-                        )}
-                      >
-                        {getDeviceRoleLabel(role)}
-                      </button>
-                    );
-                  })}
-                </div>
-                {newRoleFilter.length === 0 && (
-                  <p className="mt-1 text-xs text-muted-foreground">No restriction - applies to all device roles</p>
-                )}
-              </div>
-              <div>
-                <label className="text-sm font-medium">OS Filter <span className="text-xs text-muted-foreground">(optional)</span></label>
-                <div className="mt-2 flex flex-wrap gap-2 rounded-md border bg-background p-2 min-h-[2.5rem]">
-                  {osFilterOptions.map((os) => {
-                    const isSelected = newOsFilter.includes(os.value);
-                    return (
-                      <button
-                        key={os.value}
-                        type="button"
-                        onClick={() => {
-                          setNewOsFilter((prev) =>
-                            isSelected ? prev.filter((o) => o !== os.value) : [...prev, os.value]
-                          );
-                        }}
-                        className={cn(
-                          'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium transition',
-                          isSelected
-                            ? 'border-primary bg-primary/10 text-primary'
-                            : 'border-muted bg-muted/30 text-muted-foreground hover:bg-muted/60'
-                        )}
-                      >
-                        {os.label}
-                      </button>
-                    );
-                  })}
-                </div>
-                {newOsFilter.length === 0 && (
-                  <p className="mt-1 text-xs text-muted-foreground">No restriction - applies to all operating systems</p>
-                )}
-              </div>
-            </div>
-            <div className="mt-4 flex justify-end">
-              <button
-                type="button"
-                onClick={handleAddAssignment}
-                disabled={addingAssignment || !newTargetId.trim()}
-                className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
-              >
-                <Plus className="h-4 w-4" />
-                {addingAssignment ? 'Assigning...' : 'Assign'}
-              </button>
-            </div>
-          </div>
-
-          {/* Assignments List */}
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
-            <h2 className="text-lg font-semibold">Current Assignments</h2>
-            {assignmentsLoading ? (
-              <div className="flex items-center justify-center py-8">
-                <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-              </div>
-            ) : assignments.length === 0 ? (
-              <p className="mt-4 text-sm text-muted-foreground">
-                No assignments yet. Assign this policy to targets above.
-              </p>
-            ) : (
-              <div className="mt-4 overflow-hidden rounded-md border">
-                <table className="min-w-full divide-y">
-                  <thead className="bg-muted/40">
-                    <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                      <th className="px-4 py-3">Level</th>
-                      <th className="px-4 py-3">Target ID</th>
-                      <th className="px-4 py-3">Priority</th>
-                      <th className="px-4 py-3">Filters</th>
-                      <th className="px-4 py-3 text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y">
-                    {assignments.map((assignment) => (
-                      <tr key={assignment.id} className="text-sm">
-                        <td className="px-4 py-3">
-                          <span className="inline-flex items-center rounded-full border bg-muted/50 px-2.5 py-1 text-xs font-medium capitalize">
-                            {assignment.level.replace('_', ' ')}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 font-mono text-xs text-muted-foreground">
-                          {assignment.targetId}
-                        </td>
-                        <td className="px-4 py-3 text-muted-foreground">{assignment.priority}</td>
-                        <td className="px-4 py-3">
-                          <div className="flex flex-wrap gap-1">
-                            {(!assignment.roleFilter || assignment.roleFilter.length === 0) &&
-                             (!assignment.osFilter || assignment.osFilter.length === 0) && (
-                              <span className="text-xs text-muted-foreground">All devices</span>
-                            )}
-                            {assignment.roleFilter && assignment.roleFilter.length > 0 && (
-                              assignment.roleFilter.map((role) => (
-                                <span
-                                  key={role}
-                                  className="inline-flex items-center rounded-full border border-purple-500/40 bg-purple-500/10 px-2 py-0.5 text-xs font-medium text-purple-700"
-                                >
-                                  {getDeviceRoleLabel(role)}
-                                </span>
-                              ))
-                            )}
-                            {assignment.osFilter && assignment.osFilter.length > 0 && (
-                              assignment.osFilter.map((os) => (
-                                <span
-                                  key={os}
-                                  className="inline-flex items-center rounded-full border border-blue-500/40 bg-blue-500/10 px-2 py-0.5 text-xs font-medium text-blue-700"
-                                >
-                                  {os === 'macos' ? 'macOS' : os.charAt(0).toUpperCase() + os.slice(1)}
-                                </span>
-                              ))
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex justify-end">
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveAssignment(assignment.id)}
-                              className="inline-flex h-8 w-8 items-center justify-center rounded-md border text-destructive hover:bg-destructive/10"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </div>
+      {activeTab === 'assignments' && policyId && policy && (
+        <AssignmentsTab policyId={policyId} orgId={policy.orgId} />
       )}
     </div>
   );
