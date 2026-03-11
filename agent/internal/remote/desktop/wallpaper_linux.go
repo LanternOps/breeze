@@ -44,16 +44,16 @@ func (b *linuxWallpaperBackend) SetSolidBlack() error {
 	case "gnome", "cinnamon":
 		// Remove wallpaper image, set solid color to black
 		if err := exec.Command("gsettings", "set", "org.gnome.desktop.background", "picture-uri", "").Run(); err != nil {
-			slog.Debug("gsettings set picture-uri failed", "error", err)
+			slog.Debug("gsettings set picture-uri failed", "error", err.Error())
 		}
 		if err := exec.Command("gsettings", "set", "org.gnome.desktop.background", "picture-uri-dark", "").Run(); err != nil {
-			slog.Debug("gsettings set picture-uri-dark failed", "error", err)
+			slog.Debug("gsettings set picture-uri-dark failed", "error", err.Error())
 		}
 		if err := exec.Command("gsettings", "set", "org.gnome.desktop.background", "primary-color", "#000000").Run(); err != nil {
-			slog.Debug("gsettings set primary-color failed", "error", err)
+			slog.Debug("gsettings set primary-color failed", "error", err.Error())
 		}
 		if err := exec.Command("gsettings", "set", "org.gnome.desktop.background", "color-shading-type", "solid").Run(); err != nil {
-			slog.Debug("gsettings set color-shading-type failed", "error", err)
+			slog.Debug("gsettings set color-shading-type failed", "error", err.Error())
 		}
 		return nil
 	case "xfce":

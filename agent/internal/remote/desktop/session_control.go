@@ -36,7 +36,7 @@ func (s *Session) verifySecureDesktopTransition(timeout time.Duration) (supporte
 func (s *Session) handleInputMessage(data []byte) {
 	var event InputEvent
 	if err := json.Unmarshal(data, &event); err != nil {
-		slog.Warn("Failed to parse input event", "session", s.id, "error", err)
+		slog.Warn("Failed to parse input event", "session", s.id, "error", err.Error())
 		return
 	}
 
@@ -62,7 +62,7 @@ func (s *Session) handleControlMessage(data []byte) {
 		Value int    `json:"value"`
 	}
 	if err := json.Unmarshal(data, &msg); err != nil {
-		slog.Warn("Failed to parse control message", "session", s.id, "error", err)
+		slog.Warn("Failed to parse control message", "session", s.id, "error", err.Error())
 		return
 	}
 
@@ -76,7 +76,7 @@ func (s *Session) handleControlMessage(data []byte) {
 				s.adaptive.SetMaxBitrate(msg.Value)
 			} else {
 				if err := s.encoder.SetBitrate(msg.Value); err != nil {
-					slog.Warn("Failed to set bitrate", "session", s.id, "bitrate", msg.Value, "error", err)
+					slog.Warn("Failed to set bitrate", "session", s.id, "bitrate", msg.Value, "error", err.Error())
 				}
 			}
 		}
@@ -89,7 +89,7 @@ func (s *Session) handleControlMessage(data []byte) {
 			s.fps = msg.Value
 			s.mu.Unlock()
 			if err := s.encoder.SetFPS(msg.Value); err != nil {
-				slog.Warn("Failed to set fps", "session", s.id, "fps", msg.Value, "error", err)
+				slog.Warn("Failed to set fps", "session", s.id, "fps", msg.Value, "error", err.Error())
 			}
 		}
 	case "request_keyframe":
@@ -126,7 +126,7 @@ func (s *Session) handleControlMessage(data []byte) {
 			s.mu.RUnlock()
 			if cdc != nil {
 				if err := cdc.SendText(`{"v":0}`); err != nil {
-					slog.Debug("Failed to send cursor hide message", "session", s.id, "error", err)
+					slog.Debug("Failed to send cursor hide message", "session", s.id, "error", err.Error())
 				}
 			}
 		}
@@ -271,7 +271,7 @@ func (s *Session) handleControlMessage(data []byte) {
 		cfg.DisplayIndex = msg.Value
 		newCap, capErr := NewScreenCapturer(cfg)
 		if capErr != nil {
-			slog.Warn("Failed to create capturer for monitor", "display", msg.Value, "error", capErr)
+			slog.Warn("Failed to create capturer for monitor", "display", msg.Value, "error", capErr.Error())
 			return
 		}
 		// Force a desktop repaint so DXGI has dirty rects for the initial
@@ -294,7 +294,7 @@ func (s *Session) handleControlMessage(data []byte) {
 		// with the encoding goroutine.
 		w, h, boundsErr := newCap.GetScreenBounds()
 		if boundsErr != nil {
-			slog.Warn("Failed to get bounds for new monitor", "display", msg.Value, "error", boundsErr)
+			slog.Warn("Failed to get bounds for new monitor", "display", msg.Value, "error", boundsErr.Error())
 		}
 		// Notify viewer of new resolution
 		resp, _ := json.Marshal(map[string]any{

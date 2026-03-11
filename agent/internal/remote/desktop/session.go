@@ -281,7 +281,7 @@ func (s *Session) doCleanup() {
 		}
 
 		if err := GetWallpaperManager().Restore(); err != nil {
-			slog.Warn("Failed to restore wallpaper", "session", s.id, "error", err)
+			slog.Warn("Failed to restore wallpaper", "session", s.id, "error", err.Error())
 		}
 	})
 }

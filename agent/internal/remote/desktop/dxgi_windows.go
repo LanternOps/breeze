@@ -396,7 +396,7 @@ func (c *dxgiCapturer) initDXGI() error {
 	)
 	if err != nil {
 		// Non-fatal: GPU pipeline won't work but CPU path is fine
-		slog.Warn("Failed to create GPU texture for video processor pipeline", "error", err)
+		slog.Warn("Failed to create GPU texture for video processor pipeline", "error", err.Error())
 	}
 
 	c.device = device

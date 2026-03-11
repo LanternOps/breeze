@@ -138,7 +138,7 @@ func (a *AdaptiveBitrate) SetMaxBitrate(max int) {
 		a.targetBitrate = max
 		if a.encoder != nil {
 			if err := a.encoder.SetBitrate(max); err != nil {
-				slog.Warn("Failed to clamp bitrate", "targetBitrate", max, "error", err)
+				slog.Warn("Failed to clamp bitrate", "targetBitrate", max, "error", err.Error())
 			}
 		}
 	}
@@ -284,10 +284,10 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 
 	if encoder != nil {
 		if err := encoder.SetBitrate(newBitrate); err != nil {
-			slog.Warn("Failed to set bitrate", "bitrate", newBitrate, "error", err)
+			slog.Warn("Failed to set bitrate", "bitrate", newBitrate, "error", err.Error())
 		}
 		if err := encoder.SetQuality(newQuality); err != nil {
-			slog.Warn("Failed to set quality", "quality", newQuality, "error", err)
+			slog.Warn("Failed to set quality", "quality", newQuality, "error", err.Error())
 		}
 	}
 }

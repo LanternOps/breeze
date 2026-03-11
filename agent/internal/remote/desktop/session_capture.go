@@ -131,7 +131,7 @@ func (s *Session) maybeResendCachedFrameOnSecureDesktop(cap ScreenCapturer, fram
 		Duration: frameDuration,
 	}
 	if err := s.videoTrack.WriteSample(sample); err != nil {
-		slog.Debug("Failed to resend cached secure-desktop frame", "session", s.id, "error", err)
+		slog.Debug("Failed to resend cached secure-desktop frame", "session", s.id, "error", err.Error())
 		return false
 	}
 	s.metrics.RecordSend(size)
@@ -243,10 +243,10 @@ func (s *Session) captureLoopDXGI() captureMode {
 			// Update encoder dimensions for the new monitor
 			if w, h, err := newCap.GetScreenBounds(); err == nil && s.encoder != nil {
 				if dimErr := s.encoder.SetDimensions(w, h); dimErr != nil {
-					slog.Warn("Failed to set encoder dimensions after monitor switch", "session", s.id, "error", dimErr)
+					slog.Warn("Failed to set encoder dimensions after monitor switch", "session", s.id, "error", dimErr.Error())
 				}
 				if kfErr := s.encoder.ForceKeyframe(); kfErr != nil {
-					slog.Warn("Failed to force keyframe after monitor switch", "session", s.id, "error", kfErr)
+					slog.Warn("Failed to force keyframe after monitor switch", "session", s.id, "error", kfErr.Error())
 				}
 			}
 			// Second repaint nudge — the first (in handleControlMessage) may
@@ -326,7 +326,7 @@ func (s *Session) captureLoopDXGI() captureMode {
 			fps = newFPS
 			frameDuration = time.Second / time.Duration(fps)
 			if err := s.encoder.SetFPS(fps); err != nil {
-				slog.Debug("Failed to apply dynamic FPS to encoder", "session", s.id, "fps", fps, "error", err)
+				slog.Debug("Failed to apply dynamic FPS to encoder", "session", s.id, "fps", fps, "error", err.Error())
 			}
 		}
 
@@ -459,7 +459,7 @@ func (s *Session) captureLoopTicker() captureMode {
 				frameDuration = time.Second / time.Duration(fps)
 				ticker.Reset(frameDuration)
 				if err := s.encoder.SetFPS(fps); err != nil {
-					slog.Debug("Failed to apply dynamic FPS to encoder", "session", s.id, "fps", fps, "error", err)
+					slog.Debug("Failed to apply dynamic FPS to encoder", "session", s.id, "fps", fps, "error", err.Error())
 				}
 			}
 			s.captureAndSendFrame(frameDuration)
@@ -575,7 +575,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 		Duration: frameDuration,
 	}
 	if err := s.videoTrack.WriteSample(sample); err != nil {
-		slog.Debug("Failed to write H264 sample", "session", s.id, "error", err)
+		slog.Debug("Failed to write H264 sample", "session", s.id, "error", err.Error())
 		s.metrics.RecordDrop()
 		return
 	}
@@ -657,7 +657,7 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 		Duration: frameDuration,
 	}
 	if err := s.videoTrack.WriteSample(sample); err != nil {
-		slog.Debug("Failed to write H264 sample (GPU)", "session", s.id, "error", err)
+		slog.Debug("Failed to write H264 sample (GPU)", "session", s.id, "error", err.Error())
 		s.metrics.RecordDrop()
 		return true, false, false
 	}

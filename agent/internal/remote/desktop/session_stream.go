@@ -153,7 +153,7 @@ func (s *Session) cursorStreamLoop(prov CursorProvider) {
 			payload = strconv.AppendInt(payload, int64(v), 10)
 			payload = append(payload, '}')
 			if err := s.cursorDC.Send(payload); err != nil {
-				slog.Debug("Failed to send cursor update", "session", s.id, "error", err)
+				slog.Debug("Failed to send cursor update", "session", s.id, "error", err.Error())
 			}
 		}
 	}

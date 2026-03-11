@@ -101,7 +101,7 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 	// Without this, SetOutputType/SetInputType return MF_E_TRANSFORM_ASYNC_LOCKED.
 	if isHW {
 		if err := m.unlockAsyncMFT(transform); err != nil {
-			slog.Warn("Failed to unlock async MFT, falling back to software", "error", err)
+			slog.Warn("Failed to unlock async MFT, falling back to software", "error", err.Error())
 			comRelease(transform)
 			transform, err = m.enumAndActivate(
 				mftEnumFlagSyncMFT|mftEnumFlagSortAndFilter,
@@ -128,7 +128,7 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 		// Hardware encoder may reject this format — fall back to software MFT
 		if isHW {
 			comRelease(transform)
-			slog.Warn("Hardware MFT rejected input type, falling back to software", "error", err)
+			slog.Warn("Hardware MFT rejected input type, falling back to software", "error", err.Error())
 			transform, err = m.enumAndActivate(mftEnumFlagSyncMFT|mftEnumFlagSortAndFilter, &mftRegisterTypeInfo{mfMediaTypeVideo, mfVideoFormatNV12}, &mftRegisterTypeInfo{mfMediaTypeVideo, mfVideoFormatH264})
 			if err != nil {
 				procMFShutdown.Call()
@@ -157,10 +157,10 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 
 	// Begin streaming
 	if _, err := comCall(transform, vtblProcessMessage, mftMessageNotifyBeginStreaming, 0); err != nil {
-		slog.Warn("MFT BeginStreaming failed (non-fatal)", "error", err)
+		slog.Warn("MFT BeginStreaming failed (non-fatal)", "error", err.Error())
 	}
 	if _, err := comCall(transform, vtblProcessMessage, mftMessageNotifyStartOfStream, 0); err != nil {
-		slog.Warn("MFT StartOfStream failed (non-fatal)", "error", err)
+		slog.Warn("MFT StartOfStream failed (non-fatal)", "error", err.Error())
 	}
 
 	m.transform = transform
@@ -215,7 +215,7 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 			uintptr(unsafe.Pointer(&codecAPIAVEncMPVGOPSize)),
 			uintptr(unsafe.Pointer(&gv)),
 		); err != nil {
-			slog.Debug("ICodecAPI SetValue(GOPSize) failed (non-fatal)", "gopSize", gopSize, "error", err)
+			slog.Debug("ICodecAPI SetValue(GOPSize) failed (non-fatal)", "gopSize", gopSize, "error", err.Error())
 		} else {
 			slog.Debug("GOP size set via ICodecAPI", "gopSize", gopSize)
 		}
@@ -231,7 +231,7 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 			uintptr(unsafe.Pointer(&codecAPIAVEncMPVDefaultBPictureCount)),
 			uintptr(unsafe.Pointer(&bv)),
 		); err != nil {
-			slog.Debug("ICodecAPI SetValue(BPictureCount=0) failed (non-fatal)", "error", err)
+			slog.Debug("ICodecAPI SetValue(BPictureCount=0) failed (non-fatal)", "error", err.Error())
 		}
 
 		// 2. CBR rate control: VBR defers output to optimize compression.
@@ -241,7 +241,7 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 			uintptr(unsafe.Pointer(&codecAPIAVEncCommonRateControlMode)),
 			uintptr(unsafe.Pointer(&rv)),
 		); err != nil {
-			slog.Debug("ICodecAPI SetValue(RateControl=CBR) failed (non-fatal)", "error", err)
+			slog.Debug("ICodecAPI SetValue(RateControl=CBR) failed (non-fatal)", "error", err.Error())
 		}
 
 		// 3. VBV buffer: set to ~3 frames worth of bits at current bitrate/fps.
@@ -258,10 +258,10 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 			uintptr(unsafe.Pointer(&codecAPIAVEncCommonBufferSize)),
 			uintptr(unsafe.Pointer(&vbv)),
 		); err != nil {
-			slog.Debug("ICodecAPI SetValue(BufferSize) failed (non-fatal)", "error", err)
+			slog.Debug("ICodecAPI SetValue(BufferSize) failed (non-fatal)", "error", err.Error())
 		}
 	} else {
-		slog.Debug("ICodecAPI not available on this MFT (dynamic bitrate disabled)", "error", qiErr)
+		slog.Debug("ICodecAPI not available on this MFT (dynamic bitrate disabled)", "error", fmt.Sprintf("%v", qiErr))
 	}
 
 	// If streaming requested a keyframe before init, apply now (best-effort).
@@ -443,7 +443,7 @@ func (m *mftEncoder) setOutputType(transform uintptr, width, height int) error {
 		uintptr(eAVEncH264VProfileMain),
 	); err != nil {
 		// Non-fatal: encoder will use default profile
-		slog.Debug("Failed to set Main profile", "error", err)
+		slog.Debug("Failed to set Main profile", "error", err.Error())
 	}
 
 	// Pixel aspect ratio = 1:1
@@ -555,7 +555,7 @@ func (m *mftEncoder) setLowLatency(transform uintptr) {
 	var attrs uintptr
 	_, err := comCall(transform, vtblGetAttributes, uintptr(unsafe.Pointer(&attrs)))
 	if err != nil || attrs == 0 {
-		slog.Warn("MFT GetAttributes failed, cannot set low-latency", "error", err)
+		slog.Warn("MFT GetAttributes failed, cannot set low-latency", "error", fmt.Sprintf("%v", err))
 		return
 	}
 	defer comRelease(attrs)
@@ -564,7 +564,7 @@ func (m *mftEncoder) setLowLatency(transform uintptr) {
 		uintptr(uint32(1)),
 	)
 	if err != nil {
-		slog.Warn("Failed to set MF_LOW_LATENCY", "error", err)
+		slog.Warn("Failed to set MF_LOW_LATENCY", "error", err.Error())
 	}
 }
 
@@ -623,7 +623,7 @@ func (m *mftEncoder) SetBitrate(bitrate int) error {
 		uintptr(unsafe.Pointer(&v)),
 	)
 	if err != nil {
-		slog.Debug("ICodecAPI SetValue(bitrate) failed", "bitrate", bitrate, "error", err)
+		slog.Debug("ICodecAPI SetValue(bitrate) failed", "bitrate", bitrate, "error", err.Error())
 		return nil // non-fatal: adaptive loop will keep trying
 	}
 	slog.Debug("Dynamic bitrate applied via ICodecAPI", "bitrate", bitrate)

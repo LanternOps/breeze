@@ -215,12 +215,14 @@ func wtsStateString(state uint32) string {
 func IsSessionDisconnected(winSessionID string) bool {
 	var id uint32
 	if _, err := fmt.Sscanf(winSessionID, "%d", &id); err != nil {
+		log.Warn("IsSessionDisconnected: failed to parse session ID",
+			"winSessionID", winSessionID, "error", err.Error())
 		return false
 	}
 
 	var buf uintptr
 	var bytesReturned uint32
-	r1, _, _ := procWTSQuerySessionInfo.Call(
+	r1, _, callErr := procWTSQuerySessionInfo.Call(
 		wtsCurrentServerHandle,
 		uintptr(id),
 		wtsConnectState,
@@ -228,7 +230,9 @@ func IsSessionDisconnected(winSessionID string) bool {
 		uintptr(unsafe.Pointer(&bytesReturned)),
 	)
 	if r1 == 0 || buf == 0 {
-		return false // can't determine — assume not disconnected
+		log.Warn("WTSQuerySessionInfo failed for disconnect check, assuming active",
+			"winSessionID", winSessionID, "error", callErr.Error())
+		return false
 	}
 	defer procWTSFreeMemory.Call(buf)
 

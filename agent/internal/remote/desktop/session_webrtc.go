@@ -47,7 +47,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		webrtc.RTPHeaderExtensionCapability{URI: playoutDelayURI},
 		webrtc.RTPCodecTypeVideo,
 	); regErr != nil {
-		slog.Warn("Failed to register playout-delay extension (non-fatal)", "error", regErr)
+		slog.Warn("Failed to register playout-delay extension (non-fatal)", "error", regErr.Error())
 	}
 	api := webrtc.NewAPI(webrtc.WithMediaEngine(mediaEngine))
 
@@ -178,7 +178,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		// If the probe capture fails, the display is inaccessible (e.g. the
 		// helper is in a disconnected Windows session with no active display).
 		// Abort instead of returning a WebRTC answer that will stream zero frames.
-		capturer.Close()
+		// The defer at line 80 calls StopSession which closes the capturer.
 		return "", fmt.Errorf("screen capture failed (display may be unavailable): %w", probeErr)
 	}
 
@@ -267,7 +267,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	// Create clipboard DataChannel
 	clipboardDC, err := peerConn.CreateDataChannel("clipboard", nil)
 	if err != nil {
-		slog.Warn("Failed to create clipboard DataChannel", "session", sessionID, "error", err)
+		slog.Warn("Failed to create clipboard DataChannel", "session", sessionID, "error", err.Error())
 	} else if clipboardDC != nil {
 		session.clipboardSync = clipboard.NewClipboardSync(clipboardDC, clipboard.NewSystemClipboard())
 		clipboardDC.OnOpen(func() {
@@ -278,7 +278,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	// Create filedrop DataChannel
 	filedropDC, err := peerConn.CreateDataChannel("filedrop", nil)
 	if err != nil {
-		slog.Warn("Failed to create filedrop DataChannel", "session", sessionID, "error", err)
+		slog.Warn("Failed to create filedrop DataChannel", "session", sessionID, "error", err.Error())
 	} else if filedropDC != nil {
 		session.fileDropHandler = filedrop.NewFileDropHandler(filedropDC, "")
 	}
@@ -293,7 +293,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		MaxRetransmits: &maxRetransmits,
 	})
 	if err != nil {
-		slog.Warn("Failed to create cursor DataChannel", "session", sessionID, "error", err)
+		slog.Warn("Failed to create cursor DataChannel", "session", sessionID, "error", err.Error())
 	} else {
 		session.cursorDC = cursorDC
 	}
@@ -310,10 +310,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		"desktop-audio",
 	)
 	if err != nil {
-		slog.Warn("Failed to create audio track", "session", sessionID, "error", err)
+		slog.Warn("Failed to create audio track", "session", sessionID, "error", err.Error())
 	} else {
 		if _, addErr := peerConn.AddTrack(audioTrack); addErr != nil {
-			slog.Warn("Failed to add audio track", "session", sessionID, "error", addErr)
+			slog.Warn("Failed to add audio track", "session", sessionID, "error", addErr.Error())
 		} else {
 			session.audioTrack = audioTrack
 		}
