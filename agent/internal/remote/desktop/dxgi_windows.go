@@ -202,7 +202,7 @@ type dxgiCapturer struct {
 func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
 	c := &dxgiCapturer{config: config}
 	if err := c.initDXGI(); err != nil {
-		slog.Warn("DXGI Desktop Duplication unavailable, falling back to GDI", "error", err)
+		slog.Warn("DXGI Desktop Duplication unavailable, falling back to GDI", "error", err.Error())
 		return &gdiCapturer{config: config}, nil
 	}
 	slog.Info("DXGI Desktop Duplication initialized",

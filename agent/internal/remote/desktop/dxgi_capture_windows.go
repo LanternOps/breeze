@@ -151,7 +151,7 @@ func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
 		c.desktopSwitchFlag.Store(true)
 		c.secureDesktopFlag.Store(false)
 		if err := c.initDXGI(); err != nil {
-			slog.Warn("DXGI reinit failed, falling back to GDI", "error", err)
+			slog.Warn("DXGI reinit failed, falling back to GDI", "error", err.Error())
 			c.switchToGDI()
 			return c.captureFromGDIFallbackLocked()
 		}
@@ -448,7 +448,7 @@ func (c *dxgiCapturer) CaptureTexture() (uintptr, error) {
 		c.desktopSwitchFlag.Store(true)
 		c.secureDesktopFlag.Store(false)
 		if err := c.initDXGI(); err != nil {
-			slog.Warn("DXGI reinit failed after access lost (GPU capture), falling back to GDI", "error", err)
+			slog.Warn("DXGI reinit failed after access lost (GPU capture), falling back to GDI", "error", err.Error())
 			c.switchToGDI()
 		}
 		return 0, nil
