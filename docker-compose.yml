@@ -73,7 +73,7 @@ services:
 
   api:
     image: ghcr.io/lanternops/breeze/api:${BREEZE_VERSION:-latest}
-    platform: linux/amd64
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
     container_name: breeze-api
     restart: unless-stopped
     environment:
@@ -138,7 +138,7 @@ services:
 
   web:
     image: ghcr.io/lanternops/breeze/web:${BREEZE_VERSION:-latest}
-    platform: linux/amd64
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
     container_name: breeze-web
     restart: unless-stopped
     environment:
@@ -197,12 +197,22 @@ services:
     image: coturn/coturn:4-alpine
     container_name: breeze-coturn
     restart: unless-stopped
+    profiles:
+      - turn
     network_mode: host
-    volumes:
-      - ./docker/turnserver.conf:/etc/coturn/turnserver.conf:ro
     command: >
       turnserver
-      -c /etc/coturn/turnserver.conf
+      --listening-port=3478
+      --tls-listening-port=5349
+      --fingerprint
+      --lt-cred-mech
+      --relay-threads=4
+      --max-allocations-quota=12
+      --log-file=stdout
+      --verbose
+      --min-port=49152
+      --max-port=65535
+      --no-cli
       --static-auth-secret=${TURN_SECRET:?Set TURN_SECRET in .env}
       --realm=${TURN_REALM:-breeze.local}
       --external-ip=${TURN_HOST:?Set TURN_HOST in .env}
