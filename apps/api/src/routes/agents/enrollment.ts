@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, ne, sql } from 'drizzle-orm';
 import { createHash, timingSafeEqual } from 'crypto';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
@@ -9,9 +9,12 @@ import {
   deviceHardware,
   deviceNetwork,
   enrollmentKeys,
+  organizations,
+  partners,
 } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
+import { notifyBilling } from '../../services/billingNotifier';
 import { enrollSchema } from './schemas';
 import { generateAgentId, generateApiKey, issueMtlsCertForDevice } from './helpers';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
@@ -61,6 +64,44 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     if (!siteId) {
       await db.update(enrollmentKeys).set({ usageCount: sql`${enrollmentKeys.usageCount} - 1` }).where(eq(enrollmentKeys.id, key.id));
       throw new HTTPException(400, { message: 'Enrollment key must be associated with a site' });
+    }
+
+    // Device limit check: join org → partner to get maxDevices
+    const [org] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, key.orgId))
+      .limit(1);
+
+    if (org) {
+      const [partner] = await db
+        .select({ maxDevices: partners.maxDevices })
+        .from(partners)
+        .where(eq(partners.id, org.partnerId))
+        .limit(1);
+
+      if (partner?.maxDevices != null) {
+        // Count active (non-decommissioned) devices across all partner orgs
+        const partnerOrgIds = db
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(eq(organizations.partnerId, org.partnerId));
+
+        const [countResult] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(devices)
+          .where(
+            and(
+              sql`${devices.orgId} IN (${partnerOrgIds})`,
+              ne(devices.status, 'decommissioned')
+            )
+          );
+
+        const activeCount = Number(countResult?.count ?? 0);
+        if (activeCount >= partner.maxDevices) {
+          return c.json({ error: 'Device limit reached for this partner' }, 403);
+        }
+      }
     }
 
     const agentId = generateAgentId();
@@ -207,6 +248,17 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     queueWarrantySyncForDevice(device.id).catch((err) => {
       console.error('[Enrollment] Failed to queue warranty sync:', err instanceof Error ? err.message : err);
     });
+
+    // Notify billing service of new enrollment (fire-and-forget)
+    if (org) {
+      notifyBilling({
+        type: 'device.enrolled',
+        partnerId: org.partnerId,
+        orgId: key.orgId,
+        deviceId: device.id,
+        timestamp: new Date().toISOString(),
+      }).catch(() => {});
+    }
 
     return c.json({
       agentId: agentId,

@@ -11,6 +11,7 @@ import {
   deviceGroupMemberships,
   deviceGroups,
   sites,
+  organizations,
   enrollmentKeys
 } from '../../db/schema';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
@@ -19,6 +20,7 @@ import { getPagination, getDeviceWithOrgCheck } from './helpers';
 import { listDevicesSchema, updateDeviceSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
+import { notifyBilling } from '../../services/billingNotifier';
 
 export const coreRoutes = new Hono();
 
@@ -557,6 +559,23 @@ coreRoutes.delete(
       resourceId: updated?.id ?? deviceId,
       resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname
     });
+
+    // Notify billing service of decommission (fire-and-forget)
+    const [org] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, device.orgId))
+      .limit(1);
+
+    if (org) {
+      notifyBilling({
+        type: 'device.decommissioned',
+        partnerId: org.partnerId,
+        orgId: device.orgId,
+        deviceId,
+        timestamp: new Date().toISOString(),
+      }).catch(() => {});
+    }
 
     return c.json({ success: true, device: updated });
   }

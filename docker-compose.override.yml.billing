@@ -1,0 +1,29 @@
+# Billing sidecar — activate with:
+#   docker compose -f docker-compose.yml -f docker-compose.override.yml.billing up -d
+#
+# Requires STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, and BILLING_SERVICE_API_KEY
+# in your .env file.
+
+services:
+  billing:
+    image: ghcr.io/lanternops/breeze-billing:${BILLING_VERSION:-latest}
+    container_name: breeze-billing
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      BILLING_PORT: 3002
+      DATABASE_URL: postgresql://${POSTGRES_USER:-breeze}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-breeze}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+      BILLING_API_KEY: ${BILLING_SERVICE_API_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - breeze
+
+  api:
+    environment:
+      BILLING_SERVICE_URL: http://billing:3002
+      BILLING_SERVICE_API_KEY: ${BILLING_SERVICE_API_KEY:-}
