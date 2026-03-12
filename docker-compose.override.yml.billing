@@ -20,6 +20,8 @@ services:
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
       BILLING_API_KEY: ${BILLING_SERVICE_API_KEY}
       JWT_SECRET: ${JWT_SECRET}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-billing@breezermm.com}
     depends_on:
       postgres:
         condition: service_healthy

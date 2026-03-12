@@ -28,7 +28,8 @@ import {
   Download,
   ClipboardCheck,
   ScanSearch,
-  Usb
+  Usb,
+  CreditCard
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -99,6 +100,7 @@ const managementNav = [
   { name: 'Organizations', href: '/settings/organizations', icon: Building2 },
   { name: 'Users', href: '/settings/users', icon: Users },
   { name: 'Roles', href: '/settings/roles', icon: KeyRound },
+  { name: 'Billing', href: '/billing/', icon: CreditCard },
   { name: 'Settings', href: '/settings', icon: Settings }
 ];
 
