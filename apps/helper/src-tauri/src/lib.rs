@@ -573,7 +573,7 @@ pub fn run() {
                         });
                         if !url.is_empty() {
                             let _ = tauri_plugin_shell::ShellExt::shell(app_handle)
-                                .open(&url, None::<&str>);
+                                .open(&url, None::<open::Program>);
                         }
                     }
                     "device_info" => {
