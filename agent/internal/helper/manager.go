@@ -171,11 +171,17 @@ func (m *Manager) downloadAndInstall() error {
 	url := fmt.Sprintf("%s/api/v1/agents/download/helper/%s/%s", m.serverURL, runtime.GOOS, runtime.GOARCH)
 	log.Info("downloading helper package", "url", url)
 
-	tmpPath := filepath.Join(os.TempDir(), "breeze-helper-install"+packageExtension())
+	tmpFile, err := os.CreateTemp("", "breeze-helper-install-*"+packageExtension())
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(tmpPath)
+
 	if err := downloadFile(url, tmpPath, m.authToken); err != nil {
 		return fmt.Errorf("download helper: %w", err)
 	}
-	defer os.Remove(tmpPath)
 
 	if err := installPackage(tmpPath, m.binaryPath); err != nil {
 		return fmt.Errorf("install helper package: %w", err)

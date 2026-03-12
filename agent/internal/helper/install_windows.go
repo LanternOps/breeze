@@ -14,9 +14,16 @@ const registryValue = "BreezeHelper"
 func packageExtension() string { return ".msi" }
 
 // installPackage runs the MSI installer silently.
+// Exit code 3010 means success but reboot required — treated as success.
 func installPackage(msiPath, _ string) error {
-	out, err := exec.Command("msiexec", "/i", msiPath, "/qn", "/norestart").CombinedOutput()
+	cmd := exec.Command("msiexec", "/i", msiPath, "/qn", "/norestart")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
+		// Exit code 3010 = ERROR_SUCCESS_REBOOT_REQUIRED
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 3010 {
+			log.Info("MSI installed successfully (reboot required)", "msi", msiPath)
+			return nil
+		}
 		return fmt.Errorf("msiexec: %w (output: %s)", err, strings.TrimSpace(string(out)))
 	}
 	log.Info("MSI installed successfully", "msi", msiPath)

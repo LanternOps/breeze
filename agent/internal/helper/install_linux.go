@@ -2,8 +2,10 @@ package helper
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -15,21 +17,24 @@ func packageExtension() string { return ".AppImage" }
 // installPackage copies the AppImage to the target path and makes it executable.
 // AppImages are self-contained and directly runnable.
 func installPackage(appImagePath, binaryPath string) error {
-	dir := os.Getenv("HOME")
-	if dir == "" {
-		dir = "/usr/local/bin"
-	}
-
-	if err := os.MkdirAll(strings.TrimSuffix(binaryPath, "/breeze-helper"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(binaryPath), 0755); err != nil {
 		return fmt.Errorf("create binary dir: %w", err)
 	}
 
-	data, err := os.ReadFile(appImagePath)
+	src, err := os.Open(appImagePath)
 	if err != nil {
-		return fmt.Errorf("read appimage: %w", err)
+		return fmt.Errorf("open appimage: %w", err)
 	}
-	if err := os.WriteFile(binaryPath, data, 0755); err != nil {
-		return fmt.Errorf("write binary: %w", err)
+	defer src.Close()
+
+	dst, err := os.OpenFile(binaryPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	if err != nil {
+		return fmt.Errorf("create binary: %w", err)
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, src); err != nil {
+		return fmt.Errorf("copy appimage: %w", err)
 	}
 
 	log.Info("AppImage installed", "path", binaryPath)
