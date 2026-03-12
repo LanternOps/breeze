@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_shell::open;
 use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------
