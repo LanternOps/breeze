@@ -18,9 +18,9 @@ const createPartnerSchema = z.object({
   name: z.string().min(1),
   slug: z.string().min(1).max(100),
   type: z.enum(['msp', 'enterprise', 'internal']).optional(),
-  plan: z.enum(['free', 'pro', 'enterprise', 'unlimited']).optional(),
+  // plan and maxDevices are managed by the billing service (via direct DB writes).
+  // They are intentionally excluded from the API schema to prevent self-service changes.
   maxOrganizations: z.number().int().nullable().optional(),
-  maxDevices: z.number().int().nullable().optional(),
   settings: z.any().optional(),
   ssoConfig: z.any().optional(),
   billingEmail: z.string().email().optional()
@@ -34,7 +34,7 @@ const createOrganizationSchema = z.object({
   slug: z.string().min(1).max(100),
   type: z.enum(['customer', 'internal']).optional(),
   status: z.enum(['active', 'suspended', 'trial', 'churned']).optional(),
-  maxDevices: z.number().int().nullable().optional(),
+  // maxDevices is managed by the billing service — excluded from API schema
   settings: z.any().optional(),
   ssoConfig: z.any().optional(),
   contractStart: z.string().nullable().optional(),
@@ -171,9 +171,7 @@ orgRoutes.post('/partners', requireScope('system'), zValidator('json', createPar
       name: data.name,
       slug: data.slug,
       type: data.type,
-      plan: data.plan,
       maxOrganizations: data.maxOrganizations,
-      maxDevices: data.maxDevices,
       settings: data.settings,
       ssoConfig: data.ssoConfig,
       billingEmail: data.billingEmail
@@ -464,7 +462,6 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), zValidator('
     slug: data.slug,
     type: data.type,
     status: data.status,
-    maxDevices: data.maxDevices,
     settings: data.settings,
     ssoConfig: data.ssoConfig,
     contractStart: data.contractStart ? new Date(data.contractStart) : null,
@@ -529,7 +526,6 @@ const updateOrgHandler = [requireScope('partner', 'system'), zValidator('json', 
   if (data.slug !== undefined) updates.slug = data.slug;
   if (data.type !== undefined) updates.type = data.type;
   if (data.status !== undefined) updates.status = data.status;
-  if (data.maxDevices !== undefined) updates.maxDevices = data.maxDevices;
   if (data.settings !== undefined) updates.settings = data.settings;
   if (data.ssoConfig !== undefined) updates.ssoConfig = data.ssoConfig;
   if (data.billingContact !== undefined) updates.billingContact = data.billingContact;
