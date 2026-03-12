@@ -4,11 +4,49 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
 const plistLabel = "com.breeze.helper"
 const plistPath = "/Library/LaunchAgents/com.breeze.helper.plist"
+const appBundleName = "Breeze Helper.app"
+
+func packageExtension() string { return ".dmg" }
+
+// installPackage mounts the DMG, copies the .app bundle, and unmounts.
+func installPackage(dmgPath, binaryPath string) error {
+	// Mount the DMG to a temp mount point
+	mountPoint, err := os.MkdirTemp("", "breeze-helper-mount-")
+	if err != nil {
+		return fmt.Errorf("create mount point: %w", err)
+	}
+	defer os.RemoveAll(mountPoint)
+
+	if out, err := exec.Command("hdiutil", "attach", dmgPath, "-mountpoint", mountPoint, "-nobrowse", "-quiet").CombinedOutput(); err != nil {
+		return fmt.Errorf("mount dmg: %w (output: %s)", err, strings.TrimSpace(string(out)))
+	}
+	defer exec.Command("hdiutil", "detach", mountPoint, "-quiet").Run()
+
+	// Find the .app in the mounted DMG
+	srcApp := filepath.Join(mountPoint, appBundleName)
+	if _, err := os.Stat(srcApp); err != nil {
+		return fmt.Errorf("app bundle not found in dmg at %s: %w", srcApp, err)
+	}
+
+	// Copy .app to /Applications/
+	destApp := filepath.Dir(filepath.Dir(filepath.Dir(binaryPath))) // up from Contents/MacOS/binary to .app
+	if err := os.RemoveAll(destApp); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove old app: %w", err)
+	}
+
+	if out, err := exec.Command("cp", "-R", srcApp, destApp).CombinedOutput(); err != nil {
+		return fmt.Errorf("copy app: %w (output: %s)", err, strings.TrimSpace(string(out)))
+	}
+
+	log.Info("app bundle installed", "path", destApp)
+	return nil
+}
 
 func installAutoStart(binaryPath string) error {
 	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>

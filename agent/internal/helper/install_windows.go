@@ -11,6 +11,18 @@ import (
 const registryKey = `SOFTWARE\Microsoft\Windows\CurrentVersion\Run`
 const registryValue = "BreezeHelper"
 
+func packageExtension() string { return ".msi" }
+
+// installPackage runs the MSI installer silently.
+func installPackage(msiPath, _ string) error {
+	out, err := exec.Command("msiexec", "/i", msiPath, "/qn", "/norestart").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("msiexec: %w (output: %s)", err, strings.TrimSpace(string(out)))
+	}
+	log.Info("MSI installed successfully", "msi", msiPath)
+	return nil
+}
+
 func installAutoStart(binaryPath string) error {
 	key, _, err := registry.CreateKey(registry.LOCAL_MACHINE, registryKey, registry.SET_VALUE)
 	if err != nil {
@@ -27,15 +39,15 @@ func installAutoStart(binaryPath string) error {
 }
 
 func isHelperRunning() bool {
-	out, err := exec.Command("tasklist", "/FI", "IMAGENAME eq breeze-helper.exe", "/NH").Output()
+	out, err := exec.Command("tasklist", "/FI", "IMAGENAME eq Breeze Helper.exe", "/NH").Output()
 	if err != nil {
 		return false
 	}
-	return strings.Contains(strings.ToLower(string(out)), "breeze-helper.exe")
+	return strings.Contains(strings.ToLower(string(out)), "breeze helper.exe")
 }
 
 func stopHelper() error {
-	return exec.Command("taskkill", "/F", "/IM", "breeze-helper.exe").Run()
+	return exec.Command("taskkill", "/F", "/IM", "Breeze Helper.exe").Run()
 }
 
 func removeAutoStart() error {

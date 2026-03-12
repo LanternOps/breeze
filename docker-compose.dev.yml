@@ -97,9 +97,10 @@ services:
       - ./apps/api/drizzle.config.ts:/app/apps/api/drizzle.config.ts:ro
       - ./packages/shared/package.json:/app/packages/shared/package.json:ro
       - ./packages/shared/tsconfig.json:/app/packages/shared/tsconfig.json:ro
-      # Mount agent and viewer binaries for download endpoints
+      # Mount agent, viewer, and helper binaries for download endpoints
       - ./agent/bin:/app/apps/api/agent/bin:ro
       - ./viewer/bin:/app/apps/api/viewer/bin:ro
+      - ./helper/bin:/app/apps/api/helper/bin:ro
       # Exclude node_modules (use container's)
       - /app/node_modules
       - /app/apps/api/node_modules

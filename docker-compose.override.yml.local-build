@@ -5,7 +5,7 @@
 services:
   binaries-init:
     image: alpine:3.19
-    entrypoint: ["sh", "-c", "mkdir -p /target/agent /target/viewer && echo '0.0.0-dev' > /target/VERSION && echo 'Stub binaries volume created'"]
+    entrypoint: ["sh", "-c", "mkdir -p /target/agent /target/viewer /target/helper && echo '0.0.0-dev' > /target/VERSION && echo 'Stub binaries volume created'"]
 
   api:
     image: breeze-api:local

@@ -57,21 +57,17 @@ func New(serverURL, authToken, agentID string) *Manager {
 }
 
 func defaultBinaryPath() string {
-	ext := ""
-	if runtime.GOOS == "windows" {
-		ext = ".exe"
-	}
 	switch runtime.GOOS {
 	case "darwin":
-		return "/Library/Application Support/Breeze/breeze-helper" + ext
+		return "/Applications/Breeze Helper.app/Contents/MacOS/Breeze Helper"
 	case "windows":
-		pd := os.Getenv("ProgramData")
-		if pd == "" {
-			pd = `C:\ProgramData`
+		pf := os.Getenv("ProgramFiles")
+		if pf == "" {
+			pf = `C:\Program Files`
 		}
-		return filepath.Join(pd, "Breeze", "breeze-helper"+ext)
+		return filepath.Join(pf, "Breeze Helper", "Breeze Helper.exe")
 	default:
-		return "/usr/local/bin/breeze-helper" + ext
+		return "/usr/local/bin/breeze-helper"
 	}
 }
 
@@ -169,29 +165,20 @@ func (m *Manager) isInstalled() bool {
 	return err == nil
 }
 
+// downloadAndInstall downloads the platform-appropriate helper package
+// (MSI on Windows, DMG on macOS, AppImage on Linux) and installs it.
 func (m *Manager) downloadAndInstall() error {
 	url := fmt.Sprintf("%s/api/v1/agents/download/helper/%s/%s", m.serverURL, runtime.GOOS, runtime.GOARCH)
-	log.Info("downloading helper binary", "url", url)
+	log.Info("downloading helper package", "url", url)
 
-	tmpPath := m.binaryPath + ".download"
+	tmpPath := filepath.Join(os.TempDir(), "breeze-helper-install"+packageExtension())
 	if err := downloadFile(url, tmpPath, m.authToken); err != nil {
 		return fmt.Errorf("download helper: %w", err)
 	}
+	defer os.Remove(tmpPath)
 
-	if err := os.Chmod(tmpPath, 0755); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("chmod helper: %w", err)
-	}
-
-	dir := filepath.Dir(m.binaryPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("create binary dir: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, m.binaryPath); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("install helper: %w", err)
+	if err := installPackage(tmpPath, m.binaryPath); err != nil {
+		return fmt.Errorf("install helper package: %w", err)
 	}
 
 	// Platform-specific auto-start registration
@@ -199,7 +186,7 @@ func (m *Manager) downloadAndInstall() error {
 		log.Warn("failed to install auto-start for helper", "error", err.Error())
 	}
 
-	log.Info("helper binary installed", "path", m.binaryPath)
+	log.Info("helper installed", "path", m.binaryPath)
 	return nil
 }
 
