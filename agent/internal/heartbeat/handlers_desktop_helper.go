@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"sync"
 	"time"
 
@@ -120,6 +121,12 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 // spawnHelperForDesktop spawns a user helper in the target session.
 // If targetSession is empty, it auto-detects the first active non-services session.
 func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
+	if runtime.GOOS != "windows" {
+		return fmt.Errorf(
+			"no user-helper connected; install the LaunchAgent with: " +
+				"sudo breeze-agent service install --with-user-helper")
+	}
+
 	if targetSession == "" {
 		detector := sessionbroker.NewSessionDetector()
 		detected, err := detector.ListSessions()

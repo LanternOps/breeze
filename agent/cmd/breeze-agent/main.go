@@ -252,14 +252,19 @@ func startAgent() (*agentComponents, error) {
 		}
 	}
 
-	// Propagate service mode flag so the heartbeat can route desktop
+	// Propagate service/headless flags so the heartbeat routes desktop
 	// sessions through the IPC user helper instead of capturing directly.
 	cfg.IsService = isWindowsService()
+	cfg.IsHeadless = isHeadless()
 
 	// Ensure SAS (Ctrl+Alt+Del) policy allows services to generate it.
 	// Only relevant on Windows when running as a service.
 	if cfg.IsService {
 		ensureSASPolicy()
+	}
+
+	if cfg.IsHeadless {
+		log.Info("running in headless mode (no console attached), desktop commands will route via IPC")
 	}
 
 	// Start heartbeat - this implements the main agent run loop

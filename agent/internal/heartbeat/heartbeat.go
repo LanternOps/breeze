@@ -127,6 +127,7 @@ type Heartbeat struct {
 	// User session helper (IPC)
 	sessionBroker *sessionbroker.Broker
 	isService     bool
+	isHeadless    bool
 	scmSessionCh  chan sessionbroker.SCMSessionEvent // fed by SCM handler
 
 	// Resilience & observability
@@ -214,6 +215,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	}
 	h.accepting.Store(true)
 	h.isService = cfg.IsService
+	h.isHeadless = cfg.IsHeadless
 
 	// Classify device role once at startup
 	if sysInfo, err := h.hardwareCol.CollectSystemInfo(); err == nil {
@@ -254,7 +256,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// Always enable when running as a Windows service — the helper is required
 	// for desktop capture, input injection, and other interactive operations
 	// that cannot work from Session 0.
-	if cfg.UserHelperEnabled || cfg.IsService {
+	if cfg.UserHelperEnabled || cfg.IsService || cfg.IsHeadless {
 		socketPath := cfg.IPCSocketPath
 		if socketPath == "" {
 			socketPath = ipc.DefaultSocketPath()
@@ -263,6 +265,8 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		reason := "config"
 		if cfg.IsService {
 			reason = "windows-service"
+		} else if cfg.IsHeadless {
+			reason = "headless-daemon"
 		}
 		log.Info("user helper IPC enabled", "socket", socketPath, "reason", reason)
 
@@ -331,7 +335,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 
 	// For direct mode (non-service), notify API when WebRTC peer drops.
 	// In service mode this is handled via IPC from the user helper.
-	if !cfg.IsService {
+	if !cfg.IsService && !cfg.IsHeadless {
 		h.desktopMgr.OnSessionStopped = func(sessionID string) {
 			h.sendDesktopDisconnectNotification(sessionID)
 		}

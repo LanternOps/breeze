@@ -86,6 +86,10 @@ type Config struct {
 	// IsService is a runtime flag set when the agent is running as a system service
 	// (Windows SCM, macOS launchd, Linux systemd). It is not persisted to config.
 	IsService bool `mapstructure:"-"`
+
+	// IsHeadless is a runtime flag set when no console/TTY is attached (launchd
+	// daemon, systemd service, etc.). Desktop commands route through IPC when set.
+	IsHeadless bool `mapstructure:"-"`
 }
 
 // defaultLogFile returns the platform-specific default log file path.
