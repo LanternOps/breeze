@@ -74,10 +74,6 @@ const envSchema = z
     API_PORT: portSchema,
     REDIS_URL: z.string().default('redis://localhost:6379'),
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-
-    // -- Optional: Billing service integration --------------------------------
-    BILLING_SERVICE_URL: z.string().url().optional(),
-    BILLING_SERVICE_API_KEY: z.string().optional(),
   })
   // --- Cross-field refinements (insecure defaults for required secrets) -------
   .superRefine((data, ctx) => {
@@ -225,8 +221,6 @@ export function validateConfig(): AppConfig {
     API_PORT: env.API_PORT,
     REDIS_URL: env.REDIS_URL,
     NODE_ENV: env.NODE_ENV,
-    BILLING_SERVICE_URL: env.BILLING_SERVICE_URL,
-    BILLING_SERVICE_API_KEY: env.BILLING_SERVICE_API_KEY,
   });
 
   if (!result.success) {

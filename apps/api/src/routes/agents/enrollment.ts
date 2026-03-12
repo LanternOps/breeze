@@ -14,7 +14,6 @@ import {
 } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
-import { notifyBilling } from '../../services/billingNotifier';
 import { enrollSchema } from './schemas';
 import { generateAgentId, generateApiKey, issueMtlsCertForDevice } from './helpers';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
@@ -248,17 +247,6 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     queueWarrantySyncForDevice(device.id).catch((err) => {
       console.error('[Enrollment] Failed to queue warranty sync:', err instanceof Error ? err.message : err);
     });
-
-    // Notify billing service of new enrollment (fire-and-forget)
-    if (org) {
-      notifyBilling({
-        type: 'device.enrolled',
-        partnerId: org.partnerId,
-        orgId: key.orgId,
-        deviceId: device.id,
-        timestamp: new Date().toISOString(),
-      }).catch(() => {});
-    }
 
     return c.json({
       agentId: agentId,
