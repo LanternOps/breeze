@@ -6,11 +6,14 @@
 
 services:
   billing:
-    image: ghcr.io/lanternops/breeze-billing:${BILLING_VERSION:-latest}
+    build:
+      context: ../breeze-billing
+      dockerfile: Dockerfile
+    image: breeze-billing:local
     container_name: breeze-billing
     restart: unless-stopped
     environment:
-      NODE_ENV: production
+      NODE_ENV: development
       BILLING_PORT: 3002
       DATABASE_URL: postgresql://${POSTGRES_USER:-breeze}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-breeze}
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
