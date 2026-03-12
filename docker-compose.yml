@@ -193,6 +193,9 @@ services:
     networks:
       - breeze
 
+  # TURN relay for WebRTC remote desktop. Opt-in via: docker compose --profile turn up -d
+  # Or set COMPOSE_PROFILES=turn in .env. Requires TURN_HOST and TURN_SECRET.
+  # Open UDP 49152-65535 in your firewall for relay traffic.
   coturn:
     image: coturn/coturn:4-alpine
     container_name: breeze-coturn
@@ -213,9 +216,9 @@ services:
       --min-port=49152
       --max-port=65535
       --no-cli
-      --static-auth-secret=${TURN_SECRET:?Set TURN_SECRET in .env}
+      --static-auth-secret=${TURN_SECRET:-}
       --realm=${TURN_REALM:-breeze.local}
-      --external-ip=${TURN_HOST:?Set TURN_HOST in .env}
+      --external-ip=${TURN_HOST:-}
 
 networks:
   breeze:
