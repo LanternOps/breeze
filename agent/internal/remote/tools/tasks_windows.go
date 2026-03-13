@@ -3,26 +3,153 @@
 package tools
 
 import (
-	"encoding/csv"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
 
+// listTasksPS outputs one task per line. Each line has fields separated by
+// the unit separator character (0x1F). String fields that might contain
+// special characters (name, author, description) are base64-encoded.
+// This completely avoids PowerShell JSON serialization bugs (PS 5.1
+// fails to escape double quotes in certain CIM string properties).
+//
+// Fields per line (0x1F-separated):
+//   0: name (base64)
+//   1: path (base64)
+//   2: folder (base64)
+//   3: status
+//   4: author (base64)
+//   5: description (base64)
+//   6: lastRun (ISO 8601 or empty)
+//   7: nextRun (ISO 8601 or empty)
+//   8: lastResult (int or empty)
+//   9: triggers (pipe-separated base64 strings)
+const listTasksPS = `$ErrorActionPreference='SilentlyContinue'
+$U=[char]31
+function B($s){[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$s))}
+$tasks=@(Get-ScheduledTask)
+$im=@{}
+$tasks|Get-ScheduledTaskInfo|ForEach-Object{$im[$_.TaskPath+$_.TaskName]=$_}
+foreach($t in $tasks){
+  $i=$im[$t.TaskPath+$t.TaskName]
+  $lr='';$nr='';$res=''
+  if($i){
+    if($i.LastRunTime.Year -gt 1601){$lr=$i.LastRunTime.ToString('o')}
+    if($i.NextRunTime.Year -gt 1601){$nr=$i.NextRunTime.ToString('o')}
+    $res=[string][int]$i.LastTaskResult
+  }
+  $f=$t.TaskPath.TrimEnd('\')
+  if(-not $f){$f='\'}
+  $trigs=@($t.Triggers|ForEach-Object{
+    $c=$_.CimClass.CimClassName-replace'MSFT_Task','' -replace'Trigger',''
+    switch($c){
+      'Registration'{'At task creation'}
+      'Boot'{'At startup'}
+      'Logon'{'At log on'}
+      'Idle'{'On idle'}
+      'Time'{'One time'}
+      'Daily'{'Daily'}
+      'Weekly'{'Weekly'}
+      'Monthly'{'Monthly'}
+      'Event'{'On event'}
+      'SessionStateChange'{'On session change'}
+      default{$c}
+    }
+  })
+  $trigB64=($trigs|ForEach-Object{B $_})-join'|'
+  Write-Output ((B $t.TaskName)+$U+(B($t.TaskPath+$t.TaskName))+$U+(B $f)+$U+$t.State.ToString().ToLower()+$U+(B $t.Author)+$U+(B $t.Description)+$U+$lr+$U+$nr+$U+$res+$U+$trigB64)
+}`
+
+func decB64(s string) string {
+	if s == "" {
+		return ""
+	}
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return s
+	}
+	return string(b)
+}
+
+func parseTSVTasks(output string) []ScheduledTask {
+	var tasks []ScheduledTask
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Split(line, "\x1f")
+		if len(fields) < 9 {
+			continue
+		}
+
+		var lastResult int
+		if fields[8] != "" {
+			lastResult, _ = strconv.Atoi(fields[8])
+		}
+
+		var triggers []string
+		if len(fields) > 9 && fields[9] != "" {
+			for _, tb := range strings.Split(fields[9], "|") {
+				if t := decB64(tb); t != "" {
+					triggers = append(triggers, t)
+				}
+			}
+		}
+
+		tasks = append(tasks, ScheduledTask{
+			Name:        decB64(fields[0]),
+			Path:        decB64(fields[1]),
+			Folder:      decB64(fields[2]),
+			Status:      fields[3],
+			Author:      decB64(fields[4]),
+			Description: decB64(fields[5]),
+			LastRun:     fields[6],
+			NextRun:     fields[7],
+			LastResult:  lastResult,
+			Triggers:    triggers,
+		})
+	}
+	return tasks
+}
+
 func listTasksOS(folder, search string, page, limit int, startTime time.Time) CommandResult {
-	// Use schtasks to list tasks
-	cmd := exec.Command("schtasks", "/query", "/fo", "csv", "/v")
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", listTasksPS)
 	output, err := cmd.Output()
 	if err != nil {
 		return NewErrorResult(fmt.Errorf("failed to list tasks: %w", err), time.Since(startTime).Milliseconds())
 	}
 
-	tasks := parseTaskList(string(output), folder, search)
+	allTasks := parseTSVTasks(string(output))
+
+	// Apply folder and search filters.
+	searchLower := strings.ToLower(search)
+	folderLower := strings.ToLower(folder)
+	var filtered []ScheduledTask
+
+	for _, task := range allTasks {
+		if folder != "" && folder != "\\" {
+			if !strings.HasPrefix(strings.ToLower(task.Folder), folderLower) {
+				continue
+			}
+		}
+		if search != "" {
+			if !strings.Contains(strings.ToLower(task.Name), searchLower) &&
+				!strings.Contains(strings.ToLower(task.Path), searchLower) &&
+				!strings.Contains(strings.ToLower(task.Description), searchLower) {
+				continue
+			}
+		}
+		filtered = append(filtered, task)
+	}
 
 	// Paginate
-	total := len(tasks)
+	total := len(filtered)
 	totalPages := (total + limit - 1) / limit
 	start := (page - 1) * limit
 	end := start + limit
@@ -34,8 +161,13 @@ func listTasksOS(folder, search string, page, limit int, startTime time.Time) Co
 		end = total
 	}
 
+	resultTasks := filtered[start:end]
+	if resultTasks == nil {
+		resultTasks = []ScheduledTask{}
+	}
+
 	response := TaskListResponse{
-		Tasks:      tasks[start:end],
+		Tasks:      resultTasks,
 		Total:      total,
 		Page:       page,
 		Limit:      limit,
@@ -45,23 +177,164 @@ func listTasksOS(folder, search string, page, limit int, startTime time.Time) Co
 	return NewSuccessResult(response, time.Since(startTime).Milliseconds())
 }
 
+// getTaskDetailPS outputs a single task's detail using the same base64/US
+// format as the list, plus additional fields for triggers and actions.
+//
+// Line 1: same 10 fields as list
+// Line 2+: "TRIG" US type US enabled US schedule (base64)
+// Line N+: "ACT" US type US path(b64) US args(b64)
 func getTaskOS(path string, startTime time.Time) CommandResult {
 	if path == "" {
 		return NewErrorResult(fmt.Errorf("task path is required"), time.Since(startTime).Milliseconds())
 	}
 
-	cmd := exec.Command("schtasks", "/query", "/tn", path, "/fo", "csv", "/v")
+	escapedPath := strings.ReplaceAll(path, "'", "''")
+	script := fmt.Sprintf(`$ErrorActionPreference='SilentlyContinue'
+$U=[char]31
+function B($s){[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$s))}
+$fullPath='%s'
+$t=Get-ScheduledTask|Where-Object{($_.TaskPath+$_.TaskName)-eq $fullPath}|Select-Object -First 1
+if(-not $t){Write-Error "Task not found: $fullPath";exit 1}
+$i=$t|Get-ScheduledTaskInfo
+$lr='';$nr='';$res=''
+if($i){
+  if($i.LastRunTime.Year -gt 1601){$lr=$i.LastRunTime.ToString('o')}
+  if($i.NextRunTime.Year -gt 1601){$nr=$i.NextRunTime.ToString('o')}
+  $res=[string][int]$i.LastTaskResult
+}
+$f=$t.TaskPath.TrimEnd('\')
+if(-not $f){$f='\'}
+$trigs=@($t.Triggers|ForEach-Object{
+  $c=$_.CimClass.CimClassName-replace'MSFT_Task','' -replace'Trigger',''
+  switch($c){
+    'Registration'{'At task creation'}
+    'Boot'{'At startup'}
+    'Logon'{'At log on'}
+    'Idle'{'On idle'}
+    'Time'{'One time'}
+    'Daily'{'Daily'}
+    'Weekly'{'Weekly'}
+    'Monthly'{'Monthly'}
+    'Event'{'On event'}
+    'SessionStateChange'{'On session change'}
+    default{$c}
+  }
+})
+$trigB64=($trigs|ForEach-Object{B $_})-join'|'
+Write-Output ((B $t.TaskName)+$U+(B($t.TaskPath+$t.TaskName))+$U+(B $f)+$U+$t.State.ToString().ToLower()+$U+(B $t.Author)+$U+(B $t.Description)+$U+$lr+$U+$nr+$U+$res+$U+$trigB64)
+$t.Triggers|ForEach-Object{
+  $c=$_.CimClass.CimClassName-replace'MSFT_Task','' -replace'Trigger',''
+  $type=switch($c){
+    'Registration'{'registration'}
+    'Boot'{'boot'}
+    'Logon'{'logon'}
+    'Idle'{'idle'}
+    'Time'{'time'}
+    'Daily'{'daily'}
+    'Weekly'{'weekly'}
+    'Monthly'{'monthly'}
+    'Event'{'event'}
+    'SessionStateChange'{'session_change'}
+    default{$c.ToLower()}
+  }
+  $en=if($_.Enabled){'true'}else{'false'}
+  Write-Output ('TRIG'+$U+$type+$U+$en+$U+(B $_.StartBoundary))
+}
+$t.Actions|ForEach-Object{
+  $atype=if($_.CimClass.CimClassName-eq'MSFT_TaskExecAction'){'execute'}
+         else{$_.CimClass.CimClassName.ToLower()-replace'MSFT_Task','' -replace'Action',''}
+  Write-Output ('ACT'+$U+$atype+$U+(B $_.Execute)+$U+(B $_.Arguments))
+}`, escapedPath)
+
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
 	output, err := cmd.Output()
 	if err != nil {
-		return NewErrorResult(fmt.Errorf("task not found: %w", err), time.Since(startTime).Milliseconds())
+		return NewErrorResult(fmt.Errorf("task not found: %s: %w", path, err), time.Since(startTime).Milliseconds())
 	}
 
-	tasks := parseTaskList(string(output), "", "")
-	if len(tasks) == 0 {
-		return NewErrorResult(fmt.Errorf("task not found"), time.Since(startTime).Milliseconds())
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) == 0 {
+		return NewErrorResult(fmt.Errorf("task not found: %s", path), time.Since(startTime).Milliseconds())
 	}
 
-	return NewSuccessResult(tasks[0], time.Since(startTime).Milliseconds())
+	// Parse the first line as the base task info.
+	fields := strings.Split(strings.TrimSpace(lines[0]), "\x1f")
+	if len(fields) < 9 {
+		return NewErrorResult(fmt.Errorf("invalid task output: %d fields", len(fields)), time.Since(startTime).Milliseconds())
+	}
+
+	var lastResult *int
+	if fields[8] != "" {
+		v, _ := strconv.Atoi(fields[8])
+		lastResult = &v
+	}
+
+	// Build detail as map[string]any so the API normalizer gets
+	// structured triggers/actions.
+	detail := map[string]any{
+		"name":        decB64(fields[0]),
+		"path":        decB64(fields[1]),
+		"folder":      decB64(fields[2]),
+		"status":      fields[3],
+		"author":      decB64(fields[4]),
+		"description": decB64(fields[5]),
+	}
+	if fields[6] != "" {
+		detail["lastRun"] = fields[6]
+	}
+	if fields[7] != "" {
+		detail["nextRun"] = fields[7]
+	}
+	if lastResult != nil {
+		detail["lastResult"] = *lastResult
+	}
+
+	// Parse TRIG and ACT lines.
+	var triggers []map[string]any
+	var actions []map[string]any
+	for _, line := range lines[1:] {
+		line = strings.TrimSpace(line)
+		parts := strings.Split(line, "\x1f")
+		if len(parts) < 2 {
+			continue
+		}
+		switch parts[0] {
+		case "TRIG":
+			if len(parts) >= 4 {
+				trig := map[string]any{
+					"type":    parts[1],
+					"enabled": parts[2] == "true",
+				}
+				if sch := decB64(parts[3]); sch != "" {
+					trig["schedule"] = sch
+				}
+				triggers = append(triggers, trig)
+			}
+		case "ACT":
+			if len(parts) >= 4 {
+				act := map[string]any{
+					"type": parts[1],
+				}
+				if p := decB64(parts[2]); p != "" {
+					act["path"] = p
+				}
+				if a := decB64(parts[3]); a != "" {
+					act["arguments"] = a
+				}
+				actions = append(actions, act)
+			}
+		}
+	}
+	if triggers == nil {
+		triggers = []map[string]any{}
+	}
+	if actions == nil {
+		actions = []map[string]any{}
+	}
+	detail["triggers"] = triggers
+	detail["actions"] = actions
+
+	return NewSuccessResult(detail, time.Since(startTime).Milliseconds())
 }
 
 func runTaskOS(path string, startTime time.Time) CommandResult {
@@ -183,9 +456,9 @@ $history | ConvertTo-Json -Depth 4 -Compress`, escapedPath, limit)
 	}
 
 	history := []TaskHistoryEntry{}
-	if err := json.Unmarshal(output, &history); err != nil {
+	if err := json.Unmarshal([]byte(outputText), &history); err != nil {
 		var single TaskHistoryEntry
-		if errSingle := json.Unmarshal(output, &single); errSingle != nil {
+		if errSingle := json.Unmarshal([]byte(outputText), &single); errSingle != nil {
 			return NewErrorResult(fmt.Errorf("failed to parse task history: %w", err), time.Since(startTime).Milliseconds())
 		}
 		history = []TaskHistoryEntry{single}
@@ -196,108 +469,4 @@ $history | ConvertTo-Json -Depth 4 -Compress`, escapedPath, limit)
 		Path:    path,
 		Total:   len(history),
 	}, time.Since(startTime).Milliseconds())
-}
-
-func parseTaskList(output, folder, search string) []ScheduledTask {
-	var tasks []ScheduledTask
-
-	reader := csv.NewReader(strings.NewReader(output))
-	records, err := reader.ReadAll()
-	if err != nil {
-		return tasks
-	}
-
-	if len(records) < 2 {
-		return tasks
-	}
-
-	// Find column indices from header
-	header := records[0]
-	indices := make(map[string]int)
-	for i, col := range header {
-		indices[strings.TrimSpace(col)] = i
-	}
-
-	searchLower := strings.ToLower(search)
-	folderLower := strings.ToLower(folder)
-
-	for i := 1; i < len(records); i++ {
-		row := records[i]
-		if len(row) < len(header) {
-			continue
-		}
-
-		taskPath := getField(row, indices, "TaskName")
-		if taskPath == "" {
-			continue
-		}
-
-		// Extract folder and name from path
-		taskFolder := "\\"
-		taskName := taskPath
-		if lastSlash := strings.LastIndex(taskPath, "\\"); lastSlash > 0 {
-			taskFolder = taskPath[:lastSlash]
-			taskName = taskPath[lastSlash+1:]
-		}
-
-		// Apply folder filter
-		if folder != "" && folder != "\\" {
-			if !strings.HasPrefix(strings.ToLower(taskFolder), folderLower) {
-				continue
-			}
-		}
-
-		// Apply search filter
-		if search != "" && !strings.Contains(strings.ToLower(taskName), searchLower) {
-			continue
-		}
-
-		status := getField(row, indices, "Status")
-		lastRun := getField(row, indices, "Last Run Time")
-		nextRun := getField(row, indices, "Next Run Time")
-		author := getField(row, indices, "Author")
-
-		task := ScheduledTask{
-			Name:        taskName,
-			Path:        taskPath,
-			Folder:      taskFolder,
-			Status:      normalizeTaskStatus(status),
-			LastRun:     lastRun,
-			NextRun:     nextRun,
-			Author:      author,
-			Description: getField(row, indices, "Comment"),
-		}
-
-		// Parse triggers (simplified)
-		triggers := getField(row, indices, "Scheduled Task State")
-		if triggers != "" {
-			task.Triggers = []string{triggers}
-		}
-
-		tasks = append(tasks, task)
-	}
-
-	return tasks
-}
-
-func getField(row []string, indices map[string]int, field string) string {
-	if idx, ok := indices[field]; ok && idx < len(row) {
-		return strings.TrimSpace(row[idx])
-	}
-	return ""
-}
-
-func normalizeTaskStatus(status string) string {
-	switch strings.ToLower(status) {
-	case "ready":
-		return "ready"
-	case "running":
-		return "running"
-	case "disabled":
-		return "disabled"
-	case "queued":
-		return "queued"
-	default:
-		return status
-	}
 }
