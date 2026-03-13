@@ -1,6 +1,7 @@
 package helper
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -35,6 +36,23 @@ type Config struct {
 	LastCheckin        string `yaml:"last_checkin,omitempty"`
 }
 
+// SpawnFunc launches the Breeze Assist binary in the appropriate user session.
+// On Windows: wraps SpawnProcessInSession for each active session.
+// On macOS/Linux: nil (falls back to exec.Command).
+type SpawnFunc func(binaryPath string) error
+
+// ErrNoActiveSession is returned by SpawnFunc when no user session is available.
+var ErrNoActiveSession = fmt.Errorf("no active user session")
+
+// Option configures a Manager.
+type Option func(*Manager)
+
+// WithSpawnFunc sets a platform-specific function for launching the helper
+// binary in a user session. Required on Windows (Session 0 service).
+func WithSpawnFunc(fn SpawnFunc) Option {
+	return func(m *Manager) { m.spawnFunc = fn }
+}
+
 // Manager handles helper binary lifecycle: config writing, install, start, stop.
 type Manager struct {
 	mu          sync.Mutex
@@ -44,17 +62,25 @@ type Manager struct {
 	serverURL   string
 	authToken   *secmem.SecureString
 	agentID     string
+	ctx         context.Context
+	spawnFunc   SpawnFunc
+	watcher     *watcher
 }
 
 // New creates a new helper Manager.
-func New(serverURL string, authToken *secmem.SecureString, agentID string) *Manager {
-	return &Manager{
+func New(ctx context.Context, serverURL string, authToken *secmem.SecureString, agentID string, opts ...Option) *Manager {
+	m := &Manager{
+		ctx:        ctx,
 		binaryPath: defaultBinaryPath(),
 		configPath: defaultConfigPath(),
 		serverURL:  serverURL,
 		authToken:  authToken,
 		agentID:    agentID,
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 func defaultBinaryPath() string {
@@ -98,31 +124,36 @@ func (m *Manager) Apply(settings *Settings) {
 	defer m.mu.Unlock()
 
 	if settings.Enabled {
+		m.migrateFromLegacyName()
+
 		if err := m.writeConfig(settings); err != nil {
-			log.Error("failed to write helper config", "error", err.Error())
+			log.Error("failed to write breeze assist config", "error", err.Error())
 			return
 		}
 
 		if !m.isInstalled() {
 			if err := m.downloadAndInstall(); err != nil {
-				log.Error("failed to install helper", "error", err.Error())
+				log.Error("failed to install breeze assist", "error", err.Error())
 				return
 			}
 		}
 
 		if err := m.ensureRunning(); err != nil {
-			log.Error("failed to start helper", "error", err.Error())
+			log.Error("failed to start breeze assist", "error", err.Error())
+		} else {
+			m.startWatcher()
 		}
 
 		if !m.lastEnabled {
-			log.Info("helper enabled and started")
+			log.Info("breeze assist enabled and started")
 		}
 	} else {
 		if m.lastEnabled {
+			m.stopWatcher()
 			if err := m.ensureStopped(); err != nil {
-				log.Error("failed to stop helper", "error", err.Error())
+				log.Error("failed to stop breeze assist", "error", err.Error())
 			} else {
-				log.Info("helper disabled and stopped")
+				log.Info("breeze assist disabled and stopped")
 			}
 		}
 	}
@@ -201,9 +232,12 @@ func (m *Manager) downloadAndInstall() error {
 }
 
 func (m *Manager) ensureRunning() error {
-	// Check if already running
 	if isHelperRunning() {
 		return nil
+	}
+
+	if m.spawnFunc != nil {
+		return m.spawnFunc(m.binaryPath)
 	}
 
 	cmd := exec.Command(m.binaryPath)
@@ -215,4 +249,35 @@ func (m *Manager) ensureRunning() error {
 
 func (m *Manager) ensureStopped() error {
 	return stopHelper()
+}
+
+// Shutdown stops the watcher gracefully.
+func (m *Manager) Shutdown() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stopWatcher()
+}
+
+func (m *Manager) startWatcher() {
+	if m.watcher != nil {
+		return
+	}
+	m.watcher = newWatcher(m.ctx, m)
+	go m.watcher.run()
+}
+
+// stopWatcher cancels the watcher and waits for it to exit.
+// IMPORTANT: Must release m.mu before joining to avoid deadlock —
+// the watcher acquires mu during its tick, so if we hold mu and
+// wait on done, we deadlock if the watcher is blocked on mu.Lock().
+func (m *Manager) stopWatcher() {
+	if m.watcher == nil {
+		return
+	}
+	w := m.watcher
+	m.watcher = nil
+	w.cancel()
+	m.mu.Unlock()
+	<-w.done
+	m.mu.Lock()
 }
