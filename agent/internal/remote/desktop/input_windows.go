@@ -476,7 +476,7 @@ func charToVK(key string) uint16 {
 		return 0x0D
 	case "tab":
 		return 0x09
-	case "space":
+	case "space", " ":
 		return 0x20
 	case "backspace":
 		return 0x08

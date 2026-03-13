@@ -40,6 +40,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const startReconnectRef = useRef<() => void>(() => {});
   const sessionRegisteredRef = useRef(false);
 
+  const clipboardDCRef = useRef<RTCDataChannel | null>(null);
+  const lastClipboardHashRef = useRef<string>('');
   const webrtcMouseMovePendingRef = useRef<{ x: number; y: number } | null>(null);
   const webrtcMouseMoveRafRef = useRef<number | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
@@ -207,6 +209,24 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             } catch (err) {
               console.debug('Cursor message handling failed:', err);
             }
+          };
+        } else if (event.channel.label === 'clipboard') {
+          clipboardDCRef.current = event.channel;
+          event.channel.onmessage = (msg) => {
+            try {
+              const payload = JSON.parse(msg.data);
+              if (payload.type === 'text' && payload.text) {
+                lastClipboardHashRef.current = payload.text;
+                navigator.clipboard.writeText(payload.text).catch((err) => {
+                  console.debug('Failed to write remote clipboard to local:', err);
+                });
+              }
+            } catch (err) {
+              console.debug('Clipboard message handling failed:', err);
+            }
+          };
+          event.channel.onclose = () => {
+            clipboardDCRef.current = null;
           };
         }
       };
@@ -1028,6 +1048,19 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (ne.code === 'KeyV' && ne.shiftKey && (ne.ctrlKey || ne.metaKey)) {
       handlePasteAsKeystrokes();
       return;
+    }
+
+    // Ctrl+V / Cmd+V → push local clipboard to remote before pasting
+    if (ne.code === 'KeyV' && !ne.shiftKey && (ne.ctrlKey || ne.metaKey)) {
+      const dc = clipboardDCRef.current;
+      if (dc && dc.readyState === 'open') {
+        navigator.clipboard.readText().then((text) => {
+          if (text && text !== lastClipboardHashRef.current) {
+            lastClipboardHashRef.current = text;
+            dc.send(JSON.stringify({ type: 'text', text }));
+          }
+        }).catch(() => {});
+      }
     }
 
     const key = mapKey(ne);

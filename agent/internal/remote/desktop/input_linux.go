@@ -128,7 +128,7 @@ func (h *LinuxInputHandler) translateKey(key string) string {
 		return "Return"
 	case "tab":
 		return "Tab"
-	case "space":
+	case "space", " ":
 		return "space"
 	case "backspace":
 		return "BackSpace"
