@@ -1,0 +1,10 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import AccountInactiveScreen from '../../components/auth/AccountInactiveScreen';
+import AuthOverlay from '../../components/auth/AuthOverlay';
+---
+
+<Layout title="Account Inactive">
+  <AuthOverlay client:load />
+  <AccountInactiveScreen client:load />
+</Layout>
