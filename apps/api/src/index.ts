@@ -93,6 +93,7 @@ import { sensitiveDataRoutes } from './routes/sensitiveData';
 import { peripheralControlRoutes } from './routes/peripheralControl';
 import { browserSecurityRoutes } from './routes/browserSecurity';
 import { captureException } from './services/sentry';
+import { partnerGuard } from './middleware/partnerGuard';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
@@ -540,6 +541,16 @@ async function resolveFallbackOrgId(c: Context, path: string): Promise<string | 
 
   return null;
 }
+
+// Generic partner status guard — blocks non-active partners
+api.use('*', async (c, next) => {
+  const path = c.req.path;
+  if (path.startsWith('/api/v1/auth')) { await next(); return; }
+  if (path.startsWith('/api/v1/users/me')) { await next(); return; }
+  if (path === '/api/v1/partner/me' || path.startsWith('/api/v1/partner/me/')) { await next(); return; }
+  if (path.startsWith('/api/v1/agents/')) { await next(); return; }
+  await partnerGuard(c, next);
+});
 
 api.use('*', async (c, next) => {
   await next();
