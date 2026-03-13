@@ -30,7 +30,7 @@ partnerRoutes.get('/me', async (c) => {
   }
 
   const [partner] = await db
-    .select({ id: partners.id, name: partners.name, slug: partners.slug })
+    .select({ id: partners.id, name: partners.name, slug: partners.slug, status: partners.status })
     .from(partners)
     .where(eq(partners.id, partnerId))
     .limit(1);

@@ -395,6 +395,7 @@ export interface Partner {
   id: string;
   name: string;
   slug: string;
+  status?: string;
 }
 
 export async function apiRegister(
