@@ -34,7 +34,11 @@ export default function PartnerRegisterPage() {
 
     if (result.user && result.tokens) {
       login(result.user, result.tokens);
-      await navigateTo('/');
+      if (result.requiresCheckout) {
+        await navigateTo('/billing/plans');
+      } else {
+        await navigateTo('/');
+      }
       return;
     }
 

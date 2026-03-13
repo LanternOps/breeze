@@ -180,7 +180,9 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
           name: companyName,
           slug,
           type: 'msp',
-          plan: 'free'
+          plan: 'free',
+          status: 'pending',
+          billingEmail: email.toLowerCase(),
         })
         .returning();
 
@@ -262,10 +264,12 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         partner: {
           id: newPartner.id,
           name: newPartner.name,
-          slug: newPartner.slug
+          slug: newPartner.slug,
+          status: newPartner.status,
         },
         tokens: toPublicTokens(tokens),
-        mfaRequired: false
+        mfaRequired: false,
+        requiresCheckout: true,
       });
     } catch (err) {
       console.error('Partner registration error:', err);
