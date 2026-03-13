@@ -37,12 +37,14 @@ func (w *watcher) run() {
 
 	var failures int
 	interval := watcherBaseInterval
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
 
 	for {
 		select {
 		case <-w.ctx.Done():
 			return
-		case <-time.After(interval):
+		case <-timer.C:
 		}
 
 		w.mgr.mu.Lock()
@@ -51,6 +53,7 @@ func (w *watcher) run() {
 			w.mgr.mu.Unlock()
 			failures = 0
 			interval = watcherBaseInterval
+			timer.Reset(interval)
 			continue
 		}
 
@@ -60,6 +63,7 @@ func (w *watcher) run() {
 		if err == nil {
 			failures = 0
 			interval = watcherBaseInterval
+			timer.Reset(interval)
 			log.Info("breeze assist restarted by watcher")
 			continue
 		}
@@ -84,6 +88,7 @@ func (w *watcher) run() {
 			backoff = watcherBackoffCap
 		}
 		interval = backoff
+		timer.Reset(interval)
 	}
 }
 

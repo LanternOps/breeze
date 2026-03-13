@@ -243,6 +243,9 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 				}
 				var launched int
 				for _, s := range sessions {
+					if s.Session == "0" || s.Type == "services" {
+						continue
+					}
 					if s.State != "active" && s.State != "connected" {
 						continue
 					}
@@ -649,6 +652,9 @@ func (h *Heartbeat) Stop() {
 		if h.auditLog != nil {
 			h.auditLog.Log(audit.EventAgentStop, "", nil)
 			h.auditLog.Close()
+		}
+		if h.helperMgr != nil {
+			h.helperMgr.Shutdown()
 		}
 		// Close stopChan first — this signals broker.Listen() to call broker.Close()
 		// internally. The broker's Close() is idempotent via its closed flag.
