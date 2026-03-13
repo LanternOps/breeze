@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createHash } from 'crypto';
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -89,16 +88,10 @@ describe('agent websocket command results', () => {
   });
 
   it('rejects cross-device command result updates', async () => {
-    const token = 'brz_test_agent_token';
-    const tokenHash = createHash('sha256').update(token).digest('hex');
+    // Auth is now pre-validated before WS upgrade, so we pass the context directly
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
 
     vi.mocked(db.select)
-      .mockReturnValueOnce(selectAgentDevice([{
-        id: 'device-123',
-        orgId: 'org-123',
-        agentTokenHash: tokenHash,
-        status: 'online'
-      }]) as any)
       .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
       .mockReturnValueOnce(selectAgentDevice([]) as any);
     vi.mocked(db.update).mockReturnValue({
@@ -107,7 +100,7 @@ describe('agent websocket command results', () => {
       })
     } as any);
 
-    const handlers = createAgentWsHandlers('agent-123', token);
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
     const ws = wsMock();
 
     await handlers.onMessage({
@@ -124,16 +117,9 @@ describe('agent websocket command results', () => {
   });
 
   it('updates command result when command belongs to connected agent', async () => {
-    const token = 'brz_test_agent_token';
-    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
 
     vi.mocked(db.select)
-      .mockReturnValueOnce(selectAgentDevice([{
-        id: 'device-123',
-        orgId: 'org-123',
-        agentTokenHash: tokenHash,
-        status: 'online'
-      }]) as any)
       .mockReturnValueOnce(selectOwnedCommandResult([
         {
           command: {
@@ -151,7 +137,7 @@ describe('agent websocket command results', () => {
       })
     } as any);
 
-    const handlers = createAgentWsHandlers('agent-123', token);
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
     const ws = wsMock();
 
     await handlers.onMessage({
@@ -169,18 +155,9 @@ describe('agent websocket command results', () => {
   });
 
   it('bypasses device_commands lookup for non-UUID command IDs', async () => {
-    const token = 'brz_test_agent_token';
-    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
 
-    vi.mocked(db.select)
-      .mockReturnValueOnce(selectAgentDevice([{
-        id: 'device-123',
-        orgId: 'org-123',
-        agentTokenHash: tokenHash,
-        status: 'online'
-      }]) as any);
-
-    const handlers = createAgentWsHandlers('agent-123', token);
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
     const ws = wsMock();
 
     await handlers.onMessage({
@@ -191,7 +168,7 @@ describe('agent websocket command results', () => {
       })
     } as any, ws as any);
 
-    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(db.select).not.toHaveBeenCalled();
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 });

@@ -229,11 +229,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	}
 
 	// Initialize helper manager
-	authToken := ""
-	if ftToken != nil {
-		authToken = ftToken.Reveal()
-	}
-	h.helperMgr = helper.New(cfg.ServerURL, authToken, cfg.AgentID)
+	h.helperMgr = helper.New(cfg.ServerURL, ftToken, cfg.AgentID)
 
 	// Initialize service & process monitoring
 	h.monitor = monitoring.New(h.sendMonitoringResults)
@@ -696,15 +692,6 @@ func (h *Heartbeat) authHeader() string {
 	}
 	log.Warn("authHeader called with no available token")
 	return "Bearer "
-}
-
-// authTokenPlaintext returns the raw token string for use in external APIs
-// (e.g., updater) that require a plain string, not a Bearer header.
-func (h *Heartbeat) authTokenPlaintext() string {
-	if h.secureToken != nil && !h.secureToken.IsZeroed() {
-		return h.secureToken.Reveal()
-	}
-	return h.config.AuthToken
 }
 
 // sendInventoryData marshals the payload and sends it to the given endpoint via PUT.
@@ -2349,10 +2336,9 @@ func (h *Heartbeat) handleUpgrade(targetVersion string) {
 	}
 	backupPath := filepath.Join(backupDir, "breeze-agent.backup")
 
-	authToken := h.authTokenPlaintext()
 	updaterCfg := &updater.Config{
 		ServerURL:      h.config.ServerURL,
-		AuthToken:      authToken,
+		AuthToken:      h.secureToken,
 		CurrentVersion: h.agentVersion,
 		BinaryPath:     binaryPath,
 		BackupPath:     backupPath,

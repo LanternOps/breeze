@@ -14,32 +14,38 @@ import { sendCommandToAgent, isAgentConnected } from './agentWs';
 const exchangeCache = new Map<string, { result: { accessToken: string; expiresInSeconds: number }; expiresAt: number }>();
 const EXCHANGE_CACHE_TTL_MS = 30_000; // 30 seconds
 
-// Types for desktop messages
-interface DesktopInputMessage {
-  type: 'input';
-  event: {
-    type: string;
-    x?: number;
-    y?: number;
-    button?: string;
-    key?: string;
-    modifiers?: string[];
-    delta?: number;
-  };
-}
+// Zod validation for desktop user messages
+const desktopInputEvent = z.object({
+  type: z.enum(['mousemove', 'mousedown', 'mouseup', 'keydown', 'keyup', 'wheel', 'click', 'dblclick']),
+  x: z.number().min(-10000).max(100000).optional(),
+  y: z.number().min(-10000).max(100000).optional(),
+  button: z.union([z.string().max(20), z.number().int().min(0).max(4)]).optional(),
+  key: z.string().max(50).optional(),
+  modifiers: z.union([
+    z.array(z.string().max(20)).max(4),
+    z.object({
+      ctrl: z.boolean().optional(),
+      alt: z.boolean().optional(),
+      shift: z.boolean().optional(),
+      meta: z.boolean().optional(),
+    }),
+  ]).optional(),
+  delta: z.number().optional(),
+  deltaX: z.number().optional(),
+  deltaY: z.number().optional(),
+  code: z.string().max(50).optional(),
+});
 
-interface DesktopConfigMessage {
-  type: 'config';
-  quality?: number;
-  scaleFactor?: number;
-  maxFps?: number;
-}
-
-interface DesktopPingMessage {
-  type: 'ping';
-}
-
-type DesktopMessage = DesktopInputMessage | DesktopConfigMessage | DesktopPingMessage;
+const desktopMessageSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('input'), event: desktopInputEvent }),
+  z.object({
+    type: z.literal('config'),
+    quality: z.number().int().min(1).max(100).optional(),
+    scaleFactor: z.number().min(0.1).max(2).optional(),
+    maxFps: z.number().int().min(1).max(60).optional(),
+  }),
+  z.object({ type: z.literal('ping') }),
+]);
 
 // Store active desktop sessions
 interface DesktopSession {
@@ -48,6 +54,8 @@ interface DesktopSession {
   userId: string;
   deviceId: string;
   startedAt: Date;
+  pingInterval?: ReturnType<typeof setInterval>;
+  lastPongAt: number;
 }
 
 const activeDesktopSessions = new Map<string, DesktopSession>();
@@ -55,6 +63,56 @@ const activeDesktopSessions = new Map<string, DesktopSession>();
 // Store frame callbacks — called by agentWs when binary frames arrive
 type DesktopFrameCallback = (data: Uint8Array) => void;
 const desktopFrameCallbacks = new Map<string, DesktopFrameCallback>();
+
+// Server-side ping/pong constants for stale connection detection
+const PING_INTERVAL_MS = 30_000;
+const PONG_TIMEOUT_MS = 10_000;
+
+// Exchange cache cleanup interval (Fix #33)
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of exchangeCache) {
+    if (now >= entry.expiresAt) {
+      exchangeCache.delete(key);
+    }
+  }
+}, 60_000);
+
+// In-memory sliding window rate limiter for user WS upgrades
+const USER_WS_RATE_WINDOW_MS = 60_000;
+const USER_WS_RATE_MAX_CONNECTIONS = 10;
+const userDesktopWsConnTimestamps = new Map<string, number[]>();
+
+function isUserDesktopWsRateLimited(userId: string): boolean {
+  const now = Date.now();
+  const cutoff = now - USER_WS_RATE_WINDOW_MS;
+  let timestamps = userDesktopWsConnTimestamps.get(userId);
+
+  if (timestamps) {
+    timestamps = timestamps.filter(t => t > cutoff);
+  } else {
+    timestamps = [];
+  }
+
+  if (timestamps.length >= USER_WS_RATE_MAX_CONNECTIONS) {
+    userDesktopWsConnTimestamps.set(userId, timestamps);
+    return true;
+  }
+
+  timestamps.push(now);
+  userDesktopWsConnTimestamps.set(userId, timestamps);
+  return false;
+}
+
+// Periodic cleanup of stale rate-limit entries
+setInterval(() => {
+  const cutoff = Date.now() - USER_WS_RATE_WINDOW_MS * 2;
+  for (const [userId, timestamps] of userDesktopWsConnTimestamps) {
+    if (timestamps.length === 0 || timestamps[timestamps.length - 1]! < cutoff) {
+      userDesktopWsConnTimestamps.delete(userId);
+    }
+  }
+}, 120_000);
 
 const desktopConnectExchangeSchema = z.object({
   sessionId: z.string().min(1),
@@ -192,13 +250,27 @@ function createDesktopWsHandlers(sessionId: string, ticket: string | undefined) 
         return;
       }
 
+      // Rate limit user WS connections
+      if (isUserDesktopWsRateLimited(userId)) {
+        console.warn(`Desktop WebSocket rate limited for user ${userId}`);
+        ws.send(JSON.stringify({
+          type: 'error',
+          code: 'RATE_LIMITED',
+          message: 'Too many connection attempts'
+        }));
+        ws.close(4029, 'Rate limited');
+        return;
+      }
+
       // Store the desktop session
+      const now = Date.now();
       activeDesktopSessions.set(sessionId, {
         userWs: ws,
         agentId: device.agentId,
         userId,
         deviceId: device.id,
-        startedAt: new Date()
+        startedAt: new Date(),
+        lastPongAt: now,
       });
 
       // Register frame callback — relay binary JPEG frames directly to viewer
@@ -254,6 +326,33 @@ function createDesktopWsHandlers(sessionId: string, ticket: string | undefined) 
         }
       }));
 
+      // Start server-side ping/pong for stale connection detection
+      const pingInterval = setInterval(() => {
+        const deskSess = activeDesktopSessions.get(sessionId);
+        if (!deskSess) {
+          clearInterval(pingInterval);
+          return;
+        }
+        const elapsed = Date.now() - deskSess.lastPongAt;
+        if (elapsed > PING_INTERVAL_MS + PONG_TIMEOUT_MS) {
+          console.warn(`Desktop session ${sessionId} pong timeout (${elapsed}ms), closing`);
+          clearInterval(pingInterval);
+          ws.close(4008, 'Pong timeout');
+          return;
+        }
+        try {
+          ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
+        } catch (err) {
+          console.warn(`[DesktopWs] Ping send failed for session ${sessionId}, cleaning up`, err);
+          clearInterval(pingInterval);
+        }
+      }, PING_INTERVAL_MS);
+
+      const currentSession = activeDesktopSessions.get(sessionId);
+      if (currentSession) {
+        currentSession.pingInterval = pingInterval;
+      }
+
       console.log(`Desktop session ${sessionId} connected for device ${device.hostname}`);
     },
 
@@ -270,7 +369,20 @@ function createDesktopWsHandlers(sessionId: string, ticket: string | undefined) 
 
       try {
         const data = typeof event.data === 'string' ? event.data : event.data.toString();
-        const message: DesktopMessage = JSON.parse(data);
+        const raw = JSON.parse(data);
+
+        // Handle pong responses for server-initiated ping (not in discriminatedUnion)
+        if (raw?.type === 'pong') {
+          desktopSession.lastPongAt = Date.now();
+          return;
+        }
+
+        const parsed = desktopMessageSchema.safeParse(raw);
+        if (!parsed.success) {
+          console.warn(`Invalid desktop message from session ${sessionId}:`, parsed.error.errors);
+          return;
+        }
+        const message = parsed.data;
 
         switch (message.type) {
           case 'input': {
@@ -314,11 +426,10 @@ function createDesktopWsHandlers(sessionId: string, ticket: string | undefined) 
           }
 
           case 'ping':
+            // Client-initiated ping — respond with pong and update timestamp
+            desktopSession.lastPongAt = Date.now();
             ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
             break;
-
-          default:
-            console.warn(`Unknown desktop message type from session ${sessionId}`);
         }
       } catch (error) {
         console.error(`Error processing desktop message for session ${sessionId}:`, error);
@@ -334,6 +445,11 @@ function createDesktopWsHandlers(sessionId: string, ticket: string | undefined) 
       const desktopSession = activeDesktopSessions.get(sessionId);
 
       if (desktopSession) {
+        // Clear ping interval
+        if (desktopSession.pingInterval) {
+          clearInterval(desktopSession.pingInterval);
+        }
+
         // Send desktop_stream_stop to agent
         sendCommandToAgent(desktopSession.agentId, {
           id: `desk-stop-${sessionId}`,
@@ -365,6 +481,9 @@ function createDesktopWsHandlers(sessionId: string, ticket: string | undefined) 
     onError: async (event: unknown, _ws: WSContext) => {
       console.error(`Desktop WebSocket error for session ${sessionId}:`, event);
       const desktopSession = activeDesktopSessions.get(sessionId);
+      if (desktopSession?.pingInterval) {
+        clearInterval(desktopSession.pingInterval);
+      }
       activeDesktopSessions.delete(sessionId);
       unregisterDesktopFrameCallback(sessionId);
 

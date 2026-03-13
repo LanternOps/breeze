@@ -154,6 +154,9 @@ docsRoutes.get('/', (c) => {
  * Returns the OpenAPI specification as JSON
  */
 docsRoutes.get('/openapi.json', (c) => {
+  if (!ENABLE_DOCS_UI) {
+    return c.json({ error: 'Not found' }, 404);
+  }
   return c.json(openApiSpec);
 });
 
@@ -162,6 +165,9 @@ docsRoutes.get('/openapi.json', (c) => {
  * Returns the OpenAPI specification as YAML (basic conversion)
  */
 docsRoutes.get('/openapi.yaml', (c) => {
+  if (!ENABLE_DOCS_UI) {
+    return c.json({ error: 'Not found' }, 404);
+  }
   // Simple JSON to YAML conversion for basic compatibility
   const yaml = jsonToYaml(openApiSpec);
   return c.text(yaml, 200, {

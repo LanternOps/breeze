@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/secmem"
 	"gopkg.in/yaml.v3"
 )
 
@@ -41,12 +42,12 @@ type Manager struct {
 	binaryPath  string
 	configPath  string
 	serverURL   string
-	authToken   string
+	authToken   *secmem.SecureString
 	agentID     string
 }
 
 // New creates a new helper Manager.
-func New(serverURL, authToken, agentID string) *Manager {
+func New(serverURL string, authToken *secmem.SecureString, agentID string) *Manager {
 	return &Manager{
 		binaryPath: defaultBinaryPath(),
 		configPath: defaultConfigPath(),
@@ -168,6 +169,9 @@ func (m *Manager) isInstalled() bool {
 // downloadAndInstall downloads the platform-appropriate helper package
 // (MSI on Windows, DMG on macOS, AppImage on Linux) and installs it.
 func (m *Manager) downloadAndInstall() error {
+	if m.authToken == nil {
+		return fmt.Errorf("cannot download helper: auth token not available")
+	}
 	url := fmt.Sprintf("%s/api/v1/agents/download/helper/%s/%s", m.serverURL, runtime.GOOS, runtime.GOARCH)
 	log.Info("downloading helper package", "url", url)
 
@@ -179,7 +183,7 @@ func (m *Manager) downloadAndInstall() error {
 	tmpFile.Close()
 	defer os.Remove(tmpPath)
 
-	if err := downloadFile(url, tmpPath, m.authToken); err != nil {
+	if err := downloadFile(url, tmpPath, m.authToken.Reveal()); err != nil {
 		return fmt.Errorf("download helper: %w", err)
 	}
 

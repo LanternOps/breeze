@@ -189,7 +189,7 @@ func startAgent() (*agentComponents, error) {
 		logging.InitShipper(logging.ShipperConfig{
 			ServerURL:    cfg.ServerURL,
 			AgentID:      cfg.AgentID,
-			AuthToken:    secureToken.Reveal(),
+			AuthToken:    secureToken,
 			AgentVersion: version,
 			HTTPClient:   nil, // will use default
 			MinLevel:     cfg.LogShippingLevel,
@@ -321,9 +321,13 @@ func runAgent() {
 	}
 	defer logging.StopShipper()
 
+	// Ignore SIGINT — as a daemon, PTY child processes can propagate
+	// SIGINT to our process group via Ctrl+C. Only SIGTERM should trigger shutdown.
+	signal.Ignore(syscall.SIGINT)
+
 	// Wait for shutdown signal
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigChan, syscall.SIGTERM)
 
 	<-sigChan
 	log.Info("shutting down agent")
@@ -503,10 +507,12 @@ func runUserHelper() {
 
 	// Ship helper logs to the API under the same agent identity
 	if cfg.AgentID != "" && cfg.ServerURL != "" && cfg.AuthToken != "" {
+		helperToken := secmem.NewSecureString(cfg.AuthToken)
+		cfg.AuthToken = "" // Clear plaintext from config struct
 		logging.InitShipper(logging.ShipperConfig{
 			ServerURL:    cfg.ServerURL,
 			AgentID:      cfg.AgentID,
-			AuthToken:    cfg.AuthToken,
+			AuthToken:    helperToken,
 			AgentVersion: version + "-helper",
 			MinLevel:     cfg.LogShippingLevel,
 		})

@@ -1,28 +1,18 @@
 import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
+import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { remoteSessions, devices, users } from '../db/schema';
 import { consumeWsTicket } from '../services/remoteSessionAuth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 
-// Types for terminal messages
-interface TerminalDataMessage {
-  type: 'data';
-  data: string;
-}
-
-interface TerminalResizeMessage {
-  type: 'resize';
-  cols: number;
-  rows: number;
-}
-
-interface TerminalPingMessage {
-  type: 'ping';
-}
-
-type TerminalMessage = TerminalDataMessage | TerminalResizeMessage | TerminalPingMessage;
+// Zod validation for terminal user messages
+const terminalMessageSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('data'), data: z.string().max(16384) }),
+  z.object({ type: z.literal('resize'), cols: z.number().int().min(1).max(500), rows: z.number().int().min(1).max(500) }),
+  z.object({ type: z.literal('ping') }),
+]);
 
 // Store active terminal sessions
 // Map<sessionId, { userWs: WSContext, agentId: string, userId: string }>
@@ -32,6 +22,8 @@ interface TerminalSession {
   userId: string;
   deviceId: string;
   startedAt: Date;
+  pingInterval?: ReturnType<typeof setInterval>;
+  lastPongAt: number;
 }
 
 const activeTerminalSessions = new Map<string, TerminalSession>();
@@ -40,6 +32,46 @@ const activeTerminalSessions = new Map<string, TerminalSession>();
 // Map<sessionId, callback>
 type TerminalOutputCallback = (data: string) => void;
 const terminalOutputCallbacks = new Map<string, TerminalOutputCallback>();
+
+// Server-side ping/pong constants for stale connection detection
+const PING_INTERVAL_MS = 30_000; // Send ping every 30 seconds
+const PONG_TIMEOUT_MS = 10_000; // Close if no pong within 10 seconds
+
+// In-memory sliding window rate limiter for user WS upgrades
+const USER_WS_RATE_WINDOW_MS = 60_000; // 1 minute window
+const USER_WS_RATE_MAX_CONNECTIONS = 10; // max 10 connections per user per minute
+const userWsConnTimestamps = new Map<string, number[]>();
+
+function isUserTerminalWsRateLimited(userId: string): boolean {
+  const now = Date.now();
+  const cutoff = now - USER_WS_RATE_WINDOW_MS;
+  let timestamps = userWsConnTimestamps.get(userId);
+
+  if (timestamps) {
+    timestamps = timestamps.filter(t => t > cutoff);
+  } else {
+    timestamps = [];
+  }
+
+  if (timestamps.length >= USER_WS_RATE_MAX_CONNECTIONS) {
+    userWsConnTimestamps.set(userId, timestamps);
+    return true;
+  }
+
+  timestamps.push(now);
+  userWsConnTimestamps.set(userId, timestamps);
+  return false;
+}
+
+// Periodic cleanup of stale rate-limit entries
+setInterval(() => {
+  const cutoff = Date.now() - USER_WS_RATE_WINDOW_MS * 2;
+  for (const [userId, timestamps] of userWsConnTimestamps) {
+    if (timestamps.length === 0 || timestamps[timestamps.length - 1]! < cutoff) {
+      userWsConnTimestamps.delete(userId);
+    }
+  }
+}, 120_000);
 
 /**
  * Validate one-time WS ticket and session access
@@ -190,13 +222,27 @@ function createTerminalWsHandlers(sessionId: string, ticket: string | undefined)
       }
       console.log(`Agent ${device.agentId} is connected`);
 
+      // Rate limit user WS connections
+      if (isUserTerminalWsRateLimited(userId)) {
+        console.warn(`Terminal WebSocket rate limited for user ${userId}`);
+        ws.send(JSON.stringify({
+          type: 'error',
+          code: 'RATE_LIMITED',
+          message: 'Too many connection attempts'
+        }));
+        ws.close(4029, 'Rate limited');
+        return;
+      }
+
       // Store the terminal session
+      const now = Date.now();
       activeTerminalSessions.set(sessionId, {
         userWs: ws,
         agentId: device.agentId,
         userId,
         deviceId: device.id,
-        startedAt: new Date()
+        startedAt: new Date(),
+        lastPongAt: now,
       });
 
       // Register callback for terminal output
@@ -249,6 +295,33 @@ function createTerminalWsHandlers(sessionId: string, ticket: string | undefined)
           message: 'Failed to send start command to agent'
         }));
       }
+
+      // Start server-side ping/pong for stale connection detection
+      const pingInterval = setInterval(() => {
+        const termSess = activeTerminalSessions.get(sessionId);
+        if (!termSess) {
+          clearInterval(pingInterval);
+          return;
+        }
+        const elapsed = Date.now() - termSess.lastPongAt;
+        if (elapsed > PING_INTERVAL_MS + PONG_TIMEOUT_MS) {
+          console.warn(`Terminal session ${sessionId} pong timeout (${elapsed}ms), closing`);
+          clearInterval(pingInterval);
+          ws.close(4008, 'Pong timeout');
+          return;
+        }
+        try {
+          ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
+        } catch (err) {
+          console.warn(`[TerminalWs] Ping send failed for session ${sessionId}, cleaning up`, err);
+          clearInterval(pingInterval);
+        }
+      }, PING_INTERVAL_MS);
+
+      const currentSession = activeTerminalSessions.get(sessionId);
+      if (currentSession) {
+        currentSession.pingInterval = pingInterval;
+      }
     },
 
     onMessage: async (event: MessageEvent, ws: WSContext) => {
@@ -264,7 +337,20 @@ function createTerminalWsHandlers(sessionId: string, ticket: string | undefined)
 
       try {
         const data = typeof event.data === 'string' ? event.data : event.data.toString();
-        const message: TerminalMessage = JSON.parse(data);
+        const raw = JSON.parse(data);
+
+        // Handle pong responses for server-initiated ping (not in discriminatedUnion)
+        if (raw?.type === 'pong') {
+          termSession.lastPongAt = Date.now();
+          return;
+        }
+
+        const parsed = terminalMessageSchema.safeParse(raw);
+        if (!parsed.success) {
+          console.warn(`Invalid terminal message from session ${sessionId}:`, parsed.error.errors);
+          return;
+        }
+        const message = parsed.data;
 
         switch (message.type) {
           case 'data':
@@ -293,11 +379,10 @@ function createTerminalWsHandlers(sessionId: string, ticket: string | undefined)
             break;
 
           case 'ping':
+            // Client-initiated ping — respond with pong and update timestamp
+            termSession.lastPongAt = Date.now();
             ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
             break;
-
-          default:
-            console.warn(`Unknown terminal message type from session ${sessionId}`);
         }
       } catch (error) {
         console.error(`Error processing terminal message for session ${sessionId}:`, error);
@@ -313,6 +398,11 @@ function createTerminalWsHandlers(sessionId: string, ticket: string | undefined)
       const termSession = activeTerminalSessions.get(sessionId);
 
       if (termSession) {
+        // Clear ping interval
+        if (termSession.pingInterval) {
+          clearInterval(termSession.pingInterval);
+        }
+
         // Send terminal_stop command to agent
         sendCommandToAgent(termSession.agentId, {
           id: `term-stop-${sessionId}`,
@@ -345,6 +435,9 @@ function createTerminalWsHandlers(sessionId: string, ticket: string | undefined)
     onError: async (event: unknown, _ws: WSContext) => {
       console.error(`Terminal WebSocket error for session ${sessionId}:`, event);
       const termSession = activeTerminalSessions.get(sessionId);
+      if (termSession?.pingInterval) {
+        clearInterval(termSession.pingInterval);
+      }
       activeTerminalSessions.delete(sessionId);
       unregisterTerminalOutputCallback(sessionId);
 

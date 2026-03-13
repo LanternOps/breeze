@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
+import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { deviceCommands } from '../../db/schema';
@@ -24,18 +25,25 @@ import { CommandTypes, queueCommandForExecution } from '../../services/commandQu
 
 export const commandsRoutes = new Hono();
 
+const commandResultParamSchema = z.object({
+  id: z.string().uuid(),
+  commandId: z.string().min(1),
+});
+
 commandsRoutes.post(
   '/:id/commands/:commandId/result',
+  zValidator('param', commandResultParamSchema),
   zValidator('json', commandResultSchema),
   async (c) => {
-    const commandId = c.req.param('commandId');
+    const { id: agentId, commandId } = c.req.valid('param');
     const data = c.req.valid('json');
     const agent = c.get('agent') as { orgId?: string; agentId?: string; deviceId?: string } | undefined;
-    const agentId = c.req.param('id');
 
     if (!agent?.deviceId) {
       return c.json({ error: 'Agent context not found' }, 401);
     }
+
+    const deviceId = agent.deviceId;
 
     // Commands dispatched directly over WebSocket can use non-UUID IDs and
     // intentionally have no device_commands row.
@@ -43,36 +51,43 @@ commandsRoutes.post(
       return c.json({ success: true });
     }
 
-    const [command] = await db
-      .select()
-      .from(deviceCommands)
-      .where(
-        and(
-          eq(deviceCommands.id, commandId),
-          eq(deviceCommands.deviceId, agent.deviceId)
+    // Query device_commands OUTSIDE the agentAuth transaction.
+    // device_commands has no RLS; querying via the pool (auto-commit)
+    // guarantees visibility of recently committed rows.
+    const [command] = await runOutsideDbContext(() =>
+      db
+        .select()
+        .from(deviceCommands)
+        .where(
+          and(
+            eq(deviceCommands.id, commandId),
+            eq(deviceCommands.deviceId, deviceId)
+          )
         )
-      )
-      .limit(1);
+        .limit(1)
+    );
 
     if (!command) {
       return c.json({ error: 'Command not found' }, 404);
     }
 
-    await db
-      .update(deviceCommands)
-      .set({
-        status: data.status === 'completed' ? 'completed' : 'failed',
-        completedAt: new Date(),
-        result: {
-          status: data.status,
-          exitCode: data.exitCode,
-          stdout: data.stdout,
-          stderr: data.stderr,
-          durationMs: data.durationMs,
-          error: data.error
-        }
-      })
-      .where(eq(deviceCommands.id, commandId));
+    await runOutsideDbContext(() =>
+      db
+        .update(deviceCommands)
+        .set({
+          status: data.status === 'completed' ? 'completed' : 'failed',
+          completedAt: new Date(),
+          result: {
+            status: data.status,
+            exitCode: data.exitCode,
+            stdout: data.stdout,
+            stderr: data.stderr,
+            durationMs: data.durationMs,
+            error: data.error
+          }
+        })
+        .where(eq(deviceCommands.id, commandId))
+    );
 
     if (
       command.type === securityCommandTypes.collectStatus ||

@@ -106,27 +106,45 @@ const createDashboardSchema = z.object({
   orgId: z.string().uuid().optional(),
   name: z.string().min(1).max(255),
   description: z.string().optional(),
-  layout: z.record(z.any()).optional().default({})
+  layout: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional().default({})
 });
 
 const updateDashboardSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   description: z.string().optional(),
-  layout: z.record(z.any()).optional()
+  layout: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional()
 });
 
 const createWidgetSchema = z.object({
   name: z.string().min(1).max(255),
   type: z.string().min(1).max(100),
-  config: z.record(z.any()).optional().default({}),
-  layout: z.record(z.any()).optional()
+  config: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional().default({}),
+  layout: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional()
 });
 
 const updateWidgetSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   type: z.string().min(1).max(100).optional(),
-  config: z.record(z.any()).optional(),
-  layout: z.record(z.any()).optional()
+  config: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional(),
+  layout: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional()
 });
 
 function mapWidgetToApi(widget: typeof dashboardWidgets.$inferSelect) {

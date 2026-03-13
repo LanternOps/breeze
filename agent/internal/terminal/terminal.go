@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"runtime"
 	"sync"
+	"syscall"
 
 	"github.com/breeze-rmm/agent/internal/logging"
 )
@@ -167,6 +168,22 @@ func (s *Session) write(data []byte) error {
 		return fmt.Errorf("PTY not available")
 	}
 
+	// On macOS (LaunchDaemon), the shell may not have a controlling terminal,
+	// so the PTY line discipline can't deliver signals. Manually forward
+	// control characters as signals to the shell's process group.
+	if s.cmd != nil && s.cmd.Process != nil {
+		for _, b := range data {
+			switch b {
+			case 0x03: // Ctrl+C → SIGINT
+				syscall.Kill(-s.cmd.Process.Pid, syscall.SIGINT)
+			case 0x1c: // Ctrl+\ → SIGQUIT
+				syscall.Kill(-s.cmd.Process.Pid, syscall.SIGQUIT)
+			case 0x1a: // Ctrl+Z → SIGTSTP
+				syscall.Kill(-s.cmd.Process.Pid, syscall.SIGTSTP)
+			}
+		}
+	}
+
 	_, err := s.pty.Write(data)
 	return err
 }
@@ -210,13 +227,17 @@ func (s *Session) close() error {
 
 // readLoop reads output from the PTY and sends it to the callback
 func (s *Session) readLoop() {
+	log.Info("readLoop started", "sessionId", s.ID)
 	buf := make([]byte, 4096)
+	firstRead := true
 
 	for {
 		n, err := s.pty.Read(buf)
 		if err != nil {
 			if err != io.EOF {
 				log.Warn("session read error", "sessionId", s.ID, "error", err)
+			} else {
+				log.Info("readLoop EOF", "sessionId", s.ID)
 			}
 			if s.onClose != nil {
 				s.onClose(err)
@@ -225,6 +246,10 @@ func (s *Session) readLoop() {
 		}
 
 		if n > 0 && s.onOutput != nil {
+			if firstRead {
+				log.Info("readLoop first data", "sessionId", s.ID, "bytes", n)
+				firstRead = false
+			}
 			// Make a copy of the data
 			data := make([]byte, n)
 			copy(data, buf[:n])

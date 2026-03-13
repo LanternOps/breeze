@@ -4,13 +4,19 @@ export const configSchema = z.object({
   name: z.string().min(1),
   provider: z.enum(['s3', 'local']),
   enabled: z.boolean().optional(),
-  details: z.record(z.any()).optional()
+  details: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional()
 });
 
 export const configUpdateSchema = z.object({
   name: z.string().min(1).optional(),
   enabled: z.boolean().optional(),
-  details: z.record(z.any()).optional()
+  details: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional()
 });
 
 export const policyTargetsSchema = z.object({

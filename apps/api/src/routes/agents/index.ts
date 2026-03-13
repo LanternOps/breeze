@@ -30,9 +30,11 @@ agentRoutes.use('/:id/*', async (c, next) => {
   if (id === 'enroll' || id === 'renew-cert' || id === 'quarantined' || id === 'org' || id === 'download') {
     return next();
   }
-  // Check if the sub-path is an admin endpoint that uses user JWT auth
+  // Check if the sub-path is an admin endpoint that uses user JWT auth.
+  // Use a precise regex to only match /:id/approve or /:id/deny at the end
+  // of the path, avoiding false positives from substrings.
   const path = c.req.path;
-  if (path.endsWith('/approve') || path.endsWith('/deny')) {
+  if (/\/[^/]+\/(approve|deny)$/.test(path)) {
     return next();
   }
   return agentAuthMiddleware(c, next);

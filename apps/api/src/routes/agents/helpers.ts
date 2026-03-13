@@ -553,7 +553,7 @@ export async function handleSecurityCommandResult(
       ? Math.max(0, Math.floor(threatsFoundRaw))
       : threatsValue.length;
     const completedAt = new Date();
-    const durationSeconds = Math.max(0, Math.round(resultData.durationMs / 1000));
+    const durationSeconds = Math.max(0, Math.round((resultData.durationMs ?? 0) / 1000));
 
     let existingScan: { id: string } | undefined;
     if (isUuid(scanRecordId)) {

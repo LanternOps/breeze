@@ -4,12 +4,16 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shirou/gopsutil/v3/process"
 )
 
-// ListProcesses returns a paginated list of running processes
+// ListProcesses returns a paginated list of running processes.
+// On Windows, gopsutil's Username() calls LookupAccountSid per process which
+// can be very slow with AzureAD/domain accounts. We use 2 workers to overlap
+// IO-bound SID lookups without saturating CPU.
 func ListProcesses(payload map[string]any) CommandResult {
 	startTime := time.Now()
 
@@ -31,16 +35,61 @@ func ListProcesses(payload map[string]any) CommandResult {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
 
-	var processList []ProcessInfo
-	for _, p := range procs {
-		info := getProcessInfo(p)
-		if info == nil {
-			continue
-		}
+	// 8 workers: overlaps IO-bound SID lookups (the bottleneck on Windows with
+	// AzureAD). The earlier 400% CPU spike was from leaked timeout goroutines
+	// in getProcessInfo, not the worker count — those are removed now.
+	const workers = 8
 
-		// Apply search filter
+	type indexedInfo struct {
+		idx  int
+		info *ProcessInfo
+	}
+
+	results := make([]indexedInfo, 0, len(procs))
+	var mu sync.Mutex
+
+	jobs := make(chan struct {
+		idx int
+		p   *process.Process
+	}, len(procs))
+	var wg sync.WaitGroup
+
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				info := getProcessInfo(job.p)
+				if info != nil {
+					mu.Lock()
+					results = append(results, indexedInfo{idx: job.idx, info: info})
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+
+	for i, p := range procs {
+		jobs <- struct {
+			idx int
+			p   *process.Process
+		}{idx: i, p: p}
+	}
+	close(jobs)
+	wg.Wait()
+
+	// Restore original order for deterministic output.
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].idx < results[j].idx
+	})
+
+	var processList []ProcessInfo
+	searchLower := strings.ToLower(search)
+
+	for _, r := range results {
+		info := r.info
+
 		if search != "" {
-			searchLower := strings.ToLower(search)
 			nameLower := strings.ToLower(info.Name)
 			userLower := strings.ToLower(info.User)
 			cmdLower := strings.ToLower(info.CommandLine)
@@ -98,7 +147,7 @@ func GetProcess(payload map[string]any) CommandResult {
 		return NewErrorResult(fmt.Errorf("process not found: %w", err), time.Since(startTime).Milliseconds())
 	}
 
-	info := getProcessInfo(p)
+	info := getFullProcessInfo(p)
 	if info == nil {
 		return NewErrorResult(fmt.Errorf("failed to get process info"), time.Since(startTime).Milliseconds())
 	}
@@ -145,6 +194,9 @@ func KillProcess(payload map[string]any) CommandResult {
 	return NewSuccessResult(result, time.Since(startTime).Milliseconds())
 }
 
+// getProcessInfo collects lightweight fields for the list view.
+// Expensive fields (CommandLine, CreateTime, Status, Threads, ParentPID)
+// are fetched on demand via GetProcess when the user expands a row.
 func getProcessInfo(p *process.Process) *ProcessInfo {
 	name, err := p.Name()
 	if err != nil {
@@ -157,42 +209,43 @@ func getProcessInfo(p *process.Process) *ProcessInfo {
 		Status: "running",
 	}
 
-	// Get username (may fail for system processes)
-	if username, err := p.Username(); err == nil {
-		info.User = username
-	}
+	info.User = resolveUsername(p)
 
-	// Get CPU percent (averaged over a short interval)
 	if cpuPercent, err := p.CPUPercent(); err == nil {
 		info.CPUPercent = cpuPercent
 	}
 
-	// Get memory info
 	if memInfo, err := p.MemoryInfo(); err == nil && memInfo != nil {
 		info.MemoryMB = float64(memInfo.RSS) / 1024 / 1024
 	}
 
-	// Get command line
+	return info
+}
+
+// getFullProcessInfo collects all fields including expensive ones.
+// Used by GetProcess for the single-process detail view.
+func getFullProcessInfo(p *process.Process) *ProcessInfo {
+	info := getProcessInfo(p)
+	if info == nil {
+		return nil
+	}
+
 	if cmdline, err := p.Cmdline(); err == nil {
 		info.CommandLine = cmdline
 	}
 
-	// Get parent PID
 	if ppid, err := p.Ppid(); err == nil {
 		info.ParentPID = ppid
 	}
 
-	// Get thread count
 	if threads, err := p.NumThreads(); err == nil {
 		info.Threads = threads
 	}
 
-	// Get create time
 	if createTime, err := p.CreateTime(); err == nil {
 		info.CreateTime = createTime
 	}
 
-	// Get status
 	if status, err := p.Status(); err == nil && len(status) > 0 {
 		info.Status = status[0]
 	}

@@ -453,7 +453,7 @@ export default function RemoteToolsPage({
   const fetchProcesses = useCallback(async () => {
     setProcessLoading(true);
     try {
-      const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/processes`);
+      const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/processes?limit=500`);
       if (!res.ok) throw new Error('Failed to fetch processes');
       const json = await res.json();
       const data: ApiProcess[] = Array.isArray(json.data) ? json.data : [];
@@ -475,6 +475,16 @@ export default function RemoteToolsPage({
     }
     await fetchProcesses();
   }, [deviceId, fetchProcesses]);
+
+  const handleGetProcess = useCallback(async (pid: number): Promise<Process> => {
+    const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/processes/${pid}`);
+    if (!res.ok) {
+      const json = await res.json();
+      throw new Error(json.error || 'Failed to get process details');
+    }
+    const json = await res.json();
+    return mapProcess(json.data as ApiProcess);
+  }, [deviceId]);
 
   // Services API calls
   const fetchServices = useCallback(async () => {
@@ -791,6 +801,7 @@ export default function RemoteToolsPage({
             loading={processLoading}
             onRefresh={fetchProcesses}
             onKillProcess={handleKillProcess}
+            onGetProcess={handleGetProcess}
           />
         )}
         {activeTab === 'services' && isWindows && (

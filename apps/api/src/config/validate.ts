@@ -57,6 +57,9 @@ const envSchema = z
       .string({ required_error: 'JWT_SECRET is required' })
       .min(1, 'JWT_SECRET must not be empty'),
 
+    // -- E2E testing mode (must NEVER be enabled in production) ----------------
+    E2E_MODE: z.string().optional(),
+
     APP_ENCRYPTION_KEY: z
       .string({ required_error: 'APP_ENCRYPTION_KEY is required' })
       .min(1, 'APP_ENCRYPTION_KEY must not be empty'),
@@ -81,6 +84,16 @@ const envSchema = z
 
     // --- Required secrets: reject insecure values in production only ---
     if (isProduction) {
+      // E2E_MODE must never be enabled in production
+      if (data.E2E_MODE === '1' || data.E2E_MODE === 'true') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['E2E_MODE'],
+          message:
+            'E2E_MODE must not be enabled in production. It disables rate limiting and other security controls.',
+        });
+      }
+
       const requiredSecrets: Array<{ key: string; value: string }> = [
         { key: 'JWT_SECRET', value: data.JWT_SECRET },
         { key: 'APP_ENCRYPTION_KEY', value: data.APP_ENCRYPTION_KEY },
@@ -95,6 +108,16 @@ const envSchema = z
             message: `${key} is set to an insecure default/placeholder value. Generate a strong random secret (e.g. openssl rand -base64 64).`,
           });
         }
+      }
+
+      // JWT_SECRET must be at least 32 characters in production
+      if (data.JWT_SECRET.length < 32) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['JWT_SECRET'],
+          message:
+            'JWT_SECRET must be at least 32 characters in production. Generate a strong random secret (e.g. openssl rand -base64 64).',
+        });
       }
 
       if (!data.CORS_ALLOWED_ORIGINS || data.CORS_ALLOWED_ORIGINS.trim() === '*') {
@@ -162,6 +185,15 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
         message: 'FORCE_HTTPS is not enabled. HTTPS is strongly recommended in production.',
       });
     }
+
+    // Warn loudly if agent enrollment is open without secret verification
+    if (!env.AGENT_ENROLLMENT_SECRET || env.AGENT_ENROLLMENT_SECRET.trim() === '') {
+      warnings.push({
+        key: 'AGENT_ENROLLMENT_SECRET',
+        message:
+          '[SECURITY WARNING] AGENT_ENROLLMENT_SECRET is not configured. Agent enrollment is open without secret verification. Any valid enrollment key can enroll devices without an additional secret check.',
+      });
+    }
   }
 
   // Warn about optional secrets that look insecure
@@ -221,6 +253,7 @@ export function validateConfig(): AppConfig {
     API_PORT: env.API_PORT,
     REDIS_URL: env.REDIS_URL,
     NODE_ENV: env.NODE_ENV,
+    E2E_MODE: env.E2E_MODE,
   });
 
   if (!result.success) {

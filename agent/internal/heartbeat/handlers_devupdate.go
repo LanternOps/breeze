@@ -57,11 +57,10 @@ func handleDevUpdate(h *Heartbeat, cmd Command) tools.CommandResult {
 		return tools.NewErrorResult(fmt.Errorf("failed to create backup directory %s: %w", backupDir, err), time.Since(start).Milliseconds())
 	}
 	backupPath := filepath.Join(backupDir, "breeze-agent.backup")
-	authToken := h.authTokenPlaintext()
 
 	updaterCfg := &updater.Config{
 		ServerURL:      h.config.ServerURL,
-		AuthToken:      authToken,
+		AuthToken:      h.secureToken,
 		CurrentVersion: h.agentVersion,
 		BinaryPath:     binaryPath,
 		BackupPath:     backupPath,

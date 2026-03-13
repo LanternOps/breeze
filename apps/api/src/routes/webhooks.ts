@@ -247,6 +247,9 @@ const testWebhookSchema = z.object({
 // Routes
 // ============================================
 
+const webhookIdParamSchema = z.object({ id: z.string().uuid() });
+const webhookRetryParamSchema = z.object({ id: z.string().uuid(), deliveryId: z.string().uuid() });
+
 webhookRoutes.use('*', authMiddleware);
 
 // GET /webhooks - List webhooks for org (paginated, filtered by status)
@@ -396,9 +399,10 @@ webhookRoutes.post(
 webhookRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', webhookIdParamSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
-    const webhookId = c.req.param('id')!;
+    const { id: webhookId } = c.req.valid('param');
 
     const webhook = await getWebhookWithOrgCheck(webhookId, auth);
     if (!webhook) {
@@ -420,10 +424,11 @@ webhookRoutes.patch(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
+  zValidator('param', webhookIdParamSchema),
   zValidator('json', updateWebhookSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
-    const webhookId = c.req.param('id')!;
+    const { id: webhookId } = c.req.valid('param');
     const data = c.req.valid('json');
 
     if (Object.keys(data).length === 0) {
@@ -484,9 +489,10 @@ webhookRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
+  zValidator('param', webhookIdParamSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
-    const webhookId = c.req.param('id')!;
+    const { id: webhookId } = c.req.valid('param');
 
     const webhook = await getWebhookWithOrgCheck(webhookId, auth);
     if (!webhook) {
@@ -517,10 +523,11 @@ webhookRoutes.delete(
 webhookRoutes.get(
   '/:id/deliveries',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', webhookIdParamSchema),
   zValidator('query', listDeliveriesSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
-    const webhookId = c.req.param('id')!;
+    const { id: webhookId } = c.req.valid('param');
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
@@ -567,10 +574,11 @@ webhookRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
+  zValidator('param', webhookIdParamSchema),
   zValidator('json', testWebhookSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
-    const webhookId = c.req.param('id')!;
+    const { id: webhookId } = c.req.valid('param');
     const data = c.req.valid('json');
 
     const webhook = await getWebhookWithOrgCheck(webhookId, auth);
@@ -664,10 +672,10 @@ webhookRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
+  zValidator('param', webhookRetryParamSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
-    const webhookId = c.req.param('id')!;
-    const deliveryId = c.req.param('deliveryId')!;
+    const { id: webhookId, deliveryId } = c.req.valid('param');
 
     const webhook = await getWebhookWithOrgCheck(webhookId, auth);
     if (!webhook) {

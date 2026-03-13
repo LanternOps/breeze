@@ -8591,4 +8591,15 @@ select {
   .chart-legend-xs {
     font-size: 11px;
   }
+
+  /* xterm.js: fill terminal container and enforce dark background */
+  .xterm {
+    height: 100%;
+  }
+  .xterm-viewport {
+    background-color: #1a1b26 !important;
+  }
+  .xterm-screen {
+    height: 100% !important;
+  }
 }

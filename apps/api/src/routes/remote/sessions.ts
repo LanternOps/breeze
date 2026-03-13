@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
+import { z } from 'zod';
 import { and, eq, sql, desc, gte, lte, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import {
@@ -32,6 +33,8 @@ import {
 } from './helpers';
 
 export const sessionRoutes = new Hono();
+
+const sessionIdParamSchema = z.object({ id: z.string().uuid() });
 
 // DELETE /remote/sessions/stale - Cleanup stale sessions, optionally scoped to a device
 sessionRoutes.delete(
@@ -439,9 +442,10 @@ sessionRoutes.get(
 sessionRoutes.get(
   '/sessions/:id',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', sessionIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id')!;
+    const { id: sessionId } = c.req.valid('param');
 
     // Skip reserved routes
     if (['history'].includes(sessionId)) {
@@ -495,9 +499,10 @@ sessionRoutes.get(
 sessionRoutes.post(
   '/sessions/:id/ws-ticket',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', sessionIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id')!;
+    const { id: sessionId } = c.req.valid('param');
 
     const result = await getSessionWithOrgCheck(sessionId, auth);
     if (!result) {
@@ -538,9 +543,10 @@ sessionRoutes.post(
 sessionRoutes.post(
   '/sessions/:id/desktop-connect-code',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', sessionIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id')!;
+    const { id: sessionId } = c.req.valid('param');
 
     const result = await getSessionWithOrgCheck(sessionId, auth);
     if (!result) {
@@ -599,10 +605,11 @@ sessionRoutes.get(
 sessionRoutes.post(
   '/sessions/:id/offer',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', sessionIdParamSchema),
   zValidator('json', webrtcOfferSchema),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id')!;
+    const { id: sessionId } = c.req.valid('param');
     const data = c.req.valid('json');
 
     const result = await getSessionWithOrgCheck(sessionId, auth);
@@ -674,10 +681,11 @@ sessionRoutes.post(
 sessionRoutes.post(
   '/sessions/:id/answer',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', sessionIdParamSchema),
   zValidator('json', webrtcAnswerSchema),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id')!;
+    const { id: sessionId } = c.req.valid('param');
     const data = c.req.valid('json');
 
     const result = await getSessionWithOrgCheck(sessionId, auth);
@@ -734,10 +742,11 @@ sessionRoutes.post(
 sessionRoutes.post(
   '/sessions/:id/ice',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', sessionIdParamSchema),
   zValidator('json', iceCandidateSchema),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id')!;
+    const { id: sessionId } = c.req.valid('param');
     const data = c.req.valid('json');
 
     const result = await getSessionWithOrgCheck(sessionId, auth);
@@ -785,9 +794,10 @@ sessionRoutes.post(
 sessionRoutes.post(
   '/sessions/:id/end',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', sessionIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const sessionId = c.req.param('id')!;
+    const { id: sessionId } = c.req.valid('param');
     const body = await c.req.json<{ bytesTransferred?: number; recordingUrl?: string }>().catch(() => ({}));
 
     const result = await getSessionWithOrgCheck(sessionId, auth);
