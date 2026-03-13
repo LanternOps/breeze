@@ -20,6 +20,14 @@ const (
 	startupFrameWarmupWindow = 4 * time.Second
 	startupFrameRepaintEvery = 200 * time.Millisecond
 
+	// staticDesktopResendInterval is the minimum interval between frame sends
+	// on a static normal desktop. Provides a ~4fps floor to prevent WebRTC
+	// jitter accumulation and decoder frame drops during idle periods.
+	staticDesktopResendInterval = 250 * time.Millisecond
+
+	// staticDesktopKeyframeEvery forces periodic keyframes during sustained
+	// idle so the decoder stays synchronized with cached-frame resends.
+	staticDesktopKeyframeEvery = 3 * time.Second
 )
 
 var encodedFramePool = sync.Pool{
@@ -139,6 +147,42 @@ func (s *Session) maybeResendCachedFrameOnSecureDesktop(cap ScreenCapturer, fram
 	return true
 }
 
+// maybeResendCachedFrameOnIdle resends the last encoded frame when the normal
+// desktop has been static for too long. This prevents WebRTC jitter from
+// accumulating by maintaining a minimum ~2fps floor even with no dirty rects.
+func (s *Session) maybeResendCachedFrameOnIdle(frameDuration time.Duration) bool {
+	last := s.lastVideoWriteUnixNano.Load()
+	if last == 0 {
+		return false
+	}
+	if time.Since(time.Unix(0, last)) < staticDesktopResendInterval {
+		return false
+	}
+
+	s.lastEncodedMu.RLock()
+	cached := s.lastEncodedFrame
+	if len(cached) == 0 {
+		s.lastEncodedMu.RUnlock()
+		return false
+	}
+	frame := make([]byte, len(cached))
+	copy(frame, cached)
+	size := len(frame)
+	s.lastEncodedMu.RUnlock()
+
+	sample := media.Sample{
+		Data:     frame,
+		Duration: frameDuration,
+	}
+	if err := s.videoTrack.WriteSample(sample); err != nil {
+		slog.Debug("Failed to resend cached idle frame", "session", s.id, "error", err.Error())
+		return false
+	}
+	s.metrics.RecordSend(size)
+	s.noteVideoWrite()
+	return true
+}
+
 // captureLoop continuously captures and sends encoded H264 frames.
 // Dispatches between DXGI tight-loop and ticker-paced modes. Mode switches
 // return to this function instead of calling each other recursively, avoiding
@@ -191,6 +235,7 @@ func (s *Session) captureLoopDXGI() captureMode {
 	postSwitchRepaints := 0
 	var lastRepaintTime time.Time
 	var lastSecureKeyframe time.Time
+	var lastIdleKeyframe time.Time
 	startupWarmupUntil := time.Now().Add(startupFrameWarmupWindow)
 	var lastStartupRepaint time.Time
 
@@ -296,6 +341,13 @@ func (s *Session) captureLoopDXGI() captureMode {
 			}
 		}
 
+		// Periodic keyframe during normal desktop idle — keeps decoder
+		// synchronized when the capture loop is resending cached frames.
+		if !onSecure && consecutiveSkips >= 30 && time.Since(lastIdleKeyframe) >= staticDesktopKeyframeEvery {
+			_ = s.encoder.ForceKeyframe()
+			lastIdleKeyframe = time.Now()
+		}
+
 		// If the capturer falls back to a non-blocking mode (e.g. DXGI→GDI),
 		// switch to the ticker loop to avoid spinning.
 		if h, ok := currentCap.(TightLoopHint); ok && !h.TightLoop() {
@@ -354,6 +406,16 @@ func (s *Session) captureLoopDXGI() captureMode {
 					} else if consecutiveSkips >= idleThreshold {
 						sleepDur = idleSleep // idle mode: poll less often
 					}
+					// Minimum framerate floor: on normal desktops, resend the
+					// last cached frame every 500ms to prevent jitter climbing
+					// and decoder frame drops during static-screen idle.
+					if !onSecure && !frameSent {
+						if s.maybeResendCachedFrameOnIdle(frameDuration) {
+							frameSent = true
+							// Nudge DXGI so it may produce a fresh frame next iteration
+							forceDesktopRepaint()
+						}
+					}
 				} else {
 					// Scene change keyframe: if screen was static for a while and
 					// we just got a new frame, force IDR for fast decoder recovery.
@@ -361,6 +423,7 @@ func (s *Session) captureLoopDXGI() captureMode {
 						_ = s.encoder.ForceKeyframe()
 					}
 					consecutiveSkips = 0
+					lastIdleKeyframe = time.Time{} // reset idle keyframe timer
 				}
 				wasIdle = consecutiveSkips >= idleThreshold
 				if elapsed := time.Since(loopStart); elapsed < sleepDur {
@@ -486,7 +549,10 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	}
 	if img == nil {
 		// DXGI: no new frame available (AccumulatedFrames==0)
-		_ = s.maybeResendCachedFrameOnSecureDesktop(cap, frameDuration)
+		resent := s.maybeResendCachedFrameOnSecureDesktop(cap, frameDuration)
+		if !resent {
+			s.maybeResendCachedFrameOnIdle(frameDuration)
+		}
 		s.metrics.RecordSkip()
 		return
 	}
