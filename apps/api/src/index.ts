@@ -92,6 +92,7 @@ import { huntressRoutes } from './routes/huntress';
 import { sensitiveDataRoutes } from './routes/sensitiveData';
 import { peripheralControlRoutes } from './routes/peripheralControl';
 import { browserSecurityRoutes } from './routes/browserSecurity';
+import { pendingPartnerGuard } from './middleware/pendingGuard';
 import { captureException } from './services/sentry';
 
 // Workers
@@ -249,6 +250,7 @@ app.get('/health/live', (c) => {
 // Full readiness check — live DB + Redis connectivity
 app.get('/health/ready', async (c) => {
   const checks: Record<string, string> = {};
+  const isProd = process.env.NODE_ENV === 'production';
 
   // Check database connectivity
   try {
@@ -257,20 +259,24 @@ app.get('/health/ready', async (c) => {
     });
     checks.database = 'ok';
   } catch (error) {
-    checks.database = `error: ${error instanceof Error ? error.message : 'unknown'}`;
+    checks.database = isProd
+      ? 'error: unavailable'
+      : `error: ${error instanceof Error ? error.message : 'unknown'}`;
   }
 
   // Check Redis connectivity
   try {
     const redis = getRedis();
     if (!redis) {
-      checks.redis = 'error: not configured';
+      checks.redis = isProd ? 'error: unavailable' : 'error: not configured';
     } else {
       await redis.ping();
       checks.redis = 'ok';
     }
   } catch (error) {
-    checks.redis = `error: ${error instanceof Error ? error.message : 'unknown'}`;
+    checks.redis = isProd
+      ? 'error: unavailable'
+      : `error: ${error instanceof Error ? error.message : 'unknown'}`;
   }
 
   const allOk = Object.values(checks).every((v) => v === 'ok');
@@ -535,6 +541,22 @@ async function resolveFallbackOrgId(c: Context, path: string): Promise<string | 
 
   return null;
 }
+
+// Block pending (unpaid) partners from API access — allow auth & user-profile routes through
+api.use('*', async (c, next) => {
+  const path = c.req.path;
+  // Allow auth routes (login, register, refresh, etc.)
+  if (path.startsWith('/api/v1/auth')) {
+    await next();
+    return;
+  }
+  // Allow users/me so frontend can check partner status
+  if (path.startsWith('/api/v1/users/me')) {
+    await next();
+    return;
+  }
+  await pendingPartnerGuard(c, next);
+});
 
 api.use('*', async (c, next) => {
   await next();
