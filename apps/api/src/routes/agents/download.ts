@@ -3,7 +3,7 @@ import { statSync, createReadStream } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { VALID_OS, VALID_ARCH } from './schemas';
 import { isS3Configured, getPresignedUrl } from '../../services/s3Storage';
-import { getBinarySource, getGithubAgentUrl } from '../../services/binarySource';
+import { getBinarySource, getGithubAgentUrl, getGithubHelperUrl, HELPER_FILENAMES } from '../../services/binarySource';
 
 export const downloadRoutes = new Hono();
 
@@ -128,11 +128,13 @@ downloadRoutes.get('/download/helper/:os/:arch', async (c) => {
     return c.json({ error: 'Invalid architecture', message: `Supported values: amd64, arm64. Got: ${arch}` }, 400);
   }
 
-  const extension = os === 'windows' ? '.exe' : '';
-  const filename = `breeze-helper-${os}-${arch}${extension}`;
+  const filename = HELPER_FILENAMES[os];
+  if (!filename) {
+    return c.json({ error: 'Invalid OS', message: `No helper binary available for OS: ${os}` }, 400);
+  }
 
   if (getBinarySource() === 'github') {
-    return c.redirect(getGithubAgentUrl(os, arch).replace('breeze-agent', 'breeze-helper'), 302);
+    return c.redirect(getGithubHelperUrl(os), 302);
   }
 
   if (isS3Configured()) {
@@ -148,7 +150,7 @@ downloadRoutes.get('/download/helper/:os/:arch', async (c) => {
     }
   }
 
-  const binaryDir = resolve(process.env.HELPER_BINARY_DIR || process.env.AGENT_BINARY_DIR || './agent/bin');
+  const binaryDir = resolve(process.env.HELPER_BINARY_DIR || './agent/bin');
   const filePath = join(binaryDir, filename);
 
   let fileStat: ReturnType<typeof statSync>;

@@ -27,6 +27,7 @@ Binaries are served from disk. The API reads from two directories:
 |---|---|---|
 | `AGENT_BINARY_DIR` | `./agent/bin` | Agent binaries (e.g. `breeze-agent-linux-amd64`) |
 | `VIEWER_BINARY_DIR` | `./viewer/bin` | Viewer installers (e.g. `breeze-viewer-macos.dmg`) |
+| `HELPER_BINARY_DIR` | `/data/binaries/helper` | Helper binaries (e.g. `breeze-helper-windows.msi`) |
 
 On startup, the API:
 1. Scans `AGENT_BINARY_DIR` for agent binaries
@@ -67,6 +68,7 @@ services:
     environment:
       AGENT_BINARY_DIR: /data/binaries/agent
       VIEWER_BINARY_DIR: /data/binaries/viewer
+      HELPER_BINARY_DIR: /data/binaries/helper
     depends_on:
       binaries-init:
         condition: service_completed_successfully
@@ -128,6 +130,19 @@ GET /api/v1/viewers/download/:platform
 | `platform` | `macos` | `breeze-viewer-macos.dmg` |
 | | `windows` | `breeze-viewer-windows.msi` |
 | | `linux` | `breeze-viewer-linux.AppImage` |
+
+### Helper Binaries
+
+```
+GET /api/v1/agents/download/helper/:os/:arch
+```
+
+| Parameter | Values |
+|---|---|
+| `os` | `linux`, `darwin`, `windows` |
+| `arch` | `amd64`, `arm64` |
+
+Helper binaries are companion processes used for remote desktop in headless/service contexts (Session 0 on Windows, LaunchDaemon on macOS, systemd on Linux).
 
 ### Install Script
 

@@ -85,8 +85,14 @@ export const createTemplateSchema = z.object({
   description: z.string().optional(),
   category: z.string().min(1).max(100).optional(),
   severity: severitySchema,
-  conditions: z.record(z.any()).optional().default({}),
-  targets: z.record(z.any()).optional(),
+  conditions: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional().default({}),
+  targets: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional(),
   defaultCooldownMinutes: z.number().int().min(0).max(10080).optional()
 });
 
@@ -95,8 +101,14 @@ export const updateTemplateSchema = z.object({
   description: z.string().optional(),
   category: z.string().min(1).max(100).optional(),
   severity: severitySchema.optional(),
-  conditions: z.record(z.any()).optional(),
-  targets: z.record(z.any()).optional(),
+  conditions: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional(),
+  targets: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional(),
   defaultCooldownMinutes: z.number().int().min(0).max(10080).optional()
 });
 
@@ -119,8 +131,14 @@ export const createRuleSchema = z.object({
   description: z.string().optional(),
   enabled: z.boolean().optional().default(true),
   severity: severitySchema.optional(),
-  targets: z.record(z.any()).optional(),
-  conditions: z.record(z.any()).optional(),
+  targets: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional(),
+  conditions: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional(),
   cooldownMinutes: z.number().int().min(0).max(10080).optional()
 });
 
@@ -129,8 +147,14 @@ export const updateRuleSchema = z.object({
   description: z.string().optional(),
   enabled: z.boolean().optional(),
   severity: severitySchema.optional(),
-  targets: z.record(z.any()).optional(),
-  conditions: z.record(z.any()).optional(),
+  targets: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional(),
+  conditions: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional(),
   cooldownMinutes: z.number().int().min(0).max(10080).optional()
 });
 

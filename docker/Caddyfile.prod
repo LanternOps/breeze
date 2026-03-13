@@ -3,14 +3,27 @@
 }
 
 {$BREEZE_DOMAIN} {
-  encode zstd gzip
+  # SSE / streaming endpoints: no compression, no buffering
+  @streaming {
+    path /api/v1/helper/chat/sessions/*/messages
+    path /api/v1/ai/sessions/*/stream
+  }
+  handle @streaming {
+    reverse_proxy api:3001 {
+      flush_interval -1
+    }
+  }
 
+  # Regular API routes (with compression)
   @api path /api/* /health /ready /metrics/*
   handle @api {
+    encode zstd gzip
     reverse_proxy api:3001
   }
 
+  # Frontend (with compression)
   handle {
+    encode zstd gzip
     reverse_proxy web:4321
   }
 

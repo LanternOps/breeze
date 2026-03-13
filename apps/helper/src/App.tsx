@@ -496,6 +496,20 @@ export default function App() {
           >
             New
           </button>
+          <button
+            onClick={() => (window as any).__TAURI__?.core?.invoke('minimize_window')}
+            className="helper-btn-window"
+            title="Minimize"
+          >
+            &#8211;
+          </button>
+          <button
+            onClick={() => (window as any).__TAURI__?.core?.invoke('hide_window')}
+            className="helper-btn-window helper-btn-window-close"
+            title="Close to tray"
+          >
+            &#10005;
+          </button>
         </div>
       </div>
 

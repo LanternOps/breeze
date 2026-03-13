@@ -43,3 +43,15 @@ export function getGithubViewerUrl(platform: string): string {
   if (!filename) throw new Error(`Unknown viewer platform: ${platform}`);
   return `${githubDownloadBase()}/${filename}`;
 }
+
+export const HELPER_FILENAMES: Record<string, string> = {
+  darwin: 'breeze-helper-macos.dmg',
+  windows: 'breeze-helper-windows.msi',
+  linux: 'breeze-helper-linux.AppImage',
+};
+
+export function getGithubHelperUrl(os: string): string {
+  const filename = HELPER_FILENAMES[os];
+  if (!filename) throw new Error(`Unknown helper OS: ${os}`);
+  return `${githubDownloadBase()}/${filename}`;
+}

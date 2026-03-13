@@ -246,19 +246,31 @@ pub fn run() {
             unregister_session,
         ]);
 
-    // Single instance plugin (desktop only) — ensures deep links open in existing process
+    // Single instance plugin (desktop only) — ensures deep links open in existing process.
+    // IMPORTANT: Defer all window operations (set_focus, WebviewWindowBuilder::build)
+    // via run_on_main_thread so they execute AFTER this callback returns. On macOS,
+    // the plugin holds an internal lock during the callback; set_focus/build pump
+    // the AppKit run loop, which can re-enter the plugin and deadlock.
     #[cfg(desktop)]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             if let Some(url) = argv.iter().find(|arg| arg.starts_with("breeze:")).cloned() {
-                route_deep_link(app, url);
-            } else if let Some(window) = app.get_webview_window("main") {
-                if let Err(err) = window.set_focus() {
-                    eprintln!(
-                        "Failed to focus main window on single-instance activate: {}",
-                        err
-                    );
-                }
+                let handle = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    route_deep_link(&handle, url);
+                });
+            } else {
+                let handle = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    if let Some(window) = handle.get_webview_window("main") {
+                        if let Err(err) = window.set_focus() {
+                            eprintln!(
+                                "Failed to focus main window on single-instance activate: {}",
+                                err
+                            );
+                        }
+                    }
+                });
             }
         }));
     }
@@ -307,10 +319,18 @@ pub fn run() {
             }
 
             // Listen for deep link events when the app is already running.
+            // Defer via run_on_main_thread so the callback returns (and the
+            // deep-link plugin releases its internal lock) before route_deep_link
+            // calls set_focus/build, which pump the macOS AppKit run loop and
+            // can re-enter the plugin → deadlock.
             let app_handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
                 if let Some(url) = event.urls().first() {
-                    route_deep_link(&app_handle, url.to_string());
+                    let url = url.to_string();
+                    let handle = app_handle.clone();
+                    let _ = app_handle.run_on_main_thread(move || {
+                        route_deep_link(&handle, url);
+                    });
                 }
             });
 

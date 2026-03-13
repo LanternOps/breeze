@@ -14,7 +14,7 @@
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query, SDKResultMessage, SDKUserMessage, McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
-import { db, withSystemDbAccessContext } from '../db';
+import { db, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { aiSessions, aiMessages, aiBudgets } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -34,10 +34,8 @@ const MAX_ACTIVE_SESSIONS = 200;
 const EVENT_RING_BUFFER_SIZE = 100;
 const SDK_TURN_TIMEOUT_MS = 6 * 60 * 1000; // 6 min per-turn timeout (accounts for tool approval waits up to 5 min)
 const MCP_PREFIX = 'mcp__breeze__';
-const runOutsideDbContextSafe = <T>(fn: () => T): T => {
-  const runner = (db as { runOutsideDbContext?: <U>(task: () => U) => U }).runOutsideDbContext;
-  return typeof runner === 'function' ? runner(fn) : fn();
-};
+// Use the directly-imported runOutsideDbContext (see commandQueue.ts for explanation).
+const runOutsideDbContextSafe = runOutsideDbContext;
 
 // ============================================
 // StreamInputController

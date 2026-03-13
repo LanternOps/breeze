@@ -54,7 +54,7 @@ All configuration is done through environment variables, defined in your `.env.p
 | `NODE_ENV` | `production` | | Environment mode |
 | `API_PORT` | `3001` | | API server port |
 | `WEB_PORT` | `4321` | | Web dashboard port |
-| `PUBLIC_API_URL` | — | Yes | Full public API URL (e.g., `https://breeze.example.com/api/v1`) |
+| `PUBLIC_API_URL` | — | | Full public API URL. Leave empty for Docker deployments — the web app uses relative URLs through Caddy. |
 | `BREEZE_DOMAIN` | — | Yes (prod) | Domain for Caddy TLS provisioning |
 | `ACME_EMAIL` | — | Yes (prod) | Email for Let's Encrypt certificate notifications |
 | `CORS_ALLOWED_ORIGINS` | — | | Comma-separated allowed CORS origins |
@@ -97,6 +97,7 @@ All configuration is done through environment variables, defined in your `.env.p
 | `BINARY_SOURCE` | `local` | Download source: `local` (serve from disk, optional S3) or `github` (redirect to GitHub Releases) |
 | `AGENT_BINARY_DIR` | `./agent/bin` | Local directory containing agent binaries |
 | `VIEWER_BINARY_DIR` | `./viewer/bin` | Local directory containing viewer installers |
+| `HELPER_BINARY_DIR` | `/data/binaries/helper` | Local directory containing helper binaries |
 | `BINARY_VERSION_FILE` | — | Path to `VERSION` file for local mode DB registration (set automatically in Docker Compose) |
 | `BINARY_VERSION` | — | Release tag for GitHub redirect mode (falls back to `BREEZE_VERSION`, then `latest`) |
 
@@ -142,7 +143,7 @@ The Breeze stack includes a [coturn](https://github.com/coturn/coturn) TURN serv
 | `METRICS_INCLUDE_ORG_ID` | `false` | Include org IDs in Prometheus labels |
 | `METRICS_SCRAPE_IP_ALLOWLIST` | — | Restrict metrics scraping by IP |
 | `LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
-| `LOG_JSON` | `false` | Structured JSON logging |
+| `LOG_JSON` | `true` | Structured JSON logging |
 | `GRAFANA_ADMIN_USER` | `admin` | Grafana admin username |
 | `GRAFANA_ADMIN_PASSWORD` | — | Grafana admin password |
 

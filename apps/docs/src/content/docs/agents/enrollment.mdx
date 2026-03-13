@@ -44,7 +44,7 @@ Agent tokens follow the `brz_` prefix convention:
 
 - **Generation**: Cryptographically random, 32-byte hex string with `brz_` prefix
 - **Storage (server)**: Only the SHA-256 hash is stored in the `agentTokenHash` column
-- **Storage (agent)**: The raw token is stored in the config file with `0600` permissions
+- **Storage (agent)**: The raw token is stored in `secrets.yaml` with `0600` permissions (the main `agent.yaml` config uses `0640` so the Helper can read it)
 - **Validation**: API hashes incoming tokens and compares against stored hash
 - **Same pattern as API keys** (`apiKeyAuth.ts`)
 
@@ -67,19 +67,21 @@ For deploying agents at scale:
 
 ```bash
 # Environment variable method (for scripts/GPO/MDM)
-export BREEZE_SERVER=https://breeze.yourdomain.com
-export BREEZE_ENROLLMENT_SECRET=your-secret
-export BREEZE_SITE_ID=site-uuid
+export BREEZE_SERVER_URL=https://breeze.yourdomain.com
+export BREEZE_AGENT_ENROLLMENT_SECRET=your-secret
 
-breeze-agent enroll
+breeze-agent enroll YOUR_ENROLLMENT_KEY
 ```
 
-The agent reads from environment variables when flags aren't provided.
+The enrollment key is a required positional argument. The site is determined by the enrollment key on the server side. The agent reads `BREEZE_SERVER_URL` and `BREEZE_AGENT_ENROLLMENT_SECRET` from environment variables when flags aren't provided.
 
 ## Re-enrollment
 
 If an agent's token is compromised or the device needs to be reassigned:
 
 1. **Revoke the device** in the dashboard (invalidates the token hash)
-2. **Delete the config** on the device: `sudo rm /etc/breeze/config.json`
-3. **Re-enroll**: `sudo breeze-agent enroll --server ... --enrollment-secret ...`
+2. **Delete the config** on the device:
+   - Linux: `sudo rm /etc/breeze/agent.yaml /etc/breeze/secrets.yaml`
+   - macOS: `sudo rm "/Library/Application Support/Breeze/agent.yaml" "/Library/Application Support/Breeze/secrets.yaml"`
+   - Windows: `Remove-Item C:\ProgramData\Breeze\agent.yaml, C:\ProgramData\Breeze\secrets.yaml`
+3. **Re-enroll**: `sudo breeze-agent enroll YOUR_ENROLLMENT_KEY --server ... --enrollment-secret ...`

@@ -4,7 +4,7 @@
 services:
   binaries-init:
     image: alpine:3.19
-    entrypoint: ["sh", "-c", "mkdir -p /target/agent /target/viewer && echo '0.0.0-dev' > /target/VERSION"]
+    entrypoint: ["sh", "-c", "mkdir -p /target/agent /target/viewer /target/helper && echo '0.0.0-dev' > /target/VERSION"]
 
   api:
     build:

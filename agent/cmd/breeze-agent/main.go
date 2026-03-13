@@ -189,7 +189,7 @@ func startAgent() (*agentComponents, error) {
 		logging.InitShipper(logging.ShipperConfig{
 			ServerURL:    cfg.ServerURL,
 			AgentID:      cfg.AgentID,
-			AuthToken:    secureToken.Reveal(),
+			AuthToken:    secureToken,
 			AgentVersion: version,
 			HTTPClient:   nil, // will use default
 			MinLevel:     cfg.LogShippingLevel,
@@ -252,14 +252,19 @@ func startAgent() (*agentComponents, error) {
 		}
 	}
 
-	// Propagate service mode flag so the heartbeat can route desktop
+	// Propagate service/headless flags so the heartbeat routes desktop
 	// sessions through the IPC user helper instead of capturing directly.
 	cfg.IsService = isWindowsService()
+	cfg.IsHeadless = isHeadless()
 
 	// Ensure SAS (Ctrl+Alt+Del) policy allows services to generate it.
 	// Only relevant on Windows when running as a service.
 	if cfg.IsService {
 		ensureSASPolicy()
+	}
+
+	if cfg.IsHeadless {
+		log.Info("running in headless mode (no console attached), desktop commands will route via IPC")
 	}
 
 	// Start heartbeat - this implements the main agent run loop
@@ -316,9 +321,13 @@ func runAgent() {
 	}
 	defer logging.StopShipper()
 
+	// Ignore SIGINT — as a daemon, PTY child processes can propagate
+	// SIGINT to our process group via Ctrl+C. Only SIGTERM should trigger shutdown.
+	signal.Ignore(syscall.SIGINT)
+
 	// Wait for shutdown signal
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigChan, syscall.SIGTERM)
 
 	<-sigChan
 	log.Info("shutting down agent")
@@ -498,10 +507,12 @@ func runUserHelper() {
 
 	// Ship helper logs to the API under the same agent identity
 	if cfg.AgentID != "" && cfg.ServerURL != "" && cfg.AuthToken != "" {
+		helperToken := secmem.NewSecureString(cfg.AuthToken)
+		cfg.AuthToken = "" // Clear plaintext from config struct
 		logging.InitShipper(logging.ShipperConfig{
 			ServerURL:    cfg.ServerURL,
 			AgentID:      cfg.AgentID,
-			AuthToken:    cfg.AuthToken,
+			AuthToken:    helperToken,
 			AgentVersion: version + "-helper",
 			MinLevel:     cfg.LogShippingLevel,
 		})

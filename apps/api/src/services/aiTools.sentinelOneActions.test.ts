@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthContext } from '../middleware/auth';
 
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn: any) => fn()),
   db: {
     select: vi.fn(),
     insert: vi.fn(),

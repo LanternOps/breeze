@@ -133,8 +133,11 @@ endif
 	$(eval PLATFORM := $(shell curl -sf "$(API_URL)/api/v1/devices/$(DEVICE)" -H "$(AUTH_HEADER)" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('os','linux').lower()+'/'+d.get('arch','amd64'))" 2>/dev/null || echo "windows/amd64"))
 	$(eval TARGET_GOOS := $(word 1,$(subst /, ,$(PLATFORM))))
 	$(eval TARGET_GOARCH := $(word 2,$(subst /, ,$(PLATFORM))))
-	@echo "Building for $(TARGET_GOOS)/$(TARGET_GOARCH) version=$(DEV_VERSION)..."
-	GOOS=$(TARGET_GOOS) GOARCH=$(TARGET_GOARCH) CGO_ENABLED=0 go build -ldflags "-X main.version=$(DEV_VERSION)" -o bin/breeze-agent-dev ./cmd/breeze-agent
+	$(eval BUILD_GOOS := $(shell go env GOOS))
+	$(eval BUILD_GOARCH := $(shell go env GOARCH))
+	$(eval CGO_FLAG := $(if $(and $(filter $(BUILD_GOOS),$(TARGET_GOOS)),$(filter $(BUILD_GOARCH),$(TARGET_GOARCH))),,CGO_ENABLED=0))
+	@echo "Building for $(TARGET_GOOS)/$(TARGET_GOARCH) version=$(DEV_VERSION) (cgo=$(if $(CGO_FLAG),off,on))..."
+	GOOS=$(TARGET_GOOS) GOARCH=$(TARGET_GOARCH) $(CGO_FLAG) go build -ldflags "-X main.version=$(DEV_VERSION)" -o bin/breeze-agent-dev ./cmd/breeze-agent
 	@echo "Uploading binary to API..."
 	@curl -sf -X POST "$(API_URL)/api/v1/dev/push" \
 		-H "$(AUTH_HEADER)" \

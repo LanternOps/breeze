@@ -20,6 +20,11 @@ func hasConsole() bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
+// isHeadless returns true when the process has no controlling terminal.
+// This is the case for launchd daemons and systemd services — both of which
+// redirect stdout/stderr to log files, leaving no character device.
+func isHeadless() bool { return !hasConsole() }
+
 // runAsService is a no-op stub on non-Windows platforms.
 func runAsService(_ func() (*agentComponents, error)) error {
 	return fmt.Errorf("Windows service mode is not available on this platform")

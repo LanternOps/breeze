@@ -20,6 +20,9 @@ services:
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
       BILLING_API_KEY: ${BILLING_SERVICE_API_KEY}
       JWT_SECRET: ${JWT_SECRET}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-billing@breezermm.com}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:3002}
     depends_on:
       postgres:
         condition: service_healthy
@@ -30,3 +33,8 @@ services:
     environment:
       BILLING_SERVICE_URL: http://billing:3002
       BILLING_SERVICE_API_KEY: ${BILLING_SERVICE_API_KEY:-}
+      PARTNER_HOOKS_URL: http://billing:3002/hooks
+
+  web:
+    environment:
+      PUBLIC_BILLING_URL: ${PUBLIC_BILLING_URL:-http://localhost:3002}

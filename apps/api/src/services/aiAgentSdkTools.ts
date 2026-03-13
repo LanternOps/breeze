@@ -9,7 +9,8 @@
 import { z } from 'zod';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { AuthContext } from '../middleware/auth';
-import { db, withSystemDbAccessContext, runOutsideDbContext } from '../db';
+import { db, withSystemDbAccessContext, withDbAccessContext, runOutsideDbContext } from '../db';
+import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
 import { executeTool } from './aiTools';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
@@ -240,8 +241,15 @@ function makeHandler(
     }
     try {
       const auth = getAuth();
+      // Use the user's actual auth scope instead of system context so that
+      // RLS policies and DB-level tenant isolation are enforced.
+      const dbContext: DbAccessContext = {
+        scope: auth.scope as DbAccessContext['scope'],
+        orgId: auth.orgId ?? null,
+        accessibleOrgIds: auth.accessibleOrgIds ?? null,
+      };
       const result = await withTimeout(
-        withSystemDbAccessContext(() => executeTool(toolName, args, auth)),
+        withDbAccessContext(dbContext, () => executeTool(toolName, args, auth)),
         toolTimeout,
         toolName,
       );

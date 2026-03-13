@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { scriptRoutes } from './scripts';
 
+// Valid UUID constants for tests
+const SCRIPT_ID_1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const SCRIPT_ID_2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+
 // Mock all services
 vi.mock('../services', () => ({}));
 
@@ -49,19 +54,19 @@ vi.mock('../middleware/auth', () => ({
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
       partnerId: null,
-      orgId: 'org-123',
+      orgId: ORG_ID,
       token: {
         sub: 'user-123',
         email: 'test@example.com',
         roleId: 'role-123',
-        orgId: 'org-123',
+        orgId: ORG_ID,
         partnerId: null,
         scope: 'organization',
         type: 'access',
         mfa: true,
       },
-      accessibleOrgIds: ['org-123'],
-      canAccessOrg: (orgId: string) => orgId === 'org-123'
+      accessibleOrgIds: [ORG_ID],
+      canAccessOrg: (orgId: string) => orgId === ORG_ID
     });
     return next();
   }),
@@ -94,8 +99,8 @@ describe('scripts routes', () => {
             orderBy: vi.fn().mockReturnValue({
               limit: vi.fn().mockReturnValue({
                 offset: vi.fn().mockResolvedValue([
-                  { id: 'script-1', name: 'Script One' },
-                  { id: 'script-2', name: 'Script Two' }
+                  { id: SCRIPT_ID_1, name: 'Script One' },
+                  { id: SCRIPT_ID_2, name: 'Script Two' }
                 ])
               })
             })
@@ -119,32 +124,32 @@ describe('scripts routes', () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
-            id: 'script-1',
+            id: SCRIPT_ID_1,
             name: 'Script One',
             isSystem: false,
-            orgId: 'org-123'
+            orgId: ORG_ID
           }])
         })
       })
     } as any);
 
-    const res = await app.request('/scripts/script-1', {
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
       method: 'GET',
       headers: { Authorization: 'Bearer valid-token' }
     });
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.id).toBe('script-1');
+    expect(body.id).toBe(SCRIPT_ID_1);
   });
 
   it('should create a script', async () => {
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockReturnValue({
         returning: vi.fn().mockResolvedValue([{
-          id: 'script-1',
+          id: SCRIPT_ID_1,
           name: 'Install Agent',
-          orgId: 'org-123'
+          orgId: ORG_ID
         }])
       })
     } as any);
@@ -166,7 +171,7 @@ describe('scripts routes', () => {
 
     expect(res.status).toBe(201);
     const body = await res.json();
-    expect(body.id).toBe('script-1');
+    expect(body.id).toBe(SCRIPT_ID_1);
   });
 
   it('should update a script and return updated record', async () => {
@@ -174,12 +179,12 @@ describe('scripts routes', () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
-            id: 'script-1',
+            id: SCRIPT_ID_1,
             name: 'Old Script',
             content: 'old',
             version: 1,
             isSystem: false,
-            orgId: 'org-123'
+            orgId: ORG_ID
           }])
         })
       })
@@ -188,7 +193,7 @@ describe('scripts routes', () => {
       set: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           returning: vi.fn().mockResolvedValue([{
-            id: 'script-1',
+            id: SCRIPT_ID_1,
             name: 'Updated Script',
             version: 2
           }])
@@ -196,7 +201,7 @@ describe('scripts routes', () => {
       })
     } as any);
 
-    const res = await app.request('/scripts/script-1', {
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
       body: JSON.stringify({
@@ -216,10 +221,10 @@ describe('scripts routes', () => {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([{
-              id: 'script-1',
+              id: SCRIPT_ID_1,
               name: 'Script One',
               isSystem: false,
-              orgId: 'org-123'
+              orgId: ORG_ID
             }])
           })
         })
@@ -230,7 +235,7 @@ describe('scripts routes', () => {
         })
       } as any);
 
-    const res = await app.request('/scripts/script-1', {
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
       method: 'DELETE',
       headers: { Authorization: 'Bearer valid-token' }
     });
@@ -246,10 +251,10 @@ describe('scripts routes', () => {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([{
-              id: 'script-1',
+              id: SCRIPT_ID_1,
               name: 'Script One',
               isSystem: false,
-              orgId: 'org-123'
+              orgId: ORG_ID
             }])
           })
         })
@@ -263,7 +268,7 @@ describe('scripts routes', () => {
       where: vi.fn().mockResolvedValue(undefined)
     } as any);
 
-    const res = await app.request('/scripts/script-1', {
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
       method: 'DELETE',
       headers: { Authorization: 'Bearer valid-token' }
     });
@@ -280,7 +285,7 @@ describe('scripts routes', () => {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([{
-              id: 'script-1',
+              id: SCRIPT_ID_1,
               name: 'Script One',
               content: 'echo hello',
               language: 'bash',
@@ -288,7 +293,7 @@ describe('scripts routes', () => {
               timeoutSeconds: 300,
               runAs: 'system',
               isSystem: false,
-              orgId: 'org-123'
+              orgId: ORG_ID
             }])
           })
         })
@@ -296,8 +301,8 @@ describe('scripts routes', () => {
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockResolvedValue([
-            { id: 'device-1', orgId: 'org-123', osType: 'linux', status: 'online' },
-            { id: 'device-2', orgId: 'org-123', osType: 'linux', status: 'online' }
+            { id: 'device-1', orgId: ORG_ID, osType: 'linux', status: 'online' },
+            { id: 'device-2', orgId: ORG_ID, osType: 'linux', status: 'online' }
           ])
         })
       } as any);
@@ -333,7 +338,7 @@ describe('scripts routes', () => {
       })
     } as any);
 
-    const res = await app.request('/scripts/script-1/execute', {
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}/execute`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
       body: JSON.stringify({
@@ -355,10 +360,10 @@ describe('scripts routes', () => {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([{
-              id: 'script-1',
+              id: SCRIPT_ID_1,
               name: 'Script One',
               isSystem: false,
-              orgId: 'org-123'
+              orgId: ORG_ID
             }])
           })
         })
@@ -376,7 +381,7 @@ describe('scripts routes', () => {
                 limit: vi.fn().mockReturnValue({
                   offset: vi.fn().mockResolvedValue([{
                     id: 'exec-1',
-                    scriptId: 'script-1',
+                    scriptId: SCRIPT_ID_1,
                     deviceId: 'device-1',
                     status: 'completed'
                   }])
@@ -387,7 +392,7 @@ describe('scripts routes', () => {
         })
       } as any);
 
-    const res = await app.request('/scripts/script-1/executions', {
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}/executions`, {
       method: 'GET',
       headers: { Authorization: 'Bearer valid-token' }
     });
@@ -415,18 +420,18 @@ describe('scripts routes', () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
-            id: 'script-1',
+            id: SCRIPT_ID_1,
             name: 'Script One',
             content: 'echo',
             version: 1,
             isSystem: false,
-            orgId: 'org-123'
+            orgId: ORG_ID
           }])
         })
       })
     } as any);
 
-    const res = await app.request('/scripts/script-1', {
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
       body: JSON.stringify({})
@@ -436,7 +441,7 @@ describe('scripts routes', () => {
   });
 
   it('should validate execute payload', async () => {
-    const res = await app.request('/scripts/script-1/execute', {
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}/execute`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
       body: JSON.stringify({
@@ -448,7 +453,7 @@ describe('scripts routes', () => {
   });
 
   it('should reject unsupported runAs override on execute', async () => {
-    const res = await app.request('/scripts/script-1/execute', {
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}/execute`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
       body: JSON.stringify({

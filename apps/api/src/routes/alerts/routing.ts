@@ -138,7 +138,7 @@ routingRoutes.patch(
       const [updated] = await db
         .update(notificationRoutingRules)
         .set(setValues)
-        .where(eq(notificationRoutingRules.id, ruleId))
+        .where(and(eq(notificationRoutingRules.id, ruleId), eq(notificationRoutingRules.orgId, orgId)))
         .returning();
 
       writeRouteAudit(c, {
@@ -181,7 +181,9 @@ routingRoutes.delete(
         return c.json({ error: 'Routing rule not found' }, 404);
       }
 
-      await db.delete(notificationRoutingRules).where(eq(notificationRoutingRules.id, ruleId));
+      await db.delete(notificationRoutingRules).where(
+        and(eq(notificationRoutingRules.id, ruleId), eq(notificationRoutingRules.orgId, orgId))
+      );
 
       writeRouteAudit(c, {
         orgId,

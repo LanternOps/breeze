@@ -10,13 +10,15 @@ export const agentVersions = pgTable('agent_versions', {
   fileSize: bigint('file_size', { mode: 'bigint' }),
   releaseNotes: text('release_notes'),
   isLatest: boolean('is_latest').notNull().default(false),
+  component: varchar('component', { length: 20 }).notNull().default('agent'), // agent, helper, viewer
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
-  // Composite unique constraint on (version, platform, architecture)
-  versionPlatformArchUnique: unique('agent_versions_version_platform_arch_unique').on(
+  // Composite unique constraint on (version, platform, architecture, component)
+  versionPlatformArchComponentUnique: unique('agent_versions_version_platform_arch_component_unique').on(
     table.version,
     table.platform,
-    table.architecture
+    table.architecture,
+    table.component
   ),
   // Index on isLatest for fast lookups of latest versions
   isLatestIdx: index('agent_versions_is_latest_idx').on(table.isLatest)

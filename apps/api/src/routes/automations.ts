@@ -470,6 +470,11 @@ automationRoutes.post(
       return c.json({ error: 'trigger or triggerType is required' }, 400);
     }
 
+    // Require a secret for webhook-type automations
+    if (isPlainRecord(triggerInput) && triggerInput.type === 'webhook' && !asNonEmptyString(triggerInput.secret)) {
+      return c.json({ error: 'Webhook automations require a secret' }, 400);
+    }
+
     if (data.actions === undefined) {
       return c.json({ error: 'actions are required' }, 400);
     }
@@ -575,6 +580,11 @@ async function handleUpdateAutomation(c: Context) {
             secret: currentSecret,
           };
         }
+      }
+
+      // Require a secret for webhook-type automations (new or updated)
+      if (nextTrigger.type === 'webhook' && !nextTrigger.secret) {
+        return c.json({ error: 'Webhook automations require a secret' }, 400);
       }
 
       updates.trigger = withWebhookDefaults(

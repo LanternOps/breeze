@@ -21,3 +21,4 @@ reqwest = { version = "0.12", features = ["rustls-tls", "stream"], default-featu
 tokio = { version = "1", features = ["sync"] }
 futures-util = "0.3"
 whoami = "1"
+chrono = "0.4"

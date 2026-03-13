@@ -9,12 +9,14 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/breeze-rmm/agent/internal/secmem"
 )
 
 func TestNewCreatesUpdater(t *testing.T) {
 	cfg := &Config{
 		ServerURL:      "http://localhost:3001",
-		AuthToken:      "brz_test",
+		AuthToken:      secmem.NewSecureString("brz_test"),
 		CurrentVersion: "0.1.0",
 		BinaryPath:     "/usr/local/bin/breeze-agent",
 		BackupPath:     "/usr/local/bin/breeze-agent.backup",
@@ -221,7 +223,7 @@ func TestDownloadBinary(t *testing.T) {
 
 	u := New(&Config{
 		ServerURL: server.URL,
-		AuthToken: "test-token",
+		AuthToken: secmem.NewSecureString("test-token"),
 	})
 	u.client = server.Client()
 
@@ -267,7 +269,7 @@ func TestDownloadBinaryRedirectResponse(t *testing.T) {
 
 	u := New(&Config{
 		ServerURL: server.URL,
-		AuthToken: "test-token",
+		AuthToken: secmem.NewSecureString("test-token"),
 	})
 	u.client = server.Client()
 
@@ -352,7 +354,7 @@ func TestEndToEndUpdateWithoutRestart(t *testing.T) {
 
 	u := New(&Config{
 		ServerURL:      server.URL,
-		AuthToken:      "tok",
+		AuthToken:      secmem.NewSecureString("tok"),
 		CurrentVersion: "0.1.0",
 		BinaryPath:     binaryPath,
 		BackupPath:     backupPath,

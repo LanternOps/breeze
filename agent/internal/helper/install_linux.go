@@ -2,13 +2,44 @@ package helper
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
 const desktopEntryDir = "/etc/xdg/autostart"
 const desktopEntryPath = "/etc/xdg/autostart/breeze-helper.desktop"
+
+func packageExtension() string { return ".AppImage" }
+
+// installPackage copies the AppImage to the target path and makes it executable.
+// AppImages are self-contained and directly runnable.
+func installPackage(appImagePath, binaryPath string) error {
+	if err := os.MkdirAll(filepath.Dir(binaryPath), 0755); err != nil {
+		return fmt.Errorf("create binary dir: %w", err)
+	}
+
+	src, err := os.Open(appImagePath)
+	if err != nil {
+		return fmt.Errorf("open appimage: %w", err)
+	}
+	defer src.Close()
+
+	dst, err := os.OpenFile(binaryPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	if err != nil {
+		return fmt.Errorf("create binary: %w", err)
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, src); err != nil {
+		return fmt.Errorf("copy appimage: %w", err)
+	}
+
+	log.Info("AppImage installed", "path", binaryPath)
+	return nil
+}
 
 func installAutoStart(binaryPath string) error {
 	entry := fmt.Sprintf(`[Desktop Entry]

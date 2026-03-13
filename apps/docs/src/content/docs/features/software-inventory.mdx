@@ -16,8 +16,8 @@ Together, these systems let you answer questions like "which devices are running
   For enforcement-based software management (allowlists and blocklists), see [Software Policies](/features/software-policies/). For patching and update management, see [Patch Management](/features/patch-management/).
 </Aside>
 
-<Aside type="caution" title="Implementation Status">
-  The **software catalog**, **deployments**, and **inventory** endpoints under `/software/*` currently use an in-memory data store and do not persist across API restarts. The **device-specific endpoint** (`GET /devices/:id/software`) is the exception — it queries the `software_inventory` database table directly via Drizzle ORM and reflects persisted data. The database schema tables documented below are defined but not yet wired to the `/software/*` route handlers.
+<Aside type="tip">
+  The software catalog, deployments, and inventory endpoints are fully persisted via Drizzle ORM with PostgreSQL. Software packages can be uploaded to S3 with SHA-256 checksum verification and deployed silently to endpoints. The sidebar labels for these features are **App Library** (`/software`) and **App Policies** (`/software-inventory`).
 </Aside>
 
 ---

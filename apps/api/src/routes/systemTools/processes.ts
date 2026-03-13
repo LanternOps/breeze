@@ -1,10 +1,17 @@
 import { Hono } from 'hono';
+import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { createAuditLog } from '../../services/auditService';
 import { getDeviceWithOrgCheck, getPagination } from './helpers';
 import { deviceIdParamSchema, pidParamSchema, paginationQuerySchema } from './schemas';
+
+const processListQuerySchema = z.object({
+  page: z.string().optional(),
+  limit: z.string().optional(),
+  search: z.string().max(500).optional(),
+});
 
 export const processesRoutes = new Hono();
 
@@ -14,7 +21,7 @@ processesRoutes.get(
   authMiddleware,
   requireScope('system', 'partner', 'organization'),
   zValidator('param', deviceIdParamSchema),
-  zValidator('query', paginationQuerySchema),
+  zValidator('query', processListQuerySchema),
   async (c) => {
     const { deviceId } = c.req.valid('param');
     const auth = c.get('auth');
@@ -24,14 +31,15 @@ processesRoutes.get(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    const { page, limit } = getPagination(c.req.valid('query'));
-    const search = c.req.query('search') || '';
+    const query = c.req.valid('query');
+    const { page, limit } = getPagination(query, 500);
+    const search = query.search || '';
 
     const result = await executeCommand(deviceId, CommandTypes.LIST_PROCESSES, {
       page,
       limit,
       search
-    }, { userId: auth.user?.id, timeoutMs: 30000 });
+    }, { userId: auth.user?.id, timeoutMs: 60000 });
 
     if (result.status === 'failed') {
       return c.json({ error: result.error || 'Failed to get processes' }, 500);
@@ -95,10 +103,13 @@ processesRoutes.post(
   authMiddleware,
   requireScope('system', 'partner', 'organization'),
   zValidator('param', pidParamSchema),
+  zValidator('query', z.object({
+    force: z.enum(['true', 'false']).optional(),
+  })),
   async (c) => {
     const { deviceId, pid } = c.req.valid('param');
     const auth = c.get('auth');
-    const force = c.req.query('force') === 'true';
+    const force = c.req.valid('query').force === 'true';
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {

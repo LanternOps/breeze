@@ -157,6 +157,12 @@ func (s *Session) write(data []byte) error {
 		return fmt.Errorf("session is closed")
 	}
 
+	// Forward control characters as signals to the shell process.
+	// This runs on all platforms before writing data to the pipe/PTY.
+	for _, b := range data {
+		s.forwardSignal(b)
+	}
+
 	// Prefer stdin pipe (Windows), fall back to PTY fd (Unix/macOS)
 	if s.stdin != nil {
 		_, err := s.stdin.Write(data)
@@ -210,13 +216,17 @@ func (s *Session) close() error {
 
 // readLoop reads output from the PTY and sends it to the callback
 func (s *Session) readLoop() {
+	log.Info("readLoop started", "sessionId", s.ID)
 	buf := make([]byte, 4096)
+	firstRead := true
 
 	for {
 		n, err := s.pty.Read(buf)
 		if err != nil {
 			if err != io.EOF {
 				log.Warn("session read error", "sessionId", s.ID, "error", err)
+			} else {
+				log.Info("readLoop EOF", "sessionId", s.ID)
 			}
 			if s.onClose != nil {
 				s.onClose(err)
@@ -225,6 +235,10 @@ func (s *Session) readLoop() {
 		}
 
 		if n > 0 && s.onOutput != nil {
+			if firstRead {
+				log.Info("readLoop first data", "sessionId", s.ID, "bytes", n)
+				firstRead = false
+			}
 			// Make a copy of the data
 			data := make([]byte, n)
 			copy(data, buf[:n])

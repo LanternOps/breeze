@@ -11,6 +11,7 @@ import {
   getRedis
 } from '../../services';
 import { ENABLE_REGISTRATION, registerSchema, registerPartnerSchema } from './schemas';
+import { dispatchHook } from '../../services/partnerHooks';
 import {
   runWithSystemDbAccess,
   getClientRateLimitKey,
@@ -171,104 +172,136 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
       }
     }
 
-    // Start transaction - create partner, role, user, and association
+    // Hash password before transaction (CPU-intensive, don't hold tx open)
+    const passwordHash = await hashPassword(password);
+
+    // Atomic transaction — all-or-nothing creation of partner, role, user, association
     try {
-      // Create partner
-      const [newPartner] = await db
-        .insert(partners)
-        .values({
-          name: companyName,
-          slug,
-          type: 'msp',
-          plan: 'free'
-        })
-        .returning();
+      const result = await db.transaction(async (tx) => {
+        const [newPartner] = await tx
+          .insert(partners)
+          .values({
+            name: companyName,
+            slug,
+            type: 'msp',
+            plan: 'free',
+            status: 'active',
+            billingEmail: email.toLowerCase(),
+          })
+          .returning();
 
-      if (!newPartner) {
-        return c.json({ error: 'Failed to create company' }, 500);
-      }
+        if (!newPartner) {
+          throw new Error('Failed to create company');
+        }
 
-      // Create Partner Admin role for this partner
-      const [adminRole] = await db
-        .insert(roles)
-        .values({
+        const [adminRole] = await tx
+          .insert(roles)
+          .values({
+            partnerId: newPartner.id,
+            scope: 'partner',
+            name: 'Partner Admin',
+            description: 'Full access to partner and all organizations',
+            isSystem: true
+          })
+          .returning();
+
+        if (!adminRole) {
+          throw new Error('Failed to create admin role');
+        }
+
+        const [newUser] = await tx
+          .insert(users)
+          .values({
+            email: email.toLowerCase(),
+            name,
+            passwordHash,
+            status: 'active'
+          })
+          .returning();
+
+        if (!newUser) {
+          throw new Error('Failed to create user');
+        }
+
+        await tx.insert(partnerUsers).values({
           partnerId: newPartner.id,
-          scope: 'partner',
-          name: 'Partner Admin',
-          description: 'Full access to partner and all organizations',
-          isSystem: true
-        })
-        .returning();
+          userId: newUser.id,
+          roleId: adminRole.id,
+          orgAccess: 'all'
+        });
 
-      if (!adminRole) {
-        // Cleanup partner
-        await db.delete(partners).where(eq(partners.id, newPartner.id));
-        return c.json({ error: 'Failed to create admin role' }, 500);
-      }
+        // Update last login inside tx
+        await tx
+          .update(users)
+          .set({ lastLoginAt: new Date() })
+          .where(eq(users.id, newUser.id));
 
-      // Create user
-      const passwordHash = await hashPassword(password);
-      const [newUser] = await db
-        .insert(users)
-        .values({
-          email: email.toLowerCase(),
-          name,
-          passwordHash,
-          status: 'active'
-        })
-        .returning();
-
-      if (!newUser) {
-        // Cleanup
-        await db.delete(roles).where(eq(roles.id, adminRole.id));
-        await db.delete(partners).where(eq(partners.id, newPartner.id));
-        return c.json({ error: 'Failed to create user' }, 500);
-      }
-
-      // Associate user with partner
-      await db.insert(partnerUsers).values({
-        partnerId: newPartner.id,
-        userId: newUser.id,
-        roleId: adminRole.id,
-        orgAccess: 'all'
+        return { newPartner, adminRole, newUser };
       });
 
-      // Create tokens with partner scope
+      // Token creation outside tx (doesn't need rollback)
       const tokens = await createTokenPair({
-        sub: newUser.id,
-        email: newUser.email,
-        roleId: adminRole.id,
+        sub: result.newUser.id,
+        email: result.newUser.email,
+        roleId: result.adminRole.id,
         orgId: null,
-        partnerId: newPartner.id,
+        partnerId: result.newPartner.id,
         scope: 'partner',
         mfa: false
       });
 
-      // Update last login
-      await db
-        .update(users)
-        .set({ lastLoginAt: new Date() })
-        .where(eq(users.id, newUser.id));
-
       setRefreshTokenCookie(c, tokens.refreshToken);
+
+      // Dispatch post-registration hook (external services can override status/redirect)
+      const hookResponse = await dispatchHook('registration', result.newPartner.id, {
+        email: result.newUser.email,
+        partnerName: result.newPartner.name,
+        plan: result.newPartner.plan,
+      });
+
+      // If hook overrides the partner status (e.g. to 'pending'), apply it
+      const VALID_STATUSES = ['pending', 'active', 'suspended', 'churned'] as const;
+      let effectiveStatus: string = result.newPartner.status;
+
+      if (hookResponse?.status && hookResponse.status !== result.newPartner.status) {
+        if (!VALID_STATUSES.includes(hookResponse.status as any)) {
+          console.error(`[Registration] Hook returned invalid status '${hookResponse.status}' for partner ${result.newPartner.id}; ignoring`);
+        } else {
+          try {
+            await db
+              .update(partners)
+              .set({ status: hookResponse.status as typeof result.newPartner.status })
+              .where(eq(partners.id, result.newPartner.id));
+            effectiveStatus = hookResponse.status;
+          } catch (statusErr) {
+            console.error(`[Registration] Failed to update partner ${result.newPartner.id} status to '${hookResponse.status}':`, statusErr instanceof Error ? statusErr.message : String(statusErr));
+            effectiveStatus = hookResponse.status;
+          }
+        }
+      }
+
+      // Only allow relative redirects from hooks to prevent open redirect
+      const redirectUrl = hookResponse?.redirectUrl?.startsWith('/') ? hookResponse.redirectUrl : undefined;
 
       return c.json({
         user: {
-          id: newUser.id,
-          email: newUser.email,
-          name: newUser.name,
+          id: result.newUser.id,
+          email: result.newUser.email,
+          name: result.newUser.name,
           mfaEnabled: false
         },
         partner: {
-          id: newPartner.id,
-          name: newPartner.name,
-          slug: newPartner.slug
+          id: result.newPartner.id,
+          name: result.newPartner.name,
+          slug: result.newPartner.slug,
+          status: effectiveStatus,
         },
         tokens: toPublicTokens(tokens),
-        mfaRequired: false
+        mfaRequired: false,
+        ...(redirectUrl ? { redirectUrl } : {}),
       });
     } catch (err) {
-      console.error('Partner registration error:', err);
+      console.error('Partner registration error:', err instanceof Error ? err.message : String(err));
       return c.json({ error: 'Registration failed. Please try again.' }, 500);
     }
   });

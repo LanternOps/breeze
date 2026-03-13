@@ -86,7 +86,11 @@ When a deployment auto-pauses, it enters a `paused` sub-state between batches. A
 
 4. Select the **Type**: Script, Patch, Software, or Policy (config update).
 
-5. Configure the **Payload** for the selected type (choose a script, select patches, or pick a configuration policy).
+5. Configure the **Payload** for the selected type:
+   - **Script**: Choose a script from the library and set parameters.
+   - **Patch**: Select patches to install from the patch catalog.
+   - **Software**: Choose a package from the App Library. The agent downloads from a presigned S3 URL, verifies the SHA-256 checksum, and runs the installer silently (MSI/EXE on Windows, DEB on Linux, PKG/DMG on macOS). MSI packages default to `/qn /norestart` silent install arguments.
+   - **Policy**: Select a configuration policy to apply.
 
 6. Select the **Target Type** and specify target devices, groups, or a filter expression.
 

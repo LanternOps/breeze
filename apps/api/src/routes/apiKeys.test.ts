@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { apiKeyRoutes } from './apiKeys';
 
+// Valid UUID constants for tests
+const KEY_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+
 vi.mock('../services', () => ({}));
 
 vi.mock('../db', () => ({
@@ -40,9 +44,10 @@ vi.mock('../middleware/auth', () => ({
     c.set('auth', {
       scope: 'organization',
       partnerId: null,
-      orgId: 'org-123',
+      orgId: ORG_ID,
       token: { mfa: true },
-      user: { id: 'user-123', email: 'test@example.com' }
+      user: { id: 'user-123', email: 'test@example.com' },
+      canAccessOrg: (orgId: string) => orgId === ORG_ID
     });
     return next();
   }),
@@ -70,8 +75,9 @@ describe('api keys routes', () => {
       c.set('auth', {
         scope: 'organization',
         partnerId: null,
-        orgId: 'org-123',
-        user: { id: 'user-123', email: 'test@example.com' }
+        orgId: ORG_ID,
+        user: { id: 'user-123', email: 'test@example.com' },
+        canAccessOrg: (orgId: string) => orgId === ORG_ID
       });
       return next();
     });
@@ -82,8 +88,8 @@ describe('api keys routes', () => {
   it('should list API keys', async () => {
     const keys = [
       {
-        id: 'key-1',
-        orgId: 'org-123',
+        id: KEY_ID,
+        orgId: ORG_ID,
         name: 'Primary Key',
         keyPrefix: 'brz_abc12345',
         scopes: ['read'],
@@ -132,8 +138,8 @@ describe('api keys routes', () => {
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockReturnValue({
         returning: vi.fn().mockResolvedValue([{
-          id: 'key-1',
-          orgId: 'org-123',
+          id: KEY_ID,
+          orgId: ORG_ID,
           name: 'Primary Key',
           keyPrefix: 'brz_abc12345',
           scopes: ['read'],
@@ -150,7 +156,7 @@ describe('api keys routes', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        orgId: 'org-123',
+        orgId: ORG_ID,
         name: 'Primary Key',
         scopes: ['read'],
         rateLimit: 1000
@@ -168,8 +174,8 @@ describe('api keys routes', () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
-            id: 'key-1',
-            orgId: 'org-123',
+            id: KEY_ID,
+            orgId: ORG_ID,
             name: 'Primary Key',
             keyPrefix: 'brz_abc12345',
             scopes: ['read'],
@@ -186,15 +192,15 @@ describe('api keys routes', () => {
       })
     } as any);
 
-    const res = await app.request('/api-keys/key-1', {
+    const res = await app.request(`/api-keys/${KEY_ID}`, {
       method: 'GET',
       headers: { Authorization: 'Bearer token' }
     });
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.id).toBe('key-1');
-    expect(body.orgId).toBe('org-123');
+    expect(body.id).toBe(KEY_ID);
+    expect(body.orgId).toBe(ORG_ID);
   });
 
   it('should update an API key', async () => {
@@ -202,8 +208,8 @@ describe('api keys routes', () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
-            id: 'key-1',
-            orgId: 'org-123',
+            id: KEY_ID,
+            orgId: ORG_ID,
             name: 'Primary Key',
             status: 'active'
           }])
@@ -214,8 +220,8 @@ describe('api keys routes', () => {
       set: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           returning: vi.fn().mockResolvedValue([{
-            id: 'key-1',
-            orgId: 'org-123',
+            id: KEY_ID,
+            orgId: ORG_ID,
             name: 'Updated Key',
             keyPrefix: 'brz_abc12345',
             scopes: ['read', 'write'],
@@ -232,7 +238,7 @@ describe('api keys routes', () => {
       })
     } as any);
 
-    const res = await app.request('/api-keys/key-1', {
+    const res = await app.request(`/api-keys/${KEY_ID}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -253,8 +259,8 @@ describe('api keys routes', () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
-            id: 'key-1',
-            orgId: 'org-123',
+            id: KEY_ID,
+            orgId: ORG_ID,
             status: 'active'
           }])
         })
@@ -264,7 +270,7 @@ describe('api keys routes', () => {
       set: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           returning: vi.fn().mockResolvedValue([{
-            id: 'key-1',
+            id: KEY_ID,
             name: 'Primary Key',
             keyPrefix: 'brz_abc12345',
             status: 'revoked',
@@ -274,7 +280,7 @@ describe('api keys routes', () => {
       })
     } as any);
 
-    const res = await app.request('/api-keys/key-1', {
+    const res = await app.request(`/api-keys/${KEY_ID}`, {
       method: 'DELETE',
       headers: { Authorization: 'Bearer token' }
     });
@@ -290,8 +296,8 @@ describe('api keys routes', () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
-            id: 'key-1',
-            orgId: 'org-123',
+            id: KEY_ID,
+            orgId: ORG_ID,
             status: 'active'
           }])
         })
@@ -301,8 +307,8 @@ describe('api keys routes', () => {
       set: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           returning: vi.fn().mockResolvedValue([{
-            id: 'key-1',
-            orgId: 'org-123',
+            id: KEY_ID,
+            orgId: ORG_ID,
             name: 'Primary Key',
             keyPrefix: 'brz_rotated',
             scopes: ['read'],
@@ -317,7 +323,7 @@ describe('api keys routes', () => {
       })
     } as any);
 
-    const res = await app.request('/api-keys/key-1/rotate', {
+    const res = await app.request(`/api-keys/${KEY_ID}/rotate`, {
       method: 'POST',
       headers: { Authorization: 'Bearer token' }
     });
