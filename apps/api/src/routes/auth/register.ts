@@ -171,108 +171,105 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
       }
     }
 
-    // Start transaction - create partner, role, user, and association
+    // Hash password before transaction (CPU-intensive, don't hold tx open)
+    const passwordHash = await hashPassword(password);
+
+    // Atomic transaction — all-or-nothing creation of partner, role, user, association
     try {
-      // Create partner
-      const [newPartner] = await db
-        .insert(partners)
-        .values({
-          name: companyName,
-          slug,
-          type: 'msp',
-          plan: 'free',
-          status: 'pending',
-          billingEmail: email.toLowerCase(),
-        })
-        .returning();
+      const result = await db.transaction(async (tx) => {
+        const [newPartner] = await tx
+          .insert(partners)
+          .values({
+            name: companyName,
+            slug,
+            type: 'msp',
+            plan: 'free',
+            status: 'pending',
+            billingEmail: email.toLowerCase(),
+          })
+          .returning();
 
-      if (!newPartner) {
-        return c.json({ error: 'Failed to create company' }, 500);
-      }
+        if (!newPartner) {
+          throw new Error('Failed to create company');
+        }
 
-      // Create Partner Admin role for this partner
-      const [adminRole] = await db
-        .insert(roles)
-        .values({
+        const [adminRole] = await tx
+          .insert(roles)
+          .values({
+            partnerId: newPartner.id,
+            scope: 'partner',
+            name: 'Partner Admin',
+            description: 'Full access to partner and all organizations',
+            isSystem: true
+          })
+          .returning();
+
+        if (!adminRole) {
+          throw new Error('Failed to create admin role');
+        }
+
+        const [newUser] = await tx
+          .insert(users)
+          .values({
+            email: email.toLowerCase(),
+            name,
+            passwordHash,
+            status: 'active'
+          })
+          .returning();
+
+        if (!newUser) {
+          throw new Error('Failed to create user');
+        }
+
+        await tx.insert(partnerUsers).values({
           partnerId: newPartner.id,
-          scope: 'partner',
-          name: 'Partner Admin',
-          description: 'Full access to partner and all organizations',
-          isSystem: true
-        })
-        .returning();
+          userId: newUser.id,
+          roleId: adminRole.id,
+          orgAccess: 'all'
+        });
 
-      if (!adminRole) {
-        // Cleanup partner
-        await db.delete(partners).where(eq(partners.id, newPartner.id));
-        return c.json({ error: 'Failed to create admin role' }, 500);
-      }
+        // Update last login inside tx
+        await tx
+          .update(users)
+          .set({ lastLoginAt: new Date() })
+          .where(eq(users.id, newUser.id));
 
-      // Create user
-      const passwordHash = await hashPassword(password);
-      const [newUser] = await db
-        .insert(users)
-        .values({
-          email: email.toLowerCase(),
-          name,
-          passwordHash,
-          status: 'active'
-        })
-        .returning();
-
-      if (!newUser) {
-        // Cleanup
-        await db.delete(roles).where(eq(roles.id, adminRole.id));
-        await db.delete(partners).where(eq(partners.id, newPartner.id));
-        return c.json({ error: 'Failed to create user' }, 500);
-      }
-
-      // Associate user with partner
-      await db.insert(partnerUsers).values({
-        partnerId: newPartner.id,
-        userId: newUser.id,
-        roleId: adminRole.id,
-        orgAccess: 'all'
+        return { newPartner, adminRole, newUser };
       });
 
-      // Create tokens with partner scope
+      // Token creation outside tx (doesn't need rollback)
       const tokens = await createTokenPair({
-        sub: newUser.id,
-        email: newUser.email,
-        roleId: adminRole.id,
+        sub: result.newUser.id,
+        email: result.newUser.email,
+        roleId: result.adminRole.id,
         orgId: null,
-        partnerId: newPartner.id,
+        partnerId: result.newPartner.id,
         scope: 'partner',
         mfa: false
       });
-
-      // Update last login
-      await db
-        .update(users)
-        .set({ lastLoginAt: new Date() })
-        .where(eq(users.id, newUser.id));
 
       setRefreshTokenCookie(c, tokens.refreshToken);
 
       return c.json({
         user: {
-          id: newUser.id,
-          email: newUser.email,
-          name: newUser.name,
+          id: result.newUser.id,
+          email: result.newUser.email,
+          name: result.newUser.name,
           mfaEnabled: false
         },
         partner: {
-          id: newPartner.id,
-          name: newPartner.name,
-          slug: newPartner.slug,
-          status: newPartner.status,
+          id: result.newPartner.id,
+          name: result.newPartner.name,
+          slug: result.newPartner.slug,
+          status: result.newPartner.status,
         },
         tokens: toPublicTokens(tokens),
         mfaRequired: false,
         requiresCheckout: true,
       });
     } catch (err) {
-      console.error('Partner registration error:', err);
+      console.error('Partner registration error:', err instanceof Error ? err.message : String(err));
       return c.json({ error: 'Registration failed. Please try again.' }, 500);
     }
   });

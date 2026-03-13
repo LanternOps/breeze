@@ -11,6 +11,8 @@ const STEPS = [
 ];
 
 const STORAGE_KEY = 'breeze-setup-step';
+const SETUP_ORG_KEY = 'breeze-setup-org';
+const SETUP_SITE_KEY = 'breeze-setup-site';
 
 export default function SetupWizard() {
   const [currentStep, setCurrentStep] = useState(0);
@@ -19,9 +21,13 @@ export default function SetupWizard() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isLoading = useAuthStore((s) => s.isLoading);
 
-  // Created org/site IDs passed from step 1 to step 2
-  const [orgId, setOrgId] = useState<string | null>(null);
-  const [siteId, setSiteId] = useState<string | null>(null);
+  // Created org/site IDs passed from step 1 to step 2 (persisted to localStorage)
+  const [orgId, setOrgId] = useState<string | null>(() => {
+    try { return localStorage.getItem(SETUP_ORG_KEY); } catch { return null; }
+  });
+  const [siteId, setSiteId] = useState<string | null>(() => {
+    try { return localStorage.getItem(SETUP_SITE_KEY); } catch { return null; }
+  });
 
   // Wait for zustand to rehydrate from localStorage before checking auth
   useEffect(() => {
@@ -87,6 +93,8 @@ export default function SetupWizard() {
   const handleOrgStepComplete = (createdOrgId: string, createdSiteId: string) => {
     setOrgId(createdOrgId);
     setSiteId(createdSiteId);
+    try { localStorage.setItem(SETUP_ORG_KEY, createdOrgId); } catch { /* ignore */ }
+    try { localStorage.setItem(SETUP_SITE_KEY, createdSiteId); } catch { /* ignore */ }
     setCurrentStep(1);
   };
 
@@ -98,6 +106,8 @@ export default function SetupWizard() {
     }
     try {
       localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(SETUP_ORG_KEY);
+      localStorage.removeItem(SETUP_SITE_KEY);
     } catch (err) {
       console.warn('[SetupWizard] Failed to clear localStorage:', err);
     }

@@ -25,7 +25,12 @@ export default function PendingGuard() {
 
     fetchWithAuth('/partner/me')
       .then((res) => {
-        if (!res.ok || cancelled) return null;
+        if (cancelled) return null;
+        if (!res.ok) {
+          // Fail closed: if we can't verify partner status, redirect to billing
+          window.location.href = '/billing/plans';
+          return null;
+        }
         return res.json();
       })
       .then((data) => {
@@ -35,7 +40,10 @@ export default function PendingGuard() {
         }
       })
       .catch(() => {
-        // Non-critical — if the request fails, don't block the user
+        // Fail closed: network error means we can't verify, redirect to billing
+        if (!cancelled) {
+          window.location.href = '/billing/plans';
+        }
       });
 
     return () => {
