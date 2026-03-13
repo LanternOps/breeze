@@ -17,6 +17,7 @@ import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
 import { enrollSchema } from './schemas';
 import { generateAgentId, generateApiKey, issueMtlsCertForDevice } from './helpers';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
+import { dispatchHook } from '../../services/partnerHooks';
 
 export const enrollmentRoutes = new Hono();
 
@@ -98,11 +99,18 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
 
         const activeCount = Number(countResult?.count ?? 0);
         if (activeCount >= partner.maxDevices) {
+          const hookResponse = await dispatchHook('device-limit', org.partnerId, {
+            currentDevices: activeCount,
+            maxDevices: partner.maxDevices,
+          });
+
           return c.json({
             error: 'Device limit reached',
             code: 'DEVICE_LIMIT_REACHED',
             currentDevices: activeCount,
             maxDevices: partner.maxDevices,
+            ...(hookResponse?.upgradeUrl ? { upgradeUrl: hookResponse.upgradeUrl } : {}),
+            ...(hookResponse?.message ? { message: hookResponse.message } : {}),
           }, 403);
         }
       }
