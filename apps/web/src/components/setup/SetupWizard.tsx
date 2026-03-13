@@ -2,28 +2,32 @@ import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import SetupStepper from './SetupStepper';
-import AccountSetupStep from './AccountSetupStep';
 import OrganizationSetupStep from './OrganizationSetupStep';
-import ConfigReviewStep from './ConfigReviewStep';
-import SetupSummaryStep from './SetupSummaryStep';
+import EnrollDeviceStep from './EnrollDeviceStep';
 
 const STEPS = [
-  { label: 'Account' },
   { label: 'Organization' },
-  { label: 'Config' },
-  { label: 'Summary' }
+  { label: 'Enroll Device' },
 ];
 
 const STORAGE_KEY = 'breeze-setup-step';
+const SETUP_ORG_KEY = 'breeze-setup-org';
+const SETUP_SITE_KEY = 'breeze-setup-site';
 
 export default function SetupWizard() {
   const [currentStep, setCurrentStep] = useState(0);
-  const [stepsVisited, setStepsVisited] = useState([false, false, false]);
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [isHydrated, setIsHydrated] = useState(false);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isLoading = useAuthStore((s) => s.isLoading);
-  const user = useAuthStore((s) => s.user);
+
+  // Created org/site IDs passed from step 1 to step 2 (persisted to localStorage)
+  const [orgId, setOrgId] = useState<string | null>(() => {
+    try { return localStorage.getItem(SETUP_ORG_KEY); } catch { return null; }
+  });
+  const [siteId, setSiteId] = useState<string | null>(() => {
+    try { return localStorage.getItem(SETUP_SITE_KEY); } catch { return null; }
+  });
 
   // Wait for zustand to rehydrate from localStorage before checking auth
   useEffect(() => {
@@ -86,13 +90,12 @@ export default function SetupWizard() {
     checkSetup();
   }, [isHydrated, isLoading, isAuthenticated]);
 
-  const goToNext = (stepIndex: number) => {
-    setStepsVisited((prev) => {
-      const next = [...prev];
-      next[stepIndex] = true;
-      return next;
-    });
-    setCurrentStep((prev) => Math.min(prev + 1, STEPS.length - 1));
+  const handleOrgStepComplete = (createdOrgId: string, createdSiteId: string) => {
+    setOrgId(createdOrgId);
+    setSiteId(createdSiteId);
+    try { localStorage.setItem(SETUP_ORG_KEY, createdOrgId); } catch { /* ignore */ }
+    try { localStorage.setItem(SETUP_SITE_KEY, createdSiteId); } catch { /* ignore */ }
+    setCurrentStep(1);
   };
 
   const handleSkipAll = async () => {
@@ -103,10 +106,16 @@ export default function SetupWizard() {
     }
     try {
       localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(SETUP_ORG_KEY);
+      localStorage.removeItem(SETUP_SITE_KEY);
     } catch (err) {
       console.warn('[SetupWizard] Failed to clear localStorage:', err);
     }
     window.location.href = '/';
+  };
+
+  const handleEnrollFinish = () => {
+    // EnrollDeviceStep handles setup-complete and redirect internally
   };
 
   if (checkingAuth) {
@@ -122,13 +131,19 @@ export default function SetupWizard() {
       <SetupStepper steps={STEPS} currentStep={currentStep} />
 
       <div className="rounded-lg border bg-card p-6 shadow-sm">
-        {currentStep === 0 && <AccountSetupStep onNext={() => goToNext(0)} />}
-        {currentStep === 1 && <OrganizationSetupStep onNext={() => goToNext(1)} />}
-        {currentStep === 2 && <ConfigReviewStep onNext={() => goToNext(2)} />}
-        {currentStep === 3 && <SetupSummaryStep stepsVisited={stepsVisited} />}
+        {currentStep === 0 && (
+          <OrganizationSetupStep onNext={handleOrgStepComplete} />
+        )}
+        {currentStep === 1 && orgId && siteId && (
+          <EnrollDeviceStep
+            orgId={orgId}
+            siteId={siteId}
+            onFinish={handleEnrollFinish}
+          />
+        )}
       </div>
 
-      {currentStep < 3 && (
+      {currentStep === 0 && (
         <div className="text-center">
           <button
             onClick={handleSkipAll}

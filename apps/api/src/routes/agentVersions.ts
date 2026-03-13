@@ -32,7 +32,8 @@ const architectureEnum = z.enum(['amd64', 'arm64']);
 
 const latestQuerySchema = z.object({
   platform: platformEnum,
-  arch: architectureEnum
+  arch: architectureEnum,
+  component: z.enum(['agent', 'helper', 'viewer']).optional().default('agent')
 });
 
 const downloadParamsSchema = z.object({
@@ -41,7 +42,8 @@ const downloadParamsSchema = z.object({
 
 const downloadQuerySchema = z.object({
   platform: platformEnum,
-  arch: architectureEnum
+  arch: architectureEnum,
+  component: z.enum(['agent', 'helper', 'viewer']).optional().default('agent')
 });
 
 const createVersionSchema = z.object({
@@ -52,7 +54,8 @@ const createVersionSchema = z.object({
   checksum: z.string().length(64), // SHA256 is 64 hex characters
   fileSize: z.number().int().positive().optional(),
   releaseNotes: z.string().optional(),
-  isLatest: z.boolean().optional().default(false)
+  isLatest: z.boolean().optional().default(false),
+  component: z.enum(['agent', 'helper', 'viewer']).optional().default('agent')
 });
 
 // GET /agent-versions/latest - Get latest version info for platform/arch
@@ -61,7 +64,7 @@ agentVersionRoutes.get(
   '/latest',
   zValidator('query', latestQuerySchema),
   async (c) => {
-    const { platform: rawPlatform, arch } = c.req.valid('query');
+    const { platform: rawPlatform, arch, component } = c.req.valid('query');
     const platform = PLATFORM_MAP[rawPlatform] ?? rawPlatform;
 
     const [latestVersion] = await db
@@ -77,6 +80,7 @@ agentVersionRoutes.get(
         and(
           eq(agentVersions.platform, platform),
           eq(agentVersions.architecture, arch),
+          eq(agentVersions.component, component),
           eq(agentVersions.isLatest, true)
         )
       )
@@ -104,7 +108,7 @@ agentVersionRoutes.get(
   zValidator('query', downloadQuerySchema),
   async (c) => {
     const { version } = c.req.valid('param');
-    const { platform: rawPlatform, arch } = c.req.valid('query');
+    const { platform: rawPlatform, arch, component } = c.req.valid('query');
     const platform = PLATFORM_MAP[rawPlatform] ?? rawPlatform;
 
     const [versionInfo] = await db
@@ -117,7 +121,8 @@ agentVersionRoutes.get(
         and(
           eq(agentVersions.version, version),
           eq(agentVersions.platform, platform),
-          eq(agentVersions.architecture, arch)
+          eq(agentVersions.architecture, arch),
+          eq(agentVersions.component, component)
         )
       )
       .limit(1);
@@ -145,7 +150,7 @@ agentVersionRoutes.post(
     const data = c.req.valid('json');
 
     // If this version is marked as latest, unset isLatest for other versions
-    // with the same platform/architecture
+    // with the same platform/architecture/component
     if (data.isLatest) {
       await db
         .update(agentVersions)
@@ -154,6 +159,7 @@ agentVersionRoutes.post(
           and(
             eq(agentVersions.platform, data.platform),
             eq(agentVersions.architecture, data.architecture),
+            eq(agentVersions.component, data.component),
             eq(agentVersions.isLatest, true)
           )
         );
@@ -169,7 +175,8 @@ agentVersionRoutes.post(
         checksum: data.checksum,
         fileSize: data.fileSize ? BigInt(data.fileSize) : null,
         releaseNotes: data.releaseNotes,
-        isLatest: data.isLatest ?? false
+        isLatest: data.isLatest ?? false,
+        component: data.component
       })
       .returning();
     if (!newVersion) {
@@ -275,7 +282,7 @@ agentVersionRoutes.post(
       const platform = PLATFORM_MAP[target.goos];
       if (!platform) continue;
 
-      // Unset isLatest for this platform/arch combo
+      // Unset isLatest for this platform/arch/component combo
       await db
         .update(agentVersions)
         .set({ isLatest: false })
@@ -283,6 +290,7 @@ agentVersionRoutes.post(
           and(
             eq(agentVersions.platform, platform),
             eq(agentVersions.architecture, target.goarch),
+            eq(agentVersions.component, 'agent'),
             eq(agentVersions.isLatest, true)
           )
         );
@@ -298,10 +306,11 @@ agentVersionRoutes.post(
           checksum,
           fileSize: BigInt(asset.size),
           releaseNotes: release.body ?? null,
-          isLatest: true
+          isLatest: true,
+          component: 'agent'
         })
         .onConflictDoUpdate({
-          target: [agentVersions.version, agentVersions.platform, agentVersions.architecture],
+          target: [agentVersions.version, agentVersions.platform, agentVersions.architecture, agentVersions.component],
           set: {
             downloadUrl: asset.browser_download_url,
             checksum,
@@ -311,7 +320,65 @@ agentVersionRoutes.post(
           }
         });
 
-      upserted.push(`${platform}/${target.goarch}`);
+      upserted.push(`agent:${platform}/${target.goarch}`);
+    }
+
+    // Sync helper assets
+    // macOS DMG is a universal binary (arm64+x86_64), so both arch rows share the same asset.
+    const HELPER_ASSETS = [
+      { goos: 'windows', goarch: 'amd64', assetName: 'breeze-helper-windows.msi' },
+      { goos: 'darwin', goarch: 'amd64', assetName: 'breeze-helper-macos.dmg' },
+      { goos: 'darwin', goarch: 'arm64', assetName: 'breeze-helper-macos.dmg' },
+      { goos: 'linux', goarch: 'amd64', assetName: 'breeze-helper-linux.AppImage' },
+    ];
+
+    for (const target of HELPER_ASSETS) {
+      const asset = release.assets.find((a) => a.name === target.assetName);
+      if (!asset) continue;
+
+      const checksum = checksums.get(target.assetName);
+      if (!checksum) continue;
+
+      const platform = PLATFORM_MAP[target.goos];
+      if (!platform) continue;
+
+      await db
+        .update(agentVersions)
+        .set({ isLatest: false })
+        .where(
+          and(
+            eq(agentVersions.platform, platform),
+            eq(agentVersions.architecture, target.goarch),
+            eq(agentVersions.component, 'helper'),
+            eq(agentVersions.isLatest, true)
+          )
+        );
+
+      await db
+        .insert(agentVersions)
+        .values({
+          version,
+          platform,
+          architecture: target.goarch,
+          downloadUrl: asset.browser_download_url,
+          checksum,
+          fileSize: BigInt(asset.size),
+          releaseNotes: release.body ?? null,
+          isLatest: true,
+          component: 'helper'
+        })
+        .onConflictDoUpdate({
+          target: [agentVersions.version, agentVersions.platform, agentVersions.architecture, agentVersions.component],
+          set: {
+            downloadUrl: asset.browser_download_url,
+            checksum,
+            fileSize: BigInt(asset.size),
+            releaseNotes: release.body ?? null,
+            isLatest: true
+          }
+        });
+
+      upserted.push(`helper:${platform}/${target.goarch}`);
     }
 
     writeRouteAudit(c, {

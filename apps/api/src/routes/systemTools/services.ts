@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
@@ -6,6 +7,13 @@ import { createAuditLog } from '../../services/auditService';
 import { getDeviceWithOrgCheck, getPagination, asRecord, asString } from './helpers';
 import { deviceIdParamSchema, serviceNameParamSchema, paginationQuerySchema } from './schemas';
 import type { ServiceInfo } from './types';
+
+const serviceListQuerySchema = z.object({
+  page: z.string().optional(),
+  limit: z.string().optional(),
+  search: z.string().max(500).optional(),
+  status: z.string().max(100).optional(),
+});
 
 function normalizeServiceStatus(value?: string): ServiceInfo['status'] {
   switch ((value ?? '').toLowerCase()) {
@@ -73,7 +81,7 @@ servicesRoutes.get(
   authMiddleware,
   requireScope('system', 'partner', 'organization'),
   zValidator('param', deviceIdParamSchema),
-  zValidator('query', paginationQuerySchema),
+  zValidator('query', serviceListQuerySchema),
   async (c) => {
     const { deviceId } = c.req.valid('param');
     const auth = c.get('auth');
@@ -83,9 +91,10 @@ servicesRoutes.get(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    const { page, limit } = getPagination(c.req.valid('query'));
-    const search = c.req.query('search') || '';
-    const status = c.req.query('status') || '';
+    const query = c.req.valid('query');
+    const { page, limit } = getPagination(query);
+    const search = query.search || '';
+    const status = query.status || '';
 
     const result = await executeCommand(deviceId, CommandTypes.LIST_SERVICES, {
       page,

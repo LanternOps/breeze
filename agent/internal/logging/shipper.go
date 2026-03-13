@@ -16,6 +16,12 @@ import (
 	"time"
 )
 
+// TokenRevealer is implemented by secmem.SecureString. Using an interface
+// here avoids a circular import (secmem already imports logging).
+type TokenRevealer interface {
+	Reveal() string
+}
+
 const (
 	defaultBatchInterval = 60 * time.Second
 	defaultMaxBatchSize  = 500
@@ -36,7 +42,7 @@ type LogEntry struct {
 type Shipper struct {
 	serverURL    string
 	agentID      string
-	authToken    string
+	authToken    TokenRevealer
 	agentVersion string
 	httpClient   *http.Client
 	buffer       chan LogEntry
@@ -52,7 +58,7 @@ type Shipper struct {
 type ShipperConfig struct {
 	ServerURL    string
 	AgentID      string
-	AuthToken    string
+	AuthToken    TokenRevealer
 	AgentVersion string
 	HTTPClient   *http.Client
 	MinLevel     string // "debug", "info", "warn", "error"
@@ -210,7 +216,7 @@ func (s *Shipper) shipBatch(entries []LogEntry) {
 			return
 		}
 
-		req.Header.Set("Authorization", "Bearer "+s.authToken)
+		req.Header.Set("Authorization", "Bearer "+s.authToken.Reveal())
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Content-Encoding", "gzip")
 

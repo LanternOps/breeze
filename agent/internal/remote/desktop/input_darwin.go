@@ -114,7 +114,7 @@ var keyNameToKeycode = map[string]int{
 	"j": 0x26, "k": 0x28, "n": 0x2D, "m": 0x2E,
 
 	// Special keys
-	"return": 0x24, "tab": 0x30, "space": 0x31,
+	"return": 0x24, "tab": 0x30, "space": 0x31, " ": 0x31,
 	"backspace": 0x33, "escape": 0x35,
 	"delete": 0x75, "insert": 0x72,
 

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -63,6 +64,7 @@ type HeartbeatPayload struct {
 	DeviceRole       string                    `json:"deviceRole,omitempty"`
 	HealthStatus     map[string]any            `json:"healthStatus,omitempty"`
 	DroppedLogs      int64                     `json:"droppedLogs,omitempty"`
+	HelperVersion    string                    `json:"helperVersion,omitempty"`
 }
 
 type HeartbeatResponse struct {
@@ -70,8 +72,9 @@ type HeartbeatResponse struct {
 	ConfigUpdate   map[string]any  `json:"configUpdate,omitempty"`
 	UpgradeTo      string          `json:"upgradeTo,omitempty"`
 	RenewCert      bool            `json:"renewCert,omitempty"`
-	HelperEnabled  bool            `json:"helperEnabled,omitempty"`
-	HelperSettings *HelperSettings `json:"helperSettings,omitempty"`
+	HelperEnabled   bool            `json:"helperEnabled,omitempty"`
+	HelperSettings  *HelperSettings `json:"helperSettings,omitempty"`
+	HelperUpgradeTo string          `json:"helperUpgradeTo,omitempty"`
 }
 
 type HelperSettings struct {
@@ -127,6 +130,7 @@ type Heartbeat struct {
 	// User session helper (IPC)
 	sessionBroker *sessionbroker.Broker
 	isService     bool
+	isHeadless    bool
 	scmSessionCh  chan sessionbroker.SCMSessionEvent // fed by SCM handler
 
 	// Resilience & observability
@@ -214,6 +218,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	}
 	h.accepting.Store(true)
 	h.isService = cfg.IsService
+	h.isHeadless = cfg.IsHeadless
 
 	// Classify device role once at startup
 	if sysInfo, err := h.hardwareCol.CollectSystemInfo(); err == nil {
@@ -226,12 +231,47 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		h.cachedDeviceRole = "workstation"
 	}
 
-	// Initialize helper manager
-	authToken := ""
-	if ftToken != nil {
-		authToken = ftToken.Reveal()
+	// Initialize Breeze Assist manager
+	helperCtx, helperCancel := context.WithCancel(context.Background())
+	go func() { <-h.stopChan; helperCancel() }()
+
+	if runtime.GOOS == "windows" && cfg.IsService {
+		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID,
+			helper.WithSpawnFunc(func(binaryPath string) error {
+				detector := sessionbroker.NewSessionDetector()
+				sessions, err := detector.ListSessions()
+				if err != nil {
+					return fmt.Errorf("list sessions: %w", err)
+				}
+				var launched int
+				for _, s := range sessions {
+					if s.Session == "0" || s.Type == "services" {
+						continue
+					}
+					if s.State != "active" && s.State != "connected" {
+						continue
+					}
+					sessionNum, parseErr := strconv.ParseUint(s.Session, 10, 32)
+					if parseErr != nil {
+						log.Warn("invalid session id", "session", s.Session, "error", parseErr.Error())
+						continue
+					}
+					if spawnErr := sessionbroker.SpawnProcessInSession(binaryPath, uint32(sessionNum)); spawnErr != nil {
+						log.Warn("failed to spawn breeze assist in session",
+							"sessionId", sessionNum, "error", spawnErr.Error())
+						continue
+					}
+					launched++
+				}
+				if launched == 0 {
+					return helper.ErrNoActiveSession
+				}
+				return nil
+			}),
+		)
+	} else {
+		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID)
 	}
-	h.helperMgr = helper.New(cfg.ServerURL, authToken, cfg.AgentID)
 
 	// Initialize service & process monitoring
 	h.monitor = monitoring.New(h.sendMonitoringResults)
@@ -254,7 +294,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// Always enable when running as a Windows service — the helper is required
 	// for desktop capture, input injection, and other interactive operations
 	// that cannot work from Session 0.
-	if cfg.UserHelperEnabled || cfg.IsService {
+	if cfg.UserHelperEnabled || cfg.IsService || cfg.IsHeadless {
 		socketPath := cfg.IPCSocketPath
 		if socketPath == "" {
 			socketPath = ipc.DefaultSocketPath()
@@ -263,6 +303,8 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		reason := "config"
 		if cfg.IsService {
 			reason = "windows-service"
+		} else if cfg.IsHeadless {
+			reason = "headless-daemon"
 		}
 		log.Info("user helper IPC enabled", "socket", socketPath, "reason", reason)
 
@@ -331,7 +373,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 
 	// For direct mode (non-service), notify API when WebRTC peer drops.
 	// In service mode this is handled via IPC from the user helper.
-	if !cfg.IsService {
+	if !cfg.IsService && !cfg.IsHeadless {
 		h.desktopMgr.OnSessionStopped = func(sessionID string) {
 			h.sendDesktopDisconnectNotification(sessionID)
 		}
@@ -613,6 +655,9 @@ func (h *Heartbeat) Stop() {
 			h.auditLog.Log(audit.EventAgentStop, "", nil)
 			h.auditLog.Close()
 		}
+		if h.helperMgr != nil {
+			h.helperMgr.Shutdown()
+		}
 		// Close stopChan first — this signals broker.Listen() to call broker.Close()
 		// internally. The broker's Close() is idempotent via its closed flag.
 		close(h.stopChan)
@@ -692,15 +737,6 @@ func (h *Heartbeat) authHeader() string {
 	}
 	log.Warn("authHeader called with no available token")
 	return "Bearer "
-}
-
-// authTokenPlaintext returns the raw token string for use in external APIs
-// (e.g., updater) that require a plain string, not a Bearer header.
-func (h *Heartbeat) authTokenPlaintext() string {
-	if h.secureToken != nil && !h.secureToken.IsZeroed() {
-		return h.secureToken.Reveal()
-	}
-	return h.config.AuthToken
 }
 
 // sendInventoryData marshals the payload and sends it to the given endpoint via PUT.
@@ -1622,10 +1658,11 @@ func (h *Heartbeat) sendHeartbeat() {
 	}
 
 	payload := HeartbeatPayload{
-		Status:       status,
-		AgentVersion: h.agentVersion,
-		HealthStatus: h.healthMon.Summary(),
-		DeviceRole:   h.cachedDeviceRole,
+		Status:        status,
+		AgentVersion:  h.agentVersion,
+		HelperVersion: h.helperMgr.InstalledVersion(),
+		HealthStatus:  h.healthMon.Summary(),
+		DeviceRole:    h.cachedDeviceRole,
 	}
 	if metricsAvailable {
 		payload.Metrics = metrics
@@ -1751,6 +1788,11 @@ func (h *Heartbeat) sendHeartbeat() {
 	// Handle mTLS cert renewal if signaled by server
 	if response.RenewCert {
 		go h.handleCertRenewal()
+	}
+
+	// Handle helper upgrade if requested
+	if response.HelperUpgradeTo != "" {
+		h.helperMgr.CheckUpdate(response.HelperUpgradeTo)
 	}
 
 	// Update helper enabled state and apply full settings
@@ -2345,10 +2387,9 @@ func (h *Heartbeat) handleUpgrade(targetVersion string) {
 	}
 	backupPath := filepath.Join(backupDir, "breeze-agent.backup")
 
-	authToken := h.authTokenPlaintext()
 	updaterCfg := &updater.Config{
 		ServerURL:      h.config.ServerURL,
-		AuthToken:      authToken,
+		AuthToken:      h.secureToken,
 		CurrentVersion: h.agentVersion,
 		BinaryPath:     binaryPath,
 		BackupPath:     backupPath,

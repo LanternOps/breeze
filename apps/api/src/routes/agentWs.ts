@@ -2,8 +2,8 @@ import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
 import { z } from 'zod';
 import { eq, and, sql } from 'drizzle-orm';
-import { createHash } from 'crypto';
-import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
+import { createHash, timingSafeEqual } from 'crypto';
+import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, networkMonitors, networkMonitorResults, remoteSessions, backupJobs, restoreJobs } from '../db/schema';
 import { handleTerminalOutput } from './terminalWs';
 import { handleDesktopFrame, isDesktopSessionOwnedByAgent } from './desktopWs';
@@ -14,6 +14,12 @@ import { enqueueMonitorCheckResult, type MonitorCheckResult } from '../jobs/moni
 import { isRedisAvailable } from '../services/redis';
 import { isIP } from 'node:net';
 import { processDeviceIPHistoryUpdate } from '../services/deviceIpHistory';
+
+declare module 'hono' {
+  interface ContextVariableMap {
+    agentDb: AgentDbContext;
+  }
+}
 
 const VALID_MONITOR_STATUSES = new Set(['online', 'offline', 'degraded']);
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -27,16 +33,25 @@ function normalizeMonitorStatus(raw: string | undefined): 'online' | 'offline' |
 // Map<agentId, WSContext>
 const activeConnections = new Map<string, WSContext>();
 
+// Track per-agent ping/pong state for stale connection detection
+interface AgentPingState {
+  pingInterval: ReturnType<typeof setInterval>;
+  lastPongAt: number;
+}
+const agentPingStates = new Map<string, AgentPingState>();
+const AGENT_PING_INTERVAL_MS = 30_000;
+const AGENT_PONG_TIMEOUT_MS = 10_000;
+
 // Message types from agent
 const commandResultSchema = z.object({
   type: z.literal('command_result'),
   commandId: z.string(),
   status: z.enum(['completed', 'failed', 'timeout']),
   exitCode: z.number().int().optional(),
-  stdout: z.string().optional(),
-  stderr: z.string().optional(),
+  stdout: z.string().max(5_000_000).optional(),
+  stderr: z.string().max(5_000_000).optional(),
   durationMs: z.number().int().optional(),
-  error: z.string().optional(),
+  error: z.string().max(10_000).optional(),
   result: z.any().optional()
 });
 
@@ -131,7 +146,14 @@ async function validateAgentToken(agentId: string, token: string): Promise<Agent
     return null;
   }
 
-  if (device.agentTokenHash !== tokenHash) {
+  const storedBuf = Buffer.from(device.agentTokenHash, 'hex');
+  const computedBuf = Buffer.from(tokenHash, 'hex');
+  if (storedBuf.length !== computedBuf.length) {
+    // Hash format mismatch — treat as auth failure
+    return null;
+  }
+  const hashMatch = timingSafeEqual(storedBuf, computedBuf);
+  if (!hashMatch) {
     return null;
   }
 
@@ -412,7 +434,8 @@ async function processOrphanedCommandResult(
  */
 async function processCommandResult(
   agentId: string,
-  result: z.infer<typeof commandResultSchema>
+  result: z.infer<typeof commandResultSchema>,
+  deviceId?: string
 ): Promise<void> {
   try {
     // Non-UUID command IDs (for example mon-* and snmp-*) are dispatched directly
@@ -422,54 +445,85 @@ async function processCommandResult(
       return;
     }
 
-    const [ownedCommand] = await db
-      .select({
-        command: deviceCommands,
-        deviceId: devices.id
-      })
-      .from(deviceCommands)
-      .innerJoin(devices, eq(deviceCommands.deviceId, devices.id))
-      .where(
-        and(
-          eq(deviceCommands.id, result.commandId),
-          eq(devices.agentId, agentId)
-        )
-      )
-      .limit(1);
+    // Look up command by ID + deviceId directly (device_commands has no RLS).
+    // Previous approach JOINed through devices table which has RLS and could
+    // fail when the DB context didn't grant access to the org's devices.
+    let command: typeof deviceCommands.$inferSelect | undefined;
+    let resolvedDeviceId: string | undefined = deviceId;
 
-    if (!ownedCommand) {
+    if (resolvedDeviceId) {
+      // Query device_commands OUTSIDE the current transaction context.
+      // device_commands has no RLS; querying via the pool (auto-commit)
+      // guarantees visibility of recently committed rows.
+      const did = resolvedDeviceId;
+      const [row] = await runOutsideDbContext(() =>
+        db
+          .select()
+          .from(deviceCommands)
+          .where(
+            and(
+              eq(deviceCommands.id, result.commandId),
+              eq(deviceCommands.deviceId, did)
+            )
+          )
+          .limit(1)
+      );
+      command = row;
+    } else {
+      // Fallback: resolve deviceId from agentId via devices table
+      const [ownedCommand] = await db
+        .select({
+          command: deviceCommands,
+          deviceId: devices.id
+        })
+        .from(deviceCommands)
+        .innerJoin(devices, eq(deviceCommands.deviceId, devices.id))
+        .where(
+          and(
+            eq(deviceCommands.id, result.commandId),
+            eq(devices.agentId, agentId)
+          )
+        )
+        .limit(1);
+      command = ownedCommand?.command;
+      resolvedDeviceId = ownedCommand?.deviceId;
+    }
+
+    if (!command || !resolvedDeviceId) {
       // Discovery and SNMP commands are dispatched directly via WebSocket
       // without creating a deviceCommands record. Handle them here.
       await processOrphanedCommandResult(agentId, result);
       return;
     }
-    const command = ownedCommand.command;
 
     // Agent sends structured data in `result` field (parsed JSON) rather than
     // `stdout` (raw string). Convert it back to a JSON string for storage.
     const stdout = result.stdout ??
       (result.result !== undefined ? JSON.stringify(result.result) : undefined);
 
-    await db
-      .update(deviceCommands)
-      .set({
-        status: result.status === 'completed' ? 'completed' : 'failed',
-        completedAt: new Date(),
-        result: {
-          status: result.status,
-          exitCode: result.exitCode,
-          stdout,
-          stderr: result.stderr,
-          durationMs: result.durationMs,
-          error: result.error
-        }
-      })
-      .where(
-        and(
-          eq(deviceCommands.id, result.commandId),
-          eq(deviceCommands.deviceId, ownedCommand.deviceId)
+    // Update outside transaction for same visibility reasons as the lookup.
+    await runOutsideDbContext(() =>
+      db
+        .update(deviceCommands)
+        .set({
+          status: result.status === 'completed' ? 'completed' : 'failed',
+          completedAt: new Date(),
+          result: {
+            status: result.status,
+            exitCode: result.exitCode,
+            stdout,
+            stderr: result.stderr,
+            durationMs: result.durationMs,
+            error: result.error
+          }
+        })
+        .where(
+          and(
+            eq(deviceCommands.id, result.commandId),
+            eq(deviceCommands.deviceId, resolvedDeviceId!)
+          )
         )
-      );
+    );
 
     console.log(`Command ${result.commandId} ${result.status} for agent ${agentId}`);
 
@@ -677,21 +731,14 @@ async function getPendingCommands(agentId: string): Promise<AgentCommand[]> {
 }
 
 /**
- * Create WebSocket handlers for a given agentId and token
- * This returns the handler object expected by upgradeWebSocket
+ * Create WebSocket handlers for a given agentId with a pre-validated context.
+ * Authentication is done BEFORE the WebSocket upgrade in the HTTP middleware,
+ * so onOpen no longer needs to validate the token.
  */
-export function createAgentWsHandlers(agentId: string, token: string | undefined) {
-  // Pre-validate token
-  let agentDb: AgentDbContext | null = null;
-  const validationPromise = token
-    ? validateAgentToken(agentId, token).then(result => { agentDb = result; })
-    : Promise.resolve();
+export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext) {
+  const agentDb = preValidatedAgent;
 
   const runWithAgentDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
-    if (!agentDb) {
-      throw new Error('Agent DB context not initialized');
-    }
-
     return withDbAccessContext(
       {
         scope: 'organization',
@@ -704,17 +751,11 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
 
   return {
     onOpen: async (_event: unknown, ws: WSContext) => {
-      await validationPromise;
-
-      if (!agentDb) {
-        console.warn(`WebSocket connection rejected for agent ${agentId}: invalid token`);
-        ws.send(JSON.stringify({
-          type: 'error',
-          code: 'AUTH_FAILED',
-          message: 'Invalid or missing authentication token'
-        }));
-        ws.close(4001, 'Authentication failed');
-        return;
+      // Clean up any existing ping state from a previous connection
+      const existingPingState = agentPingStates.get(agentId);
+      if (existingPingState) {
+        clearInterval(existingPingState.pingInterval);
+        agentPingStates.delete(agentId);
       }
 
       // Store connection
@@ -734,21 +775,46 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
         timestamp: Date.now(),
         pendingCommands
       }));
+
+      // Start server-side ping/pong for stale connection detection
+      const now = Date.now();
+      const pingInterval = setInterval(() => {
+        const state = agentPingStates.get(agentId);
+        if (!state) {
+          clearInterval(pingInterval);
+          return;
+        }
+        const elapsed = Date.now() - state.lastPongAt;
+        if (elapsed > AGENT_PING_INTERVAL_MS + AGENT_PONG_TIMEOUT_MS) {
+          console.warn(`Agent ${agentId} pong timeout (${elapsed}ms), closing`);
+          clearInterval(pingInterval);
+          agentPingStates.delete(agentId);
+          ws.close(4008, 'Pong timeout');
+          return;
+        }
+        try {
+          ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
+        } catch (err) {
+          console.warn(`[AgentWs] Ping send failed for agent ${agentId}, cleaning up`, err);
+          clearInterval(pingInterval);
+          agentPingStates.delete(agentId);
+        }
+      }, AGENT_PING_INTERVAL_MS);
+      agentPingStates.set(agentId, { pingInterval, lastPongAt: now });
     },
 
     onMessage: async (event: MessageEvent, ws: WSContext) => {
       try {
-        // Ensure token validation finished even if the agent sends data immediately after open.
-        await validationPromise;
-        if (!agentDb) {
-          ws.close(4001, 'Authentication failed');
-          return;
-        }
         const authenticatedAgent = agentDb;
 
         // Binary fast-path for desktop frames: [0x02][36-byte sessionId][JPEG data]
         if (event.data instanceof ArrayBuffer || Buffer.isBuffer(event.data)) {
           const buf = Buffer.isBuffer(event.data) ? event.data : Buffer.from(event.data);
+          // Size limit: 5MB max for binary frames
+          if (buf.length > 5_000_000) {
+            console.warn(`[AgentWs] Dropping oversized binary frame from agent ${agentId}: ${buf.length} bytes`);
+            return;
+          }
           if (buf.length > 37 && buf[0] === 0x02) {
             const sessionId = buf.subarray(1, 37).toString('utf8');
             if (!isDesktopSessionOwnedByAgent(sessionId, agentId)) {
@@ -766,9 +832,36 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
 
         const message = JSON.parse(data);
 
+        // Handle pong responses for server-initiated ping
+        if (message.type === 'pong') {
+          const state = agentPingStates.get(agentId);
+          if (state) {
+            state.lastPongAt = Date.now();
+          }
+          return;
+        }
+
+        // Agent heartbeats also prove the connection is alive
+        if (message.type === 'heartbeat') {
+          const state = agentPingStates.get(agentId);
+          if (state) {
+            state.lastPongAt = Date.now();
+          }
+        }
+
         // Handle terminal_output messages directly (high-frequency streaming
         // data that doesn't need full schema validation)
         if (message.type === 'terminal_output' && typeof message.sessionId === 'string' && typeof message.data === 'string') {
+          // Size limit: 64KB max per terminal_output message
+          if (message.data.length > 65536) {
+            console.warn(`[AgentWs] Dropping oversized terminal_output from agent ${agentId}: ${message.data.length} chars`);
+            return;
+          }
+          // Validate sessionId is reasonable length (UUID or term-prefixed ID)
+          if (message.sessionId.length > 128) {
+            console.warn(`[AgentWs] Dropping terminal_output with oversized sessionId from agent ${agentId}`);
+            return;
+          }
           handleTerminalOutput(message.sessionId, message.data);
           return;
         }
@@ -776,12 +869,20 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
         // Handle command_result for terminal/desktop commands (non-UUID IDs)
         if (message.type === 'command_result' && typeof message.commandId === 'string' &&
             (message.commandId.startsWith('term-') || message.commandId.startsWith('desk-'))) {
+          // Validate commandId length (term-UUID or desk-UUID prefix)
+          if (message.commandId.length > 128) {
+            console.warn(`[AgentWs] Dropping command_result with oversized commandId from agent ${agentId}`);
+            return;
+          }
+          if (message.commandId.startsWith('term-')) {
+          }
           // Handle WebRTC peer disconnect notifications from agent
           if (message.commandId.startsWith('desk-disconnect-') &&
               message.status === 'completed' &&
               typeof message.result === 'object' && message.result !== null) {
             const disconnectResult = message.result as Record<string, unknown>;
-            const sessionId = typeof disconnectResult.sessionId === 'string' ? disconnectResult.sessionId : null;
+            const sessionId = typeof disconnectResult.sessionId === 'string' && disconnectResult.sessionId.length <= 128
+              ? disconnectResult.sessionId : null;
             if (sessionId && disconnectResult.event === 'peer_disconnected') {
               try {
                 await runWithAgentDbAccess(async () => {
@@ -811,7 +912,8 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
               message.status === 'completed' &&
               typeof message.result === 'object' && message.result !== null) {
             const desktopResult = message.result as Record<string, unknown>;
-            const sessionId = typeof desktopResult.sessionId === 'string' ? desktopResult.sessionId : null;
+            const sessionId = typeof desktopResult.sessionId === 'string' && desktopResult.sessionId.length <= 128
+              ? desktopResult.sessionId : null;
             const answer = typeof desktopResult.answer === 'string' ? desktopResult.answer : null;
             if (sessionId && answer && answer.length < 65536) {
               try {
@@ -867,7 +969,7 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
         switch (parsed.data.type) {
           case 'command_result':
             await runWithAgentDbAccess(async () =>
-              processCommandResult(agentId, parsed.data as z.infer<typeof commandResultSchema>)
+              processCommandResult(agentId, parsed.data as z.infer<typeof commandResultSchema>, authenticatedAgent.deviceId)
             );
             ws.send(JSON.stringify({
               type: 'ack',
@@ -922,6 +1024,13 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
     },
 
     onClose: async (_event: unknown, _ws: WSContext) => {
+      // Clean up ping interval
+      const pingState = agentPingStates.get(agentId);
+      if (pingState) {
+        clearInterval(pingState.pingInterval);
+        agentPingStates.delete(agentId);
+      }
+
       // Remove from active connections
       activeConnections.delete(agentId);
       console.log(`Agent ${agentId} disconnected. Active connections: ${activeConnections.size}`);
@@ -934,6 +1043,12 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
 
     onError: (event: unknown, _ws: WSContext) => {
       console.error(`WebSocket error for agent ${agentId}:`, event);
+      // Clean up ping interval
+      const pingState = agentPingStates.get(agentId);
+      if (pingState) {
+        clearInterval(pingState.pingInterval);
+        agentPingStates.delete(agentId);
+      }
       activeConnections.delete(agentId);
       if (agentDb) {
         void runWithAgentDbAccess(async () => updateDeviceStatus(agentId, 'offline')).catch((err) => {
@@ -993,6 +1108,7 @@ export function createAgentWsRoutes(upgradeWebSocket: Function): Hono {
   // GET /api/v1/agent-ws/:id/ws with Authorization: Bearer <agent-token>
   app.get(
     '/:id/ws',
+    // Rate limiting middleware
     (c, next) => {
       const agentId = c.req.param('id');
       if (isAgentWsRateLimited(agentId)) {
@@ -1000,11 +1116,34 @@ export function createAgentWsRoutes(upgradeWebSocket: Function): Hono {
       }
       return next();
     },
-    upgradeWebSocket((c: { req: { param: (key: string) => string; header: (key: string) => string | undefined } }) => {
+    // Authentication middleware — validates BEFORE WebSocket upgrade
+    async (c, next) => {
       const agentId = c.req.param('id');
       const authHeader = c.req.header('Authorization');
-      const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : undefined;
-      return createAgentWsHandlers(agentId, token);
+      let token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : undefined;
+
+      // Fallback to ?token= query param (agents may connect either way)
+      if (!token) {
+        token = c.req.query('token');
+      }
+
+      if (!token) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+
+      const agentCtx = await validateAgentToken(agentId, token);
+      if (!agentCtx) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+
+      // Store validated device context for the upgrade handler to access
+      c.set('agentDb', agentCtx);
+      return next();
+    },
+    upgradeWebSocket((c: { req: { param: (key: string) => string }; get: (key: string) => unknown }) => {
+      const agentId = c.req.param('id');
+      const agentCtx = c.get('agentDb') as AgentDbContext;
+      return createAgentWsHandlers(agentId, agentCtx);
     })
   );
 
@@ -1022,11 +1161,12 @@ export function sendCommandToAgent(agentId: string, command: AgentCommand): bool
   }
 
   try {
+    const json = JSON.stringify(command);
     // Send command directly - agent expects {id, type, payload} at top level
-    ws.send(JSON.stringify(command));
+    ws.send(json);
     return true;
   } catch (error) {
-    console.error(`Failed to send command to agent ${agentId}:`, error);
+    console.error(`Failed to send command to agent ${agentId.slice(0,12)}:`, error);
     activeConnections.delete(agentId);
     return false;
   }

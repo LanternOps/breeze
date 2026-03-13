@@ -82,6 +82,16 @@ Breeze solves this with a **session broker** architecture:
 
 The `list_sessions` command returns available user sessions by merging the WTS session detector output with the broker's helper state, showing which sessions have active remote desktop connections.
 
+### macOS and Linux Headless Support
+
+The same session broker architecture extends to macOS and Linux. When the agent runs as a LaunchDaemon (macOS) or systemd service (Linux), it has no display access. The agent detects this via the `IsHeadless` flag (checked by `hasConsole()` on Unix).
+
+In headless mode, all desktop and screenshot commands are routed through IPC to the Breeze Helper process running in the user's desktop session, rather than attempting direct screen capture which would silently fail. The Helper handles screen capture using platform-native APIs (Core Graphics on macOS, X11/Wayland on Linux).
+
+<Aside>
+  If no Helper process is connected when a remote desktop session is requested in headless mode, the agent returns an error immediately rather than streaming zero frames.
+</Aside>
+
 ### Multi-Display Support
 
 Breeze supports multi-monitor remote desktop. The viewer can switch between displays on the target device. Each display is captured independently using DXGI Desktop Duplication.

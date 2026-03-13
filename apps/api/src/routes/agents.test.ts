@@ -554,7 +554,7 @@ describe('agent routes', () => {
 
   describe('POST /agents/:id/commands/:commandId/result', () => {
     it('accepts non-UUID command IDs without querying device_commands', async () => {
-      const res = await app.request('/agents/agent-123/commands/mon-test-123/result', {
+      const res = await app.request('/agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/commands/mon-test-123/result', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -587,7 +587,7 @@ describe('agent routes', () => {
         })
       } as any);
 
-      const res = await app.request('/agents/agent-123/commands/33333333-3333-4333-8333-333333333333/result', {
+      const res = await app.request('/agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/commands/33333333-3333-4333-8333-333333333333/result', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -612,7 +612,7 @@ describe('agent routes', () => {
         })
       } as any);
 
-      const res = await app.request('/agents/agent-123/commands/44444444-4444-4444-8444-444444444444/result', {
+      const res = await app.request('/agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/commands/44444444-4444-4444-8444-444444444444/result', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -645,7 +645,7 @@ describe('agent routes', () => {
         })
       } as any);
 
-      const res = await app.request('/agents/agent-123/commands/55555555-5555-4555-8555-555555555555/result', {
+      const res = await app.request('/agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/commands/55555555-5555-4555-8555-555555555555/result', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -685,7 +685,7 @@ describe('agent routes', () => {
         })
       } as any);
 
-      const res = await app.request('/agents/agent-123/commands/66666666-6666-4666-8666-666666666666/result', {
+      const res = await app.request('/agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/commands/66666666-6666-4666-8666-666666666666/result', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -739,7 +739,7 @@ describe('agent routes', () => {
         }
       } as any);
 
-      const res = await app.request('/agents/agent-123/commands/77777777-7777-4777-8777-777777777777/result', {
+      const res = await app.request('/agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/commands/77777777-7777-4777-8777-777777777777/result', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -751,7 +751,8 @@ describe('agent routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(vi.mocked(runOutsideDbContext)).toHaveBeenCalledTimes(1);
+      // runOutsideDbContext is called 3 times: command lookup, command update, and audit policy queueing
+      expect(vi.mocked(runOutsideDbContext)).toHaveBeenCalledTimes(3);
       expect(vi.mocked(withSystemDbAccessContext)).toHaveBeenCalledTimes(1);
       expect(vi.mocked(queueCommandForExecution)).toHaveBeenCalledWith(
         'device-123',

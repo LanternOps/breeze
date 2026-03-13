@@ -96,8 +96,8 @@ export default function HelperTab({ policyId, existingLink, onLinkChanged, linke
         {/* Deploy toggle */}
         <div className="flex items-center justify-between rounded-md border bg-background px-4 py-3">
           <div>
-            <p className="text-sm font-medium">Deploy Helper to devices</p>
-            <p className="text-xs text-muted-foreground">Install and run the Breeze Helper tray application on targeted devices.</p>
+            <p className="text-sm font-medium">Deploy Breeze Assist to devices</p>
+            <p className="text-xs text-muted-foreground">Install and run the Breeze Assist tray application on targeted devices.</p>
           </div>
           <button
             type="button"
@@ -111,7 +111,7 @@ export default function HelperTab({ policyId, existingLink, onLinkChanged, linke
         {settings.enabled && (
           <div className="space-y-4">
             <h3 className="text-sm font-semibold">Tray Menu Options</h3>
-            <p className="text-xs text-muted-foreground">Configure which items appear in the Helper's right-click context menu. Exit is always available.</p>
+            <p className="text-xs text-muted-foreground">Configure which items appear in the Breeze Assist right-click context menu. Exit is always available.</p>
 
             {/* Open Portal */}
             <label className="flex items-center gap-3 rounded-md border bg-background px-4 py-3 cursor-pointer">
@@ -151,7 +151,7 @@ export default function HelperTab({ policyId, existingLink, onLinkChanged, linke
               />
               <div>
                 <p className="text-sm font-medium">Request Support</p>
-                <p className="text-xs text-muted-foreground">Opens the Helper chat window for AI-assisted support.</p>
+                <p className="text-xs text-muted-foreground">Opens the Breeze Assist chat window for AI-assisted support.</p>
               </div>
             </label>
 

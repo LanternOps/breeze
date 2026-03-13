@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
+import { z } from 'zod';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../../db';
 import { backupConfigs } from '../../db/schema';
@@ -8,6 +9,8 @@ import { resolveScopedOrgId } from './helpers';
 import { configSchema, configUpdateSchema } from './schemas';
 
 export const configsRoutes = new Hono();
+
+const configIdParamSchema = z.object({ id: z.string().uuid() });
 
 configsRoutes.get('/configs', async (c) => {
   const auth = c.get('auth');
@@ -68,14 +71,14 @@ configsRoutes.post(
   }
 );
 
-configsRoutes.get('/configs/:id', async (c) => {
+configsRoutes.get('/configs/:id', zValidator('param', configIdParamSchema), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
 
-  const configId = c.req.param('id');
+  const { id: configId } = c.req.valid('param');
   const [row] = await db
     .select()
     .from(backupConfigs)
@@ -90,6 +93,7 @@ configsRoutes.get('/configs/:id', async (c) => {
 
 configsRoutes.patch(
   '/configs/:id',
+  zValidator('param', configIdParamSchema),
   zValidator('json', configUpdateSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -98,7 +102,7 @@ configsRoutes.patch(
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
 
-    const configId = c.req.param('id');
+    const { id: configId } = c.req.valid('param');
     const payload = c.req.valid('json');
 
     const updateData: Record<string, unknown> = { updatedAt: new Date() };
@@ -131,14 +135,14 @@ configsRoutes.patch(
   }
 );
 
-configsRoutes.delete('/configs/:id', async (c) => {
+configsRoutes.delete('/configs/:id', zValidator('param', configIdParamSchema), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
 
-  const configId = c.req.param('id');
+  const { id: configId } = c.req.valid('param');
   const [deleted] = await db
     .delete(backupConfigs)
     .where(and(eq(backupConfigs.id, configId), eq(backupConfigs.orgId, orgId)))
@@ -159,14 +163,14 @@ configsRoutes.delete('/configs/:id', async (c) => {
   return c.json({ deleted: true });
 });
 
-configsRoutes.post('/configs/:id/test', async (c) => {
+configsRoutes.post('/configs/:id/test', zValidator('param', configIdParamSchema), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
 
-  const configId = c.req.param('id');
+  const { id: configId } = c.req.valid('param');
   const [row] = await db
     .select()
     .from(backupConfigs)

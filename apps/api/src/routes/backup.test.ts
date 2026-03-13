@@ -2,6 +2,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { backupRoutes } from './backup';
 
+// Valid UUID constants for tests
+const CONFIG_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const POLICY_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const SNAPSHOT_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+const DEVICE_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+const RESTORE_ID = '11111111-1111-4111-8111-111111111111';
+
 // Mock all services
 vi.mock('../services', () => ({}));
 
@@ -76,7 +84,7 @@ vi.mock('../middleware/auth', () => ({
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
       partnerId: null,
-      orgId: 'org-123',
+      orgId: ORG_ID,
       token: { sub: 'user-123' }
     });
     return next();
@@ -96,8 +104,8 @@ describe('backup routes', () => {
   it('should create, update, and test backup configuration', async () => {
     const now = new Date();
     const configRecord = {
-      id: 'cfg-001',
-      orgId: 'org-123',
+      id: CONFIG_ID,
+      orgId: ORG_ID,
       name: 'Archive S3',
       type: 'file',
       provider: 's3',
@@ -135,7 +143,7 @@ describe('backup routes', () => {
     };
     updateMock.mockReturnValueOnce(chainMock([updatedRecord]));
 
-    const updateRes = await app.request(`/backup/configs/${created.id}`, {
+    const updateRes = await app.request(`/backup/configs/${CONFIG_ID}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
       body: JSON.stringify({
@@ -152,7 +160,7 @@ describe('backup routes', () => {
     // Mock select for test endpoint
     selectMock.mockReturnValueOnce(chainMock([configRecord]));
 
-    const testRes = await app.request(`/backup/configs/${created.id}/test`, {
+    const testRes = await app.request(`/backup/configs/${CONFIG_ID}/test`, {
       method: 'POST',
       headers: { Authorization: 'Bearer token' }
     });
@@ -167,15 +175,15 @@ describe('backup routes', () => {
     const now = new Date();
 
     // First select: verify config exists (for policy create)
-    selectMock.mockReturnValueOnce(chainMock([{ id: 'cfg-s3-primary' }]));
+    selectMock.mockReturnValueOnce(chainMock([{ id: CONFIG_ID }]));
 
     const policyRecord = {
-      id: 'pol-001',
-      orgId: 'org-123',
-      configId: 'cfg-s3-primary',
+      id: POLICY_ID,
+      orgId: ORG_ID,
+      configId: CONFIG_ID,
       name: 'Weekly Servers',
       enabled: true,
-      targets: { deviceIds: ['dev-sched-1'], siteIds: [], groupIds: [] },
+      targets: { deviceIds: [DEVICE_ID], siteIds: [], groupIds: [] },
       schedule: { frequency: 'weekly', time: '04:15', timezone: 'UTC', dayOfWeek: 2 },
       retention: { keepDaily: 5, keepWeekly: 6, keepMonthly: 2 },
       createdAt: now,
@@ -189,10 +197,10 @@ describe('backup routes', () => {
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
       body: JSON.stringify({
         name: 'Weekly Servers',
-        configId: 'cfg-s3-primary',
+        configId: CONFIG_ID,
         enabled: true,
         targets: {
-          deviceIds: ['dev-sched-1'],
+          deviceIds: [DEVICE_ID],
           siteIds: [],
           groupIds: []
         },
@@ -220,7 +228,7 @@ describe('backup routes', () => {
       .mockReturnValueOnce(chainMock([policyRecord])) // policies query
       .mockReturnValueOnce(chainMock([])); // jobs query
 
-    const statusRes = await app.request('/backup/status/dev-sched-1', {
+    const statusRes = await app.request(`/backup/status/${DEVICE_ID}`, {
       method: 'GET',
       headers: { Authorization: 'Bearer token' }
     });
@@ -235,9 +243,9 @@ describe('backup routes', () => {
   it('should queue and fetch a restore job', async () => {
     const now = new Date();
     const snapshot = {
-      id: 'snap-001',
-      orgId: 'org-123',
-      deviceId: 'dev-001',
+      id: SNAPSHOT_ID,
+      orgId: ORG_ID,
+      deviceId: DEVICE_ID,
       snapshotId: 'snap-ext-001',
     };
 
@@ -245,10 +253,10 @@ describe('backup routes', () => {
     selectMock.mockReturnValueOnce(chainMock([snapshot]));
 
     const restoreRecord = {
-      id: 'restore-001',
-      orgId: 'org-123',
-      snapshotId: 'snap-001',
-      deviceId: 'dev-001',
+      id: RESTORE_ID,
+      orgId: ORG_ID,
+      snapshotId: SNAPSHOT_ID,
+      deviceId: DEVICE_ID,
       restoreType: 'selective',
       targetPath: '/var/restore',
       status: 'pending',
@@ -266,8 +274,8 @@ describe('backup routes', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
       body: JSON.stringify({
-        snapshotId: 'snap-001',
-        deviceId: 'dev-001',
+        snapshotId: SNAPSHOT_ID,
+        deviceId: DEVICE_ID,
         targetPath: '/var/restore'
       })
     });
@@ -279,7 +287,7 @@ describe('backup routes', () => {
     // Mock fetch of restore job
     selectMock.mockReturnValueOnce(chainMock([restoreRecord]));
 
-    const fetchRes = await app.request(`/backup/restore/${restore.id}`, {
+    const fetchRes = await app.request(`/backup/restore/${RESTORE_ID}`, {
       method: 'GET',
       headers: { Authorization: 'Bearer token' }
     });
@@ -287,7 +295,7 @@ describe('backup routes', () => {
     expect(fetchRes.status).toBe(200);
     const fetched = await fetchRes.json();
     expect(fetched.id).toBe(restore.id);
-    expect(fetched.snapshotId).toBe('snap-001');
+    expect(fetched.snapshotId).toBe(SNAPSHOT_ID);
   });
 
   it('should return provider usage history timeline', async () => {

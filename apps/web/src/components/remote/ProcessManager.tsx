@@ -37,6 +37,7 @@ export type ProcessManagerProps = {
   loading?: boolean;
   onRefresh?: () => void;
   onKillProcess?: (pid: number) => Promise<void>;
+  onGetProcess?: (pid: number) => Promise<Process>;
 };
 
 type SortField = 'pid' | 'name' | 'user' | 'cpuPercent' | 'memoryMb' | 'status';
@@ -83,7 +84,8 @@ export default function ProcessManager({
   processes: externalProcesses,
   loading: externalLoading,
   onRefresh,
-  onKillProcess
+  onKillProcess,
+  onGetProcess
 }: ProcessManagerProps) {
   const [internalProcesses, setInternalProcesses] = useState<Process[]>([]);
   const [internalLoading, setInternalLoading] = useState(false);
@@ -92,6 +94,8 @@ export default function ProcessManager({
   const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
   const [selectedPid, setSelectedPid] = useState<number | null>(null);
   const [expandedPid, setExpandedPid] = useState<number | null>(null);
+  const [processDetails, setProcessDetails] = useState<Record<number, Process>>({});
+  const [detailLoading, setDetailLoading] = useState<number | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [showKillModal, setShowKillModal] = useState(false);
   const [killingPid, setKillingPid] = useState<number | null>(null);
@@ -202,15 +206,24 @@ export default function ProcessManager({
     return () => clearInterval(interval);
   }, [autoRefresh, handleRefresh]);
 
-  // Row click handler
+  // Row click handler — fetches full process details on expand
   const handleRowClick = useCallback((proc: Process) => {
     if (expandedPid === proc.pid) {
       setExpandedPid(null);
     } else {
       setExpandedPid(proc.pid);
+      if (onGetProcess && !processDetails[proc.pid]) {
+        setDetailLoading(proc.pid);
+        onGetProcess(proc.pid)
+          .then(detail => setProcessDetails(prev => ({ ...prev, [proc.pid]: detail })))
+          .catch((err) => {
+            console.error(`Failed to fetch process details for PID ${proc.pid}:`, err);
+          })
+          .finally(() => setDetailLoading(null));
+      }
     }
     setSelectedPid(proc.pid);
-  }, [expandedPid]);
+  }, [expandedPid, onGetProcess, processDetails]);
 
   // Sort indicator component
   const SortIndicator = ({ field }: { field: SortField }) => {
@@ -299,7 +312,7 @@ export default function ProcessManager({
             <HardDrive className="h-5 w-5 text-purple-500" />
           </div>
           <div>
-            <p className="text-sm text-muted-foreground">Total Memory</p>
+            <p className="text-sm text-muted-foreground">Process Memory</p>
             <p className="text-lg font-semibold">{resourceSummary.totalMemory}</p>
           </div>
         </div>
@@ -448,38 +461,49 @@ export default function ProcessManager({
                       </td>
                     </tr>
                     {/* Expanded Details Row */}
-                    {expandedPid === proc.pid && (
+                    {expandedPid === proc.pid && (() => {
+                      const detail = processDetails[proc.pid];
+                      const isLoading = detailLoading === proc.pid;
+                      return (
                       <tr key={proc.pid + '-details'} className="bg-muted/10">
                         <td colSpan={8} className="px-4 py-4">
+                          {isLoading ? (
+                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                              Loading details...
+                            </div>
+                          ) : (
                           <div className="grid grid-cols-2 gap-4 text-sm md:grid-cols-4">
                             <div>
                               <p className="text-muted-foreground">Command Line</p>
                               <p className="mt-1 break-all font-mono text-xs">
-                                {proc.commandLine}
+                                {detail?.commandLine || proc.commandLine || '-'}
                               </p>
                             </div>
                             <div>
                               <p className="text-muted-foreground">Parent PID</p>
-                              <p className="mt-1 font-mono">{proc.parentPid ?? '-'}</p>
+                              <p className="mt-1 font-mono">{detail?.parentPid ?? proc.parentPid ?? '-'}</p>
                             </div>
                             <div>
                               <p className="text-muted-foreground">Threads</p>
-                              <p className="mt-1">{proc.threads ?? '-'}</p>
+                              <p className="mt-1">{detail?.threads ?? proc.threads ?? '-'}</p>
                             </div>
                             <div>
                               <p className="text-muted-foreground">Priority</p>
-                              <p className="mt-1">{proc.priority ?? '-'}</p>
+                              <p className="mt-1">{detail?.priority ?? proc.priority ?? '-'}</p>
                             </div>
-                            {proc.startTime && (
+                            {(detail?.startTime || proc.startTime) && (
                               <div>
                                 <p className="text-muted-foreground">Start Time</p>
-                                <p className="mt-1">{formatStartTime(proc.startTime)}</p>
+                                <p className="mt-1">{formatStartTime(detail?.startTime || proc.startTime)}</p>
                               </div>
                             )}
                           </div>
+                          )}
                         </td>
                       </tr>
-                    )}
+                      );
+                    })()}
                   </>
                 ))
               )}

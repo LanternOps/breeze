@@ -184,7 +184,7 @@ When an agent starts for the first time, it presents the enrollment key to the A
 ```
 
 <Aside type="caution">
-  The `authToken` is only returned once. The agent stores it in its local config file (`/etc/breeze/config.json` on Linux/macOS, `C:\ProgramData\Breeze\config.json` on Windows) with restrictive file permissions (0600). The API stores only the SHA-256 hash.
+  The `authToken` is only returned once. The agent stores it in `secrets.yaml` (`/etc/breeze/secrets.yaml` on Linux, `/Library/Application Support/Breeze/secrets.yaml` on macOS, `C:\ProgramData\Breeze\secrets.yaml` on Windows) with `0600` permissions. The main config (`agent.yaml`) uses `0640` so the Helper can read it. The API stores only the SHA-256 hash.
 </Aside>
 
 ---
@@ -320,5 +320,5 @@ In production, at least one of `ENROLLMENT_KEY_PEPPER`, `APP_ENCRYPTION_KEY`, `S
 ### Key appears valid but agent fails to connect after enrollment
 
 - Verify the `authToken` returned by enrollment is stored correctly in the agent config file.
-- Check that file permissions are `0600` (owner read/write only).
+- Check that `secrets.yaml` permissions are `0600` (owner read/write only) and `agent.yaml` is `0640`.
 - Ensure the agent is connecting to the correct WebSocket URL (`/api/v1/agents/:id/ws`) with the `Authorization: Bearer brz_...` header.

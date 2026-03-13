@@ -28,7 +28,7 @@ import {
   Download,
   ClipboardCheck,
   ScanSearch,
-  Usb
+  Usb,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 

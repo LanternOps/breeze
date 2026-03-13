@@ -13,11 +13,16 @@ import (
 	"time"
 )
 
+// testToken is a simple TokenRevealer for tests (avoids circular secmem import).
+type testToken string
+
+func (t testToken) Reveal() string { return string(t) }
+
 func TestNewShipperDefaults(t *testing.T) {
 	s := NewShipper(ShipperConfig{
 		ServerURL:    "http://localhost:3001",
 		AgentID:      "agent-1",
-		AuthToken:    "tok",
+		AuthToken:    testToken("tok"),
 		AgentVersion: "1.0.0",
 		MinLevel:     "warn",
 	})
@@ -142,7 +147,7 @@ func TestShipBatchSendsGzipJSON(t *testing.T) {
 	s := NewShipper(ShipperConfig{
 		ServerURL:    server.URL,
 		AgentID:      "test-agent",
-		AuthToken:    "brz_secret",
+		AuthToken:    testToken("brz_secret"),
 		AgentVersion: "1.0.0",
 		MinLevel:     "debug",
 		HTTPClient:   server.Client(),
@@ -232,7 +237,7 @@ func TestShipperStartStopDrains(t *testing.T) {
 	s := NewShipper(ShipperConfig{
 		ServerURL:    server.URL,
 		AgentID:      "test-agent",
-		AuthToken:    "tok",
+		AuthToken:    testToken("tok"),
 		AgentVersion: "1.0.0",
 		MinLevel:     "debug",
 		HTTPClient:   server.Client(),
@@ -274,7 +279,7 @@ func TestShipBatchURLFormat(t *testing.T) {
 	s := NewShipper(ShipperConfig{
 		ServerURL:  server.URL,
 		AgentID:    "abc-123",
-		AuthToken:  "tok",
+		AuthToken:  testToken("tok"),
 		HTTPClient: server.Client(),
 	})
 

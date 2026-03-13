@@ -18,8 +18,8 @@ export interface WebRTCSession {
   close: () => void;
 }
 
-const ICE_GATHER_TIMEOUT_MS = 5000;
-const ANSWER_POLL_INTERVAL_MS = 200;
+const ICE_GATHER_TIMEOUT_MS = 3000;
+const ANSWER_POLL_INTERVAL_MS = 50;
 
 /**
  * Create a WebRTC session with the remote agent.

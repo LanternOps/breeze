@@ -35,6 +35,9 @@ Get a working Breeze instance running with a single `docker compose up`.
    openssl rand -hex 32      # → AGENT_ENROLLMENT_SECRET
    openssl rand -hex 32      # → APP_ENCRYPTION_KEY
    openssl rand -hex 32      # → MFA_ENCRYPTION_KEY
+   openssl rand -hex 32      # → ENROLLMENT_KEY_PEPPER
+   openssl rand -hex 32      # → MFA_RECOVERY_CODE_PEPPER
+   openssl rand -hex 32      # → SESSION_SECRET
 
    # Database
    POSTGRES_PASSWORD=changeme
@@ -78,7 +81,7 @@ Get a working Breeze instance running with a single `docker compose up`.
 | `breeze-web` | 4321 (internal) | Astro SSR dashboard |
 | `breeze-postgres` | 5432 (internal) | PostgreSQL 16 database |
 | `breeze-redis` | 6379 (internal) | Redis 7 (BullMQ + caching) |
-| `breeze-coturn` | 3478 (host) | TURN relay for WebRTC remote desktop |
+| `breeze-coturn` | 3478 (host) | TURN relay for WebRTC remote desktop (only with `--profile turn`) |
 
 ## Next: Enroll Your First Agent
 

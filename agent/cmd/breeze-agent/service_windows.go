@@ -34,6 +34,9 @@ func hasConsole() bool {
 	return ret != 0
 }
 
+// isHeadless mirrors isWindowsService on Windows — Session 0 has no display.
+func isHeadless() bool { return isWindowsService() }
+
 // ensureSASPolicy checks the SoftwareSASGeneration registry value and
 // auto-enables it if not sufficient. Value 3 = services AND apps can generate
 // SAS, which covers both the service (Session 0) and the SYSTEM helper

@@ -10,7 +10,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Prerequisites
 
-- Go 1.22 or later
+- Go 1.25 or later
 - Make
 - (Optional) `go-winres` for Windows resource embedding
 - (Optional) WiX Toolset + PowerShell for MSI packaging
@@ -60,7 +60,7 @@ This produces `dist/breeze-agent.msi` for silent deployment via GPO or SCCM.
 The build embeds the version number via linker flags:
 
 ```makefile
-VERSION ?= 0.1.0
+VERSION ?= 0.5.0
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
 ```
 

@@ -93,6 +93,7 @@ import { sensitiveDataRoutes } from './routes/sensitiveData';
 import { peripheralControlRoutes } from './routes/peripheralControl';
 import { browserSecurityRoutes } from './routes/browserSecurity';
 import { captureException } from './services/sentry';
+import { partnerGuard } from './middleware/partnerGuard';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
@@ -249,6 +250,7 @@ app.get('/health/live', (c) => {
 // Full readiness check — live DB + Redis connectivity
 app.get('/health/ready', async (c) => {
   const checks: Record<string, string> = {};
+  const isProd = process.env.NODE_ENV === 'production';
 
   // Check database connectivity
   try {
@@ -257,20 +259,24 @@ app.get('/health/ready', async (c) => {
     });
     checks.database = 'ok';
   } catch (error) {
-    checks.database = `error: ${error instanceof Error ? error.message : 'unknown'}`;
+    checks.database = isProd
+      ? 'error: unavailable'
+      : `error: ${error instanceof Error ? error.message : 'unknown'}`;
   }
 
   // Check Redis connectivity
   try {
     const redis = getRedis();
     if (!redis) {
-      checks.redis = 'error: not configured';
+      checks.redis = isProd ? 'error: unavailable' : 'error: not configured';
     } else {
       await redis.ping();
       checks.redis = 'ok';
     }
   } catch (error) {
-    checks.redis = `error: ${error instanceof Error ? error.message : 'unknown'}`;
+    checks.redis = isProd
+      ? 'error: unavailable'
+      : `error: ${error instanceof Error ? error.message : 'unknown'}`;
   }
 
   const allOk = Object.values(checks).every((v) => v === 'ok');
@@ -535,6 +541,16 @@ async function resolveFallbackOrgId(c: Context, path: string): Promise<string | 
 
   return null;
 }
+
+// Generic partner status guard — blocks non-active partners
+api.use('*', async (c, next) => {
+  const path = c.req.path;
+  if (path.startsWith('/api/v1/auth')) { await next(); return; }
+  if (path.startsWith('/api/v1/users/me')) { await next(); return; }
+  if (path === '/api/v1/partner/me' || path.startsWith('/api/v1/partner/me/')) { await next(); return; }
+  if (path.startsWith('/api/v1/agents/')) { await next(); return; }
+  await partnerGuard(c, next);
+});
 
 api.use('*', async (c, next) => {
   await next();

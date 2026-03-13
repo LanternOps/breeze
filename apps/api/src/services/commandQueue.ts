@@ -1,5 +1,5 @@
 import { eq, and } from 'drizzle-orm';
-import { db } from '../db';
+import { db, runOutsideDbContext } from '../db';
 import { deviceCommands, devices, auditLogs } from '../db/schema';
 import { sendCommandToAgent } from '../routes/agentWs';
 import { captureException } from './sentry';
@@ -135,10 +135,12 @@ export interface QueuedCommand {
   result: CommandResult | null;
 }
 
-const runOutsideDbContextSafe = <T>(fn: () => T): T => {
-  const runner = (db as { runOutsideDbContext?: <U>(task: () => U) => U }).runOutsideDbContext;
-  return typeof runner === 'function' ? runner(fn) : fn();
-};
+// Use the directly-imported runOutsideDbContext, NOT db.runOutsideDbContext.
+// The `db` proxy delegates property lookups to the active transaction when
+// inside withDbAccessContext, so db.runOutsideDbContext resolves to
+// tx.runOutsideDbContext (undefined), causing the fallback to run fn()
+// inside the transaction — which is exactly what we're trying to avoid.
+const runOutsideDbContextSafe = runOutsideDbContext;
 
 export interface QueueCommandForExecutionResult {
   command?: QueuedCommand;

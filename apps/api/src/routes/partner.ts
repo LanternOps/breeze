@@ -30,7 +30,7 @@ partnerRoutes.get('/me', async (c) => {
   }
 
   const [partner] = await db
-    .select({ id: partners.id, name: partners.name, slug: partners.slug })
+    .select({ id: partners.id, name: partners.name, slug: partners.slug, status: partners.status, settings: partners.settings })
     .from(partners)
     .where(eq(partners.id, partnerId))
     .limit(1);
@@ -39,7 +39,14 @@ partnerRoutes.get('/me', async (c) => {
     return c.json({ error: 'Partner not found' }, 404);
   }
 
-  return c.json(partner);
+  const settings = (partner.settings ?? {}) as Record<string, unknown>;
+  return c.json({
+    ...partner,
+    settings: undefined,
+    statusMessage: (settings.statusMessage as string) ?? null,
+    statusActionUrl: (settings.statusActionUrl as string) ?? null,
+    statusActionLabel: (settings.statusActionLabel as string) ?? null,
+  });
 });
 
 partnerRoutes.get('/dashboard', requireScope('partner', 'system'), async (c) => {

@@ -29,7 +29,7 @@ export const devices = pgTable('devices', {
   osVersion: varchar('os_version', { length: 100 }).notNull(),
   osBuild: varchar('os_build', { length: 100 }),
   architecture: varchar('architecture', { length: 20 }).notNull(),
-  agentVersion: varchar('agent_version', { length: 20 }).notNull(),
+  agentVersion: varchar('agent_version', { length: 50 }).notNull(),
   status: deviceStatusEnum('status').notNull().default('offline'),
   lastSeenAt: timestamp('last_seen_at'),
   enrolledAt: timestamp('enrolled_at').defaultNow().notNull(),

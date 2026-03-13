@@ -48,6 +48,8 @@ A **Partner** represents a top-level tenant -- typically a Managed Service Provi
 | Plan | Description |
 |---|---|
 | `free` | Free tier. Default. |
+| `starter` | Starter tier for initial paid onboarding. |
+| `community` | Community tier with basic paid features. |
 | `pro` | Professional tier with expanded limits. |
 | `enterprise` | Enterprise tier with advanced features. |
 | `unlimited` | No enforced limits. |
@@ -60,7 +62,8 @@ A **Partner** represents a top-level tenant -- typically a Managed Service Provi
 | `name` | `varchar(255)` | Display name. Required. |
 | `slug` | `varchar(100)` | URL-safe unique identifier. Required. |
 | `type` | `enum` | One of `msp`, `enterprise`, `internal`. Defaults to `msp`. |
-| `plan` | `enum` | One of `free`, `pro`, `enterprise`, `unlimited`. Defaults to `free`. |
+| `plan` | `enum` | One of `free`, `starter`, `community`, `pro`, `enterprise`, `unlimited`. Defaults to `free`. |
+| `status` | `enum` | One of `pending`, `active`, `suspended`, `churned`. Defaults to `pending` for new registrations, `active` when provisioned by an admin. Partners with non-active status are blocked by the partner guard middleware. |
 | `maxOrganizations` | `integer` | Optional cap on the number of organisations. |
 | `maxDevices` | `integer` | Optional cap on total devices across all organisations. |
 | `settings` | `jsonb` | Arbitrary partner-level settings (see below). |

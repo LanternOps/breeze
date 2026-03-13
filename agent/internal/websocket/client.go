@@ -342,7 +342,7 @@ func (c *Client) processCommand(cmd Command) {
 	result.CommandID = cmd.ID
 
 	if err := c.SendResult(result); err != nil {
-		log.Error("failed to send command result", "error", err)
+		log.Error("failed to send command result", "commandId", cmd.ID, "error", err)
 	}
 }
 

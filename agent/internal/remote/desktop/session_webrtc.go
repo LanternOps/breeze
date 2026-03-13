@@ -110,6 +110,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	go func() {
 		rtcpBuf := make([]byte, 1500)
 		var lastKF time.Time
+		firstKF := true
 		for {
 			n, _, readErr := sender.Read(rtcpBuf)
 			if readErr != nil {
@@ -122,10 +123,12 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			for _, p := range pkts {
 				switch p.(type) {
 				case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
-					// Rate-limit keyframe forcing.
-					if time.Since(lastKF) < 500*time.Millisecond {
+					// Allow the first PLI immediately for fast startup,
+					// then rate-limit subsequent ones to 500ms apart.
+					if !firstKF && time.Since(lastKF) < 500*time.Millisecond {
 						continue
 					}
+					firstKF = false
 					lastKF = time.Now()
 					if session.encoder != nil {
 						_ = session.encoder.ForceKeyframe()
@@ -374,14 +377,47 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		return "", fmt.Errorf("failed to set local description: %w", err)
 	}
 
-	// Wait for ICE gathering to complete
+	// Fast ICE gathering: return as soon as we have usable candidates rather
+	// than waiting for full gathering. Host candidates appear in <10ms, STUN
+	// reflexive candidates in ~50-200ms. We wait for the first candidate,
+	// then collect for a short window before returning.
 	gatherComplete := webrtc.GatheringCompletePromise(peerConn)
-	timer := time.NewTimer(iceGatherTimeout)
-	defer timer.Stop()
+
+	// Channel signalled on first candidate
+	firstCandidate := make(chan struct{}, 1)
+	peerConn.OnICECandidate(func(c *webrtc.ICECandidate) {
+		if c != nil {
+			select {
+			case firstCandidate <- struct{}{}:
+			default:
+			}
+		}
+	})
+
+	hardTimer := time.NewTimer(iceGatherTimeout)
+	defer hardTimer.Stop()
+
+	// Phase 1: wait for first candidate (or full completion / hard timeout)
 	select {
 	case <-gatherComplete:
-	case <-timer.C:
-		return "", fmt.Errorf("ICE gathering timed out after %s", iceGatherTimeout)
+		// All candidates gathered quickly — return immediately
+	case <-firstCandidate:
+		// Got first candidate — give a short window to collect more
+		// (host + STUN candidates typically all arrive within 500ms)
+		collectTimer := time.NewTimer(500 * time.Millisecond)
+		select {
+		case <-gatherComplete:
+			collectTimer.Stop()
+		case <-collectTimer.C:
+			slog.Info("ICE early-exit: returning answer with partial candidates",
+				"session", sessionID,
+				"gatheringState", peerConn.ICEGatheringState().String())
+		case <-session.done:
+			collectTimer.Stop()
+			return "", fmt.Errorf("session stopped during ICE gathering")
+		}
+	case <-hardTimer.C:
+		return "", fmt.Errorf("ICE gathering timed out after %s (no candidates)", iceGatherTimeout)
 	case <-session.done:
 		return "", fmt.Errorf("session stopped during ICE gathering")
 	}

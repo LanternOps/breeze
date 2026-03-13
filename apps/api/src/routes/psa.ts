@@ -26,14 +26,26 @@ const createConnectionSchema = z.object({
   orgId: z.string().uuid().optional(),
   provider: providerSchema,
   name: z.string().min(1).max(255),
-  credentials: z.record(z.any()),
-  settings: z.record(z.any()).optional().default({})
+  credentials: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ),
+  settings: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional().default({})
 });
 
 const updateConnectionSchema = z.object({
   name: z.string().min(1).max(255).optional(),
-  credentials: z.record(z.any()).optional(),
-  settings: z.record(z.any()).optional()
+  credentials: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional(),
+  settings: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional()
 });
 
 const listTicketsSchema = z.object({

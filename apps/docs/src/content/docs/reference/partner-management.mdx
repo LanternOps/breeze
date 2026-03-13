@@ -41,9 +41,20 @@ Every API query automatically scopes data to the caller's position in this hiera
 | Plan | Description |
 |------|-------------|
 | `free` | Free tier with default limits. Assigned during self-registration. |
+| `starter` | Starter tier for initial paid onboarding. |
+| `community` | Community tier with basic paid features. |
 | `pro` | Professional tier with expanded limits. |
 | `enterprise` | Enterprise tier with advanced features. |
 | `unlimited` | No enforced limits. |
+
+### Partner Status
+
+| Status | Description |
+|--------|-------------|
+| `pending` | Newly registered partner awaiting payment or admin approval. Blocked from API access by the partner guard middleware (403 with `PARTNER_INACTIVE` code). |
+| `active` | Fully operational partner with API access. |
+| `suspended` | Temporarily suspended (e.g., payment failure). Blocked from API access. |
+| `churned` | Permanently inactive partner. Blocked from API access. |
 
 ### Organization Access Levels
 

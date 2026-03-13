@@ -3,11 +3,15 @@ use reqwest::{header::HeaderMap, Client, Identity, Method};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::open;
 use tokio::sync::Mutex;
+
+/// Tracks whether a chat session is currently active (set from frontend).
+static CHAT_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
 // Agent config types
@@ -173,6 +177,39 @@ fn load_helper_config() -> HelperConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Helper status file (read by Go agent for idle detection before updates)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct HelperStatus {
+    version: String,
+    chat_active: bool,
+    last_activity: String, // ISO 8601
+    pid: u32,
+}
+
+fn helper_status_path() -> PathBuf {
+    agent_config_path().with_file_name("helper_status.yaml")
+}
+
+fn write_status_file(chat_active: bool) {
+    let status = HelperStatus {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        chat_active,
+        last_activity: chrono::Utc::now().to_rfc3339(),
+        pid: std::process::id(),
+    };
+    let path = helper_status_path();
+    if let Ok(yaml) = serde_yaml::to_string(&status) {
+        // Atomic write: temp file + rename
+        let tmp_path = path.with_extension("yaml.tmp");
+        if std::fs::write(&tmp_path, &yaml).is_ok() {
+            let _ = std::fs::rename(&tmp_path, &path);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // HTTP client state (cached per-app)
 // ---------------------------------------------------------------------------
 
@@ -243,6 +280,24 @@ fn hide_window(app: tauri::AppHandle) {
             eprintln!("[helper] Failed to hide window: {}", e);
         }
     }
+}
+
+/// Minimize the main window.
+#[tauri::command]
+fn minimize_window(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if let Err(e) = window.minimize() {
+            eprintln!("[helper] Failed to minimize window: {}", e);
+        }
+    }
+}
+
+/// Update the helper status file when chat activity changes.
+/// Called from the frontend when a chat session starts/ends or on message activity.
+#[tauri::command]
+fn update_chat_active(active: bool) {
+    CHAT_ACTIVE.store(active, Ordering::Relaxed);
+    write_status_file(active);
 }
 
 // ---------------------------------------------------------------------------
@@ -398,8 +453,11 @@ async fn helper_fetch(
         let sid = stream_id.clone();
         let app_clone = app.clone();
 
-        // Spawn a background task to read the body and emit events
+        // Spawn a background task to read the body and emit events.
+        // Small delay to ensure the frontend listener is registered before
+        // we start emitting events (avoids race with IPC round-trip).
         tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             let mut byte_stream = response.bytes_stream();
 
             while let Some(chunk_result) = byte_stream.next().await {
@@ -529,8 +587,10 @@ pub fn run() {
             read_agent_config,
             helper_fetch,
             hide_window,
+            minimize_window,
             get_os_username,
             get_helper_config,
+            update_chat_active,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -548,14 +608,24 @@ pub fn run() {
                     Err(e) => eprintln!("[helper] Failed to build tray menu: {}", e),
                 }
 
-                // Handle left-click: show chat window
+                // Handle left-click only: show chat window
+                // Matching all Click variants (including right-click) would steal
+                // focus from the context menu on Windows, causing it to close instantly.
                 let click_handle = handle.clone();
                 tray.on_tray_icon_event(move |_tray, event| {
-                    if let tauri::tray::TrayIconEvent::Click { .. } = event {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        button_state: tauri::tray::MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
                         show_window(&click_handle);
                     }
                 });
             }
+
+            // Write initial status file (not chatting)
+            write_status_file(false);
 
             // Handle menu item clicks
             let menu_handle = handle.clone();
@@ -612,6 +682,9 @@ pub fn run() {
                         }
                         last_config = new_yaml;
                     }
+
+                    // Refresh status file timestamp (shows helper is alive even when idle)
+                    write_status_file(CHAT_ACTIVE.load(Ordering::Relaxed));
                 }
             });
 

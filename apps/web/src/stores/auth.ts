@@ -304,6 +304,23 @@ export async function fetchWithAuth(url: string, options: RequestInit = {}): Pro
     }
   }
 
+  // If the partner is inactive, redirect to the account inactive page.
+  // This catches any API call that hits the server-side partner guard.
+  if (response.status === 403) {
+    try {
+      const cloned = response.clone();
+      const body = await cloned.json();
+      if (body?.code === 'PARTNER_INACTIVE') {
+        const path = window.location.pathname;
+        if (!path.startsWith('/account/') && !path.startsWith('/login')) {
+          window.location.href = '/account/inactive';
+        }
+      }
+    } catch {
+      // Not JSON or parse failed — treat as normal 403
+    }
+  }
+
   return response;
 }
 
@@ -395,6 +412,7 @@ export interface Partner {
   id: string;
   name: string;
   slug: string;
+  status?: string;
 }
 
 export async function apiRegister(
@@ -441,6 +459,7 @@ export async function apiRegisterPartner(
   user?: User;
   partner?: Partner;
   tokens?: Tokens;
+  redirectUrl?: string;
   error?: string;
 }> {
   try {
@@ -461,7 +480,8 @@ export async function apiRegisterPartner(
       success: true,
       user: data.user,
       partner: data.partner,
-      tokens: data.tokens
+      tokens: data.tokens,
+      redirectUrl: data.redirectUrl,
     };
   } catch {
     return { success: false, error: 'Network error' };

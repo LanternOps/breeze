@@ -227,6 +227,23 @@ loginRoutes.post('/refresh', async (c) => {
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
 
+  // Rate limit per user — 10 refreshes per minute
+  const e2eMode = process.env.E2E_MODE === '1' || process.env.E2E_MODE === 'true';
+  if (!e2eMode) {
+    const redis = getRedis();
+    if (!redis) {
+      return c.json({ error: 'Service temporarily unavailable' }, 503);
+    }
+    const refreshRateKey = `refresh:${payload.sub}`;
+    const refreshRateCheck = await rateLimiter(redis, refreshRateKey, 10, 60);
+    if (!refreshRateCheck.allowed) {
+      return c.json({
+        error: 'Too many refresh attempts. Please try again later.',
+        retryAfter: Math.ceil((refreshRateCheck.resetAt.getTime() - Date.now()) / 1000)
+      }, 429);
+    }
+  }
+
   if (await isRefreshTokenJtiRevoked(payload.jti)) {
     clearRefreshTokenCookie(c);
     return c.json({ error: 'Invalid refresh token' }, 401);
