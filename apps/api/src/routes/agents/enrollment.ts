@@ -99,8 +99,8 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         const activeCount = Number(countResult?.count ?? 0);
         if (activeCount >= partner.maxDevices) {
           return c.json({
-            error: 'Device limit reached for this partner',
-            code: 'UPGRADE_REQUIRED',
+            error: 'Device limit reached',
+            code: 'DEVICE_LIMIT_REACHED',
             currentDevices: activeCount,
             maxDevices: partner.maxDevices,
           }, 403);

@@ -92,7 +92,6 @@ import { huntressRoutes } from './routes/huntress';
 import { sensitiveDataRoutes } from './routes/sensitiveData';
 import { peripheralControlRoutes } from './routes/peripheralControl';
 import { browserSecurityRoutes } from './routes/browserSecurity';
-import { pendingPartnerGuard } from './middleware/pendingGuard';
 import { captureException } from './services/sentry';
 
 // Workers
@@ -541,27 +540,6 @@ async function resolveFallbackOrgId(c: Context, path: string): Promise<string | 
 
   return null;
 }
-
-// Block pending (unpaid) partners from API access — allow auth, user profile, and partner routes through
-api.use('*', async (c, next) => {
-  const path = c.req.path;
-  // Allow auth routes (login, register, refresh, etc.)
-  if (path.startsWith('/api/v1/auth')) {
-    await next();
-    return;
-  }
-  // Allow users/me so frontend can check partner status
-  if (path.startsWith('/api/v1/users/me')) {
-    await next();
-    return;
-  }
-  // Allow partner/me so PendingGuard frontend can check partner status
-  if (path === '/api/v1/partner/me' || path.startsWith('/api/v1/partner/me/')) {
-    await next();
-    return;
-  }
-  await pendingPartnerGuard(c, next);
-});
 
 api.use('*', async (c, next) => {
   await next();

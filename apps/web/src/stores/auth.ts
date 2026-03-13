@@ -442,7 +442,6 @@ export async function apiRegisterPartner(
   user?: User;
   partner?: Partner;
   tokens?: Tokens;
-  requiresCheckout?: boolean;
   error?: string;
 }> {
   try {
@@ -464,7 +463,6 @@ export async function apiRegisterPartner(
       user: data.user,
       partner: data.partner,
       tokens: data.tokens,
-      requiresCheckout: data.requiresCheckout,
     };
   } catch {
     return { success: false, error: 'Network error' };
