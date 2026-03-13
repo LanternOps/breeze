@@ -128,6 +128,11 @@ function mockSelectList(result: unknown) {
   };
 }
 
+// Stable UUIDs for test fixtures
+const WEBHOOK_ID_1 = '22222222-2222-2222-2222-222222222222';
+const WEBHOOK_ID_2 = '33333333-3333-3333-3333-333333333333';
+const DELIVERY_ID_1 = '44444444-4444-4444-4444-444444444444';
+
 describe('webhook routes', () => {
   let app: Hono;
 
@@ -157,7 +162,7 @@ describe('webhook routes', () => {
     vi.mocked(db.insert).mockReturnValueOnce({
       values: vi.fn(() => ({
         returning: vi.fn(() => Promise.resolve([{
-          id: 'webhook-1',
+          id: WEBHOOK_ID_1,
           orgId: '11111111-1111-1111-1111-111111111111',
           name: 'Device Alerts',
           url: 'https://example.com/webhooks/device',
@@ -187,7 +192,7 @@ describe('webhook routes', () => {
 
     expect(res.status).toBe(201);
     const body = await res.json();
-    expect(body.id).toBe('webhook-1');
+    expect(body.id).toBe(WEBHOOK_ID_1);
     expect(body.hasSecret).toBe(true);
     expect(body.secret).toBeUndefined();
   });
@@ -216,7 +221,7 @@ describe('webhook routes', () => {
       .mockReturnValueOnce(mockSelectWhere([{ count: 2 }]) as any)
       .mockReturnValueOnce(mockSelectList([
         {
-          id: 'webhook-1',
+          id: WEBHOOK_ID_1,
           orgId: '11111111-1111-1111-1111-111111111111',
           name: 'First',
           url: 'https://example.com/1',
@@ -230,7 +235,7 @@ describe('webhook routes', () => {
           lastDeliveryAt: null
         },
         {
-          id: 'webhook-2',
+          id: WEBHOOK_ID_2,
           orgId: '11111111-1111-1111-1111-111111111111',
           name: 'Second',
           url: 'https://example.com/2',
@@ -261,7 +266,7 @@ describe('webhook routes', () => {
   it('queues a test webhook delivery and persists pending delivery row', async () => {
     vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([
       {
-        id: 'webhook-1',
+        id: WEBHOOK_ID_1,
         orgId: '11111111-1111-1111-1111-111111111111',
         name: 'Device Alerts',
         url: 'https://example.com/webhook',
@@ -280,8 +285,8 @@ describe('webhook routes', () => {
     vi.mocked(db.insert).mockReturnValueOnce({
       values: vi.fn(() => ({
         returning: vi.fn(() => Promise.resolve([{
-          id: 'delivery-1',
-          webhookId: 'webhook-1',
+          id: DELIVERY_ID_1,
+          webhookId: WEBHOOK_ID_1,
           eventType: 'webhook.test',
           eventId: 'event-1',
           payload: { test: true },
@@ -298,9 +303,9 @@ describe('webhook routes', () => {
       }))
     } as any);
 
-    queueDeliveryMock.mockResolvedValueOnce('delivery-1');
+    queueDeliveryMock.mockResolvedValueOnce(DELIVERY_ID_1);
 
-    const res = await app.request('/webhooks/webhook-1/test', {
+    const res = await app.request(`/webhooks/${WEBHOOK_ID_1}/test`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
       body: JSON.stringify({ payload: { test: true } })
@@ -317,7 +322,7 @@ describe('webhook routes', () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(mockSelectLimit([
         {
-          id: 'webhook-1',
+          id: WEBHOOK_ID_1,
           orgId: '11111111-1111-1111-1111-111111111111',
           name: 'Device Alerts',
           url: 'https://example.com/webhook',
@@ -334,8 +339,8 @@ describe('webhook routes', () => {
       ]) as any)
       .mockReturnValueOnce(mockSelectLimit([
         {
-          id: 'delivery-1',
-          webhookId: 'webhook-1',
+          id: DELIVERY_ID_1,
+          webhookId: WEBHOOK_ID_1,
           eventType: 'device.created',
           eventId: 'evt-1',
           payload: {},
@@ -349,7 +354,7 @@ describe('webhook routes', () => {
         }
       ]) as any);
 
-    const res = await app.request('/webhooks/webhook-1/retry/delivery-1', {
+    const res = await app.request(`/webhooks/${WEBHOOK_ID_1}/retry/${DELIVERY_ID_1}`, {
       method: 'POST',
       headers: { Authorization: 'Bearer token' }
     });
