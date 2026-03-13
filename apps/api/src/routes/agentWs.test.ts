@@ -63,10 +63,8 @@ function wsMock() {
 function selectOwnedCommandResult(rows: unknown[]) {
   return {
     from: vi.fn().mockReturnValue({
-      innerJoin: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue(rows)
-        })
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(rows)
       })
     })
   };
@@ -122,11 +120,9 @@ describe('agent websocket command results', () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(selectOwnedCommandResult([
         {
-          command: {
-            id: 'cmd-1',
-            type: 'run_script',
-            payload: {}
-          },
+          id: 'cmd-1',
+          type: 'run_script',
+          payload: {},
           deviceId: 'device-123'
         }
       ]) as any);
