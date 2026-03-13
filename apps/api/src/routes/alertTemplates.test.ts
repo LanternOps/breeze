@@ -83,7 +83,7 @@ vi.mock('../db', () => ({
           returning: vi.fn(() => {
             // Find first row and apply updates
             if (store.length > 0) {
-              const row = store[0];
+              const row = store[0] as Record<string, unknown>;
               Object.assign(row, setValues);
               return Promise.resolve([{ ...row }]);
             }
@@ -204,7 +204,7 @@ describe('alert template routes', () => {
         where: vi.fn((_cond: any) => ({
           returning: vi.fn(() => {
             if (store.length > 0) {
-              const row = store[0];
+              const row = store[0] as Record<string, unknown>;
               Object.assign(row, setValues);
               return Promise.resolve([{ ...row }]);
             }
