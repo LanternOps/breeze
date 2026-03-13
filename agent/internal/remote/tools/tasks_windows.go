@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -20,15 +21,15 @@ import (
 //
 // Fields per line (0x1F-separated):
 //   0: name (base64)
-//   1: path (base64)
+//   1: full path = TaskPath+TaskName (base64)
 //   2: folder (base64)
-//   3: status
+//   3: status (lowercase: ready/running/disabled/queued)
 //   4: author (base64)
 //   5: description (base64)
 //   6: lastRun (ISO 8601 or empty)
 //   7: nextRun (ISO 8601 or empty)
 //   8: lastResult (int or empty)
-//   9: triggers (pipe-separated base64 strings)
+//   9: triggers (pipe-separated base64 strings, may be empty)
 const listTasksPS = `$ErrorActionPreference='SilentlyContinue'
 $U=[char]31
 function B($s){[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$s))}
@@ -71,6 +72,8 @@ func decB64(s string) string {
 	}
 	b, err := base64.StdEncoding.DecodeString(s)
 	if err != nil {
+		slog.Warn("base64 decode failed, using raw value",
+			"raw", s, "error", err.Error())
 		return s
 	}
 	return string(b)
@@ -122,10 +125,17 @@ func listTasksOS(folder, search string, page, limit int, startTime time.Time) Co
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", listTasksPS)
 	output, err := cmd.Output()
 	if err != nil {
-		return NewErrorResult(fmt.Errorf("failed to list tasks: %w", err), time.Since(startTime).Milliseconds())
+		errMsg := fmt.Sprintf("failed to list tasks: %v", err)
+		if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
+			errMsg = fmt.Sprintf("failed to list tasks: %s", strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return NewErrorResult(fmt.Errorf("%s", errMsg), time.Since(startTime).Milliseconds())
 	}
 
 	allTasks := parseTSVTasks(string(output))
+	if len(allTasks) == 0 {
+		slog.Warn("scheduled tasks query returned zero results; possible permissions issue or PowerShell error")
+	}
 
 	// Apply folder and search filters.
 	searchLower := strings.ToLower(search)
@@ -177,11 +187,12 @@ func listTasksOS(folder, search string, page, limit int, startTime time.Time) Co
 	return NewSuccessResult(response, time.Since(startTime).Milliseconds())
 }
 
-// getTaskDetailPS outputs a single task's detail using the same base64/US
-// format as the list, plus additional fields for triggers and actions.
+// getTaskOS retrieves a single scheduled task's detail. The inline
+// PowerShell script uses the same base64/US format as listTasksPS
+// for the first line, plus additional TRIG and ACT lines.
 //
-// Line 1: same 10 fields as list
-// Line 2+: "TRIG" US type US enabled US schedule (base64)
+// Line 1: same 10 fields as listTasksPS output
+// Line 2+: "TRIG" US type US enabled US startBoundary (base64, ISO 8601 datetime)
 // Line N+: "ACT" US type US path(b64) US args(b64)
 func getTaskOS(path string, startTime time.Time) CommandResult {
 	if path == "" {
@@ -249,7 +260,11 @@ $t.Actions|ForEach-Object{
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
 	output, err := cmd.Output()
 	if err != nil {
-		return NewErrorResult(fmt.Errorf("task not found: %s: %w", path, err), time.Since(startTime).Milliseconds())
+		errMsg := fmt.Sprintf("task not found: %s: %v", path, err)
+		if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
+			errMsg = fmt.Sprintf("task not found: %s: %s", path, strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return NewErrorResult(fmt.Errorf("%s", errMsg), time.Since(startTime).Milliseconds())
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
