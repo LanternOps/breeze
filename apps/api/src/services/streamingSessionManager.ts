@@ -378,14 +378,14 @@ export class StreamingSessionManager {
           settingSources: [],
           thinking: { type: 'disabled' },
           stderr: (data: string) => {
-            // Temporarily log ALL stderr for debugging
-            console.log('[SDK-stderr]', breezeSessionId, data.trim());
+            if (data.includes('error') || data.includes('Error') || data.includes('FATAL')) {
+              console.error('[SDK-stderr]', breezeSessionId, data.trim());
+            }
           },
         }
       });
 
       (session as { query: Query }).query = sdkQuery;
-      console.log('[StreamingSessionManager] SDK query created for session:', breezeSessionId);
 
       // Start background processor (inherits the clean context)
       (session as { processorPromise: Promise<void> }).processorPromise = this.runBackgroundProcessor(session);
@@ -393,7 +393,6 @@ export class StreamingSessionManager {
         captureException(err);
         console.error('[StreamingSessionManager] Background processor error:', err);
       });
-      console.log('[StreamingSessionManager] Background processor started for session:', breezeSessionId);
     });
 
     // Enforce max active sessions via LRU eviction
@@ -503,10 +502,8 @@ export class StreamingSessionManager {
     let currentMessageId = crypto.randomUUID();
     let messageStarted = false;
 
-    console.log('[BGProcessor] Entering for-await loop for session:', session.breezeSessionId);
     try {
       for await (const message of session.query) {
-        console.log('[BGProcessor] Got message:', session.breezeSessionId, message.type, (message as any).subtype ?? '');
         // Stop publishing if session is being torn down
         if (session.state === 'closing' || session.state === 'closed') break;
 
