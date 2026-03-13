@@ -9,7 +9,15 @@ interface OrgData {
 }
 
 interface OrganizationSetupStepProps {
-  onNext: () => void;
+  onNext: (orgId: string, siteId: string) => void;
+}
+
+function slugify(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 100) || 'default';
 }
 
 export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepProps) {
@@ -19,7 +27,6 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
   const [success, setSuccess] = useState<string>();
   const [orgData, setOrgData] = useState<OrgData>({});
 
-  const [partnerName, setPartnerName] = useState('');
   const [orgName, setOrgName] = useState('');
   const [siteName, setSiteName] = useState('');
 
@@ -70,7 +77,6 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
       }
 
       setOrgData({ partner, organizations, sites });
-      if (partner) setPartnerName(partner.name);
       if (organizations?.[0]) setOrgName(organizations[0].name);
       if (sites?.[0]) setSiteName(sites[0].name);
     } catch {
@@ -87,55 +93,80 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
     setSaving(true);
 
     try {
-      // Update partner name
-      if (orgData.partner && partnerName && partnerName !== orgData.partner.name) {
-        const res = await fetchWithAuth(`/orgs/partners/${orgData.partner.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ name: partnerName })
+      const existingOrg = orgData.organizations?.[0];
+      const existingSite = orgData.sites?.[0];
+
+      let finalOrgId: string;
+      let finalSiteId: string;
+
+      // If an org already exists, update its name; otherwise create one
+      if (existingOrg) {
+        if (orgName && orgName !== existingOrg.name) {
+          const res = await fetchWithAuth(`/orgs/organizations/${existingOrg.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ name: orgName })
+          });
+          if (!res.ok) {
+            let msg = 'Failed to update organization name';
+            try { const data = await res.json(); msg = data.error || msg; } catch { /* ignore */ }
+            setError(msg);
+            setSaving(false);
+            return;
+          }
+        }
+        finalOrgId = existingOrg.id;
+      } else {
+        const name = orgName.trim() || 'My Organization';
+        const res = await fetchWithAuth('/orgs/organizations', {
+          method: 'POST',
+          body: JSON.stringify({ name, slug: slugify(name) })
         });
         if (!res.ok) {
-          let msg = 'Failed to update partner name';
-          try { const data = await res.json(); msg = data.error || msg; } catch { /* ignore parse error */ }
+          let msg = 'Failed to create organization';
+          try { const data = await res.json(); msg = data.error || msg; } catch { /* ignore */ }
           setError(msg);
           setSaving(false);
           return;
         }
+        const org = await res.json();
+        finalOrgId = org.id;
       }
 
-      // Update org name
-      const org = orgData.organizations?.[0];
-      if (org && orgName && orgName !== org.name) {
-        const res = await fetchWithAuth(`/orgs/organizations/${org.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ name: orgName })
+      // If a site already exists, update its name; otherwise create one
+      if (existingSite) {
+        if (siteName && siteName !== existingSite.name) {
+          const res = await fetchWithAuth(`/orgs/sites/${existingSite.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ name: siteName })
+          });
+          if (!res.ok) {
+            let msg = 'Failed to update site name';
+            try { const data = await res.json(); msg = data.error || msg; } catch { /* ignore */ }
+            setError(msg);
+            setSaving(false);
+            return;
+          }
+        }
+        finalSiteId = existingSite.id;
+      } else {
+        const name = siteName.trim() || 'Main Office';
+        const res = await fetchWithAuth('/orgs/sites', {
+          method: 'POST',
+          body: JSON.stringify({ orgId: finalOrgId, name })
         });
         if (!res.ok) {
-          let msg = 'Failed to update organization name';
-          try { const data = await res.json(); msg = data.error || msg; } catch { /* ignore parse error */ }
+          let msg = 'Failed to create site';
+          try { const data = await res.json(); msg = data.error || msg; } catch { /* ignore */ }
           setError(msg);
           setSaving(false);
           return;
         }
+        const site = await res.json();
+        finalSiteId = site.id;
       }
 
-      // Update site name
-      const site = orgData.sites?.[0];
-      if (site && siteName && siteName !== site.name) {
-        const res = await fetchWithAuth(`/orgs/sites/${site.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ name: siteName })
-        });
-        if (!res.ok) {
-          let msg = 'Failed to update site name';
-          try { const data = await res.json(); msg = data.error || msg; } catch { /* ignore parse error */ }
-          setError(msg);
-          setSaving(false);
-          return;
-        }
-      }
-
-      setSuccess('Organization details updated');
-      setTimeout(() => onNext(), 600);
+      setSuccess('Organization details saved');
+      setTimeout(() => onNext(finalOrgId, finalSiteId), 600);
     } catch {
       setError('An unexpected error occurred');
     } finally {
@@ -151,71 +182,45 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
     );
   }
 
-  const hasChanges =
-    (orgData.partner && partnerName !== orgData.partner.name) ||
-    (orgData.organizations?.[0] && orgName !== orgData.organizations[0].name) ||
-    (orgData.sites?.[0] && siteName !== orgData.sites[0].name);
-
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-semibold">Name Your Organization</h2>
+        <h2 className="text-lg font-semibold">Create Your Organization</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Replace the default names with your company and site details.
+          Name your organization and primary site. You can add more sites later.
         </p>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4">
-        {orgData.partner && (
-          <div>
-            <label htmlFor="setup-partner" className="flex items-center gap-2 text-sm font-medium">
-              <Building2 className="h-4 w-4 text-muted-foreground" />
-              Partner (MSP) Name
-            </label>
-            <input
-              id="setup-partner"
-              type="text"
-              value={partnerName}
-              onChange={(e) => setPartnerName(e.target.value)}
-              placeholder="Your Company Name"
-              className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-            />
-          </div>
-        )}
+        <div>
+          <label htmlFor="setup-org" className="flex items-center gap-2 text-sm font-medium">
+            <Building2 className="h-4 w-4 text-muted-foreground" />
+            Organization Name
+          </label>
+          <input
+            id="setup-org"
+            type="text"
+            value={orgName}
+            onChange={(e) => setOrgName(e.target.value)}
+            placeholder="Your Company Name"
+            className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+        </div>
 
-        {orgData.organizations?.[0] && (
-          <div>
-            <label htmlFor="setup-org" className="flex items-center gap-2 text-sm font-medium">
-              <Building2 className="h-4 w-4 text-muted-foreground" />
-              Organization Name
-            </label>
-            <input
-              id="setup-org"
-              type="text"
-              value={orgName}
-              onChange={(e) => setOrgName(e.target.value)}
-              placeholder="Default Organization"
-              className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-            />
-          </div>
-        )}
-
-        {orgData.sites?.[0] && (
-          <div>
-            <label htmlFor="setup-site" className="flex items-center gap-2 text-sm font-medium">
-              <Building2 className="h-4 w-4 text-muted-foreground" />
-              Site Name
-            </label>
-            <input
-              id="setup-site"
-              type="text"
-              value={siteName}
-              onChange={(e) => setSiteName(e.target.value)}
-              placeholder="Main Office"
-              className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-            />
-          </div>
-        )}
+        <div>
+          <label htmlFor="setup-site" className="flex items-center gap-2 text-sm font-medium">
+            <Building2 className="h-4 w-4 text-muted-foreground" />
+            Site Name
+          </label>
+          <input
+            id="setup-site"
+            type="text"
+            value={siteName}
+            onChange={(e) => setSiteName(e.target.value)}
+            placeholder="Main Office"
+            className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+        </div>
 
         {error && (
           <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -229,17 +234,10 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
           </div>
         )}
 
-        <div className="flex justify-end gap-3 pt-2">
-          <button
-            type="button"
-            onClick={onNext}
-            className="rounded-md px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground"
-          >
-            Skip
-          </button>
+        <div className="flex justify-end pt-2">
           <button
             type="submit"
-            disabled={saving || !hasChanges}
+            disabled={saving}
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-50"
           >
             {saving && <Loader2 className="h-4 w-4 animate-spin" />}

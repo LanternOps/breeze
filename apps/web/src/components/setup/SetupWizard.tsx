@@ -2,28 +2,26 @@ import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import SetupStepper from './SetupStepper';
-import AccountSetupStep from './AccountSetupStep';
 import OrganizationSetupStep from './OrganizationSetupStep';
-import ConfigReviewStep from './ConfigReviewStep';
-import SetupSummaryStep from './SetupSummaryStep';
+import EnrollDeviceStep from './EnrollDeviceStep';
 
 const STEPS = [
-  { label: 'Account' },
   { label: 'Organization' },
-  { label: 'Config' },
-  { label: 'Summary' }
+  { label: 'Enroll Device' },
 ];
 
 const STORAGE_KEY = 'breeze-setup-step';
 
 export default function SetupWizard() {
   const [currentStep, setCurrentStep] = useState(0);
-  const [stepsVisited, setStepsVisited] = useState([false, false, false]);
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [isHydrated, setIsHydrated] = useState(false);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isLoading = useAuthStore((s) => s.isLoading);
-  const user = useAuthStore((s) => s.user);
+
+  // Created org/site IDs passed from step 1 to step 2
+  const [orgId, setOrgId] = useState<string | null>(null);
+  const [siteId, setSiteId] = useState<string | null>(null);
 
   // Wait for zustand to rehydrate from localStorage before checking auth
   useEffect(() => {
@@ -86,13 +84,10 @@ export default function SetupWizard() {
     checkSetup();
   }, [isHydrated, isLoading, isAuthenticated]);
 
-  const goToNext = (stepIndex: number) => {
-    setStepsVisited((prev) => {
-      const next = [...prev];
-      next[stepIndex] = true;
-      return next;
-    });
-    setCurrentStep((prev) => Math.min(prev + 1, STEPS.length - 1));
+  const handleOrgStepComplete = (createdOrgId: string, createdSiteId: string) => {
+    setOrgId(createdOrgId);
+    setSiteId(createdSiteId);
+    setCurrentStep(1);
   };
 
   const handleSkipAll = async () => {
@@ -109,6 +104,10 @@ export default function SetupWizard() {
     window.location.href = '/';
   };
 
+  const handleEnrollFinish = () => {
+    // EnrollDeviceStep handles setup-complete and redirect internally
+  };
+
   if (checkingAuth) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -122,13 +121,19 @@ export default function SetupWizard() {
       <SetupStepper steps={STEPS} currentStep={currentStep} />
 
       <div className="rounded-lg border bg-card p-6 shadow-sm">
-        {currentStep === 0 && <AccountSetupStep onNext={() => goToNext(0)} />}
-        {currentStep === 1 && <OrganizationSetupStep onNext={() => goToNext(1)} />}
-        {currentStep === 2 && <ConfigReviewStep onNext={() => goToNext(2)} />}
-        {currentStep === 3 && <SetupSummaryStep stepsVisited={stepsVisited} />}
+        {currentStep === 0 && (
+          <OrganizationSetupStep onNext={handleOrgStepComplete} />
+        )}
+        {currentStep === 1 && orgId && siteId && (
+          <EnrollDeviceStep
+            orgId={orgId}
+            siteId={siteId}
+            onFinish={handleEnrollFinish}
+          />
+        )}
       </div>
 
-      {currentStep < 3 && (
+      {currentStep === 0 && (
         <div className="text-center">
           <button
             onClick={handleSkipAll}
