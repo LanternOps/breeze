@@ -11,6 +11,7 @@ import {
   getRedis
 } from '../../services';
 import { ENABLE_REGISTRATION, registerSchema, registerPartnerSchema } from './schemas';
+import { dispatchHook } from '../../services/partnerHooks';
 import {
   runWithSystemDbAccess,
   getClientRateLimitKey,
@@ -251,6 +252,21 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
 
       setRefreshTokenCookie(c, tokens.refreshToken);
 
+      // Dispatch post-registration hook (external services can override status/redirect)
+      const hookResponse = await dispatchHook('registration', result.newPartner.id, {
+        email: result.newUser.email,
+        partnerName: result.newPartner.name,
+        plan: result.newPartner.plan,
+      });
+
+      // If hook overrides the partner status (e.g. to 'pending'), apply it
+      if (hookResponse?.status && hookResponse.status !== result.newPartner.status) {
+        await db
+          .update(partners)
+          .set({ status: hookResponse.status as any })
+          .where(eq(partners.id, result.newPartner.id));
+      }
+
       return c.json({
         user: {
           id: result.newUser.id,
@@ -262,10 +278,11 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
           id: result.newPartner.id,
           name: result.newPartner.name,
           slug: result.newPartner.slug,
-          status: result.newPartner.status,
+          status: hookResponse?.status ?? result.newPartner.status,
         },
         tokens: toPublicTokens(tokens),
         mfaRequired: false,
+        ...(hookResponse?.redirectUrl ? { redirectUrl: hookResponse.redirectUrl } : {}),
       });
     } catch (err) {
       console.error('Partner registration error:', err instanceof Error ? err.message : String(err));
