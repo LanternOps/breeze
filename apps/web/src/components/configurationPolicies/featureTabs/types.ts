@@ -37,5 +37,5 @@ export const FEATURE_META: Record<FeatureType, {
   sensitive_data: { label: 'Data Discovery', fetchUrl: '/sensitive-data/policies', description: 'Sensitive data scanning configuration' },
   peripheral_control: { label: 'Peripheral Control', fetchUrl: '/peripherals/policies', description: 'USB, Bluetooth, and Thunderbolt device policies' },
   warranty:    { label: 'Warranty',    fetchUrl: null,                   description: 'Warranty expiry alert thresholds' },
-  helper:      { label: 'Helper',     fetchUrl: null,                   description: 'End-user helper tray application' },
+  helper:      { label: 'Breeze Assist',     fetchUrl: null,                   description: 'End-user Breeze Assist tray application' },
 };
