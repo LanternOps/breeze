@@ -22,7 +22,7 @@ The core stack (`docker-compose.yml`) includes:
 | **Web** | `ghcr.io/lanternops/breeze/web` | Astro SSR dashboard |
 | **PostgreSQL** | `postgres:16-alpine` | Primary database |
 | **Redis** | `redis:7-alpine` | Job queue, caching, rate limiting |
-| **Coturn** | `coturn/coturn:4-alpine` | TURN relay server for WebRTC remote desktop |
+| **Coturn** | `coturn/coturn:4-alpine` | TURN relay server for WebRTC remote desktop (opt-in via `--profile turn`) |
 
 An optional monitoring stack (Prometheus, Grafana, Alertmanager, Loki, Promtail, exporters) is available as a separate overlay — see [Monitoring](#adding-monitoring).
 
@@ -77,6 +77,14 @@ An optional monitoring stack (Prometheus, Grafana, Alertmanager, Loki, Promtail,
    # Optional: TURN realm (defaults to breeze.local)
    TURN_REALM=breeze.local
    ```
+
+   Coturn is behind a Docker Compose profile and does not start by default. To enable it:
+
+   ```bash
+   docker compose --profile turn up -d
+   ```
+
+   Or add `COMPOSE_PROFILES=turn` to your `.env` file for persistent activation.
 
    <Aside type="tip">
      If your server is behind **Cloudflare Tunnel** or another HTTP-only proxy, TURN cannot run on the same host because it requires UDP. Deploy TURN on a separate VPS instead — see [TURN Server](/deploy/turn-server/) for a step-by-step guide.

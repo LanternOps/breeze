@@ -604,6 +604,9 @@ func (w *watcher) run() {
 	}
 }
 
+// Note: stop() is not used directly — Manager.stopWatcher() handles
+// cancel + join with mutex release/reacquire. This method exists for
+// testing and direct use outside the Manager mutex pattern.
 func (w *watcher) stop() {
 	w.cancel()
 	<-w.done

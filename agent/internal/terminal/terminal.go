@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"runtime"
 	"sync"
-	"syscall"
 
 	"github.com/breeze-rmm/agent/internal/logging"
 )
@@ -158,6 +157,12 @@ func (s *Session) write(data []byte) error {
 		return fmt.Errorf("session is closed")
 	}
 
+	// Forward control characters as signals to the shell process.
+	// This runs on all platforms before writing data to the pipe/PTY.
+	for _, b := range data {
+		s.forwardSignal(b)
+	}
+
 	// Prefer stdin pipe (Windows), fall back to PTY fd (Unix/macOS)
 	if s.stdin != nil {
 		_, err := s.stdin.Write(data)
@@ -166,22 +171,6 @@ func (s *Session) write(data []byte) error {
 
 	if s.pty == nil {
 		return fmt.Errorf("PTY not available")
-	}
-
-	// On macOS (LaunchDaemon), the shell may not have a controlling terminal,
-	// so the PTY line discipline can't deliver signals. Manually forward
-	// control characters as signals to the shell's process group.
-	if s.cmd != nil && s.cmd.Process != nil {
-		for _, b := range data {
-			switch b {
-			case 0x03: // Ctrl+C → SIGINT
-				syscall.Kill(-s.cmd.Process.Pid, syscall.SIGINT)
-			case 0x1c: // Ctrl+\ → SIGQUIT
-				syscall.Kill(-s.cmd.Process.Pid, syscall.SIGQUIT)
-			case 0x1a: // Ctrl+Z → SIGTSTP
-				syscall.Kill(-s.cmd.Process.Pid, syscall.SIGTSTP)
-			}
-		}
 	}
 
 	_, err := s.pty.Write(data)

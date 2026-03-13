@@ -1,14 +1,14 @@
 ---
-title: Breeze Helper
+title: Breeze Assist
 description: System tray application providing end-user AI chat, vision-based troubleshooting, and self-service tools.
 sidebar:
   order: 5
-  label: Breeze Helper
+  label: Breeze Assist
 ---
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-The Breeze Helper is a companion application that runs in the end user's desktop session alongside the Breeze agent service. It provides a system tray icon with status indicators, an AI-powered chat interface for self-service troubleshooting, vision-based screen analysis, and computer control capabilities. The Helper bridges the gap between the background agent service (which runs as SYSTEM/root in Session 0) and the interactive user session where display, input, and notification APIs are available.
+The Breeze Assist is a companion application that runs in the end user's desktop session alongside the Breeze agent service. It provides a system tray icon with status indicators, an AI-powered chat interface for self-service troubleshooting, vision-based screen analysis, and computer control capabilities. The Helper bridges the gap between the background agent service (which runs as SYSTEM/root in Session 0) and the interactive user session where display, input, and notification APIs are available.
 
 The Helper is designed for **end users**, not IT administrators. It speaks in simple, non-technical language and uses a filtered subset of AI tools appropriate for the permission level configured by the organization. Destructive operations always require explicit approval before they reach the device.
 
@@ -41,7 +41,7 @@ Key capabilities:
 
 ## Installation
 
-The Helper is installed automatically as part of the Breeze agent deployment. On Windows, the agent service (Session 0) spawns the Helper into the user's desktop session via the session broker. On Linux and macOS, it runs as a user-level service.
+The Helper can be deployed automatically via config policy or installed manually. On Windows, the agent downloads the MSI installer, runs it silently, and the session broker spawns the Helper into the user's desktop session. On macOS, the agent downloads the DMG, mounts and copies the app to `/Applications`. On Linux, the agent downloads the AppImage. The agent also detects headless mode (macOS LaunchDaemon, Linux systemd) and routes desktop commands through IPC to the Helper instead of attempting direct screen capture.
 
 <Tabs>
   <TabItem label="Windows">
@@ -51,7 +51,7 @@ The Helper is spawned automatically by the Breeze agent service when a user logs
 No manual installation is required. The Helper binary is bundled with the agent installer.
 
 ```
-C:\Program Files\Breeze\breeze-helper.exe
+C:\Program Files\Breeze Assist\Breeze Assist.exe
 ```
 
   </TabItem>
@@ -65,7 +65,7 @@ systemctl --user enable breeze-agent-user
 systemctl --user start breeze-agent-user
 ```
 
-The Helper connects to the agent service via a Unix domain socket at `/var/run/breeze/helper.sock`.
+The Helper connects to the agent service via a Unix domain socket at `/var/run/breeze/agent.sock`.
 
   </TabItem>
   <TabItem label="macOS">
@@ -77,7 +77,7 @@ sudo make install-user-helper
 # LaunchAgent auto-starts at login
 ```
 
-The LaunchAgent plist is installed to `~/Library/LaunchAgents/com.breeze.helper.plist` and starts automatically when the user logs in.
+When installed via config policy, the LaunchAgent plist is at `/Library/LaunchAgents/com.breeze.assist.plist`. When using the built-in `user-helper` subcommand, the plist is at `/Library/LaunchAgents/com.breeze.agent-user.plist`. Both start automatically when the user logs in.
 
   </TabItem>
 </Tabs>
