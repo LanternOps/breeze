@@ -92,7 +92,7 @@ func defaultBinaryPath() string {
 		if pf == "" {
 			pf = `C:\Program Files`
 		}
-		return filepath.Join(pf, "Breeze Helper", "Breeze Helper.exe")
+		return filepath.Join(pf, "Breeze Helper", "breeze-helper.exe")
 	default:
 		return "/usr/local/bin/breeze-helper"
 	}

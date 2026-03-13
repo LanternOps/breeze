@@ -121,7 +121,7 @@ After enrollment, the agent stores its configuration at:
 | Windows | `C:\ProgramData\Breeze\agent.yaml` | `C:\ProgramData\Breeze\secrets.yaml` |
 
 ```yaml
-# agent.yaml (0640 — readable by Breeze Assist helper)
+# agent.yaml (0640 — readable by Breeze Helper)
 server_url: "https://breeze.yourdomain.com"
 agent_id: "hex-agent-id"
 auth_token: "brz_..."
@@ -135,5 +135,5 @@ auth_token: "brz_..."
 ```
 
 <Aside type="danger">
-  The `secrets.yaml` file contains the agent's bearer token and is restricted to `0600` (owner-only read/write). The `auth_token` is intentionally duplicated in `agent.yaml` (which uses `0640` permissions) so the Breeze Assist helper process can discover the token without needing root access to `secrets.yaml`. Do not change these permissions.
+  The `secrets.yaml` file contains the agent's bearer token and is restricted to `0600` (owner-only read/write). The `auth_token` is intentionally duplicated in `agent.yaml` (which uses `0640` permissions) so the Breeze Helper process can discover the token without needing root access to `secrets.yaml`. Do not change these permissions.
 </Aside>

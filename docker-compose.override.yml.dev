@@ -75,7 +75,7 @@ services:
       ENABLE_REGISTRATION: ${ENABLE_REGISTRATION:-true}
       PUBLIC_ENABLE_REGISTRATION: ${PUBLIC_ENABLE_REGISTRATION:-true}
       PUBLIC_API_URL: ${PUBLIC_API_URL:-https://2breeze.app}
-      BINARY_SOURCE: disabled
+      BINARY_SOURCE: ${BINARY_SOURCE:-github}
       TURN_HOST: ${TURN_HOST:-127.0.0.1}
       TURN_PORT: ${TURN_PORT:-3478}
       TURN_SECRET: ${TURN_SECRET:-dev-turn-secret}
