@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var log = logging.L("helper")
+var log = logging.L("breeze-assist")
 
 // Settings mirrors the API HelperSettings shape.
 type Settings struct {
@@ -60,15 +60,15 @@ func New(serverURL string, authToken *secmem.SecureString, agentID string) *Mana
 func defaultBinaryPath() string {
 	switch runtime.GOOS {
 	case "darwin":
-		return "/Applications/Breeze Helper.app/Contents/MacOS/Breeze Helper"
+		return "/Applications/Breeze Assist.app/Contents/MacOS/Breeze Assist"
 	case "windows":
 		pf := os.Getenv("ProgramFiles")
 		if pf == "" {
 			pf = `C:\Program Files`
 		}
-		return filepath.Join(pf, "Breeze Helper", "Breeze Helper.exe")
+		return filepath.Join(pf, "Breeze Assist", "Breeze Assist.exe")
 	default:
-		return "/usr/local/bin/breeze-helper"
+		return "/usr/local/bin/breeze-assist"
 	}
 }
 
