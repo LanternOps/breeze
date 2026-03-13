@@ -21,13 +21,19 @@ const (
 	startupFrameRepaintEvery = 100 * time.Millisecond
 
 	// staticDesktopResendInterval is the minimum interval between frame sends
-	// on a static normal desktop. Provides a ~4fps floor to prevent WebRTC
+	// on a static normal desktop. Provides a ~8fps floor to prevent WebRTC
 	// jitter accumulation and decoder frame drops during idle periods.
-	staticDesktopResendInterval = 250 * time.Millisecond
+	staticDesktopResendInterval = 125 * time.Millisecond
 
 	// staticDesktopKeyframeEvery forces periodic keyframes during sustained
 	// idle so the decoder stays synchronized with cached-frame resends.
-	staticDesktopKeyframeEvery = 3 * time.Second
+	staticDesktopKeyframeEvery = 10 * time.Second
+
+	// maxFrameSizeBytes caps individual encoded frames to prevent MFT keyframe
+	// bursts from overwhelming the jitter buffer. At 4 Mbps target, a single
+	// frame at 30fps should be ~16KB. We allow 4x that for keyframes but drop
+	// anything larger — the encoder will produce a smaller P-frame next cycle.
+	maxFrameSizeBytes = 80_000 // ~80KB = ~640kbps at 60fps, generous for keyframes
 )
 
 var encodedFramePool = sync.Pool{
@@ -641,6 +647,14 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 
 	s.metrics.RecordEncode(encodeTime, len(h264Data))
 
+	// Drop oversized frames (MFT keyframe bursts) — same guard as GPU path.
+	if s.frameIdx > 5 && len(h264Data) > maxFrameSizeBytes {
+		slog.Debug("Dropping oversized frame (CPU path)",
+			"session", s.id, "bytes", len(h264Data), "maxBytes", maxFrameSizeBytes)
+		s.metrics.RecordDrop()
+		return
+	}
+
 	// 5. Write as pion media.Sample
 	sample := media.Sample{
 		Data:     h264Data,
@@ -722,6 +736,16 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 			"encodeMs", encodeTime.Milliseconds(),
 			"nalus", describeH264NALUs(h264Data),
 		)
+	}
+
+	// Drop oversized frames (MFT keyframe bursts can be 2-4x the bitrate target).
+	// The encoder will produce a smaller P-frame on the next capture cycle.
+	// Skip the check for the first 5 frames to allow initial keyframes through.
+	if s.frameIdx > 5 && len(h264Data) > maxFrameSizeBytes {
+		slog.Debug("Dropping oversized frame to prevent jitter burst",
+			"session", s.id, "bytes", len(h264Data), "maxBytes", maxFrameSizeBytes)
+		s.metrics.RecordDrop()
+		return true, false, false
 	}
 
 	sample := media.Sample{
