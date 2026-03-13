@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -228,8 +229,44 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		h.cachedDeviceRole = "workstation"
 	}
 
-	// Initialize helper manager
-	h.helperMgr = helper.New(cfg.ServerURL, ftToken, cfg.AgentID)
+	// Initialize Breeze Assist manager
+	helperCtx, helperCancel := context.WithCancel(context.Background())
+	go func() { <-h.stopChan; helperCancel() }()
+
+	if runtime.GOOS == "windows" && cfg.IsService {
+		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID,
+			helper.WithSpawnFunc(func(binaryPath string) error {
+				detector := sessionbroker.NewSessionDetector()
+				sessions, err := detector.ListSessions()
+				if err != nil {
+					return fmt.Errorf("list sessions: %w", err)
+				}
+				var launched int
+				for _, s := range sessions {
+					if s.State != "active" && s.State != "connected" {
+						continue
+					}
+					sessionNum, parseErr := strconv.ParseUint(s.Session, 10, 32)
+					if parseErr != nil {
+						log.Warn("invalid session id", "session", s.Session, "error", parseErr.Error())
+						continue
+					}
+					if spawnErr := sessionbroker.SpawnProcessInSession(binaryPath, uint32(sessionNum)); spawnErr != nil {
+						log.Warn("failed to spawn breeze assist in session",
+							"sessionId", sessionNum, "error", spawnErr.Error())
+						continue
+					}
+					launched++
+				}
+				if launched == 0 {
+					return helper.ErrNoActiveSession
+				}
+				return nil
+			}),
+		)
+	} else {
+		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID)
+	}
 
 	// Initialize service & process monitoring
 	h.monitor = monitoring.New(h.sendMonitoringResults)
