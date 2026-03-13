@@ -20,6 +20,11 @@ export default function UpgradeModal({
 
   const billingUrl = import.meta.env.PUBLIC_BILLING_URL || '';
 
+  // Billing not configured — this modal should never appear in self-hosted mode
+  if (!billingUrl) {
+    return null;
+  }
+
   const handleUpgrade = async () => {
     setLoading(true);
     setError(undefined);

@@ -13,6 +13,10 @@ export default function PendingGuard() {
   const tokens = useAuthStore((s) => s.tokens);
 
   useEffect(() => {
+    // Only active when billing service is configured (SaaS mode)
+    const billingUrl = import.meta.env.PUBLIC_BILLING_URL;
+    if (!billingUrl) return;
+
     if (!isAuthenticated || !tokens?.accessToken) return;
 
     // Don't redirect if we're already on a billing or auth page
@@ -25,12 +29,7 @@ export default function PendingGuard() {
 
     fetchWithAuth('/partner/me')
       .then((res) => {
-        if (cancelled) return null;
-        if (!res.ok) {
-          // Fail closed: if we can't verify partner status, redirect to billing
-          window.location.href = '/billing/plans';
-          return null;
-        }
+        if (cancelled || !res.ok) return null;
         return res.json();
       })
       .then((data) => {
@@ -40,10 +39,9 @@ export default function PendingGuard() {
         }
       })
       .catch(() => {
-        // Fail closed: network error means we can't verify, redirect to billing
-        if (!cancelled) {
-          window.location.href = '/billing/plans';
-        }
+        // Server-side pendingPartnerGuard is the real enforcement —
+        // this component is just a UX convenience to redirect early.
+        // On error, do nothing; API calls will 403 if partner is pending.
       });
 
     return () => {

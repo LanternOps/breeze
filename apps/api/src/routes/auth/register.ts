@@ -21,6 +21,7 @@ import {
 } from './helpers';
 
 const { db } = dbModule;
+const BILLING_ENABLED = (process.env.BILLING_ENABLED ?? '').toLowerCase() === 'true';
 
 export const registerRoutes = new Hono();
 
@@ -184,7 +185,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
             slug,
             type: 'msp',
             plan: 'free',
-            status: 'pending',
+            status: BILLING_ENABLED ? 'pending' : 'active',
             billingEmail: email.toLowerCase(),
           })
           .returning();
@@ -266,7 +267,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         },
         tokens: toPublicTokens(tokens),
         mfaRequired: false,
-        requiresCheckout: true,
+        ...(BILLING_ENABLED ? { requiresCheckout: true } : {}),
       });
     } catch (err) {
       console.error('Partner registration error:', err instanceof Error ? err.message : String(err));
