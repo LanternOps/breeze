@@ -116,6 +116,7 @@ describe('auth routes', () => {
     vi.mocked(isUserTokenRevoked).mockResolvedValue(false);
     vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
     vi.mocked(getTrustedClientIp).mockReturnValue('127.0.0.1');
+    vi.mocked(rateLimiter).mockResolvedValue({ allowed: true, remaining: 4, resetAt: new Date() });
     app = new Hono();
     app.route('/auth', authRoutes);
   });

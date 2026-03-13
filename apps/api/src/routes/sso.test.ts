@@ -112,11 +112,11 @@ vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'organization',
-      orgId: 'org-123',
+      orgId: ORG_UUID,
       partnerId: null,
-      accessibleOrgIds: ['org-123'],
+      accessibleOrgIds: [ORG_UUID],
       canAccessOrg: () => true,
-      user: { id: 'user-123', email: 'test@example.com' }
+      user: { id: USER_UUID, email: 'test@example.com' }
     });
     return next();
   }),
@@ -145,6 +145,12 @@ import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { discoverOIDCConfig } from '../services/sso';
 
+const PROVIDER_UUID = '00000000-0000-4000-8000-000000000001';
+const ORG_UUID = '00000000-0000-4000-8000-000000000010';
+const ORG_UUID_OTHER = '00000000-0000-4000-8000-000000000099';
+const USER_UUID = '00000000-0000-4000-8000-000000000020';
+const PARTNER_UUID = '00000000-0000-4000-8000-000000000030';
+
 describe('sso routes', () => {
   let app: Hono;
 
@@ -158,11 +164,11 @@ describe('sso routes', () => {
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         scope: overrides.scope ?? 'organization',
-        orgId: 'orgId' in overrides ? overrides.orgId : 'org-123',
+        orgId: 'orgId' in overrides ? overrides.orgId : ORG_UUID,
         partnerId: 'partnerId' in overrides ? overrides.partnerId : null,
-        accessibleOrgIds: 'accessibleOrgIds' in overrides ? overrides.accessibleOrgIds : ['org-123'],
+        accessibleOrgIds: 'accessibleOrgIds' in overrides ? overrides.accessibleOrgIds : [ORG_UUID],
         canAccessOrg: overrides.canAccessOrg ?? (() => true),
-        user: { id: 'user-123', email: 'test@example.com' }
+        user: { id: USER_UUID, email: 'test@example.com' }
       });
       return next();
     });
@@ -182,7 +188,7 @@ describe('sso routes', () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockResolvedValue([
           {
-            id: 'provider-1',
+            id: PROVIDER_UUID,
             name: 'Okta',
             type: 'oidc',
             status: 'active',
@@ -220,12 +226,12 @@ describe('sso routes', () => {
     setAuthContext({
       scope: 'partner',
       orgId: null,
-      partnerId: 'partner-123',
-      accessibleOrgIds: ['org-123'],
-      canAccessOrg: (orgId) => orgId === 'org-123'
+      partnerId: PARTNER_UUID,
+      accessibleOrgIds: [ORG_UUID],
+      canAccessOrg: (orgId) => orgId === ORG_UUID
     });
 
-    const res = await app.request('/sso/providers?orgId=org-999', {
+    const res = await app.request(`/sso/providers?orgId=${ORG_UUID_OTHER}`, {
       method: 'GET',
       headers: { Authorization: 'Bearer token' }
     });
@@ -238,8 +244,8 @@ describe('sso routes', () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
-            id: 'provider-1',
-            orgId: 'org-123',
+            id: PROVIDER_UUID,
+            orgId: ORG_UUID,
             name: 'Okta',
             type: 'oidc',
             issuer: 'https://issuer.example.com',
@@ -249,7 +255,7 @@ describe('sso routes', () => {
       })
     } as any);
 
-    const res = await app.request('/sso/providers/provider-1', {
+    const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
       method: 'GET',
       headers: { Authorization: 'Bearer token' }
     });
@@ -264,17 +270,17 @@ describe('sso routes', () => {
     setAuthContext({
       scope: 'partner',
       orgId: null,
-      partnerId: 'partner-123',
-      accessibleOrgIds: ['org-123'],
-      canAccessOrg: (orgId) => orgId === 'org-123'
+      partnerId: PARTNER_UUID,
+      accessibleOrgIds: [ORG_UUID],
+      canAccessOrg: (orgId) => orgId === ORG_UUID
     });
 
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
-            id: 'provider-1',
-            orgId: 'org-999',
+            id: PROVIDER_UUID,
+            orgId: ORG_UUID_OTHER,
             name: 'Other Provider',
             type: 'oidc',
             issuer: 'https://issuer.example.com',
@@ -284,7 +290,7 @@ describe('sso routes', () => {
       })
     } as any);
 
-    const res = await app.request('/sso/providers/provider-1', {
+    const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
       method: 'GET',
       headers: { Authorization: 'Bearer token' }
     });
@@ -302,7 +308,7 @@ describe('sso routes', () => {
     } as any);
 
     const valuesMock = vi.fn().mockReturnValue({
-      returning: vi.fn().mockResolvedValue([{ id: 'provider-1', name: 'Okta' }])
+      returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, name: 'Okta' }])
     });
     vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
 
@@ -322,7 +328,7 @@ describe('sso routes', () => {
     expect(res.status).toBe(201);
     expect(discoverOIDCConfig).toHaveBeenCalledWith('https://issuer.example.com');
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
-      orgId: 'org-123',
+      orgId: ORG_UUID,
       name: 'Okta',
       type: 'oidc',
       scopes: 'openid profile email',
@@ -330,7 +336,7 @@ describe('sso routes', () => {
       tokenUrl: 'https://issuer.example.com/token',
       userInfoUrl: 'https://issuer.example.com/userinfo',
       jwksUrl: 'https://issuer.example.com/jwks',
-      createdBy: 'user-123',
+      createdBy: USER_UUID,
       status: 'inactive'
     }));
   });
@@ -359,7 +365,7 @@ describe('sso routes', () => {
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([{ id: 'provider-1', orgId: 'org-123' }])
+          limit: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, orgId: ORG_UUID }])
         })
       })
     } as any);
@@ -367,12 +373,12 @@ describe('sso routes', () => {
     vi.mocked(db.update).mockReturnValue({
       set: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{ id: 'provider-1', name: 'Okta Updated' }])
+          returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, name: 'Okta Updated' }])
         })
       })
     } as any);
 
-    const res = await app.request('/sso/providers/provider-1', {
+    const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'Okta Updated' })
@@ -387,7 +393,7 @@ describe('sso routes', () => {
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([{ id: 'provider-1', orgId: 'org-123' }])
+          limit: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, orgId: ORG_UUID }])
         })
       })
     } as any);
@@ -397,11 +403,11 @@ describe('sso routes', () => {
       .mockReturnValueOnce({ where: vi.fn().mockResolvedValue(undefined) } as any)
       .mockReturnValueOnce({
         where: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{ id: 'provider-1' }])
+          returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID }])
         })
       } as any);
 
-    const res = await app.request('/sso/providers/provider-1', {
+    const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
       method: 'DELETE',
       headers: { Authorization: 'Bearer token' }
     });
@@ -416,14 +422,14 @@ describe('sso routes', () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
-            id: 'provider-1',
+            id: PROVIDER_UUID,
             type: 'saml'
           }])
         })
       })
     } as any);
 
-    const res = await app.request('/sso/providers/provider-1/test', {
+    const res = await app.request(`/sso/providers/${PROVIDER_UUID}/test`, {
       method: 'POST',
       headers: { Authorization: 'Bearer token' }
     });
@@ -436,7 +442,7 @@ describe('sso routes', () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
-            id: 'provider-1',
+            id: PROVIDER_UUID,
             type: 'oidc',
             issuer: 'https://issuer.example.com'
           }])
@@ -451,7 +457,7 @@ describe('sso routes', () => {
       userinfo_endpoint: 'https://issuer.example.com/userinfo'
     } as any);
 
-    const res = await app.request('/sso/providers/provider-1/test', {
+    const res = await app.request(`/sso/providers/${PROVIDER_UUID}/test`, {
       method: 'POST',
       headers: { Authorization: 'Bearer token' }
     });
