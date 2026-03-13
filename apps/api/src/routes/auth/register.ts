@@ -260,12 +260,28 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
       });
 
       // If hook overrides the partner status (e.g. to 'pending'), apply it
+      const VALID_STATUSES = ['pending', 'active', 'suspended', 'churned'] as const;
+      let effectiveStatus: string = result.newPartner.status;
+
       if (hookResponse?.status && hookResponse.status !== result.newPartner.status) {
-        await db
-          .update(partners)
-          .set({ status: hookResponse.status as any })
-          .where(eq(partners.id, result.newPartner.id));
+        if (!VALID_STATUSES.includes(hookResponse.status as any)) {
+          console.error(`[Registration] Hook returned invalid status '${hookResponse.status}' for partner ${result.newPartner.id}; ignoring`);
+        } else {
+          try {
+            await db
+              .update(partners)
+              .set({ status: hookResponse.status as typeof result.newPartner.status })
+              .where(eq(partners.id, result.newPartner.id));
+            effectiveStatus = hookResponse.status;
+          } catch (statusErr) {
+            console.error(`[Registration] Failed to update partner ${result.newPartner.id} status to '${hookResponse.status}':`, statusErr instanceof Error ? statusErr.message : String(statusErr));
+            effectiveStatus = hookResponse.status;
+          }
+        }
       }
+
+      // Only allow relative redirects from hooks to prevent open redirect
+      const redirectUrl = hookResponse?.redirectUrl?.startsWith('/') ? hookResponse.redirectUrl : undefined;
 
       return c.json({
         user: {
@@ -278,11 +294,11 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
           id: result.newPartner.id,
           name: result.newPartner.name,
           slug: result.newPartner.slug,
-          status: hookResponse?.status ?? result.newPartner.status,
+          status: effectiveStatus,
         },
         tokens: toPublicTokens(tokens),
         mfaRequired: false,
-        ...(hookResponse?.redirectUrl ? { redirectUrl: hookResponse.redirectUrl } : {}),
+        ...(redirectUrl ? { redirectUrl } : {}),
       });
     } catch (err) {
       console.error('Partner registration error:', err instanceof Error ? err.message : String(err));

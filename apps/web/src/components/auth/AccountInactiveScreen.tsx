@@ -9,6 +9,13 @@ interface StatusInfo {
   actionLabel: string | null;
 }
 
+function isSafeUrl(url: string): boolean {
+  try {
+    const p = new URL(url, window.location.origin).protocol;
+    return p === 'http:' || p === 'https:';
+  } catch { return false; }
+}
+
 const DEFAULT_MESSAGES: Record<string, string> = {
   pending: 'Your account is being set up. Please check back shortly.',
   suspended: 'Your account has been suspended. Please contact your administrator.',
@@ -72,7 +79,7 @@ export default function AccountInactiveScreen() {
         </div>
 
         <div className="flex flex-col gap-3">
-          {info?.actionUrl && (
+          {info?.actionUrl && isSafeUrl(info.actionUrl) && (
             <a
               href={info.actionUrl}
               className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90"

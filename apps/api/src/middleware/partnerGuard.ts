@@ -31,14 +31,21 @@ export async function partnerGuard(c: Context, next: Next) {
     return;
   }
 
-  const [partner] = await db
-    .select({
-      status: partners.status,
-      settings: partners.settings,
-    })
-    .from(partners)
-    .where(eq(partners.id, partnerId))
-    .limit(1);
+  let partner;
+  try {
+    [partner] = await db
+      .select({
+        status: partners.status,
+        settings: partners.settings,
+      })
+      .from(partners)
+      .where(eq(partners.id, partnerId))
+      .limit(1);
+  } catch (err) {
+    console.error(`[PartnerGuard] DB lookup failed for partner ${partnerId}:`, err instanceof Error ? err.message : String(err));
+    await next();
+    return;
+  }
 
   if (!partner) {
     await next();

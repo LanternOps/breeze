@@ -36,10 +36,10 @@ export async function dispatchHook(
   const url = `${baseUrl}/${event}`;
   const payload: HookPayload = { event, partnerId, data };
 
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
 
+  try {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -47,16 +47,23 @@ export async function dispatchHook(
       signal: controller.signal,
     });
 
-    clearTimeout(timeout);
-
     if (!res.ok) {
-      console.warn(`[PartnerHooks] ${event} returned ${res.status}`);
+      const body = await res.text().catch(() => '<unreadable>');
+      console.error(`[PartnerHooks] ${event} for partner ${partnerId} returned ${res.status}: ${body}`);
       return null;
     }
 
-    return (await res.json()) as HookResponse;
+    const body = await res.json();
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+      console.error(`[PartnerHooks] ${event} for partner ${partnerId} returned non-object body`);
+      return null;
+    }
+
+    return body as HookResponse;
   } catch (err) {
     console.warn(`[PartnerHooks] ${event} failed: ${err instanceof Error ? err.message : String(err)}`);
     return null;
+  } finally {
+    clearTimeout(timeout);
   }
 }
