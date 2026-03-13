@@ -14,7 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var log = logging.L("breeze-assist")
+var log = logging.L("helper")
 
 // Settings mirrors the API HelperSettings shape.
 type Settings struct {
@@ -86,15 +86,15 @@ func New(ctx context.Context, serverURL string, authToken *secmem.SecureString, 
 func defaultBinaryPath() string {
 	switch runtime.GOOS {
 	case "darwin":
-		return "/Applications/Breeze Assist.app/Contents/MacOS/Breeze Assist"
+		return "/Applications/Breeze Helper.app/Contents/MacOS/Breeze Helper"
 	case "windows":
 		pf := os.Getenv("ProgramFiles")
 		if pf == "" {
 			pf = `C:\Program Files`
 		}
-		return filepath.Join(pf, "Breeze Assist", "Breeze Assist.exe")
+		return filepath.Join(pf, "Breeze Helper", "Breeze Helper.exe")
 	default:
-		return "/usr/local/bin/breeze-assist"
+		return "/usr/local/bin/breeze-helper"
 	}
 }
 
@@ -124,8 +124,6 @@ func (m *Manager) Apply(settings *Settings) {
 	defer m.mu.Unlock()
 
 	if settings.Enabled {
-		m.migrateFromLegacyName()
-
 		if err := m.writeConfig(settings); err != nil {
 			log.Error("failed to write breeze assist config", "error", err.Error())
 			return

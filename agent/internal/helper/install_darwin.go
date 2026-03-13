@@ -8,14 +8,14 @@ import (
 	"strings"
 )
 
-const plistLabel = "com.breeze.assist"
-const plistPath = "/Library/LaunchAgents/com.breeze.assist.plist"
-const appBundleName = "Breeze Assist.app"
+const plistLabel = "com.breeze.helper"
+const plistPath = "/Library/LaunchAgents/com.breeze.helper.plist"
+const appBundleName = "Breeze Helper.app"
 
 func packageExtension() string { return ".dmg" }
 
 // destAppPath is the fixed install location — avoids fragile filepath.Dir chains.
-const destAppPath = "/Applications/Breeze Assist.app"
+const destAppPath = "/Applications/Breeze Helper.app"
 
 // installPackage mounts the DMG, copies the .app bundle, and unmounts.
 func installPackage(dmgPath, _ string) error {

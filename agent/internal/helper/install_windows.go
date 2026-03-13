@@ -9,7 +9,7 @@ import (
 )
 
 const registryKey = `SOFTWARE\Microsoft\Windows\CurrentVersion\Run`
-const registryValue = "BreezeAssist"
+const registryValue = "BreezeHelper"
 
 func packageExtension() string { return ".msi" }
 
@@ -46,15 +46,15 @@ func installAutoStart(binaryPath string) error {
 }
 
 func isHelperRunning() bool {
-	out, err := exec.Command("tasklist", "/FI", "IMAGENAME eq Breeze Assist.exe", "/NH").Output()
+	out, err := exec.Command("tasklist", "/FI", "IMAGENAME eq Breeze Helper.exe", "/NH").Output()
 	if err != nil {
 		return false
 	}
-	return strings.Contains(strings.ToLower(string(out)), "breeze assist.exe")
+	return strings.Contains(strings.ToLower(string(out)), "breeze helper.exe")
 }
 
 func stopHelper() error {
-	return exec.Command("taskkill", "/F", "/IM", "Breeze Assist.exe").Run()
+	return exec.Command("taskkill", "/F", "/IM", "Breeze Helper.exe").Run()
 }
 
 func removeAutoStart() error {

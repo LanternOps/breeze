@@ -10,7 +10,7 @@ import (
 )
 
 const desktopEntryDir = "/etc/xdg/autostart"
-const desktopEntryPath = "/etc/xdg/autostart/breeze-assist.desktop"
+const desktopEntryPath = "/etc/xdg/autostart/breeze-helper.desktop"
 
 func packageExtension() string { return ".AppImage" }
 
@@ -44,7 +44,7 @@ func installPackage(appImagePath, binaryPath string) error {
 func installAutoStart(binaryPath string) error {
 	entry := fmt.Sprintf(`[Desktop Entry]
 Type=Application
-Name=Breeze Assist
+Name=Breeze Helper
 Exec=%s
 Hidden=false
 NoDisplay=true
@@ -64,7 +64,7 @@ X-GNOME-Autostart-enabled=true
 }
 
 func isHelperRunning() bool {
-	out, err := exec.Command("pgrep", "-f", "breeze-assist").Output()
+	out, err := exec.Command("pgrep", "-f", "breeze-helper").Output()
 	if err != nil {
 		return false
 	}
@@ -72,5 +72,5 @@ func isHelperRunning() bool {
 }
 
 func stopHelper() error {
-	return exec.Command("pkill", "-f", "breeze-assist").Run()
+	return exec.Command("pkill", "-f", "breeze-helper").Run()
 }
