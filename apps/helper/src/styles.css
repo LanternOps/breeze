@@ -210,6 +210,35 @@ body {
   border-radius: var(--radius-sm);
 }
 
+.helper-btn-window {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+  -webkit-app-region: no-drag;
+  user-select: none;
+}
+
+.helper-btn-window:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.helper-btn-window-close:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+
 .helper-btn-close {
   display: inline-flex;
   align-items: center;

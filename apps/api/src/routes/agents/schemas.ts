@@ -78,6 +78,7 @@ export const heartbeatSchema = z.object({
   metricsAvailable: z.boolean().optional(),
   status: z.enum(['ok', 'warning', 'error']),
   agentVersion: z.string(),
+  helperVersion: z.string().max(20).optional(),
   ipHistoryUpdate: z.object({
     deviceId: z.string().optional(),
     currentIPs: z.array(z.object({

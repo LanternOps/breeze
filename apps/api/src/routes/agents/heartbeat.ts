@@ -168,6 +168,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           and(
             eq(agentVersions.platform, device.osType),
             eq(agentVersions.architecture, normalizedArch),
+            eq(agentVersions.component, 'agent'),
             eq(agentVersions.isLatest, true)
           )
         )
@@ -178,6 +179,30 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }
     } catch (err) {
       console.error(`[agents] failed to evaluate upgrade target for ${agentId}:`, err);
+    }
+  }
+
+  let helperUpgradeTo: string | null = null;
+  if (data.helperVersion && normalizedArch) {
+    try {
+      const [latestHelper] = await db
+        .select({ version: agentVersions.version })
+        .from(agentVersions)
+        .where(
+          and(
+            eq(agentVersions.platform, device.osType),
+            eq(agentVersions.architecture, normalizedArch),
+            eq(agentVersions.component, 'helper'),
+            eq(agentVersions.isLatest, true)
+          )
+        )
+        .limit(1);
+
+      if (latestHelper && compareAgentVersions(latestHelper.version, data.helperVersion) > 0) {
+        helperUpgradeTo = latestHelper.version;
+      }
+    } catch (err) {
+      console.error(`[agents] failed to evaluate helper upgrade target for ${agentId}:`, err);
     }
   }
 
@@ -232,6 +257,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     })),
     configUpdate: mergedConfigUpdate,
     upgradeTo,
+    helperUpgradeTo: helperUpgradeTo ?? undefined,
     renewCert: renewCert || undefined,
     helperEnabled: helperSettings?.enabled ?? false,
     helperSettings: helperSettings ?? undefined,

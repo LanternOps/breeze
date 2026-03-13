@@ -55,16 +55,17 @@ func WithSpawnFunc(fn SpawnFunc) Option {
 
 // Manager handles helper binary lifecycle: config writing, install, start, stop.
 type Manager struct {
-	mu          sync.Mutex
-	lastEnabled bool
-	binaryPath  string
-	configPath  string
-	serverURL   string
-	authToken   *secmem.SecureString
-	agentID     string
-	ctx         context.Context
-	spawnFunc   SpawnFunc
-	watcher     *watcher
+	mu                   sync.Mutex
+	lastEnabled          bool
+	binaryPath           string
+	configPath           string
+	serverURL            string
+	authToken            *secmem.SecureString
+	agentID              string
+	ctx                  context.Context
+	spawnFunc            SpawnFunc
+	watcher              *watcher
+	pendingHelperVersion string
 }
 
 // New creates a new helper Manager.
@@ -135,6 +136,8 @@ func (m *Manager) Apply(settings *Settings) {
 				return
 			}
 		}
+
+		m.applyPendingUpdate()
 
 		if err := m.ensureRunning(); err != nil {
 			log.Error("failed to start breeze assist", "error", err.Error())
@@ -278,4 +281,95 @@ func (m *Manager) stopWatcher() {
 	m.mu.Unlock()
 	<-w.done
 	m.mu.Lock()
+}
+
+// CheckUpdate stores a pending Helper version upgrade. The actual update
+// happens when the Helper is idle (checked on each Apply call).
+func (m *Manager) CheckUpdate(targetVersion string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.pendingHelperVersion != targetVersion {
+		log.Info("helper update pending", "targetVersion", targetVersion)
+		m.pendingHelperVersion = targetVersion
+	}
+}
+
+// InstalledVersion returns the version from helper_status.yaml, or empty string.
+func (m *Manager) InstalledVersion() string {
+	status, err := ReadStatus(m.configPath)
+	if err != nil {
+		return ""
+	}
+	return status.Version
+}
+
+// applyPendingUpdate checks if a Helper update is pending and the Helper is idle,
+// then performs the update. Must be called with m.mu held.
+func (m *Manager) applyPendingUpdate() {
+	if m.pendingHelperVersion == "" {
+		return
+	}
+
+	if !IsIdle(m.configPath) {
+		log.Debug("helper update deferred, chat active", "targetVersion", m.pendingHelperVersion)
+		return
+	}
+
+	log.Info("helper is idle, applying update", "targetVersion", m.pendingHelperVersion)
+
+	// Stop the running helper
+	if err := m.ensureStopped(); err != nil {
+		log.Error("failed to stop helper for update", "error", err.Error())
+		return
+	}
+
+	// Back up the current binary
+	backupPath := m.binaryPath + ".backup"
+	if err := copyFile(m.binaryPath, backupPath); err != nil {
+		log.Warn("failed to backup helper binary", "error", err.Error())
+		// Continue anyway — fresh install will work
+	}
+
+	// Download and install new version
+	if err := m.downloadAndInstall(); err != nil {
+		log.Error("failed to install helper update", "error", err.Error())
+		// Attempt rollback
+		if restoreErr := restoreBackup(backupPath, m.binaryPath); restoreErr != nil {
+			log.Error("failed to rollback helper", "error", restoreErr.Error())
+		}
+		// Restart old version
+		if err := m.ensureRunning(); err != nil {
+			log.Error("failed to restart helper after rollback", "error", err.Error())
+		}
+		return
+	}
+
+	// Start the new version
+	if err := m.ensureRunning(); err != nil {
+		log.Error("failed to start updated helper", "error", err.Error())
+		// Attempt rollback
+		if restoreErr := restoreBackup(backupPath, m.binaryPath); restoreErr != nil {
+			log.Error("failed to rollback helper", "error", restoreErr.Error())
+		}
+		m.ensureRunning() // try to start the old one
+		return
+	}
+
+	log.Info("helper updated successfully", "requestedVersion", m.pendingHelperVersion)
+	m.pendingHelperVersion = ""
+
+	// Clean up backup
+	os.Remove(backupPath)
+}
+
+func copyFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0755)
+}
+
+func restoreBackup(backupPath, targetPath string) error {
+	return os.Rename(backupPath, targetPath)
 }

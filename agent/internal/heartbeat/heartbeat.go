@@ -64,6 +64,7 @@ type HeartbeatPayload struct {
 	DeviceRole       string                    `json:"deviceRole,omitempty"`
 	HealthStatus     map[string]any            `json:"healthStatus,omitempty"`
 	DroppedLogs      int64                     `json:"droppedLogs,omitempty"`
+	HelperVersion    string                    `json:"helperVersion,omitempty"`
 }
 
 type HeartbeatResponse struct {
@@ -71,8 +72,9 @@ type HeartbeatResponse struct {
 	ConfigUpdate   map[string]any  `json:"configUpdate,omitempty"`
 	UpgradeTo      string          `json:"upgradeTo,omitempty"`
 	RenewCert      bool            `json:"renewCert,omitempty"`
-	HelperEnabled  bool            `json:"helperEnabled,omitempty"`
-	HelperSettings *HelperSettings `json:"helperSettings,omitempty"`
+	HelperEnabled   bool            `json:"helperEnabled,omitempty"`
+	HelperSettings  *HelperSettings `json:"helperSettings,omitempty"`
+	HelperUpgradeTo string          `json:"helperUpgradeTo,omitempty"`
 }
 
 type HelperSettings struct {
@@ -1656,10 +1658,11 @@ func (h *Heartbeat) sendHeartbeat() {
 	}
 
 	payload := HeartbeatPayload{
-		Status:       status,
-		AgentVersion: h.agentVersion,
-		HealthStatus: h.healthMon.Summary(),
-		DeviceRole:   h.cachedDeviceRole,
+		Status:        status,
+		AgentVersion:  h.agentVersion,
+		HelperVersion: h.helperMgr.InstalledVersion(),
+		HealthStatus:  h.healthMon.Summary(),
+		DeviceRole:    h.cachedDeviceRole,
 	}
 	if metricsAvailable {
 		payload.Metrics = metrics
@@ -1785,6 +1788,11 @@ func (h *Heartbeat) sendHeartbeat() {
 	// Handle mTLS cert renewal if signaled by server
 	if response.RenewCert {
 		go h.handleCertRenewal()
+	}
+
+	// Handle helper upgrade if requested
+	if response.HelperUpgradeTo != "" {
+		h.helperMgr.CheckUpdate(response.HelperUpgradeTo)
 	}
 
 	// Update helper enabled state and apply full settings
