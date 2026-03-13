@@ -10,15 +10,15 @@ import (
 )
 
 const (
-	secureDesktopMinFPS        = 8
-	secureDesktopMaxFPS        = 12
+	secureDesktopMinFPS        = 20
+	secureDesktopMaxFPS        = 30
 	secureDesktopKeyframeStall = 900 * time.Millisecond
 	secureDesktopKeyframeEvery = 2 * time.Second
 
 	enableFramePixelDiagnostics = false
 
-	startupFrameWarmupWindow = 4 * time.Second
-	startupFrameRepaintEvery = 200 * time.Millisecond
+	startupFrameWarmupWindow = 1 * time.Second
+	startupFrameRepaintEvery = 100 * time.Millisecond
 
 	// staticDesktopResendInterval is the minimum interval between frame sends
 	// on a static normal desktop. Provides a ~4fps floor to prevent WebRTC
@@ -417,10 +417,16 @@ func (s *Session) captureLoopDXGI() captureMode {
 						}
 					}
 				} else {
-					// Scene change keyframe: if screen was static for a while and
-					// we just got a new frame, force IDR for fast decoder recovery.
+					// Scene change: screen was idle and now has activity.
 					if wasIdle || consecutiveSkips >= 30 {
+						// Force IDR for fast decoder recovery.
 						_ = s.encoder.ForceKeyframe()
+						// Temporarily cap bitrate to prevent overwhelming the
+						// jitter buffer with a sudden spike from idle → active.
+						// The adaptive controller will ramp back up smoothly.
+						if s.adaptive != nil {
+							s.adaptive.SoftResetForActivity()
+						}
 					}
 					consecutiveSkips = 0
 					lastIdleKeyframe = time.Time{} // reset idle keyframe timer

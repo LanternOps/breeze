@@ -46,17 +46,17 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
     setError(null);
 
     try {
-      // Clean up any stale sessions for this user before creating a new one
-      await fetchWithAuth('/remote/sessions/stale', { method: 'DELETE' }).catch(() => {});
-
-      // Create desktop session
-      const response = await fetchWithAuth('/remote/sessions', {
-        method: 'POST',
-        body: JSON.stringify({
-          deviceId,
-          type: 'desktop',
+      // Clean up stale sessions in parallel with creating new one
+      const [, response] = await Promise.all([
+        fetchWithAuth('/remote/sessions/stale', { method: 'DELETE' }).catch(() => {}),
+        fetchWithAuth('/remote/sessions', {
+          method: 'POST',
+          body: JSON.stringify({
+            deviceId,
+            type: 'desktop',
+          }),
         }),
-      });
+      ]);
 
       if (!response.ok) {
         const err = await response.json();

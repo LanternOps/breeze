@@ -17,7 +17,7 @@ const (
 	defaultFrameRate = 30
 	maxFrameRate     = 60
 
-	iceGatherTimeout = 20 * time.Second
+	iceGatherTimeout = 5 * time.Second
 )
 
 // captureMode indicates which capture strategy to use. Returned by the

@@ -63,9 +63,9 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 				spawnGuard.Unlock()
 				return tools.NewErrorResult(fmt.Errorf("no capable helper session and spawn failed: %w", err), 0)
 			}
-			// Poll for the helper to connect (up to 5s, every 500ms)
-			for i := 0; i < 10; i++ {
-				time.Sleep(500 * time.Millisecond)
+			// Poll for the helper to connect (up to 5s, every 100ms)
+			for i := 0; i < 50; i++ {
+				time.Sleep(100 * time.Millisecond)
 				session = h.sessionBroker.FindCapableSession("capture", targetSession)
 				if session != nil && !isWinSessionDisconnected(session.WinSessionID) {
 					break
