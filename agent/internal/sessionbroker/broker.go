@@ -360,8 +360,20 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		}
 	}
 
-	// Step 7: Verify binary hash (require non-empty hash from client)
-	if b.selfHash != "" && authReq.BinaryHash != b.selfHash {
+	// Step 8: Verify binary hash — reject ALL helpers if our own hash is unavailable
+	if b.selfHash == "" {
+		log.Error("rejecting helper connection: agent binary hash unavailable — cannot verify helper integrity",
+			"identity", identityKey,
+			"pid", creds.PID,
+		)
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted: false,
+			Reason:   "agent binary hash unavailable",
+		})
+		conn.Close()
+		return
+	}
+	if authReq.BinaryHash != b.selfHash {
 		log.Warn("binary hash mismatch",
 			"identity", identityKey,
 			"expected", b.selfHash,
