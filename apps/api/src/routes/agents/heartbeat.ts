@@ -174,8 +174,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         )
         .limit(1);
 
-      if (latestVersion && compareAgentVersions(latestVersion.version, data.agentVersion) > 0) {
-        upgradeTo = latestVersion.version;
+      if (latestVersion) {
+        const cmp = compareAgentVersions(latestVersion.version, data.agentVersion);
+        // cmp > 0: latest is newer; cmp === 0 && versions differ: agent runs unparseable dev build
+        if (cmp > 0 || (cmp === 0 && latestVersion.version !== data.agentVersion)) {
+          upgradeTo = latestVersion.version;
+        }
       }
     } catch (err) {
       console.error(`[agents] failed to evaluate upgrade target for ${agentId}:`, err);
@@ -198,8 +202,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         )
         .limit(1);
 
-      if (latestHelper && compareAgentVersions(latestHelper.version, data.helperVersion) > 0) {
-        helperUpgradeTo = latestHelper.version;
+      if (latestHelper) {
+        const cmp = compareAgentVersions(latestHelper.version, data.helperVersion);
+        if (cmp > 0 || (cmp === 0 && latestHelper.version !== data.helperVersion)) {
+          helperUpgradeTo = latestHelper.version;
+        }
       }
     } catch (err) {
       console.error(`[agents] failed to evaluate helper upgrade target for ${agentId}:`, err);
