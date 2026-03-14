@@ -65,6 +65,9 @@ type HeartbeatPayload struct {
 	HealthStatus     map[string]any            `json:"healthStatus,omitempty"`
 	DroppedLogs      int64                     `json:"droppedLogs,omitempty"`
 	HelperVersion    string                    `json:"helperVersion,omitempty"`
+Hostname         string                    `json:"hostname,omitempty"`
+	OSVersion        string                    `json:"osVersion,omitempty"`
+	OSBuild          string                    `json:"osBuild,omitempty"`
 }
 
 type HeartbeatResponse struct {
@@ -160,6 +163,10 @@ type Heartbeat struct {
 
 	// Cached device role classification (computed once at startup)
 	cachedDeviceRole string
+
+	// Cached system info (hostname, OS version) — refreshed every 10 min
+	cachedSysInfo      *collectors.SystemInfo
+	lastSysInfoRefresh time.Time
 }
 
 func New(cfg *config.Config) *Heartbeat {
@@ -220,8 +227,10 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	h.isService = cfg.IsService
 	h.isHeadless = cfg.IsHeadless
 
-	// Classify device role once at startup
+	// Classify device role once at startup and cache system info
 	if sysInfo, err := h.hardwareCol.CollectSystemInfo(); err == nil {
+		h.cachedSysInfo = sysInfo
+		h.lastSysInfoRefresh = time.Now()
 		if hwInfo, err := h.hardwareCol.CollectHardware(); err == nil {
 			h.cachedDeviceRole = collectors.ClassifyDeviceRole(sysInfo, hwInfo)
 		} else {
@@ -1657,12 +1666,30 @@ func (h *Heartbeat) sendHeartbeat() {
 		status = "warning"
 	}
 
+	// Refresh cached system info every 10 minutes to pick up hostname/OS changes
+	h.mu.Lock()
+	if time.Since(h.lastSysInfoRefresh) > 10*time.Minute {
+		if freshInfo, infoErr := h.hardwareCol.CollectSystemInfo(); infoErr == nil {
+			h.cachedSysInfo = freshInfo
+			h.lastSysInfoRefresh = time.Now()
+		}
+	}
+	sysInfo := h.cachedSysInfo
+	h.mu.Unlock()
+
 	payload := HeartbeatPayload{
 		Status:        status,
 		AgentVersion:  h.agentVersion,
 		HelperVersion: h.helperMgr.InstalledVersion(),
 		HealthStatus:  h.healthMon.Summary(),
 		DeviceRole:    h.cachedDeviceRole,
+	}
+
+	// Include hostname/OS version so the server can detect changes
+	if sysInfo != nil {
+		payload.Hostname = sysInfo.Hostname
+		payload.OSVersion = sysInfo.OSVersion
+		payload.OSBuild = sysInfo.OSBuild
 	}
 	if metricsAvailable {
 		payload.Metrics = metrics

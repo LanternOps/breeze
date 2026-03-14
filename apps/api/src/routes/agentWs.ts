@@ -1023,7 +1023,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
       }
     },
 
-    onClose: async (_event: unknown, _ws: WSContext) => {
+onClose: async (_event: unknown, ws: WSContext) => {
       // Clean up ping interval
       const pingState = agentPingStates.get(agentId);
       if (pingState) {
@@ -1031,17 +1031,24 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         agentPingStates.delete(agentId);
       }
 
-      // Remove from active connections
-      activeConnections.delete(agentId);
-      console.log(`Agent ${agentId} disconnected. Active connections: ${activeConnections.size}`);
 
-      // Update device status to offline
-      if (agentDb) {
-        await runWithAgentDbAccess(async () => updateDeviceStatus(agentId, 'offline'));
+      // Only remove from active connections if this ws is still the current one.
+      // A reconnecting agent may have already replaced us in the map — deleting
+      // the new connection's entry would make the agent unreachable.
+      if (activeConnections.get(agentId) === ws) {
+        activeConnections.delete(agentId);
+        console.log(`Agent ${agentId} disconnected. Active connections: ${activeConnections.size}`);
+
+        // Update device status to offline
+        if (agentDb) {
+          await runWithAgentDbAccess(async () => updateDeviceStatus(agentId, 'offline'));
+        }
+      } else {
+        console.log(`Agent ${agentId} stale connection closed (newer connection active). Active connections: ${activeConnections.size}`);
       }
     },
 
-    onError: (event: unknown, _ws: WSContext) => {
+    onError: (event: unknown, ws: WSContext) => {
       console.error(`WebSocket error for agent ${agentId}:`, event);
       // Clean up ping interval
       const pingState = agentPingStates.get(agentId);
@@ -1049,7 +1056,9 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         clearInterval(pingState.pingInterval);
         agentPingStates.delete(agentId);
       }
-      activeConnections.delete(agentId);
+if (activeConnections.get(agentId) === ws) {
+        activeConnections.delete(agentId);
+      }
       if (agentDb) {
         void runWithAgentDbAccess(async () => updateDeviceStatus(agentId, 'offline')).catch((err) => {
           console.error(`[AgentWs] Failed to mark agent ${agentId} offline after error:`, err);

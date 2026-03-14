@@ -675,7 +675,7 @@ webhookRoutes.post(
   zValidator('param', webhookRetryParamSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
-    const { id: webhookId, deliveryId } = c.req.valid('param');
+const { id: webhookId, deliveryId } = c.req.valid('param');
 
     const webhook = await getWebhookWithOrgCheck(webhookId, auth);
     if (!webhook) {

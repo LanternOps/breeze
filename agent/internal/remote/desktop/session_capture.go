@@ -29,11 +29,11 @@ const (
 	// idle so the decoder stays synchronized with cached-frame resends.
 	staticDesktopKeyframeEvery = 10 * time.Second
 
-	// maxFrameSizeBytes caps individual encoded frames to prevent MFT keyframe
-	// bursts from overwhelming the jitter buffer. At 4 Mbps target, a single
-	// frame at 30fps should be ~16KB. We allow 4x that for keyframes but drop
-	// anything larger — the encoder will produce a smaller P-frame next cycle.
-	maxFrameSizeBytes = 80_000 // ~80KB = ~640kbps at 60fps, generous for keyframes
+	// maxFrameSizeBytes caps individual encoded frames to prevent sustained
+	// bitrate spikes. Must be large enough for IDR keyframes at high resolutions
+	// (2560x1440 IDRs are typically 60-150KB). Dropping keyframes causes decoder
+	// corruption — garbled blocks and color artifacts until the next IDR arrives.
+	maxFrameSizeBytes = 512_000 // 512KB — safe for 1440p IDR keyframes
 )
 
 var encodedFramePool = sync.Pool{
@@ -194,6 +194,12 @@ func (s *Session) maybeResendCachedFrameOnIdle(frameDuration time.Duration) bool
 // return to this function instead of calling each other recursively, avoiding
 // unbounded stack growth on repeated desktop switches.
 func (s *Session) captureLoop() {
+	// Attach the capture goroutine to the input desktop. On Windows, this pins
+	// the goroutine to a single OS thread and calls SetThreadDesktop so that
+	// both DXGI and GDI capture work in helper processes spawned into user
+	// sessions (Session 0 → Session 1 SYSTEM helper).
+	prepareCaptureThread()
+
 	s.mu.RLock()
 	cap := s.capturer
 	s.mu.RUnlock()

@@ -112,10 +112,12 @@ func (c *MetricsCollector) Collect() (*SystemMetrics, error) {
 	metrics := &SystemMetrics{}
 	now := time.Now()
 
-	// CPU
+	// CPU (gopsutil returns ErrNotImplementedError on darwin without CGO)
 	cpuPercent, err := cpu.Percent(0, false)
 	if err == nil && len(cpuPercent) > 0 {
 		metrics.CPUPercent = cpuPercent[0]
+	} else if pct, fbErr := cpuPercentFallback(); fbErr == nil {
+		metrics.CPUPercent = pct
 	}
 
 	// Memory
@@ -236,7 +238,11 @@ func (c *MetricsCollector) Collect() (*SystemMetrics, error) {
 func (c *MetricsCollector) collectDiskActivity(metrics *SystemMetrics, elapsed float64) {
 	diskIO, err := disk.IOCounters()
 	if err != nil || len(diskIO) == 0 {
-		return
+		// Fallback for darwin nocgo builds where gopsutil returns ErrNotImplementedError
+		diskIO, err = diskIOCountersFallback()
+		if err != nil || len(diskIO) == 0 {
+			return
+		}
 	}
 
 	selected := selectDiskCounters(diskIO)

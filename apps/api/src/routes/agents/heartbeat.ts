@@ -53,6 +53,17 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.deviceRole = data.deviceRole;
   }
 
+  // Update hostname/OS version when agent reports changes
+  if (data.hostname && data.hostname !== device.hostname) {
+    deviceUpdates.hostname = data.hostname;
+  }
+  if (data.osVersion && data.osVersion !== device.osVersion) {
+    deviceUpdates.osVersion = data.osVersion;
+  }
+  if (data.osBuild !== undefined && data.osBuild !== device.osBuild) {
+    deviceUpdates.osBuild = data.osBuild;
+  }
+
   await db
     .update(devices)
     .set(deviceUpdates)
@@ -174,8 +185,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         )
         .limit(1);
 
-      if (latestVersion && compareAgentVersions(latestVersion.version, data.agentVersion) > 0) {
-        upgradeTo = latestVersion.version;
+      if (latestVersion) {
+        const cmp = compareAgentVersions(latestVersion.version, data.agentVersion);
+        // cmp > 0: latest is newer. Skip dev builds (dev-*) to avoid overwriting dev-push binaries.
+        if (cmp > 0 && !data.agentVersion.startsWith('dev-')) {
+          upgradeTo = latestVersion.version;
+        }
       }
     } catch (err) {
       console.error(`[agents] failed to evaluate upgrade target for ${agentId}:`, err);
@@ -198,7 +213,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         )
         .limit(1);
 
-      if (latestHelper && compareAgentVersions(latestHelper.version, data.helperVersion) > 0) {
+if (latestHelper && compareAgentVersions(latestHelper.version, data.helperVersion) > 0) {
         helperUpgradeTo = latestHelper.version;
       }
     } catch (err) {

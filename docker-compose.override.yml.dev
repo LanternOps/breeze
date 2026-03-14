@@ -30,16 +30,17 @@ services:
         }
         header {
           X-Content-Type-Options "nosniff"
-          X-Frame-Options "DENY"
+X-Frame-Options "DENY"
           Referrer-Policy "strict-origin-when-cross-origin"
         }
       }
       CADDYEOF
       caddy run --config /etc/caddy/Caddyfile --adapter caddyfile'
 
-  binaries-init:
+binaries-init:
     image: alpine:3.19
     entrypoint: ["sh", "-c", "mkdir -p /target/agent /target/viewer /target/helper && echo '0.0.0-dev' > /target/VERSION && echo 'Stub binaries volume created'"]
+
 
   api:
     image: breeze-api:dev

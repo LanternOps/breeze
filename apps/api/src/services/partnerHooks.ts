@@ -36,7 +36,7 @@ export async function dispatchHook(
 
   const url = `${baseUrl}/${event}`;
   const payload: HookPayload = { event, partnerId, data };
-  const bodyString = JSON.stringify(payload);
+const bodyString = JSON.stringify(payload);
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 
@@ -53,7 +53,7 @@ export async function dispatchHook(
   try {
     const res = await fetch(url, {
       method: 'POST',
-      headers,
+headers,
       body: bodyString,
       signal: controller.signal,
     });

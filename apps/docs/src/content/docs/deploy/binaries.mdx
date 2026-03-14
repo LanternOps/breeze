@@ -1,6 +1,6 @@
 ---
 title: Binary Distribution
-description: How Breeze serves agent and viewer downloads — local disk, GitHub Releases, or S3.
+description: How Breeze serves agent and viewer downloads — GitHub Releases, local disk, or S3.
 sidebar:
   order: 5
   label: Binary Distribution
@@ -16,12 +16,25 @@ Set `BINARY_SOURCE` to control where downloads come from:
 
 | Mode | Description | When to use |
 |---|---|---|
-| `local` (default) | Serve from disk. Optional S3 offload. | Docker Compose (init container populates a volume) |
-| `github` | 302 redirect to GitHub Releases | Standalone API image, or any deployment without local binaries |
+| `github` (default) | Agents download directly from GitHub Releases CDN | Most deployments |
+| `local` | Serve from disk, with optional S3 offload | Distribute binaries from your own infrastructure |
+
+### GitHub Mode (Default)
+
+No local binaries needed. Download requests redirect to GitHub Releases:
+
+```
+GET /api/v1/agents/download/linux/amd64
+→ 302 https://github.com/lanternops/breeze/releases/download/v0.11.3/breeze-agent-linux-amd64
+```
+
+The release version is determined by `BINARY_VERSION` or `BREEZE_VERSION`. If neither is set, redirects to the `latest` release.
+
+On startup, the API calls GitHub's Releases API to register the current version's checksums in the `agent_versions` table, so agents know when a new version is available.
 
 ### Local Mode
 
-Binaries are served from disk. The API reads from two directories:
+Binaries are served from disk. The API reads from these directories:
 
 | Variable | Default | Contents |
 |---|---|---|
@@ -35,29 +48,19 @@ On startup, the API:
 3. Marks them as the latest version
 4. If S3 is configured, syncs both directories to your S3 bucket
 
-### GitHub Mode
-
-No local binaries needed. Download requests redirect to GitHub Releases:
-
-```
-GET /api/v1/agents/download/linux/amd64
-→ 302 https://github.com/lanternops/breeze/releases/download/v0.3.0/breeze-agent-linux-amd64
-```
-
-The release version is determined by `BINARY_VERSION` or `BREEZE_VERSION`. If neither is set, redirects to the `latest` release.
-
-<Aside type="tip">
-  Use `BINARY_SOURCE=github` when running the API image standalone (without Docker Compose). No init container or volume mount is needed.
+<Aside type="caution">
+  If the API detects a version mismatch between the binaries volume and `BREEZE_VERSION` (e.g. the init container wasn't refreshed during an upgrade), it automatically falls back to GitHub Releases so agents still get the correct binary.
 </Aside>
 
 ## Docker Compose Setup
 
-The default `docker-compose.yml` includes a **binaries init container** that bundles agent and viewer binaries into a shared volume:
+The `docker-compose.yml` includes a **binaries init container** that bundles agent and viewer binaries into a shared volume:
 
 ```yaml
 services:
   binaries-init:
     image: ghcr.io/lanternops/breeze/binaries:${BREEZE_VERSION:-latest}
+    pull_policy: always
     volumes:
       - binaries:/target
     restart: "no"
@@ -66,23 +69,22 @@ services:
     volumes:
       - binaries:/data/binaries:ro
     environment:
+      BINARY_SOURCE: ${BINARY_SOURCE:-github}
       AGENT_BINARY_DIR: /data/binaries/agent
       VIEWER_BINARY_DIR: /data/binaries/viewer
       HELPER_BINARY_DIR: /data/binaries/helper
-    depends_on:
+depends_on:
       binaries-init:
         condition: service_completed_successfully
 ```
 
 The init container:
-1. Runs once on `docker compose up`
+1. Runs on every `docker compose up` (`pull_policy: always` ensures the latest image is pulled)
 2. Copies bundled binaries to the shared `binaries` volume
 3. Exits (restart: "no")
-4. The API mounts the volume read-only and serves files from it
+4. The API mounts the volume read-only
 
-<Aside>
-  The init container keeps the API image lean. Agent and viewer binaries (~50 MB+) are separate from the API runtime (~30 MB).
-</Aside>
+When `BINARY_SOURCE=github` (default), the API ignores the local volume and syncs versions from GitHub Releases instead. The volume is only used when `BINARY_SOURCE=local`.
 
 ## S3 Offload (Optional)
 
@@ -155,32 +157,27 @@ One-line agent installer that auto-detects OS/arch, downloads the binary, enroll
 ## Decision Guide
 
 <Tabs>
-  <TabItem label="Docker Compose">
-    Use the default setup. The init container handles everything:
+  <TabItem label="Standard (Default)">
+    Agents download directly from GitHub. No configuration needed:
 
     ```bash
     # .env
-    # BINARY_SOURCE=local  (default, no change needed)
+    # BINARY_SOURCE=github  (default, no change needed)
     ```
-
-    Optionally add S3 for CDN-like distribution:
+  </TabItem>
+  <TabItem label="Own Infrastructure (S3/CDN)">
+    Distribute binaries from your own S3-compatible storage:
 
     ```bash
+    # .env
+    BINARY_SOURCE=local
     S3_ENDPOINT=https://s3.us-east-1.amazonaws.com
     S3_ACCESS_KEY=AKIA...
     S3_SECRET_KEY=...
     S3_BUCKET=breeze-binaries
     ```
-  </TabItem>
-  <TabItem label="Standalone API">
-    Point downloads at GitHub Releases:
 
-    ```bash
-    BINARY_SOURCE=github
-    BREEZE_VERSION=0.3.0  # or omit for "latest"
-    ```
-
-    No volume mounts or init container needed.
+    On upgrade, the init container pulls the new binaries image, copies to the volume, and the API syncs to S3 automatically.
   </TabItem>
   <TabItem label="Local Dev">
     Build the agent and binaries are served from `./agent/bin`:

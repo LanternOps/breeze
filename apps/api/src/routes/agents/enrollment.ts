@@ -83,7 +83,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         .limit(1);
 
       if (partner?.maxDevices != null) {
-        deviceLimitPartnerId = org.partnerId;
+deviceLimitPartnerId = org.partnerId;
         maxDevices = partner.maxDevices;
       }
     }
