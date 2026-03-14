@@ -261,6 +261,34 @@ func (c *dxgiCapturer) switchToGDI() {
 	slog.Info("Switched to GDI screen capture fallback")
 }
 
+// switchThreadToInputDesktop is a standalone helper that attaches the calling
+// OS thread to the currently active input desktop. Unlike switchToInputDesktop
+// (which is a method on dxgiCapturer and manages capturer state), this is safe
+// to call from any goroutine without affecting capturer bookkeeping.
+//
+// The caller MUST have called runtime.LockOSThread() first, because
+// SetThreadDesktop is per-OS-thread. The returned desktop handle is left open
+// (it becomes the thread's current desktop); closing it would detach the thread.
+func switchThreadToInputDesktop() bool {
+	hDesk, _, err := procOpenInputDesktop.Call(
+		0,                          // dwFlags
+		0,                          // fInherit (FALSE)
+		uintptr(desktopGenericAll), // dwDesiredAccess
+	)
+	if hDesk == 0 {
+		slog.Debug("switchThreadToInputDesktop: OpenInputDesktop failed", "error", err.Error())
+		return false
+	}
+	ret, _, err := procSetThreadDesktop.Call(hDesk)
+	if ret == 0 {
+		procCloseDesktop.Call(hDesk)
+		slog.Debug("switchThreadToInputDesktop: SetThreadDesktop failed (may already be on input desktop)", "error", err.Error())
+		return false
+	}
+	slog.Info("Attached thread to input desktop", "desktop", fmt.Sprintf("0x%X", hDesk))
+	return true
+}
+
 // ConsumeDesktopSwitch implements DesktopSwitchNotifier.
 func (c *dxgiCapturer) ConsumeDesktopSwitch() bool {
 	return c.desktopSwitchFlag.CompareAndSwap(true, false)

@@ -194,6 +194,12 @@ func (s *Session) maybeResendCachedFrameOnIdle(frameDuration time.Duration) bool
 // return to this function instead of calling each other recursively, avoiding
 // unbounded stack growth on repeated desktop switches.
 func (s *Session) captureLoop() {
+	// Attach the capture goroutine to the input desktop. On Windows, this pins
+	// the goroutine to a single OS thread and calls SetThreadDesktop so that
+	// both DXGI and GDI capture work in helper processes spawned into user
+	// sessions (Session 0 → Session 1 SYSTEM helper).
+	prepareCaptureThread()
+
 	s.mu.RLock()
 	cap := s.capturer
 	s.mu.RUnlock()
