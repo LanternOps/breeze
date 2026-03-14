@@ -9,6 +9,28 @@ import { agentVersions } from '../db/schema';
 import { isS3Configured, syncDirectory } from './s3Storage';
 import { getBinarySource } from './binarySource';
 
+const GITHUB_REPO = process.env.GITHUB_REPO || 'LanternOps/breeze';
+
+const GH_PLATFORM_MAP: Record<string, string> = {
+  linux: 'linux',
+  darwin: 'macos',
+  windows: 'windows'
+};
+
+const AGENT_TARGETS = [
+  { goos: 'linux', goarch: 'amd64' },
+  { goos: 'darwin', goarch: 'amd64' },
+  { goos: 'darwin', goarch: 'arm64' },
+  { goos: 'windows', goarch: 'amd64' }
+] as const;
+
+const HELPER_TARGETS = [
+  { goos: 'windows', goarch: 'amd64', assetName: 'breeze-helper-windows.msi' },
+  { goos: 'darwin', goarch: 'amd64', assetName: 'breeze-helper-macos.dmg' },
+  { goos: 'darwin', goarch: 'arm64', assetName: 'breeze-helper-macos.dmg' },
+  { goos: 'linux', goarch: 'amd64', assetName: 'breeze-helper-linux.AppImage' },
+] as const;
+
 interface BinaryInfo {
   filename: string;
   filePath: string;
@@ -81,7 +103,8 @@ async function scanBinaryDir(dir: string): Promise<BinaryInfo[]> {
 
 export async function syncBinaries(): Promise<void> {
   if (getBinarySource() === 'github') {
-    console.log('[binarySync] BINARY_SOURCE=github, skipping local binary sync');
+    console.log('[binarySync] BINARY_SOURCE=github, syncing from GitHub releases');
+    await syncFromGitHub();
     return;
   }
 
@@ -153,7 +176,8 @@ export async function syncBinaries(): Promise<void> {
 
     console.log(`[binarySync] Registered ${binaries.length} agent binaries (version: ${version})`);
   } else {
-    console.log('[binarySync] No agent binaries found, skipping DB registration');
+    console.log('[binarySync] No local agent binaries found, falling back to GitHub sync');
+    await syncFromGitHub();
   }
 
   // Sync to S3 if configured (runs regardless of whether agent binaries were found)
@@ -174,4 +198,113 @@ export async function syncBinaries(): Promise<void> {
     const viewerSync = await syncDirectory(viewerBinaryDir, 'viewer');
     logSyncResult('viewer', viewerSync);
   }
+}
+
+/**
+ * Sync latest release from GitHub Releases API.
+ * Called automatically on startup when BINARY_SOURCE=github or when no
+ * local binaries are found. Also used by the POST /sync-github route.
+ */
+export async function syncFromGitHub(requestedVersion?: string): Promise<{ version: string; synced: string[] }> {
+  const ghUrl = requestedVersion
+    ? `https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${requestedVersion}`
+    : `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+
+  const ghResp = await fetch(ghUrl, {
+    headers: { Accept: 'application/vnd.github.v3+json', 'User-Agent': 'breeze-api' }
+  });
+  if (!ghResp.ok) {
+    throw new Error(`GitHub API error: ${ghResp.status}`);
+  }
+
+  const release = (await ghResp.json()) as {
+    tag_name: string;
+    body?: string;
+    assets: Array<{ name: string; browser_download_url: string; size: number }>;
+  };
+
+  const version = release.tag_name.replace(/^v/, '');
+
+  const checksumAsset = release.assets.find((a) => a.name === 'checksums.txt');
+  if (!checksumAsset) {
+    throw new Error('No checksums.txt found in release assets');
+  }
+
+  const checksumResp = await fetch(checksumAsset.browser_download_url, {
+    headers: { 'User-Agent': 'breeze-api' }
+  });
+  if (!checksumResp.ok) {
+    throw new Error('Failed to download checksums.txt');
+  }
+  const checksumText = await checksumResp.text();
+
+  const checksums = new Map<string, string>();
+  for (const line of checksumText.split('\n')) {
+    const match = line.match(/^([a-f0-9]{64})\s+(.+)$/);
+    if (match?.[2] && match[1]) {
+      checksums.set(match[2].trim(), match[1]);
+    }
+  }
+
+  const synced: string[] = [];
+
+  // Sync agent binaries
+  for (const target of AGENT_TARGETS) {
+    const suffix = target.goos === 'windows' ? '.exe' : '';
+    const assetName = `breeze-agent-${target.goos}-${target.goarch}${suffix}`;
+    const asset = release.assets.find((a) => a.name === assetName);
+    if (!asset) continue;
+    const checksum = checksums.get(assetName);
+    if (!checksum) continue;
+    const platform = GH_PLATFORM_MAP[target.goos];
+    if (!platform) continue;
+
+    await upsertVersion(version, platform, target.goarch, 'agent', asset.browser_download_url, checksum, asset.size, release.body);
+    synced.push(`agent:${platform}/${target.goarch}`);
+  }
+
+  // Sync helper binaries
+  for (const target of HELPER_TARGETS) {
+    const asset = release.assets.find((a) => a.name === target.assetName);
+    if (!asset) continue;
+    const checksum = checksums.get(target.assetName);
+    if (!checksum) continue;
+    const platform = GH_PLATFORM_MAP[target.goos];
+    if (!platform) continue;
+
+    await upsertVersion(version, platform, target.goarch, 'helper', asset.browser_download_url, checksum, asset.size, release.body);
+    synced.push(`helper:${platform}/${target.goarch}`);
+  }
+
+  console.log(`[binarySync] GitHub sync: registered ${synced.length} binaries (version: ${version})`);
+  return { version, synced };
+}
+
+async function upsertVersion(
+  version: string, platform: string, arch: string, component: string,
+  downloadUrl: string, checksum: string, size: number, releaseNotes?: string | null
+) {
+  await db
+    .update(agentVersions)
+    .set({ isLatest: false })
+    .where(
+      and(
+        eq(agentVersions.platform, platform),
+        eq(agentVersions.architecture, arch),
+        eq(agentVersions.component, component),
+        eq(agentVersions.isLatest, true)
+      )
+    );
+
+  await db
+    .insert(agentVersions)
+    .values({
+      version, platform, architecture: arch, downloadUrl, checksum,
+      fileSize: BigInt(size), releaseNotes: releaseNotes ?? null,
+      isLatest: true, component
+    })
+    .onConflictDoUpdate({
+      target: [agentVersions.version, agentVersions.platform, agentVersions.architecture, agentVersions.component],
+      set: { downloadUrl, checksum, fileSize: BigInt(size), releaseNotes: releaseNotes ?? null, isLatest: true }
+    });
 }
