@@ -214,8 +214,15 @@ func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
 	c := &dxgiCapturer{config: config}
 	if err := c.initDXGI(); err != nil {
 		runtime.UnlockOSThread()
-		slog.Warn("DXGI Desktop Duplication unavailable, falling back to GDI", "error", err.Error())
-		return &gdiCapturer{config: config}, nil
+		slog.Warn("DXGI Desktop Duplication unavailable, using internal GDI fallback", "error", err.Error())
+		// Return the dxgiCapturer with GDI fallback instead of a standalone
+		// gdiCapturer. The dxgiCapturer's checkDesktopSwitch() will detect
+		// desktop transitions (e.g. login after lock screen) and reinit DXGI
+		// when the desktop becomes available. A standalone gdiCapturer has no
+		// desktop switch detection and would be stuck forever.
+		c.gdiFallback = &gdiCapturer{config: config}
+		c.secureDesktopFlag.Store(true)
+		return c, nil
 	}
 	runtime.UnlockOSThread()
 	slog.Info("DXGI Desktop Duplication initialized",

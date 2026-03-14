@@ -29,11 +29,11 @@ const (
 	// idle so the decoder stays synchronized with cached-frame resends.
 	staticDesktopKeyframeEvery = 10 * time.Second
 
-	// maxFrameSizeBytes caps individual encoded frames to prevent MFT keyframe
-	// bursts from overwhelming the jitter buffer. At 4 Mbps target, a single
-	// frame at 30fps should be ~16KB. We allow 4x that for keyframes but drop
-	// anything larger — the encoder will produce a smaller P-frame next cycle.
-	maxFrameSizeBytes = 80_000 // ~80KB = ~640kbps at 60fps, generous for keyframes
+	// maxFrameSizeBytes caps individual encoded frames to prevent sustained
+	// bitrate spikes. Must be large enough for IDR keyframes at high resolutions
+	// (2560x1440 IDRs are typically 60-150KB). Dropping keyframes causes decoder
+	// corruption — garbled blocks and color artifacts until the next IDR arrives.
+	maxFrameSizeBytes = 512_000 // 512KB — safe for 1440p IDR keyframes
 )
 
 var encodedFramePool = sync.Pool{
@@ -430,15 +430,9 @@ func (s *Session) captureLoopDXGI() captureMode {
 					}
 				} else {
 					// Scene change: screen was idle and now has activity.
+					// Force IDR for fast decoder recovery.
 					if wasIdle || consecutiveSkips >= 30 {
-						// Force IDR for fast decoder recovery.
 						_ = s.encoder.ForceKeyframe()
-						// Temporarily cap bitrate to prevent overwhelming the
-						// jitter buffer with a sudden spike from idle → active.
-						// The adaptive controller will ramp back up smoothly.
-						if s.adaptive != nil {
-							s.adaptive.SoftResetForActivity()
-						}
 					}
 					consecutiveSkips = 0
 					lastIdleKeyframe = time.Time{} // reset idle keyframe timer
