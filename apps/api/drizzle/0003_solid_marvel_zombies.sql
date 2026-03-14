@@ -1,44 +1,44 @@
-CREATE TYPE "public"."partner_status" AS ENUM('pending', 'active', 'suspended', 'churned');--> statement-breakpoint
-CREATE TYPE "public"."ip_assignment_type" AS ENUM('dhcp', 'static', 'vpn', 'link-local', 'unknown');--> statement-breakpoint
-CREATE TYPE "public"."initiated_by_type" AS ENUM('manual', 'ai', 'automation', 'policy', 'schedule', 'agent', 'integration');--> statement-breakpoint
-CREATE TYPE "public"."discovered_asset_approval_status" AS ENUM('pending', 'approved', 'dismissed');--> statement-breakpoint
-CREATE TYPE "public"."network_event_type" AS ENUM('new_device', 'device_disappeared', 'device_changed', 'rogue_device');--> statement-breakpoint
-CREATE TYPE "public"."software_policy_mode" AS ENUM('allowlist', 'blocklist', 'audit');--> statement-breakpoint
-CREATE TYPE "public"."config_assignment_level" AS ENUM('partner', 'organization', 'site', 'device_group', 'device');--> statement-breakpoint
-CREATE TYPE "public"."config_feature_type" AS ENUM('patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper');--> statement-breakpoint
-CREATE TYPE "public"."config_policy_status" AS ENUM('active', 'inactive', 'archived');--> statement-breakpoint
-CREATE TYPE "public"."monitoring_watch_type" AS ENUM('service', 'process');--> statement-breakpoint
-CREATE TYPE "public"."log_correlation_severity" AS ENUM('info', 'warning', 'error', 'critical');--> statement-breakpoint
-CREATE TYPE "public"."log_correlation_status" AS ENUM('active', 'resolved', 'ignored');--> statement-breakpoint
-CREATE TYPE "public"."trend_direction" AS ENUM('improving', 'stable', 'degrading');--> statement-breakpoint
-CREATE TYPE "public"."ai_approval_mode" AS ENUM('per_step', 'action_plan', 'auto_approve', 'hybrid_plan');--> statement-breakpoint
-CREATE TYPE "public"."ai_plan_status" AS ENUM('pending', 'approved', 'rejected', 'executing', 'completed', 'aborted');--> statement-breakpoint
-CREATE TYPE "public"."agent_log_level" AS ENUM('debug', 'info', 'warn', 'error');--> statement-breakpoint
-CREATE TYPE "public"."brain_context_type" AS ENUM('issue', 'quirk', 'followup', 'preference');--> statement-breakpoint
-CREATE TYPE "public"."playbook_execution_status" AS ENUM('pending', 'running', 'waiting', 'completed', 'failed', 'rolled_back', 'cancelled');--> statement-breakpoint
-CREATE TYPE "public"."playbook_step_type" AS ENUM('diagnose', 'act', 'wait', 'verify', 'rollback');--> statement-breakpoint
-CREATE TYPE "public"."change_action" AS ENUM('added', 'removed', 'modified', 'updated');--> statement-breakpoint
-CREATE TYPE "public"."change_type" AS ENUM('software', 'service', 'startup', 'network', 'scheduled_task', 'user_account');--> statement-breakpoint
-CREATE TYPE "public"."dns_action" AS ENUM('allowed', 'blocked', 'redirected');--> statement-breakpoint
-CREATE TYPE "public"."dns_policy_sync_status" AS ENUM('pending', 'synced', 'error');--> statement-breakpoint
-CREATE TYPE "public"."dns_policy_type" AS ENUM('blocklist', 'allowlist');--> statement-breakpoint
-CREATE TYPE "public"."dns_provider" AS ENUM('umbrella', 'cloudflare', 'dnsfilter', 'pihole', 'opendns', 'quad9');--> statement-breakpoint
-CREATE TYPE "public"."dns_threat_category" AS ENUM('malware', 'phishing', 'botnet', 'cryptomining', 'ransomware', 'spam', 'adware', 'adult_content', 'gambling', 'social_media', 'streaming', 'unknown');--> statement-breakpoint
-CREATE TYPE "public"."cis_baseline_level" AS ENUM('l1', 'l2', 'custom');--> statement-breakpoint
-CREATE TYPE "public"."cis_check_severity" AS ENUM('low', 'medium', 'high', 'critical');--> statement-breakpoint
-CREATE TYPE "public"."cis_check_status" AS ENUM('pass', 'fail', 'not_applicable', 'error');--> statement-breakpoint
-CREATE TYPE "public"."cis_os_type" AS ENUM('windows', 'macos', 'linux');--> statement-breakpoint
-CREATE TYPE "public"."cis_remediation_approval_status" AS ENUM('pending', 'approved', 'rejected');--> statement-breakpoint
-CREATE TYPE "public"."cis_remediation_status" AS ENUM('pending_approval', 'queued', 'in_progress', 'completed', 'failed', 'cancelled');--> statement-breakpoint
-CREATE TYPE "public"."peripheral_device_class" AS ENUM('storage', 'all_usb', 'bluetooth', 'thunderbolt');--> statement-breakpoint
-CREATE TYPE "public"."peripheral_event_type" AS ENUM('connected', 'disconnected', 'blocked', 'mounted_read_only', 'policy_override');--> statement-breakpoint
-CREATE TYPE "public"."peripheral_policy_action" AS ENUM('allow', 'block', 'read_only', 'alert');--> statement-breakpoint
-CREATE TYPE "public"."peripheral_policy_target_type" AS ENUM('organization', 'site', 'group', 'device');--> statement-breakpoint
-CREATE TYPE "public"."check_result_status" AS ENUM('running', 'stopped', 'not_found', 'error');--> statement-breakpoint
-CREATE TYPE "public"."warranty_status" AS ENUM('active', 'expiring', 'expired', 'unknown');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."partner_status" AS ENUM('pending', 'active', 'suspended', 'churned');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."ip_assignment_type" AS ENUM('dhcp', 'static', 'vpn', 'link-local', 'unknown');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."initiated_by_type" AS ENUM('manual', 'ai', 'automation', 'policy', 'schedule', 'agent', 'integration');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."discovered_asset_approval_status" AS ENUM('pending', 'approved', 'dismissed');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."network_event_type" AS ENUM('new_device', 'device_disappeared', 'device_changed', 'rogue_device');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."software_policy_mode" AS ENUM('allowlist', 'blocklist', 'audit');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."config_assignment_level" AS ENUM('partner', 'organization', 'site', 'device_group', 'device');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."config_feature_type" AS ENUM('patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."config_policy_status" AS ENUM('active', 'inactive', 'archived');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."monitoring_watch_type" AS ENUM('service', 'process');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."log_correlation_severity" AS ENUM('info', 'warning', 'error', 'critical');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."log_correlation_status" AS ENUM('active', 'resolved', 'ignored');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."trend_direction" AS ENUM('improving', 'stable', 'degrading');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."ai_approval_mode" AS ENUM('per_step', 'action_plan', 'auto_approve', 'hybrid_plan');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."ai_plan_status" AS ENUM('pending', 'approved', 'rejected', 'executing', 'completed', 'aborted');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."agent_log_level" AS ENUM('debug', 'info', 'warn', 'error');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."brain_context_type" AS ENUM('issue', 'quirk', 'followup', 'preference');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."playbook_execution_status" AS ENUM('pending', 'running', 'waiting', 'completed', 'failed', 'rolled_back', 'cancelled');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."playbook_step_type" AS ENUM('diagnose', 'act', 'wait', 'verify', 'rollback');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."change_action" AS ENUM('added', 'removed', 'modified', 'updated');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."change_type" AS ENUM('software', 'service', 'startup', 'network', 'scheduled_task', 'user_account');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."dns_action" AS ENUM('allowed', 'blocked', 'redirected');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."dns_policy_sync_status" AS ENUM('pending', 'synced', 'error');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."dns_policy_type" AS ENUM('blocklist', 'allowlist');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."dns_provider" AS ENUM('umbrella', 'cloudflare', 'dnsfilter', 'pihole', 'opendns', 'quad9');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."dns_threat_category" AS ENUM('malware', 'phishing', 'botnet', 'cryptomining', 'ransomware', 'spam', 'adware', 'adult_content', 'gambling', 'social_media', 'streaming', 'unknown');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."cis_baseline_level" AS ENUM('l1', 'l2', 'custom');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."cis_check_severity" AS ENUM('low', 'medium', 'high', 'critical');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."cis_check_status" AS ENUM('pass', 'fail', 'not_applicable', 'error');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."cis_os_type" AS ENUM('windows', 'macos', 'linux');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."cis_remediation_approval_status" AS ENUM('pending', 'approved', 'rejected');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."cis_remediation_status" AS ENUM('pending_approval', 'queued', 'in_progress', 'completed', 'failed', 'cancelled');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."peripheral_device_class" AS ENUM('storage', 'all_usb', 'bluetooth', 'thunderbolt');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."peripheral_event_type" AS ENUM('connected', 'disconnected', 'blocked', 'mounted_read_only', 'policy_override');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."peripheral_policy_action" AS ENUM('allow', 'block', 'read_only', 'alert');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."peripheral_policy_target_type" AS ENUM('organization', 'site', 'group', 'device');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."check_result_status" AS ENUM('running', 'stopped', 'not_found', 'error');--> statement-breakpoint
+CREATE TYPE IF NOT EXISTS "public"."warranty_status" AS ENUM('active', 'expiring', 'expired', 'unknown');--> statement-breakpoint
 ALTER TYPE "public"."plan_type" ADD VALUE 'starter' BEFORE 'pro';--> statement-breakpoint
 ALTER TYPE "public"."plan_type" ADD VALUE 'community' BEFORE 'pro';--> statement-breakpoint
-CREATE TABLE "device_boot_metrics" (
+CREATE TABLE IF NOT EXISTS "device_boot_metrics" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"device_id" uuid NOT NULL,
 	"org_id" uuid NOT NULL,
@@ -53,7 +53,7 @@ CREATE TABLE "device_boot_metrics" (
 	CONSTRAINT "device_boot_metrics_device_boot_uniq" UNIQUE("device_id","boot_timestamp")
 );
 --> statement-breakpoint
-CREATE TABLE "device_ip_history" (
+CREATE TABLE IF NOT EXISTS "device_ip_history" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"device_id" uuid NOT NULL,
 	"org_id" uuid NOT NULL,
@@ -73,7 +73,7 @@ CREATE TABLE "device_ip_history" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "notification_routing_rules" (
+CREATE TABLE IF NOT EXISTS "notification_routing_rules" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"name" varchar(255) NOT NULL,
@@ -85,7 +85,7 @@ CREATE TABLE "notification_routing_rules" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "network_baselines" (
+CREATE TABLE IF NOT EXISTS "network_baselines" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"site_id" uuid NOT NULL,
@@ -99,7 +99,7 @@ CREATE TABLE "network_baselines" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "network_change_events" (
+CREATE TABLE IF NOT EXISTS "network_change_events" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"site_id" uuid NOT NULL,
@@ -122,7 +122,7 @@ CREATE TABLE "network_change_events" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "network_known_guests" (
+CREATE TABLE IF NOT EXISTS "network_known_guests" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"partner_id" uuid NOT NULL,
 	"mac_address" varchar(17) NOT NULL,
@@ -133,7 +133,7 @@ CREATE TABLE "network_known_guests" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "software_compliance_status" (
+CREATE TABLE IF NOT EXISTS "software_compliance_status" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"device_id" uuid NOT NULL,
 	"policy_id" uuid NOT NULL,
@@ -145,7 +145,7 @@ CREATE TABLE "software_compliance_status" (
 	"remediation_errors" jsonb
 );
 --> statement-breakpoint
-CREATE TABLE "software_policies" (
+CREATE TABLE IF NOT EXISTS "software_policies" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"name" varchar(200) NOT NULL,
@@ -163,7 +163,7 @@ CREATE TABLE "software_policies" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "software_policy_audit" (
+CREATE TABLE IF NOT EXISTS "software_policy_audit" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"policy_id" uuid,
@@ -175,7 +175,7 @@ CREATE TABLE "software_policy_audit" (
 	"timestamp" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "config_policy_alert_rules" (
+CREATE TABLE IF NOT EXISTS "config_policy_alert_rules" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"feature_link_id" uuid NOT NULL,
 	"name" varchar(200) NOT NULL,
@@ -191,7 +191,7 @@ CREATE TABLE "config_policy_alert_rules" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "config_policy_assignments" (
+CREATE TABLE IF NOT EXISTS "config_policy_assignments" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"config_policy_id" uuid NOT NULL,
 	"level" "config_assignment_level" NOT NULL,
@@ -203,7 +203,7 @@ CREATE TABLE "config_policy_assignments" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "config_policy_automations" (
+CREATE TABLE IF NOT EXISTS "config_policy_automations" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"feature_link_id" uuid NOT NULL,
 	"name" varchar(255) NOT NULL,
@@ -219,7 +219,7 @@ CREATE TABLE "config_policy_automations" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "config_policy_compliance_rules" (
+CREATE TABLE IF NOT EXISTS "config_policy_compliance_rules" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"feature_link_id" uuid NOT NULL,
 	"name" varchar(255) NOT NULL,
@@ -232,7 +232,7 @@ CREATE TABLE "config_policy_compliance_rules" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "config_policy_event_log_settings" (
+CREATE TABLE IF NOT EXISTS "config_policy_event_log_settings" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"feature_link_id" uuid NOT NULL,
 	"retention_days" integer DEFAULT 30 NOT NULL,
@@ -248,7 +248,7 @@ CREATE TABLE "config_policy_event_log_settings" (
 	CONSTRAINT "config_policy_event_log_settings_feature_link_id_unique" UNIQUE("feature_link_id")
 );
 --> statement-breakpoint
-CREATE TABLE "config_policy_feature_links" (
+CREATE TABLE IF NOT EXISTS "config_policy_feature_links" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"config_policy_id" uuid NOT NULL,
 	"feature_type" "config_feature_type" NOT NULL,
@@ -258,7 +258,7 @@ CREATE TABLE "config_policy_feature_links" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "config_policy_maintenance_settings" (
+CREATE TABLE IF NOT EXISTS "config_policy_maintenance_settings" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"feature_link_id" uuid NOT NULL,
 	"recurrence" varchar(20) DEFAULT 'weekly' NOT NULL,
@@ -277,7 +277,7 @@ CREATE TABLE "config_policy_maintenance_settings" (
 	CONSTRAINT "config_policy_maintenance_settings_feature_link_id_unique" UNIQUE("feature_link_id")
 );
 --> statement-breakpoint
-CREATE TABLE "config_policy_monitoring_settings" (
+CREATE TABLE IF NOT EXISTS "config_policy_monitoring_settings" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"feature_link_id" uuid NOT NULL,
 	"check_interval_seconds" integer DEFAULT 60 NOT NULL,
@@ -286,7 +286,7 @@ CREATE TABLE "config_policy_monitoring_settings" (
 	CONSTRAINT "config_policy_monitoring_settings_feature_link_id_unique" UNIQUE("feature_link_id")
 );
 --> statement-breakpoint
-CREATE TABLE "config_policy_monitoring_watches" (
+CREATE TABLE IF NOT EXISTS "config_policy_monitoring_watches" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"settings_id" uuid NOT NULL,
 	"watch_type" "monitoring_watch_type" NOT NULL,
@@ -307,7 +307,7 @@ CREATE TABLE "config_policy_monitoring_watches" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "config_policy_patch_settings" (
+CREATE TABLE IF NOT EXISTS "config_policy_patch_settings" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"feature_link_id" uuid NOT NULL,
 	"sources" text[] DEFAULT '{"os"}' NOT NULL,
@@ -323,7 +323,7 @@ CREATE TABLE "config_policy_patch_settings" (
 	CONSTRAINT "config_policy_patch_settings_feature_link_id_unique" UNIQUE("feature_link_id")
 );
 --> statement-breakpoint
-CREATE TABLE "config_policy_sensitive_data_settings" (
+CREATE TABLE IF NOT EXISTS "config_policy_sensitive_data_settings" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"feature_link_id" uuid NOT NULL,
 	"detection_classes" text[] DEFAULT '{"credential"}' NOT NULL,
@@ -343,7 +343,7 @@ CREATE TABLE "config_policy_sensitive_data_settings" (
 	CONSTRAINT "config_policy_sensitive_data_settings_feature_link_id_unique" UNIQUE("feature_link_id")
 );
 --> statement-breakpoint
-CREATE TABLE "configuration_policies" (
+CREATE TABLE IF NOT EXISTS "configuration_policies" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"name" varchar(255) NOT NULL,
@@ -354,7 +354,7 @@ CREATE TABLE "configuration_policies" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "log_correlation_rules" (
+CREATE TABLE IF NOT EXISTS "log_correlation_rules" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"name" varchar(200) NOT NULL,
@@ -371,7 +371,7 @@ CREATE TABLE "log_correlation_rules" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "log_correlations" (
+CREATE TABLE IF NOT EXISTS "log_correlations" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"rule_id" uuid NOT NULL,
@@ -389,7 +389,7 @@ CREATE TABLE "log_correlations" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "log_search_queries" (
+CREATE TABLE IF NOT EXISTS "log_search_queries" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"name" varchar(200) NOT NULL,
@@ -402,7 +402,7 @@ CREATE TABLE "log_search_queries" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "audit_baseline_apply_approvals" (
+CREATE TABLE IF NOT EXISTS "audit_baseline_apply_approvals" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"baseline_id" uuid NOT NULL,
@@ -417,7 +417,7 @@ CREATE TABLE "audit_baseline_apply_approvals" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "audit_baseline_results" (
+CREATE TABLE IF NOT EXISTS "audit_baseline_results" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"device_id" uuid NOT NULL,
@@ -430,7 +430,7 @@ CREATE TABLE "audit_baseline_results" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "audit_baselines" (
+CREATE TABLE IF NOT EXISTS "audit_baselines" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"name" varchar(200) NOT NULL,
@@ -443,7 +443,7 @@ CREATE TABLE "audit_baselines" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "audit_policy_states" (
+CREATE TABLE IF NOT EXISTS "audit_policy_states" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"device_id" uuid NOT NULL,
@@ -454,7 +454,7 @@ CREATE TABLE "audit_policy_states" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "device_reliability" (
+CREATE TABLE IF NOT EXISTS "device_reliability" (
 	"device_id" uuid PRIMARY KEY NOT NULL,
 	"org_id" uuid NOT NULL,
 	"computed_at" timestamp DEFAULT now() NOT NULL,
@@ -484,7 +484,7 @@ CREATE TABLE "device_reliability" (
 	"details" jsonb DEFAULT '{}'::jsonb NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "device_reliability_history" (
+CREATE TABLE IF NOT EXISTS "device_reliability_history" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"device_id" uuid NOT NULL,
 	"org_id" uuid NOT NULL,
@@ -498,7 +498,7 @@ CREATE TABLE "device_reliability_history" (
 	"raw_metrics" jsonb DEFAULT '{}'::jsonb NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "user_risk_events" (
+CREATE TABLE IF NOT EXISTS "user_risk_events" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"user_id" uuid NOT NULL,
@@ -510,7 +510,7 @@ CREATE TABLE "user_risk_events" (
 	"occurred_at" timestamp NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "user_risk_policies" (
+CREATE TABLE IF NOT EXISTS "user_risk_policies" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"weights" jsonb DEFAULT '{}'::jsonb NOT NULL,
@@ -520,7 +520,7 @@ CREATE TABLE "user_risk_policies" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "user_risk_scores" (
+CREATE TABLE IF NOT EXISTS "user_risk_scores" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"user_id" uuid NOT NULL,
@@ -530,7 +530,7 @@ CREATE TABLE "user_risk_scores" (
 	"calculated_at" timestamp NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "ai_action_plans" (
+CREATE TABLE IF NOT EXISTS "ai_action_plans" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"session_id" uuid NOT NULL,
 	"org_id" uuid NOT NULL,
@@ -543,7 +543,7 @@ CREATE TABLE "ai_action_plans" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "ai_screenshots" (
+CREATE TABLE IF NOT EXISTS "ai_screenshots" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"device_id" uuid NOT NULL,
 	"org_id" uuid NOT NULL,
@@ -558,7 +558,7 @@ CREATE TABLE "ai_screenshots" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "agent_logs" (
+CREATE TABLE IF NOT EXISTS "agent_logs" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"device_id" uuid NOT NULL,
 	"org_id" uuid NOT NULL,
@@ -571,7 +571,7 @@ CREATE TABLE "agent_logs" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "brain_device_context" (
+CREATE TABLE IF NOT EXISTS "brain_device_context" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"device_id" uuid NOT NULL,
@@ -583,7 +583,7 @@ CREATE TABLE "brain_device_context" (
 	"resolved_at" timestamp
 );
 --> statement-breakpoint
-CREATE TABLE "playbook_definitions" (
+CREATE TABLE IF NOT EXISTS "playbook_definitions" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid,
 	"name" varchar(255) NOT NULL,
@@ -599,7 +599,7 @@ CREATE TABLE "playbook_definitions" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "playbook_executions" (
+CREATE TABLE IF NOT EXISTS "playbook_executions" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"device_id" uuid NOT NULL,
@@ -618,7 +618,7 @@ CREATE TABLE "playbook_executions" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "device_change_log" (
+CREATE TABLE IF NOT EXISTS "device_change_log" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"device_id" uuid NOT NULL,
 	"org_id" uuid NOT NULL,
@@ -633,7 +633,7 @@ CREATE TABLE "device_change_log" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "dns_event_aggregations" (
+CREATE TABLE IF NOT EXISTS "dns_event_aggregations" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"date" date NOT NULL,
@@ -646,7 +646,7 @@ CREATE TABLE "dns_event_aggregations" (
 	"allowed_queries" integer DEFAULT 0 NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "dns_filter_integrations" (
+CREATE TABLE IF NOT EXISTS "dns_filter_integrations" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"provider" "dns_provider" NOT NULL,
@@ -665,7 +665,7 @@ CREATE TABLE "dns_filter_integrations" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "dns_policies" (
+CREATE TABLE IF NOT EXISTS "dns_policies" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"integration_id" uuid NOT NULL,
@@ -683,7 +683,7 @@ CREATE TABLE "dns_policies" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "dns_security_events" (
+CREATE TABLE IF NOT EXISTS "dns_security_events" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"integration_id" uuid NOT NULL,
@@ -702,7 +702,7 @@ CREATE TABLE "dns_security_events" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "cis_baseline_results" (
+CREATE TABLE IF NOT EXISTS "cis_baseline_results" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"device_id" uuid NOT NULL,
@@ -717,7 +717,7 @@ CREATE TABLE "cis_baseline_results" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "cis_baselines" (
+CREATE TABLE IF NOT EXISTS "cis_baselines" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"name" varchar(200) NOT NULL,
@@ -732,7 +732,7 @@ CREATE TABLE "cis_baselines" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "cis_check_catalog" (
+CREATE TABLE IF NOT EXISTS "cis_check_catalog" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"os_type" "cis_os_type" NOT NULL,
 	"benchmark_version" varchar(200) NOT NULL,
@@ -746,7 +746,7 @@ CREATE TABLE "cis_check_catalog" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "cis_remediation_actions" (
+CREATE TABLE IF NOT EXISTS "cis_remediation_actions" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"device_id" uuid NOT NULL,
@@ -769,7 +769,7 @@ CREATE TABLE "cis_remediation_actions" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "s1_actions" (
+CREATE TABLE IF NOT EXISTS "s1_actions" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"device_id" uuid,
@@ -783,7 +783,7 @@ CREATE TABLE "s1_actions" (
 	"error" text
 );
 --> statement-breakpoint
-CREATE TABLE "s1_agents" (
+CREATE TABLE IF NOT EXISTS "s1_agents" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"integration_id" uuid NOT NULL,
@@ -798,7 +798,7 @@ CREATE TABLE "s1_agents" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "s1_integrations" (
+CREATE TABLE IF NOT EXISTS "s1_integrations" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"name" varchar(200) NOT NULL,
@@ -813,7 +813,7 @@ CREATE TABLE "s1_integrations" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "s1_site_mappings" (
+CREATE TABLE IF NOT EXISTS "s1_site_mappings" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"integration_id" uuid NOT NULL,
 	"site_name" varchar(200) NOT NULL,
@@ -822,7 +822,7 @@ CREATE TABLE "s1_site_mappings" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "s1_threats" (
+CREATE TABLE IF NOT EXISTS "s1_threats" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"integration_id" uuid NOT NULL,
@@ -842,7 +842,7 @@ CREATE TABLE "s1_threats" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "huntress_agents" (
+CREATE TABLE IF NOT EXISTS "huntress_agents" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"integration_id" uuid NOT NULL,
@@ -857,7 +857,7 @@ CREATE TABLE "huntress_agents" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "huntress_incidents" (
+CREATE TABLE IF NOT EXISTS "huntress_incidents" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"integration_id" uuid NOT NULL,
@@ -876,7 +876,7 @@ CREATE TABLE "huntress_incidents" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "huntress_integrations" (
+CREATE TABLE IF NOT EXISTS "huntress_integrations" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"name" varchar(200) NOT NULL,
@@ -893,7 +893,7 @@ CREATE TABLE "huntress_integrations" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "sensitive_data_findings" (
+CREATE TABLE IF NOT EXISTS "sensitive_data_findings" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"device_id" uuid NOT NULL,
@@ -916,7 +916,7 @@ CREATE TABLE "sensitive_data_findings" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "sensitive_data_policies" (
+CREATE TABLE IF NOT EXISTS "sensitive_data_policies" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"name" varchar(200) NOT NULL,
@@ -929,7 +929,7 @@ CREATE TABLE "sensitive_data_policies" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "sensitive_data_scans" (
+CREATE TABLE IF NOT EXISTS "sensitive_data_scans" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"device_id" uuid NOT NULL,
@@ -944,7 +944,7 @@ CREATE TABLE "sensitive_data_scans" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "peripheral_events" (
+CREATE TABLE IF NOT EXISTS "peripheral_events" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"device_id" uuid NOT NULL,
@@ -960,7 +960,7 @@ CREATE TABLE "peripheral_events" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "peripheral_policies" (
+CREATE TABLE IF NOT EXISTS "peripheral_policies" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"name" varchar(200) NOT NULL,
@@ -975,7 +975,7 @@ CREATE TABLE "peripheral_policies" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "browser_extensions" (
+CREATE TABLE IF NOT EXISTS "browser_extensions" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"device_id" uuid NOT NULL,
@@ -991,7 +991,7 @@ CREATE TABLE "browser_extensions" (
 	"last_seen_at" timestamp NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "browser_policies" (
+CREATE TABLE IF NOT EXISTS "browser_policies" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"name" varchar(200) NOT NULL,
@@ -1007,7 +1007,7 @@ CREATE TABLE "browser_policies" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "browser_policy_violations" (
+CREATE TABLE IF NOT EXISTS "browser_policy_violations" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"device_id" uuid NOT NULL,
@@ -1018,7 +1018,7 @@ CREATE TABLE "browser_policy_violations" (
 	"resolved_at" timestamp
 );
 --> statement-breakpoint
-CREATE TABLE "service_process_check_results" (
+CREATE TABLE IF NOT EXISTS "service_process_check_results" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"org_id" uuid NOT NULL,
 	"device_id" uuid NOT NULL,
@@ -1034,7 +1034,7 @@ CREATE TABLE "service_process_check_results" (
 	"timestamp" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "device_warranty" (
+CREATE TABLE IF NOT EXISTS "device_warranty" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"device_id" uuid NOT NULL,
 	"org_id" uuid NOT NULL,
@@ -1061,8 +1061,8 @@ DROP TABLE "policy_assignments" CASCADE;--> statement-breakpoint
 DROP TABLE "policy_compliance" CASCADE;--> statement-breakpoint
 DROP TABLE "policy_templates" CASCADE;--> statement-breakpoint
 DROP TABLE "policy_versions" CASCADE;--> statement-breakpoint
-ALTER TABLE "agent_versions" DROP CONSTRAINT "agent_versions_version_platform_arch_unique";--> statement-breakpoint
-ALTER TABLE "discovered_assets" DROP CONSTRAINT "discovered_assets_ignored_by_users_id_fk";
+ALTER TABLE "agent_versions" DROP CONSTRAINT IF EXISTS "agent_versions_version_platform_arch_unique";--> statement-breakpoint
+ALTER TABLE "discovered_assets" DROP CONSTRAINT IF EXISTS "discovered_assets_ignored_by_users_id_fk";
 --> statement-breakpoint
 DROP INDEX "patch_approvals_org_patch_unique";--> statement-breakpoint
 DROP INDEX "backup_policies_target_idx";--> statement-breakpoint
@@ -1073,460 +1073,629 @@ ALTER TABLE "automation_policy_compliance" ALTER COLUMN "policy_id" DROP NOT NUL
 ALTER TABLE "automation_runs" ALTER COLUMN "automation_id" DROP NOT NULL;--> statement-breakpoint
 ALTER TABLE "device_event_logs" ALTER COLUMN "timestamp" SET DATA TYPE timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "ai_sessions" ALTER COLUMN "user_id" DROP NOT NULL;--> statement-breakpoint
-ALTER TABLE "partners" ADD COLUMN "status" "partner_status" DEFAULT 'active' NOT NULL;--> statement-breakpoint
-ALTER TABLE "users" ADD COLUMN "setup_completed_at" timestamp;--> statement-breakpoint
-ALTER TABLE "users" ADD COLUMN "preferences" jsonb;--> statement-breakpoint
-ALTER TABLE "device_metrics" ADD COLUMN "disk_activity_available" boolean;--> statement-breakpoint
-ALTER TABLE "device_metrics" ADD COLUMN "disk_read_bytes" bigint;--> statement-breakpoint
-ALTER TABLE "device_metrics" ADD COLUMN "disk_write_bytes" bigint;--> statement-breakpoint
-ALTER TABLE "device_metrics" ADD COLUMN "disk_read_bps" bigint;--> statement-breakpoint
-ALTER TABLE "device_metrics" ADD COLUMN "disk_write_bps" bigint;--> statement-breakpoint
-ALTER TABLE "device_metrics" ADD COLUMN "disk_read_ops" bigint;--> statement-breakpoint
-ALTER TABLE "device_metrics" ADD COLUMN "disk_write_ops" bigint;--> statement-breakpoint
-ALTER TABLE "devices" ADD COLUMN "device_role" varchar(30) DEFAULT 'unknown' NOT NULL;--> statement-breakpoint
-ALTER TABLE "devices" ADD COLUMN "device_role_source" varchar(20) DEFAULT 'auto' NOT NULL;--> statement-breakpoint
-ALTER TABLE "devices" ADD COLUMN "management_posture" jsonb;--> statement-breakpoint
-ALTER TABLE "devices" ADD COLUMN "last_user" varchar(255);--> statement-breakpoint
-ALTER TABLE "devices" ADD COLUMN "uptime_seconds" integer;--> statement-breakpoint
-ALTER TABLE "alert_templates" ADD COLUMN "category" varchar(100);--> statement-breakpoint
-ALTER TABLE "alert_templates" ADD COLUMN "targets" jsonb;--> statement-breakpoint
-ALTER TABLE "alert_templates" ADD COLUMN "updated_at" timestamp DEFAULT now() NOT NULL;--> statement-breakpoint
-ALTER TABLE "alerts" ADD COLUMN "config_policy_id" uuid;--> statement-breakpoint
-ALTER TABLE "alerts" ADD COLUMN "config_item_name" varchar(200);--> statement-breakpoint
-ALTER TABLE "notification_channels" ADD COLUMN "templates" jsonb DEFAULT '{}'::jsonb;--> statement-breakpoint
-ALTER TABLE "audit_logs" ADD COLUMN "initiated_by" "initiated_by_type";--> statement-breakpoint
-ALTER TABLE "patch_approvals" ADD COLUMN "ring_id" uuid;--> statement-breakpoint
-ALTER TABLE "patch_compliance_snapshots" ADD COLUMN "ring_id" uuid;--> statement-breakpoint
-ALTER TABLE "patch_jobs" ADD COLUMN "ring_id" uuid;--> statement-breakpoint
-ALTER TABLE "patch_jobs" ADD COLUMN "config_policy_id" uuid;--> statement-breakpoint
-ALTER TABLE "patch_policies" ADD COLUMN "ring_order" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
-ALTER TABLE "patch_policies" ADD COLUMN "deferral_days" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
-ALTER TABLE "patch_policies" ADD COLUMN "deadline_days" integer;--> statement-breakpoint
-ALTER TABLE "patch_policies" ADD COLUMN "grace_period_hours" integer DEFAULT 4 NOT NULL;--> statement-breakpoint
-ALTER TABLE "patch_policies" ADD COLUMN "categories" text[] DEFAULT '{}' NOT NULL;--> statement-breakpoint
-ALTER TABLE "patch_policies" ADD COLUMN "exclude_categories" text[] DEFAULT '{}' NOT NULL;--> statement-breakpoint
-ALTER TABLE "patch_policies" ADD COLUMN "category_rules" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
-ALTER TABLE "discovered_assets" ADD COLUMN "label" varchar(255);--> statement-breakpoint
-ALTER TABLE "discovered_assets" ADD COLUMN "approval_status" "discovered_asset_approval_status" DEFAULT 'pending' NOT NULL;--> statement-breakpoint
-ALTER TABLE "discovered_assets" ADD COLUMN "is_online" boolean DEFAULT false NOT NULL;--> statement-breakpoint
-ALTER TABLE "discovered_assets" ADD COLUMN "approved_by" uuid;--> statement-breakpoint
-ALTER TABLE "discovered_assets" ADD COLUMN "approved_at" timestamp;--> statement-breakpoint
-ALTER TABLE "discovered_assets" ADD COLUMN "dismissed_by" uuid;--> statement-breakpoint
-ALTER TABLE "discovered_assets" ADD COLUMN "dismissed_at" timestamp;--> statement-breakpoint
-ALTER TABLE "discovery_profiles" ADD COLUMN "alert_settings" jsonb;--> statement-breakpoint
-ALTER TABLE "software_catalog" ADD COLUMN "org_id" uuid NOT NULL;--> statement-breakpoint
-ALTER TABLE "software_inventory" ADD COLUMN "file_hash" varchar(128);--> statement-breakpoint
-ALTER TABLE "software_inventory" ADD COLUMN "hash_algorithm" varchar(10);--> statement-breakpoint
-ALTER TABLE "software_versions" ADD COLUMN "s3_key" text;--> statement-breakpoint
-ALTER TABLE "software_versions" ADD COLUMN "file_type" varchar(20);--> statement-breakpoint
-ALTER TABLE "software_versions" ADD COLUMN "original_file_name" varchar(500);--> statement-breakpoint
-ALTER TABLE "backup_configs" ADD COLUMN "updated_at" timestamp DEFAULT now() NOT NULL;--> statement-breakpoint
-ALTER TABLE "backup_jobs" ADD COLUMN "org_id" uuid NOT NULL;--> statement-breakpoint
-ALTER TABLE "backup_jobs" ADD COLUMN "policy_id" uuid;--> statement-breakpoint
-ALTER TABLE "backup_jobs" ADD COLUMN "created_at" timestamp DEFAULT now() NOT NULL;--> statement-breakpoint
-ALTER TABLE "backup_jobs" ADD COLUMN "updated_at" timestamp DEFAULT now() NOT NULL;--> statement-breakpoint
-ALTER TABLE "backup_policies" ADD COLUMN "org_id" uuid NOT NULL;--> statement-breakpoint
-ALTER TABLE "backup_policies" ADD COLUMN "name" varchar(200) NOT NULL;--> statement-breakpoint
-ALTER TABLE "backup_policies" ADD COLUMN "enabled" boolean DEFAULT true NOT NULL;--> statement-breakpoint
-ALTER TABLE "backup_policies" ADD COLUMN "schedule" jsonb NOT NULL;--> statement-breakpoint
-ALTER TABLE "backup_policies" ADD COLUMN "retention" jsonb NOT NULL;--> statement-breakpoint
-ALTER TABLE "backup_policies" ADD COLUMN "targets" jsonb NOT NULL;--> statement-breakpoint
-ALTER TABLE "backup_policies" ADD COLUMN "created_at" timestamp DEFAULT now() NOT NULL;--> statement-breakpoint
-ALTER TABLE "backup_policies" ADD COLUMN "updated_at" timestamp DEFAULT now() NOT NULL;--> statement-breakpoint
-ALTER TABLE "backup_snapshots" ADD COLUMN "org_id" uuid NOT NULL;--> statement-breakpoint
-ALTER TABLE "backup_snapshots" ADD COLUMN "config_id" uuid;--> statement-breakpoint
-ALTER TABLE "backup_snapshots" ADD COLUMN "label" varchar(200);--> statement-breakpoint
-ALTER TABLE "backup_snapshots" ADD COLUMN "location" text;--> statement-breakpoint
-ALTER TABLE "restore_jobs" ADD COLUMN "org_id" uuid NOT NULL;--> statement-breakpoint
-ALTER TABLE "restore_jobs" ADD COLUMN "created_at" timestamp DEFAULT now() NOT NULL;--> statement-breakpoint
-ALTER TABLE "restore_jobs" ADD COLUMN "updated_at" timestamp DEFAULT now() NOT NULL;--> statement-breakpoint
-ALTER TABLE "automation_policy_compliance" ADD COLUMN "config_policy_id" uuid;--> statement-breakpoint
-ALTER TABLE "automation_policy_compliance" ADD COLUMN "config_item_name" varchar(200);--> statement-breakpoint
-ALTER TABLE "automation_runs" ADD COLUMN "config_policy_id" uuid;--> statement-breakpoint
-ALTER TABLE "automation_runs" ADD COLUMN "config_item_name" varchar(200);--> statement-breakpoint
-ALTER TABLE "agent_versions" ADD COLUMN "component" varchar(20) DEFAULT 'agent' NOT NULL;--> statement-breakpoint
-ALTER TABLE "ai_budgets" ADD COLUMN "approval_mode" "ai_approval_mode" DEFAULT 'per_step' NOT NULL;--> statement-breakpoint
-ALTER TABLE "ai_sessions" ADD COLUMN "device_id" uuid;--> statement-breakpoint
-ALTER TABLE "ai_sessions" ADD COLUMN "type" text DEFAULT 'general' NOT NULL;--> statement-breakpoint
-ALTER TABLE "ai_sessions" ADD COLUMN "flagged_at" timestamp;--> statement-breakpoint
-ALTER TABLE "ai_sessions" ADD COLUMN "flagged_by" uuid;--> statement-breakpoint
-ALTER TABLE "ai_sessions" ADD COLUMN "flag_reason" text;--> statement-breakpoint
+ALTER TABLE "partners" ADD COLUMN IF NOT EXISTS "status" "partner_status" DEFAULT 'active' NOT NULL;--> statement-breakpoint
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "setup_completed_at" timestamp;--> statement-breakpoint
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "preferences" jsonb;--> statement-breakpoint
+ALTER TABLE "device_metrics" ADD COLUMN IF NOT EXISTS "disk_activity_available" boolean;--> statement-breakpoint
+ALTER TABLE "device_metrics" ADD COLUMN IF NOT EXISTS "disk_read_bytes" bigint;--> statement-breakpoint
+ALTER TABLE "device_metrics" ADD COLUMN IF NOT EXISTS "disk_write_bytes" bigint;--> statement-breakpoint
+ALTER TABLE "device_metrics" ADD COLUMN IF NOT EXISTS "disk_read_bps" bigint;--> statement-breakpoint
+ALTER TABLE "device_metrics" ADD COLUMN IF NOT EXISTS "disk_write_bps" bigint;--> statement-breakpoint
+ALTER TABLE "device_metrics" ADD COLUMN IF NOT EXISTS "disk_read_ops" bigint;--> statement-breakpoint
+ALTER TABLE "device_metrics" ADD COLUMN IF NOT EXISTS "disk_write_ops" bigint;--> statement-breakpoint
+ALTER TABLE "devices" ADD COLUMN IF NOT EXISTS "device_role" varchar(30) DEFAULT 'unknown' NOT NULL;--> statement-breakpoint
+ALTER TABLE "devices" ADD COLUMN IF NOT EXISTS "device_role_source" varchar(20) DEFAULT 'auto' NOT NULL;--> statement-breakpoint
+ALTER TABLE "devices" ADD COLUMN IF NOT EXISTS "management_posture" jsonb;--> statement-breakpoint
+ALTER TABLE "devices" ADD COLUMN IF NOT EXISTS "last_user" varchar(255);--> statement-breakpoint
+ALTER TABLE "devices" ADD COLUMN IF NOT EXISTS "uptime_seconds" integer;--> statement-breakpoint
+ALTER TABLE "alert_templates" ADD COLUMN IF NOT EXISTS "category" varchar(100);--> statement-breakpoint
+ALTER TABLE "alert_templates" ADD COLUMN IF NOT EXISTS "targets" jsonb;--> statement-breakpoint
+ALTER TABLE "alert_templates" ADD COLUMN IF NOT EXISTS "updated_at" timestamp DEFAULT now() NOT NULL;--> statement-breakpoint
+ALTER TABLE "alerts" ADD COLUMN IF NOT EXISTS "config_policy_id" uuid;--> statement-breakpoint
+ALTER TABLE "alerts" ADD COLUMN IF NOT EXISTS "config_item_name" varchar(200);--> statement-breakpoint
+ALTER TABLE "notification_channels" ADD COLUMN IF NOT EXISTS "templates" jsonb DEFAULT '{}'::jsonb;--> statement-breakpoint
+ALTER TABLE "audit_logs" ADD COLUMN IF NOT EXISTS "initiated_by" "initiated_by_type";--> statement-breakpoint
+ALTER TABLE "patch_approvals" ADD COLUMN IF NOT EXISTS "ring_id" uuid;--> statement-breakpoint
+ALTER TABLE "patch_compliance_snapshots" ADD COLUMN IF NOT EXISTS "ring_id" uuid;--> statement-breakpoint
+ALTER TABLE "patch_jobs" ADD COLUMN IF NOT EXISTS "ring_id" uuid;--> statement-breakpoint
+ALTER TABLE "patch_jobs" ADD COLUMN IF NOT EXISTS "config_policy_id" uuid;--> statement-breakpoint
+ALTER TABLE "patch_policies" ADD COLUMN IF NOT EXISTS "ring_order" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "patch_policies" ADD COLUMN IF NOT EXISTS "deferral_days" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "patch_policies" ADD COLUMN IF NOT EXISTS "deadline_days" integer;--> statement-breakpoint
+ALTER TABLE "patch_policies" ADD COLUMN IF NOT EXISTS "grace_period_hours" integer DEFAULT 4 NOT NULL;--> statement-breakpoint
+ALTER TABLE "patch_policies" ADD COLUMN IF NOT EXISTS "categories" text[] DEFAULT '{}' NOT NULL;--> statement-breakpoint
+ALTER TABLE "patch_policies" ADD COLUMN IF NOT EXISTS "exclude_categories" text[] DEFAULT '{}' NOT NULL;--> statement-breakpoint
+ALTER TABLE "patch_policies" ADD COLUMN IF NOT EXISTS "category_rules" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "discovered_assets" ADD COLUMN IF NOT EXISTS "label" varchar(255);--> statement-breakpoint
+ALTER TABLE "discovered_assets" ADD COLUMN IF NOT EXISTS "approval_status" "discovered_asset_approval_status" DEFAULT 'pending' NOT NULL;--> statement-breakpoint
+ALTER TABLE "discovered_assets" ADD COLUMN IF NOT EXISTS "is_online" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "discovered_assets" ADD COLUMN IF NOT EXISTS "approved_by" uuid;--> statement-breakpoint
+ALTER TABLE "discovered_assets" ADD COLUMN IF NOT EXISTS "approved_at" timestamp;--> statement-breakpoint
+ALTER TABLE "discovered_assets" ADD COLUMN IF NOT EXISTS "dismissed_by" uuid;--> statement-breakpoint
+ALTER TABLE "discovered_assets" ADD COLUMN IF NOT EXISTS "dismissed_at" timestamp;--> statement-breakpoint
+ALTER TABLE "discovery_profiles" ADD COLUMN IF NOT EXISTS "alert_settings" jsonb;--> statement-breakpoint
+ALTER TABLE "software_catalog" ADD COLUMN IF NOT EXISTS "org_id" uuid NOT NULL;--> statement-breakpoint
+ALTER TABLE "software_inventory" ADD COLUMN IF NOT EXISTS "file_hash" varchar(128);--> statement-breakpoint
+ALTER TABLE "software_inventory" ADD COLUMN IF NOT EXISTS "hash_algorithm" varchar(10);--> statement-breakpoint
+ALTER TABLE "software_versions" ADD COLUMN IF NOT EXISTS "s3_key" text;--> statement-breakpoint
+ALTER TABLE "software_versions" ADD COLUMN IF NOT EXISTS "file_type" varchar(20);--> statement-breakpoint
+ALTER TABLE "software_versions" ADD COLUMN IF NOT EXISTS "original_file_name" varchar(500);--> statement-breakpoint
+ALTER TABLE "backup_configs" ADD COLUMN IF NOT EXISTS "updated_at" timestamp DEFAULT now() NOT NULL;--> statement-breakpoint
+ALTER TABLE "backup_jobs" ADD COLUMN IF NOT EXISTS "org_id" uuid NOT NULL;--> statement-breakpoint
+ALTER TABLE "backup_jobs" ADD COLUMN IF NOT EXISTS "policy_id" uuid;--> statement-breakpoint
+ALTER TABLE "backup_jobs" ADD COLUMN IF NOT EXISTS "created_at" timestamp DEFAULT now() NOT NULL;--> statement-breakpoint
+ALTER TABLE "backup_jobs" ADD COLUMN IF NOT EXISTS "updated_at" timestamp DEFAULT now() NOT NULL;--> statement-breakpoint
+ALTER TABLE "backup_policies" ADD COLUMN IF NOT EXISTS "org_id" uuid NOT NULL;--> statement-breakpoint
+ALTER TABLE "backup_policies" ADD COLUMN IF NOT EXISTS "name" varchar(200) NOT NULL;--> statement-breakpoint
+ALTER TABLE "backup_policies" ADD COLUMN IF NOT EXISTS "enabled" boolean DEFAULT true NOT NULL;--> statement-breakpoint
+ALTER TABLE "backup_policies" ADD COLUMN IF NOT EXISTS "schedule" jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "backup_policies" ADD COLUMN IF NOT EXISTS "retention" jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "backup_policies" ADD COLUMN IF NOT EXISTS "targets" jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "backup_policies" ADD COLUMN IF NOT EXISTS "created_at" timestamp DEFAULT now() NOT NULL;--> statement-breakpoint
+ALTER TABLE "backup_policies" ADD COLUMN IF NOT EXISTS "updated_at" timestamp DEFAULT now() NOT NULL;--> statement-breakpoint
+ALTER TABLE "backup_snapshots" ADD COLUMN IF NOT EXISTS "org_id" uuid NOT NULL;--> statement-breakpoint
+ALTER TABLE "backup_snapshots" ADD COLUMN IF NOT EXISTS "config_id" uuid;--> statement-breakpoint
+ALTER TABLE "backup_snapshots" ADD COLUMN IF NOT EXISTS "label" varchar(200);--> statement-breakpoint
+ALTER TABLE "backup_snapshots" ADD COLUMN IF NOT EXISTS "location" text;--> statement-breakpoint
+ALTER TABLE "restore_jobs" ADD COLUMN IF NOT EXISTS "org_id" uuid NOT NULL;--> statement-breakpoint
+ALTER TABLE "restore_jobs" ADD COLUMN IF NOT EXISTS "created_at" timestamp DEFAULT now() NOT NULL;--> statement-breakpoint
+ALTER TABLE "restore_jobs" ADD COLUMN IF NOT EXISTS "updated_at" timestamp DEFAULT now() NOT NULL;--> statement-breakpoint
+ALTER TABLE "automation_policy_compliance" ADD COLUMN IF NOT EXISTS "config_policy_id" uuid;--> statement-breakpoint
+ALTER TABLE "automation_policy_compliance" ADD COLUMN IF NOT EXISTS "config_item_name" varchar(200);--> statement-breakpoint
+ALTER TABLE "automation_runs" ADD COLUMN IF NOT EXISTS "config_policy_id" uuid;--> statement-breakpoint
+ALTER TABLE "automation_runs" ADD COLUMN IF NOT EXISTS "config_item_name" varchar(200);--> statement-breakpoint
+ALTER TABLE "agent_versions" ADD COLUMN IF NOT EXISTS "component" varchar(20) DEFAULT 'agent' NOT NULL;--> statement-breakpoint
+ALTER TABLE "ai_budgets" ADD COLUMN IF NOT EXISTS "approval_mode" "ai_approval_mode" DEFAULT 'per_step' NOT NULL;--> statement-breakpoint
+ALTER TABLE "ai_sessions" ADD COLUMN IF NOT EXISTS "device_id" uuid;--> statement-breakpoint
+ALTER TABLE "ai_sessions" ADD COLUMN IF NOT EXISTS "type" text DEFAULT 'general' NOT NULL;--> statement-breakpoint
+ALTER TABLE "ai_sessions" ADD COLUMN IF NOT EXISTS "flagged_at" timestamp;--> statement-breakpoint
+ALTER TABLE "ai_sessions" ADD COLUMN IF NOT EXISTS "flagged_by" uuid;--> statement-breakpoint
+ALTER TABLE "ai_sessions" ADD COLUMN IF NOT EXISTS "flag_reason" text;--> statement-breakpoint
+ALTER TABLE "device_boot_metrics" DROP CONSTRAINT IF EXISTS "device_boot_metrics_device_id_devices_id_fk";
 ALTER TABLE "device_boot_metrics" ADD CONSTRAINT "device_boot_metrics_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "device_boot_metrics" DROP CONSTRAINT IF EXISTS "device_boot_metrics_org_id_organizations_id_fk";
 ALTER TABLE "device_boot_metrics" ADD CONSTRAINT "device_boot_metrics_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "device_ip_history" DROP CONSTRAINT IF EXISTS "device_ip_history_device_id_devices_id_fk";
 ALTER TABLE "device_ip_history" ADD CONSTRAINT "device_ip_history_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "device_ip_history" DROP CONSTRAINT IF EXISTS "device_ip_history_org_id_organizations_id_fk";
 ALTER TABLE "device_ip_history" ADD CONSTRAINT "device_ip_history_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "notification_routing_rules" DROP CONSTRAINT IF EXISTS "notification_routing_rules_org_id_organizations_id_fk";
 ALTER TABLE "notification_routing_rules" ADD CONSTRAINT "notification_routing_rules_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "network_baselines" DROP CONSTRAINT IF EXISTS "network_baselines_org_id_organizations_id_fk";
 ALTER TABLE "network_baselines" ADD CONSTRAINT "network_baselines_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "network_baselines" DROP CONSTRAINT IF EXISTS "network_baselines_site_id_sites_id_fk";
 ALTER TABLE "network_baselines" ADD CONSTRAINT "network_baselines_site_id_sites_id_fk" FOREIGN KEY ("site_id") REFERENCES "public"."sites"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "network_baselines" DROP CONSTRAINT IF EXISTS "network_baselines_last_scan_job_id_discovery_jobs_id_fk";
 ALTER TABLE "network_baselines" ADD CONSTRAINT "network_baselines_last_scan_job_id_discovery_jobs_id_fk" FOREIGN KEY ("last_scan_job_id") REFERENCES "public"."discovery_jobs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "network_change_events" DROP CONSTRAINT IF EXISTS "network_change_events_org_id_organizations_id_fk";
 ALTER TABLE "network_change_events" ADD CONSTRAINT "network_change_events_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "network_change_events" DROP CONSTRAINT IF EXISTS "network_change_events_site_id_sites_id_fk";
 ALTER TABLE "network_change_events" ADD CONSTRAINT "network_change_events_site_id_sites_id_fk" FOREIGN KEY ("site_id") REFERENCES "public"."sites"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "network_change_events" DROP CONSTRAINT IF EXISTS "network_change_events_baseline_id_network_baselines_id_fk";
 ALTER TABLE "network_change_events" ADD CONSTRAINT "network_change_events_baseline_id_network_baselines_id_fk" FOREIGN KEY ("baseline_id") REFERENCES "public"."network_baselines"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "network_change_events" DROP CONSTRAINT IF EXISTS "network_change_events_profile_id_discovery_profiles_id_fk";
 ALTER TABLE "network_change_events" ADD CONSTRAINT "network_change_events_profile_id_discovery_profiles_id_fk" FOREIGN KEY ("profile_id") REFERENCES "public"."discovery_profiles"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "network_change_events" DROP CONSTRAINT IF EXISTS "network_change_events_acknowledged_by_users_id_fk";
 ALTER TABLE "network_change_events" ADD CONSTRAINT "network_change_events_acknowledged_by_users_id_fk" FOREIGN KEY ("acknowledged_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "network_change_events" DROP CONSTRAINT IF EXISTS "network_change_events_alert_id_alerts_id_fk";
 ALTER TABLE "network_change_events" ADD CONSTRAINT "network_change_events_alert_id_alerts_id_fk" FOREIGN KEY ("alert_id") REFERENCES "public"."alerts"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "network_change_events" DROP CONSTRAINT IF EXISTS "network_change_events_linked_device_id_devices_id_fk";
 ALTER TABLE "network_change_events" ADD CONSTRAINT "network_change_events_linked_device_id_devices_id_fk" FOREIGN KEY ("linked_device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "network_known_guests" DROP CONSTRAINT IF EXISTS "network_known_guests_partner_id_partners_id_fk";
 ALTER TABLE "network_known_guests" ADD CONSTRAINT "network_known_guests_partner_id_partners_id_fk" FOREIGN KEY ("partner_id") REFERENCES "public"."partners"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "network_known_guests" DROP CONSTRAINT IF EXISTS "network_known_guests_added_by_users_id_fk";
 ALTER TABLE "network_known_guests" ADD CONSTRAINT "network_known_guests_added_by_users_id_fk" FOREIGN KEY ("added_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "software_compliance_status" DROP CONSTRAINT IF EXISTS "software_compliance_status_device_id_devices_id_fk";
 ALTER TABLE "software_compliance_status" ADD CONSTRAINT "software_compliance_status_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "software_compliance_status" DROP CONSTRAINT IF EXISTS "software_compliance_status_policy_id_software_policies_id_fk";
 ALTER TABLE "software_compliance_status" ADD CONSTRAINT "software_compliance_status_policy_id_software_policies_id_fk" FOREIGN KEY ("policy_id") REFERENCES "public"."software_policies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "software_policies" DROP CONSTRAINT IF EXISTS "software_policies_org_id_organizations_id_fk";
 ALTER TABLE "software_policies" ADD CONSTRAINT "software_policies_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "software_policies" DROP CONSTRAINT IF EXISTS "software_policies_created_by_users_id_fk";
 ALTER TABLE "software_policies" ADD CONSTRAINT "software_policies_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "software_policy_audit" DROP CONSTRAINT IF EXISTS "software_policy_audit_org_id_organizations_id_fk";
 ALTER TABLE "software_policy_audit" ADD CONSTRAINT "software_policy_audit_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "software_policy_audit" DROP CONSTRAINT IF EXISTS "software_policy_audit_policy_id_software_policies_id_fk";
 ALTER TABLE "software_policy_audit" ADD CONSTRAINT "software_policy_audit_policy_id_software_policies_id_fk" FOREIGN KEY ("policy_id") REFERENCES "public"."software_policies"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "software_policy_audit" DROP CONSTRAINT IF EXISTS "software_policy_audit_device_id_devices_id_fk";
 ALTER TABLE "software_policy_audit" ADD CONSTRAINT "software_policy_audit_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "software_policy_audit" DROP CONSTRAINT IF EXISTS "software_policy_audit_actor_id_users_id_fk";
 ALTER TABLE "software_policy_audit" ADD CONSTRAINT "software_policy_audit_actor_id_users_id_fk" FOREIGN KEY ("actor_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "config_policy_alert_rules" DROP CONSTRAINT IF EXISTS "config_policy_alert_rules_feature_link_id_config_policy_feature_links_id_fk";
 ALTER TABLE "config_policy_alert_rules" ADD CONSTRAINT "config_policy_alert_rules_feature_link_id_config_policy_feature_links_id_fk" FOREIGN KEY ("feature_link_id") REFERENCES "public"."config_policy_feature_links"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "config_policy_assignments" DROP CONSTRAINT IF EXISTS "config_policy_assignments_config_policy_id_configuration_policies_id_fk";
 ALTER TABLE "config_policy_assignments" ADD CONSTRAINT "config_policy_assignments_config_policy_id_configuration_policies_id_fk" FOREIGN KEY ("config_policy_id") REFERENCES "public"."configuration_policies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "config_policy_assignments" DROP CONSTRAINT IF EXISTS "config_policy_assignments_assigned_by_users_id_fk";
 ALTER TABLE "config_policy_assignments" ADD CONSTRAINT "config_policy_assignments_assigned_by_users_id_fk" FOREIGN KEY ("assigned_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "config_policy_automations" DROP CONSTRAINT IF EXISTS "config_policy_automations_feature_link_id_config_policy_feature_links_id_fk";
 ALTER TABLE "config_policy_automations" ADD CONSTRAINT "config_policy_automations_feature_link_id_config_policy_feature_links_id_fk" FOREIGN KEY ("feature_link_id") REFERENCES "public"."config_policy_feature_links"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "config_policy_compliance_rules" DROP CONSTRAINT IF EXISTS "config_policy_compliance_rules_feature_link_id_config_policy_feature_links_id_fk";
 ALTER TABLE "config_policy_compliance_rules" ADD CONSTRAINT "config_policy_compliance_rules_feature_link_id_config_policy_feature_links_id_fk" FOREIGN KEY ("feature_link_id") REFERENCES "public"."config_policy_feature_links"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "config_policy_compliance_rules" DROP CONSTRAINT IF EXISTS "config_policy_compliance_rules_remediation_script_id_scripts_id_fk";
 ALTER TABLE "config_policy_compliance_rules" ADD CONSTRAINT "config_policy_compliance_rules_remediation_script_id_scripts_id_fk" FOREIGN KEY ("remediation_script_id") REFERENCES "public"."scripts"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "config_policy_event_log_settings" DROP CONSTRAINT IF EXISTS "config_policy_event_log_settings_feature_link_id_config_policy_feature_links_id_fk";
 ALTER TABLE "config_policy_event_log_settings" ADD CONSTRAINT "config_policy_event_log_settings_feature_link_id_config_policy_feature_links_id_fk" FOREIGN KEY ("feature_link_id") REFERENCES "public"."config_policy_feature_links"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "config_policy_feature_links" DROP CONSTRAINT IF EXISTS "config_policy_feature_links_config_policy_id_configuration_policies_id_fk";
 ALTER TABLE "config_policy_feature_links" ADD CONSTRAINT "config_policy_feature_links_config_policy_id_configuration_policies_id_fk" FOREIGN KEY ("config_policy_id") REFERENCES "public"."configuration_policies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "config_policy_maintenance_settings" DROP CONSTRAINT IF EXISTS "config_policy_maintenance_settings_feature_link_id_config_policy_feature_links_id_fk";
 ALTER TABLE "config_policy_maintenance_settings" ADD CONSTRAINT "config_policy_maintenance_settings_feature_link_id_config_policy_feature_links_id_fk" FOREIGN KEY ("feature_link_id") REFERENCES "public"."config_policy_feature_links"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "config_policy_monitoring_settings" DROP CONSTRAINT IF EXISTS "config_policy_monitoring_settings_feature_link_id_config_policy_feature_links_id_fk";
 ALTER TABLE "config_policy_monitoring_settings" ADD CONSTRAINT "config_policy_monitoring_settings_feature_link_id_config_policy_feature_links_id_fk" FOREIGN KEY ("feature_link_id") REFERENCES "public"."config_policy_feature_links"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "config_policy_monitoring_watches" DROP CONSTRAINT IF EXISTS "config_policy_monitoring_watches_settings_id_config_policy_monitoring_settings_id_fk";
 ALTER TABLE "config_policy_monitoring_watches" ADD CONSTRAINT "config_policy_monitoring_watches_settings_id_config_policy_monitoring_settings_id_fk" FOREIGN KEY ("settings_id") REFERENCES "public"."config_policy_monitoring_settings"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "config_policy_patch_settings" DROP CONSTRAINT IF EXISTS "config_policy_patch_settings_feature_link_id_config_policy_feature_links_id_fk";
 ALTER TABLE "config_policy_patch_settings" ADD CONSTRAINT "config_policy_patch_settings_feature_link_id_config_policy_feature_links_id_fk" FOREIGN KEY ("feature_link_id") REFERENCES "public"."config_policy_feature_links"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "config_policy_sensitive_data_settings" DROP CONSTRAINT IF EXISTS "config_policy_sensitive_data_settings_feature_link_id_config_policy_feature_links_id_fk";
 ALTER TABLE "config_policy_sensitive_data_settings" ADD CONSTRAINT "config_policy_sensitive_data_settings_feature_link_id_config_policy_feature_links_id_fk" FOREIGN KEY ("feature_link_id") REFERENCES "public"."config_policy_feature_links"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "configuration_policies" DROP CONSTRAINT IF EXISTS "configuration_policies_org_id_organizations_id_fk";
 ALTER TABLE "configuration_policies" ADD CONSTRAINT "configuration_policies_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "configuration_policies" DROP CONSTRAINT IF EXISTS "configuration_policies_created_by_users_id_fk";
 ALTER TABLE "configuration_policies" ADD CONSTRAINT "configuration_policies_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "log_correlation_rules" DROP CONSTRAINT IF EXISTS "log_correlation_rules_org_id_organizations_id_fk";
 ALTER TABLE "log_correlation_rules" ADD CONSTRAINT "log_correlation_rules_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "log_correlations" DROP CONSTRAINT IF EXISTS "log_correlations_org_id_organizations_id_fk";
 ALTER TABLE "log_correlations" ADD CONSTRAINT "log_correlations_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "log_correlations" DROP CONSTRAINT IF EXISTS "log_correlations_rule_id_log_correlation_rules_id_fk";
 ALTER TABLE "log_correlations" ADD CONSTRAINT "log_correlations_rule_id_log_correlation_rules_id_fk" FOREIGN KEY ("rule_id") REFERENCES "public"."log_correlation_rules"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "log_correlations" DROP CONSTRAINT IF EXISTS "log_correlations_alert_id_alerts_id_fk";
 ALTER TABLE "log_correlations" ADD CONSTRAINT "log_correlations_alert_id_alerts_id_fk" FOREIGN KEY ("alert_id") REFERENCES "public"."alerts"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "log_correlations" DROP CONSTRAINT IF EXISTS "log_correlations_resolved_by_users_id_fk";
 ALTER TABLE "log_correlations" ADD CONSTRAINT "log_correlations_resolved_by_users_id_fk" FOREIGN KEY ("resolved_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "log_search_queries" DROP CONSTRAINT IF EXISTS "log_search_queries_org_id_organizations_id_fk";
 ALTER TABLE "log_search_queries" ADD CONSTRAINT "log_search_queries_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "log_search_queries" DROP CONSTRAINT IF EXISTS "log_search_queries_created_by_users_id_fk";
 ALTER TABLE "log_search_queries" ADD CONSTRAINT "log_search_queries_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "audit_baseline_apply_approvals" DROP CONSTRAINT IF EXISTS "audit_baseline_apply_approvals_org_id_organizations_id_fk";
 ALTER TABLE "audit_baseline_apply_approvals" ADD CONSTRAINT "audit_baseline_apply_approvals_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "audit_baseline_apply_approvals" DROP CONSTRAINT IF EXISTS "audit_baseline_apply_approvals_baseline_id_audit_baselines_id_fk";
 ALTER TABLE "audit_baseline_apply_approvals" ADD CONSTRAINT "audit_baseline_apply_approvals_baseline_id_audit_baselines_id_fk" FOREIGN KEY ("baseline_id") REFERENCES "public"."audit_baselines"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "audit_baseline_apply_approvals" DROP CONSTRAINT IF EXISTS "audit_baseline_apply_approvals_requested_by_users_id_fk";
 ALTER TABLE "audit_baseline_apply_approvals" ADD CONSTRAINT "audit_baseline_apply_approvals_requested_by_users_id_fk" FOREIGN KEY ("requested_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "audit_baseline_apply_approvals" DROP CONSTRAINT IF EXISTS "audit_baseline_apply_approvals_approved_by_users_id_fk";
 ALTER TABLE "audit_baseline_apply_approvals" ADD CONSTRAINT "audit_baseline_apply_approvals_approved_by_users_id_fk" FOREIGN KEY ("approved_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "audit_baseline_results" DROP CONSTRAINT IF EXISTS "audit_baseline_results_org_id_organizations_id_fk";
 ALTER TABLE "audit_baseline_results" ADD CONSTRAINT "audit_baseline_results_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "audit_baseline_results" DROP CONSTRAINT IF EXISTS "audit_baseline_results_device_id_devices_id_fk";
 ALTER TABLE "audit_baseline_results" ADD CONSTRAINT "audit_baseline_results_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "audit_baseline_results" DROP CONSTRAINT IF EXISTS "audit_baseline_results_baseline_id_audit_baselines_id_fk";
 ALTER TABLE "audit_baseline_results" ADD CONSTRAINT "audit_baseline_results_baseline_id_audit_baselines_id_fk" FOREIGN KEY ("baseline_id") REFERENCES "public"."audit_baselines"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "audit_baselines" DROP CONSTRAINT IF EXISTS "audit_baselines_org_id_organizations_id_fk";
 ALTER TABLE "audit_baselines" ADD CONSTRAINT "audit_baselines_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "audit_baselines" DROP CONSTRAINT IF EXISTS "audit_baselines_created_by_users_id_fk";
 ALTER TABLE "audit_baselines" ADD CONSTRAINT "audit_baselines_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "audit_policy_states" DROP CONSTRAINT IF EXISTS "audit_policy_states_org_id_organizations_id_fk";
 ALTER TABLE "audit_policy_states" ADD CONSTRAINT "audit_policy_states_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "audit_policy_states" DROP CONSTRAINT IF EXISTS "audit_policy_states_device_id_devices_id_fk";
 ALTER TABLE "audit_policy_states" ADD CONSTRAINT "audit_policy_states_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "device_reliability" DROP CONSTRAINT IF EXISTS "device_reliability_device_id_devices_id_fk";
 ALTER TABLE "device_reliability" ADD CONSTRAINT "device_reliability_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "device_reliability" DROP CONSTRAINT IF EXISTS "device_reliability_org_id_organizations_id_fk";
 ALTER TABLE "device_reliability" ADD CONSTRAINT "device_reliability_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "device_reliability_history" DROP CONSTRAINT IF EXISTS "device_reliability_history_device_id_devices_id_fk";
 ALTER TABLE "device_reliability_history" ADD CONSTRAINT "device_reliability_history_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "device_reliability_history" DROP CONSTRAINT IF EXISTS "device_reliability_history_org_id_organizations_id_fk";
 ALTER TABLE "device_reliability_history" ADD CONSTRAINT "device_reliability_history_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "user_risk_events" DROP CONSTRAINT IF EXISTS "user_risk_events_org_id_organizations_id_fk";
 ALTER TABLE "user_risk_events" ADD CONSTRAINT "user_risk_events_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "user_risk_events" DROP CONSTRAINT IF EXISTS "user_risk_events_user_id_users_id_fk";
 ALTER TABLE "user_risk_events" ADD CONSTRAINT "user_risk_events_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "user_risk_policies" DROP CONSTRAINT IF EXISTS "user_risk_policies_org_id_organizations_id_fk";
 ALTER TABLE "user_risk_policies" ADD CONSTRAINT "user_risk_policies_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "user_risk_policies" DROP CONSTRAINT IF EXISTS "user_risk_policies_updated_by_users_id_fk";
 ALTER TABLE "user_risk_policies" ADD CONSTRAINT "user_risk_policies_updated_by_users_id_fk" FOREIGN KEY ("updated_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "user_risk_scores" DROP CONSTRAINT IF EXISTS "user_risk_scores_org_id_organizations_id_fk";
 ALTER TABLE "user_risk_scores" ADD CONSTRAINT "user_risk_scores_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "user_risk_scores" DROP CONSTRAINT IF EXISTS "user_risk_scores_user_id_users_id_fk";
 ALTER TABLE "user_risk_scores" ADD CONSTRAINT "user_risk_scores_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "ai_action_plans" DROP CONSTRAINT IF EXISTS "ai_action_plans_session_id_ai_sessions_id_fk";
 ALTER TABLE "ai_action_plans" ADD CONSTRAINT "ai_action_plans_session_id_ai_sessions_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."ai_sessions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "ai_action_plans" DROP CONSTRAINT IF EXISTS "ai_action_plans_org_id_organizations_id_fk";
 ALTER TABLE "ai_action_plans" ADD CONSTRAINT "ai_action_plans_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "ai_action_plans" DROP CONSTRAINT IF EXISTS "ai_action_plans_approved_by_users_id_fk";
 ALTER TABLE "ai_action_plans" ADD CONSTRAINT "ai_action_plans_approved_by_users_id_fk" FOREIGN KEY ("approved_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "ai_screenshots" DROP CONSTRAINT IF EXISTS "ai_screenshots_device_id_devices_id_fk";
 ALTER TABLE "ai_screenshots" ADD CONSTRAINT "ai_screenshots_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "ai_screenshots" DROP CONSTRAINT IF EXISTS "ai_screenshots_org_id_organizations_id_fk";
 ALTER TABLE "ai_screenshots" ADD CONSTRAINT "ai_screenshots_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "ai_screenshots" DROP CONSTRAINT IF EXISTS "ai_screenshots_session_id_ai_sessions_id_fk";
 ALTER TABLE "ai_screenshots" ADD CONSTRAINT "ai_screenshots_session_id_ai_sessions_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."ai_sessions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_logs" DROP CONSTRAINT IF EXISTS "agent_logs_device_id_devices_id_fk";
 ALTER TABLE "agent_logs" ADD CONSTRAINT "agent_logs_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_logs" DROP CONSTRAINT IF EXISTS "agent_logs_org_id_organizations_id_fk";
 ALTER TABLE "agent_logs" ADD CONSTRAINT "agent_logs_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "brain_device_context" DROP CONSTRAINT IF EXISTS "brain_device_context_org_id_organizations_id_fk";
 ALTER TABLE "brain_device_context" ADD CONSTRAINT "brain_device_context_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "brain_device_context" DROP CONSTRAINT IF EXISTS "brain_device_context_device_id_devices_id_fk";
 ALTER TABLE "brain_device_context" ADD CONSTRAINT "brain_device_context_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "playbook_definitions" DROP CONSTRAINT IF EXISTS "playbook_definitions_org_id_organizations_id_fk";
 ALTER TABLE "playbook_definitions" ADD CONSTRAINT "playbook_definitions_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "playbook_definitions" DROP CONSTRAINT IF EXISTS "playbook_definitions_created_by_users_id_fk";
 ALTER TABLE "playbook_definitions" ADD CONSTRAINT "playbook_definitions_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "playbook_executions" DROP CONSTRAINT IF EXISTS "playbook_executions_org_id_organizations_id_fk";
 ALTER TABLE "playbook_executions" ADD CONSTRAINT "playbook_executions_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "playbook_executions" DROP CONSTRAINT IF EXISTS "playbook_executions_device_id_devices_id_fk";
 ALTER TABLE "playbook_executions" ADD CONSTRAINT "playbook_executions_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "playbook_executions" DROP CONSTRAINT IF EXISTS "playbook_executions_playbook_id_playbook_definitions_id_fk";
 ALTER TABLE "playbook_executions" ADD CONSTRAINT "playbook_executions_playbook_id_playbook_definitions_id_fk" FOREIGN KEY ("playbook_id") REFERENCES "public"."playbook_definitions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "playbook_executions" DROP CONSTRAINT IF EXISTS "playbook_executions_triggered_by_user_id_users_id_fk";
 ALTER TABLE "playbook_executions" ADD CONSTRAINT "playbook_executions_triggered_by_user_id_users_id_fk" FOREIGN KEY ("triggered_by_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "device_change_log" DROP CONSTRAINT IF EXISTS "device_change_log_device_id_devices_id_fk";
 ALTER TABLE "device_change_log" ADD CONSTRAINT "device_change_log_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "device_change_log" DROP CONSTRAINT IF EXISTS "device_change_log_org_id_organizations_id_fk";
 ALTER TABLE "device_change_log" ADD CONSTRAINT "device_change_log_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dns_event_aggregations" DROP CONSTRAINT IF EXISTS "dns_event_aggregations_org_id_organizations_id_fk";
 ALTER TABLE "dns_event_aggregations" ADD CONSTRAINT "dns_event_aggregations_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dns_event_aggregations" DROP CONSTRAINT IF EXISTS "dns_event_aggregations_integration_id_dns_filter_integrations_id_fk";
 ALTER TABLE "dns_event_aggregations" ADD CONSTRAINT "dns_event_aggregations_integration_id_dns_filter_integrations_id_fk" FOREIGN KEY ("integration_id") REFERENCES "public"."dns_filter_integrations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dns_event_aggregations" DROP CONSTRAINT IF EXISTS "dns_event_aggregations_device_id_devices_id_fk";
 ALTER TABLE "dns_event_aggregations" ADD CONSTRAINT "dns_event_aggregations_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dns_filter_integrations" DROP CONSTRAINT IF EXISTS "dns_filter_integrations_org_id_organizations_id_fk";
 ALTER TABLE "dns_filter_integrations" ADD CONSTRAINT "dns_filter_integrations_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dns_filter_integrations" DROP CONSTRAINT IF EXISTS "dns_filter_integrations_created_by_users_id_fk";
 ALTER TABLE "dns_filter_integrations" ADD CONSTRAINT "dns_filter_integrations_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dns_policies" DROP CONSTRAINT IF EXISTS "dns_policies_org_id_organizations_id_fk";
 ALTER TABLE "dns_policies" ADD CONSTRAINT "dns_policies_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dns_policies" DROP CONSTRAINT IF EXISTS "dns_policies_integration_id_dns_filter_integrations_id_fk";
 ALTER TABLE "dns_policies" ADD CONSTRAINT "dns_policies_integration_id_dns_filter_integrations_id_fk" FOREIGN KEY ("integration_id") REFERENCES "public"."dns_filter_integrations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dns_policies" DROP CONSTRAINT IF EXISTS "dns_policies_created_by_users_id_fk";
 ALTER TABLE "dns_policies" ADD CONSTRAINT "dns_policies_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dns_security_events" DROP CONSTRAINT IF EXISTS "dns_security_events_org_id_organizations_id_fk";
 ALTER TABLE "dns_security_events" ADD CONSTRAINT "dns_security_events_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dns_security_events" DROP CONSTRAINT IF EXISTS "dns_security_events_integration_id_dns_filter_integrations_id_fk";
 ALTER TABLE "dns_security_events" ADD CONSTRAINT "dns_security_events_integration_id_dns_filter_integrations_id_fk" FOREIGN KEY ("integration_id") REFERENCES "public"."dns_filter_integrations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dns_security_events" DROP CONSTRAINT IF EXISTS "dns_security_events_device_id_devices_id_fk";
 ALTER TABLE "dns_security_events" ADD CONSTRAINT "dns_security_events_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "cis_baseline_results" DROP CONSTRAINT IF EXISTS "cis_baseline_results_org_id_organizations_id_fk";
 ALTER TABLE "cis_baseline_results" ADD CONSTRAINT "cis_baseline_results_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "cis_baseline_results" DROP CONSTRAINT IF EXISTS "cis_baseline_results_device_id_devices_id_fk";
 ALTER TABLE "cis_baseline_results" ADD CONSTRAINT "cis_baseline_results_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "cis_baseline_results" DROP CONSTRAINT IF EXISTS "cis_baseline_results_baseline_id_cis_baselines_id_fk";
 ALTER TABLE "cis_baseline_results" ADD CONSTRAINT "cis_baseline_results_baseline_id_cis_baselines_id_fk" FOREIGN KEY ("baseline_id") REFERENCES "public"."cis_baselines"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "cis_baselines" DROP CONSTRAINT IF EXISTS "cis_baselines_org_id_organizations_id_fk";
 ALTER TABLE "cis_baselines" ADD CONSTRAINT "cis_baselines_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "cis_baselines" DROP CONSTRAINT IF EXISTS "cis_baselines_created_by_users_id_fk";
 ALTER TABLE "cis_baselines" ADD CONSTRAINT "cis_baselines_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "cis_remediation_actions" DROP CONSTRAINT IF EXISTS "cis_remediation_actions_org_id_organizations_id_fk";
 ALTER TABLE "cis_remediation_actions" ADD CONSTRAINT "cis_remediation_actions_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "cis_remediation_actions" DROP CONSTRAINT IF EXISTS "cis_remediation_actions_device_id_devices_id_fk";
 ALTER TABLE "cis_remediation_actions" ADD CONSTRAINT "cis_remediation_actions_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "cis_remediation_actions" DROP CONSTRAINT IF EXISTS "cis_remediation_actions_baseline_id_cis_baselines_id_fk";
 ALTER TABLE "cis_remediation_actions" ADD CONSTRAINT "cis_remediation_actions_baseline_id_cis_baselines_id_fk" FOREIGN KEY ("baseline_id") REFERENCES "public"."cis_baselines"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "cis_remediation_actions" DROP CONSTRAINT IF EXISTS "cis_remediation_actions_baseline_result_id_cis_baseline_results_id_fk";
 ALTER TABLE "cis_remediation_actions" ADD CONSTRAINT "cis_remediation_actions_baseline_result_id_cis_baseline_results_id_fk" FOREIGN KEY ("baseline_result_id") REFERENCES "public"."cis_baseline_results"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "cis_remediation_actions" DROP CONSTRAINT IF EXISTS "cis_remediation_actions_approved_by_users_id_fk";
 ALTER TABLE "cis_remediation_actions" ADD CONSTRAINT "cis_remediation_actions_approved_by_users_id_fk" FOREIGN KEY ("approved_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "cis_remediation_actions" DROP CONSTRAINT IF EXISTS "cis_remediation_actions_requested_by_users_id_fk";
 ALTER TABLE "cis_remediation_actions" ADD CONSTRAINT "cis_remediation_actions_requested_by_users_id_fk" FOREIGN KEY ("requested_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "s1_actions" DROP CONSTRAINT IF EXISTS "s1_actions_org_id_organizations_id_fk";
 ALTER TABLE "s1_actions" ADD CONSTRAINT "s1_actions_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "s1_actions" DROP CONSTRAINT IF EXISTS "s1_actions_device_id_devices_id_fk";
 ALTER TABLE "s1_actions" ADD CONSTRAINT "s1_actions_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "s1_actions" DROP CONSTRAINT IF EXISTS "s1_actions_requested_by_users_id_fk";
 ALTER TABLE "s1_actions" ADD CONSTRAINT "s1_actions_requested_by_users_id_fk" FOREIGN KEY ("requested_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "s1_agents" DROP CONSTRAINT IF EXISTS "s1_agents_org_id_organizations_id_fk";
 ALTER TABLE "s1_agents" ADD CONSTRAINT "s1_agents_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "s1_agents" DROP CONSTRAINT IF EXISTS "s1_agents_integration_id_s1_integrations_id_fk";
 ALTER TABLE "s1_agents" ADD CONSTRAINT "s1_agents_integration_id_s1_integrations_id_fk" FOREIGN KEY ("integration_id") REFERENCES "public"."s1_integrations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "s1_agents" DROP CONSTRAINT IF EXISTS "s1_agents_device_id_devices_id_fk";
 ALTER TABLE "s1_agents" ADD CONSTRAINT "s1_agents_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "s1_integrations" DROP CONSTRAINT IF EXISTS "s1_integrations_org_id_organizations_id_fk";
 ALTER TABLE "s1_integrations" ADD CONSTRAINT "s1_integrations_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "s1_integrations" DROP CONSTRAINT IF EXISTS "s1_integrations_created_by_users_id_fk";
 ALTER TABLE "s1_integrations" ADD CONSTRAINT "s1_integrations_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "s1_site_mappings" DROP CONSTRAINT IF EXISTS "s1_site_mappings_integration_id_s1_integrations_id_fk";
 ALTER TABLE "s1_site_mappings" ADD CONSTRAINT "s1_site_mappings_integration_id_s1_integrations_id_fk" FOREIGN KEY ("integration_id") REFERENCES "public"."s1_integrations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "s1_site_mappings" DROP CONSTRAINT IF EXISTS "s1_site_mappings_org_id_organizations_id_fk";
 ALTER TABLE "s1_site_mappings" ADD CONSTRAINT "s1_site_mappings_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "s1_threats" DROP CONSTRAINT IF EXISTS "s1_threats_org_id_organizations_id_fk";
 ALTER TABLE "s1_threats" ADD CONSTRAINT "s1_threats_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "s1_threats" DROP CONSTRAINT IF EXISTS "s1_threats_integration_id_s1_integrations_id_fk";
 ALTER TABLE "s1_threats" ADD CONSTRAINT "s1_threats_integration_id_s1_integrations_id_fk" FOREIGN KEY ("integration_id") REFERENCES "public"."s1_integrations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "s1_threats" DROP CONSTRAINT IF EXISTS "s1_threats_device_id_devices_id_fk";
 ALTER TABLE "s1_threats" ADD CONSTRAINT "s1_threats_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "huntress_agents" DROP CONSTRAINT IF EXISTS "huntress_agents_org_id_organizations_id_fk";
 ALTER TABLE "huntress_agents" ADD CONSTRAINT "huntress_agents_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "huntress_agents" DROP CONSTRAINT IF EXISTS "huntress_agents_integration_id_huntress_integrations_id_fk";
 ALTER TABLE "huntress_agents" ADD CONSTRAINT "huntress_agents_integration_id_huntress_integrations_id_fk" FOREIGN KEY ("integration_id") REFERENCES "public"."huntress_integrations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "huntress_agents" DROP CONSTRAINT IF EXISTS "huntress_agents_device_id_devices_id_fk";
 ALTER TABLE "huntress_agents" ADD CONSTRAINT "huntress_agents_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "huntress_incidents" DROP CONSTRAINT IF EXISTS "huntress_incidents_org_id_organizations_id_fk";
 ALTER TABLE "huntress_incidents" ADD CONSTRAINT "huntress_incidents_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "huntress_incidents" DROP CONSTRAINT IF EXISTS "huntress_incidents_integration_id_huntress_integrations_id_fk";
 ALTER TABLE "huntress_incidents" ADD CONSTRAINT "huntress_incidents_integration_id_huntress_integrations_id_fk" FOREIGN KEY ("integration_id") REFERENCES "public"."huntress_integrations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "huntress_incidents" DROP CONSTRAINT IF EXISTS "huntress_incidents_device_id_devices_id_fk";
 ALTER TABLE "huntress_incidents" ADD CONSTRAINT "huntress_incidents_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "huntress_integrations" DROP CONSTRAINT IF EXISTS "huntress_integrations_org_id_organizations_id_fk";
 ALTER TABLE "huntress_integrations" ADD CONSTRAINT "huntress_integrations_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "huntress_integrations" DROP CONSTRAINT IF EXISTS "huntress_integrations_created_by_users_id_fk";
 ALTER TABLE "huntress_integrations" ADD CONSTRAINT "huntress_integrations_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "sensitive_data_findings" DROP CONSTRAINT IF EXISTS "sensitive_data_findings_org_id_organizations_id_fk";
 ALTER TABLE "sensitive_data_findings" ADD CONSTRAINT "sensitive_data_findings_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "sensitive_data_findings" DROP CONSTRAINT IF EXISTS "sensitive_data_findings_device_id_devices_id_fk";
 ALTER TABLE "sensitive_data_findings" ADD CONSTRAINT "sensitive_data_findings_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "sensitive_data_findings" DROP CONSTRAINT IF EXISTS "sensitive_data_findings_scan_id_sensitive_data_scans_id_fk";
 ALTER TABLE "sensitive_data_findings" ADD CONSTRAINT "sensitive_data_findings_scan_id_sensitive_data_scans_id_fk" FOREIGN KEY ("scan_id") REFERENCES "public"."sensitive_data_scans"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "sensitive_data_policies" DROP CONSTRAINT IF EXISTS "sensitive_data_policies_org_id_organizations_id_fk";
 ALTER TABLE "sensitive_data_policies" ADD CONSTRAINT "sensitive_data_policies_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "sensitive_data_policies" DROP CONSTRAINT IF EXISTS "sensitive_data_policies_created_by_users_id_fk";
 ALTER TABLE "sensitive_data_policies" ADD CONSTRAINT "sensitive_data_policies_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "sensitive_data_scans" DROP CONSTRAINT IF EXISTS "sensitive_data_scans_org_id_organizations_id_fk";
 ALTER TABLE "sensitive_data_scans" ADD CONSTRAINT "sensitive_data_scans_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "sensitive_data_scans" DROP CONSTRAINT IF EXISTS "sensitive_data_scans_device_id_devices_id_fk";
 ALTER TABLE "sensitive_data_scans" ADD CONSTRAINT "sensitive_data_scans_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "sensitive_data_scans" DROP CONSTRAINT IF EXISTS "sensitive_data_scans_policy_id_sensitive_data_policies_id_fk";
 ALTER TABLE "sensitive_data_scans" ADD CONSTRAINT "sensitive_data_scans_policy_id_sensitive_data_policies_id_fk" FOREIGN KEY ("policy_id") REFERENCES "public"."sensitive_data_policies"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "sensitive_data_scans" DROP CONSTRAINT IF EXISTS "sensitive_data_scans_requested_by_users_id_fk";
 ALTER TABLE "sensitive_data_scans" ADD CONSTRAINT "sensitive_data_scans_requested_by_users_id_fk" FOREIGN KEY ("requested_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "peripheral_events" DROP CONSTRAINT IF EXISTS "peripheral_events_org_id_organizations_id_fk";
 ALTER TABLE "peripheral_events" ADD CONSTRAINT "peripheral_events_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "peripheral_events" DROP CONSTRAINT IF EXISTS "peripheral_events_device_id_devices_id_fk";
 ALTER TABLE "peripheral_events" ADD CONSTRAINT "peripheral_events_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "peripheral_events" DROP CONSTRAINT IF EXISTS "peripheral_events_policy_id_peripheral_policies_id_fk";
 ALTER TABLE "peripheral_events" ADD CONSTRAINT "peripheral_events_policy_id_peripheral_policies_id_fk" FOREIGN KEY ("policy_id") REFERENCES "public"."peripheral_policies"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "peripheral_policies" DROP CONSTRAINT IF EXISTS "peripheral_policies_org_id_organizations_id_fk";
 ALTER TABLE "peripheral_policies" ADD CONSTRAINT "peripheral_policies_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "peripheral_policies" DROP CONSTRAINT IF EXISTS "peripheral_policies_created_by_users_id_fk";
 ALTER TABLE "peripheral_policies" ADD CONSTRAINT "peripheral_policies_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "browser_extensions" DROP CONSTRAINT IF EXISTS "browser_extensions_org_id_organizations_id_fk";
 ALTER TABLE "browser_extensions" ADD CONSTRAINT "browser_extensions_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "browser_extensions" DROP CONSTRAINT IF EXISTS "browser_extensions_device_id_devices_id_fk";
 ALTER TABLE "browser_extensions" ADD CONSTRAINT "browser_extensions_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "browser_policies" DROP CONSTRAINT IF EXISTS "browser_policies_org_id_organizations_id_fk";
 ALTER TABLE "browser_policies" ADD CONSTRAINT "browser_policies_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "browser_policies" DROP CONSTRAINT IF EXISTS "browser_policies_created_by_users_id_fk";
 ALTER TABLE "browser_policies" ADD CONSTRAINT "browser_policies_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "browser_policy_violations" DROP CONSTRAINT IF EXISTS "browser_policy_violations_org_id_organizations_id_fk";
 ALTER TABLE "browser_policy_violations" ADD CONSTRAINT "browser_policy_violations_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "browser_policy_violations" DROP CONSTRAINT IF EXISTS "browser_policy_violations_device_id_devices_id_fk";
 ALTER TABLE "browser_policy_violations" ADD CONSTRAINT "browser_policy_violations_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "browser_policy_violations" DROP CONSTRAINT IF EXISTS "browser_policy_violations_policy_id_browser_policies_id_fk";
 ALTER TABLE "browser_policy_violations" ADD CONSTRAINT "browser_policy_violations_policy_id_browser_policies_id_fk" FOREIGN KEY ("policy_id") REFERENCES "public"."browser_policies"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "service_process_check_results" DROP CONSTRAINT IF EXISTS "service_process_check_results_org_id_organizations_id_fk";
 ALTER TABLE "service_process_check_results" ADD CONSTRAINT "service_process_check_results_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "service_process_check_results" DROP CONSTRAINT IF EXISTS "service_process_check_results_device_id_devices_id_fk";
 ALTER TABLE "service_process_check_results" ADD CONSTRAINT "service_process_check_results_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "device_warranty" DROP CONSTRAINT IF EXISTS "device_warranty_device_id_devices_id_fk";
 ALTER TABLE "device_warranty" ADD CONSTRAINT "device_warranty_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "device_warranty" DROP CONSTRAINT IF EXISTS "device_warranty_org_id_organizations_id_fk";
 ALTER TABLE "device_warranty" ADD CONSTRAINT "device_warranty_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "device_boot_metrics_device_boot_idx" ON "device_boot_metrics" USING btree ("device_id","boot_timestamp");--> statement-breakpoint
-CREATE INDEX "device_boot_metrics_device_created_idx" ON "device_boot_metrics" USING btree ("device_id","created_at");--> statement-breakpoint
-CREATE INDEX "device_boot_metrics_org_device_idx" ON "device_boot_metrics" USING btree ("org_id","device_id");--> statement-breakpoint
-CREATE INDEX "device_ip_history_device_id_idx" ON "device_ip_history" USING btree ("device_id");--> statement-breakpoint
-CREATE INDEX "device_ip_history_org_id_idx" ON "device_ip_history" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "device_ip_history_ip_address_idx" ON "device_ip_history" USING btree ("ip_address");--> statement-breakpoint
-CREATE INDEX "device_ip_history_first_seen_idx" ON "device_ip_history" USING btree ("first_seen");--> statement-breakpoint
-CREATE INDEX "device_ip_history_last_seen_idx" ON "device_ip_history" USING btree ("last_seen");--> statement-breakpoint
-CREATE INDEX "device_ip_history_is_active_idx" ON "device_ip_history" USING btree ("is_active");--> statement-breakpoint
-CREATE INDEX "device_ip_history_ip_time_idx" ON "device_ip_history" USING btree ("ip_address","first_seen","last_seen");--> statement-breakpoint
-CREATE INDEX "notification_routing_rules_org_id_idx" ON "notification_routing_rules" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "notification_routing_rules_priority_idx" ON "notification_routing_rules" USING btree ("org_id","priority");--> statement-breakpoint
-CREATE UNIQUE INDEX "network_baselines_org_site_subnet_unique" ON "network_baselines" USING btree ("org_id","site_id","subnet");--> statement-breakpoint
-CREATE INDEX "network_baselines_org_id_idx" ON "network_baselines" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "network_baselines_site_id_idx" ON "network_baselines" USING btree ("site_id");--> statement-breakpoint
-CREATE INDEX "network_change_events_org_id_idx" ON "network_change_events" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "network_change_events_site_id_idx" ON "network_change_events" USING btree ("site_id");--> statement-breakpoint
-CREATE INDEX "network_change_events_baseline_id_idx" ON "network_change_events" USING btree ("baseline_id");--> statement-breakpoint
-CREATE INDEX "network_change_events_profile_id_idx" ON "network_change_events" USING btree ("profile_id");--> statement-breakpoint
-CREATE INDEX "network_change_events_detected_at_idx" ON "network_change_events" USING btree ("detected_at");--> statement-breakpoint
-CREATE INDEX "network_change_events_acknowledged_idx" ON "network_change_events" USING btree ("acknowledged");--> statement-breakpoint
-CREATE UNIQUE INDEX "network_known_guests_partner_mac_unique" ON "network_known_guests" USING btree ("partner_id","mac_address");--> statement-breakpoint
-CREATE INDEX "network_known_guests_partner_id_idx" ON "network_known_guests" USING btree ("partner_id");--> statement-breakpoint
-CREATE INDEX "software_compliance_device_id_idx" ON "software_compliance_status" USING btree ("device_id");--> statement-breakpoint
-CREATE INDEX "software_compliance_policy_id_idx" ON "software_compliance_status" USING btree ("policy_id");--> statement-breakpoint
-CREATE INDEX "software_compliance_status_idx" ON "software_compliance_status" USING btree ("status");--> statement-breakpoint
-CREATE UNIQUE INDEX "software_compliance_device_policy_unique" ON "software_compliance_status" USING btree ("device_id","policy_id");--> statement-breakpoint
-CREATE INDEX "software_policies_org_id_idx" ON "software_policies" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "software_policies_target_type_idx" ON "software_policies" USING btree ("target_type");--> statement-breakpoint
-CREATE INDEX "software_policies_active_priority_idx" ON "software_policies" USING btree ("is_active","priority");--> statement-breakpoint
-CREATE INDEX "software_policy_audit_org_id_idx" ON "software_policy_audit" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "software_policy_audit_policy_id_idx" ON "software_policy_audit" USING btree ("policy_id");--> statement-breakpoint
-CREATE INDEX "software_policy_audit_device_id_idx" ON "software_policy_audit" USING btree ("device_id");--> statement-breakpoint
-CREATE INDEX "software_policy_audit_timestamp_idx" ON "software_policy_audit" USING btree ("timestamp");--> statement-breakpoint
-CREATE INDEX "cpar_feature_link_id_idx" ON "config_policy_alert_rules" USING btree ("feature_link_id");--> statement-breakpoint
-CREATE INDEX "config_assignments_policy_id_idx" ON "config_policy_assignments" USING btree ("config_policy_id");--> statement-breakpoint
-CREATE INDEX "config_assignments_level_target_idx" ON "config_policy_assignments" USING btree ("level","target_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "config_assignments_unique" ON "config_policy_assignments" USING btree ("config_policy_id","level","target_id");--> statement-breakpoint
-CREATE INDEX "cpaut_feature_link_id_idx" ON "config_policy_automations" USING btree ("feature_link_id");--> statement-breakpoint
-CREATE INDEX "cpaut_trigger_type_enabled_idx" ON "config_policy_automations" USING btree ("trigger_type");--> statement-breakpoint
-CREATE INDEX "cpcr_feature_link_id_idx" ON "config_policy_compliance_rules" USING btree ("feature_link_id");--> statement-breakpoint
-CREATE INDEX "config_feature_links_policy_id_idx" ON "config_policy_feature_links" USING btree ("config_policy_id");--> statement-breakpoint
-CREATE INDEX "config_feature_links_feature_type_idx" ON "config_policy_feature_links" USING btree ("feature_type");--> statement-breakpoint
-CREATE UNIQUE INDEX "config_feature_links_unique" ON "config_policy_feature_links" USING btree ("config_policy_id","feature_type");--> statement-breakpoint
-CREATE INDEX "cpmon_watches_settings_id_idx" ON "config_policy_monitoring_watches" USING btree ("settings_id");--> statement-breakpoint
-CREATE INDEX "config_policies_org_id_idx" ON "configuration_policies" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "config_policies_status_idx" ON "configuration_policies" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "log_correlation_rules_org_id_idx" ON "log_correlation_rules" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "log_correlation_rules_active_idx" ON "log_correlation_rules" USING btree ("is_active");--> statement-breakpoint
-CREATE INDEX "log_correlations_org_id_idx" ON "log_correlations" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "log_correlations_rule_id_idx" ON "log_correlations" USING btree ("rule_id");--> statement-breakpoint
-CREATE INDEX "log_correlations_status_idx" ON "log_correlations" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "log_search_queries_org_id_idx" ON "log_search_queries" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "log_search_queries_created_by_idx" ON "log_search_queries" USING btree ("created_by");--> statement-breakpoint
-CREATE INDEX "audit_baseline_apply_approvals_org_status_idx" ON "audit_baseline_apply_approvals" USING btree ("org_id","status");--> statement-breakpoint
-CREATE INDEX "audit_baseline_apply_approvals_baseline_idx" ON "audit_baseline_apply_approvals" USING btree ("baseline_id");--> statement-breakpoint
-CREATE INDEX "audit_baseline_apply_approvals_expires_at_idx" ON "audit_baseline_apply_approvals" USING btree ("expires_at");--> statement-breakpoint
-CREATE INDEX "audit_results_org_device_idx" ON "audit_baseline_results" USING btree ("org_id","device_id");--> statement-breakpoint
-CREATE INDEX "audit_results_checked_at_idx" ON "audit_baseline_results" USING btree ("checked_at");--> statement-breakpoint
-CREATE INDEX "audit_results_baseline_checked_idx" ON "audit_baseline_results" USING btree ("baseline_id","checked_at");--> statement-breakpoint
-CREATE INDEX "audit_baselines_org_os_idx" ON "audit_baselines" USING btree ("org_id","os_type");--> statement-breakpoint
-CREATE INDEX "audit_baselines_org_active_idx" ON "audit_baselines" USING btree ("org_id","is_active");--> statement-breakpoint
-CREATE INDEX "audit_policy_states_org_device_collected_idx" ON "audit_policy_states" USING btree ("org_id","device_id","collected_at");--> statement-breakpoint
-CREATE INDEX "audit_policy_states_device_collected_idx" ON "audit_policy_states" USING btree ("device_id","collected_at");--> statement-breakpoint
-CREATE INDEX "audit_policy_states_org_collected_idx" ON "audit_policy_states" USING btree ("org_id","collected_at");--> statement-breakpoint
-CREATE INDEX "reliability_org_score_idx" ON "device_reliability" USING btree ("org_id","reliability_score");--> statement-breakpoint
-CREATE INDEX "reliability_score_idx" ON "device_reliability" USING btree ("reliability_score");--> statement-breakpoint
-CREATE INDEX "reliability_trend_idx" ON "device_reliability" USING btree ("trend_direction");--> statement-breakpoint
-CREATE INDEX "reliability_history_device_collected_idx" ON "device_reliability_history" USING btree ("device_id","collected_at");--> statement-breakpoint
-CREATE INDEX "reliability_history_org_collected_idx" ON "device_reliability_history" USING btree ("org_id","collected_at");--> statement-breakpoint
-CREATE INDEX "user_risk_events_org_user_time_idx" ON "user_risk_events" USING btree ("org_id","user_id","occurred_at");--> statement-breakpoint
-CREATE INDEX "user_risk_events_org_event_type_time_idx" ON "user_risk_events" USING btree ("org_id","event_type","occurred_at");--> statement-breakpoint
-CREATE UNIQUE INDEX "user_risk_policy_org_idx" ON "user_risk_policies" USING btree ("org_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "user_risk_org_user_calc_idx" ON "user_risk_scores" USING btree ("org_id","user_id","calculated_at");--> statement-breakpoint
-CREATE INDEX "user_risk_score_idx" ON "user_risk_scores" USING btree ("score");--> statement-breakpoint
-CREATE INDEX "user_risk_org_score_idx" ON "user_risk_scores" USING btree ("org_id","score");--> statement-breakpoint
-CREATE INDEX "user_risk_org_user_idx" ON "user_risk_scores" USING btree ("org_id","user_id");--> statement-breakpoint
-CREATE INDEX "ai_action_plans_session_id_idx" ON "ai_action_plans" USING btree ("session_id");--> statement-breakpoint
-CREATE INDEX "ai_action_plans_status_idx" ON "ai_action_plans" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "ai_screenshots_device_id_idx" ON "ai_screenshots" USING btree ("device_id");--> statement-breakpoint
-CREATE INDEX "ai_screenshots_org_id_idx" ON "ai_screenshots" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "ai_screenshots_expires_at_idx" ON "ai_screenshots" USING btree ("expires_at");--> statement-breakpoint
-CREATE INDEX "agent_logs_device_idx" ON "agent_logs" USING btree ("device_id");--> statement-breakpoint
-CREATE INDEX "agent_logs_org_ts_idx" ON "agent_logs" USING btree ("org_id","timestamp");--> statement-breakpoint
-CREATE INDEX "agent_logs_level_component_idx" ON "agent_logs" USING btree ("level","component");--> statement-breakpoint
-CREATE INDEX "agent_logs_timestamp_idx" ON "agent_logs" USING btree ("timestamp");--> statement-breakpoint
-CREATE INDEX "brain_device_context_device_id_idx" ON "brain_device_context" USING btree ("device_id");--> statement-breakpoint
-CREATE INDEX "brain_device_context_org_id_idx" ON "brain_device_context" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "brain_device_context_device_type_idx" ON "brain_device_context" USING btree ("device_id","context_type");--> statement-breakpoint
-CREATE INDEX "brain_device_context_device_active_idx" ON "brain_device_context" USING btree ("device_id","resolved_at");--> statement-breakpoint
-CREATE INDEX "playbook_definitions_org_id_idx" ON "playbook_definitions" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "playbook_definitions_active_idx" ON "playbook_definitions" USING btree ("is_active");--> statement-breakpoint
-CREATE INDEX "playbook_definitions_category_idx" ON "playbook_definitions" USING btree ("category");--> statement-breakpoint
-CREATE INDEX "playbook_executions_org_id_idx" ON "playbook_executions" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "playbook_executions_device_id_idx" ON "playbook_executions" USING btree ("device_id");--> statement-breakpoint
-CREATE INDEX "playbook_executions_playbook_id_idx" ON "playbook_executions" USING btree ("playbook_id");--> statement-breakpoint
-CREATE INDEX "playbook_executions_status_idx" ON "playbook_executions" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "playbook_executions_created_at_idx" ON "playbook_executions" USING btree ("created_at");--> statement-breakpoint
-CREATE INDEX "device_change_log_device_id_idx" ON "device_change_log" USING btree ("device_id");--> statement-breakpoint
-CREATE INDEX "device_change_log_org_id_idx" ON "device_change_log" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "device_change_log_timestamp_idx" ON "device_change_log" USING btree ("timestamp");--> statement-breakpoint
-CREATE INDEX "device_change_log_type_idx" ON "device_change_log" USING btree ("change_type");--> statement-breakpoint
-CREATE INDEX "device_change_log_action_idx" ON "device_change_log" USING btree ("change_action");--> statement-breakpoint
-CREATE INDEX "device_change_log_device_time_idx" ON "device_change_log" USING btree ("device_id","timestamp");--> statement-breakpoint
-CREATE INDEX "device_change_log_org_time_idx" ON "device_change_log" USING btree ("org_id","timestamp");--> statement-breakpoint
-CREATE INDEX "device_change_log_created_at_idx" ON "device_change_log" USING btree ("created_at");--> statement-breakpoint
-CREATE UNIQUE INDEX "device_change_log_device_fingerprint_uniq" ON "device_change_log" USING btree ("device_id","fingerprint");--> statement-breakpoint
-CREATE INDEX "dns_event_agg_org_date_idx" ON "dns_event_aggregations" USING btree ("org_id","date");--> statement-breakpoint
-CREATE INDEX "dns_event_agg_org_date_integration_idx" ON "dns_event_aggregations" USING btree ("org_id","date","integration_id");--> statement-breakpoint
-CREATE INDEX "dns_event_agg_integration_id_idx" ON "dns_event_aggregations" USING btree ("integration_id");--> statement-breakpoint
-CREATE INDEX "dns_event_agg_device_id_idx" ON "dns_event_aggregations" USING btree ("device_id");--> statement-breakpoint
-CREATE INDEX "dns_filter_integrations_org_id_idx" ON "dns_filter_integrations" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "dns_filter_integrations_provider_idx" ON "dns_filter_integrations" USING btree ("provider");--> statement-breakpoint
-CREATE INDEX "dns_policies_org_id_idx" ON "dns_policies" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "dns_policies_integration_id_idx" ON "dns_policies" USING btree ("integration_id");--> statement-breakpoint
-CREATE INDEX "dns_security_events_org_ts_idx" ON "dns_security_events" USING btree ("org_id","timestamp");--> statement-breakpoint
-CREATE INDEX "dns_security_events_integration_id_idx" ON "dns_security_events" USING btree ("integration_id");--> statement-breakpoint
-CREATE INDEX "dns_security_events_device_id_idx" ON "dns_security_events" USING btree ("device_id");--> statement-breakpoint
-CREATE INDEX "dns_security_events_domain_idx" ON "dns_security_events" USING btree ("domain");--> statement-breakpoint
-CREATE INDEX "dns_security_events_action_cat_idx" ON "dns_security_events" USING btree ("action","category");--> statement-breakpoint
-CREATE INDEX "dns_security_events_provider_id_idx" ON "dns_security_events" USING btree ("integration_id","provider_event_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "dns_security_events_provider_evt_uniq" ON "dns_security_events" USING btree ("integration_id","provider_event_id");--> statement-breakpoint
-CREATE INDEX "cis_results_org_device_checked_idx" ON "cis_baseline_results" USING btree ("org_id","device_id","checked_at");--> statement-breakpoint
-CREATE INDEX "cis_results_baseline_checked_idx" ON "cis_baseline_results" USING btree ("baseline_id","checked_at");--> statement-breakpoint
-CREATE INDEX "cis_results_score_idx" ON "cis_baseline_results" USING btree ("score");--> statement-breakpoint
-CREATE INDEX "cis_baselines_org_os_idx" ON "cis_baselines" USING btree ("org_id","os_type");--> statement-breakpoint
-CREATE INDEX "cis_baselines_org_active_idx" ON "cis_baselines" USING btree ("org_id","is_active");--> statement-breakpoint
-CREATE UNIQUE INDEX "cis_check_catalog_unique_idx" ON "cis_check_catalog" USING btree ("os_type","benchmark_version","level","check_id");--> statement-breakpoint
-CREATE INDEX "cis_check_catalog_os_benchmark_idx" ON "cis_check_catalog" USING btree ("os_type","benchmark_version");--> statement-breakpoint
-CREATE INDEX "cis_remediation_org_device_status_idx" ON "cis_remediation_actions" USING btree ("org_id","device_id","status");--> statement-breakpoint
-CREATE INDEX "cis_remediation_org_approval_status_idx" ON "cis_remediation_actions" USING btree ("org_id","approval_status","status");--> statement-breakpoint
-CREATE INDEX "cis_remediation_result_idx" ON "cis_remediation_actions" USING btree ("baseline_result_id");--> statement-breakpoint
-CREATE INDEX "cis_remediation_check_idx" ON "cis_remediation_actions" USING btree ("check_id");--> statement-breakpoint
-CREATE INDEX "s1_actions_org_status_idx" ON "s1_actions" USING btree ("org_id","status");--> statement-breakpoint
-CREATE INDEX "s1_actions_provider_action_idx" ON "s1_actions" USING btree ("provider_action_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "s1_agents_external_idx" ON "s1_agents" USING btree ("integration_id","s1_agent_id");--> statement-breakpoint
-CREATE INDEX "s1_agents_org_device_idx" ON "s1_agents" USING btree ("org_id","device_id");--> statement-breakpoint
-CREATE INDEX "s1_agents_integration_idx" ON "s1_agents" USING btree ("integration_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "s1_integrations_org_idx" ON "s1_integrations" USING btree ("org_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "s1_site_mappings_integration_site_idx" ON "s1_site_mappings" USING btree ("integration_id","site_name");--> statement-breakpoint
-CREATE INDEX "s1_site_mappings_org_idx" ON "s1_site_mappings" USING btree ("org_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "s1_threats_external_idx" ON "s1_threats" USING btree ("integration_id","s1_threat_id");--> statement-breakpoint
-CREATE INDEX "s1_threats_org_status_idx" ON "s1_threats" USING btree ("org_id","status");--> statement-breakpoint
-CREATE INDEX "s1_threats_org_severity_status_idx" ON "s1_threats" USING btree ("org_id","severity","status");--> statement-breakpoint
-CREATE INDEX "s1_threats_integration_idx" ON "s1_threats" USING btree ("integration_id");--> statement-breakpoint
-CREATE INDEX "s1_threats_integration_detected_idx" ON "s1_threats" USING btree ("integration_id","detected_at");--> statement-breakpoint
-CREATE INDEX "s1_threats_device_idx" ON "s1_threats" USING btree ("device_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "huntress_agents_agent_id_idx" ON "huntress_agents" USING btree ("integration_id","huntress_agent_id");--> statement-breakpoint
-CREATE INDEX "huntress_agents_org_device_idx" ON "huntress_agents" USING btree ("org_id","device_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "huntress_incidents_external_idx" ON "huntress_incidents" USING btree ("integration_id","huntress_incident_id");--> statement-breakpoint
-CREATE INDEX "huntress_incidents_org_status_idx" ON "huntress_incidents" USING btree ("org_id","status");--> statement-breakpoint
-CREATE UNIQUE INDEX "huntress_integrations_org_idx" ON "huntress_integrations" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "sensitive_findings_org_risk_idx" ON "sensitive_data_findings" USING btree ("org_id","risk");--> statement-breakpoint
-CREATE INDEX "sensitive_findings_scan_idx" ON "sensitive_data_findings" USING btree ("scan_id");--> statement-breakpoint
-CREATE INDEX "sensitive_findings_org_last_seen_idx" ON "sensitive_data_findings" USING btree ("org_id","last_seen_at");--> statement-breakpoint
-CREATE INDEX "sensitive_policy_org_idx" ON "sensitive_data_policies" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "sensitive_scan_org_device_idx" ON "sensitive_data_scans" USING btree ("org_id","device_id");--> statement-breakpoint
-CREATE INDEX "sensitive_scan_status_idx" ON "sensitive_data_scans" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "sensitive_scan_org_idempotency_idx" ON "sensitive_data_scans" USING btree ("org_id","idempotency_key");--> statement-breakpoint
-CREATE INDEX "peripheral_events_org_device_time_idx" ON "peripheral_events" USING btree ("org_id","device_id","occurred_at");--> statement-breakpoint
-CREATE INDEX "peripheral_events_type_idx" ON "peripheral_events" USING btree ("event_type");--> statement-breakpoint
-CREATE INDEX "peripheral_events_org_policy_time_idx" ON "peripheral_events" USING btree ("org_id","policy_id","occurred_at");--> statement-breakpoint
-CREATE UNIQUE INDEX "peripheral_events_source_event_idx" ON "peripheral_events" USING btree ("org_id","device_id","source_event_id") WHERE source_event_id IS NOT NULL;--> statement-breakpoint
-CREATE INDEX "peripheral_events_type_time_idx" ON "peripheral_events" USING btree ("event_type","occurred_at");--> statement-breakpoint
-CREATE INDEX "peripheral_policy_org_active_idx" ON "peripheral_policies" USING btree ("org_id","is_active");--> statement-breakpoint
-CREATE INDEX "peripheral_policy_org_class_idx" ON "peripheral_policies" USING btree ("org_id","device_class");--> statement-breakpoint
-CREATE INDEX "browser_ext_org_device_idx" ON "browser_extensions" USING btree ("org_id","device_id");--> statement-breakpoint
-CREATE INDEX "browser_ext_extension_id_idx" ON "browser_extensions" USING btree ("extension_id");--> statement-breakpoint
-CREATE INDEX "browser_ext_risk_level_idx" ON "browser_extensions" USING btree ("org_id","risk_level");--> statement-breakpoint
-CREATE UNIQUE INDEX "browser_ext_org_device_browser_ext_uniq" ON "browser_extensions" USING btree ("org_id","device_id","browser","extension_id");--> statement-breakpoint
-CREATE INDEX "browser_policy_org_idx" ON "browser_policies" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "browser_policy_violations_org_device_idx" ON "browser_policy_violations" USING btree ("org_id","device_id");--> statement-breakpoint
-CREATE INDEX "browser_policy_violations_policy_idx" ON "browser_policy_violations" USING btree ("policy_id");--> statement-breakpoint
-CREATE INDEX "browser_policy_violations_unresolved_idx" ON "browser_policy_violations" USING btree ("org_id","resolved_at");--> statement-breakpoint
-CREATE INDEX "spc_results_org_id_idx" ON "service_process_check_results" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "spc_results_device_id_idx" ON "service_process_check_results" USING btree ("device_id");--> statement-breakpoint
-CREATE INDEX "spc_results_device_name_ts_idx" ON "service_process_check_results" USING btree ("device_id","name","timestamp");--> statement-breakpoint
-CREATE INDEX "device_warranty_org_id_idx" ON "device_warranty" USING btree ("org_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "device_warranty_device_id_idx" ON "device_warranty" USING btree ("device_id");--> statement-breakpoint
-CREATE INDEX "device_warranty_end_date_idx" ON "device_warranty" USING btree ("warranty_end_date");--> statement-breakpoint
-CREATE INDEX "device_warranty_next_sync_at_idx" ON "device_warranty" USING btree ("next_sync_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_boot_metrics_device_boot_idx" ON "device_boot_metrics" USING btree ("device_id","boot_timestamp");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_boot_metrics_device_created_idx" ON "device_boot_metrics" USING btree ("device_id","created_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_boot_metrics_org_device_idx" ON "device_boot_metrics" USING btree ("org_id","device_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_ip_history_device_id_idx" ON "device_ip_history" USING btree ("device_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_ip_history_org_id_idx" ON "device_ip_history" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_ip_history_ip_address_idx" ON "device_ip_history" USING btree ("ip_address");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_ip_history_first_seen_idx" ON "device_ip_history" USING btree ("first_seen");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_ip_history_last_seen_idx" ON "device_ip_history" USING btree ("last_seen");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_ip_history_is_active_idx" ON "device_ip_history" USING btree ("is_active");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_ip_history_ip_time_idx" ON "device_ip_history" USING btree ("ip_address","first_seen","last_seen");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "notification_routing_rules_org_id_idx" ON "notification_routing_rules" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "notification_routing_rules_priority_idx" ON "notification_routing_rules" USING btree ("org_id","priority");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "network_baselines_org_site_subnet_unique" ON "network_baselines" USING btree ("org_id","site_id","subnet");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "network_baselines_org_id_idx" ON "network_baselines" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "network_baselines_site_id_idx" ON "network_baselines" USING btree ("site_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "network_change_events_org_id_idx" ON "network_change_events" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "network_change_events_site_id_idx" ON "network_change_events" USING btree ("site_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "network_change_events_baseline_id_idx" ON "network_change_events" USING btree ("baseline_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "network_change_events_profile_id_idx" ON "network_change_events" USING btree ("profile_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "network_change_events_detected_at_idx" ON "network_change_events" USING btree ("detected_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "network_change_events_acknowledged_idx" ON "network_change_events" USING btree ("acknowledged");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "network_known_guests_partner_mac_unique" ON "network_known_guests" USING btree ("partner_id","mac_address");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "network_known_guests_partner_id_idx" ON "network_known_guests" USING btree ("partner_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "software_compliance_device_id_idx" ON "software_compliance_status" USING btree ("device_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "software_compliance_policy_id_idx" ON "software_compliance_status" USING btree ("policy_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "software_compliance_status_idx" ON "software_compliance_status" USING btree ("status");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "software_compliance_device_policy_unique" ON "software_compliance_status" USING btree ("device_id","policy_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "software_policies_org_id_idx" ON "software_policies" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "software_policies_target_type_idx" ON "software_policies" USING btree ("target_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "software_policies_active_priority_idx" ON "software_policies" USING btree ("is_active","priority");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "software_policy_audit_org_id_idx" ON "software_policy_audit" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "software_policy_audit_policy_id_idx" ON "software_policy_audit" USING btree ("policy_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "software_policy_audit_device_id_idx" ON "software_policy_audit" USING btree ("device_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "software_policy_audit_timestamp_idx" ON "software_policy_audit" USING btree ("timestamp");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "cpar_feature_link_id_idx" ON "config_policy_alert_rules" USING btree ("feature_link_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "config_assignments_policy_id_idx" ON "config_policy_assignments" USING btree ("config_policy_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "config_assignments_level_target_idx" ON "config_policy_assignments" USING btree ("level","target_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "config_assignments_unique" ON "config_policy_assignments" USING btree ("config_policy_id","level","target_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "cpaut_feature_link_id_idx" ON "config_policy_automations" USING btree ("feature_link_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "cpaut_trigger_type_enabled_idx" ON "config_policy_automations" USING btree ("trigger_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "cpcr_feature_link_id_idx" ON "config_policy_compliance_rules" USING btree ("feature_link_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "config_feature_links_policy_id_idx" ON "config_policy_feature_links" USING btree ("config_policy_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "config_feature_links_feature_type_idx" ON "config_policy_feature_links" USING btree ("feature_type");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "config_feature_links_unique" ON "config_policy_feature_links" USING btree ("config_policy_id","feature_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "cpmon_watches_settings_id_idx" ON "config_policy_monitoring_watches" USING btree ("settings_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "config_policies_org_id_idx" ON "configuration_policies" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "config_policies_status_idx" ON "configuration_policies" USING btree ("status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "log_correlation_rules_org_id_idx" ON "log_correlation_rules" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "log_correlation_rules_active_idx" ON "log_correlation_rules" USING btree ("is_active");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "log_correlations_org_id_idx" ON "log_correlations" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "log_correlations_rule_id_idx" ON "log_correlations" USING btree ("rule_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "log_correlations_status_idx" ON "log_correlations" USING btree ("status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "log_search_queries_org_id_idx" ON "log_search_queries" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "log_search_queries_created_by_idx" ON "log_search_queries" USING btree ("created_by");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "audit_baseline_apply_approvals_org_status_idx" ON "audit_baseline_apply_approvals" USING btree ("org_id","status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "audit_baseline_apply_approvals_baseline_idx" ON "audit_baseline_apply_approvals" USING btree ("baseline_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "audit_baseline_apply_approvals_expires_at_idx" ON "audit_baseline_apply_approvals" USING btree ("expires_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "audit_results_org_device_idx" ON "audit_baseline_results" USING btree ("org_id","device_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "audit_results_checked_at_idx" ON "audit_baseline_results" USING btree ("checked_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "audit_results_baseline_checked_idx" ON "audit_baseline_results" USING btree ("baseline_id","checked_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "audit_baselines_org_os_idx" ON "audit_baselines" USING btree ("org_id","os_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "audit_baselines_org_active_idx" ON "audit_baselines" USING btree ("org_id","is_active");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "audit_policy_states_org_device_collected_idx" ON "audit_policy_states" USING btree ("org_id","device_id","collected_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "audit_policy_states_device_collected_idx" ON "audit_policy_states" USING btree ("device_id","collected_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "audit_policy_states_org_collected_idx" ON "audit_policy_states" USING btree ("org_id","collected_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "reliability_org_score_idx" ON "device_reliability" USING btree ("org_id","reliability_score");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "reliability_score_idx" ON "device_reliability" USING btree ("reliability_score");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "reliability_trend_idx" ON "device_reliability" USING btree ("trend_direction");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "reliability_history_device_collected_idx" ON "device_reliability_history" USING btree ("device_id","collected_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "reliability_history_org_collected_idx" ON "device_reliability_history" USING btree ("org_id","collected_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "user_risk_events_org_user_time_idx" ON "user_risk_events" USING btree ("org_id","user_id","occurred_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "user_risk_events_org_event_type_time_idx" ON "user_risk_events" USING btree ("org_id","event_type","occurred_at");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "user_risk_policy_org_idx" ON "user_risk_policies" USING btree ("org_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "user_risk_org_user_calc_idx" ON "user_risk_scores" USING btree ("org_id","user_id","calculated_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "user_risk_score_idx" ON "user_risk_scores" USING btree ("score");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "user_risk_org_score_idx" ON "user_risk_scores" USING btree ("org_id","score");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "user_risk_org_user_idx" ON "user_risk_scores" USING btree ("org_id","user_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_action_plans_session_id_idx" ON "ai_action_plans" USING btree ("session_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_action_plans_status_idx" ON "ai_action_plans" USING btree ("status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_screenshots_device_id_idx" ON "ai_screenshots" USING btree ("device_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_screenshots_org_id_idx" ON "ai_screenshots" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_screenshots_expires_at_idx" ON "ai_screenshots" USING btree ("expires_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "agent_logs_device_idx" ON "agent_logs" USING btree ("device_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "agent_logs_org_ts_idx" ON "agent_logs" USING btree ("org_id","timestamp");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "agent_logs_level_component_idx" ON "agent_logs" USING btree ("level","component");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "agent_logs_timestamp_idx" ON "agent_logs" USING btree ("timestamp");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "brain_device_context_device_id_idx" ON "brain_device_context" USING btree ("device_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "brain_device_context_org_id_idx" ON "brain_device_context" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "brain_device_context_device_type_idx" ON "brain_device_context" USING btree ("device_id","context_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "brain_device_context_device_active_idx" ON "brain_device_context" USING btree ("device_id","resolved_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "playbook_definitions_org_id_idx" ON "playbook_definitions" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "playbook_definitions_active_idx" ON "playbook_definitions" USING btree ("is_active");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "playbook_definitions_category_idx" ON "playbook_definitions" USING btree ("category");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "playbook_executions_org_id_idx" ON "playbook_executions" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "playbook_executions_device_id_idx" ON "playbook_executions" USING btree ("device_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "playbook_executions_playbook_id_idx" ON "playbook_executions" USING btree ("playbook_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "playbook_executions_status_idx" ON "playbook_executions" USING btree ("status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "playbook_executions_created_at_idx" ON "playbook_executions" USING btree ("created_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_change_log_device_id_idx" ON "device_change_log" USING btree ("device_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_change_log_org_id_idx" ON "device_change_log" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_change_log_timestamp_idx" ON "device_change_log" USING btree ("timestamp");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_change_log_type_idx" ON "device_change_log" USING btree ("change_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_change_log_action_idx" ON "device_change_log" USING btree ("change_action");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_change_log_device_time_idx" ON "device_change_log" USING btree ("device_id","timestamp");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_change_log_org_time_idx" ON "device_change_log" USING btree ("org_id","timestamp");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_change_log_created_at_idx" ON "device_change_log" USING btree ("created_at");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "device_change_log_device_fingerprint_uniq" ON "device_change_log" USING btree ("device_id","fingerprint");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "dns_event_agg_org_date_idx" ON "dns_event_aggregations" USING btree ("org_id","date");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "dns_event_agg_org_date_integration_idx" ON "dns_event_aggregations" USING btree ("org_id","date","integration_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "dns_event_agg_integration_id_idx" ON "dns_event_aggregations" USING btree ("integration_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "dns_event_agg_device_id_idx" ON "dns_event_aggregations" USING btree ("device_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "dns_filter_integrations_org_id_idx" ON "dns_filter_integrations" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "dns_filter_integrations_provider_idx" ON "dns_filter_integrations" USING btree ("provider");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "dns_policies_org_id_idx" ON "dns_policies" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "dns_policies_integration_id_idx" ON "dns_policies" USING btree ("integration_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "dns_security_events_org_ts_idx" ON "dns_security_events" USING btree ("org_id","timestamp");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "dns_security_events_integration_id_idx" ON "dns_security_events" USING btree ("integration_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "dns_security_events_device_id_idx" ON "dns_security_events" USING btree ("device_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "dns_security_events_domain_idx" ON "dns_security_events" USING btree ("domain");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "dns_security_events_action_cat_idx" ON "dns_security_events" USING btree ("action","category");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "dns_security_events_provider_id_idx" ON "dns_security_events" USING btree ("integration_id","provider_event_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "dns_security_events_provider_evt_uniq" ON "dns_security_events" USING btree ("integration_id","provider_event_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "cis_results_org_device_checked_idx" ON "cis_baseline_results" USING btree ("org_id","device_id","checked_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "cis_results_baseline_checked_idx" ON "cis_baseline_results" USING btree ("baseline_id","checked_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "cis_results_score_idx" ON "cis_baseline_results" USING btree ("score");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "cis_baselines_org_os_idx" ON "cis_baselines" USING btree ("org_id","os_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "cis_baselines_org_active_idx" ON "cis_baselines" USING btree ("org_id","is_active");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "cis_check_catalog_unique_idx" ON "cis_check_catalog" USING btree ("os_type","benchmark_version","level","check_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "cis_check_catalog_os_benchmark_idx" ON "cis_check_catalog" USING btree ("os_type","benchmark_version");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "cis_remediation_org_device_status_idx" ON "cis_remediation_actions" USING btree ("org_id","device_id","status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "cis_remediation_org_approval_status_idx" ON "cis_remediation_actions" USING btree ("org_id","approval_status","status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "cis_remediation_result_idx" ON "cis_remediation_actions" USING btree ("baseline_result_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "cis_remediation_check_idx" ON "cis_remediation_actions" USING btree ("check_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "s1_actions_org_status_idx" ON "s1_actions" USING btree ("org_id","status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "s1_actions_provider_action_idx" ON "s1_actions" USING btree ("provider_action_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "s1_agents_external_idx" ON "s1_agents" USING btree ("integration_id","s1_agent_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "s1_agents_org_device_idx" ON "s1_agents" USING btree ("org_id","device_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "s1_agents_integration_idx" ON "s1_agents" USING btree ("integration_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "s1_integrations_org_idx" ON "s1_integrations" USING btree ("org_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "s1_site_mappings_integration_site_idx" ON "s1_site_mappings" USING btree ("integration_id","site_name");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "s1_site_mappings_org_idx" ON "s1_site_mappings" USING btree ("org_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "s1_threats_external_idx" ON "s1_threats" USING btree ("integration_id","s1_threat_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "s1_threats_org_status_idx" ON "s1_threats" USING btree ("org_id","status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "s1_threats_org_severity_status_idx" ON "s1_threats" USING btree ("org_id","severity","status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "s1_threats_integration_idx" ON "s1_threats" USING btree ("integration_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "s1_threats_integration_detected_idx" ON "s1_threats" USING btree ("integration_id","detected_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "s1_threats_device_idx" ON "s1_threats" USING btree ("device_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "huntress_agents_agent_id_idx" ON "huntress_agents" USING btree ("integration_id","huntress_agent_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "huntress_agents_org_device_idx" ON "huntress_agents" USING btree ("org_id","device_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "huntress_incidents_external_idx" ON "huntress_incidents" USING btree ("integration_id","huntress_incident_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "huntress_incidents_org_status_idx" ON "huntress_incidents" USING btree ("org_id","status");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "huntress_integrations_org_idx" ON "huntress_integrations" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "sensitive_findings_org_risk_idx" ON "sensitive_data_findings" USING btree ("org_id","risk");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "sensitive_findings_scan_idx" ON "sensitive_data_findings" USING btree ("scan_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "sensitive_findings_org_last_seen_idx" ON "sensitive_data_findings" USING btree ("org_id","last_seen_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "sensitive_policy_org_idx" ON "sensitive_data_policies" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "sensitive_scan_org_device_idx" ON "sensitive_data_scans" USING btree ("org_id","device_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "sensitive_scan_status_idx" ON "sensitive_data_scans" USING btree ("status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "sensitive_scan_org_idempotency_idx" ON "sensitive_data_scans" USING btree ("org_id","idempotency_key");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "peripheral_events_org_device_time_idx" ON "peripheral_events" USING btree ("org_id","device_id","occurred_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "peripheral_events_type_idx" ON "peripheral_events" USING btree ("event_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "peripheral_events_org_policy_time_idx" ON "peripheral_events" USING btree ("org_id","policy_id","occurred_at");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "peripheral_events_source_event_idx" ON "peripheral_events" USING btree ("org_id","device_id","source_event_id") WHERE source_event_id IS NOT NULL;--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "peripheral_events_type_time_idx" ON "peripheral_events" USING btree ("event_type","occurred_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "peripheral_policy_org_active_idx" ON "peripheral_policies" USING btree ("org_id","is_active");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "peripheral_policy_org_class_idx" ON "peripheral_policies" USING btree ("org_id","device_class");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "browser_ext_org_device_idx" ON "browser_extensions" USING btree ("org_id","device_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "browser_ext_extension_id_idx" ON "browser_extensions" USING btree ("extension_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "browser_ext_risk_level_idx" ON "browser_extensions" USING btree ("org_id","risk_level");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "browser_ext_org_device_browser_ext_uniq" ON "browser_extensions" USING btree ("org_id","device_id","browser","extension_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "browser_policy_org_idx" ON "browser_policies" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "browser_policy_violations_org_device_idx" ON "browser_policy_violations" USING btree ("org_id","device_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "browser_policy_violations_policy_idx" ON "browser_policy_violations" USING btree ("policy_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "browser_policy_violations_unresolved_idx" ON "browser_policy_violations" USING btree ("org_id","resolved_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "spc_results_org_id_idx" ON "service_process_check_results" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "spc_results_device_id_idx" ON "service_process_check_results" USING btree ("device_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "spc_results_device_name_ts_idx" ON "service_process_check_results" USING btree ("device_id","name","timestamp");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_warranty_org_id_idx" ON "device_warranty" USING btree ("org_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "device_warranty_device_id_idx" ON "device_warranty" USING btree ("device_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_warranty_end_date_idx" ON "device_warranty" USING btree ("warranty_end_date");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_warranty_next_sync_at_idx" ON "device_warranty" USING btree ("next_sync_at");--> statement-breakpoint
+ALTER TABLE "patch_approvals" DROP CONSTRAINT IF EXISTS "patch_approvals_ring_id_patch_policies_id_fk";
 ALTER TABLE "patch_approvals" ADD CONSTRAINT "patch_approvals_ring_id_patch_policies_id_fk" FOREIGN KEY ("ring_id") REFERENCES "public"."patch_policies"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "patch_compliance_snapshots" DROP CONSTRAINT IF EXISTS "patch_compliance_snapshots_ring_id_patch_policies_id_fk";
 ALTER TABLE "patch_compliance_snapshots" ADD CONSTRAINT "patch_compliance_snapshots_ring_id_patch_policies_id_fk" FOREIGN KEY ("ring_id") REFERENCES "public"."patch_policies"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "patch_jobs" DROP CONSTRAINT IF EXISTS "patch_jobs_ring_id_patch_policies_id_fk";
 ALTER TABLE "patch_jobs" ADD CONSTRAINT "patch_jobs_ring_id_patch_policies_id_fk" FOREIGN KEY ("ring_id") REFERENCES "public"."patch_policies"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "discovered_assets" DROP CONSTRAINT IF EXISTS "discovered_assets_approved_by_users_id_fk";
 ALTER TABLE "discovered_assets" ADD CONSTRAINT "discovered_assets_approved_by_users_id_fk" FOREIGN KEY ("approved_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "discovered_assets" DROP CONSTRAINT IF EXISTS "discovered_assets_dismissed_by_users_id_fk";
 ALTER TABLE "discovered_assets" ADD CONSTRAINT "discovered_assets_dismissed_by_users_id_fk" FOREIGN KEY ("dismissed_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "software_catalog" DROP CONSTRAINT IF EXISTS "software_catalog_org_id_organizations_id_fk";
 ALTER TABLE "software_catalog" ADD CONSTRAINT "software_catalog_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "backup_jobs" DROP CONSTRAINT IF EXISTS "backup_jobs_org_id_organizations_id_fk";
 ALTER TABLE "backup_jobs" ADD CONSTRAINT "backup_jobs_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "backup_jobs" DROP CONSTRAINT IF EXISTS "backup_jobs_policy_id_backup_policies_id_fk";
 ALTER TABLE "backup_jobs" ADD CONSTRAINT "backup_jobs_policy_id_backup_policies_id_fk" FOREIGN KEY ("policy_id") REFERENCES "public"."backup_policies"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "backup_policies" DROP CONSTRAINT IF EXISTS "backup_policies_org_id_organizations_id_fk";
 ALTER TABLE "backup_policies" ADD CONSTRAINT "backup_policies_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "backup_snapshots" DROP CONSTRAINT IF EXISTS "backup_snapshots_org_id_organizations_id_fk";
 ALTER TABLE "backup_snapshots" ADD CONSTRAINT "backup_snapshots_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "backup_snapshots" DROP CONSTRAINT IF EXISTS "backup_snapshots_config_id_backup_configs_id_fk";
 ALTER TABLE "backup_snapshots" ADD CONSTRAINT "backup_snapshots_config_id_backup_configs_id_fk" FOREIGN KEY ("config_id") REFERENCES "public"."backup_configs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "restore_jobs" DROP CONSTRAINT IF EXISTS "restore_jobs_org_id_organizations_id_fk";
 ALTER TABLE "restore_jobs" ADD CONSTRAINT "restore_jobs_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "ai_sessions" DROP CONSTRAINT IF EXISTS "ai_sessions_device_id_devices_id_fk";
 ALTER TABLE "ai_sessions" ADD CONSTRAINT "ai_sessions_device_id_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "public"."devices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "ai_sessions" DROP CONSTRAINT IF EXISTS "ai_sessions_flagged_by_users_id_fk";
 ALTER TABLE "ai_sessions" ADD CONSTRAINT "ai_sessions_flagged_by_users_id_fk" FOREIGN KEY ("flagged_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "device_connections_device_port_state_idx" ON "device_connections" USING btree ("device_id","local_port","state");--> statement-breakpoint
-CREATE INDEX "device_connections_device_updated_idx" ON "device_connections" USING btree ("device_id","updated_at");--> statement-breakpoint
-CREATE UNIQUE INDEX "patch_approvals_org_patch_ring_unique" ON "patch_approvals" USING btree ("org_id","patch_id",COALESCE("ring_id", '00000000-0000-0000-0000-000000000000'));--> statement-breakpoint
-CREATE INDEX "security_posture_snapshots_org_device_captured_idx" ON "security_posture_snapshots" USING btree ("org_id","device_id","captured_at");--> statement-breakpoint
-CREATE INDEX "security_threats_device_status_detected_idx" ON "security_threats" USING btree ("device_id","status","detected_at");--> statement-breakpoint
-CREATE INDEX "software_catalog_org_id_idx" ON "software_catalog" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "software_inventory_name_vendor_idx" ON "software_inventory" USING btree ("name","vendor");--> statement-breakpoint
-CREATE INDEX "backup_jobs_org_id_idx" ON "backup_jobs" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "backup_jobs_policy_id_idx" ON "backup_jobs" USING btree ("policy_id");--> statement-breakpoint
-CREATE INDEX "backup_jobs_created_at_idx" ON "backup_jobs" USING btree ("created_at");--> statement-breakpoint
-CREATE INDEX "backup_policies_org_id_idx" ON "backup_policies" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "backup_policies_enabled_idx" ON "backup_policies" USING btree ("enabled");--> statement-breakpoint
-CREATE INDEX "backup_snapshots_org_id_idx" ON "backup_snapshots" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "restore_jobs_org_id_idx" ON "restore_jobs" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "apc_config_policy_id_idx" ON "automation_policy_compliance" USING btree ("config_policy_id");--> statement-breakpoint
-CREATE INDEX "apc_device_id_idx" ON "automation_policy_compliance" USING btree ("device_id");--> statement-breakpoint
-CREATE INDEX "device_event_logs_search_vector_idx" ON "device_event_logs" USING gin (search_vector);--> statement-breakpoint
-CREATE INDEX "device_event_logs_message_trgm_idx" ON "device_event_logs" USING gin (message gin_trgm_ops);--> statement-breakpoint
-CREATE INDEX "device_event_logs_source_trgm_idx" ON "device_event_logs" USING gin (source gin_trgm_ops);--> statement-breakpoint
-ALTER TABLE "discovered_assets" DROP COLUMN "status";--> statement-breakpoint
-ALTER TABLE "discovered_assets" DROP COLUMN "ignored_by";--> statement-breakpoint
-ALTER TABLE "discovered_assets" DROP COLUMN "ignored_at";--> statement-breakpoint
-ALTER TABLE "backup_policies" DROP COLUMN "target_type";--> statement-breakpoint
-ALTER TABLE "backup_policies" DROP COLUMN "target_id";--> statement-breakpoint
-ALTER TABLE "backup_policies" DROP COLUMN "includes";--> statement-breakpoint
-ALTER TABLE "backup_policies" DROP COLUMN "excludes";--> statement-breakpoint
-ALTER TABLE "backup_policies" DROP COLUMN "priority";--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_connections_device_port_state_idx" ON "device_connections" USING btree ("device_id","local_port","state");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_connections_device_updated_idx" ON "device_connections" USING btree ("device_id","updated_at");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "patch_approvals_org_patch_ring_unique" ON "patch_approvals" USING btree ("org_id","patch_id",COALESCE("ring_id", '00000000-0000-0000-0000-000000000000'));--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "security_posture_snapshots_org_device_captured_idx" ON "security_posture_snapshots" USING btree ("org_id","device_id","captured_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "security_threats_device_status_detected_idx" ON "security_threats" USING btree ("device_id","status","detected_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "software_catalog_org_id_idx" ON "software_catalog" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "software_inventory_name_vendor_idx" ON "software_inventory" USING btree ("name","vendor");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "backup_jobs_org_id_idx" ON "backup_jobs" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "backup_jobs_policy_id_idx" ON "backup_jobs" USING btree ("policy_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "backup_jobs_created_at_idx" ON "backup_jobs" USING btree ("created_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "backup_policies_org_id_idx" ON "backup_policies" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "backup_policies_enabled_idx" ON "backup_policies" USING btree ("enabled");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "backup_snapshots_org_id_idx" ON "backup_snapshots" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "restore_jobs_org_id_idx" ON "restore_jobs" USING btree ("org_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "apc_config_policy_id_idx" ON "automation_policy_compliance" USING btree ("config_policy_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "apc_device_id_idx" ON "automation_policy_compliance" USING btree ("device_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_event_logs_search_vector_idx" ON "device_event_logs" USING gin (search_vector);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_event_logs_message_trgm_idx" ON "device_event_logs" USING gin (message gin_trgm_ops);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "device_event_logs_source_trgm_idx" ON "device_event_logs" USING gin (source gin_trgm_ops);--> statement-breakpoint
+ALTER TABLE "discovered_assets" DROP COLUMN IF EXISTS "status";--> statement-breakpoint
+ALTER TABLE "discovered_assets" DROP COLUMN IF EXISTS "ignored_by";--> statement-breakpoint
+ALTER TABLE "discovered_assets" DROP COLUMN IF EXISTS "ignored_at";--> statement-breakpoint
+ALTER TABLE "backup_policies" DROP COLUMN IF EXISTS "target_type";--> statement-breakpoint
+ALTER TABLE "backup_policies" DROP COLUMN IF EXISTS "target_id";--> statement-breakpoint
+ALTER TABLE "backup_policies" DROP COLUMN IF EXISTS "includes";--> statement-breakpoint
+ALTER TABLE "backup_policies" DROP COLUMN IF EXISTS "excludes";--> statement-breakpoint
+ALTER TABLE "backup_policies" DROP COLUMN IF EXISTS "priority";--> statement-breakpoint
+ALTER TABLE "agent_versions" DROP CONSTRAINT IF EXISTS "agent_versions_version_platform_arch_component_unique";
 ALTER TABLE "agent_versions" ADD CONSTRAINT "agent_versions_version_platform_arch_component_unique" UNIQUE("version","platform","architecture","component");--> statement-breakpoint
 DROP TYPE "public"."discovered_asset_status";--> statement-breakpoint
 DROP TYPE "public"."policy_status";--> statement-breakpoint
