@@ -111,6 +111,7 @@ export async function syncBinaries(): Promise<void> {
   const agentBinaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
   const viewerBinaryDir = resolve(process.env.VIEWER_BINARY_DIR || './viewer/bin');
   const versionFile = process.env.BINARY_VERSION_FILE;
+  const expectedVersion = process.env.BREEZE_VERSION;
 
   // Read version from VERSION file if available
   let version = 'unknown';
@@ -123,6 +124,22 @@ export async function syncBinaries(): Promise<void> {
     }
   } else {
     console.warn('[binarySync] BINARY_VERSION_FILE not set, using "unknown" as version');
+  }
+
+  // Detect stale binaries volume: if BREEZE_VERSION is set but doesn't match
+  // the VERSION file from the binaries-init container, the volume wasn't refreshed.
+  // Fall back to GitHub sync so agents get the correct binary via direct download.
+  if (expectedVersion && expectedVersion !== 'latest' && version !== 'unknown' && version !== expectedVersion) {
+    console.warn(
+      `[binarySync] Stale binaries volume detected: volume has v${version} but BREEZE_VERSION=${expectedVersion}. ` +
+      `Falling back to GitHub release sync. To fix, run: docker compose up -d --force-recreate binaries-init`
+    );
+    try {
+      await syncFromGitHub();
+      return;
+    } catch (err) {
+      console.warn(`[binarySync] GitHub sync failed, continuing with local binaries: ${err instanceof Error ? err.message : err}`);
+    }
   }
 
   // Scan and register agent binaries in DB
