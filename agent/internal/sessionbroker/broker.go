@@ -49,10 +49,11 @@ type Broker struct {
 	listener    net.Listener
 	rateLimiter *ipc.RateLimiter
 
-	mu         sync.RWMutex
-	sessions   map[string]*Session   // sessionID -> Session
-	byIdentity map[string][]*Session // identity key -> Sessions (UID string on Unix, SID on Windows)
-	closed     bool
+	mu           sync.RWMutex
+	sessions     map[string]*Session   // sessionID -> Session
+	byIdentity   map[string][]*Session // identity key -> Sessions (UID string on Unix, SID on Windows)
+	staleHelpers map[string][]int      // winSessionID -> PIDs of disconnected helpers
+	closed       bool
 
 	onMessage MessageHandler
 	selfHash  string // SHA-256 of our own binary
@@ -62,10 +63,11 @@ type Broker struct {
 func New(socketPath string, onMessage MessageHandler) *Broker {
 	b := &Broker{
 		socketPath:  socketPath,
-		rateLimiter: ipc.NewRateLimiter(RateLimitAttempts, RateLimitWindow),
-		sessions:    make(map[string]*Session),
-		byIdentity:  make(map[string][]*Session),
-		onMessage:   onMessage,
+		rateLimiter:  ipc.NewRateLimiter(RateLimitAttempts, RateLimitWindow),
+		sessions:     make(map[string]*Session),
+		byIdentity:   make(map[string][]*Session),
+		staleHelpers: make(map[string][]int),
+		onMessage:    onMessage,
 	}
 	b.selfHash = b.computeSelfHash()
 	return b
@@ -429,6 +431,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 
 	// Create session
 	session := NewSession(conn, creds.UID, identityKey, authReq.Username, authReq.DisplayEnv, authReq.SessionID, defaultScopes)
+	session.PID = int(creds.PID)
 	session.WinSessionID = fmt.Sprintf("%d", authReq.WinSessionID)
 
 	// Register session
@@ -502,6 +505,40 @@ func (b *Broker) removeSession(session *Session) {
 	}
 	if len(b.byIdentity[key]) == 0 {
 		delete(b.byIdentity, key)
+	}
+
+	// Track the PID so we can kill it before spawning a replacement.
+	// Don't kill here — the process may still be serving an active desktop session.
+	if session.PID > 0 {
+		b.trackStaleHelper(session.WinSessionID, session.PID)
+	}
+}
+
+// trackStaleHelper records a disconnected helper PID for later cleanup.
+// Called under b.mu lock.
+func (b *Broker) trackStaleHelper(winSessionID string, pid int) {
+	b.staleHelpers[winSessionID] = append(b.staleHelpers[winSessionID], pid)
+}
+
+// KillStaleHelpers kills any disconnected helper processes for the given
+// Windows session. Call this before spawning a new helper to release DXGI
+// Desktop Duplication locks held by orphaned processes.
+func (b *Broker) KillStaleHelpers(winSessionID string) {
+	b.mu.Lock()
+	pids := b.staleHelpers[winSessionID]
+	delete(b.staleHelpers, winSessionID)
+	b.mu.Unlock()
+
+	for _, pid := range pids {
+		if proc, err := os.FindProcess(pid); err == nil {
+			if err := proc.Kill(); err != nil {
+				log.Debug("failed to kill stale userhelper (may have already exited)",
+					"pid", pid, "error", err.Error())
+			} else {
+				log.Info("killed stale userhelper before respawn",
+					"pid", pid, "winSessionID", winSessionID)
+			}
+		}
 	}
 }
 

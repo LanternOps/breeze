@@ -19,6 +19,7 @@ type Session struct {
 	Username      string
 	DisplayEnv    string
 	SessionID     string
+	PID           int    // OS process ID of the helper process
 	Capabilities  *ipc.Capabilities
 	AllowedScopes []string
 	WinSessionID  string // Windows session ID string (e.g., "1", "2") for targeting
