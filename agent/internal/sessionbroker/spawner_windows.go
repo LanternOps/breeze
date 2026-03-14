@@ -28,12 +28,15 @@ func SpawnHelperInSession(sessionID uint32) error {
 	defer processToken.Close()
 
 	// 2. Duplicate as a primary token we can modify.
+	// SecurityImpersonation is sufficient for local DXGI desktop capture;
+	// SecurityDelegation is only needed for credential delegation to remote
+	// machines, which the helper never performs.
 	var dupToken windows.Token
 	err = windows.DuplicateTokenEx(
 		processToken,
 		windows.MAXIMUM_ALLOWED,
 		nil, // default security attributes
-		windows.SecurityDelegation, // Delegation required for CreateProcessAsUser + cross-session GPU access
+		windows.SecurityImpersonation,
 		windows.TokenPrimary,
 		&dupToken,
 	)
