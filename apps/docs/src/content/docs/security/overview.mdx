@@ -22,7 +22,7 @@ Every request passes through multiple security layers before reaching applicatio
 | Origin | CORS strict allowlist (no wildcards in production) |
 | Content | Content Security Policy (CSP) |
 | CSRF | Header-based validation on state-changing requests |
-| Rate Limiting | Redis sliding window (fail-closed) |
+| Rate Limiting | Redis sliding window with in-memory fallback (100K entry cap) |
 | Authentication | JWT + MFA + session tokens |
 | Authorization | RBAC with permission middleware |
 | Tenant Isolation | PostgreSQL row-level scoping |
@@ -124,8 +124,8 @@ The agent runs on customer endpoints with elevated privileges. Its security is p
 | **Token format** | `brz_` prefix tokens generated during enrollment |
 | **Token storage** | SHA-256 hash in `devices.agentTokenHash` — plaintext never persisted |
 | **Request validation** | Every REST and WebSocket request validates bearer token against stored hash |
-| **Config directory** | `0700` (rwx------) — no access for other users or groups |
-| **Config file** | `0600` (rw-------) — read/write only by the agent process |
+| **Config directory** | `0750` (rwxr-x---) — agent owner + group read for Helper |
+| **Config file** | `0640` (rw-r-----) for `agent.yaml`, `0600` (rw-------) for `secrets.yaml` — auth token isolated in root-only secrets file |
 | **Message validation** | All incoming WebSocket messages validated against Zod discriminated union schema |
 
 ### Mutual TLS (Optional)

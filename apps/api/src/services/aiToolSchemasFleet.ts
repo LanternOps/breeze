@@ -9,32 +9,6 @@ import { z } from 'zod';
 const uuid = z.string().uuid();
 
 export const fleetToolInputSchemas: Record<string, z.ZodType> = {
-  manage_policies: z.object({
-    action: z.enum([
-      'list', 'get', 'compliance_status', 'compliance_summary',
-      'evaluate', 'create', 'update', 'activate', 'deactivate', 'delete', 'remediate',
-    ]),
-    policyId: uuid.optional(),
-    enforcement: z.enum(['monitor', 'warn', 'enforce']).optional(),
-    enabled: z.boolean().optional(),
-    name: z.string().min(1).max(255).optional(),
-    description: z.string().max(2000).optional(),
-    rules: z.record(z.unknown()).optional(),
-    targets: z.record(z.unknown()).optional(),
-    checkIntervalMinutes: z.number().int().min(1).max(1440).optional(),
-    remediationScriptId: uuid.optional(),
-    limit: z.number().int().min(1).max(100).optional(),
-  }).refine(
-    (d) => {
-      const needsId = ['get', 'compliance_status', 'evaluate', 'update', 'activate', 'deactivate', 'delete', 'remediate'];
-      return !needsId.includes(d.action) || !!d.policyId;
-    },
-    { message: 'policyId is required for this action' },
-  ).refine(
-    (d) => d.action !== 'create' || (!!d.name && !!d.rules && !!d.targets),
-    { message: 'name, rules, and targets are required for create' },
-  ),
-
   manage_deployments: z.object({
     action: z.enum(['list', 'get', 'device_status', 'create', 'start', 'pause', 'resume', 'cancel']),
     deploymentId: uuid.optional(),
@@ -190,8 +164,9 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
   ),
 
   generate_report: z.object({
-    action: z.enum(['list', 'generate', 'data', 'create', 'update', 'delete', 'history']),
+    action: z.enum(['list', 'generate', 'data', 'create', 'update', 'delete', 'history', 'download']),
     reportId: uuid.optional(),
+    reportRunId: uuid.optional(),
     reportType: z.enum(['device_inventory', 'software_inventory', 'alert_summary', 'compliance', 'performance', 'executive_summary']).optional(),
     name: z.string().min(1).max(255).optional(),
     config: z.record(z.unknown()).optional(),
@@ -213,5 +188,8 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
   ).refine(
     (d) => d.action !== 'create' || (!!d.name && !!d.reportType),
     { message: 'name and reportType are required for create' },
+  ).refine(
+    (d) => d.action !== 'download' || !!d.reportRunId,
+    { message: 'reportRunId is required for download' },
   ),
 };

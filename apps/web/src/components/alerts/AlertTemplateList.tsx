@@ -3,6 +3,7 @@ import { Copy, Pencil, Plus, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import type { AlertSeverity } from './AlertList';
+import { navigateTo } from '@/lib/navigation';
 
 type AlertTemplate = {
   id: string;
@@ -50,7 +51,7 @@ export default function AlertTemplateList({
       const response = await fetchWithAuth('/alerts/templates');
 
       if (response.status === 401) {
-        window.location.href = '/login';
+        void navigateTo('/login', { replace: true });
         return;
       }
 
@@ -80,7 +81,7 @@ export default function AlertTemplateList({
       });
 
       if (response.status === 401) {
-        window.location.href = '/login';
+        void navigateTo('/login', { replace: true });
         return;
       }
 
@@ -100,7 +101,7 @@ export default function AlertTemplateList({
       });
 
       if (response.status === 401) {
-        window.location.href = '/login';
+        void navigateTo('/login', { replace: true });
         return;
       }
 

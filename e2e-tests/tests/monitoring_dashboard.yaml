@@ -1,0 +1,234 @@
+# Monitoring Dashboard E2E Tests
+# Tests the Monitoring page tabs: Assets, Network Checks, and SNMP Templates
+# UI selectors are derived from MonitoringPage.tsx and MonitoringAssetsDashboard.tsx
+# Verification uses API calls, not remote MCP calls
+
+tests:
+  - id: monitoring_page_loads
+    name: "Monitoring Page Loads with Tab Navigation"
+    description: "Verify the Monitoring page loads with the correct heading and all three tab buttons"
+    tags: [monitoring, smoke, critical]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_monitoring
+        action: ui
+        description: "Navigate to Monitoring page and verify heading"
+        playwright:
+          - goto: "/monitoring"
+          - waitFor: "text=Monitoring"
+            timeout: 15000
+          - waitFor: "text=SNMP polling and network checks."
+
+      - id: verify_tabs
+        action: ui
+        description: "Verify all three tab buttons: Assets, Network Checks, SNMP Templates"
+        playwright:
+          - waitFor: "button:has-text('Assets')"
+          - waitFor: "button:has-text('Network Checks')"
+          - waitFor: "button:has-text('SNMP Templates')"
+
+  - id: monitoring_assets_tab
+    name: "Monitoring Assets Tab Shows Asset Dashboard"
+    description: "Verify the Assets tab is the default and shows the summary stat cards and Assets table"
+    tags: [monitoring, assets]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_monitoring
+        action: ui
+        description: "Navigate to Monitoring page"
+        playwright:
+          - goto: "/monitoring"
+          - waitFor: "text=Monitoring"
+            timeout: 15000
+
+      - id: verify_summary_stat_cards
+        action: ui
+        description: "Verify the five summary cards: Configured, Active, Paused, SNMP Warnings, Shown"
+        playwright:
+          - waitFor: "text=Configured"
+          - waitFor: "text=Active"
+          - waitFor: "text=Paused"
+          - waitFor: "text=SNMP Warnings"
+          - waitFor: "text=Shown"
+
+      - id: verify_assets_table
+        action: ui
+        description: "Verify Assets table section heading and column headers"
+        playwright:
+          - waitFor: "h2:has-text('Assets')"
+          - waitFor: "text=Unified view of SNMP polling and network checks per discovered asset."
+          - waitFor: "th:has-text('Asset')"
+          - waitFor: "th:has-text('IP')"
+          - waitFor: "th:has-text('Type')"
+          - waitFor: "th:has-text('Overall')"
+          - waitFor: "th:has-text('SNMP')"
+          - waitFor: "th:has-text('Network Checks')"
+          - waitFor: "th:has-text('Actions')"
+
+      - id: verify_toggle_button
+        action: ui
+        description: "Verify the toggle button to show all/monitored assets is present"
+        playwright:
+          - waitFor: "button:has-text('Showing monitored assets')"
+
+      - id: verify_manage_checks_link
+        action: ui
+        description: "Verify the Manage network checks button is available"
+        playwright:
+          - waitFor: "button:has-text('Manage network checks')"
+
+      - id: verify_assets_api
+        action: api
+        description: "Verify the monitoring assets API returns data"
+        request:
+          method: GET
+          path: "/api/v1/monitoring/assets"
+        expect: {}
+
+  - id: monitoring_show_all_assets
+    name: "Toggle to Show All Discovered Assets"
+    description: "Click the toggle button to switch from monitored-only to all discovered assets"
+    tags: [monitoring, assets]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_monitoring
+        action: ui
+        description: "Navigate to Monitoring page"
+        playwright:
+          - goto: "/monitoring"
+          - waitFor: "text=Monitoring"
+            timeout: 15000
+
+      - id: click_show_all_toggle
+        action: ui
+        description: "Click the toggle to show all discovered assets"
+        playwright:
+          - click: "button:has-text('Showing monitored assets')"
+          - waitFor: "button:has-text('Showing all discovered assets')"
+            timeout: 10000
+
+      - id: verify_refresh_button
+        action: ui
+        description: "Verify the Refresh button is available"
+        playwright:
+          - waitFor: "button:has-text('Refresh')"
+
+      - id: verify_all_assets_via_api
+        action: api
+        description: "Verify the API returns all assets when includeUnconfigured is true"
+        request:
+          method: GET
+          path: "/api/v1/monitoring/assets"
+          query:
+            includeUnconfigured: "true"
+        expect: {}
+
+  - id: monitoring_network_checks_tab
+    name: "Network Checks Tab Loads"
+    description: "Switch to the Network Checks tab and verify it renders"
+    tags: [monitoring, network-checks]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_monitoring_checks
+        action: ui
+        description: "Navigate to Monitoring page via URL with tab=checks query param"
+        playwright:
+          - goto: "/monitoring?tab=checks"
+          - waitFor: "text=Monitoring"
+            timeout: 15000
+          - waitFor: "button.bg-muted:has-text('Network Checks')"
+            timeout: 10000
+
+  - id: monitoring_snmp_templates_tab
+    name: "SNMP Templates Tab Shows Template List"
+    description: "Switch to the SNMP Templates tab and verify the template list and editor panels render"
+    tags: [monitoring, snmp]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_monitoring_templates
+        action: ui
+        description: "Navigate to Monitoring page via URL with tab=templates query param"
+        playwright:
+          - goto: "/monitoring?tab=templates"
+          - waitFor: "text=Monitoring"
+            timeout: 15000
+          - waitFor: "button.bg-muted:has-text('SNMP Templates')"
+            timeout: 10000
+
+      - id: verify_snmp_templates_api
+        action: api
+        description: "Verify the SNMP templates API returns data"
+        request:
+          method: GET
+          path: "/api/v1/snmp/templates"
+        expect: {}

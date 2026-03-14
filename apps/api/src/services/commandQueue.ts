@@ -2,6 +2,7 @@ import { eq, and } from 'drizzle-orm';
 import { db, runOutsideDbContext } from '../db';
 import { deviceCommands, devices, auditLogs } from '../db/schema';
 import { sendCommandToAgent } from '../routes/agentWs';
+import { captureException } from './sentry';
 
 // Command types for system tools
 export const CommandTypes = {
@@ -64,6 +65,8 @@ export const CommandTypes = {
 
   // Software management
   SOFTWARE_UNINSTALL: 'software_uninstall',
+  CIS_BENCHMARK: 'cis_benchmark',
+  APPLY_CIS_REMEDIATION: 'apply_cis_remediation',
 
   // Patch management
   PATCH_SCAN: 'patch_scan',
@@ -77,6 +80,13 @@ export const CommandTypes = {
   SECURITY_THREAT_QUARANTINE: 'security_threat_quarantine',
   SECURITY_THREAT_REMOVE: 'security_threat_remove',
   SECURITY_THREAT_RESTORE: 'security_threat_restore',
+  SENSITIVE_DATA_SCAN: 'sensitive_data_scan',
+  ENCRYPT_FILE: 'encrypt_file',
+  SECURE_DELETE_FILE: 'secure_delete_file',
+  QUARANTINE_FILE: 'quarantine_file',
+
+  // Peripheral control — pushes full active policy set to agent
+  PERIPHERAL_POLICY_SYNC: 'peripheral_policy_sync',
 
   // Log shipping
   SET_LOG_LEVEL: 'set_log_level',
@@ -90,6 +100,10 @@ export const CommandTypes = {
   // Boot performance
   COLLECT_BOOT_PERFORMANCE: 'collect_boot_performance',
   MANAGE_STARTUP_ITEM: 'manage_startup_item',
+
+  // Audit policy compliance
+  COLLECT_AUDIT_POLICY: 'collect_audit_policy',
+  APPLY_AUDIT_POLICY_BASELINE: 'apply_audit_policy_baseline',
 } as const;
 
 export type CommandType = typeof CommandTypes[keyof typeof CommandTypes];
@@ -120,6 +134,13 @@ export interface QueuedCommand {
   completedAt: Date | null;
   result: CommandResult | null;
 }
+
+// Use the directly-imported runOutsideDbContext, NOT db.runOutsideDbContext.
+// The `db` proxy delegates property lookups to the active transaction when
+// inside withDbAccessContext, so db.runOutsideDbContext resolves to
+// tx.runOutsideDbContext (undefined), causing the fallback to run fn()
+// inside the transaction — which is exactly what we're trying to avoid.
+const runOutsideDbContextSafe = runOutsideDbContext;
 
 export interface QueueCommandForExecutionResult {
   command?: QueuedCommand;
@@ -152,13 +173,22 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.INSTALL_PATCHES,
   CommandTypes.ROLLBACK_PATCHES,
   CommandTypes.SOFTWARE_UNINSTALL,
+  CommandTypes.CIS_BENCHMARK,
+  CommandTypes.APPLY_CIS_REMEDIATION,
   CommandTypes.SECURITY_SCAN,
   CommandTypes.SECURITY_THREAT_QUARANTINE,
   CommandTypes.SECURITY_THREAT_REMOVE,
   CommandTypes.SECURITY_THREAT_RESTORE,
+  CommandTypes.SENSITIVE_DATA_SCAN,
+  CommandTypes.ENCRYPT_FILE,
+  CommandTypes.SECURE_DELETE_FILE,
+  CommandTypes.QUARANTINE_FILE,
   CommandTypes.TAKE_SCREENSHOT,
   CommandTypes.COMPUTER_ACTION,
   CommandTypes.MANAGE_STARTUP_ITEM,
+  CommandTypes.APPLY_AUDIT_POLICY_BASELINE,
+  // Peripheral control — pushes full active policy set to agent
+  CommandTypes.PERIPHERAL_POLICY_SYNC,
 ]);
 
 /**
@@ -203,12 +233,15 @@ export async function queueCommand(
           result: 'success',
         })
         .execute()
-        .catch((err) => console.error('Failed to write audit log', {
-          commandId: command.id,
-          deviceId,
-          type,
-          error: err,
-        }));
+        .catch((err) => {
+          console.error('Failed to write audit log', {
+            commandId: command.id,
+            deviceId,
+            type,
+            error: err,
+          });
+          captureException(err);
+        });
     }
   }
 
@@ -372,7 +405,7 @@ export async function executeCommand(
 
   // 2. Queue, dispatch, and poll OUTSIDE the auth transaction so the
   //    INSERT commits immediately and is visible to the WS handler.
-  return runOutsideDbContext(async () => {
+  return runOutsideDbContextSafe(async () => {
     // Validate userId for FK constraint: device_commands.created_by references users.id.
     // Helper sessions use a synthetic auth where auth.user.id is actually the device ID
     // (no real user record exists). Detect this by checking if userId equals deviceId.
@@ -410,13 +443,16 @@ export async function executeCommand(
           result: 'success',
         })
         .execute()
-        .catch((err) => console.error('Failed to write audit log', {
-          commandId: command.id,
-          deviceId,
-          type,
-          orgId: device.orgId,
-          error: err,
-        }));
+        .catch((err) => {
+          console.error('Failed to write audit log', {
+            commandId: command.id,
+            deviceId,
+            type,
+            orgId: device.orgId,
+            error: err,
+          });
+          captureException(err);
+        });
     }
 
     // Dispatch via WebSocket

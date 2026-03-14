@@ -4,7 +4,9 @@ package collectors
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/windows/registry"
 )
@@ -92,7 +94,8 @@ func readSoftwareFromKey(key registry.Key) SoftwareItem {
 	item.Name, _ = readStringValue(key, "DisplayName")
 	item.Version, _ = readStringValue(key, "DisplayVersion")
 	item.Vendor, _ = readStringValue(key, "Publisher")
-	item.InstallDate, _ = readStringValue(key, "InstallDate")
+	rawDate, _ := readStringValue(key, "InstallDate")
+	item.InstallDate = parseInstallDate(rawDate)
 	item.InstallLocation, _ = readStringValue(key, "InstallLocation")
 	item.UninstallString, _ = readStringValue(key, "UninstallString")
 
@@ -105,6 +108,56 @@ func readStringValue(key registry.Key, name string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(val), nil
+}
+
+// yyyymmddRegex matches dates in YYYYMMDD format (e.g., "20240115")
+var yyyymmddRegex = regexp.MustCompile(`^\d{8}$`)
+
+// parseInstallDate normalizes a Windows registry InstallDate value to ISO 8601
+// (YYYY-MM-DD). The registry value is typically YYYYMMDD but some installers
+// write locale-dependent strings (e.g. French: "jeu. févr. 12 19:40:25 2026").
+// Returns "" for unparseable values so the API stores NULL instead of crashing.
+func parseInstallDate(dateStr string) string {
+	dateStr = strings.TrimSpace(dateStr)
+	if dateStr == "" {
+		return ""
+	}
+
+	// Most common: YYYYMMDD (e.g., "20240115")
+	if yyyymmddRegex.MatchString(dateStr) {
+		if t, err := time.Parse("20060102", dateStr); err == nil {
+			return t.Format("2006-01-02")
+		}
+	}
+
+	// Already ISO 8601
+	if t, err := time.Parse("2006-01-02", dateStr); err == nil {
+		return t.Format("2006-01-02")
+	}
+
+	// Try common locale-dependent formats written by various installers
+	formats := []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05Z",
+		"2006-01-02 15:04:05",
+		"01/02/2006",
+		"1/2/2006",
+		"02/01/2006",
+		"Jan 2, 2006",
+		"2 Jan 2006",
+		"January 2, 2006",
+		"Mon Jan 2 15:04:05 2006",
+		"Mon. Jan. 2 15:04:05 2006",
+	}
+
+	for _, format := range formats {
+		if t, err := time.Parse(format, dateStr); err == nil {
+			return t.Format("2006-01-02")
+		}
+	}
+
+	// Unparseable — return empty so the API inserts NULL rather than crashing
+	return ""
 }
 
 func isSystemComponent(key registry.Key) bool {

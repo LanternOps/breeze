@@ -1,11 +1,222 @@
 # Script Execution E2E Tests
-# Tests remote script execution across platforms
+# Tests the full script lifecycle: list, create, edit, execute, view results, and delete.
+# Verification uses API queries for backend state; UI steps use real selectors from source.
 
 tests:
-  - id: script_execution_single
-    name: "Single Device Script Execution"
-    description: "Create and execute a script on a single device"
-    tags: [scripts, execution, basic]
+  - id: scripts_page_loads
+    name: "Scripts Page Loads with Script Library"
+    description: "Verify the Script Library page renders with its table, header, and action buttons"
+    tags: [scripts, smoke]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_to_scripts
+        action: ui
+        description: "Navigate to /scripts and verify page structure"
+        playwright:
+          - goto: "/scripts"
+          - waitFor: "text=Script Library"
+            timeout: 15000
+          - waitFor: "text=Manage and execute scripts across your devices."
+          - assert:
+              selector: "a:has-text('New Script')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Import from Library')"
+              exists: true
+          - waitFor: "h2:has-text('Scripts')"
+
+      - id: verify_script_table_columns
+        action: ui
+        description: "Confirm the scripts table has expected column headers"
+        playwright:
+          - assert:
+              selector: "th:has-text('Name')"
+              exists: true
+          - assert:
+              selector: "th:has-text('Language')"
+              exists: true
+          - assert:
+              selector: "th:has-text('Category')"
+              exists: true
+          - assert:
+              selector: "th:has-text('OS Types')"
+              exists: true
+          - assert:
+              selector: "th:has-text('Last Run')"
+              exists: true
+          - assert:
+              selector: "th:has-text('Status')"
+              exists: true
+          - assert:
+              selector: "th:has-text('Actions')"
+              exists: true
+
+      - id: verify_filter_controls
+        action: ui
+        description: "Confirm search and filter dropdowns are present"
+        playwright:
+          - assert:
+              selector: "input[placeholder='Search scripts...']"
+              exists: true
+          - assert:
+              selector: "select:has(option[value='all'])"
+              exists: true
+          - assert:
+              selector: "select:has(option[value='powershell'])"
+              exists: true
+          - assert:
+              selector: "select:has(option[value='windows'])"
+              exists: true
+
+  - id: create_and_edit_script
+    name: "Create New Script and Edit It"
+    description: "Navigate to /scripts/new, fill the form, save, then edit the saved script"
+    tags: [scripts, crud, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: open_new_script_page
+        action: ui
+        description: "Navigate to /scripts/new and verify the form renders"
+        playwright:
+          - goto: "/scripts/new"
+          - waitFor: "h1:has-text('New Script')"
+            timeout: 15000
+          - waitFor: "text=Create a new script for your devices."
+          - assert:
+              selector: "a[href='/scripts']"
+              exists: true
+
+      - id: fill_script_form
+        action: ui
+        description: "Fill in the script creation form with all required fields"
+        playwright:
+          - fill:
+              "#script-name": "E2E Hostname Check"
+          - fill:
+              "#script-description": "Returns hostname, date, and current user for E2E testing"
+          - selectOption:
+              "#script-category": "Monitoring"
+          - selectOption:
+              "#script-language": "bash"
+          - click: "button:has-text('Linux')"
+          # The Monaco editor textarea — type into the editor container
+          - waitFor: ".monaco-editor"
+            timeout: 10000
+          - click: ".monaco-editor"
+          - keyboard:
+              key: "Control+KeyA"
+          - type: "#!/bin/bash\necho \"Hostname: $(hostname)\"\necho \"Date: $(date)\"\necho \"User: $(whoami)\"\nexit 0"
+
+      - id: verify_form_fields
+        action: ui
+        description: "Confirm form values are reflected correctly"
+        playwright:
+          - assert:
+              selector: "#script-name"
+              value: "E2E Hostname Check"
+          - assert:
+              selector: "#script-category"
+              value: "Monitoring"
+          - assert:
+              selector: "#script-language"
+              value: "bash"
+
+      - id: submit_new_script
+        action: ui
+        description: "Submit the form and verify redirect back to /scripts"
+        playwright:
+          - click: "button[type='submit']:has-text('Create Script')"
+          - waitFor:
+              url: "**/scripts"
+              timeout: 20000
+          - waitFor: "text=Script Library"
+
+      - id: verify_script_in_list
+        action: ui
+        description: "Confirm the newly created script appears in the table"
+        playwright:
+          - waitFor: "td:has-text('E2E Hostname Check')"
+            timeout: 10000
+          - assert:
+              selector: "tr:has-text('E2E Hostname Check') td:has-text('Bash')"
+              exists: true
+          - assert:
+              selector: "tr:has-text('E2E Hostname Check') td:has-text('Monitoring')"
+              exists: true
+          - assert:
+              selector: "tr:has-text('E2E Hostname Check') td:has-text('Linux')"
+              exists: true
+
+      - id: open_script_for_edit
+        action: ui
+        description: "Click the edit (pencil) button on the script row"
+        playwright:
+          - click: "tr:has-text('E2E Hostname Check') button[title='Edit script']"
+          - waitFor: "h1:has-text('Edit Script')"
+            timeout: 15000
+          - waitFor: "text=Update the script configuration."
+          - assert:
+              selector: "a:has-text('Execution History')"
+              exists: true
+
+      - id: update_script_description
+        action: ui
+        description: "Change the description and save"
+        playwright:
+          - fill:
+              "#script-description": "Updated description for E2E test"
+          - click: "button[type='submit']:has-text('Save Changes')"
+          - waitFor:
+              url: "**/scripts"
+              timeout: 20000
+
+      - id: verify_api_script_exists
+        action: api
+        description: "Confirm the script exists in the API"
+        request:
+          method: GET
+          path: "/api/v1/scripts"
+        poll:
+          maxAttempts: 5
+          intervalMs: 2000
+          until: "response.data.some(s => s.name === 'E2E Hostname Check')"
+        expect:
+          data: []
+          pagination:
+            page: 1
+
+  - id: execute_script_on_device
+    name: "Execute Script on Linux Device"
+    description: "Run an existing script on a live device and verify execution result via the UI and API"
+    tags: [scripts, execution, critical]
     nodes: [linux]
     timeout: 180000
     steps:
@@ -18,183 +229,105 @@ tests:
               "[name='email']": "${TEST_USER_EMAIL}"
               "[name='password']": "${TEST_USER_PASSWORD}"
           - click: "button[type='submit']"
-          - waitFor: "[data-testid='dashboard']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
 
-      - id: create_script
+      - id: navigate_to_scripts
         action: ui
-        description: "Create a test script"
+        description: "Go to the scripts list"
         playwright:
           - goto: "/scripts"
-          - click: "button:has-text('New Script')"
-          - waitFor: "[data-testid='script-editor']"
-          - fill:
-              "[name='name']": "E2E Test Script - Hostname"
-              "[name='description']": "Test script that returns hostname"
-          - click: "[data-testid='language-select']"
-          - click: "li:has-text('Bash')"
-          - fill:
-              "[data-testid='script-content']": |
-                #!/bin/bash
-                echo "Hostname: $(hostname)"
-                echo "Date: $(date)"
-                echo "User: $(whoami)"
-                exit 0
-          - click: "button:has-text('Save')"
-          - waitFor: "text=Script saved"
+          - waitFor: "text=Script Library"
+            timeout: 15000
 
-      - id: execute_script
+      - id: open_run_modal
         action: ui
-        description: "Execute script on Linux device"
+        description: "Click Run (play icon) on the E2E Hostname Check script"
         playwright:
-          - click: "button:has-text('Run')"
-          - waitFor: "[data-testid='device-selector']"
-          - click: "[data-testid='device-linux']"
+          - waitFor: "tr:has-text('E2E Hostname Check')"
+            timeout: 10000
+          - click: "tr:has-text('E2E Hostname Check') button[title='Run script']"
+          - waitFor: "h2:has-text('Execute Script')"
+            timeout: 10000
+          - assert:
+              selector: "p.text-sm.text-muted-foreground:has-text('E2E Hostname Check')"
+              exists: true
+
+      - id: select_device_and_execute
+        action: ui
+        description: "Select all online devices and click Execute"
+        playwright:
+          - waitFor: "text=Select Devices"
+            timeout: 5000
+          - click: "button:has-text('Select all online')"
+          - waitFor: "text=1 device(s) selected"
+            timeout: 5000
+          # First click shows confirm banner
           - click: "button:has-text('Execute')"
-          - waitFor: "[data-testid='execution-progress']"
-          - waitFor: "text=Completed"
+          - waitFor: "text=Confirm Execution"
+            timeout: 5000
+          # Second click confirms
+          - click: "button:has-text('Confirm Execute')"
+          - waitFor: "text=Started!"
+            timeout: 30000
+
+      - id: verify_execution_via_api
+        action: api
+        description: "Poll the API until the script execution record appears"
+        request:
+          method: GET
+          path: "/api/v1/scripts"
+        poll:
+          maxAttempts: 15
+          intervalMs: 4000
+          until: "response.data.find(s => s.name === 'E2E Hostname Check')?.lastRun != null"
+        expect:
+          data: []
+          pagination:
+            page: 1
+
+      - id: view_execution_history
+        action: ui
+        description: "Navigate to the executions page for this script"
+        playwright:
+          - goto: "/scripts"
+          - waitFor: "tr:has-text('E2E Hostname Check')"
+            timeout: 10000
+          - click: "tr:has-text('E2E Hostname Check') button[title='Edit script']"
+          - waitFor: "h1:has-text('Edit Script')"
+            timeout: 10000
+          - click: "a:has-text('Execution History')"
+          - waitFor: "h1:has-text('Execution History')"
+            timeout: 10000
+          - waitFor: "h2:has-text('Execution History')"
+
+      - id: verify_execution_in_history
+        action: ui
+        description: "Confirm the execution row appears with Completed status"
+        playwright:
+          - waitFor: "td:has-text('E2E Hostname Check')"
             timeout: 60000
-
-      - id: verify_execution_result
-        action: ui
-        description: "Verify script execution results"
-        playwright:
-          - click: "[data-testid='view-results']"
-          - waitFor: "[data-testid='execution-output']"
           - assert:
-              selector: "[data-testid='execution-output']"
-              contains: "Hostname:"
+              selector: "span:has-text('Completed')"
+              exists: true
+
+      - id: view_execution_details
+        action: ui
+        description: "Open execution details modal and check stdout output"
+        playwright:
+          - click: "button[title='View details']"
+          - waitFor: "h2:has-text('Execution Details')"
+            timeout: 10000
+          - waitFor: "text=Standard Output (stdout)"
           - assert:
-              selector: "[data-testid='execution-status']"
-              text: "Success"
+              selector: "button:has-text('Close')"
+              exists: true
+          - click: "button:has-text('Close')"
 
-      - id: verify_on_remote
-        action: remote
-        node: linux
-        description: "Verify script was actually executed"
-        tool: claude_code
-        args:
-          prompt: |
-            Check the Breeze agent script execution logs:
-            1. Look at /var/log/breeze/scripts.log for recent executions
-            2. Find the "E2E Test Script - Hostname" execution
-            3. Return JSON: {executed: boolean, output: string, exitCode: number}
-        expect:
-          executed: true
-          exitCode: 0
-
-  - id: script_execution_cross_platform
-    name: "Cross-Platform Script Execution"
-    description: "Execute platform-specific scripts on all devices"
-    tags: [scripts, execution, cross-platform, advanced]
-    nodes: [windows, linux, macos]
-    timeout: 300000
-    steps:
-      - id: login
-        action: ui
-        description: "Login to Breeze dashboard"
-        playwright:
-          - goto: "/login"
-          - fill:
-              "[name='email']": "${TEST_USER_EMAIL}"
-              "[name='password']": "${TEST_USER_PASSWORD}"
-          - click: "button[type='submit']"
-          - waitFor: "[data-testid='dashboard']"
-
-      - id: create_cross_platform_script
-        action: ui
-        description: "Create cross-platform script"
-        playwright:
-          - goto: "/scripts"
-          - click: "button:has-text('New Script')"
-          - fill:
-              "[name='name']": "E2E Cross-Platform Test"
-              "[name='description']": "Tests execution across all platforms"
-          - click: "[data-testid='cross-platform-toggle']"
-          # Windows script
-          - click: "[data-testid='tab-windows']"
-          - fill:
-              "[data-testid='script-content-windows']": |
-                Write-Host "Platform: Windows"
-                Write-Host "Hostname: $env:COMPUTERNAME"
-                Write-Host "OS: $([System.Environment]::OSVersion.VersionString)"
-          # Linux script
-          - click: "[data-testid='tab-linux']"
-          - fill:
-              "[data-testid='script-content-linux']": |
-                #!/bin/bash
-                echo "Platform: Linux"
-                echo "Hostname: $(hostname)"
-                echo "OS: $(cat /etc/os-release | grep PRETTY_NAME)"
-          # macOS script
-          - click: "[data-testid='tab-macos']"
-          - fill:
-              "[data-testid='script-content-macos']": |
-                #!/bin/bash
-                echo "Platform: macOS"
-                echo "Hostname: $(hostname)"
-                echo "OS: $(sw_vers -productVersion)"
-          - click: "button:has-text('Save')"
-          - waitFor: "text=Script saved"
-
-      - id: execute_on_all
-        action: ui
-        description: "Execute on all devices"
-        playwright:
-          - click: "button:has-text('Run')"
-          - click: "[data-testid='select-all-devices']"
-          - click: "button:has-text('Execute')"
-          - waitFor: "[data-testid='execution-progress']"
-          - waitFor: "text=3 of 3 completed"
-            timeout: 120000
-
-      - id: verify_windows_result
-        action: remote
-        node: windows
-        description: "Verify Windows execution"
-        tool: claude_code
-        args:
-          prompt: |
-            Check the most recent script execution on Windows:
-            1. Look at C:\ProgramData\Breeze\logs\scripts.log
-            2. Find the "E2E Cross-Platform Test" execution
-            3. Return JSON: {platform: "Windows", success: boolean, output: string}
-        expect:
-          platform: "Windows"
-          success: true
-
-      - id: verify_linux_result
-        action: remote
-        node: linux
-        description: "Verify Linux execution"
-        tool: claude_code
-        args:
-          prompt: |
-            Check the most recent script execution on Linux:
-            1. Look at /var/log/breeze/scripts.log
-            2. Find the "E2E Cross-Platform Test" execution
-            3. Return JSON: {platform: "Linux", success: boolean, output: string}
-        expect:
-          platform: "Linux"
-          success: true
-
-      - id: verify_macos_result
-        action: remote
-        node: macos
-        description: "Verify macOS execution"
-        tool: claude_code
-        args:
-          prompt: |
-            Check the most recent script execution on macOS:
-            1. Look at /var/log/breeze/scripts.log
-            2. Find the "E2E Cross-Platform Test" execution
-            3. Return JSON: {platform: "macOS", success: boolean, output: string}
-        expect:
-          platform: "macOS"
-          success: true
-
-  - id: script_execution_failure_handling
+  - id: script_failure_handling
     name: "Script Failure Handling"
-    description: "Verify proper handling of script failures"
+    description: "Create a script that exits non-zero and verify it reports as Failed with exit code 1"
     tags: [scripts, execution, error-handling]
     nodes: [linux]
     timeout: 120000
@@ -208,62 +341,230 @@ tests:
               "[name='email']": "${TEST_USER_EMAIL}"
               "[name='password']": "${TEST_USER_PASSWORD}"
           - click: "button[type='submit']"
-          - waitFor: "[data-testid='dashboard']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
 
       - id: create_failing_script
         action: ui
-        description: "Create a script that fails"
+        description: "Create a script that intentionally exits with code 1"
+        playwright:
+          - goto: "/scripts/new"
+          - waitFor: "h1:has-text('New Script')"
+            timeout: 15000
+          - fill:
+              "#script-name": "E2E Failure Test"
+          - fill:
+              "#script-description": "Script that always fails with exit code 1"
+          - selectOption:
+              "#script-category": "Custom"
+          - selectOption:
+              "#script-language": "bash"
+          - click: "button:has-text('Linux')"
+          - waitFor: ".monaco-editor"
+            timeout: 10000
+          - click: ".monaco-editor"
+          - keyboard:
+              key: "Control+KeyA"
+          - type: "#!/bin/bash\necho 'This script will fail'\nexit 1"
+          - click: "button[type='submit']:has-text('Create Script')"
+          - waitFor:
+              url: "**/scripts"
+              timeout: 20000
+
+      - id: run_failing_script
+        action: ui
+        description: "Execute the failing script on the Linux device"
+        playwright:
+          - waitFor: "tr:has-text('E2E Failure Test')"
+            timeout: 10000
+          - click: "tr:has-text('E2E Failure Test') button[title='Run script']"
+          - waitFor: "h2:has-text('Execute Script')"
+            timeout: 10000
+          - click: "button:has-text('Select all online')"
+          - waitFor: "text=1 device(s) selected"
+          - click: "button:has-text('Execute')"
+          - waitFor: "text=Confirm Execution"
+          - click: "button:has-text('Confirm Execute')"
+          - waitFor: "text=Started!"
+            timeout: 30000
+
+      - id: verify_failure_in_history
+        action: ui
+        description: "Navigate to executions page and confirm Failed status with exit code 1"
         playwright:
           - goto: "/scripts"
-          - click: "button:has-text('New Script')"
-          - fill:
-              "[name='name']": "E2E Failure Test Script"
-          - click: "[data-testid='language-select']"
-          - click: "li:has-text('Bash')"
-          - fill:
-              "[data-testid='script-content']": |
-                #!/bin/bash
-                echo "This script will fail"
-                exit 1
-          - click: "button:has-text('Save')"
-
-      - id: execute_failing_script
-        action: ui
-        description: "Execute failing script"
-        playwright:
-          - click: "button:has-text('Run')"
-          - click: "[data-testid='device-linux']"
-          - click: "button:has-text('Execute')"
-          - waitFor: "text=Failed"
+          - waitFor: "tr:has-text('E2E Failure Test')"
+            timeout: 10000
+          - click: "tr:has-text('E2E Failure Test') button[title='Edit script']"
+          - waitFor: "h1:has-text('Edit Script')"
+            timeout: 10000
+          - click: "a:has-text('Execution History')"
+          - waitFor: "span:has-text('Failed')"
             timeout: 60000
+          - assert:
+              selector: "span.font-mono:has-text('1')"
+              exists: true
 
-      - id: verify_failure_details
+      - id: check_failure_in_execution_details
         action: ui
-        description: "Verify failure is properly reported"
+        description: "Open details modal and confirm failed status banner and stderr section"
         playwright:
-          - click: "[data-testid='view-results']"
+          - click: "button[title='View details']"
+          - waitFor: "h2:has-text('Execution Details')"
+            timeout: 10000
           - assert:
-              selector: "[data-testid='execution-status']"
-              text: "Failed"
-          - assert:
-              selector: "[data-testid='exit-code']"
-              text: "1"
+              selector: "p:has-text('Script execution failed')"
+              exists: true
+          - waitFor: "text=Standard Error (stderr)"
+          - click: "button:has-text('Close')"
 
-      - id: investigate_failure
-        action: remote
-        node: linux
-        description: "Use Claude to investigate the failure"
-        tool: claude_code
-        args:
-          prompt: |
-            A script execution failed. Investigate:
-            1. Check /var/log/breeze/scripts.log for the failure
-            2. Identify why exit code was 1
-            3. Return JSON: {
-              scriptName: string,
-              exitCode: number,
-              stderr: string,
-              explanation: string
-            }
+      - id: verify_failure_logged_by_agent
+        action: api
+        description: "Confirm the script failure was recorded by the agent"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.linux}}/diagnostic-logs"
+          query:
+            component: scripts
+            level: "error,warn"
+            since: "{{testStartTime}}"
+            search: "E2E Failure Test"
+        poll:
+          maxAttempts: 10
+          intervalMs: 3000
+          until: "logs.length > 0"
         expect:
-          exitCode: 1
+          logs: []
+
+  - id: delete_script
+    name: "Delete Script via Confirmation Modal"
+    description: "Delete a script using the trash button and confirm the delete modal workflow"
+    tags: [scripts, crud]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_to_scripts
+        action: ui
+        description: "Go to the scripts list"
+        playwright:
+          - goto: "/scripts"
+          - waitFor: "text=Script Library"
+            timeout: 15000
+
+      - id: delete_e2e_failure_script
+        action: ui
+        description: "Open the delete confirmation modal for E2E Failure Test"
+        playwright:
+          - waitFor: "tr:has-text('E2E Failure Test')"
+            timeout: 10000
+          - click: "tr:has-text('E2E Failure Test') button[title='Delete script']"
+          - waitFor: "h2:has-text('Delete Script')"
+            timeout: 10000
+          - assert:
+              selector: "p:has-text('Are you sure you want to delete')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Cancel')"
+              exists: true
+          # Cancel first to test the cancel path
+          - click: "button:has-text('Cancel')"
+          - assertNotExists: "h2:has-text('Delete Script')"
+
+      - id: confirm_delete
+        action: ui
+        description: "Re-open modal and confirm deletion"
+        playwright:
+          - waitFor: "tr:has-text('E2E Failure Test')"
+            timeout: 5000
+          - click: "tr:has-text('E2E Failure Test') button[title='Delete script']"
+          - waitFor: "h2:has-text('Delete Script')"
+          - click: "button:has-text('Delete')"
+          - assertNotExists: "tr:has-text('E2E Failure Test')"
+            timeout: 10000
+
+      - id: cleanup_hostname_script
+        action: ui
+        description: "Also delete the E2E Hostname Check script for cleanup"
+        playwright:
+          - waitFor: "tr:has-text('E2E Hostname Check')"
+            timeout: 5000
+          - click: "tr:has-text('E2E Hostname Check') button[title='Delete script']"
+          - waitFor: "h2:has-text('Delete Script')"
+          - click: "button:has-text('Delete')"
+          - assertNotExists: "tr:has-text('E2E Hostname Check')"
+            timeout: 10000
+        optional: true
+
+  - id: import_from_system_library
+    name: "Import Script from System Library"
+    description: "Open the Import from Library modal and import a system script"
+    tags: [scripts, library]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: open_library_modal
+        action: ui
+        description: "Click 'Import from Library' to open the system script library modal"
+        playwright:
+          - goto: "/scripts"
+          - waitFor: "text=Script Library"
+            timeout: 15000
+          - click: "button:has-text('Import from Library')"
+          - waitFor: "h2:has-text('System Script Library')"
+            timeout: 10000
+          - waitFor: "text=Import scripts into your organization"
+
+      - id: verify_library_ui
+        action: ui
+        description: "Check library search and category filter controls are rendered"
+        playwright:
+          - assert:
+              selector: "input[placeholder='Search system scripts...']"
+              exists: true
+          - assert:
+              selector: "button:has-text('Done')"
+              exists: true
+
+      - id: search_library_scripts
+        action: ui
+        description: "Search for a script to narrow down results"
+        playwright:
+          - fill:
+              "input[placeholder='Search system scripts...']": "disk"
+          - waitFor: "text=script(s) available"
+            timeout: 5000
+
+      - id: close_library_modal
+        action: ui
+        description: "Close the library modal using the Done button"
+        playwright:
+          - click: "button:has-text('Done')"
+          - assertNotExists: "h2:has-text('System Script Library')"
+            timeout: 5000

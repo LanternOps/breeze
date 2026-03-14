@@ -1,0 +1,378 @@
+# Patch Management E2E Tests
+# Tests update rings, patch list, approvals, compliance, and scan workflows
+# UI selectors are derived from PatchesPage.tsx, PatchList.tsx, UpdateRingList.tsx,
+# PatchComplianceDashboard.tsx, and PatchApprovalModal.tsx
+# Verification uses API calls, not remote MCP calls
+
+tests:
+  - id: patch_page_loads_with_tabs
+    name: "Patch Management Page Loads with All Tabs"
+    description: "Verify the Patches page loads with the correct heading, subtext, and three tab buttons"
+    tags: [patches, smoke, critical]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_patches
+        action: ui
+        description: "Navigate to Patch Management page and verify heading"
+        playwright:
+          - goto: "/patches"
+          - waitFor: "text=Patch Management"
+            timeout: 15000
+          - waitFor: "text=Manage update rings, approvals, compliance, and patch deployments."
+
+      - id: verify_tabs
+        action: ui
+        description: "Verify all three tab buttons are present"
+        playwright:
+          - waitFor: "button:has-text('Update Rings')"
+          - waitFor: "button:has-text('Patches')"
+          - waitFor: "button:has-text('Compliance')"
+
+      - id: verify_header_actions
+        action: ui
+        description: "Verify Run Scan and New Ring buttons are present"
+        playwright:
+          - waitFor: "button:has-text('Run Scan')"
+          - waitFor: "button:has-text('New Ring')"
+
+      - id: verify_update_rings_tab_active
+        action: ui
+        description: "Verify Update Rings tab is the default active tab and shows the rings table"
+        playwright:
+          - waitFor: "text=Update Rings"
+          - waitFor: "table"
+
+  - id: patch_update_rings_tab
+    name: "Update Rings Tab Shows Ring List"
+    description: "Navigate to the Update Rings tab and verify the ring list table columns and empty/populated state"
+    tags: [patches, rings]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_patches
+        action: ui
+        description: "Navigate to Patch Management page"
+        playwright:
+          - goto: "/patches"
+          - waitFor: "text=Patch Management"
+            timeout: 15000
+
+      - id: verify_rings_table_columns
+        action: ui
+        description: "Verify Update Rings table has correct column headers"
+        playwright:
+          - waitFor: "th:has-text('Order')"
+          - waitFor: "th:has-text('Ring')"
+          - waitFor: "th:has-text('Deferral')"
+          - waitFor: "th:has-text('Deadline')"
+          - waitFor: "th:has-text('Devices')"
+          - waitFor: "th:has-text('Compliance')"
+          - waitFor: "th:has-text('Updated')"
+          - waitFor: "th:has-text('Actions')"
+
+      - id: create_ring_modal_opens
+        action: ui
+        description: "Click New Ring and verify modal opens with correct title"
+        playwright:
+          - click: "button:has-text('New Ring')"
+          - waitFor: "text=Create Update Ring"
+            timeout: 5000
+
+      - id: close_ring_modal
+        action: ui
+        description: "Close the Create Update Ring modal"
+        playwright:
+          - click: "button:has-text('×')"
+
+      - id: verify_rings_via_api
+        action: api
+        description: "Verify update rings are retrievable from the API"
+        request:
+          method: GET
+          path: "/api/v1/update-rings"
+        expect:
+          data: []
+
+  - id: patch_list_tab_with_filters
+    name: "Patches Tab Shows Patch List with Filters"
+    description: "Switch to the Patches tab and verify the patch list table, search input, and filter dropdowns render correctly"
+    tags: [patches, filters]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_patches_tab
+        action: ui
+        description: "Navigate to Patches page and switch to Patches tab"
+        playwright:
+          - goto: "/patches"
+          - waitFor: "text=Patch Management"
+            timeout: 15000
+          - click: "button:has-text('Patches')"
+          - waitFor: "text=Patches"
+            timeout: 10000
+
+      - id: verify_patch_list_table_columns
+        action: ui
+        description: "Verify patch list table has correct column headers"
+        playwright:
+          - waitFor: "th:has-text('Patch')"
+          - waitFor: "th:has-text('Severity')"
+          - waitFor: "th:has-text('Source')"
+          - waitFor: "th:has-text('OS')"
+          - waitFor: "th:has-text('Release')"
+          - waitFor: "th:has-text('Approval')"
+          - waitFor: "th:has-text('Actions')"
+
+      - id: verify_patch_list_filters
+        action: ui
+        description: "Verify search input and all filter dropdowns are present"
+        playwright:
+          - waitFor: "input[placeholder='Search patches...']"
+          - waitFor: "select:has(option[value='all']:has-text('All Severities'))"
+          - waitFor: "select:has(option[value='pending'])"
+          - waitFor: "select:has(option[value='all']:has-text('All Sources'))"
+          - waitFor: "select:has(option[value='all']:has-text('All OS'))"
+
+      - id: filter_by_status
+        action: ui
+        description: "Filter patches by Pending status"
+        playwright:
+          - selectOption: "select:has(option[value='pending'])=pending"
+          - waitFor: "text=patches"
+            timeout: 5000
+
+      - id: filter_by_severity
+        action: ui
+        description: "Filter patches by Critical severity"
+        playwright:
+          - selectOption: "select:has(option[value='critical'])=critical"
+          - waitFor: "text=patches"
+            timeout: 5000
+
+      - id: search_patches
+        action: ui
+        description: "Use search input to filter patches"
+        playwright:
+          - fill: "input[placeholder='Search patches...']"
+            value: "update"
+          - waitFor: "text=patches"
+            timeout: 5000
+
+  - id: patch_compliance_tab
+    name: "Patch Compliance Dashboard"
+    description: "Switch to Compliance tab and verify compliance metrics, severity summary cards, and devices-needing-patches table"
+    tags: [patches, compliance, critical]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_compliance_tab
+        action: ui
+        description: "Navigate to Patches page and switch to Compliance tab"
+        playwright:
+          - goto: "/patches"
+          - waitFor: "text=Patch Management"
+            timeout: 15000
+          - click: "button:has-text('Compliance')"
+          - waitFor: "text=Compliance"
+            timeout: 10000
+
+      - id: verify_compliance_stat_cards
+        action: ui
+        description: "Verify compliance percentage, patched devices, and needs patches stat cards"
+        playwright:
+          - waitFor: "text=Compliance"
+          - waitFor: "text=Patched Devices"
+          - waitFor: "text=Needs Patches"
+
+      - id: verify_severity_summary_cards
+        action: ui
+        description: "Verify Critical Patches and Important Patches summary cards"
+        playwright:
+          - waitFor: "text=Critical Patches"
+          - waitFor: "text=Important Patches"
+
+      - id: verify_devices_needing_patches_table
+        action: ui
+        description: "Verify the devices-needing-patches table with correct columns"
+        playwright:
+          - waitFor: "text=Devices needing patches"
+          - waitFor: "th:has-text('Device')"
+          - waitFor: "th:has-text('OS')"
+          - waitFor: "th:has-text('Missing')"
+          - waitFor: "th:has-text('Critical')"
+          - waitFor: "th:has-text('Important')"
+
+      - id: verify_compliance_via_api
+        action: api
+        description: "Verify compliance data is returned by the API"
+        request:
+          method: GET
+          path: "/api/v1/patches/compliance"
+        expect:
+          data:
+            summary:
+              total: 0
+
+  - id: patch_scan_trigger
+    name: "Trigger Patch Scan from UI"
+    description: "Click Run Scan button and verify the scan is submitted to the API; verifies agent receives scan command"
+    tags: [patches, scan, windows]
+    nodes: [windows]
+    timeout: 180000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_patches
+        action: ui
+        description: "Navigate to Patches page"
+        playwright:
+          - goto: "/patches"
+          - waitFor: "text=Patch Management"
+            timeout: 15000
+
+      - id: click_run_scan
+        action: ui
+        description: "Click the Run Scan button to trigger a patch scan"
+        playwright:
+          - click: "button:has-text('Run Scan')"
+          - waitFor: "button:has-text('Scanning...')"
+            timeout: 5000
+
+      - id: wait_for_scan_completion
+        action: ui
+        description: "Wait for scan button to return to idle state"
+        playwright:
+          - waitFor: "button:has-text('Run Scan')"
+            timeout: 30000
+
+      - id: verify_scan_on_agent
+        action: api
+        description: "Verify patch scan command was received and processed by the Windows agent"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.windows}}/diagnostic-logs"
+          query:
+            component: patching
+            since: "{{testStartTime}}"
+            search: "scan"
+        poll:
+          maxAttempts: 20
+          intervalMs: 5000
+          until: "logs.length > 0"
+        timeout: 120000
+        expect:
+          logs: []
+
+  - id: patch_approval_workflow
+    name: "Patch Approval Workflow via Review Modal"
+    description: "Navigate to Patches tab, locate a pending patch, open the review modal, and approve it"
+    tags: [patches, approval]
+    nodes: [windows]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_patches_tab
+        action: ui
+        description: "Navigate to Patches page and switch to the Patches tab"
+        playwright:
+          - goto: "/patches"
+          - waitFor: "text=Patch Management"
+            timeout: 15000
+          - click: "button:has-text('Patches')"
+          - waitFor: "th:has-text('Patch')"
+            timeout: 10000
+
+      - id: open_review_modal
+        action: ui
+        description: "Click the Review button on the first pending patch to open the approval modal"
+        playwright:
+          - click: "button:has-text('Review')"
+          - waitFor: "text=Review"
+            timeout: 5000
+
+      - id: verify_api_patches_endpoint
+        action: api
+        description: "Verify the patches API returns data"
+        request:
+          method: GET
+          path: "/api/v1/patches"
+        expect:
+          data: []
+          pagination:
+            page: 1

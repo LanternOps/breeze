@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Plus } from 'lucide-react';
 import AlertRuleList, { type AlertRule } from './AlertRuleList';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'delete' | 'test';
 
@@ -21,7 +22,7 @@ export default function AlertRulesPage() {
       const response = await fetchWithAuth('/alerts/rules');
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to fetch alert rules');
@@ -40,7 +41,7 @@ export default function AlertRulesPage() {
   }, [fetchRules]);
 
   const handleEdit = (rule: AlertRule) => {
-    window.location.href = `/alerts/rules/${rule.id}`;
+    void navigateTo(`/alerts/rules/${rule.id}`);
   };
 
   const handleDelete = (rule: AlertRule) => {
@@ -61,7 +62,7 @@ export default function AlertRulesPage() {
 
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to test rule');
@@ -85,13 +86,13 @@ export default function AlertRulesPage() {
   const handleToggle = async (rule: AlertRule, enabled: boolean) => {
     try {
       const response = await fetchWithAuth(`/alerts/rules/${rule.id}`, {
-        method: 'PATCH',
+        method: 'PUT',
         body: JSON.stringify({ enabled })
       });
 
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error(`Failed to ${enabled ? 'enable' : 'disable'} rule`);
@@ -122,7 +123,7 @@ export default function AlertRulesPage() {
 
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to delete rule');
@@ -199,7 +200,9 @@ export default function AlertRulesPage() {
         onDelete={handleDelete}
         onTest={handleTest}
         onToggle={handleToggle}
-        onCreate={() => window.location.href = '/alerts/rules/new'}
+        onCreate={() => {
+          void navigateTo('/alerts/rules/new');
+        }}
       />
 
       {/* Delete Confirmation Modal */}

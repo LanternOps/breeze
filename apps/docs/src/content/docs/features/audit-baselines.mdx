@@ -1,0 +1,501 @@
+---
+title: Audit Baselines
+description: Establish audit policy baselines, detect configuration drift, and enforce CIS-aligned event log settings across your fleet.
+sidebar:
+  order: 50
+  label: Audit Baselines
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Audit Baselines let you define the expected audit policy configuration for your managed devices, automatically detect when devices drift from those expectations, and remediate non-compliant systems through an approval-gated workflow. Breeze ships with built-in CIS Level 1 and Level 2 templates for Windows, macOS, and Linux, and supports fully custom baselines for organizations with their own compliance requirements.
+
+The system works in three phases: first, baselines define what the audit policy should look like. Second, the agent periodically collects the actual audit policy state from each device and reports it to the API. Third, a background drift evaluator compares the collected state against the active baseline for that OS type, scores the result, and publishes compliance events. When deviations are found, administrators can review the specific settings that drifted and, for Windows devices, push the baseline directly to the device through an approval-gated apply workflow.
+
+---
+
+## Key Concepts
+
+### Profiles
+
+| Profile | Description |
+|---|---|
+| `cis_l1` | CIS Benchmark Level 1 -- baseline security settings suitable for most environments |
+| `cis_l2` | CIS Benchmark Level 2 -- stricter settings for high-security environments |
+| `custom` | User-defined settings (requires explicit `settings` object) |
+
+### Baseline Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | UUID | Unique identifier for the baseline |
+| `orgId` | UUID | Organization that owns this baseline |
+| `name` | string (max 200) | Human-readable baseline name |
+| `osType` | enum | Target OS: `windows`, `macos`, or `linux` |
+| `profile` | enum | One of `cis_l1`, `cis_l2`, `custom` |
+| `settings` | JSON | Key-value map of expected audit policy settings |
+| `isActive` | boolean | Whether this baseline is used for drift evaluation |
+| `createdBy` | UUID | User who created the baseline |
+| `createdAt` | datetime | When the baseline was created |
+| `updatedAt` | datetime | When the baseline was last modified |
+
+<Aside type="caution">
+Only one baseline can be active per organization per OS type. When you activate a baseline, any previously active baseline for the same org and OS is automatically deactivated.
+</Aside>
+
+### Compliance Result Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | UUID | Unique identifier for the result |
+| `orgId` | UUID | Organization ID |
+| `deviceId` | UUID | Device that was evaluated |
+| `baselineId` | UUID | Baseline the device was evaluated against |
+| `compliant` | boolean | Whether the device fully matches the baseline |
+| `score` | integer (0-100) | Percentage of settings that match |
+| `deviations` | JSON array | List of settings that deviated from expectations |
+| `checkedAt` | datetime | When the evaluation was performed |
+| `remediatedAt` | datetime | Set when a device returns to compliance after a prior deviation |
+
+### Deviation Structure
+
+Each entry in the `deviations` array contains:
+
+| Field | Type | Description |
+|---|---|---|
+| `setting` | string | The audit policy setting key (e.g., `auditpol:logon`) |
+| `expected` | any | The value defined in the baseline |
+| `actual` | any | The value observed on the device (null if missing) |
+| `reason` | enum | `missing` (setting not found on device) or `mismatch` (value does not match) |
+
+---
+
+## Built-in Templates
+
+Breeze includes six CIS-aligned templates that are seeded for each organization. These provide sensible defaults and can be activated as-is or used as a starting point for custom baselines.
+
+<Tabs>
+<TabItem label="Windows">
+
+**CIS L1 (Windows)**
+
+| Setting | Expected Value |
+|---|---|
+| `auditpol:logon` | `success_and_failure` |
+| `auditpol:account lockout` | `success_and_failure` |
+| `auditpol:security state change` | `success` |
+| `auditpol:system integrity` | `success_and_failure` |
+
+**CIS L2 (Windows)**
+
+Includes all L1 settings plus:
+
+| Setting | Expected Value |
+|---|---|
+| `auditpol:process creation` | `success_and_failure` |
+| `auditpol:credential validation` | `success_and_failure` |
+
+</TabItem>
+<TabItem label="macOS">
+
+**CIS L1 (macOS)**
+
+| Setting | Expected Value | Comparison |
+|---|---|---|
+| `audit_control.flags` | `lo` | includes |
+| `audit_control.naflags` | `lo` | includes |
+| `audit_control.policy` | `cnt` | includes |
+| `audit_control.filesz` | `5` | >= |
+
+**CIS L2 (macOS)**
+
+| Setting | Expected Value | Comparison |
+|---|---|---|
+| `audit_control.flags` | `aa` | includes |
+| `audit_control.naflags` | `lo` | includes |
+| `audit_control.policy` | `cnt` | includes |
+| `audit_control.filesz` | `10` | >= |
+
+</TabItem>
+<TabItem label="Linux">
+
+**CIS L1 (Linux)**
+
+| Setting | Expected Value | Comparison |
+|---|---|---|
+| `auditd.enabled` | `true` | equals |
+| `auditd.failure_mode` | `single`, `1` | in |
+| `auditd.max_log_file_action` | `keep_logs`, `rotate` | in |
+| `auditd.space_left_action` | `email`, `syslog`, `single` | in |
+
+**CIS L2 (Linux)**
+
+| Setting | Expected Value | Comparison |
+|---|---|---|
+| `auditd.enabled` | `true` | equals |
+| `auditd.failure_mode` | `single`, `2`, `panic` | in |
+| `auditd.max_log_file_action` | `keep_logs` | equals |
+| `auditd.space_left_action` | `email`, `single`, `halt` | in |
+| `auditd.admin_space_left_action` | `single`, `halt` | in |
+
+</TabItem>
+</Tabs>
+
+---
+
+## Comparison Operators
+
+Baseline settings support rich comparison operators for flexible compliance rules. When a setting value is a plain scalar (string, number, boolean), it is compared using deep equality. When the value is an object with an `op` field, the specified operator is used.
+
+| Operator | Description | Example |
+|---|---|---|
+| `equals` | Exact deep equality | `{ "op": "equals", "value": "success_and_failure" }` |
+| `in` | Value matches any item in a list | `{ "op": "in", "values": ["keep_logs", "rotate"] }` |
+| `includes` | String contains the value, or array contains the element | `{ "op": "includes", "value": "lo" }` |
+| `gte` | Numeric value is greater than or equal to threshold | `{ "op": "gte", "value": 5 }` |
+| `lte` | Numeric value is less than or equal to threshold | `{ "op": "lte", "value": 100 }` |
+| `regex` | String matches a regular expression (case-insensitive) | `{ "op": "regex", "value": "^success" }` |
+
+---
+
+## How Drift Detection Works
+
+<Steps>
+
+1. **Agent collects the audit policy state**
+
+   A background job (`audit-policy-collection`) runs daily at 03:00 UTC and sends a `collect_audit_policy` command to all online devices that have an active baseline matching their OS type. The agent executes the command and returns the current audit policy settings as JSON in the command result.
+
+2. **API persists the policy state**
+
+   When the command result arrives, the API calls `insertAuditPolicyState()` to store the collected settings in the `audit_policy_states` table. Each record captures the device ID, org ID, OS type, normalized settings, raw output, and collection timestamp.
+
+3. **Drift evaluator compares against the active baseline**
+
+   The drift evaluator runs every hour (and also immediately when a baseline is created or updated). It:
+
+   - Retrieves the latest collected policy state for each device.
+   - Finds the active baseline for the device's org and OS type.
+   - Compares each expected setting against the actual collected value using the appropriate comparison operator.
+   - Computes a compliance score: `(passed settings / total expected settings) * 100`.
+   - Records the result in `audit_baseline_results` with the full list of deviations.
+
+4. **Compliance events are published**
+
+   - If the device is non-compliant, a `compliance.audit_deviation` event is published with the baseline ID, device ID, score, and deviation details.
+   - If the device was previously non-compliant but is now fully compliant, a `compliance.audit_remediated` event is published and the `remediatedAt` timestamp is set on the result.
+
+</Steps>
+
+<Aside type="tip">
+The compliance score is a percentage. A score of 100 means every setting in the baseline matches the device. A score of 75 means 75% of settings match. The `compliant` flag is only `true` when the score is 100 (zero deviations).
+</Aside>
+
+---
+
+## Applying Baselines to Devices
+
+For Windows devices, you can push the baseline audit policy settings directly to the device. This requires a two-step approval workflow to prevent accidental or unauthorized changes.
+
+<Steps>
+
+1. **Create an apply request**
+
+   Call `POST /audit-baselines/apply-requests` with the baseline ID and target device IDs. The API validates that the baseline exists, verifies OS compatibility (only Windows is currently supported), and creates a pending approval record.
+
+   Devices with a different OS than the baseline are skipped and returned in the `skipped` array with the reason.
+
+2. **Approve or reject the request**
+
+   A different user (the requester cannot approve their own request) calls `POST /audit-baselines/apply-requests/:approvalId/decision` with `decision: "approved"` or `decision: "rejected"`.
+
+   Approval requests expire after a configurable duration (default: 60 minutes, range: 5-1440 minutes). Expired requests are automatically marked as `expired` and cannot be approved.
+
+3. **Execute the apply**
+
+   Call `POST /audit-baselines/apply` with the baseline ID, device IDs, and the `approvalRequestId`. The API:
+
+   - Verifies the approval is in `approved` status and has not been consumed or expired.
+   - Verifies the device set matches the originally approved set.
+   - Atomically marks the approval as `consumed` (preventing double-use).
+   - Queues an `apply_audit_policy_baseline` command for each eligible device with the baseline settings as the payload.
+
+4. **Dry run mode**
+
+   You can preview the apply operation by setting `dryRun: true`. This returns the list of eligible and skipped devices without creating commands or consuming an approval.
+
+</Steps>
+
+### Approval Statuses
+
+| Status | Description |
+|---|---|
+| `pending` | Waiting for an approver to review |
+| `approved` | Approved by a different user than the requester |
+| `rejected` | Rejected by a reviewer |
+| `expired` | The approval window elapsed before a decision was made |
+| `consumed` | The approved request was used to execute the apply |
+
+---
+
+## API Reference
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/audit-baselines` | List baselines (filterable by org, OS type, profile, active status) |
+| `POST` | `/audit-baselines` | Create or update a baseline |
+| `GET` | `/audit-baselines/compliance` | Get compliance summary across devices and baselines |
+| `GET` | `/audit-baselines/devices/:deviceId` | Get baseline compliance results for a specific device |
+| `POST` | `/audit-baselines/apply-requests` | Create an apply approval request |
+| `GET` | `/audit-baselines/apply-requests` | List apply approval requests (filterable by status, baseline) |
+| `POST` | `/audit-baselines/apply-requests/:approvalId/decision` | Approve or reject an apply request |
+| `POST` | `/audit-baselines/apply` | Execute a baseline apply (requires approved request) |
+
+### GET /audit-baselines
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `orgId` | UUID | Filter by organization (optional for partner/system scope) |
+| `osType` | enum | Filter by `windows`, `macos`, or `linux` |
+| `profile` | enum | Filter by `cis_l1`, `cis_l2`, or `custom` |
+| `isActive` | boolean | Filter by active status |
+
+**Response (200):**
+
+```json
+{
+  "data": [
+    {
+      "id": "...",
+      "orgId": "...",
+      "name": "CIS L1 Audit Baseline (Windows)",
+      "osType": "windows",
+      "profile": "cis_l1",
+      "settings": {
+        "auditpol:logon": "success_and_failure",
+        "auditpol:account lockout": "success_and_failure"
+      },
+      "isActive": true,
+      "createdBy": "...",
+      "createdAt": "2026-01-15T10:00:00.000Z",
+      "updatedAt": "2026-03-01T08:00:00.000Z"
+    }
+  ]
+}
+```
+
+### POST /audit-baselines
+
+Creates a new baseline or updates an existing one. If `id` is provided, the existing baseline is updated. If the profile is not `custom` and no `settings` are provided, the built-in template settings are used automatically.
+
+**Request body:**
+
+```json
+{
+  "orgId": "...",
+  "name": "Custom Windows Audit Baseline",
+  "osType": "windows",
+  "profile": "custom",
+  "settings": {
+    "auditpol:logon": "success_and_failure",
+    "auditpol:process creation": "success"
+  },
+  "isActive": true
+}
+```
+
+### GET /audit-baselines/compliance
+
+Returns an aggregate compliance summary.
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `orgId` | UUID | Filter by organization |
+| `baselineId` | UUID | Filter by specific baseline |
+| `osType` | enum | Filter by OS type |
+
+**Response (200):**
+
+```json
+{
+  "totalDevices": 42,
+  "compliant": 38,
+  "nonCompliant": 4,
+  "averageScore": 94,
+  "baselines": [
+    {
+      "baselineId": "...",
+      "baselineName": "CIS L1 Audit Baseline (Windows)",
+      "osType": "windows",
+      "total": 30,
+      "compliant": 28,
+      "nonCompliant": 2,
+      "averageScore": 96
+    }
+  ]
+}
+```
+
+### GET /audit-baselines/devices/:deviceId
+
+Returns the latest compliance result per baseline for a specific device.
+
+**Response (200):**
+
+```json
+{
+  "device": {
+    "id": "...",
+    "orgId": "...",
+    "hostname": "WORKSTATION-01"
+  },
+  "baselines": [
+    {
+      "baselineId": "...",
+      "baselineName": "CIS L1 Audit Baseline (Windows)",
+      "osType": "windows",
+      "compliant": false,
+      "score": 75,
+      "deviations": [
+        {
+          "setting": "auditpol:system integrity",
+          "expected": "success_and_failure",
+          "actual": "success",
+          "reason": "mismatch"
+        }
+      ],
+      "checkedAt": "2026-03-02T03:15:00.000Z",
+      "remediatedAt": null
+    }
+  ]
+}
+```
+
+### POST /audit-baselines/apply-requests
+
+**Request body:**
+
+```json
+{
+  "orgId": "...",
+  "baselineId": "...",
+  "deviceIds": ["device-uuid-1", "device-uuid-2"],
+  "expiresInMinutes": 120
+}
+```
+
+**Response (201):**
+
+```json
+{
+  "approval": {
+    "id": "...",
+    "orgId": "...",
+    "baselineId": "...",
+    "requestedBy": "...",
+    "status": "pending",
+    "expiresAt": "2026-03-02T16:30:00.000Z"
+  },
+  "baselineId": "...",
+  "eligibleDeviceIds": ["device-uuid-1", "device-uuid-2"],
+  "skipped": []
+}
+```
+
+### POST /audit-baselines/apply
+
+**Request body:**
+
+```json
+{
+  "orgId": "...",
+  "baselineId": "...",
+  "deviceIds": ["device-uuid-1", "device-uuid-2"],
+  "approvalRequestId": "approval-uuid",
+  "dryRun": false
+}
+```
+
+**Response (200):**
+
+```json
+{
+  "baselineId": "...",
+  "queued": [
+    { "deviceId": "device-uuid-1", "commandId": "cmd-uuid-1" },
+    { "deviceId": "device-uuid-2", "commandId": "cmd-uuid-2" }
+  ],
+  "failed": [],
+  "skipped": [],
+  "dryRun": false,
+  "approvalRequestId": "approval-uuid",
+  "approvalConsumed": true
+}
+```
+
+---
+
+## Background Jobs
+
+Two recurring background jobs manage the audit baseline lifecycle:
+
+| Job | Schedule | Description |
+|---|---|---|
+| `audit-policy-collection` | Daily at 03:00 UTC | Sends `collect_audit_policy` commands to all online devices with an active baseline for their OS |
+| `audit-drift-evaluator` | Every hour (on the hour) | Evaluates the latest collected policy state against active baselines and records compliance results |
+
+Both jobs can also be triggered on demand (e.g., drift evaluation runs immediately when a baseline is created or updated).
+
+---
+
+## Permissions
+
+| Action | Required Scope | Required Permission |
+|---|---|---|
+| List baselines | `organization`, `partner`, or `system` | `audit:read` |
+| Create/update baseline | `organization`, `partner`, or `system` | `organizations:write` |
+| View compliance summary | `organization`, `partner`, or `system` | `audit:read` |
+| View device compliance | `organization`, `partner`, or `system` | `audit:read` |
+| Create apply request | `organization`, `partner`, or `system` | `devices:write` |
+| Approve/reject apply request | `organization`, `partner`, or `system` | `devices:write` |
+| Execute apply | `organization`, `partner`, or `system` | `devices:write` |
+
+---
+
+## Troubleshooting
+
+### No compliance results appear for devices
+
+- Verify that at least one baseline is active (`isActive: true`) for the target OS type and organization.
+- Check that the `audit-policy-collection` job has run. The daily collection runs at 03:00 UTC. You can trigger it manually by creating a baseline or updating an existing one (which enqueues an immediate drift evaluation).
+- Ensure target devices are online. The collection job only targets devices with `status: online`.
+
+### Compliance score is lower than expected
+
+- Review the `deviations` array in the compliance result to see which specific settings drifted.
+- Settings with `reason: "missing"` indicate the agent could not find that setting on the device. This may mean the audit policy category is not configured at all.
+- Settings with `reason: "mismatch"` show both the expected and actual values. Verify the baseline settings use the correct comparison operator.
+
+### Apply request shows "OS mismatch" for devices
+
+- Baseline apply is currently supported on Windows only. Devices running macOS or Linux will be listed in the `skipped` array with the reason.
+- Ensure the `osType` on the baseline matches the target devices' OS type.
+
+### Apply request expired before approval
+
+- The default expiration is 60 minutes. Use `expiresInMinutes` (range: 5-1440) when creating the request to set a longer window.
+- Once expired, you must create a new apply request. Expired requests cannot be approved.
+
+### "Requester cannot approve their own apply request"
+
+- This is a deliberate security control. The user who created the apply request must have a different user approve it. This ensures a four-eyes principle for audit policy changes.
+
+### Approval was consumed but commands failed
+
+- Check the `failed` array in the apply response. Each entry includes the device ID and error message.
+- Common causes: device is offline (command cannot be queued), device already has a pending command of the same type.
+- Once an approval is consumed, it cannot be reused. You must create a new apply request and go through the approval process again.

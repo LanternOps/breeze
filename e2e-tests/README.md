@@ -1,281 +1,242 @@
 # Breeze E2E Tests
 
-End-to-end testing framework for Breeze RMM using Claude Code as the coordinator.
+YAML-driven end-to-end test suite for Breeze RMM. Tests drive the UI via Playwright and verify agent behavior through API log queries — no remote MCP servers required.
 
-## Overview
-
-This testing framework enables:
-- **UI Testing**: Automated browser testing of Breeze web UI via Playwright
-- **Cross-Platform Testing**: Verification on Windows, Linux, and macOS nodes
-- **AI-Assisted Debugging**: Claude Code investigates issues on remote machines
-- **Conversational Testing**: Run tests by talking to Claude Code
-
-Current status:
-- The CLI runner supports `dry-run`, `simulate`, and `live` execution modes.
-- In `live` mode, `remote` steps execute real MCP `tools/call` requests to configured nodes.
-- In `live` mode, `ui` steps execute real Playwright browser actions.
-- Use `--allow-ui-simulate` in `live` mode only when you want to bypass UI execution.
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  Your Machine (Coordinator)                                     │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │  Claude Code                                                │ │
-│  │    ├─ playwright runner → Browser → Breeze UI              │ │
-│  │    ├─ windows-node   → Remote Windows PC                   │ │
-│  │    ├─ linux-node     → Remote Linux VM                     │ │
-│  │    └─ macos-node     → Remote Mac                          │ │
-│  └────────────────────────────────────────────────────────────┘ │
-│                                                                 │
-│  e2e-tests/                                                     │
-│    ├─ config.yaml        # Environment configuration           │
-│    ├─ run.ts             # Test runner CLI                      │
-│    └─ tests/                                                    │
-│        ├─ agent_install.yaml                                    │
-│        ├─ script_execution.yaml                                 │
-│        ├─ alert_lifecycle.yaml                                  │
-│        └─ remote_session.yaml                                   │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-## Prerequisites
-
-1. **Claude Code** installed and configured
-2. **Playwright** installed for local UI execution (`npm install` in `e2e-tests`)
-3. **Remote MCP servers** running on test nodes (see `../tools/remote-mcp/`)
-4. **Tailscale** (or other network connectivity) between machines
-
-## Setup
-
-### 1. Configure Remote Nodes
-
-Copy the example settings and configure your node addresses:
-
-```bash
-cp ../.claude/settings.example.json ../.claude/settings.json
-```
-
-Edit `.claude/settings.json` with your Tailscale hostnames or IPs.
-
-### 2. Set Environment Variables
-
-```bash
-export TEST_USER_EMAIL="admin@example.com"
-export TEST_USER_PASSWORD="your-password"
-export WINDOWS_NODE_TOKEN="your-windows-token"
-export LINUX_NODE_TOKEN="your-linux-token"
-export MACOS_NODE_TOKEN="your-macos-token"
-```
-
-### 3. Install Dependencies
+## Quick Start
 
 ```bash
 cd e2e-tests
 npm install
 npx playwright install chromium
+
+# Simulate all tests (no browser, validates YAML structure)
+npx tsx run.ts --mode simulate
+
+# Run all tests live (headless Chromium)
+npx tsx run.ts --mode live
+
+# Run a single test
+npx tsx run.ts --mode live --test dashboard_comprehensive
+
+# Run tests by tag
+npx tsx run.ts --mode live --tags critical
+npx tsx run.ts --mode live --tags dashboard,smoke
 ```
 
-## Usage
+## Configuration
 
-### CLI Runner
+### Environment Variables
 
-```bash
-# Run all tests in live mode
-npm test
+Set in the parent `.env` file (`../breeze/.env`). The runner loads it automatically via dotenv.
 
-# Simulate all tests (non-blocking preview mode)
-npm run test:simulate
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `E2E_BASE_URL` | Breeze UI URL | `http://localhost:4321/` |
+| `E2E_API_URL` | Breeze API URL | `http://localhost:3001` |
+| `E2E_ADMIN_EMAIL` | Login email (aliased to `TEST_USER_EMAIL`) | `admin@breeze.local` |
+| `E2E_ADMIN_PASSWORD` | Login password (aliased to `TEST_USER_PASSWORD`) | `BreezeAdmin123!` |
+| `E2E_MACOS_DEVICE_ID` | Enrolled macOS device UUID | — |
+| `E2E_WINDOWS_DEVICE_ID` | Enrolled Windows device UUID | — |
+| `E2E_LINUX_DEVICE_ID` | Enrolled Linux device UUID | — |
+| `E2E_HEADLESS` | Override headless mode (`true`/`false`) | `true` |
+| `E2E_SLOWMO` | Playwright slowMo in ms | `0` |
+| `E2E_API_TIMEOUT_MS` | Max time for API steps | `5000` |
 
-# Dry run (preview without executing)
-npm run test:dry
-
-# Explicit live mode
-npm run test:live
-
-# Live remote execution with simulated UI steps
-npx tsx run.ts --mode live --allow-ui-simulate
-
-# Run critical tests in live mode
-npm run test:critical
-
-# Simulate critical tests
-npm run test:critical:simulate
-
-# Run tests for specific platform in live mode
-npm run test:linux
-npm run test:windows
-npm run test:macos
-
-# Simulate platform-specific tests
-npm run test:linux:simulate
-npm run test:windows:simulate
-npm run test:macos:simulate
-
-# Run specific test in simulate mode
-npx tsx run.ts --mode simulate --test agent_install_linux
-
-# Run specific test in live mode (remote steps live, UI simulated)
-npx tsx run.ts --mode live --allow-ui-simulate --test agent_install_linux
-
-# Run tests with specific tags in simulate mode
-npx tsx run.ts --mode simulate --tags critical,agent
-```
-
-### Conversational Mode
-
-You can also run tests by talking to Claude Code:
-
-```
-You: Run the Linux agent installation test
-
-Claude: I'll run the agent_install_linux test for you.
-[Executes test steps, shows progress]
-...
-Test passed! The agent was successfully installed and enrolled.
-
-You: The script execution test failed - can you investigate?
-
-Claude: I'll investigate the failure on the Linux node.
-[Connects to remote Claude, checks logs]
-...
-Found the issue: The script failed because the user doesn't have
-execute permissions on /opt/breeze/scripts. Here's the fix...
-```
-
-## Test Structure
-
-Tests are defined in YAML files with the following structure:
+### config.yaml
 
 ```yaml
-tests:
-  - id: unique_test_id
-    name: "Human-readable test name"
-    description: "What this test does"
-    tags: [tag1, tag2]
-    nodes: [linux, windows]
-    timeout: 120000
-    steps:
-      # UI step - uses Playwright
-      - id: step_1
-        action: ui
-        description: "Login to dashboard"
-        playwright:
-          - goto: "/login"
-          - fill:
-              "[name='email']": "${TEST_USER_EMAIL}"
-          - click: "button[type='submit']"
+environment:
+  baseUrl: "${E2E_BASE_URL:-http://localhost:4321/}"
+  apiUrl: "${E2E_API_URL:-http://localhost:3001}"
+  defaultTimeout: 10000     # per-step timeout (ms)
+  testTimeout: 300000       # per-test timeout (ms)
 
-      # Remote step - uses remote MCP node
-      - id: step_2
-        action: remote
-        node: linux
-        tool: claude_code
-        args:
-          prompt: "Check agent status and return JSON"
-        expect:
-          status: "running"
+api:
+  apiKey: "${E2E_API_KEY}"
+  email: "${E2E_ADMIN_EMAIL:-admin@breeze.local}"
+  password: "${E2E_ADMIN_PASSWORD:-BreezeAdmin123!}"
+
+devices:
+  windows: "${E2E_WINDOWS_DEVICE_ID}"
+  linux: "${E2E_LINUX_DEVICE_ID}"
+  macos: "${E2E_MACOS_DEVICE_ID}"
+
+playwright:
+  browser: chromium
+  headless: true
+  slowMo: 0
 ```
 
-## Available Tests
+## How It Works
 
-| Test ID | Description | Nodes |
-|---------|-------------|-------|
-| `agent_install_windows` | Windows agent installation | windows |
-| `agent_install_linux` | Linux agent installation | linux |
-| `agent_install_macos` | macOS agent installation | macos |
-| `script_execution_single` | Single device script run | linux |
-| `script_execution_cross_platform` | Cross-platform scripts | all |
-| `alert_cpu_threshold` | CPU alert lifecycle | linux |
-| `alert_agent_offline` | Agent offline detection | linux |
-| `remote_terminal_session` | Terminal session test | linux |
-| `remote_file_transfer` | File upload/download | linux |
+### Architecture
 
-## Writing New Tests
+```
+┌──────────────────────────────────────────────────────────┐
+│  Test Runner (run.ts)                                     │
+│                                                           │
+│  1. Parses YAML test files from tests/                    │
+│  2. Launches shared Chromium browser (one instance)       │
+│  3. For each test:                                        │
+│     ├─ Creates fresh browser context (isolated cookies)   │
+│     ├─ Executes steps sequentially:                       │
+│     │   ├─ ui:     Playwright actions (goto, fill, click) │
+│     │   ├─ api:    REST calls to Breeze API               │
+│     │   └─ remote: MCP calls to test nodes (deprecated)   │
+│     └─ Captures browser errors, screenshots on failure    │
+│                                                           │
+│  Key optimizations:                                       │
+│  - Token reuse: UI login response intercepted → API steps │
+│    reuse the same JWT (no extra login = no rate limiting)  │
+│  - Cookie caching: storage state persisted across tests   │
+│  - Rate limit clearing: auto-clears Redis keys every 4    │
+│    tests via docker exec (local dev only)                  │
+└──────────────────────────────────────────────────────────┘
+```
 
-1. Create a new YAML file in `tests/` or add to an existing file
-2. Define the test with unique ID and steps
-3. Use `action: ui` for browser interactions
-4. Use `action: remote` for remote machine operations
-5. Add `expect` blocks for assertions
-6. Use `optional: true` for cleanup steps
+### Three Action Types
 
-### Step Types
+**`ui`** — Playwright browser automation
 
-**UI Steps** (`action: ui`):
 ```yaml
 - id: login
   action: ui
   playwright:
     - goto: "/login"
+    - waitFor: "text=Sign in"
     - fill:
-        "[name='email']": "user@example.com"
+        "[name='email']": "${TEST_USER_EMAIL}"
+        "[name='password']": "${TEST_USER_PASSWORD}"
     - click: "button[type='submit']"
-    - waitFor: "[data-testid='dashboard']"
-    - assert:
-        selector: "h1"
-        text: "Welcome"
+    - waitFor:
+        url: "**/"
+        timeout: 15000
 ```
 
-**Remote Steps** (`action: remote`):
+**`api`** — Authenticated REST calls to Breeze API (verifies agent behavior via shipped logs)
+
 ```yaml
-- id: check_service
-  action: remote
-  node: linux
-  tool: claude_code
-  args:
-    prompt: |
-      Check if the service is running:
-      1. Run: systemctl status myservice
-      2. Return JSON: {running: boolean, status: string}
+- id: verify_logs
+  action: api
+  description: "Verify agent shipped diagnostic logs"
+  request:
+    method: GET
+    path: "/api/v1/devices/{{devices.macos}}/diagnostic-logs"
+    query:
+      component: heartbeat
+      since: "{{twoHoursAgo}}"
   expect:
-    running: true
+    total: "> 0"
 ```
 
-## Debugging
+**`remote`** — MCP calls to test nodes (deprecated, auto-skipped if no nodes configured)
 
-### Verbose Mode
+### Supported UI Actions
 
-```bash
-npx tsx run.ts --verbose
+| Action | Example | Notes |
+|--------|---------|-------|
+| `goto` | `goto: "/devices"` | Waits for domcontentloaded + 5s networkidle for hydration |
+| `fill` | `fill: { "[name='email']": "user@example.com" }` | Selector → value map |
+| `click` | `click: "button[type='submit']"` | CSS selector |
+| `waitFor` | `waitFor: "text=Dashboard"` | Selector, text, or `{ url, state, timeout }` |
+| `assert` | `assert: { selector: "h1", contains: "Dashboard" }` | `exists`, `text`, `contains` (case-insensitive) |
+| `assertNotExists` | `assertNotExists: ".error-banner"` | Element should not be in DOM |
+| `type` | `type: "search text"` | Types into focused element |
+| `press` / `press_key` | `press_key: "Escape"` | Keyboard key press |
+| `selectOption` | `selectOption: { "select.filter": "active" }` | Native `<select>` dropdown |
+| `hover` | `hover: ".menu-trigger"` | Mouse hover |
+| `check` / `uncheck` | `check: "#agree-checkbox"` | Checkbox toggle |
+| `scrollTo` | `scrollTo: ".footer"` | Scroll element into view |
+| `extract` | `extract: { selector: "h1", as: "pageTitle" }` | Extract text into variable |
+| `uploadFile` | `uploadFile: { selector: "input[type=file]", path: "./test.csv" }` | File upload |
+
+### Template Variables
+
+Available in `api` paths and `ui` text via `{{variable}}` syntax:
+
+| Variable | Value |
+|----------|-------|
+| `{{baseUrl}}` | Resolved `E2E_BASE_URL` |
+| `{{apiUrl}}` | Resolved `E2E_API_URL` |
+| `{{testId}}` | Current test ID |
+| `{{testStartTime}}` | ISO timestamp when test started |
+| `{{twoHoursAgo}}` | ISO timestamp 2 hours before test start |
+| `{{oneHourAgo}}` | ISO timestamp 1 hour before test start |
+| `{{devices.macos}}` | macOS device UUID |
+| `{{devices.windows}}` | Windows device UUID |
+| `{{devices.linux}}` | Linux device UUID |
+
+Environment variables are resolved with `${VAR_NAME}` or `${VAR:-default}` syntax.
+
+### API Expect Operators
+
+The `expect` block supports comparison operators for numeric fields:
+
+```yaml
+expect:
+  total: "> 0"        # greater than
+  count: ">= 5"       # greater than or equal
+  errors: "< 10"      # less than
+  status: online       # exact match (string)
 ```
 
-### Investigate Failures
+## Writing Tests
 
-When a test fails, ask Claude to investigate:
+### Example: Comprehensive UI + API Test
 
-```
-You: The agent_install_linux test failed at step verify_agent_running.
-     Can you check what's happening on the Linux node?
+See `tests/agent_log_shipping.yaml` for a complete example that:
+1. Logs in via UI
+2. Queries diagnostic logs via API (verifies agent is shipping)
+3. Filters by component and time range
+4. Navigates to device detail page via UI
+5. Verifies device status via API
 
-Claude: [Connects to Linux node, investigates logs and service status]
-```
+### Example: Pure UI Smoke Test
 
-### View Remote Logs
+See `tests/dashboard_comprehensive.yaml` for a single 11-step test covering:
+login, stat cards, panels, sidebar nav, command palette, user menu, dark mode, API check, logout.
 
-```
-You: Show me the Breeze agent logs from the Linux node
+### Tips
 
-Claude: [Reads /var/log/breeze/agent.log from remote node]
-```
+- **One login per test**: The first test logs in via UI; the runner intercepts the login response and caches the JWT. Subsequent API steps reuse it automatically.
+- **Cookie caching**: After a test closes, its browser cookies are saved. The next test starts with those cookies, so the login step often succeeds immediately (session still valid).
+- **Rate limiting**: The runner auto-clears Redis rate limit keys every 4 tests. If running against a remote deployment without Docker access, space tests apart or increase the rate limit.
+- **Hydration**: The `goto` action waits for `domcontentloaded` then up to 5s for `networkidle`. This gives Astro's React islands time to hydrate before form interactions.
+- **Case-insensitive contains**: `assert: { contains: "Dashboard" }` matches "DASHBOARD", "dashboard", etc.
 
 ## Troubleshooting
 
-### "Node not reachable"
+### Rate limiting (429 on login)
 
-1. Check Tailscale connection: `tailscale status`
-2. Verify remote MCP server is running on the node
-3. Check firewall allows port 3100
+Each login counts against a 5-per-5-minute limit. The runner clears Redis keys automatically, but if you hit this:
 
-### "Playwright action failed"
+```bash
+# Clear manually
+docker exec breeze-redis redis-cli EVAL \
+  "local k=redis.call('KEYS','login:*'); for _,v in ipairs(k) do redis.call('DEL',v) end; return #k" 0
 
-1. Run with `--verbose` to see full action details
-2. Check if Breeze UI is running at configured `baseUrl`
-3. Verify selectors match current UI
+# Or restart Redis
+docker restart breeze-redis
+```
 
-### "Claude Code timeout"
+### Redis "max clients reached"
 
-1. Increase timeout in step definition
-2. Check if Claude Code CLI is working on remote node
-3. Verify `--dangerously-skip-permissions` was accepted
+Too many rapid connections. Restart Redis:
+
+```bash
+docker restart breeze-redis
+```
+
+### Login form submits as GET (credentials in URL)
+
+React hasn't hydrated yet. The `goto` action's 5s networkidle wait should handle this. If it persists, add a `waitFor` step for a React-rendered element before filling the form.
+
+### Selectors not matching
+
+Run with `--verbose` to see full Playwright logs. Use browser DevTools to inspect the actual DOM. Common issues:
+- Table headers render uppercase ("DEVICE") but test expects title case ("Device") — `contains` is case-insensitive, but `text` is exact
+- Astro renders different HTML than expected — check the actual component source
+
+### Tests with `remote` steps skip automatically
+
+Tests using `action: remote` are auto-skipped when no MCP nodes are configured (host contains `${`). This is expected — `remote` is only needed for `agent_install` and `remote_session` tests.

@@ -1,9 +1,5 @@
 import type { BackupPolicySchedule } from './types';
 
-export function minutesAgo(minutes: number) {
-  return new Date(Date.now() - minutes * 60 * 1000).toISOString();
-}
-
 export function toDateOrNull(value?: string) {
   if (!value) return null;
   const date = new Date(value);

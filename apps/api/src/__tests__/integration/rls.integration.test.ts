@@ -25,39 +25,52 @@ import { describe, it, expect, vi, beforeEach, type MockedFunction } from 'vites
 // ---------------------------------------------------------------------------
 // Mock the postgres / drizzle layer BEFORE importing the db module so that the
 // module-level `client` and `baseDb` are replaced with test doubles.
+//
+// vi.hoisted() ensures these are available when vi.mock() factories run
+// (vitest hoists vi.mock calls above all other code).
 // ---------------------------------------------------------------------------
 
-// Track every SQL string that would be sent to set_config
-const capturedSqlStrings: string[] = [];
-// Track whether the user-supplied fn() was called inside a transaction
-let fnCalledInsideTransaction = false;
-// Track whether a new transaction was started at all
-let transactionStarted = false;
+const {
+  capturedSqlStrings,
+  mockExecute,
+  mockTx,
+  mockTransaction,
+  fnCalledInsideTransactionRef,
+  transactionStartedRef
+} = vi.hoisted(() => {
+  const capturedSqlStrings: string[] = [];
+  const fnCalledInsideTransactionRef = { value: false };
+  const transactionStartedRef = { value: false };
 
-const mockExecute = vi.fn(async (sqlQuery: { queryChunks?: Array<{ value?: string[] }> }) => {
-  // Extract the raw SQL text from the drizzle sql`` tagged template object.
-  // The structure is: { queryChunks: [ { value: ["select set_config("] }, param, { value: ["', "] }, param, ... ] }
-  const chunks = sqlQuery?.queryChunks ?? [];
-  const parts: string[] = [];
-  for (const chunk of chunks) {
-    if (chunk.value && Array.isArray(chunk.value)) {
-      parts.push(...chunk.value);
+  const mockExecute = vi.fn(async (sqlQuery: { queryChunks?: Array<{ value?: string[] }> }) => {
+    const chunks = sqlQuery?.queryChunks ?? [];
+    const parts: string[] = [];
+    for (const chunk of chunks) {
+      if (chunk.value && Array.isArray(chunk.value)) {
+        parts.push(...chunk.value);
+      }
     }
-  }
-  capturedSqlStrings.push(parts.join(''));
-  return [];
+    capturedSqlStrings.push(parts.join(''));
+    return [];
+  });
+
+  const mockTx = {
+    execute: mockExecute
+  };
+
+  const mockTransaction = vi.fn(async (callback: (tx: typeof mockTx) => Promise<unknown>) => {
+    transactionStartedRef.value = true;
+    fnCalledInsideTransactionRef.value = false;
+    const result = await callback(mockTx as unknown as Parameters<typeof callback>[0]);
+    return result;
+  });
+
+  return { capturedSqlStrings, mockExecute, mockTx, mockTransaction, fnCalledInsideTransactionRef, transactionStartedRef };
 });
 
-const mockTx = {
-  execute: mockExecute
-};
-
-const mockTransaction = vi.fn(async (callback: (tx: typeof mockTx) => Promise<unknown>) => {
-  transactionStarted = true;
-  fnCalledInsideTransaction = false;
-  const result = await callback(mockTx as unknown as Parameters<typeof callback>[0]);
-  return result;
-});
+// Convenience getters/setters via the ref objects (the mock callback mutates these)
+const getTransactionStarted = () => transactionStartedRef.value;
+const resetRefs = () => { transactionStartedRef.value = false; fnCalledInsideTransactionRef.value = false; };
 
 // The `dbContextStorage.run` call sets the ALS store. We replicate enough of
 // that here so the "nested context detection" path can be exercised.
@@ -130,8 +143,7 @@ beforeEach(() => {
   capturedSqlStrings.length = 0;
   mockExecute.mockClear();
   mockTransaction.mockClear();
-  transactionStarted = false;
-  fnCalledInsideTransaction = false;
+  resetRefs();
 });
 
 // ===========================================================================
@@ -342,7 +354,7 @@ describe('withDbAccessContext sets session variables', () => {
       async () => 'ok'
     );
 
-    expect(transactionStarted).toBe(true);
+    expect(getTransactionStarted()).toBe(true);
     expect(mockTransaction).toHaveBeenCalledTimes(1);
   });
 
@@ -384,7 +396,7 @@ describe('deny-by-default when no context is set', () => {
     // Simulate code that uses `db` directly without any context wrapper.
     // We simply assert that mockTransaction was NOT invoked, meaning no
     // session variables were set and the DB-level scope remains 'none'.
-    expect(transactionStarted).toBe(false);
+    expect(getTransactionStarted()).toBe(false);
     expect(mockTransaction).not.toHaveBeenCalled();
   });
 
@@ -402,7 +414,7 @@ describe('deny-by-default when no context is set', () => {
     );
 
     expect(mockExecute).toHaveBeenCalled();
-    expect(transactionStarted).toBe(true);
+    expect(getTransactionStarted()).toBe(true);
   });
 });
 

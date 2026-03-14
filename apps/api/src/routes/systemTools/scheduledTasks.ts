@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
@@ -11,6 +12,13 @@ import {
   paginationQuerySchema
 } from './schemas';
 import type { ScheduledTaskInfo, TaskHistoryEntry } from './types';
+
+const taskListQuerySchema = z.object({
+  page: z.string().optional(),
+  limit: z.string().optional(),
+  folder: z.string().max(1024).optional(),
+  search: z.string().max(500).optional(),
+});
 
 function normalizeTaskState(value?: string): ScheduledTaskInfo['state'] {
   switch ((value ?? '').toLowerCase()) {
@@ -138,12 +146,13 @@ scheduledTasksRoutes.get(
   authMiddleware,
   requireScope('system', 'partner', 'organization'),
   zValidator('param', deviceIdParamSchema),
-  zValidator('query', paginationQuerySchema),
+  zValidator('query', taskListQuerySchema),
   async (c) => {
     const { deviceId } = c.req.valid('param');
-    const { page, limit } = getPagination(c.req.valid('query'));
-    const folder = c.req.query('folder') || '\\';
-    const search = c.req.query('search') || '';
+    const query = c.req.valid('query');
+    const { page, limit } = getPagination(query);
+    const folder = query.folder || '\\';
+    const search = query.search || '';
     const auth = c.get('auth');
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);

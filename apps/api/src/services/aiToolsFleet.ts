@@ -1,7 +1,7 @@
 /**
  * AI Fleet Orchestration Tools
  *
- * 8 fleet-level MCP tools for managing policies, deployments, patches,
+ * 7 fleet-level MCP tools for managing deployments, patches,
  * groups, maintenance windows, automations, alert rules, and reports.
  * Each tool wraps existing DB schema and service logic with org-scoped isolation.
  */
@@ -88,242 +88,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
   }
 
   // ============================================
-  // 1. manage_policies — Compliance policy lifecycle
-  // ============================================
-
-  registerTool({
-    tier: 1,
-    definition: {
-      name: 'manage_policies',
-      description: 'Manage compliance policies: list, get details, check compliance status, evaluate, create, update, activate/deactivate, delete, or trigger remediation.',
-      input_schema: {
-        type: 'object' as const,
-        properties: {
-          action: { type: 'string', enum: ['list', 'get', 'compliance_status', 'compliance_summary', 'evaluate', 'create', 'update', 'activate', 'deactivate', 'delete', 'remediate'], description: 'The action to perform' },
-          policyId: { type: 'string', description: 'Policy UUID (required for get/evaluate/update/activate/deactivate/delete/remediate/compliance_status)' },
-          enforcement: { type: 'string', enum: ['monitor', 'warn', 'enforce'], description: 'Filter by enforcement mode (for list) or set enforcement (for create/update)' },
-          enabled: { type: 'boolean', description: 'Filter by enabled status (for list)' },
-          name: { type: 'string', description: 'Policy name (for create/update)' },
-          description: { type: 'string', description: 'Policy description (for create/update)' },
-          rules: { type: 'object', description: 'Policy rules configuration (for create/update)' },
-          targets: { type: 'object', description: 'Target configuration (for create/update)' },
-          checkIntervalMinutes: { type: 'number', description: 'Check interval in minutes (for create/update)' },
-          remediationScriptId: { type: 'string', description: 'Script UUID for remediation (for create/update)' },
-          limit: { type: 'number', description: 'Max results (default 25)' },
-        },
-        required: ['action'],
-      },
-    },
-    handler: safeHandler('manage_policies', async (input, auth) => {
-      const action = input.action as string;
-      const orgId = getOrgId(auth);
-
-      if (action === 'list') {
-        const conditions: SQL[] = [];
-        const oc = orgWhere(auth, automationPolicies.orgId);
-        if (oc) conditions.push(oc);
-        if (typeof input.enforcement === 'string') conditions.push(eq(automationPolicies.enforcement, input.enforcement as 'monitor' | 'warn' | 'enforce'));
-        if (typeof input.enabled === 'boolean') conditions.push(eq(automationPolicies.enabled, input.enabled as boolean));
-
-        const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
-        const rows = await db.select().from(automationPolicies)
-          .where(conditions.length > 0 ? and(...conditions) : undefined)
-          .orderBy(desc(automationPolicies.createdAt))
-          .limit(limit);
-
-        return JSON.stringify({ policies: rows, showing: rows.length });
-      }
-
-      if (action === 'get') {
-        if (!input.policyId) return JSON.stringify({ error: 'policyId is required' });
-        const conditions: SQL[] = [eq(automationPolicies.id, input.policyId as string)];
-        const oc = orgWhere(auth, automationPolicies.orgId);
-        if (oc) conditions.push(oc);
-
-        const [policy] = await db.select().from(automationPolicies).where(and(...conditions)).limit(1);
-        if (!policy) return JSON.stringify({ error: 'Policy not found or access denied' });
-
-        // Get compliance stats
-        const stats = await db.select({
-          total: sql<number>`count(*)`,
-          compliant: sql<number>`count(*) filter (where ${automationPolicyCompliance.status} = 'compliant')`,
-          nonCompliant: sql<number>`count(*) filter (where ${automationPolicyCompliance.status} = 'non_compliant')`,
-          pending: sql<number>`count(*) filter (where ${automationPolicyCompliance.status} = 'pending')`,
-          error: sql<number>`count(*) filter (where ${automationPolicyCompliance.status} = 'error')`,
-        }).from(automationPolicyCompliance)
-          .where(eq(automationPolicyCompliance.policyId, policy.id));
-
-        return JSON.stringify({ policy, compliance: stats[0] });
-      }
-
-      if (action === 'compliance_status') {
-        if (!input.policyId) return JSON.stringify({ error: 'policyId is required' });
-        const conditions: SQL[] = [eq(automationPolicies.id, input.policyId as string)];
-        const oc = orgWhere(auth, automationPolicies.orgId);
-        if (oc) conditions.push(oc);
-
-        const [policy] = await db.select().from(automationPolicies).where(and(...conditions)).limit(1);
-        if (!policy) return JSON.stringify({ error: 'Policy not found or access denied' });
-
-        const limit = Math.min(Math.max(1, Number(input.limit) || 50), 100);
-        const rows = await db.select({
-          deviceId: automationPolicyCompliance.deviceId,
-          status: automationPolicyCompliance.status,
-          details: automationPolicyCompliance.details,
-          lastCheckedAt: automationPolicyCompliance.lastCheckedAt,
-          remediationAttempts: automationPolicyCompliance.remediationAttempts,
-          hostname: devices.hostname,
-        }).from(automationPolicyCompliance)
-          .leftJoin(devices, eq(automationPolicyCompliance.deviceId, devices.id))
-          .where(eq(automationPolicyCompliance.policyId, policy.id))
-          .limit(limit);
-
-        return JSON.stringify({ policyId: policy.id, policyName: policy.name, devices: rows, showing: rows.length });
-      }
-
-      if (action === 'compliance_summary') {
-        const conditions: SQL[] = [];
-        const oc = orgWhere(auth, automationPolicies.orgId);
-        if (oc) conditions.push(oc);
-
-        const rows = await db.select({
-          policyId: automationPolicies.id,
-          policyName: automationPolicies.name,
-          enforcement: automationPolicies.enforcement,
-          enabled: automationPolicies.enabled,
-          total: sql<number>`count(${automationPolicyCompliance.id})`,
-          compliant: sql<number>`count(*) filter (where ${automationPolicyCompliance.status} = 'compliant')`,
-          nonCompliant: sql<number>`count(*) filter (where ${automationPolicyCompliance.status} = 'non_compliant')`,
-        }).from(automationPolicies)
-          .leftJoin(automationPolicyCompliance, eq(automationPolicies.id, automationPolicyCompliance.policyId))
-          .where(conditions.length > 0 ? and(...conditions) : undefined)
-          .groupBy(automationPolicies.id);
-
-        return JSON.stringify({ summary: rows });
-      }
-
-      if (action === 'evaluate') {
-        if (!input.policyId) return JSON.stringify({ error: 'policyId is required' });
-        const conditions: SQL[] = [eq(automationPolicies.id, input.policyId as string)];
-        const oc = orgWhere(auth, automationPolicies.orgId);
-        if (oc) conditions.push(oc);
-
-        const [policy] = await db.select().from(automationPolicies).where(and(...conditions)).limit(1);
-        if (!policy) return JSON.stringify({ error: 'Policy not found or access denied' });
-
-        // Update last evaluated timestamp
-        await db.update(automationPolicies)
-          .set({ lastEvaluatedAt: new Date() })
-          .where(eq(automationPolicies.id, policy.id));
-
-        return JSON.stringify({ success: true, message: `Policy "${policy.name}" evaluation triggered` });
-      }
-
-      if (action === 'create') {
-        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
-        const [policy] = await db.insert(automationPolicies).values({
-          orgId,
-          name: input.name as string,
-          description: (input.description as string) ?? null,
-          rules: input.rules as Record<string, unknown>,
-          targets: input.targets as Record<string, unknown>,
-          enforcement: (input.enforcement as 'monitor' | 'warn' | 'enforce') ?? 'monitor',
-          checkIntervalMinutes: Number(input.checkIntervalMinutes) || 60,
-          remediationScriptId: (input.remediationScriptId as string) ?? null,
-          enabled: input.enabled !== false,
-          createdBy: auth.user.id,
-        }).returning();
-
-        return JSON.stringify({ success: true, policyId: policy?.id, name: policy?.name });
-      }
-
-      if (action === 'update') {
-        if (!input.policyId) return JSON.stringify({ error: 'policyId is required' });
-        const conditions: SQL[] = [eq(automationPolicies.id, input.policyId as string)];
-        const oc = orgWhere(auth, automationPolicies.orgId);
-        if (oc) conditions.push(oc);
-
-        const [existing] = await db.select().from(automationPolicies).where(and(...conditions)).limit(1);
-        if (!existing) return JSON.stringify({ error: 'Policy not found or access denied' });
-
-        const updates: Record<string, unknown> = { updatedAt: new Date() };
-        if (typeof input.name === 'string') updates.name = input.name;
-        if (typeof input.description === 'string') updates.description = input.description;
-        if (input.rules) updates.rules = input.rules;
-        if (input.targets) updates.targets = input.targets;
-        if (typeof input.enforcement === 'string') updates.enforcement = input.enforcement;
-        if (typeof input.checkIntervalMinutes === 'number') updates.checkIntervalMinutes = input.checkIntervalMinutes;
-        if (typeof input.remediationScriptId === 'string') updates.remediationScriptId = input.remediationScriptId;
-        if (typeof input.enabled === 'boolean') updates.enabled = input.enabled;
-
-        await db.update(automationPolicies).set(updates).where(eq(automationPolicies.id, existing.id));
-        return JSON.stringify({ success: true, message: `Policy "${existing.name}" updated` });
-      }
-
-      if (action === 'activate' || action === 'deactivate') {
-        if (!input.policyId) return JSON.stringify({ error: 'policyId is required' });
-        const conditions: SQL[] = [eq(automationPolicies.id, input.policyId as string)];
-        const oc = orgWhere(auth, automationPolicies.orgId);
-        if (oc) conditions.push(oc);
-
-        const [existing] = await db.select().from(automationPolicies).where(and(...conditions)).limit(1);
-        if (!existing) return JSON.stringify({ error: 'Policy not found or access denied' });
-
-        const enabled = action === 'activate';
-        await db.update(automationPolicies)
-          .set({ enabled, updatedAt: new Date() })
-          .where(eq(automationPolicies.id, existing.id));
-
-        return JSON.stringify({ success: true, message: `Policy "${existing.name}" ${enabled ? 'activated' : 'deactivated'}` });
-      }
-
-      if (action === 'delete') {
-        if (!input.policyId) return JSON.stringify({ error: 'policyId is required' });
-        const conditions: SQL[] = [eq(automationPolicies.id, input.policyId as string)];
-        const oc = orgWhere(auth, automationPolicies.orgId);
-        if (oc) conditions.push(oc);
-
-        const [existing] = await db.select().from(automationPolicies).where(and(...conditions)).limit(1);
-        if (!existing) return JSON.stringify({ error: 'Policy not found or access denied' });
-
-        await db.transaction(async (tx) => {
-          await tx.delete(automationPolicyCompliance).where(eq(automationPolicyCompliance.policyId, existing.id));
-          await tx.delete(automationPolicies).where(eq(automationPolicies.id, existing.id));
-        });
-        return JSON.stringify({ success: true, message: `Policy "${existing.name}" deleted` });
-      }
-
-      if (action === 'remediate') {
-        if (!input.policyId) return JSON.stringify({ error: 'policyId is required' });
-        const conditions: SQL[] = [eq(automationPolicies.id, input.policyId as string)];
-        const oc = orgWhere(auth, automationPolicies.orgId);
-        if (oc) conditions.push(oc);
-
-        const [policy] = await db.select().from(automationPolicies).where(and(...conditions)).limit(1);
-        if (!policy) return JSON.stringify({ error: 'Policy not found or access denied' });
-        if (!policy.remediationScriptId) return JSON.stringify({ error: 'Policy has no remediation script configured' });
-
-        const nonCompliant = await db.select({ deviceId: automationPolicyCompliance.deviceId })
-          .from(automationPolicyCompliance)
-          .where(and(
-            eq(automationPolicyCompliance.policyId, policy.id),
-            eq(automationPolicyCompliance.status, 'non_compliant'),
-          ));
-
-        return JSON.stringify({
-          success: true,
-          message: `Remediation triggered for policy "${policy.name}"`,
-          nonCompliantDevices: nonCompliant.length,
-          remediationScriptId: policy.remediationScriptId,
-        });
-      }
-
-      return JSON.stringify({ error: `Unknown action: ${action}` });
-    }),
-  });
-
-  // ============================================
-  // 2. manage_deployments — Staged rollout control
+  // 1. manage_deployments — Staged rollout control
   // ============================================
 
   registerTool({
@@ -1517,12 +1282,13 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'generate_report',
-      description: 'Manage reports: list saved definitions, generate on-demand, get report data directly, create/update/delete report definitions, or view generation history.',
+      description: 'Manage reports: list saved definitions, generate on-demand, get report data directly, download a completed report run, create/update/delete report definitions, or view generation history.',
       input_schema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['list', 'generate', 'data', 'create', 'update', 'delete', 'history'], description: 'The action to perform' },
+          action: { type: 'string', enum: ['list', 'generate', 'data', 'create', 'update', 'delete', 'history', 'download'], description: 'The action to perform' },
           reportId: { type: 'string', description: 'Report UUID (for generate/update/delete/history)' },
+          reportRunId: { type: 'string', description: 'Report run UUID (required for download)' },
           reportType: { type: 'string', enum: ['device_inventory', 'software_inventory', 'alert_summary', 'compliance', 'performance', 'executive_summary'], description: 'Report type (for generate/data/create)' },
           name: { type: 'string', description: 'Report name (for create/update)' },
           config: { type: 'object', description: 'Report configuration (filters, options)' },
@@ -1723,6 +1489,59 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           .limit(limit);
 
         return JSON.stringify({ reportId: report.id, runs, showing: runs.length });
+      }
+
+      if (action === 'download') {
+        if (!input.reportRunId) return JSON.stringify({ error: 'reportRunId is required' });
+
+        const [run] = await db.select({
+          id: reportRuns.id,
+          reportId: reportRuns.reportId,
+          status: reportRuns.status,
+          startedAt: reportRuns.startedAt,
+          completedAt: reportRuns.completedAt,
+          outputUrl: reportRuns.outputUrl,
+          errorMessage: reportRuns.errorMessage,
+          rowCount: reportRuns.rowCount,
+          createdAt: reportRuns.createdAt,
+          reportName: reports.name,
+          reportType: reports.type,
+          reportFormat: reports.format,
+        }).from(reportRuns)
+          .innerJoin(reports, eq(reportRuns.reportId, reports.id))
+          .where(eq(reportRuns.id, input.reportRunId as string))
+          .limit(1);
+
+        if (!run) return JSON.stringify({ error: 'Report run not found' });
+
+        // Verify org access via the parent report
+        const oc = orgWhere(auth, reports.orgId);
+        if (oc) {
+          const [accessible] = await db.select({ id: reports.id })
+            .from(reports)
+            .where(and(eq(reports.id, run.reportId), oc))
+            .limit(1);
+          if (!accessible) return JSON.stringify({ error: 'Report not found or access denied' });
+        }
+
+        if (run.status !== 'completed') {
+          return JSON.stringify({
+            error: `Report run is not completed (status: ${run.status})`,
+            runId: run.id,
+            status: run.status,
+            errorMessage: run.errorMessage
+          });
+        }
+
+        return JSON.stringify({
+          runId: run.id,
+          reportName: run.reportName,
+          reportType: run.reportType,
+          format: run.reportFormat,
+          outputUrl: run.outputUrl,
+          rowCount: run.rowCount,
+          completedAt: run.completedAt
+        });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });

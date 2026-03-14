@@ -55,34 +55,55 @@ export async function closeRedis(): Promise<void> {
     await redisClient.quit();
     redisClient = null;
   }
+  if (bullmqConnection) {
+    await bullmqConnection.quit();
+    bullmqConnection = null;
+  }
 }
 
+let bullmqConnection: Redis | null = null;
+let bullmqAvailable = false;
+
 /**
- * Get Redis connection for BullMQ queues.
+ * Get a shared Redis connection for BullMQ queues and workers.
  * BullMQ requires maxRetriesPerRequest: null for blocking operations.
- * Creates a NEW connection each time - caller should manage lifecycle.
+ * Returns a singleton — all queues/workers share the same connection.
  */
 export function getRedisConnection(): Redis {
   if (!redisAvailable) {
     throw new Error('Redis connection required but not available');
   }
 
-  const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
+  if (!bullmqConnection) {
+    const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
 
-  // BullMQ requires maxRetriesPerRequest: null for blocking commands
-  const connection = new Redis(url, {
-    maxRetriesPerRequest: null,
-    enableReadyCheck: false,
-    retryStrategy(times) {
-      // Exponential backoff with 30s cap - never stop retrying
-      const delay = Math.min(times * 1000, 30000);
-      return delay;
-    }
-  });
+    bullmqConnection = new Redis(url, {
+      maxRetriesPerRequest: null,
+      enableReadyCheck: false,
+      retryStrategy(times) {
+        const delay = Math.min(times * 1000, 30000);
+        return delay;
+      }
+    });
 
-  connection.on('error', (err: Error) => {
-    console.error('BullMQ Redis connection error:', err.message);
-  });
+    bullmqConnection.on('error', (err: Error) => {
+      if (bullmqAvailable) {
+        console.error('BullMQ Redis connection lost — background jobs may stall:', err.message);
+      }
+      bullmqAvailable = false;
+    });
 
-  return connection;
+    bullmqConnection.on('connect', () => {
+      if (!bullmqAvailable) {
+        console.log('[BullMQ Redis] Connected');
+      }
+      bullmqAvailable = true;
+    });
+  }
+
+  return bullmqConnection;
+}
+
+export function isBullMQAvailable(): boolean {
+  return bullmqAvailable;
 }

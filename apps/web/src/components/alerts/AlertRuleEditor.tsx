@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import type { AlertSeverity } from './AlertList';
+import { navigateTo } from '@/lib/navigation';
 
 type TargetType = 'org' | 'site' | 'group' | 'device';
 
@@ -57,7 +58,7 @@ export default function AlertRuleEditor() {
       ]);
 
       if (templatesRes.status === 401 || targetsRes.status === 401) {
-        window.location.href = '/login';
+        void navigateTo('/login', { replace: true });
         return;
       }
 
@@ -142,7 +143,7 @@ export default function AlertRuleEditor() {
       });
 
       if (response.status === 401) {
-        window.location.href = '/login';
+        void navigateTo('/login', { replace: true });
         return;
       }
 

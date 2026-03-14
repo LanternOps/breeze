@@ -57,7 +57,8 @@ vi.mock('../db', () => ({
       }))
     }))
   },
-  withSystemDbAccessContext: vi.fn(async <T>(fn: () => Promise<T>) => fn())
+  withSystemDbAccessContext: vi.fn(async <T>(fn: () => Promise<T>) => fn()),
+  runOutsideDbContext: vi.fn((fn: () => any) => fn())
 }));
 
 vi.mock('../db/schema', () => ({
@@ -115,6 +116,7 @@ describe('auth routes', () => {
     vi.mocked(isUserTokenRevoked).mockResolvedValue(false);
     vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
     vi.mocked(getTrustedClientIp).mockReturnValue('127.0.0.1');
+    vi.mocked(rateLimiter).mockResolvedValue({ allowed: true, remaining: 4, resetAt: new Date() });
     app = new Hono();
     app.route('/auth', authRoutes);
   });

@@ -3,9 +3,15 @@ use reqwest::{header::HeaderMap, Client, Identity, Method};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_shell::open;
 use tokio::sync::Mutex;
+
+/// Tracks whether a chat session is currently active (set from frontend).
+static CHAT_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
 // Agent config types
@@ -119,6 +125,91 @@ fn load_agent_config_full() -> Result<AgentConfigFull, String> {
 }
 
 // ---------------------------------------------------------------------------
+// Helper config (written by Go agent, read by Tauri)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HelperConfig {
+    #[serde(default = "default_true")]
+    show_open_portal: bool,
+    #[serde(default = "default_true")]
+    show_device_info: bool,
+    #[serde(default = "default_true")]
+    show_request_support: bool,
+    #[serde(default)]
+    portal_url: Option<String>,
+    #[serde(default)]
+    device_name: Option<String>,
+    #[serde(default)]
+    device_status: Option<String>,
+    #[serde(default)]
+    last_checkin: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for HelperConfig {
+    fn default() -> Self {
+        Self {
+            show_open_portal: true,
+            show_device_info: true,
+            show_request_support: true,
+            portal_url: None,
+            device_name: None,
+            device_status: None,
+            last_checkin: None,
+        }
+    }
+}
+
+fn helper_config_path() -> PathBuf {
+    agent_config_path().with_file_name("helper_config.yaml")
+}
+
+fn load_helper_config() -> HelperConfig {
+    let path = helper_config_path();
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => serde_yaml::from_str(&contents).unwrap_or_default(),
+        Err(_) => HelperConfig::default(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helper status file (read by Go agent for idle detection before updates)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct HelperStatus {
+    version: String,
+    chat_active: bool,
+    last_activity: String, // ISO 8601
+    pid: u32,
+}
+
+fn helper_status_path() -> PathBuf {
+    agent_config_path().with_file_name("helper_status.yaml")
+}
+
+fn write_status_file(chat_active: bool) {
+    let status = HelperStatus {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        chat_active,
+        last_activity: chrono::Utc::now().to_rfc3339(),
+        pid: std::process::id(),
+    };
+    let path = helper_status_path();
+    if let Ok(yaml) = serde_yaml::to_string(&status) {
+        // Atomic write: temp file + rename
+        let tmp_path = path.with_extension("yaml.tmp");
+        if std::fs::write(&tmp_path, &yaml).is_ok() {
+            let _ = std::fs::rename(&tmp_path, &path);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // HTTP client state (cached per-app)
 // ---------------------------------------------------------------------------
 
@@ -191,6 +282,24 @@ fn hide_window(app: tauri::AppHandle) {
     }
 }
 
+/// Minimize the main window.
+#[tauri::command]
+fn minimize_window(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if let Err(e) = window.minimize() {
+            eprintln!("[helper] Failed to minimize window: {}", e);
+        }
+    }
+}
+
+/// Update the helper status file when chat activity changes.
+/// Called from the frontend when a chat session starts/ends or on message activity.
+#[tauri::command]
+fn update_chat_active(active: bool) {
+    CHAT_ACTIVE.store(active, Ordering::Relaxed);
+    write_status_file(active);
+}
+
 // ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
@@ -216,6 +325,11 @@ async fn read_agent_config() -> Result<AgentConfig, String> {
 #[tauri::command]
 fn get_os_username() -> String {
     whoami::username()
+}
+
+#[tauri::command]
+fn get_helper_config() -> HelperConfig {
+    load_helper_config()
 }
 
 // -- helper_fetch types -----------------------------------------------------
@@ -339,8 +453,11 @@ async fn helper_fetch(
         let sid = stream_id.clone();
         let app_clone = app.clone();
 
-        // Spawn a background task to read the body and emit events
+        // Spawn a background task to read the body and emit events.
+        // Small delay to ensure the frontend listener is registered before
+        // we start emitting events (avoids race with IPC round-trip).
         tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             let mut byte_stream = response.bytes_stream();
 
             while let Some(chunk_result) = byte_stream.next().await {
@@ -429,6 +546,36 @@ fn uuid_v4() -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Tray menu builder
+// ---------------------------------------------------------------------------
+
+fn build_tray_menu(app: &AppHandle, config: &HelperConfig) -> Result<tauri::menu::Menu<tauri::Wry>, tauri::Error> {
+    let mut builder = MenuBuilder::new(app);
+
+    if config.show_request_support {
+        let item = MenuItemBuilder::with_id("request_support", "Request Support").build(app)?;
+        builder = builder.item(&item);
+    }
+
+    if config.show_open_portal {
+        let item = MenuItemBuilder::with_id("open_portal", "Open Breeze Portal").build(app)?;
+        builder = builder.item(&item);
+    }
+
+    if config.show_device_info {
+        let item = MenuItemBuilder::with_id("device_info", "Device Info").build(app)?;
+        builder = builder.item(&item);
+    }
+
+    builder = builder.separator();
+
+    let exit_item = MenuItemBuilder::with_id("exit", "Exit").build(app)?;
+    builder = builder.item(&exit_item);
+
+    builder.build()
+}
+
+// ---------------------------------------------------------------------------
 // App entry point
 // ---------------------------------------------------------------------------
 
@@ -440,18 +587,107 @@ pub fn run() {
             read_agent_config,
             helper_fetch,
             hide_window,
+            minimize_window,
             get_os_username,
+            get_helper_config,
+            update_chat_active,
         ])
         .setup(|app| {
-            // Show and focus the window when the tray icon is clicked
             let handle = app.handle().clone();
+
+            // Load initial config and build tray context menu
+            let config = load_helper_config();
             if let Some(tray) = app.tray_by_id("main") {
+                // Build and set the context menu (shown on right-click)
+                match build_tray_menu(&handle, &config) {
+                    Ok(menu) => {
+                        if let Err(e) = tray.set_menu(Some(menu)) {
+                            eprintln!("[helper] Failed to set tray menu: {}", e);
+                        }
+                    }
+                    Err(e) => eprintln!("[helper] Failed to build tray menu: {}", e),
+                }
+
+                // Handle left-click only: show chat window
+                // Matching all Click variants (including right-click) would steal
+                // focus from the context menu on Windows, causing it to close instantly.
+                let click_handle = handle.clone();
                 tray.on_tray_icon_event(move |_tray, event| {
-                    if let tauri::tray::TrayIconEvent::Click { .. } = event {
-                        show_window(&handle);
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        button_state: tauri::tray::MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_window(&click_handle);
                     }
                 });
             }
+
+            // Write initial status file (not chatting)
+            write_status_file(false);
+
+            // Handle menu item clicks
+            let menu_handle = handle.clone();
+            app.on_menu_event(move |app_handle, event| {
+                match event.id().as_ref() {
+                    "request_support" => {
+                        show_window(&menu_handle);
+                    }
+                    "open_portal" => {
+                        let config = load_helper_config();
+                        let url = config.portal_url.filter(|u| !u.is_empty()).unwrap_or_else(|| {
+                            // Fallback: read API URL from agent.yaml
+                            load_agent_config_full()
+                                .map(|c| c.api_url)
+                                .unwrap_or_default()
+                        });
+                        if !url.is_empty() {
+                            let _ = tauri_plugin_shell::ShellExt::shell(app_handle)
+                                .open(&url, None::<open::Program>);
+                        }
+                    }
+                    "device_info" => {
+                        if let Err(e) = menu_handle.emit("show-device-info", ()) {
+                            eprintln!("[helper] Failed to emit show-device-info: {}", e);
+                        }
+                        show_window(&menu_handle);
+                    }
+                    "exit" => {
+                        app_handle.exit(0);
+                    }
+                    _ => {}
+                }
+            });
+
+            // Periodic config reload — rebuild tray menu every 60s on config change
+            let reload_handle = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut last_config = serde_yaml::to_string(&load_helper_config()).unwrap_or_default();
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    let new_config = load_helper_config();
+                    let new_yaml = serde_yaml::to_string(&new_config).unwrap_or_default();
+                    if new_yaml != last_config {
+                        eprintln!("[helper] Config changed, rebuilding tray menu");
+                        if let Some(tray) = reload_handle.tray_by_id("main") {
+                            match build_tray_menu(&reload_handle, &new_config) {
+                                Ok(menu) => {
+                                    if let Err(e) = tray.set_menu(Some(menu)) {
+                                        eprintln!("[helper] Failed to update tray menu: {}", e);
+                                    }
+                                }
+                                Err(e) => eprintln!("[helper] Failed to rebuild tray menu: {}", e),
+                            }
+                        }
+                        last_config = new_yaml;
+                    }
+
+                    // Refresh status file timestamp (shows helper is alive even when idle)
+                    write_status_file(CHAT_ACTIVE.load(Ordering::Relaxed));
+                }
+            });
+
             Ok(())
         })
         .run(tauri::generate_context!())

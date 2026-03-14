@@ -1,15 +1,24 @@
 import { useState, useEffect, useRef } from 'react';
-import { ClipboardCheck, Plus, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
+import { ClipboardCheck, Plus, Trash2, ChevronDown, ChevronRight, FileCode, Package, GripVertical } from 'lucide-react';
 import type { FeatureTabProps } from './types';
 import { FEATURE_META } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
+import RemediationScriptPicker, { type SelectedScript } from './RemediationScriptPicker';
+import SoftwareCatalogPicker, { type SelectedSoftware } from './SoftwareCatalogPicker';
 
 type RuleType = 'required_software' | 'prohibited_software' | 'disk_space_minimum' | 'os_version' | 'registry_check' | 'config_check';
 type EnforcementLevel = 'monitor' | 'warn' | 'enforce';
 
+type RemediationAction =
+  | { type: 'script'; scriptId: string; scriptName?: string }
+  | { type: 'software_deploy'; catalogId: string; versionId?: string; catalogName?: string }
+  | { type: 'none' };
+
 type ComplianceRule = {
   type: RuleType;
+  description?: string;
+  remediation?: RemediationAction;
   softwareName?: string;
   softwareVersion?: string;
   versionOperator?: string;
@@ -31,7 +40,6 @@ type ComplianceItem = {
   rules: ComplianceRule[];
   enforcementLevel: EnforcementLevel;
   checkIntervalMinutes: number;
-  remediationScriptId: string;
 };
 
 const defaultItem: ComplianceItem = {
@@ -39,7 +47,6 @@ const defaultItem: ComplianceItem = {
   rules: [{ type: 'required_software', softwareName: '', softwareVersion: '', versionOperator: 'gte' }],
   enforcementLevel: 'monitor',
   checkIntervalMinutes: 60,
-  remediationScriptId: '',
 };
 
 const ruleTypeOptions: { value: RuleType; label: string }[] = [
@@ -66,16 +73,44 @@ const versionOperators = [
 
 const osTypes = ['windows', 'macos', 'linux', 'any'];
 
+function buildDefaultRemediation(ruleType: RuleType): RemediationAction {
+  switch (ruleType) {
+    case 'required_software': return { type: 'software_deploy', catalogId: '' };
+    case 'prohibited_software':
+    case 'registry_check':
+    case 'config_check':
+      return { type: 'script', scriptId: '' };
+    default:
+      return { type: 'none' };
+  }
+}
+
 function loadItems(existingLink: FeatureTabProps['existingLink']): ComplianceItem[] {
   const raw = existingLink?.inlineSettings as Record<string, unknown> | null | undefined;
   if (!raw) return [];
   if (Array.isArray((raw as any).items)) {
-    return (raw as any).items as ComplianceItem[];
+    const items = (raw as any).items as (ComplianceItem & { remediationScriptId?: string })[];
+    return items.map((item) => {
+      if (item.remediationScriptId && item.rules.length > 0) {
+        const hasAnyRemediation = item.rules.some((r) => r.remediation && r.remediation.type !== 'none');
+        if (!hasAnyRemediation) {
+          const rules = [...item.rules];
+          rules[0] = {
+            ...rules[0],
+            remediation: { type: 'script', scriptId: item.remediationScriptId },
+          };
+          const { remediationScriptId: _, ...rest } = item;
+          return { ...rest, rules };
+        }
+      }
+      const { remediationScriptId: _, ...rest } = item;
+      return rest;
+    });
   }
-  // Legacy single-item format — wrap it
   if ((raw as any).rules) {
-    const legacy = raw as unknown as Omit<ComplianceItem, 'name'>;
-    return [{ ...legacy, name: 'Compliance Rule Set 1' }];
+    const legacy = raw as unknown as Omit<ComplianceItem, 'name'> & { remediationScriptId?: string };
+    const { remediationScriptId: _, ...rest } = legacy;
+    return [{ ...rest, name: 'Compliance Rule Set 1' }];
   }
   return [];
 }
@@ -102,6 +137,12 @@ export default function ComplianceTab({ policyId, existingLink, onLinkChanged, l
   const [items, setItems] = useState<ComplianceItem[]>(() => loadItems(effectiveLink));
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
+
+  const [scriptPickerRule, setScriptPickerRule] = useState<{ itemIndex: number; ruleIndex: number } | null>(null);
+  const [softwarePickerRule, setSoftwarePickerRule] = useState<{ itemIndex: number; ruleIndex: number } | null>(null);
+
+  const [dragIndex, setDragIndex] = useState<{ item: number; rule: number } | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<{ item: number; rule: number } | null>(null);
 
   useEffect(() => {
     setItems(loadItems(existingLink ?? parentLink));
@@ -132,7 +173,14 @@ export default function ComplianceTab({ policyId, existingLink, onLinkChanged, l
     setItems((prev) =>
       prev.map((item, i) => {
         if (i !== itemIndex) return item;
-        return { ...item, rules: [...item.rules, { type: 'required_software' as RuleType, softwareName: '', softwareVersion: '', versionOperator: 'gte' }] };
+        const ruleType: RuleType = 'required_software';
+        return {
+          ...item,
+          rules: [
+            ...item.rules,
+            { type: ruleType, softwareName: '', softwareVersion: '', versionOperator: 'gte', remediation: buildDefaultRemediation(ruleType) },
+          ],
+        };
       })
     );
   };
@@ -146,8 +194,70 @@ export default function ComplianceTab({ policyId, existingLink, onLinkChanged, l
     );
   };
 
+  const updateRemediation = (itemIndex: number, ruleIndex: number, remediation: RemediationAction) => {
+    updateRule(itemIndex, ruleIndex, { remediation });
+  };
+
+  const handleScriptSelected = (script: SelectedScript) => {
+    if (!scriptPickerRule) return;
+    updateRemediation(scriptPickerRule.itemIndex, scriptPickerRule.ruleIndex, {
+      type: 'script',
+      scriptId: script.id,
+      scriptName: script.name,
+    });
+    setScriptPickerRule(null);
+  };
+
+  const handleSoftwareSelected = (software: SelectedSoftware) => {
+    if (!softwarePickerRule) return;
+    updateRemediation(softwarePickerRule.itemIndex, softwarePickerRule.ruleIndex, {
+      type: 'software_deploy',
+      catalogId: software.catalogId,
+      catalogName: software.catalogName,
+      versionId: software.versionId,
+    });
+    setSoftwarePickerRule(null);
+  };
+
+  const handleDragStart = (itemIndex: number, ruleIndex: number) => {
+    setDragIndex({ item: itemIndex, rule: ruleIndex });
+  };
+
+  const handleDragOver = (e: React.DragEvent, itemIndex: number, ruleIndex: number) => {
+    e.preventDefault();
+    if (dragIndex && dragIndex.item === itemIndex) {
+      setDragOverIndex({ item: itemIndex, rule: ruleIndex });
+    }
+  };
+
+  const handleDrop = (itemIndex: number, ruleIndex: number) => {
+    if (!dragIndex || dragIndex.item !== itemIndex) return;
+    if (dragIndex.rule === ruleIndex) return;
+    setItems((prev) =>
+      prev.map((item, i) => {
+        if (i !== itemIndex) return item;
+        const rules = [...item.rules];
+        const [moved] = rules.splice(dragIndex.rule, 1);
+        rules.splice(ruleIndex, 0, moved);
+        return { ...item, rules };
+      })
+    );
+    setDragIndex(null);
+    setDragOverIndex(null);
+  };
+
+  const handleDragEnd = () => {
+    setDragIndex(null);
+    setDragOverIndex(null);
+  };
+
   const addItem = () => {
-    const newItem: ComplianceItem = { ...defaultItem, name: `Compliance Rule Set ${items.length + 1}`, rules: [{ ...defaultItem.rules[0] }] };
+    const ruleType: RuleType = 'required_software';
+    const newItem: ComplianceItem = {
+      ...defaultItem,
+      name: `Compliance Rule Set ${items.length + 1}`,
+      rules: [{ ...defaultItem.rules[0], remediation: buildDefaultRemediation(ruleType) }],
+    };
     setItems((prev) => [...prev, newItem]);
     setExpandedIndex(items.length);
   };
@@ -297,19 +407,54 @@ export default function ComplianceTab({ policyId, existingLink, onLinkChanged, l
                       </button>
                     </div>
                     <div className="mt-2 space-y-2">
-                      {item.rules.map((rule, ri) => (
-                        <div key={ri} className="rounded-md border bg-muted/20 p-3">
+                      {item.rules.map((rule, ri) => {
+                        const isDragOver = dragOverIndex?.item === index && dragOverIndex?.rule === ri && dragIndex?.item === index && dragIndex?.rule !== ri;
+                        return (
+                        <div
+                          key={ri}
+                          draggable
+                          onDragStart={() => handleDragStart(index, ri)}
+                          onDragOver={(e) => handleDragOver(e, index, ri)}
+                          onDrop={() => handleDrop(index, ri)}
+                          onDragEnd={handleDragEnd}
+                          className={`rounded-md border bg-muted/20 p-3 ${isDragOver ? 'border-primary/40' : ''}`}
+                        >
                           <div className="flex items-start gap-2">
+                            <div className="mt-4 flex cursor-grab items-center text-muted-foreground hover:text-foreground">
+                              <GripVertical className="h-4 w-4" />
+                            </div>
                             <div className="flex-1 space-y-2">
                               <div>
                                 <label className="text-xs font-medium text-muted-foreground">Rule Type</label>
                                 <select
                                   value={rule.type}
-                                  onChange={(e) => updateRule(index, ri, { type: e.target.value as RuleType })}
+                                  onChange={(e) => {
+                                    const newType = e.target.value as RuleType;
+                                    const patch: Partial<ComplianceRule> = { type: newType };
+                                    const cur = rule.remediation;
+                                    const hasConcreteSelection =
+                                      (cur?.type === 'script' && 'scriptId' in cur && cur.scriptId) ||
+                                      (cur?.type === 'software_deploy' && 'catalogId' in cur && cur.catalogId);
+                                    if (!hasConcreteSelection) {
+                                      patch.remediation = buildDefaultRemediation(newType);
+                                    }
+                                    updateRule(index, ri, patch);
+                                  }}
                                   className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
                                 >
                                   {ruleTypeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                                 </select>
+                              </div>
+
+                              {/* Description (optional) */}
+                              <div>
+                                <label className="text-xs font-medium text-muted-foreground">Description (optional)</label>
+                                <input
+                                  value={rule.description ?? ''}
+                                  onChange={(e) => updateRule(index, ri, { description: e.target.value })}
+                                  placeholder="e.g. SOC2 requirement 3.1.a"
+                                  className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
+                                />
                               </div>
 
                               {rule.type === 'required_software' && (
@@ -399,6 +544,135 @@ export default function ComplianceTab({ policyId, existingLink, onLinkChanged, l
                                   </div>
                                 </div>
                               )}
+
+                              {/* Per-rule Remediation */}
+                              <div className="mt-2 space-y-2">
+                                <label className="text-xs font-medium text-muted-foreground">Remediation Action</label>
+                                <div className="flex flex-wrap gap-2">
+                                  <label
+                                    className={`flex cursor-pointer items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition ${
+                                      (!rule.remediation || rule.remediation.type === 'none')
+                                        ? 'border-primary/40 bg-primary/10 text-primary'
+                                        : 'border-muted text-muted-foreground hover:text-foreground'
+                                    }`}
+                                  >
+                                    <input
+                                      type="radio"
+                                      name={`remediation-${index}-${ri}`}
+                                      checked={!rule.remediation || rule.remediation.type === 'none'}
+                                      onChange={() => updateRemediation(index, ri, { type: 'none' })}
+                                      className="hidden"
+                                    />
+                                    None
+                                  </label>
+                                  <label
+                                    className={`flex cursor-pointer items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition ${
+                                      rule.remediation?.type === 'script'
+                                        ? 'border-primary/40 bg-primary/10 text-primary'
+                                        : 'border-muted text-muted-foreground hover:text-foreground'
+                                    }`}
+                                  >
+                                    <input
+                                      type="radio"
+                                      name={`remediation-${index}-${ri}`}
+                                      checked={rule.remediation?.type === 'script'}
+                                      onChange={() => updateRemediation(index, ri, { type: 'script', scriptId: '' })}
+                                      className="hidden"
+                                    />
+                                    <FileCode className="h-3.5 w-3.5" />
+                                    Run Script
+                                  </label>
+                                  <label
+                                    className={`flex cursor-pointer items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition ${
+                                      rule.remediation?.type === 'software_deploy'
+                                        ? 'border-primary/40 bg-primary/10 text-primary'
+                                        : 'border-muted text-muted-foreground hover:text-foreground'
+                                    }`}
+                                  >
+                                    <input
+                                      type="radio"
+                                      name={`remediation-${index}-${ri}`}
+                                      checked={rule.remediation?.type === 'software_deploy'}
+                                      onChange={() => updateRemediation(index, ri, { type: 'software_deploy', catalogId: '' })}
+                                      className="hidden"
+                                    />
+                                    <Package className="h-3.5 w-3.5" />
+                                    Deploy Software
+                                  </label>
+                                </div>
+
+                                {/* Script picker display */}
+                                {rule.remediation?.type === 'script' && (
+                                  <div>
+                                    {rule.remediation.scriptName ? (
+                                      <div className="flex items-center gap-2">
+                                        <span className="inline-flex items-center gap-1.5 rounded-full border bg-muted/30 px-3 py-1 text-xs font-medium">
+                                          <FileCode className="h-3 w-3" />
+                                          {rule.remediation.scriptName}
+                                        </span>
+                                        <button
+                                          type="button"
+                                          onClick={() => setScriptPickerRule({ itemIndex: index, ruleIndex: ri })}
+                                          className="text-xs text-primary hover:underline"
+                                        >
+                                          Change
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => updateRemediation(index, ri, { type: 'script', scriptId: '' })}
+                                          className="text-xs text-destructive hover:underline"
+                                        >
+                                          <Trash2 className="h-3 w-3" />
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => setScriptPickerRule({ itemIndex: index, ruleIndex: ri })}
+                                        className="w-full rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground hover:border-primary/40 hover:text-primary"
+                                      >
+                                        Select a remediation script...
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Software picker display */}
+                                {rule.remediation?.type === 'software_deploy' && (
+                                  <div>
+                                    {rule.remediation.catalogName ? (
+                                      <div className="flex items-center gap-2">
+                                        <span className="inline-flex items-center gap-1.5 rounded-full border bg-muted/30 px-3 py-1 text-xs font-medium">
+                                          <Package className="h-3 w-3" />
+                                          {rule.remediation.catalogName}
+                                        </span>
+                                        <button
+                                          type="button"
+                                          onClick={() => setSoftwarePickerRule({ itemIndex: index, ruleIndex: ri })}
+                                          className="text-xs text-primary hover:underline"
+                                        >
+                                          Change
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => updateRemediation(index, ri, { type: 'software_deploy', catalogId: '' })}
+                                          className="text-xs text-destructive hover:underline"
+                                        >
+                                          <Trash2 className="h-3 w-3" />
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => setSoftwarePickerRule({ itemIndex: index, ruleIndex: ri })}
+                                        className="w-full rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground hover:border-primary/40 hover:text-primary"
+                                      >
+                                        Select software to deploy...
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
                             </div>
                             <button
                               type="button"
@@ -410,7 +684,8 @@ export default function ComplianceTab({ policyId, existingLink, onLinkChanged, l
                             </button>
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
 
@@ -442,28 +717,17 @@ export default function ComplianceTab({ policyId, existingLink, onLinkChanged, l
                     </div>
                   </div>
 
-                  {/* Check interval + remediation */}
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <div>
-                      <label className="text-xs font-medium text-muted-foreground">Check Interval (minutes)</label>
-                      <input
-                        type="number"
-                        min={5}
-                        max={1440}
-                        value={item.checkIntervalMinutes}
-                        onChange={(e) => updateItem(index, { checkIntervalMinutes: Number(e.target.value) || 60 })}
-                        className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs font-medium text-muted-foreground">Remediation Script ID (optional)</label>
-                      <input
-                        value={item.remediationScriptId}
-                        onChange={(e) => updateItem(index, { remediationScriptId: e.target.value })}
-                        placeholder="UUID of remediation script"
-                        className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                      />
-                    </div>
+                  {/* Check interval */}
+                  <div>
+                    <label className="text-xs font-medium text-muted-foreground">Check Interval (minutes)</label>
+                    <input
+                      type="number"
+                      min={5}
+                      max={1440}
+                      value={item.checkIntervalMinutes}
+                      onChange={(e) => updateItem(index, { checkIntervalMinutes: Number(e.target.value) || 60 })}
+                      className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
                   </div>
                 </div>
               )}
@@ -471,6 +735,17 @@ export default function ComplianceTab({ policyId, existingLink, onLinkChanged, l
           );
         })}
       </div>
+
+      <RemediationScriptPicker
+        isOpen={!!scriptPickerRule}
+        onClose={() => setScriptPickerRule(null)}
+        onSelect={handleScriptSelected}
+      />
+      <SoftwareCatalogPicker
+        isOpen={!!softwarePickerRule}
+        onClose={() => setSoftwarePickerRule(null)}
+        onSelect={handleSoftwareSelected}
+      />
     </FeatureTabShell>
   );
 }

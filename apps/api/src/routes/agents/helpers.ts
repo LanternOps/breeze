@@ -9,22 +9,35 @@ import {
   deviceDisks,
   deviceFilesystemSnapshots,
   automationPolicies,
+  cisBaselines,
+  cisBaselineResults,
+  cisRemediationActions,
   softwareComplianceStatus,
   softwarePolicies,
   securityStatus,
   securityThreats,
   securityScans,
+  sensitiveDataFindings,
+  sensitiveDataScans,
   organizations,
   deviceGroupMemberships,
   configPolicyAssignments,
   configurationPolicies,
   configPolicyFeatureLinks,
   configPolicyEventLogSettings,
+  configPolicyMonitoringSettings,
+  configPolicyMonitoringWatches,
 } from '../../db/schema';
 import { getRedis } from '../../services/redis';
+import { publishEvent } from '../../services/eventBus';
 import { scheduleSoftwareComplianceCheck } from '../../jobs/softwareComplianceWorker';
-import { recordSoftwareRemediationDecision } from '../metrics';
+import {
+  recordSensitiveDataFinding,
+  recordSensitiveDataRemediationDecision,
+  recordSoftwareRemediationDecision
+} from '../metrics';
 import { queueCommandForExecution } from '../../services/commandQueue';
+import { parseCisCollectorOutput } from '../../services/cisHardening';
 import {
   getFilesystemScanState,
   mergeFilesystemAnalysisPayload,
@@ -35,6 +48,7 @@ import {
   upsertFilesystemScanState,
 } from '../../services/filesystemAnalysis';
 import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
+import { captureException } from '../../services/sentry';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
 import {
   type SecurityProviderValue,
@@ -46,6 +60,7 @@ import {
   securityStatusIngestSchema,
   securityCommandTypes,
   filesystemAnalysisCommandType,
+  sensitiveDataCommandTypes,
   filesystemDiskThresholdPercent,
   filesystemThresholdCooldownMinutes,
   filesystemAutoResumeMaxRuns,
@@ -85,6 +100,33 @@ export function asInt(value: unknown, defaultValue = 0): number {
 export function parseDate(value: unknown): Date | null {
   if (typeof value !== 'string' || value.trim() === '') return null;
   const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+/**
+ * Validates a string is a valid ISO 8601 date (YYYY-MM-DD) suitable for a
+ * PostgreSQL `date` column.  Returns the date string or null.
+ */
+export function sanitizeDate(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return null;
+  const d = new Date(trimmed + 'T00:00:00Z');
+  return Number.isNaN(d.getTime()) ? null : trimmed;
+}
+
+/**
+ * Strict timestamp parser that requires ISO 8601 / RFC 3339 format before
+ * accepting — rejects ambiguous locale-dependent strings that `new Date()`
+ * might parse inconsistently across JS engines.
+ * Returns a Date or null (never throws).
+ */
+export function sanitizeTimestamp(value: unknown): Date | null {
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  const trimmed = value.trim();
+  // Must start with an ISO date prefix to rule out locale strings
+  if (!/^\d{4}-\d{2}-\d{2}[T ]/.test(trimmed)) return null;
+  const parsed = new Date(trimmed);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
@@ -511,7 +553,7 @@ export async function handleSecurityCommandResult(
       ? Math.max(0, Math.floor(threatsFoundRaw))
       : threatsValue.length;
     const completedAt = new Date();
-    const durationSeconds = Math.max(0, Math.round(resultData.durationMs / 1000));
+    const durationSeconds = Math.max(0, Math.round((resultData.durationMs ?? 0) / 1000));
 
     let existingScan: { id: string } | undefined;
     if (isUuid(scanRecordId)) {
@@ -585,10 +627,334 @@ export async function handleSecurityCommandResult(
 }
 
 // ============================================
+// Sensitive Data Discovery
+// ============================================
+
+const sensitiveDataTypeValues = new Set(['pii', 'pci', 'phi', 'credential', 'financial']);
+const sensitiveDataRiskValues = new Set(['low', 'medium', 'high', 'critical']);
+
+function normalizeSensitiveDataType(value: unknown): 'pii' | 'pci' | 'phi' | 'credential' | 'financial' | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  if (!sensitiveDataTypeValues.has(normalized)) return null;
+  return normalized as 'pii' | 'pci' | 'phi' | 'credential' | 'financial';
+}
+
+function normalizeSensitiveRisk(value: unknown, dataType: string): 'low' | 'medium' | 'high' | 'critical' {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (sensitiveDataRiskValues.has(normalized)) {
+      return normalized as 'low' | 'medium' | 'high' | 'critical';
+    }
+  }
+
+  if (dataType === 'credential' || dataType === 'pci') return 'critical';
+  if (dataType === 'phi' || dataType === 'financial') return 'high';
+  if (dataType === 'pii') return 'medium';
+  return 'low';
+}
+
+function normalizeSensitiveConfidence(value: unknown, dataType: string): number {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.max(0, Math.min(1, value));
+  }
+  switch (dataType) {
+    case 'credential':
+      return 0.95;
+    case 'pci':
+      return 0.9;
+    case 'phi':
+      return 0.8;
+    case 'financial':
+      return 0.78;
+    case 'pii':
+      return 0.72;
+    default:
+      return 0.5;
+  }
+}
+
+function mapRemediationActionFromCommandType(commandType: string): 'encrypt' | 'secure_delete' | 'quarantine' | null {
+  if (commandType === sensitiveDataCommandTypes.encrypt) return 'encrypt';
+  if (commandType === sensitiveDataCommandTypes.secureDelete) return 'secure_delete';
+  if (commandType === sensitiveDataCommandTypes.quarantine) return 'quarantine';
+  return null;
+}
+
+export async function handleSensitiveDataCommandResult(
+  command: typeof deviceCommands.$inferSelect,
+  resultData: z.infer<typeof commandResultSchema>
+): Promise<void> {
+  if (
+    command.type !== sensitiveDataCommandTypes.scan
+    && command.type !== sensitiveDataCommandTypes.encrypt
+    && command.type !== sensitiveDataCommandTypes.secureDelete
+    && command.type !== sensitiveDataCommandTypes.quarantine
+  ) {
+    return;
+  }
+
+  const payload = isObject(command.payload) ? command.payload : {};
+  const resultJson = parseResultJson(resultData.stdout);
+  const now = new Date();
+
+  if (command.type === sensitiveDataCommandTypes.scan) {
+    const scanId = asString(resultJson?.scanId) ?? asString(payload.scanId);
+    if (!isUuid(scanId)) {
+      return;
+    }
+
+    const [scan] = await db
+      .select({
+        id: sensitiveDataScans.id,
+        orgId: sensitiveDataScans.orgId,
+        deviceId: sensitiveDataScans.deviceId,
+        summary: sensitiveDataScans.summary
+      })
+      .from(sensitiveDataScans)
+      .where(and(eq(sensitiveDataScans.id, scanId), eq(sensitiveDataScans.deviceId, command.deviceId)))
+      .limit(1);
+
+    if (!scan) {
+      return;
+    }
+
+    const existingSummary = isObject(scan.summary) ? scan.summary : {};
+    const scanSummary = isObject(resultJson?.summary) ? resultJson.summary : {};
+    const findingsRaw = Array.isArray(resultJson?.findings) ? resultJson.findings : [];
+
+    const normalizedFindings: Array<{
+      filePath: string;
+      dataType: 'pii' | 'pci' | 'phi' | 'credential' | 'financial';
+      patternId: string;
+      matchCount: number;
+      risk: 'low' | 'medium' | 'high' | 'critical';
+      confidence: number;
+      fileOwner: string | null;
+      fileModifiedAt: Date | null;
+    }> = [];
+    for (const rawFinding of findingsRaw) {
+      if (!isObject(rawFinding)) continue;
+      const filePath = readTrimmedString(rawFinding.filePath);
+      const dataType = normalizeSensitiveDataType(rawFinding.dataType);
+      if (!filePath || !dataType) continue;
+
+      const patternId = readTrimmedString(rawFinding.patternId) ?? 'unknown';
+      const matchCount = Math.max(1, asInt(rawFinding.matchCount, 1));
+      const risk = normalizeSensitiveRisk(rawFinding.risk, dataType);
+      const confidence = normalizeSensitiveConfidence(rawFinding.confidence, dataType);
+      normalizedFindings.push({
+        filePath,
+        dataType,
+        patternId,
+        matchCount,
+        risk,
+        confidence,
+        fileOwner: readTrimmedString(rawFinding.fileOwner),
+        fileModifiedAt: parseDate(rawFinding.fileModifiedAt),
+      });
+    }
+
+    const dedupedFindings = Array.from(
+      new Map(
+        normalizedFindings.map((finding) => [
+          `${finding.filePath}::${finding.dataType}::${finding.patternId}`,
+          finding
+        ])
+      ).values()
+    );
+
+    const byRisk: Record<string, number> = {};
+    const byStatus: Record<string, number> = { open: dedupedFindings.length };
+    for (const finding of dedupedFindings) {
+      byRisk[finding.risk] = (byRisk[finding.risk] ?? 0) + 1;
+    }
+
+    await db
+      .update(sensitiveDataScans)
+      .set({
+        status: resultData.status === 'completed' ? 'completed' : 'failed',
+        completedAt: now,
+        summary: {
+          ...existingSummary,
+          commandId: command.id,
+          commandStatus: resultData.status,
+          agentSummary: scanSummary,
+          findingsCount: dedupedFindings.length,
+          findings: {
+            total: dedupedFindings.length,
+            byRisk,
+            byStatus,
+          },
+          completedAt: now.toISOString(),
+        }
+      })
+      .where(eq(sensitiveDataScans.id, scan.id));
+
+    if (resultData.status !== 'completed') {
+      return;
+    }
+
+    for (const finding of dedupedFindings) {
+      const [existingOpen] = await db
+        .select({
+          id: sensitiveDataFindings.id,
+          occurrenceCount: sensitiveDataFindings.occurrenceCount,
+        })
+        .from(sensitiveDataFindings)
+        .where(and(
+          eq(sensitiveDataFindings.orgId, scan.orgId),
+          eq(sensitiveDataFindings.deviceId, scan.deviceId),
+          eq(sensitiveDataFindings.filePath, finding.filePath),
+          eq(sensitiveDataFindings.dataType, finding.dataType),
+          eq(sensitiveDataFindings.patternId, finding.patternId),
+          eq(sensitiveDataFindings.status, 'open')
+        ))
+        .limit(1);
+
+      if (existingOpen) {
+        await db
+          .update(sensitiveDataFindings)
+          .set({
+            matchCount: finding.matchCount,
+            risk: finding.risk,
+            confidence: finding.confidence,
+            fileOwner: finding.fileOwner,
+            fileModifiedAt: finding.fileModifiedAt,
+            lastSeenAt: now,
+            occurrenceCount: (existingOpen.occurrenceCount ?? 1) + 1,
+          })
+          .where(eq(sensitiveDataFindings.id, existingOpen.id));
+        continue;
+      }
+
+      await db.insert(sensitiveDataFindings).values({
+        orgId: scan.orgId,
+        deviceId: scan.deviceId,
+        scanId: scan.id,
+        filePath: finding.filePath,
+        dataType: finding.dataType,
+        patternId: finding.patternId,
+        matchCount: finding.matchCount,
+        risk: finding.risk,
+        confidence: finding.confidence,
+        fileOwner: finding.fileOwner,
+        fileModifiedAt: finding.fileModifiedAt,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        occurrenceCount: 1,
+        status: 'open'
+      });
+    }
+
+    const credentialFindings = dedupedFindings.filter((finding) => finding.dataType === 'credential');
+    if (dedupedFindings.length > 0) {
+      const findingMetricCounts = new Map<string, number>();
+      for (const finding of dedupedFindings) {
+        const key = `${finding.dataType}::${finding.risk}`;
+        findingMetricCounts.set(key, (findingMetricCounts.get(key) ?? 0) + 1);
+      }
+      for (const [key, count] of findingMetricCounts.entries()) {
+        const [dataType, risk] = key.split('::');
+        recordSensitiveDataFinding(dataType ?? 'unknown', risk ?? 'unknown', count);
+      }
+
+      await publishEvent(
+        'compliance.sensitive_data_found',
+        scan.orgId,
+        {
+          deviceId: scan.deviceId,
+          scanId: scan.id,
+          findingCount: dedupedFindings.length,
+          criticalCount: dedupedFindings.filter((finding) => finding.risk === 'critical').length,
+        },
+        'agents.command.result'
+      );
+    }
+
+    if (credentialFindings.length > 0) {
+      await publishEvent(
+        'compliance.credential_exposed',
+        scan.orgId,
+        {
+          deviceId: scan.deviceId,
+          scanId: scan.id,
+          findingCount: credentialFindings.length,
+          criticalCount: credentialFindings.filter((finding) => finding.risk === 'critical').length,
+        },
+        'agents.command.result'
+      );
+    }
+    return;
+  }
+
+  const findingId = asString(payload.findingId);
+  const action = mapRemediationActionFromCommandType(command.type);
+  if (!isUuid(findingId) || !action) {
+    return;
+  }
+
+  const [finding] = await db
+    .select({
+      id: sensitiveDataFindings.id,
+      orgId: sensitiveDataFindings.orgId,
+      deviceId: sensitiveDataFindings.deviceId,
+      scanId: sensitiveDataFindings.scanId
+    })
+    .from(sensitiveDataFindings)
+    .where(and(
+      eq(sensitiveDataFindings.id, findingId),
+      eq(sensitiveDataFindings.deviceId, command.deviceId)
+    ))
+    .limit(1);
+
+  if (!finding) {
+    return;
+  }
+
+  await db
+    .update(sensitiveDataFindings)
+    .set({
+      remediationAction: action,
+      status: resultData.status === 'completed' ? 'remediated' : 'open',
+      remediatedAt: resultData.status === 'completed' ? now : null,
+      remediationMetadata: {
+        commandId: command.id,
+        commandStatus: resultData.status,
+        completedAt: now.toISOString(),
+        keyRef: readTrimmedString(payload.encryptionKeyRef),
+        keyVersion: readTrimmedString(payload.encryptionKeyVersion),
+        provider: readTrimmedString(payload.encryptionProvider),
+      }
+    })
+    .where(eq(sensitiveDataFindings.id, finding.id));
+
+  if (resultData.status === 'completed') {
+    recordSensitiveDataRemediationDecision(`${action}_completed`, 1);
+    await publishEvent(
+      'compliance.sensitive_data_remediated',
+      finding.orgId,
+      {
+        findingId: finding.id,
+        scanId: finding.scanId,
+        deviceId: finding.deviceId,
+        action,
+        remediatedAt: now.toISOString(),
+      },
+      'agents.command.result'
+    );
+  } else {
+    recordSensitiveDataRemediationDecision(`${action}_failed`, 1);
+  }
+}
+
+// ============================================
 // Software Remediation
 // ============================================
 
 const softwareUninstallCommandType = 'software_uninstall';
+const cisBenchmarkCommandType = 'cis_benchmark';
+const cisRemediationCommandType = 'apply_cis_remediation';
 
 export async function handleSoftwareRemediationCommandResult(
   command: typeof deviceCommands.$inferSelect,
@@ -721,6 +1087,281 @@ export async function handleSoftwareRemediationCommandResult(
     console.error('[agents/helpers] Audit write failed for software_uninstalled:', err);
   });
   recordSoftwareRemediationDecision('command_result_completed');
+}
+
+export async function handleCisCommandResult(
+  command: typeof deviceCommands.$inferSelect,
+  resultData: z.infer<typeof commandResultSchema>
+): Promise<void> {
+  if (command.type !== cisBenchmarkCommandType && command.type !== cisRemediationCommandType) {
+    return;
+  }
+
+  const payload = isObject(command.payload) ? command.payload : {};
+
+  if (command.type === cisBenchmarkCommandType) {
+    const baselineId = readTrimmedString(payload.baselineId);
+    if (!baselineId || !isUuid(baselineId)) {
+      console.warn(`[agents/helpers] cis_benchmark command ${command.id} missing valid baselineId`);
+      return;
+    }
+
+    const [baseline] = await db
+      .select({
+        id: cisBaselines.id,
+        orgId: cisBaselines.orgId,
+        name: cisBaselines.name,
+      })
+      .from(cisBaselines)
+      .where(eq(cisBaselines.id, baselineId))
+      .limit(1);
+
+    if (!baseline) {
+      console.warn(`[agents/helpers] cis_benchmark command ${command.id}: baseline ${baselineId} not found`);
+      return;
+    }
+
+    // Defense-in-depth: verify baseline org matches device org
+    const [deviceRow] = await db
+      .select({ orgId: devices.orgId })
+      .from(devices)
+      .where(eq(devices.id, command.deviceId))
+      .limit(1);
+    if (!deviceRow || deviceRow.orgId !== baseline.orgId) {
+      console.warn(
+        `[agents/helpers] cis_benchmark command ${command.id}: org mismatch baseline.orgId=${baseline.orgId} device.orgId=${deviceRow?.orgId}`,
+      );
+      return;
+    }
+
+    // Idempotency guard: prevent duplicate result rows if the agent delivers the same command result more than once
+    const [existingForCommand] = await db
+      .select({ id: cisBaselineResults.id })
+      .from(cisBaselineResults)
+      .where(and(
+        eq(cisBaselineResults.baselineId, baseline.id),
+        eq(cisBaselineResults.deviceId, command.deviceId),
+        sql`${cisBaselineResults.summary} ->> 'commandId' = ${command.id}`,
+      ))
+      .limit(1);
+
+    if (existingForCommand) {
+      console.debug(`[agents/helpers] cis_benchmark command ${command.id}: duplicate result skipped (idempotency)`);
+      return;
+    }
+
+    const [previousResult] = await db
+      .select({
+        score: cisBaselineResults.score,
+      })
+      .from(cisBaselineResults)
+      .where(and(
+        eq(cisBaselineResults.baselineId, baseline.id),
+        eq(cisBaselineResults.deviceId, command.deviceId),
+      ))
+      .orderBy(desc(cisBaselineResults.checkedAt))
+      .limit(1);
+
+    let parsed = parseCisCollectorOutput(resultData.stdout);
+    if (resultData.status !== 'completed') {
+      parsed = {
+        checkedAt: new Date(),
+        findings: [{
+          checkId: 'collector.runtime',
+          title: 'CIS collector execution',
+          severity: 'high',
+          status: 'fail',
+          message: resultData.error ?? resultData.stderr ?? 'CIS collector execution failed',
+          evidence: null,
+          remediation: null,
+        }],
+        totalChecks: 1,
+        passedChecks: 0,
+        failedChecks: 1,
+        score: 0,
+        rawSummary: {
+          error: resultData.error ?? null,
+          stderr: resultData.stderr ?? null,
+          status: resultData.status,
+        },
+      };
+    }
+
+    const summary = {
+      ...(parsed.rawSummary ?? {}),
+      commandId: command.id,
+      commandStatus: resultData.status,
+    };
+
+    const [inserted] = await db
+      .insert(cisBaselineResults)
+      .values({
+        orgId: baseline.orgId,
+        deviceId: command.deviceId,
+        baselineId: baseline.id,
+        checkedAt: parsed.checkedAt,
+        totalChecks: parsed.totalChecks,
+        passedChecks: parsed.passedChecks,
+        failedChecks: parsed.failedChecks,
+        score: parsed.score,
+        findings: parsed.findings,
+        summary,
+      })
+      .returning({
+        id: cisBaselineResults.id,
+        score: cisBaselineResults.score,
+        failedChecks: cisBaselineResults.failedChecks,
+        checkedAt: cisBaselineResults.checkedAt,
+      });
+
+    if (!inserted) {
+      console.error(
+        `[agents/helpers] cis_benchmark command ${command.id}: failed to insert baseline result (baseline=${baseline.id}, device=${command.deviceId})`,
+      );
+      return;
+    }
+
+    if (inserted.failedChecks > 0) {
+      publishEvent(
+        'compliance.cis_deviation',
+        baseline.orgId,
+        {
+          baselineId: baseline.id,
+          baselineName: baseline.name,
+          deviceId: command.deviceId,
+          resultId: inserted.id,
+          failedChecks: inserted.failedChecks,
+          checkedAt: inserted.checkedAt.toISOString(),
+        },
+        'agent-command-result'
+      ).catch((error) => {
+        console.error('[agents/helpers] Failed to publish compliance.cis_deviation:', error);
+        captureException(error);
+      });
+    }
+
+    const previousScore = previousResult?.score ?? null;
+    if (previousScore === null || previousScore !== inserted.score) {
+      publishEvent(
+        'compliance.cis_score_changed',
+        baseline.orgId,
+        {
+          baselineId: baseline.id,
+          baselineName: baseline.name,
+          deviceId: command.deviceId,
+          previousScore,
+          currentScore: inserted.score,
+          delta: previousScore === null ? null : inserted.score - previousScore,
+          resultId: inserted.id,
+          checkedAt: inserted.checkedAt.toISOString(),
+        },
+        'agent-command-result'
+      ).catch((error) => {
+        console.error('[agents/helpers] Failed to publish compliance.cis_score_changed:', error);
+        captureException(error);
+      });
+    }
+
+    return;
+  }
+
+  const actionId = readTrimmedString(payload.actionId);
+  if (!actionId || !isUuid(actionId)) {
+    console.warn(`[agents/helpers] apply_cis_remediation command ${command.id} missing valid actionId`);
+    return;
+  }
+
+  const [action] = await db
+    .select({
+      id: cisRemediationActions.id,
+      orgId: cisRemediationActions.orgId,
+      baselineId: cisRemediationActions.baselineId,
+      baselineResultId: cisRemediationActions.baselineResultId,
+      checkId: cisRemediationActions.checkId,
+      actionName: cisRemediationActions.action,
+      details: cisRemediationActions.details,
+      beforeState: cisRemediationActions.beforeState,
+      afterState: cisRemediationActions.afterState,
+      rollbackHint: cisRemediationActions.rollbackHint,
+    })
+    .from(cisRemediationActions)
+    .where(eq(cisRemediationActions.id, actionId))
+    .limit(1);
+
+  if (!action) {
+    console.warn(`[agents/helpers] apply_cis_remediation command ${command.id}: remediation action ${actionId} not found`);
+    return;
+  }
+
+  const completed = resultData.status === 'completed';
+  const payloadDetails = isObject(payload.details) ? payload.details : null;
+  const resultPayload = parseResultJson(resultData.stdout);
+  const resultDetails = resultPayload && isObject(resultPayload.details)
+    ? resultPayload.details
+    : null;
+  const beforeStateFromResult = resultPayload && isObject(resultPayload.beforeState)
+    ? resultPayload.beforeState
+    : resultPayload && isObject(resultPayload.before_state)
+      ? resultPayload.before_state
+      : null;
+  const afterStateFromResult = resultPayload && isObject(resultPayload.afterState)
+    ? resultPayload.afterState
+    : resultPayload && isObject(resultPayload.after_state)
+      ? resultPayload.after_state
+      : null;
+  const rollbackHint = readTrimmedString(
+    (resultPayload?.rollbackHint as unknown)
+      ?? (resultPayload?.rollback_hint as unknown)
+      ?? (resultDetails?.rollbackHint as unknown)
+      ?? (resultDetails?.rollback_hint as unknown)
+      ?? (payloadDetails?.rollbackHint as unknown)
+      ?? (payloadDetails?.rollback_hint as unknown)
+      ?? action.rollbackHint
+  );
+
+  const updatedDetails = {
+    ...(action.details ?? {}),
+    ...(payloadDetails ?? {}),
+    ...(resultDetails ?? {}),
+    commandId: command.id,
+    commandStatus: resultData.status,
+    exitCode: resultData.exitCode ?? null,
+    error: resultData.error ?? null,
+    stderr: resultData.stderr ?? null,
+    completedAt: new Date().toISOString(),
+  };
+
+  await db
+    .update(cisRemediationActions)
+    .set({
+      status: completed ? 'completed' : 'failed',
+      executedAt: new Date(),
+      details: updatedDetails,
+      beforeState: beforeStateFromResult ?? action.beforeState ?? null,
+      afterState: afterStateFromResult ?? action.afterState ?? null,
+      rollbackHint: rollbackHint ?? null,
+    })
+    .where(eq(cisRemediationActions.id, action.id));
+
+  if (completed) {
+    publishEvent(
+      'compliance.cis_remediation_applied',
+      action.orgId,
+      {
+        actionId: action.id,
+        baselineId: action.baselineId,
+        baselineResultId: action.baselineResultId,
+        deviceId: command.deviceId,
+        checkId: action.checkId,
+        action: action.actionName,
+        commandId: command.id,
+      },
+      'agent-command-result'
+    ).catch((error) => {
+      console.error('[agents/helpers] Failed to publish compliance.cis_remediation_applied:', error);
+      captureException(error);
+    });
+  }
 }
 
 // ============================================
@@ -1156,6 +1797,165 @@ export async function getOrgEventLogRetentionDays(orgId: string): Promise<number
 }
 
 // ============================================
+// Monitoring (Service & Process) Policy Settings
+// ============================================
+
+export interface MonitoringWatchConfig {
+  watch_type: 'service' | 'process';
+  name: string;
+  alert_on_stop: boolean;
+  alert_after_consecutive_failures: number;
+  auto_restart: boolean;
+  max_restart_attempts: number;
+  restart_cooldown_seconds: number;
+  cpu_threshold_percent?: number;
+  memory_threshold_mb?: number;
+  threshold_duration_seconds?: number;
+}
+
+export interface MonitoringConfigUpdate {
+  check_interval_seconds: number;
+  watches: MonitoringWatchConfig[];
+}
+
+async function resolveDeviceMonitoringSettings(deviceId: string): Promise<MonitoringConfigUpdate | null> {
+  // 1. Load device
+  const [device] = await db
+    .select({ orgId: devices.orgId, siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+
+  if (!device) return null;
+
+  // 2. Load org (for partnerId)
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, device.orgId))
+    .limit(1);
+
+  // 3. Load device group memberships
+  const groupRows = await db
+    .select({ groupId: deviceGroupMemberships.groupId })
+    .from(deviceGroupMemberships)
+    .where(eq(deviceGroupMemberships.deviceId, deviceId));
+  const groupIds = groupRows.map((r) => r.groupId);
+
+  // 4. Build target match conditions
+  const targetConditions = [
+    and(eq(configPolicyAssignments.level, 'device'), eq(configPolicyAssignments.targetId, deviceId)),
+    and(eq(configPolicyAssignments.level, 'site'), eq(configPolicyAssignments.targetId, device.siteId)),
+    and(eq(configPolicyAssignments.level, 'organization'), eq(configPolicyAssignments.targetId, device.orgId)),
+  ];
+  if (groupIds.length > 0) {
+    targetConditions.push(
+      and(eq(configPolicyAssignments.level, 'device_group'), inArray(configPolicyAssignments.targetId, groupIds))!
+    );
+  }
+  if (org?.partnerId) {
+    targetConditions.push(
+      and(eq(configPolicyAssignments.level, 'partner'), eq(configPolicyAssignments.targetId, org.partnerId))!
+    );
+  }
+
+  // 5. Single query: assignments → active policies → monitoring feature link → settings
+  const rows = await db
+    .select({
+      level: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      settingsId: configPolicyMonitoringSettings.id,
+      checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+    .innerJoin(configPolicyFeatureLinks, and(
+      eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+      eq(configPolicyFeatureLinks.featureType, 'monitoring'),
+    ))
+    .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyFeatureLinks.id))
+    .where(and(
+      eq(configurationPolicies.status, 'active'),
+      or(...targetConditions),
+    ));
+
+  if (rows.length === 0) return null;
+
+  // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
+  rows.sort((a, b) => {
+    const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
+    if (levelDiff !== 0) return levelDiff;
+    return a.assignmentPriority - b.assignmentPriority;
+  });
+
+  const winner = rows[0];
+  if (!winner) return null;
+
+  // 7. Load watches for the winning settings row
+  const watches = await db
+    .select()
+    .from(configPolicyMonitoringWatches)
+    .where(and(
+      eq(configPolicyMonitoringWatches.settingsId, winner.settingsId),
+      eq(configPolicyMonitoringWatches.enabled, true),
+    ))
+    .orderBy(configPolicyMonitoringWatches.sortOrder);
+
+  if (watches.length === 0) return null;
+
+  return {
+    check_interval_seconds: winner.checkIntervalSeconds,
+    watches: watches.map((w) => {
+      const entry: MonitoringWatchConfig = {
+        watch_type: w.watchType,
+        name: w.name,
+        alert_on_stop: w.alertOnStop,
+        alert_after_consecutive_failures: w.alertAfterConsecutiveFailures,
+        auto_restart: w.autoRestart,
+        max_restart_attempts: w.maxRestartAttempts,
+        restart_cooldown_seconds: w.restartCooldownSeconds,
+      };
+      if (w.cpuThresholdPercent != null) entry.cpu_threshold_percent = w.cpuThresholdPercent;
+      if (w.memoryThresholdMb != null) entry.memory_threshold_mb = w.memoryThresholdMb;
+      if (w.thresholdDurationSeconds) entry.threshold_duration_seconds = w.thresholdDurationSeconds;
+      return entry;
+    }),
+  };
+}
+
+const MONITORING_CACHE_TTL_SECONDS = 120; // 2 minutes
+
+export async function buildMonitoringConfigUpdate(deviceId: string): Promise<MonitoringConfigUpdate | null> {
+  const redis = getRedis();
+  const cacheKey = `monitoring:settings:device:${deviceId}`;
+
+  // Try cache first
+  if (redis) {
+    try {
+      const cached = await redis.get(cacheKey);
+      if (cached) {
+        return JSON.parse(cached) as MonitoringConfigUpdate;
+      }
+    } catch (cacheErr) {
+      console.warn(`[monitoring] Redis cache read failed for device ${deviceId}:`, cacheErr);
+    }
+  }
+
+  const settings = await resolveDeviceMonitoringSettings(deviceId);
+
+  // Cache the result when non-null (null results are not cached to allow quick policy activation)
+  if (redis && settings) {
+    try {
+      await redis.set(cacheKey, JSON.stringify(settings), 'EX', MONITORING_CACHE_TTL_SECONDS);
+    } catch (cacheErr) {
+      console.warn(`[monitoring] Redis cache write failed for device ${deviceId}:`, cacheErr);
+    }
+  }
+
+  return settings;
+}
+
+// ============================================
 // Enrollment / Auth
 // ============================================
 
@@ -1238,4 +2038,151 @@ export async function issueMtlsCertForDevice(deviceId: string, orgId: string): P
     expiresAt: cert.expiresOn,
     serialNumber: cert.serialNumber,
   };
+}
+
+// ============================================
+// Helper Settings (policy-driven)
+// ============================================
+
+export interface HelperSettings {
+  enabled: boolean;
+  showOpenPortal: boolean;
+  showDeviceInfo: boolean;
+  showRequestSupport: boolean;
+  portalUrl?: string;
+}
+
+const HELPER_DEFAULTS: HelperSettings = {
+  enabled: false,
+  showOpenPortal: true,
+  showDeviceInfo: true,
+  showRequestSupport: true,
+};
+
+async function resolveDeviceHelperSettings(deviceId: string): Promise<HelperSettings> {
+  // 1. Load device
+  const [device] = await db
+    .select({ orgId: devices.orgId, siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+
+  if (!device) return HELPER_DEFAULTS;
+
+  // 2. Load org (for partnerId)
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, device.orgId))
+    .limit(1);
+
+  // 3. Load device group memberships
+  const groupRows = await db
+    .select({ groupId: deviceGroupMemberships.groupId })
+    .from(deviceGroupMemberships)
+    .where(eq(deviceGroupMemberships.deviceId, deviceId));
+  const groupIds = groupRows.map((r) => r.groupId);
+
+  // 4. Build target match conditions
+  const targetConditions = [
+    and(eq(configPolicyAssignments.level, 'device'), eq(configPolicyAssignments.targetId, deviceId)),
+    and(eq(configPolicyAssignments.level, 'site'), eq(configPolicyAssignments.targetId, device.siteId)),
+    and(eq(configPolicyAssignments.level, 'organization'), eq(configPolicyAssignments.targetId, device.orgId)),
+  ];
+  if (groupIds.length > 0) {
+    targetConditions.push(
+      and(eq(configPolicyAssignments.level, 'device_group'), inArray(configPolicyAssignments.targetId, groupIds))!
+    );
+  }
+  if (org?.partnerId) {
+    targetConditions.push(
+      and(eq(configPolicyAssignments.level, 'partner'), eq(configPolicyAssignments.targetId, org.partnerId))!
+    );
+  }
+
+  // 5. Single query: assignments → active policies → helper feature link (pure JSONB)
+  const rows = await db
+    .select({
+      level: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      inlineSettings: configPolicyFeatureLinks.inlineSettings,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+    .innerJoin(configPolicyFeatureLinks, and(
+      eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+      eq(configPolicyFeatureLinks.featureType, 'helper'),
+    ))
+    .where(and(
+      eq(configurationPolicies.status, 'active'),
+      or(...targetConditions),
+    ));
+
+  if (rows.length === 0) return HELPER_DEFAULTS;
+
+  // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
+  rows.sort((a, b) => {
+    const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
+    if (levelDiff !== 0) return levelDiff;
+    return a.assignmentPriority - b.assignmentPriority;
+  });
+
+  const winner = rows[0];
+  if (!winner?.inlineSettings) return HELPER_DEFAULTS;
+
+  const s = winner.inlineSettings as Record<string, unknown>;
+  return {
+    enabled: typeof s.enabled === 'boolean' ? s.enabled : HELPER_DEFAULTS.enabled,
+    showOpenPortal: typeof s.showOpenPortal === 'boolean' ? s.showOpenPortal : HELPER_DEFAULTS.showOpenPortal,
+    showDeviceInfo: typeof s.showDeviceInfo === 'boolean' ? s.showDeviceInfo : HELPER_DEFAULTS.showDeviceInfo,
+    showRequestSupport: typeof s.showRequestSupport === 'boolean' ? s.showRequestSupport : HELPER_DEFAULTS.showRequestSupport,
+    portalUrl: typeof s.portalUrl === 'string' && s.portalUrl ? s.portalUrl : undefined,
+  };
+}
+
+const HELPER_CACHE_TTL_SECONDS = 120;
+
+/**
+ * Build helper config update payload for heartbeat response.
+ * Resolves helper policy settings via the config policy hierarchy.
+ * Falls back to org-level helperEnabled for backward compatibility,
+ * then to defaults if no policy found.
+ */
+export async function buildHelperConfigUpdate(deviceId: string, orgId: string): Promise<HelperSettings> {
+  const redis = getRedis();
+  const cacheKey = `helper:settings:device:${deviceId}`;
+
+  if (redis) {
+    try {
+      const cached = await redis.get(cacheKey);
+      if (cached) return JSON.parse(cached) as HelperSettings;
+    } catch (cacheErr) {
+      console.warn(`[helper] Redis cache read failed for device ${deviceId}:`, cacheErr);
+    }
+  }
+
+  // Try config policy resolution first
+  let settings = await resolveDeviceHelperSettings(deviceId);
+
+  // Fallback: if no policy found, check org-level settings for backward compat
+  if (!settings.enabled) {
+    try {
+      const orgSettings = await getOrgHelperSettings(orgId);
+      if (orgSettings.enabled) {
+        settings = { ...HELPER_DEFAULTS, enabled: true };
+      }
+    } catch {
+      // ignore — defaults are fine
+    }
+  }
+
+  if (redis) {
+    try {
+      await redis.set(cacheKey, JSON.stringify(settings), 'EX', HELPER_CACHE_TTL_SECONDS);
+    } catch (cacheErr) {
+      console.warn(`[helper] Redis cache write failed for device ${deviceId}:`, cacheErr);
+    }
+  }
+
+  return settings;
 }

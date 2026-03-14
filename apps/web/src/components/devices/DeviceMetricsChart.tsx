@@ -10,6 +10,7 @@ import {
   Legend
 } from 'recharts';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type TimeRange = '1h' | '6h' | '24h' | '7d' | '30d';
 
@@ -76,7 +77,7 @@ export default function DeviceMetricsChart({ compact = false, deviceId }: Device
       const response = await fetchWithAuth(`/devices/${deviceId}/metrics?range=${timeRange}`);
 
       if (response.status === 401) {
-        window.location.href = '/login';
+        void navigateTo('/login', { replace: true });
         return;
       }
 
@@ -161,12 +162,7 @@ export default function DeviceMetricsChart({ compact = false, deviceId }: Device
                 width={30}
               />
               <Tooltip
-                contentStyle={{
-                  backgroundColor: 'hsl(var(--card))',
-                  border: '1px solid hsl(var(--border))',
-                  borderRadius: '0.5rem',
-                  fontSize: '12px'
-                }}
+                wrapperClassName="chart-tooltip"
                 labelFormatter={(value) => new Date(value).toLocaleString()}
               />
               <Line
@@ -271,11 +267,7 @@ export default function DeviceMetricsChart({ compact = false, deviceId }: Device
               width={45}
             />
             <Tooltip
-              contentStyle={{
-                backgroundColor: 'hsl(var(--card))',
-                border: '1px solid hsl(var(--border))',
-                borderRadius: '0.5rem'
-              }}
+              wrapperClassName="chart-tooltip"
               labelFormatter={(value) => new Date(value).toLocaleString()}
               formatter={(value: number, name: string) => [`${value}%`, name]}
             />

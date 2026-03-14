@@ -45,7 +45,7 @@ function resolveOrgId(
     if (!requireForNonOrg && accessibleOrgIds.length === 1) {
       return { orgId: accessibleOrgIds[0] } as const;
     }
-    return { error: 'orgId is required for partner scope', status: 400 } as const;
+    return { error: 'orgId is required when partner has multiple organizations', status: 400 } as const;
   }
 
   if (auth.scope === 'system' && !requestedOrgId) {
@@ -235,7 +235,7 @@ maintenanceRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('deviceId');
+    const deviceId = c.req.param('deviceId')!;
 
     // Verify the caller has access to this device's org
     const [device] = await db.select({ orgId: devices.orgId }).from(devices).where(eq(devices.id, deviceId)).limit(1);
@@ -275,13 +275,17 @@ maintenanceRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgResult = resolveOrgId(auth, query.orgId, true);
+    const orgResult = resolveOrgId(auth, query.orgId);
 
     if ('error' in orgResult) {
       return c.json({ error: orgResult.error }, orgResult.status);
     }
 
-    const conditions = [eq(maintenanceWindows.orgId, orgResult.orgId as string)];
+    if (!orgResult.orgId) {
+      return c.json({ data: [] });
+    }
+
+    const conditions = [eq(maintenanceWindows.orgId, orgResult.orgId)];
 
     if (query.status) {
       conditions.push(eq(maintenanceWindows.status, query.status));
@@ -387,7 +391,7 @@ maintenanceRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const windowId = c.req.param('id');
+    const windowId = c.req.param('id')!;
 
     const [window] = await db
       .select()
@@ -425,7 +429,7 @@ maintenanceRoutes.patch(
   zValidator('json', updateWindowSchema),
   async (c) => {
     const auth = c.get('auth');
-    const windowId = c.req.param('id');
+    const windowId = c.req.param('id')!;
     const updates = c.req.valid('json');
 
     if (Object.keys(updates).length === 0) {
@@ -497,7 +501,7 @@ maintenanceRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const windowId = c.req.param('id');
+    const windowId = c.req.param('id')!;
 
     const [window] = await db
       .select()
@@ -542,7 +546,7 @@ maintenanceRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const windowId = c.req.param('id');
+    const windowId = c.req.param('id')!;
 
     const [window] = await db
       .select()
@@ -601,7 +605,7 @@ maintenanceRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const windowId = c.req.param('id');
+    const windowId = c.req.param('id')!;
 
     const [window] = await db
       .select()
@@ -695,7 +699,7 @@ maintenanceRoutes.patch(
   zValidator('json', updateOccurrenceSchema),
   async (c) => {
     const auth = c.get('auth');
-    const occurrenceId = c.req.param('id');
+    const occurrenceId = c.req.param('id')!;
     const updates = c.req.valid('json');
 
     if (Object.keys(updates).length === 0) {
@@ -769,7 +773,7 @@ maintenanceRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const occurrenceId = c.req.param('id');
+    const occurrenceId = c.req.param('id')!;
 
     const [occurrence] = await db
       .select({
@@ -825,7 +829,7 @@ maintenanceRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const occurrenceId = c.req.param('id');
+    const occurrenceId = c.req.param('id')!;
 
     const [occurrence] = await db
       .select({

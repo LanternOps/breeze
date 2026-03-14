@@ -1,0 +1,380 @@
+---
+title: EDR Integrations
+description: Connect Huntress and SentinelOne to correlate endpoint detection data with your Breeze-managed fleet.
+sidebar:
+  order: 46
+  label: EDR Integrations
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Breeze integrates with leading Endpoint Detection and Response (EDR) platforms to give you a unified view of endpoint security across your managed fleet. Instead of switching between your RMM and EDR consoles, you can view threat data, agent coverage, and incident details directly in Breeze.
+
+Currently supported EDR vendors:
+
+| Vendor | Data Synced | Actions Available |
+|--------|------------|-------------------|
+| **Huntress** | Agents, incidents | Webhook ingestion, manual sync |
+| **SentinelOne** | Agents, threats, site mappings | Device isolation, threat actions (kill, quarantine, rollback), manual sync |
+
+Both integrations follow the same pattern: you provide API credentials, Breeze syncs agent and threat data on a schedule, and the synced data is mapped to your existing Breeze devices by hostname or agent ID.
+
+---
+
+## Huntress
+
+### Overview
+
+The Huntress integration syncs agent inventory and incident reports from your Huntress account into Breeze. It supports both pull-based syncing (via the Huntress API) and push-based updates (via webhooks). Huntress agents are automatically matched to Breeze devices, and incidents are linked to the affected device when a mapping exists.
+
+### Setting Up Huntress
+
+<Steps>
+1. In the Breeze dashboard, navigate to **Settings > Integrations > Huntress**.
+2. Provide a **name** for the integration (e.g., "Production Huntress").
+3. Enter your **Huntress API key**. This is encrypted at rest using AES before being stored.
+4. Optionally provide your **Huntress account ID** and **API base URL** (defaults to `https://api.huntress.io/v1`).
+5. Optionally provide a **webhook secret** for signature verification on incoming webhook payloads.
+6. Click **Save**. An initial sync is automatically scheduled.
+</Steps>
+
+<Aside>
+  Creating or updating a Huntress integration requires the `orgs:write` permission and MFA verification.
+</Aside>
+
+### Webhook Configuration
+
+Huntress can push event notifications to Breeze in real time via webhooks. Configure the webhook URL in your Huntress dashboard:
+
+```
+POST https://your-breeze-instance.com/api/v1/huntress/webhook
+```
+
+Webhook payloads are verified using HMAC signature validation. Breeze checks both the `x-huntress-signature` (or `x-signature`) and `x-huntress-timestamp` (or `x-timestamp`) headers against the webhook secret you configured.
+
+<Aside type="caution">
+  Webhook signature verification is mandatory. If no webhook secret is configured for the integration, all incoming webhooks are rejected with a 403 error. Always configure a webhook secret when enabling webhook ingestion.
+</Aside>
+
+#### Webhook Routing
+
+When Breeze receives a Huntress webhook, it needs to determine which integration the event belongs to. The integration is resolved using (in order of priority):
+
+1. `integrationId` query parameter or `x-huntress-integration-id` header
+2. `integrationId` field in the JSON payload body
+3. `x-huntress-account-id` header or account ID extracted from the payload
+
+If multiple active integrations match the same account and no explicit integration ID is provided, the webhook returns a 409 conflict.
+
+### Data Model
+
+#### Huntress Agents
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `huntressAgentId` | String | Unique agent identifier from Huntress |
+| `deviceId` | UUID | Mapped Breeze device (nullable if unmapped) |
+| `hostname` | String | Agent hostname |
+| `platform` | String | Operating system platform |
+| `status` | String | Agent status (e.g., online, offline) |
+| `lastSeenAt` | Timestamp | Last time the agent checked in with Huntress |
+| `metadata` | JSON | Additional agent metadata from Huntress |
+
+#### Huntress Incidents
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `huntressIncidentId` | String | Unique incident identifier from Huntress |
+| `deviceId` | UUID | Affected Breeze device (nullable if unmapped) |
+| `severity` | String | Incident severity level |
+| `category` | String | Incident category (max 60 chars) |
+| `title` | String | Incident title |
+| `description` | Text | Detailed incident description |
+| `recommendation` | Text | Recommended remediation steps |
+| `status` | String | Current incident status |
+| `reportedAt` | Timestamp | When the incident was first reported |
+| `resolvedAt` | Timestamp | When the incident was resolved (nullable) |
+| `details` | JSON | Full incident details from Huntress |
+
+### Status Dashboard
+
+The Huntress status endpoint provides a summary of your integration health:
+
+| Metric | Description |
+|--------|-------------|
+| `totalAgents` | Total Huntress agents synced |
+| `mappedAgents` | Agents matched to Breeze devices |
+| `unmappedAgents` | Agents without a Breeze device match |
+| `offlineAgents` | Agents with an offline status |
+| `open` | Count of unresolved incidents |
+| `bySeverity` | Incident counts grouped by severity |
+| `byStatus` | Incident counts grouped by status |
+
+### Listing Incidents
+
+Incidents can be filtered by multiple criteria:
+
+| Filter | Type | Description |
+|--------|------|-------------|
+| `orgId` | UUID | Filter by organization |
+| `integrationId` | UUID | Filter by specific integration |
+| `status` | String | Filter by incident status |
+| `severity` | String | Filter by severity level |
+| `deviceId` | UUID | Filter by affected Breeze device |
+| `search` | String | Search incident titles (case-insensitive) |
+| `limit` | Number | Results per page (1-500, default 100) |
+| `offset` | Number | Pagination offset |
+
+---
+
+## SentinelOne
+
+### Overview
+
+The SentinelOne integration provides deeper operational capabilities beyond data sync. In addition to importing agent and threat data, you can isolate devices and take threat actions (kill, quarantine, rollback) directly from the Breeze dashboard -- commands are dispatched to the SentinelOne management console via API.
+
+### Setting Up SentinelOne
+
+<Steps>
+1. In the Breeze dashboard, navigate to **Settings > Integrations > SentinelOne**.
+2. Provide a **name** for the integration.
+3. Enter your **SentinelOne management console URL** (e.g., `https://usea1.sentinelone.net`).
+4. Enter your **SentinelOne API token**. This is encrypted at rest before being stored.
+5. Click **Save**. An initial sync is automatically scheduled.
+</Steps>
+
+<Aside>
+  Creating or updating a SentinelOne integration requires the `orgs:write` permission and MFA verification. Only one SentinelOne integration is allowed per organization.
+</Aside>
+
+### Data Model
+
+#### SentinelOne Agents
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `s1AgentId` | String | Unique agent identifier from SentinelOne |
+| `deviceId` | UUID | Mapped Breeze device (nullable if unmapped) |
+| `status` | String | Agent connection status |
+| `infected` | Boolean | Whether the agent has active threats |
+| `threatCount` | Integer | Number of threats detected on this agent |
+| `policyName` | String | Applied SentinelOne policy name |
+| `lastSeenAt` | Timestamp | Last check-in time |
+| `metadata` | JSON | Additional agent metadata including site name |
+
+#### SentinelOne Threats
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `s1ThreatId` | String | Unique threat identifier from SentinelOne |
+| `deviceId` | UUID | Affected Breeze device (nullable if unmapped) |
+| `classification` | String | Threat classification (e.g., Malware, PUP) |
+| `severity` | String | Severity level (low, medium, high, critical) |
+| `threatName` | String | Name of the detected threat |
+| `processName` | String | Process that triggered the detection |
+| `filePath` | String | File path of the threat |
+| `mitreTactics` | JSON | MITRE ATT&CK tactic mappings |
+| `status` | String | Current threat status (active, in_progress, resolved, etc.) |
+| `detectedAt` | Timestamp | When the threat was first detected |
+| `resolvedAt` | Timestamp | When the threat was resolved (nullable) |
+| `details` | JSON | Full threat details from SentinelOne |
+
+#### SentinelOne Actions
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `action` | String | Action type (isolate, unisolate, kill, quarantine, rollback) |
+| `status` | String | Action status: `queued`, `in_progress`, `completed`, `failed` |
+| `providerActionId` | String | Action ID from SentinelOne API |
+| `requestedBy` | UUID | User who initiated the action |
+| `requestedAt` | Timestamp | When the action was requested |
+| `completedAt` | Timestamp | When the action finished (nullable) |
+| `error` | Text | Error message if the action failed |
+
+### Site Mappings
+
+SentinelOne organizes agents into "Sites." Breeze lets you map SentinelOne sites to Breeze organizations, enabling multi-tenant EDR management from a single SentinelOne console.
+
+<Steps>
+1. Navigate to **Settings > Integrations > SentinelOne > Sites**.
+2. View the list of SentinelOne sites with their agent counts.
+3. For each site, select the Breeze organization it should map to.
+4. Click **Save** to apply the mapping.
+</Steps>
+
+To remove a mapping, set the target organization to `null`.
+
+### Device Isolation
+
+You can isolate compromised devices directly from Breeze. The isolation command is sent to SentinelOne, which enforces network isolation at the endpoint level.
+
+<Steps>
+1. Select one or more devices in the Breeze dashboard.
+2. Click **Isolate** (or **Unisolate** to restore connectivity).
+3. Breeze identifies the corresponding SentinelOne agents and dispatches the isolation command.
+4. The action status is tracked and reported back.
+</Steps>
+
+<Aside type="caution">
+  Device isolation requires the `devices:execute` permission and MFA verification. You can isolate up to 200 devices in a single request.
+</Aside>
+
+### Threat Actions
+
+Take direct action on detected threats without leaving Breeze:
+
+| Action | Description |
+|--------|-------------|
+| `kill` | Terminate the malicious process |
+| `quarantine` | Move the threat file to quarantine |
+| `rollback` | Roll back changes made by the threat (Windows only) |
+
+<Steps>
+1. Navigate to the **Threats** view and find the threat(s) to act on.
+2. Select the threat action (kill, quarantine, or rollback).
+3. Confirm the action. Up to 200 threats can be acted on in a single request.
+4. The action is dispatched to SentinelOne and the status is tracked.
+</Steps>
+
+<Aside type="caution">
+  Threat actions require the `devices:execute` permission and MFA verification.
+</Aside>
+
+### Status Dashboard
+
+The SentinelOne status endpoint provides a comprehensive summary:
+
+| Metric | Description |
+|--------|-------------|
+| `totalAgents` | Total SentinelOne agents synced |
+| `mappedDevices` | Agents matched to Breeze devices |
+| `infectedAgents` | Agents with active infections |
+| `activeThreats` | Threats with `active` or `in_progress` status |
+| `highOrCriticalThreats` | Threats with `high` or `critical` severity |
+| `pendingActions` | Actions with `queued` or `in_progress` status |
+| `reportedThreatCount` | Sum of threat counts across all agents |
+
+### Listing Threats
+
+Threats can be filtered by multiple criteria:
+
+| Filter | Type | Description |
+|--------|------|-------------|
+| `orgId` | UUID | Filter by organization |
+| `integrationId` | UUID | Filter by specific integration |
+| `deviceId` | UUID | Filter by affected Breeze device |
+| `status` | String | Filter by threat status |
+| `severity` | String | Filter by severity level |
+| `search` | String | Search by threat name, process name, or file path |
+| `start` | ISO datetime | Threats detected on or after this time |
+| `end` | ISO datetime | Threats detected on or before this time |
+| `limit` | Number | Results per page (1-500, default 100) |
+| `offset` | Number | Pagination offset |
+
+---
+
+## Syncing
+
+Both integrations support manual and automatic syncing.
+
+### Manual Sync
+
+Trigger a sync from the Breeze dashboard or API. The sync job is queued via BullMQ and processes in the background.
+
+| Vendor | Requirements |
+|--------|-------------|
+| Huntress | `orgs:write` permission, MFA, active integration |
+| SentinelOne | `orgs:write` permission, active integration |
+
+### Sync Status
+
+Each integration tracks its last sync result:
+
+| Field | Description |
+|-------|-------------|
+| `lastSyncAt` | Timestamp of the most recent sync |
+| `lastSyncStatus` | Result: success or failure indicator |
+| `lastSyncError` | Error message from the last failed sync (nullable) |
+
+---
+
+## API Reference
+
+### Huntress
+
+All authenticated endpoints require `organization`, `partner`, or `system` scope. Mounted at `/api/v1/huntress`.
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/webhook` | No (signature verified) | Receive Huntress webhook events |
+| `GET` | `/integration` | Yes | Get the Huntress integration for the current org |
+| `POST` | `/integration` | Yes + MFA | Create or update a Huntress integration |
+| `POST` | `/sync` | Yes + MFA | Trigger a manual Huntress sync |
+| `GET` | `/status` | Yes | Get integration status and coverage summary |
+| `GET` | `/incidents` | Yes | List Huntress incidents with filters |
+
+### SentinelOne
+
+All endpoints require authentication with `organization`, `partner`, or `system` scope. Mounted at `/api/v1/sentinel-one`.
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/integration` | Yes | Get the SentinelOne integration for the current org |
+| `POST` | `/integration` | Yes + MFA | Create or update a SentinelOne integration |
+| `GET` | `/status` | Yes | Get integration status and threat summary |
+| `GET` | `/threats` | Yes | List threats with filters |
+| `POST` | `/isolate` | Yes + MFA | Isolate or unisolate devices |
+| `POST` | `/threat-action` | Yes + MFA | Execute a threat action (kill, quarantine, rollback) |
+| `POST` | `/sync` | Yes | Trigger a manual SentinelOne sync |
+| `GET` | `/sites` | Yes | List SentinelOne sites with agent counts and org mappings |
+| `POST` | `/sites/map` | Yes | Map or unmap a SentinelOne site to a Breeze organization |
+
+---
+
+## Security
+
+### Credential Storage
+
+API keys and tokens for both Huntress and SentinelOne are encrypted at rest using AES encryption before being stored in the database. The `apiKeyEncrypted` and `apiTokenEncrypted` fields are never returned in API responses -- only a boolean `hasApiKey` or similar flag is exposed.
+
+### Webhook Verification
+
+Huntress webhooks use HMAC signature verification. The webhook secret is encrypted at rest and decrypted only at verification time. Webhooks without a configured secret or with an invalid signature are rejected.
+
+### Permission Requirements
+
+| Operation | Required Permission | MFA Required |
+|-----------|-------------------|--------------|
+| View integration status | `organization`, `partner`, or `system` scope | No |
+| Create/update integration | `orgs:write` | Yes |
+| Trigger manual sync | `orgs:write` | Huntress: Yes, SentinelOne: No |
+| Isolate devices | `devices:execute` | Yes |
+| Execute threat actions | `devices:execute` | Yes |
+
+---
+
+## Troubleshooting
+
+### Sync shows "Integration is inactive"
+
+Activate the integration by updating it with `isActive: true` before triggering a sync.
+
+### Huntress webhook returns 403 "Webhook secret not configured"
+
+You must configure a webhook secret on the integration before Breeze will accept webhook payloads. Update the integration with a `webhookSecret` value that matches what you configured in your Huntress dashboard.
+
+### Huntress webhook returns 409 "Multiple active integrations match"
+
+When multiple Huntress integrations share the same account ID, Breeze cannot determine which one to route the webhook to. Include the `integrationId` as a query parameter on your webhook URL or in the `x-huntress-integration-id` header.
+
+### SentinelOne isolation returns 502
+
+A 502 response means the isolation command was sent to SentinelOne but the provider returned an error. Check the `warning` field in the response for details and verify the target devices have active SentinelOne agents.
+
+### Unmapped agents
+
+After syncing, some EDR agents may not be matched to Breeze devices. This happens when the hostname or identifier in the EDR system does not correspond to any enrolled Breeze device. Enroll the missing devices in Breeze or verify the hostname matches.
+
+### "API token is required for new integrations"
+
+When creating a new SentinelOne integration, the API token is mandatory. For updates to existing integrations, the token is optional (the existing encrypted token is preserved).

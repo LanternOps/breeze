@@ -177,22 +177,9 @@ TURN_REALM=breeze.local
   The `TURN_SECRET` is a shared HMAC key used to generate temporary credentials. Never share it publicly. Treat it like a database password — it should only exist in your `.env` and in the coturn config.
 </Aside>
 
-### 2. Disable the bundled coturn container
+### 2. Restart the stack
 
-If you are using a Docker Compose override file (e.g., `docker-compose.override.yml.ghcr`), add this to disable the local coturn service:
-
-```yaml
-services:
-  coturn:
-    image: alpine:3.19
-    entrypoint: ["true"]
-    restart: "no"
-    network_mode: bridge
-```
-
-This replaces the bundled coturn with a no-op container that exits immediately.
-
-### 3. Restart the stack
+The bundled coturn container is behind a Docker Compose profile and does not start by default. If you previously enabled it via `COMPOSE_PROFILES=turn` in your `.env`, remove that line so only your external TURN server is used.
 
 ```bash
 docker compose pull api web
@@ -205,12 +192,22 @@ The API will now generate TURN credentials pointing to your external TURN server
 
 ## Using the Bundled TURN Server
 
-If your Breeze server has a public IP (not behind a tunnel), the bundled coturn container works out of the box. Just set these in `.env`:
+If your Breeze server has a public IP (not behind a tunnel), the bundled coturn container works out of the box. Set these in `.env`:
 
 ```bash
 TURN_HOST=YOUR_SERVER_PUBLIC_IP
 TURN_SECRET=$(openssl rand -hex 32)
 ```
+
+Then start Breeze with the `turn` profile enabled:
+
+```bash
+docker compose --profile turn up -d
+```
+
+:::tip
+You can also set `COMPOSE_PROFILES=turn` in your `.env` file so `docker compose up -d` automatically starts coturn.
+:::
 
 The bundled coturn runs with `network_mode: host`, so it needs direct access to the network — no port mapping is required, but the host firewall must allow:
 

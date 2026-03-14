@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import PartnerRegisterForm from './PartnerRegisterForm';
 import { useAuthStore, apiRegisterPartner } from '../../stores/auth';
+import { navigateTo } from '../../lib/navigation';
 
 export default function PartnerRegisterPage() {
   const [error, setError] = useState<string>();
@@ -33,8 +34,8 @@ export default function PartnerRegisterPage() {
 
     if (result.user && result.tokens) {
       login(result.user, result.tokens);
-      // Redirect to dashboard
-      window.location.href = '/';
+      await navigateTo(result.redirectUrl ?? '/');
+      return;
     }
 
     setLoading(false);

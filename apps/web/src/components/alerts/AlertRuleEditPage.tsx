@@ -4,6 +4,7 @@ import AlertRuleForm, { type AlertRuleFormValues } from './AlertRuleForm';
 import type { NotificationChannel } from './NotificationChannelList';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { navigateTo } from '@/lib/navigation';
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
@@ -34,7 +35,7 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
       const response = await fetchWithAuth(`/alerts/rules/${ruleId}`);
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to fetch alert rule');
@@ -155,14 +156,14 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
 
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         const data = await response.json();
         throw new Error(data.error || 'Failed to save alert rule');
       }
 
-      window.location.href = '/alerts/rules';
+      void navigateTo('/alerts/rules');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -171,7 +172,7 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
   };
 
   const handleCancel = () => {
-    window.location.href = '/alerts/rules';
+    void navigateTo('/alerts/rules');
   };
 
   if (loading) {

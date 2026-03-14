@@ -93,7 +93,7 @@ func (b *Broker) Listen(stopChan <-chan struct{}) error {
 				if closed {
 					return
 				}
-				log.Warn("accept error", "error", err)
+				log.Warn("accept error", "error", err.Error())
 				continue
 			}
 			go b.handleConnection(conn)
@@ -258,7 +258,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	// Step 1: Get peer credentials (kernel-enforced)
 	creds, err := ipc.GetPeerCredentials(rawConn)
 	if err != nil {
-		log.Warn("peer credential check failed", "error", err)
+		log.Warn("peer credential check failed", "error", err.Error())
 		rawConn.Close()
 		return
 	}
@@ -299,7 +299,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	// Step 5: Read auth request
 	env, err := conn.Recv()
 	if err != nil {
-		log.Warn("auth request read failed", "identity", identityKey, "error", err)
+		log.Warn("auth request read failed", "identity", identityKey, "error", err.Error())
 		conn.Close()
 		return
 	}
@@ -312,7 +312,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 
 	var authReq ipc.AuthRequest
 	if err := json.Unmarshal(env.Payload, &authReq); err != nil {
-		log.Warn("invalid auth request payload", "error", err)
+		log.Warn("invalid auth request payload", "error", err.Error())
 		conn.Close()
 		return
 	}
@@ -392,7 +392,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	// Generate session key
 	sessionKey, err := ipc.GenerateSessionKey()
 	if err != nil {
-		log.Error("failed to generate session key", "error", err)
+		log.Error("failed to generate session key", "error", err.Error())
 		conn.Close()
 		return
 	}
@@ -404,7 +404,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		AllowedScopes: defaultScopes,
 	}
 	if err := conn.SendTyped(env.ID, ipc.TypeAuthResponse, authResp); err != nil {
-		log.Warn("failed to send auth response", "error", err)
+		log.Warn("failed to send auth response", "error", err.Error())
 		conn.Close()
 		return
 	}
@@ -438,13 +438,13 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		switch env.Type {
 		case ipc.TypePing:
 			if err := s.conn.SendTyped(env.ID, ipc.TypePong, nil); err != nil {
-				log.Warn("failed to send pong", "uid", s.UID, "error", err)
+				log.Warn("failed to send pong", "uid", s.UID, "error", err.Error())
 				return
 			}
 		case ipc.TypeCapabilities:
 			var caps ipc.Capabilities
 			if err := json.Unmarshal(env.Payload, &caps); err != nil {
-				log.Warn("invalid capabilities payload", "uid", s.UID, "error", err)
+				log.Warn("invalid capabilities payload", "uid", s.UID, "error", err.Error())
 			} else {
 				s.SetCapabilities(&caps)
 				log.Info("capabilities received",
@@ -498,12 +498,12 @@ func (b *Broker) removeSession(session *Session) {
 func (b *Broker) verifyBinaryPath(peerPath string) bool {
 	expected, err := os.Executable()
 	if err != nil {
-		log.Warn("failed to get own executable path", "error", err)
+		log.Warn("failed to get own executable path", "error", err.Error())
 		return false
 	}
 	expected, err = filepath.EvalSymlinks(expected)
 	if err != nil {
-		log.Warn("failed to resolve symlinks for own path", "error", err)
+		log.Warn("failed to resolve symlinks for own path", "error", err.Error())
 		return false
 	}
 	peerResolved, err := filepath.EvalSymlinks(peerPath)
@@ -517,7 +517,7 @@ func (b *Broker) verifyBinaryPath(peerPath string) bool {
 func (b *Broker) computeSelfHash() string {
 	exePath, err := os.Executable()
 	if err != nil {
-		log.Warn("failed to get executable path for hash", "error", err)
+		log.Warn("failed to get executable path for hash", "error", err.Error())
 		return ""
 	}
 	exePath, err = filepath.EvalSymlinks(exePath)
@@ -526,7 +526,7 @@ func (b *Broker) computeSelfHash() string {
 	}
 	data, err := os.ReadFile(exePath)
 	if err != nil {
-		log.Warn("failed to read executable for hash", "error", err)
+		log.Warn("failed to read executable for hash", "error", err.Error())
 		return ""
 	}
 	sum := sha256.Sum256(data)

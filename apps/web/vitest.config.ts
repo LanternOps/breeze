@@ -4,7 +4,10 @@ import { fileURLToPath } from 'node:url';
 export default defineConfig({
   resolve: {
     alias: {
-      '@': fileURLToPath(new URL('./src', import.meta.url))
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+      'astro:transitions/client': fileURLToPath(
+        new URL('./src/__mocks__/astro-transitions-client.ts', import.meta.url)
+      ),
     }
   },
   test: {

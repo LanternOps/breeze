@@ -56,3 +56,16 @@ We follow coordinated disclosure. Once a fix is released, we will:
 3. Release a patched version
 
 Thank you for helping keep Breeze and its users safe.
+
+## Sensitive Data Discovery Safeguards
+
+Sensitive data discovery (`/api/v1/sensitive-data/*`) is designed to avoid secret exfiltration:
+
+- Agent scan results return metadata only (`filePath`, `patternId`, `matchCount`, classification/risk).
+- Raw matched values are not stored in API responses, event payloads, or finding records.
+- Findings are tenant-scoped with row-level security policies.
+- Destructive remediation (`encrypt`, `quarantine`, `secure_delete`) requires explicit confirmation in API workflows.
+- Compliance events emitted:
+  - `compliance.sensitive_data_found`
+  - `compliance.credential_exposed`
+  - `compliance.sensitive_data_remediated`

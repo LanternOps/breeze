@@ -117,7 +117,7 @@ export function SavedFilterList({
 
     try {
       const url = editingFilter ? `/filters/${editingFilter.id}` : '/filters';
-      const method = editingFilter ? 'PUT' : 'POST';
+      const method = editingFilter ? 'PATCH' : 'POST';
 
       const response = await fetchWithAuth(url, {
         method,

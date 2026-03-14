@@ -7,6 +7,7 @@ import { db } from '../db';
 // ============================================
 
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     update: vi.fn(),
   },

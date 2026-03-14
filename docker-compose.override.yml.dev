@@ -30,16 +30,11 @@ services:
         }
         header {
           X-Content-Type-Options "nosniff"
-          X-Frame-Options "DENY"
           Referrer-Policy "strict-origin-when-cross-origin"
         }
       }
       CADDYEOF
       caddy run --config /etc/caddy/Caddyfile --adapter caddyfile'
-
-  binaries-init:
-    image: alpine:3.19
-    entrypoint: ["sh", "-c", "mkdir -p /target/agent /target/viewer && echo '0.0.0-dev' > /target/VERSION && echo 'Stub binaries volume created'"]
 
   api:
     image: breeze-api:dev
@@ -75,7 +70,7 @@ services:
       ENABLE_REGISTRATION: ${ENABLE_REGISTRATION:-true}
       PUBLIC_ENABLE_REGISTRATION: ${PUBLIC_ENABLE_REGISTRATION:-true}
       PUBLIC_API_URL: ${PUBLIC_API_URL:-https://2breeze.app}
-      BINARY_SOURCE: disabled
+      BINARY_SOURCE: ${BINARY_SOURCE:-github}
       TURN_HOST: ${TURN_HOST:-127.0.0.1}
       TURN_PORT: ${TURN_PORT:-3478}
       TURN_SECRET: ${TURN_SECRET:-dev-turn-secret}
@@ -119,12 +114,22 @@ services:
     image: coturn/coturn:4-alpine
     container_name: breeze-coturn-dev
     restart: unless-stopped
+    profiles:
+      - turn
     network_mode: host
-    volumes:
-      - ./docker/turnserver.conf:/etc/coturn/turnserver.conf:ro
     command: >
       turnserver
-      -c /etc/coturn/turnserver.conf
+      --listening-port=3478
+      --tls-listening-port=5349
+      --fingerprint
+      --lt-cred-mech
+      --relay-threads=4
+      --max-allocations-quota=12
+      --log-file=stdout
+      --verbose
+      --min-port=49152
+      --max-port=65535
+      --no-cli
       --static-auth-secret=${TURN_SECRET:-dev-turn-secret}
       --realm=${TURN_REALM:-breeze.local}
       --external-ip=${TURN_HOST:-127.0.0.1}

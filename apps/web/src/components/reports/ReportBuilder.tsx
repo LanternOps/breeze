@@ -22,9 +22,10 @@ import {
   Trash2,
   X
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, widthPercentClass } from '@/lib/utils';
 import type { ReportFormat, ReportSchedule, ReportType as LegacyReportType } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import type { FilterConditionGroup } from '@breeze/shared';
 import { FilterBuilder, DEFAULT_FILTER_FIELDS } from '../filters/FilterBuilder';
 import { FilterPreview } from '../filters/FilterPreview';
@@ -627,6 +628,7 @@ const weekDays = [
 const monthDays = Array.from({ length: 28 }, (_, index) => String(index + 1));
 
 const chartColors = ['#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#14b8a6'];
+const chartColorClasses = ['bg-sky-500', 'bg-emerald-500', 'bg-amber-500', 'bg-red-500', 'bg-teal-500'];
 
 const normalizeBuilderType = (value?: ReportBuilderType): BuilderReportType => {
   if (!value) return 'devices';
@@ -661,6 +663,7 @@ export default function ReportBuilder({
   onPreview,
   onCancel
 }: ReportBuilderProps) {
+  const { currentOrgId } = useOrgStore();
   const defaultsAppliedRef = useRef(false);
   const initialType = normalizeBuilderType(defaultValues?.builderType ?? defaultValues?.type);
 
@@ -828,7 +831,8 @@ export default function ReportBuilder({
           body: JSON.stringify({
             type: builderToLegacyType[builderType],
             config,
-            format: exportFormats[0] ?? 'csv'
+            format: exportFormats[0] ?? 'csv',
+            ...(currentOrgId ? { orgId: currentOrgId } : {})
           })
         });
 
@@ -871,7 +875,7 @@ export default function ReportBuilder({
       mounted = false;
       window.clearTimeout(timer);
     };
-  }, [builderType, dataSource, defaultValues?.dateRange, defaultValues?.filters, exportFormats, filterConditions, mode]);
+  }, [builderType, currentOrgId, dataSource, defaultValues?.dateRange, defaultValues?.filters, exportFormats, filterConditions, mode]);
 
   const normalizedPreviewRows = useMemo(
     () => livePreviewRows.map(row => normalizePreviewRow(builderType, row)),
@@ -1187,6 +1191,7 @@ export default function ReportBuilder({
       type: values.type,
       schedule: values.schedule,
       format: primaryFormat,
+      ...(currentOrgId ? { orgId: currentOrgId } : {}),
       config: {
         builderType,
         dataSource,
@@ -1219,7 +1224,8 @@ export default function ReportBuilder({
           body: JSON.stringify({
             type: payload.type,
             config: payload.config,
-            format: primaryFormat
+            format: primaryFormat,
+            ...(currentOrgId ? { orgId: currentOrgId } : {})
           })
         });
       } else if (mode === 'edit' && reportId) {
@@ -1300,11 +1306,11 @@ export default function ReportBuilder({
               <span className="w-20 truncate text-muted-foreground">{item.label}</span>
               <div className="flex-1 rounded-full bg-muted/50">
                 <div
-                  className="h-2 rounded-full"
-                  style={{
-                    width: `${Math.round((item.value / maxSeriesValue) * 100)}%`,
-                    backgroundColor: chartColors[index % chartColors.length]
-                  }}
+                  className={cn(
+                    'h-2 rounded-full',
+                    chartColorClasses[index % chartColorClasses.length],
+                    widthPercentClass(Math.round((item.value / maxSeriesValue) * 100))
+                  )}
                 />
               </div>
               <span className="w-10 text-right font-medium">{item.value}</span>
@@ -1350,27 +1356,40 @@ export default function ReportBuilder({
 
     if (chartType === 'pie') {
       const total = chartSeries.reduce((sum, item) => sum + item.value, 0) || 1;
-      let cursor = 0;
-      const slices = chartSeries.map((item, index) => {
-        const start = (cursor / total) * 100;
-        cursor += item.value;
-        const end = (cursor / total) * 100;
-        return `${chartColors[index % chartColors.length]} ${start}% ${end}%`;
+      let offset = 0;
+      const segments = chartSeries.map((item, index) => {
+        const percent = Math.max(0, (item.value / total) * 100);
+        const segment = {
+          key: `${item.label}-${index}`,
+          percent,
+          offset,
+          color: chartColors[index % chartColors.length]
+        };
+        offset += percent;
+        return segment;
       });
 
       return (
         <div className="flex flex-wrap items-center gap-6">
-          <div
-            className="h-28 w-28 rounded-full"
-            style={{ background: `conic-gradient(${slices.join(', ')})` }}
-          />
+          <svg viewBox="0 0 36 36" className="h-28 w-28 -rotate-90" aria-label="Pie chart preview">
+            {segments.map((segment) => (
+              <circle
+                key={segment.key}
+                cx="18"
+                cy="18"
+                r="15.9155"
+                fill="none"
+                stroke={segment.color}
+                strokeWidth="8"
+                strokeDasharray={`${segment.percent} ${100 - segment.percent}`}
+                strokeDashoffset={`${25 - segment.offset}`}
+              />
+            ))}
+          </svg>
           <div className="space-y-2 text-xs">
             {chartSeries.map((item, index) => (
               <div key={`${item.label}-${index}`} className="flex items-center gap-2">
-                <span
-                  className="h-2 w-2 rounded-full"
-                  style={{ backgroundColor: chartColors[index % chartColors.length] }}
-                />
+                <span className={cn('h-2 w-2 rounded-full', chartColorClasses[index % chartColorClasses.length])} />
                 <span className="text-muted-foreground">{item.label}</span>
                 <span className="font-medium">{item.value}</span>
               </div>

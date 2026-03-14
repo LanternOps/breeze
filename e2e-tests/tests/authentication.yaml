@@ -1,0 +1,247 @@
+# Authentication E2E Tests
+# Tests login, logout, MFA, and password reset flows
+
+tests:
+  - id: auth_login_logout
+    name: "Login and Logout Flow"
+    description: "Test standard login and logout"
+    tags: [auth, login, critical]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: navigate_login
+        action: ui
+        description: "Navigate to login page"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+
+      - id: login
+        action: ui
+        description: "Login with valid credentials"
+        playwright:
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: verify_dashboard
+        action: ui
+        description: "Verify dashboard loads"
+        playwright:
+          - waitFor: "text=Dashboard"
+            timeout: 10000
+
+      - id: logout
+        action: ui
+        description: "Logout via user menu"
+        playwright:
+          - click: "button[aria-haspopup='true']"
+          - waitFor: "button:has-text('Sign out')"
+            timeout: 5000
+          - click: "button:has-text('Sign out')"
+          - waitFor:
+              url: "**/login**"
+              timeout: 10000
+
+  - id: auth_invalid_login
+    name: "Invalid Login Attempt"
+    description: "Verify error handling for invalid credentials"
+    tags: [auth, login, error-handling]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: navigate_login
+        action: ui
+        description: "Navigate to login page"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+
+      - id: attempt_invalid_login
+        action: ui
+        description: "Attempt login with wrong password"
+        playwright:
+          - fill:
+              "[name='email']": "invalid@example.com"
+              "[name='password']": "WrongPassword123!"
+          - click: "button[type='submit']"
+          - waitFor: "text=Invalid"
+            timeout: 10000
+
+      - id: verify_still_on_login
+        action: ui
+        description: "Verify still on login page"
+        playwright:
+          - waitFor: "button[type='submit']"
+
+  - id: forgot_password_client_validation
+    name: "Forgot Password Client Validation"
+    description: "Verify client-side email validation on forgot-password form"
+    tags: [auth, password-reset, error-handling]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: navigate_forgot_password
+        action: ui
+        description: "Navigate to forgot-password page"
+        playwright:
+          - goto: "/forgot-password"
+          - waitFor: "button[type='submit']"
+            timeout: 10000
+
+      - id: submit_invalid_email
+        action: ui
+        description: "Submit with invalid email and verify validation error"
+        playwright:
+          - fill:
+              "#email": "notanemail"
+          - click: "button[type='submit']"
+          - waitFor: "p.text-destructive"
+            timeout: 5000
+          - assert:
+              selector: "p.text-destructive"
+              contains: "Enter a valid email address"
+
+  - id: reset_password_invalid_token
+    name: "Reset Password Invalid Token"
+    description: "Verify reset-password page shows error when no token provided"
+    tags: [auth, password-reset, error-handling]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: navigate_reset_no_token
+        action: ui
+        description: "Navigate to reset-password without a token"
+        playwright:
+          - goto: "/reset-password"
+          - waitFor: "text=Invalid Link"
+            timeout: 10000
+
+      - id: verify_error_message
+        action: ui
+        description: "Verify the invalid link message"
+        playwright:
+          - assert:
+              selector: "h2"
+              text: "Invalid Link"
+          - assert:
+              selector: ".bg-card p.text-muted-foreground"
+              contains: "invalid or has expired"
+
+  - id: accept_invite_invalid_token
+    name: "Accept Invite Invalid Token"
+    description: "Verify accept-invite page shows error when no token provided"
+    tags: [auth, invite, error-handling]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: navigate_invite_no_token
+        action: ui
+        description: "Navigate to accept-invite without a token"
+        playwright:
+          - goto: "/accept-invite"
+          - waitFor: "text=Invalid Link"
+            timeout: 10000
+
+      - id: verify_invite_error_message
+        action: ui
+        description: "Verify the invalid invite link message"
+        playwright:
+          - assert:
+              selector: "h2"
+              text: "Invalid Link"
+          - assert:
+              selector: ".bg-card p.text-muted-foreground"
+              contains: "invite link is invalid or has expired"
+
+  - id: accept_invite_with_token
+    name: "Accept Invite With Token"
+    description: "Verify accept-invite page shows password form when token is present"
+    tags: [auth, invite]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: navigate_invite_with_token
+        action: ui
+        description: "Navigate to accept-invite with a token parameter"
+        playwright:
+          - goto: "/accept-invite?token=test-invite-token-123"
+          - waitFor: "button[type='submit']"
+            timeout: 10000
+
+      - id: verify_password_form
+        action: ui
+        description: "Verify the password form is shown with correct submit label"
+        playwright:
+          - waitFor: "#password"
+            timeout: 5000
+          - waitFor: "#confirmPassword"
+            timeout: 5000
+          - assert:
+              selector: "button[type='submit']"
+              contains: "Set password"
+
+  - id: auth_session_persistence
+    name: "Session Persistence"
+    description: "Verify session persists across page navigations"
+    tags: [auth, session]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_devices
+        action: ui
+        description: "Navigate to Devices"
+        playwright:
+          - goto: "/devices"
+          - waitFor: "text=Device"
+            timeout: 10000
+
+      - id: navigate_scripts
+        action: ui
+        description: "Navigate to Scripts"
+        playwright:
+          - goto: "/scripts"
+          - waitFor: "text=Script"
+            timeout: 10000
+
+      - id: navigate_alerts
+        action: ui
+        description: "Navigate to Alerts"
+        playwright:
+          - goto: "/alerts"
+          - waitFor: "text=Alert"
+            timeout: 10000
+
+      - id: navigate_settings
+        action: ui
+        description: "Navigate to Settings"
+        playwright:
+          - goto: "/settings"
+          - waitFor: "text=Settings"
+            timeout: 10000
+
+      - id: verify_still_authenticated
+        action: ui
+        description: "Return to dashboard, verify still logged in"
+        playwright:
+          - goto: "/"
+          - waitFor: "text=Dashboard"
+            timeout: 10000

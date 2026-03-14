@@ -25,8 +25,10 @@ func (s *Session) start() error {
 		return fmt.Errorf("failed to set window size: %w", err)
 	}
 
-	// Create the shell command
-	cmd := exec.Command(s.Shell)
+	// Create the shell command as a login shell (-l) so that
+	// profile scripts are sourced and readline/line editing is
+	// fully initialised — matching what SSH and terminal emulators do.
+	cmd := exec.Command(s.Shell, "-l")
 	cmd.Env = append(os.Environ(),
 		"TERM=xterm-256color",
 		fmt.Sprintf("COLUMNS=%d", s.Cols),

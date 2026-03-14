@@ -1,6 +1,17 @@
 ---
 import PortalLayout from '../../layouts/PortalLayout.astro';
 import DeviceList from '../../components/portal/DeviceList';
+import { portalApi } from '../../lib/api';
+import { buildServerApiConfig } from '../../lib/server';
+
+const response = await portalApi.getDevices(
+  { page: 1, limit: 100 },
+  buildServerApiConfig(Astro.request)
+);
+
+if (response.statusCode === 401) {
+  return Astro.redirect('/login');
+}
 ---
 
 <PortalLayout title="Devices">
@@ -12,6 +23,6 @@ import DeviceList from '../../components/portal/DeviceList';
       </p>
     </div>
 
-    <DeviceList client:load />
+    <DeviceList devices={response.data ?? []} error={response.error} />
   </div>
 </PortalLayout>

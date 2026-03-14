@@ -254,9 +254,11 @@ function applyToolSpecificCompaction(
 
   // Fleet tools: compact large arrays in standard list/data responses
   const fleetListTools = [
-    'manage_policies', 'manage_deployments', 'manage_patches',
+    'manage_deployments', 'manage_patches',
     'manage_groups', 'manage_maintenance_windows', 'manage_automations',
     'manage_alert_rules', 'generate_report',
+    'list_configuration_policies', 'get_configuration_policy', 'configuration_policy_compliance',
+    'query_monitors', 'manage_monitors', 'get_service_monitoring_status',
   ];
   if (fleetListTools.includes(toolName)) {
     return compactFleetPayload(parsed, stats);

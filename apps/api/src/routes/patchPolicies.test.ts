@@ -5,6 +5,7 @@ import { patchPolicyRoutes } from './patchPolicies';
 vi.mock('../services', () => ({}));
 
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     select: vi.fn(),
     insert: vi.fn(),

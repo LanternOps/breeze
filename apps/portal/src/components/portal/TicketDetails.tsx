@@ -1,33 +1,16 @@
-import React, { useEffect, useState } from 'react';
-import { ArrowLeft, Loader2, AlertCircle, Clock, Tag } from 'lucide-react';
-import { portalApi, type Ticket } from '@/lib/api';
+import React from 'react';
+import { ArrowLeft, AlertCircle, Clock, Tag } from 'lucide-react';
+import { type TicketDetails as TicketDetailsType, type TicketPriority, type TicketStatus } from '@/lib/api';
 import { formatDateTime } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 
 interface TicketDetailsProps {
-  ticketId: string;
+  ticket: TicketDetailsType | null;
+  error?: string | null;
 }
 
-export function TicketDetails({ ticketId }: TicketDetailsProps) {
-  const [ticket, setTicket] = useState<Ticket | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    async function fetchTicket() {
-      const result = await portalApi.getTicket(ticketId);
-      if (result.data) {
-        setTicket(result.data);
-      } else {
-        setError(result.error || 'Failed to load ticket');
-      }
-      setIsLoading(false);
-    }
-
-    fetchTicket();
-  }, [ticketId]);
-
-  const getStatusColor = (status: Ticket['status']) => {
+export function TicketDetails({ ticket, error }: TicketDetailsProps) {
+  const getStatusColor = (status: TicketStatus) => {
     switch (status) {
       case 'open':
         return 'bg-primary/10 text-primary';
@@ -40,7 +23,7 @@ export function TicketDetails({ ticketId }: TicketDetailsProps) {
     }
   };
 
-  const getStatusLabel = (status: Ticket['status']) => {
+  const getStatusLabel = (status: TicketStatus) => {
     switch (status) {
       case 'open':
         return 'Open';
@@ -53,26 +36,18 @@ export function TicketDetails({ ticketId }: TicketDetailsProps) {
     }
   };
 
-  const getPriorityColor = (priority: Ticket['priority']) => {
+  const getPriorityColor = (priority: TicketPriority) => {
     switch (priority) {
-      case 'critical':
+      case 'urgent':
         return 'bg-destructive text-destructive-foreground';
       case 'high':
         return 'bg-warning text-warning-foreground';
-      case 'medium':
+      case 'normal':
         return 'bg-primary text-primary-foreground';
       case 'low':
         return 'bg-muted text-muted-foreground';
     }
   };
-
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
 
   if (error || !ticket) {
     return (
@@ -109,9 +84,9 @@ export function TicketDetails({ ticketId }: TicketDetailsProps) {
         <div className="border-b p-6">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h1 className="text-xl font-semibold">{ticket.title}</h1>
+              <h1 className="text-xl font-semibold">{ticket.subject}</h1>
               <p className="mt-1 text-sm text-muted-foreground">
-                Ticket #{ticket.id}
+                Ticket #{ticket.ticketNumber}
               </p>
             </div>
             <div className="flex items-center gap-2">

@@ -257,8 +257,63 @@ export interface OIDCDiscoveryDocument {
   grant_types_supported?: string[];
 }
 
+/**
+ * Checks whether a URL points to an internal/private network address.
+ * Used to prevent SSRF attacks via OIDC discovery.
+ */
+function isInternalUrl(urlStr: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(urlStr);
+  } catch {
+    return true; // Malformed URLs are rejected
+  }
+
+  if (url.protocol !== 'https:') return true;
+
+  const hostname = url.hostname;
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
+
+  // Block 0.0.0.0
+  if (hostname === '0.0.0.0') return true;
+
+  // Block IPv6 private ranges (bracket notation)
+  if (hostname.startsWith('[')) {
+    const inner = hostname.slice(1, -1).toLowerCase();
+    if (inner.startsWith('fc') || inner.startsWith('fd') || inner.startsWith('fe80:')) return true;
+    if (inner.startsWith('::ffff:')) {
+      // IPv4-mapped IPv6 — extract and check the IPv4 part
+      const ipv4Part = inner.slice(7);
+      const v4Parts = ipv4Part.split('.').map(Number);
+      if (v4Parts.length === 4) {
+        if (v4Parts[0] === 10) return true;
+        if (v4Parts[0] === 172 && v4Parts[1]! >= 16 && v4Parts[1]! <= 31) return true;
+        if (v4Parts[0] === 192 && v4Parts[1] === 168) return true;
+        if (v4Parts[0] === 127) return true;
+        if (v4Parts[0] === 169 && v4Parts[1] === 254) return true;
+      }
+    }
+  }
+
+  // Check RFC 1918 and link-local ranges
+  const parts = hostname.split('.').map(Number);
+  if (parts.length === 4 && parts.every(p => !isNaN(p))) {
+    if (parts[0] === 10) return true; // 10.0.0.0/8
+    if (parts[0] === 172 && parts[1] !== undefined && parts[1] >= 16 && parts[1] <= 31) return true; // 172.16.0.0/12
+    if (parts[0] === 192 && parts[1] === 168) return true; // 192.168.0.0/16
+    if (parts[0] === 169 && parts[1] === 254) return true; // 169.254.0.0/16 (link-local + cloud metadata)
+  }
+
+  return false;
+}
+
 export async function discoverOIDCConfig(issuer: string): Promise<OIDCDiscoveryDocument> {
   const wellKnownUrl = `${issuer.replace(/\/$/, '')}/.well-known/openid-configuration`;
+
+  // SSRF protection: reject internal/private network URLs
+  if (isInternalUrl(wellKnownUrl)) {
+    throw new Error('OIDC discovery URL must use HTTPS and must not point to internal network addresses');
+  }
 
   const response = await fetch(wellKnownUrl, {
     method: 'GET',

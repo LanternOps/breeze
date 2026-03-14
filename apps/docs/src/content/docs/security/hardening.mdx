@@ -54,7 +54,7 @@ Before going live, verify every item:
 ### Agent Security
 
 - [ ] Agent tokens stored as SHA-256 hashes (automatic for new enrollments)
-- [ ] Config file permissions: `0700` for `/etc/breeze/`, `0600` for `config.json`
+- [ ] Config file permissions: `0750` for `/etc/breeze/`, `0640` for `agent.yaml`, `0600` for `secrets.yaml`
 - [ ] Agent rate limiting enabled (120 req/60s per agent via Redis)
 - [ ] Enrollment keys set with expiry and usage limits
 - [ ] Consider enabling [Cloudflare mTLS](/security/mtls/) for zero-trust agent auth
@@ -87,7 +87,7 @@ All mutating operations are automatically logged with:
 
 | Field | Description |
 |---|---|
-| `actorType` | `user`, `agent`, or `system` |
+| `actorType` | `user`, `api_key`, `agent`, or `system` |
 | `actorId` | User ID or device ID |
 | `action` | Operation performed |
 | `resource` | Target resource type |
@@ -109,7 +109,7 @@ Breeze implements Redis-backed sliding window rate limiting:
 
 | Endpoint | Limit | Window |
 |---|---|---|
-| Login | 5 attempts | 15 minutes |
+| Login | 5 attempts | 5 minutes |
 | API (per user) | 100 requests | 60 seconds |
 | Agent (per device) | 120 requests | 60 seconds |
 | Enrollment | 10 attempts | 60 seconds |

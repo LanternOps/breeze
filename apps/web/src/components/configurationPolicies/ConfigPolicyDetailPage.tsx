@@ -3,8 +3,6 @@ import {
   ArrowLeft,
   Layers,
   Target,
-  Trash2,
-  Plus,
   Bell,
   Wrench,
   ClipboardCheck,
@@ -13,12 +11,18 @@ import {
   Link2,
   HardDrive,
   Shield,
+  ShieldCheck,
   ScrollText,
+  ScanSearch,
+  Usb,
+  Activity,
+  LifeBuoy,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import type { FeatureType, FeatureLink } from './featureTabs/types';
 import { FEATURE_META } from './featureTabs/types';
+import AssignmentsTab from './AssignmentsTab';
 import PatchTab from './featureTabs/PatchTab';
 import AlertRuleTab from './featureTabs/AlertRuleTab';
 import BackupTab from './featureTabs/BackupTab';
@@ -28,17 +32,13 @@ import ComplianceTab from './featureTabs/ComplianceTab';
 import AutomationTab from './featureTabs/AutomationTab';
 import EventLogTab from './featureTabs/EventLogTab';
 import SoftwarePolicyTab from './featureTabs/SoftwarePolicyTab';
+import SensitiveDataTab from './featureTabs/SensitiveDataTab';
+import PeripheralControlTab from './featureTabs/PeripheralControlTab';
+import MonitoringTab from './featureTabs/MonitoringTab';
+import WarrantyTab from './featureTabs/WarrantyTab';
+import HelperTab from './featureTabs/HelperTab';
 
 type Tab = 'overview' | FeatureType | 'assignments';
-
-type Assignment = {
-  id: string;
-  level: string;
-  targetId: string;
-  priority: number;
-  assignedBy?: string;
-  createdAt?: string;
-};
 
 type PolicyDetail = {
   id: string;
@@ -57,14 +57,6 @@ const statusConfig: Record<string, { label: string; color: string }> = {
   archived: { label: 'Archived', color: 'bg-gray-500/20 text-gray-700 border-gray-500/40' },
 };
 
-const assignmentLevels = [
-  { value: 'partner', label: 'Partner' },
-  { value: 'organization', label: 'Organization' },
-  { value: 'site', label: 'Site' },
-  { value: 'device_group', label: 'Device Group' },
-  { value: 'device', label: 'Device' },
-];
-
 const featureTabIcons: Partial<Record<FeatureType, React.ReactNode>> = {
   patch: <PackageCheck className="h-4 w-4" />,
   alert_rule: <Bell className="h-4 w-4" />,
@@ -75,9 +67,14 @@ const featureTabIcons: Partial<Record<FeatureType, React.ReactNode>> = {
   automation: <Zap className="h-4 w-4" />,
   event_log: <ScrollText className="h-4 w-4" />,
   software_policy: <PackageCheck className="h-4 w-4" />,
+  sensitive_data: <ScanSearch className="h-4 w-4" />,
+  peripheral_control: <Usb className="h-4 w-4" />,
+  monitoring: <Activity className="h-4 w-4" />,
+  warranty: <ShieldCheck className="h-4 w-4" />,
+  helper: <LifeBuoy className="h-4 w-4" />,
 };
 
-const FEATURE_TYPES: FeatureType[] = ['patch', 'alert_rule', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy'];
+const FEATURE_TYPES: FeatureType[] = ['patch', 'alert_rule', 'backup', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper'];
 
 type ConfigPolicyDetailPageProps = {
   policyId?: string;
@@ -109,14 +106,6 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
   const [linkedPolicyName, setLinkedPolicyName] = useState<string | null>(null);
   const [parentFeatureLinks, setParentFeatureLinks] = useState<FeatureLink[]>([]);
 
-  // Assignments state
-  const [assignments, setAssignments] = useState<Assignment[]>([]);
-  const [assignmentsLoading, setAssignmentsLoading] = useState(false);
-  const [newLevel, setNewLevel] = useState('organization');
-  const [newTargetId, setNewTargetId] = useState('');
-  const [newPriority, setNewPriority] = useState('0');
-  const [addingAssignment, setAddingAssignment] = useState(false);
-
   const fetchPolicy = useCallback(async () => {
     if (!policyId) return;
     try {
@@ -146,21 +135,6 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
       setFeatureLinks(Array.isArray(data.data) ? data.data : []);
     } catch {
       // silent — feature links already loaded from policy fetch
-    }
-  }, [policyId]);
-
-  const fetchAssignments = useCallback(async () => {
-    if (!policyId) return;
-    try {
-      setAssignmentsLoading(true);
-      const response = await fetchWithAuth(`/configuration-policies/${policyId}/assignments`);
-      if (!response.ok) throw new Error('Failed to fetch assignments');
-      const data = await response.json();
-      setAssignments(Array.isArray(data.data) ? data.data : []);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
-    } finally {
-      setAssignmentsLoading(false);
     }
   }, [policyId]);
 
@@ -200,10 +174,6 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [linkedPolicyId]);
-
-  useEffect(() => {
-    if (activeTab === 'assignments') fetchAssignments();
-  }, [activeTab, fetchAssignments]);
 
   const handleSaveOverview = async () => {
     if (!policyId) return;
@@ -254,48 +224,6 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
 
   const linkFor = (t: FeatureType) => featureLinks.find((l) => l.featureType === t);
   const parentLinkFor = (t: FeatureType) => parentFeatureLinks.find((l) => l.featureType === t);
-
-  const handleAddAssignment = async () => {
-    if (!policyId || !newTargetId.trim()) return;
-    setAddingAssignment(true);
-    setError(undefined);
-    try {
-      const response = await fetchWithAuth(`/configuration-policies/${policyId}/assignments`, {
-        method: 'POST',
-        body: JSON.stringify({
-          level: newLevel,
-          targetId: newTargetId.trim(),
-          priority: Number(newPriority) || 0,
-        }),
-      });
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to add assignment');
-      }
-      setNewTargetId('');
-      setNewPriority('0');
-      await fetchAssignments();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
-    } finally {
-      setAddingAssignment(false);
-    }
-  };
-
-  const handleRemoveAssignment = async (assignmentId: string) => {
-    if (!policyId) return;
-    setError(undefined);
-    try {
-      const response = await fetchWithAuth(
-        `/configuration-policies/${policyId}/assignments/${assignmentId}`,
-        { method: 'DELETE' }
-      );
-      if (!response.ok) throw new Error('Failed to remove assignment');
-      await fetchAssignments();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
-    }
-  };
 
   const tabs: { id: Tab; label: string; icon: React.ReactNode; dot?: boolean }[] = [
     { id: 'overview', label: 'Overview', icon: <Layers className="h-4 w-4" /> },
@@ -353,6 +281,11 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
       case 'automation': return <AutomationTab {...props} />;
       case 'event_log': return <EventLogTab {...props} />;
       case 'software_policy': return <SoftwarePolicyTab {...props} />;
+      case 'sensitive_data': return <SensitiveDataTab {...props} />;
+      case 'monitoring': return <MonitoringTab {...props} />;
+      case 'peripheral_control': return <PeripheralControlTab {...props} />;
+      case 'warranty': return <WarrantyTab {...props} />;
+      case 'helper': return <HelperTab {...props} />;
     }
   };
 
@@ -488,113 +421,8 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
       {FEATURE_TYPES.includes(activeTab as FeatureType) && renderFeatureTab(activeTab as FeatureType)}
 
       {/* Assignments Tab */}
-      {activeTab === 'assignments' && (
-        <div className="space-y-6">
-          {/* Add Assignment Form */}
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
-            <h2 className="text-lg font-semibold">Add Assignment</h2>
-            <div className="mt-4 grid gap-4 sm:grid-cols-3">
-              <div>
-                <label className="text-sm font-medium">Level</label>
-                <select
-                  value={newLevel}
-                  onChange={(e) => setNewLevel(e.target.value)}
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                >
-                  {assignmentLevels.map((level) => (
-                    <option key={level.value} value={level.value}>
-                      {level.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="text-sm font-medium">Target ID</label>
-                <input
-                  value={newTargetId}
-                  onChange={(e) => setNewTargetId(e.target.value)}
-                  placeholder="UUID of the target"
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                />
-              </div>
-              <div>
-                <label className="text-sm font-medium">Priority</label>
-                <input
-                  type="number"
-                  min={0}
-                  max={1000}
-                  value={newPriority}
-                  onChange={(e) => setNewPriority(e.target.value)}
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                />
-              </div>
-            </div>
-            <div className="mt-4 flex justify-end">
-              <button
-                type="button"
-                onClick={handleAddAssignment}
-                disabled={addingAssignment || !newTargetId.trim()}
-                className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
-              >
-                <Plus className="h-4 w-4" />
-                {addingAssignment ? 'Assigning...' : 'Assign'}
-              </button>
-            </div>
-          </div>
-
-          {/* Assignments List */}
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
-            <h2 className="text-lg font-semibold">Current Assignments</h2>
-            {assignmentsLoading ? (
-              <div className="flex items-center justify-center py-8">
-                <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-              </div>
-            ) : assignments.length === 0 ? (
-              <p className="mt-4 text-sm text-muted-foreground">
-                No assignments yet. Assign this policy to targets above.
-              </p>
-            ) : (
-              <div className="mt-4 overflow-hidden rounded-md border">
-                <table className="min-w-full divide-y">
-                  <thead className="bg-muted/40">
-                    <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                      <th className="px-4 py-3">Level</th>
-                      <th className="px-4 py-3">Target ID</th>
-                      <th className="px-4 py-3">Priority</th>
-                      <th className="px-4 py-3 text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y">
-                    {assignments.map((assignment) => (
-                      <tr key={assignment.id} className="text-sm">
-                        <td className="px-4 py-3">
-                          <span className="inline-flex items-center rounded-full border bg-muted/50 px-2.5 py-1 text-xs font-medium capitalize">
-                            {assignment.level.replace('_', ' ')}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 font-mono text-xs text-muted-foreground">
-                          {assignment.targetId}
-                        </td>
-                        <td className="px-4 py-3 text-muted-foreground">{assignment.priority}</td>
-                        <td className="px-4 py-3">
-                          <div className="flex justify-end">
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveAssignment(assignment.id)}
-                              className="inline-flex h-8 w-8 items-center justify-center rounded-md border text-destructive hover:bg-destructive/10"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </div>
+      {activeTab === 'assignments' && policyId && policy && (
+        <AssignmentsTab policyId={policyId} orgId={policy.orgId} />
       )}
     </div>
   );

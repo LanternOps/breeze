@@ -138,9 +138,48 @@ func (a *AdaptiveBitrate) SetMaxBitrate(max int) {
 		a.targetBitrate = max
 		if a.encoder != nil {
 			if err := a.encoder.SetBitrate(max); err != nil {
-				slog.Warn("Failed to clamp bitrate", "targetBitrate", max, "error", err)
+				slog.Warn("Failed to clamp bitrate", "targetBitrate", max, "error", err.Error())
 			}
 		}
+	}
+}
+
+// SoftResetForActivity resets the adaptive state when transitioning from idle
+// to active. Sets bitrate to a moderate level (60% of max) so the encoder
+// doesn't spike from idle ~233kbps to full 2.5Mbps+ in one frame, which
+// overwhelms the jitter buffer and causes massive frame drops.
+func (a *AdaptiveBitrate) SoftResetForActivity() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Start at 60% of max — enough for a good keyframe but not a burst
+	moderate := a.maxBitrate * 60 / 100
+	moderate = clampInt(moderate, a.minBitrate, a.maxBitrate)
+	a.targetBitrate = moderate
+	a.stableCount = 0
+	a.degradeBackoff = 0
+	a.samplesCount = 0 // reset EWMA warmup for fresh conditions
+
+	newFPS := clampInt(moderate/minBitsPerFrame, 10, a.maxFPS)
+	prevFPS := a.currentFPS
+	a.currentFPS = newFPS
+	fpsCallback := a.onFPSChange
+	encoder := a.encoder
+
+	slog.Info("Adaptive soft-reset for activity",
+		"bitrate", moderate,
+		"fps", newFPS,
+		"prevFPS", prevFPS,
+	)
+
+	if encoder != nil {
+		_ = encoder.SetBitrate(moderate)
+	}
+	if newFPS != prevFPS && fpsCallback != nil {
+		fpsCallback(newFPS)
 	}
 }
 
@@ -284,10 +323,10 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 
 	if encoder != nil {
 		if err := encoder.SetBitrate(newBitrate); err != nil {
-			slog.Warn("Failed to set bitrate", "bitrate", newBitrate, "error", err)
+			slog.Warn("Failed to set bitrate", "bitrate", newBitrate, "error", err.Error())
 		}
 		if err := encoder.SetQuality(newQuality); err != nil {
-			slog.Warn("Failed to set quality", "quality", newQuality, "error", err)
+			slog.Warn("Failed to set quality", "quality", newQuality, "error", err.Error())
 		}
 	}
 }

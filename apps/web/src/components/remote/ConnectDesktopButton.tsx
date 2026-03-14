@@ -46,17 +46,17 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
     setError(null);
 
     try {
-      // Clean up any stale sessions for this user before creating a new one
-      await fetchWithAuth('/remote/sessions/stale', { method: 'DELETE' }).catch(() => {});
-
-      // Create desktop session
-      const response = await fetchWithAuth('/remote/sessions', {
-        method: 'POST',
-        body: JSON.stringify({
-          deviceId,
-          type: 'desktop',
+      // Clean up stale sessions in parallel with creating new one
+      const [, response] = await Promise.all([
+        fetchWithAuth('/remote/sessions/stale', { method: 'DELETE' }).catch(() => {}),
+        fetchWithAuth('/remote/sessions', {
+          method: 'POST',
+          body: JSON.stringify({
+            deviceId,
+            type: 'desktop',
+          }),
         }),
-      });
+      ]);
 
       if (!response.ok) {
         const err = await response.json();
@@ -121,7 +121,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
         <Monitor className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
         <div className="flex-1">
           <p className="font-medium text-amber-800 dark:text-amber-300">
-            Breeze Viewer not detected
+            Viewer didn't open?
           </p>
           <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
             If the viewer opened, you can dismiss this. Otherwise, download it below.

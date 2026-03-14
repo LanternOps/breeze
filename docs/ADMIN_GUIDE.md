@@ -14,6 +14,7 @@ This comprehensive guide covers all administrative functions in the Breeze RMM p
 6. [Audit & Compliance](#6-audit--compliance)
 7. [System Settings](#7-system-settings)
 8. [Troubleshooting](#8-troubleshooting)
+9. [User Risk Scoring](#9-user-risk-scoring)
 
 ---
 
@@ -1116,6 +1117,134 @@ For compliance audits, generate reports covering:
    - Policy modifications
    - User account changes
 
+### 6.10 Event Log Audit Baselines
+
+Breeze supports audit-policy baselines for Windows, macOS, and Linux to continuously verify endpoint audit controls.
+
+#### Baseline APIs
+
+```bash
+GET  /api/v1/audit-baselines
+POST /api/v1/audit-baselines
+GET  /api/v1/audit-baselines/compliance
+GET  /api/v1/audit-baselines/devices/{deviceId}
+POST /api/v1/audit-baselines/apply-requests
+POST /api/v1/audit-baselines/apply-requests/{approvalId}/decision
+POST /api/v1/audit-baselines/apply
+```
+
+#### Baseline Profiles
+
+| Profile | Description |
+|---------|-------------|
+| `cis_l1` | CIS-aligned Level 1 defaults |
+| `cis_l2` | CIS-aligned Level 2 defaults |
+| `custom` | Organization-defined setting map |
+
+#### Continuous Evaluation
+
+- `collect_audit_policy` jobs collect endpoint audit-policy state daily
+- Drift evaluator jobs score devices hourly against active org baselines
+- Compliance results are stored in `audit_baseline_results` with deviation evidence
+
+#### Remediation Workflow
+
+Baseline apply is currently Windows-only and approval-gated:
+
+1. Run `POST /api/v1/audit-baselines/apply` with `dryRun: true` to validate scope.
+2. Create an apply request via `POST /api/v1/audit-baselines/apply-requests`.
+3. A different user approves or rejects via `POST /api/v1/audit-baselines/apply-requests/{approvalId}/decision`.
+4. Execute `POST /api/v1/audit-baselines/apply` with `approvalRequestId`.
+
+When a device's agent reports successful completion of the apply command, a follow-up `collect_audit_policy` verification command is queued for that device.
+
+#### Audit Evidence
+
+For assessments, export:
+
+1. Baseline definition (name/profile/settings)
+2. Latest per-device compliance scores
+3. Device deviation details and check timestamps
+4. Baseline apply command history and outcomes
+
+### 6.11 CIS Hardening Operations
+
+Use CIS hardening baselines to measure and improve endpoint configuration compliance.
+
+#### Baseline Profiles
+
+Create and maintain profiles per OS and benchmark level:
+
+```bash
+POST /api/v1/cis/baselines
+{
+  "orgId": "<org-uuid>",
+  "name": "Windows CIS L1",
+  "osType": "windows",
+  "benchmarkVersion": "CIS Microsoft Windows 11 Enterprise Benchmark v2.0.0",
+  "level": "l1",
+  "customExclusions": ["2.3.7.5"],
+  "scanSchedule": { "enabled": true, "intervalHours": 24 }
+}
+```
+
+List existing baselines:
+
+```bash
+GET /api/v1/cis/baselines?orgId=<org-uuid>
+```
+
+#### Scan and Reporting
+
+Trigger an on-demand scan:
+
+```bash
+POST /api/v1/cis/scan
+{
+  "baselineId": "<baseline-uuid>"
+}
+```
+
+Review fleet summary:
+
+```bash
+GET /api/v1/cis/compliance?orgId=<org-uuid>
+```
+
+Review device findings:
+
+```bash
+GET /api/v1/cis/devices/<device-uuid>/report
+```
+
+#### Remediation
+
+Create check-level remediation requests:
+
+```bash
+POST /api/v1/cis/remediate
+{
+  "deviceId": "<device-uuid>",
+  "baselineResultId": "<result-uuid>",
+  "checkIds": ["1.1.1", "9.1"],
+  "action": "apply",
+  "reason": "Quarterly hardening run"
+}
+```
+
+Approve (or reject) pending remediation actions:
+
+```bash
+POST /api/v1/cis/remediate/approve
+{
+  "actionIds": ["<action-uuid-1>", "<action-uuid-2>"],
+  "approved": true,
+  "note": "Change window approved by SecOps"
+}
+```
+
+Actions are tracked in `pending_approval → queued → in_progress → completed|failed` (or `cancelled` when rejected) and emitted as compliance events for external automation.
+
 ---
 
 ## 7. System Settings
@@ -1417,6 +1546,66 @@ When contacting support, provide:
 
 ---
 
+## 9. User Risk Scoring
+
+The User Risk feature provides per-user behavioral risk scoring to prioritize interventions.
+
+### 9.1 Endpoints
+
+- `GET /api/v1/user-risk/scores` — ranked user risk list with filters and pagination
+- `GET /api/v1/user-risk/users/{userId}` — detailed factors, history, and recent risk events
+- `GET /api/v1/user-risk/events` — event history with severity/type/date filters
+- `GET /api/v1/user-risk/policy` — retrieve effective org policy
+- `PUT /api/v1/user-risk/policy` — update weights, thresholds, and interventions
+- `POST /api/v1/user-risk/assign-training` — assign training to a user
+
+### 9.2 Policy Tuning
+
+User risk policy is organization-scoped and supports:
+
+- `weights`: relative weighting for factors such as MFA risk, auth failures, threat exposure, and stale access
+- `thresholds`: boundary values for `medium`, `high`, `critical`, plus spike and auto-assignment thresholds
+- `interventions`: controls for notifications and auto-training behavior
+
+Example update:
+
+```bash
+PUT /api/v1/user-risk/policy
+Content-Type: application/json
+
+{
+  "orgId": "org-uuid",
+  "thresholds": {
+    "high": 75,
+    "critical": 90,
+    "spikeDelta": 20,
+    "autoAssignTrainingAtOrAbove": 85
+  },
+  "interventions": {
+    "autoAssignTraining": true,
+    "notifyOnHighRisk": true,
+    "notifyOnRiskSpike": true,
+    "trainingModuleId": "security-awareness-q1"
+  }
+}
+```
+
+### 9.3 Intervention Workflow
+
+1. Background jobs compute and persist user risk snapshots every 6 hours.
+2. High-signal risk events trigger targeted per-user recomputation for faster deltas.
+3. Threshold crossings/spikes emit user-risk events to the event bus.
+3. If enabled, high-risk users receive auto-assigned training with cooldown controls.
+4. Manual assignment remains available through `/assign-training`.
+5. All writes are auditable via route-level audit events.
+
+### 9.4 Operational Notes
+
+- For partner/system users spanning multiple orgs, pass `orgId` explicitly for writes.
+- Use `/events` to review explainability context for score changes.
+- Use policy tuning conservatively to prevent alert fatigue.
+- Job cadence is configurable via environment variables (for example: `USER_RISK_SCAN_INTERVAL_MS`).
+
 ## Appendix A: API Quick Reference
 
 ### Authentication
@@ -1492,6 +1681,36 @@ When contacting support, provide:
 | `/api/v1/audit/logs/:id` | GET | Get specific log entry |
 | `/api/v1/audit/logs/export` | GET | Export logs |
 | `/api/v1/audit/summary` | GET | Activity summary |
+
+---
+
+## 9. Sensitive Data Discovery
+
+Sensitive data discovery helps find probable PII/PCI/PHI/credential/financial exposure on endpoints without storing raw matched values.
+
+### 9.1 Key Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/sensitive-data/scan` | POST | Queue scan jobs for one or more devices |
+| `/api/v1/sensitive-data/scans/:id` | GET | Get scan lifecycle status and summary |
+| `/api/v1/sensitive-data/report` | GET | Fleet findings report with risk/status filters |
+| `/api/v1/sensitive-data/remediate` | POST | Queue remediation or mark accepted/false positive |
+| `/api/v1/sensitive-data/policies` | GET/POST | List/create scan policies |
+| `/api/v1/sensitive-data/policies/:id` | PUT/DELETE | Update/delete scan policy |
+
+### 9.2 Policy Guidance
+
+- Start with `credential` and `pci` classes in pilot orgs, then expand.
+- Keep scopes narrow (`Documents`, `Desktop`, `Downloads`) before broadening.
+- Set file type allowlists to reduce scan volume and false positives.
+- Use schedule type `interval` or `cron` only after validating baseline scan times.
+
+### 9.3 Remediation Safety
+
+- `accept_risk` and `false_positive` update finding status immediately.
+- Destructive actions (`encrypt`, `quarantine`, `secure_delete`) require `confirm=true`.
+- Remediation commands are executed per-device and tracked through command results.
 
 ---
 

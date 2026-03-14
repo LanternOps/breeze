@@ -66,7 +66,7 @@ func newWsStreamSession(id string, capturer ScreenCapturer, inputHandler InputHa
 // Start begins the capture loop and metrics logger in goroutines
 func (s *WsStreamSession) Start() {
 	if err := GetWallpaperManager().Suppress(); err != nil {
-		slog.Warn("Failed to suppress wallpaper", "session", s.id, "error", err)
+		slog.Warn("Failed to suppress wallpaper", "session", s.id, "error", err.Error())
 	}
 	go s.captureLoop()
 	go s.metricsLogger()
@@ -118,7 +118,7 @@ func (s *WsStreamSession) captureAndSend() {
 	img, err := s.capturer.Capture()
 	captureTime := time.Since(t0)
 	if err != nil {
-		slog.Warn("Desktop capture error", "sessionId", s.id, "error", err)
+		slog.Warn("Desktop capture error", "sessionId", s.id, "error", err.Error())
 		return
 	}
 	if img == nil {
@@ -170,7 +170,7 @@ func (s *WsStreamSession) captureAndSend() {
 	}
 
 	if err != nil {
-		slog.Warn("Desktop JPEG encode error", "sessionId", s.id, "error", err)
+		slog.Warn("Desktop JPEG encode error", "sessionId", s.id, "error", err.Error())
 		return
 	}
 
@@ -271,7 +271,7 @@ func (s *WsStreamSession) Stop() {
 	}
 
 	if err := GetWallpaperManager().Restore(); err != nil {
-		slog.Warn("Failed to restore wallpaper", "session", s.id, "error", err)
+		slog.Warn("Failed to restore wallpaper", "session", s.id, "error", err.Error())
 	}
 
 	// Log final metrics

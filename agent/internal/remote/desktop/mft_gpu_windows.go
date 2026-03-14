@@ -27,7 +27,7 @@ func (m *mftEncoder) tryInitGPUPipeline() {
 	_, err := comCall(manager, vtblDXGIManagerResetDevice, m.d3d11Device, uintptr(token))
 	if err != nil {
 		comRelease(manager)
-		slog.Warn("DXGI device manager ResetDevice failed, using CPU path", "error", err)
+		slog.Warn("DXGI device manager ResetDevice failed, using CPU path", "error", err.Error())
 		return
 	}
 
@@ -46,7 +46,7 @@ func (m *mftEncoder) tryInitGPUPipeline() {
 	_, err = comCall(m.transform, vtblProcessMessage, uintptr(mftMessageSetD3DManager), manager)
 	if err != nil {
 		comRelease(manager)
-		slog.Warn("MFT SET_D3D_MANAGER failed, using CPU path", "error", err)
+		slog.Warn("MFT SET_D3D_MANAGER failed, using CPU path", "error", err.Error())
 		return
 	}
 

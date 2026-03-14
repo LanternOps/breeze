@@ -3,23 +3,24 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockListReliabilityDevices = vi.fn();
 
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {},
 }));
 
-vi.mock('../db/schema', () => ({
-  devices: {},
-  deviceHardware: {},
-  deviceNetwork: {},
-  deviceDisks: {},
-  deviceMetrics: {},
-  deviceBootMetrics: {},
-  alerts: {},
-  sites: {},
-  organizations: {},
-  auditLogs: {},
-  deviceCommands: {},
-  deviceFilesystemCleanupRuns: {},
-  deviceSessions: {},
+vi.mock('../db/schema', () => new Proxy({
+  dnsActionEnum: { enumValues: ['allow', 'block', 'log'] },
+  dnsThreatCategoryEnum: { enumValues: ['malware', 'phishing', 'botnet', 'cryptomining'] },
+  discoveredAssetTypeEnum: { enumValues: ['workstation', 'server', 'printer', 'router', 'switch', 'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'] },
+  peripheralEventTypeEnum: { enumValues: ['connected', 'disconnected', 'blocked', 'allowed'] },
+  peripheralDeviceClassEnum: { enumValues: ['storage', 'all_usb', 'bluetooth', 'thunderbolt'] },
+  peripheralPolicyActionEnum: { enumValues: ['allow', 'block', 'read_only', 'alert'] },
+  peripheralPolicyTargetTypeEnum: { enumValues: ['organization', 'site', 'group', 'device'] },
+}, {
+  get(target, prop) {
+    if (prop in target) return target[prop as keyof typeof target];
+    // Return empty object for any un-mocked table/export
+    return {};
+  },
 }));
 
 vi.mock('./aiToolSchemas', () => ({

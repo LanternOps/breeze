@@ -1,10 +1,11 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
 import ReportBuilder from '../../components/reports/ReportBuilder';
+import { navigateTo } from '../../lib/navigation';
 ---
 
 <DashboardLayout title="Create Report">
-  <div class="max-w-4xl mx-auto space-y-6">
+  <div class="space-y-6">
     <div>
       <h1 class="text-2xl font-bold">Create Report</h1>
       <p class="text-muted-foreground">
@@ -13,13 +14,13 @@ import ReportBuilder from '../../components/reports/ReportBuilder';
     </div>
 
     <ReportBuilder
-      client:load
+      client:only="react"
       mode="create"
       onSubmit={() => {
-        window.location.href = '/reports';
+        void navigateTo('/reports');
       }}
       onCancel={() => {
-        window.location.href = '/reports';
+        void navigateTo('/reports');
       }}
     />
   </div>

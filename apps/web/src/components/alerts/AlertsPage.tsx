@@ -6,6 +6,7 @@ import type { AlertSeverity } from './AlertList';
 import { fetchWithAuth } from '../../stores/auth';
 import type { FilterConditionGroup } from '@breeze/shared';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
+import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'details' | 'acknowledge' | 'resolve' | 'suppress';
 
@@ -32,7 +33,7 @@ export default function AlertsPage() {
       const response = await fetchWithAuth('/alerts');
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to fetch alerts');
@@ -215,7 +216,7 @@ export default function AlertsPage() {
   const handleFilterBySeverity = (severity: AlertSeverity) => {
     setSeverityFilter(severity);
     // Could also navigate to filtered view
-    window.location.href = `/alerts?severity=${severity}`;
+    void navigateTo(`/alerts?severity=${severity}`);
   };
 
   // Calculate summary counts
@@ -284,7 +285,6 @@ export default function AlertsPage() {
         onChange={setDeviceFilter}
         collapsible
         defaultExpanded={false}
-        showPreview
       />
 
       <AlertList

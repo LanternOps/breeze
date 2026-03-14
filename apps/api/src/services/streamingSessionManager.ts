@@ -14,7 +14,7 @@
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query, SDKResultMessage, SDKUserMessage, McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { aiSessions, aiMessages, aiBudgets } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -32,8 +32,10 @@ const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
 const EVICTION_INTERVAL_MS = 60 * 1000; // Check every 60s
 const MAX_ACTIVE_SESSIONS = 200;
 const EVENT_RING_BUFFER_SIZE = 100;
-const SDK_TURN_TIMEOUT_MS = 3 * 60 * 1000; // 3 min per-turn timeout
+const SDK_TURN_TIMEOUT_MS = 6 * 60 * 1000; // 6 min per-turn timeout (accounts for tool approval waits up to 5 min)
 const MCP_PREFIX = 'mcp__breeze__';
+// Use the directly-imported runOutsideDbContext (see commandQueue.ts for explanation).
+const runOutsideDbContextSafe = runOutsideDbContext;
 
 // ============================================
 // StreamInputController
@@ -358,7 +360,7 @@ export class StreamingSessionManager {
     // transaction (via withDbAccessContext). Without this escape hatch, the SDK's
     // tool handlers inherit the transaction context and hang after the HTTP
     // request completes and the transaction commits.
-    runOutsideDbContext(() => {
+    runOutsideDbContextSafe(() => {
       const sdkQuery = query({
         prompt: inputController.getInputStream(),
         options: {
@@ -420,6 +422,13 @@ export class StreamingSessionManager {
     }
     try { session.inputController.close(); } catch (err) {
       captureException(err); console.error('[StreamingSessionManager] Failed to close input controller:', sessionId, err);
+    }
+    // Abort the SDK's AbortController first to signal in-flight MCP tool
+    // handlers to stop. This prevents the race where handleControlRequest
+    // completes after the subprocess is killed and tries to write a response
+    // to the dead ProcessTransport — crashing the process.
+    try { session.abortController.abort(); } catch (err) {
+      captureException(err); console.error('[StreamingSessionManager] Failed to abort session controller:', sessionId, err);
     }
     try { session.query.close(); } catch (err) {
       captureException(err); console.error('[StreamingSessionManager] Failed to close SDK query:', sessionId, err);
@@ -524,6 +533,8 @@ export class StreamingSessionManager {
             if (event.type === 'message_start') {
               currentMessageId = crypto.randomUUID();
               messageStarted = true;
+              // Reset turn timeout — SDK is actively producing output
+              this.startTurnTimeout(session);
               session.eventBus.publish({ type: 'message_start', messageId: currentMessageId });
             } else if (event.type === 'content_block_delta') {
               if ('delta' in event && event.delta.type === 'text_delta') {

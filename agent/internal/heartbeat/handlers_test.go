@@ -21,11 +21,14 @@ var allCommandTypes = []string{
 	tools.CmdRegistrySet, tools.CmdRegistryDelete,
 	tools.CmdRegistryKeyCreate, tools.CmdRegistryKeyDelete,
 	tools.CmdReboot, tools.CmdShutdown, tools.CmdLock,
-	tools.CmdCollectSoftware,
+	tools.CmdCollectSoftware, tools.CmdSoftwareUninstall, tools.CmdSoftwareInstall,
 	tools.CmdCollectBootPerformance, tools.CmdManageStartupItem,
 	tools.CmdCollectReliabilityMetrics,
+	tools.CmdCollectAuditPolicy, tools.CmdApplyAuditPolicyBaseline,
 	tools.CmdFileList, tools.CmdFileRead, tools.CmdFileWrite,
 	tools.CmdFileDelete, tools.CmdFileMkdir, tools.CmdFileRename,
+	tools.CmdFileCopy, tools.CmdFileListDrives,
+	tools.CmdFileTrashList, tools.CmdFileTrashRestore, tools.CmdFileTrashPurge,
 	tools.CmdFilesystemAnalysis,
 	tools.CmdTerminalStart, tools.CmdTerminalData,
 	tools.CmdTerminalResize, tools.CmdTerminalStop,
@@ -54,9 +57,11 @@ var allCommandTypes = []string{
 	tools.CmdSecurityCollectStatus, tools.CmdSecurityScan,
 	tools.CmdSecurityThreatQuarantine, tools.CmdSecurityThreatRemove,
 	tools.CmdSecurityThreatRestore,
+	tools.CmdSensitiveDataScan, tools.CmdQuarantineFile,
+	tools.CmdEncryptFile, tools.CmdSecureDeleteFile,
 
 	// handlers_patch.go init() — backup
-	tools.CmdBackupRun, tools.CmdBackupList, tools.CmdBackupStop,
+	tools.CmdBackupRun, tools.CmdBackupList, tools.CmdBackupStop, tools.CmdBackupRestore,
 
 	// handlers_user.go init()
 	CmdNotifyUser, CmdTrayUpdate,
@@ -72,6 +77,12 @@ var allCommandTypes = []string{
 
 	// handlers_desktop.go init() — session management
 	tools.CmdListSessions,
+
+	// handlers_cis.go init()
+	tools.CmdCisBenchmark, tools.CmdApplyCisRemediation,
+
+	// handlers_peripheral.go init()
+	tools.CmdPeripheralPolicySync,
 }
 
 func TestHandlerRegistryCompleteness(t *testing.T) {

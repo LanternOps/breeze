@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, ne, sql } from 'drizzle-orm';
 import { createHash, timingSafeEqual } from 'crypto';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
@@ -9,11 +9,15 @@ import {
   deviceHardware,
   deviceNetwork,
   enrollmentKeys,
+  organizations,
+  partners,
 } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
 import { enrollSchema } from './schemas';
 import { generateAgentId, generateApiKey, issueMtlsCertForDevice } from './helpers';
+import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
+import { dispatchHook } from '../../services/partnerHooks';
 
 export const enrollmentRoutes = new Hono();
 
@@ -62,6 +66,56 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       throw new HTTPException(400, { message: 'Enrollment key must be associated with a site' });
     }
 
+    // Device limit check: join org → partner to get maxDevices
+    const [org] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, key.orgId))
+      .limit(1);
+
+    if (org) {
+      const [partner] = await db
+        .select({ maxDevices: partners.maxDevices })
+        .from(partners)
+        .where(eq(partners.id, org.partnerId))
+        .limit(1);
+
+      if (partner?.maxDevices != null) {
+        // Count active (non-decommissioned) devices across all partner orgs
+        const partnerOrgIds = db
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(eq(organizations.partnerId, org.partnerId));
+
+        const [countResult] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(devices)
+          .where(
+            and(
+              sql`${devices.orgId} IN (${partnerOrgIds})`,
+              ne(devices.status, 'decommissioned')
+            )
+          );
+
+        const activeCount = Number(countResult?.count ?? 0);
+        if (activeCount >= partner.maxDevices) {
+          const hookResponse = await dispatchHook('device-limit', org.partnerId, {
+            currentDevices: activeCount,
+            maxDevices: partner.maxDevices,
+          });
+
+          return c.json({
+            error: 'Device limit reached',
+            code: 'DEVICE_LIMIT_REACHED',
+            currentDevices: activeCount,
+            maxDevices: partner.maxDevices,
+            ...(hookResponse?.upgradeUrl ? { upgradeUrl: hookResponse.upgradeUrl } : {}),
+            ...(hookResponse?.message ? { message: hookResponse.message } : {}),
+          }, 403);
+        }
+      }
+    }
+
     const agentId = generateAgentId();
     const apiKey = generateApiKey();
     // Agent bearer tokens are high-entropy random values; we store only a SHA-256 hash and never persist
@@ -98,6 +152,8 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             osVersion: data.osVersion,
             architecture: data.architecture,
             agentVersion: data.agentVersion,
+            deviceRole: data.deviceRole || 'unknown',
+            deviceRoleSource: 'auto',
             status: 'online',
             lastSeenAt: new Date(),
             updatedAt: new Date(),
@@ -117,6 +173,8 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             osVersion: data.osVersion,
             architecture: data.architecture,
             agentVersion: data.agentVersion,
+            deviceRole: data.deviceRole || 'unknown',
+            deviceRoleSource: 'auto',
             status: 'online',
             lastSeenAt: new Date(),
             tags: []
@@ -196,6 +254,11 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         reenrollment: Boolean(existingDevice),
         mtlsCertIssued: mtlsCert !== null,
       },
+    });
+
+    // Queue warranty lookup for the newly enrolled device (fire-and-forget)
+    queueWarrantySyncForDevice(device.id).catch((err) => {
+      console.error('[Enrollment] Failed to queue warranty sync:', err instanceof Error ? err.message : err);
     });
 
     return c.json({

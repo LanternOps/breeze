@@ -4,6 +4,7 @@ import type { FeatureTabProps } from './types';
 import { FEATURE_META } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
+import InlineEntityPicker from './InlineEntityPicker';
 
 type TriggerType = 'schedule' | 'event' | 'manual';
 type ActionType = 'run_script' | 'send_notification' | 'create_alert' | 'execute_command';
@@ -427,15 +428,19 @@ export default function AutomationTab({ policyId, existingLink, onLinkChanged, l
                               </div>
 
                               {action.type === 'run_script' && (
-                                <div>
-                                  <label className="text-xs font-medium text-muted-foreground">Script ID</label>
-                                  <input
-                                    value={action.scriptId ?? ''}
-                                    onChange={(e) => updateAction(index, ai, { scriptId: e.target.value })}
-                                    placeholder="UUID of script"
-                                    className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
-                                  />
-                                </div>
+                                <InlineEntityPicker
+                                  value={action.scriptId ?? ''}
+                                  onChange={(id) => updateAction(index, ai, { scriptId: id })}
+                                  endpoint="/scripts?limit=200"
+                                  label="Script"
+                                  placeholder="Select a script..."
+                                  compact
+                                  transform={(items) => items.map((s: any) => ({
+                                    id: s.id,
+                                    name: s.name || 'Unnamed Script',
+                                    extra: s.language ? `${s.language} — ${s.category || 'General'}` : s.category,
+                                  }))}
+                                />
                               )}
 
                               {action.type === 'execute_command' && (
@@ -479,15 +484,19 @@ export default function AutomationTab({ policyId, existingLink, onLinkChanged, l
                               )}
 
                               {action.type === 'send_notification' && (
-                                <div>
-                                  <label className="text-xs font-medium text-muted-foreground">Notification Channel ID</label>
-                                  <input
-                                    value={action.notificationChannelId ?? ''}
-                                    onChange={(e) => updateAction(index, ai, { notificationChannelId: e.target.value })}
-                                    placeholder="UUID of notification channel"
-                                    className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
-                                  />
-                                </div>
+                                <InlineEntityPicker
+                                  value={action.notificationChannelId ?? ''}
+                                  onChange={(id) => updateAction(index, ai, { notificationChannelId: id })}
+                                  endpoint="/alerts/channels?limit=200"
+                                  label="Notification Channel"
+                                  placeholder="Select a channel..."
+                                  compact
+                                  transform={(items) => items.map((ch: any) => ({
+                                    id: ch.id,
+                                    name: ch.name || 'Unnamed Channel',
+                                    extra: ch.type,
+                                  }))}
+                                />
                               )}
                             </div>
                             <button

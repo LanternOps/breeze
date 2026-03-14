@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { restoreAccessTokenFromCookie, useAuthStore } from '../../stores/auth';
 import { Loader2 } from 'lucide-react';
+import { navigateTo } from '../../lib/navigation';
 
 export default function AuthOverlay() {
   const { isAuthenticated, isLoading, tokens } = useAuthStore();
@@ -15,6 +16,19 @@ export default function AuthOverlay() {
     }, 50);
 
     return () => clearTimeout(timer);
+  }, []);
+
+  // Safety net: if the overlay is still visible after 10 seconds, force redirect to login.
+  // This prevents the user from being stuck on "Loading..." indefinitely.
+  useEffect(() => {
+    const safetyTimer = setTimeout(() => {
+      const state = useAuthStore.getState();
+      if (!state.isAuthenticated || !state.tokens?.accessToken) {
+        redirectToLogin();
+      }
+    }, 10_000);
+
+    return () => clearTimeout(safetyTimer);
   }, []);
 
   useEffect(() => {
@@ -78,5 +92,5 @@ function redirectToLogin() {
   if (currentPath !== '/login' && currentPath !== '/register') {
     sessionStorage.setItem('redirectAfterLogin', currentPath);
   }
-  window.location.href = '/login';
+  void navigateTo('/login', { replace: true });
 }

@@ -3,10 +3,6 @@
 # Usage: docker compose up --build -d
 
 services:
-  binaries-init:
-    image: alpine:3.19
-    entrypoint: ["sh", "-c", "mkdir -p /target/agent /target/viewer && echo '0.0.0-dev' > /target/VERSION && echo 'Stub binaries volume created'"]
-
   api:
     image: breeze-api:local
     platform: linux/arm64
@@ -26,6 +22,8 @@ services:
       TURN_HOST: ${TURN_HOST:-}
       TURN_PORT: ${TURN_PORT:-3478}
       TURN_SECRET: ${TURN_SECRET:-}
+      DEV_PUSH_ENABLED: "true"
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-https://2breeze.app}
 
   caddy:
     command: |
@@ -44,7 +42,6 @@ services:
         }
         header {
           X-Content-Type-Options "nosniff"
-          X-Frame-Options "DENY"
           Referrer-Policy "strict-origin-when-cross-origin"
         }
       }

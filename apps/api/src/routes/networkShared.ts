@@ -64,11 +64,13 @@ export function resolveOrgId(
 
   if (auth.scope === 'partner') {
     const orgIds = auth.accessibleOrgIds ?? [];
-    if (!requireForNonOrg && orgIds.length === 1) {
+    // Auto-resolve single-org partners — they only manage one org, so the
+    // orgId is unambiguous regardless of whether the caller marked it required.
+    if (orgIds.length === 1) {
       return { orgId: orgIds[0] ?? null };
     }
     if (requireForNonOrg) {
-      return { error: 'orgId is required for partner scope', status: 400 };
+      return { error: 'orgId is required when partner has multiple organizations', status: 400 };
     }
     return { orgId: null };
   }

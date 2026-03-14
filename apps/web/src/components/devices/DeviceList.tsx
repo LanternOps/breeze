@@ -1,8 +1,10 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
-import { Search, ChevronLeft, ChevronRight, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2 } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Package } from 'lucide-react';
 import type { FilterConditionGroup } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
+import { widthPercentClass } from '@/lib/utils';
+import { DEVICE_ROLES, getDeviceRoleLabel, getDeviceRoleIcon, type DeviceRole } from '@/lib/deviceRoles';
 
 export type DeviceStatus = 'online' | 'offline' | 'maintenance';
 export type OSType = 'windows' | 'macos' | 'linux';
@@ -24,6 +26,9 @@ export type Device = {
   tags: string[];
   lastUser?: string;
   uptimeSeconds?: number;
+  deviceRole?: DeviceRole;
+  deviceRoleSource?: string;
+  displayName?: string;
 };
 
 type DeviceListProps = {
@@ -90,6 +95,7 @@ export default function DeviceList({
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [osFilter, setOsFilter] = useState<string>('all');
+  const [roleFilter, setRoleFilter] = useState<string>('all');
   const [orgFilter, setOrgFilter] = useState<string>('all');
   const [siteFilter, setSiteFilter] = useState<string>('all');
   const [currentPage, setCurrentPage] = useState(1);
@@ -167,15 +173,17 @@ export default function DeviceList({
 
       const matchesQuery = normalizedQuery.length === 0
         ? true
-        : device.hostname.toLowerCase().includes(normalizedQuery);
+        : device.hostname.toLowerCase().includes(normalizedQuery) ||
+          (device.displayName?.toLowerCase().includes(normalizedQuery) ?? false);
       const matchesStatus = statusFilter === 'all' ? true : device.status === statusFilter;
       const matchesOs = osFilter === 'all' ? true : device.os === osFilter;
+      const matchesRole = roleFilter === 'all' ? true : device.deviceRole === roleFilter;
       const matchesOrg = orgFilter === 'all' ? true : device.orgId === orgFilter;
       const matchesSite = siteFilter === 'all' ? true : device.siteId === siteFilter;
 
-      return matchesQuery && matchesStatus && matchesOs && matchesOrg && matchesSite;
+      return matchesQuery && matchesStatus && matchesOs && matchesRole && matchesOrg && matchesSite;
     });
-  }, [devices, query, statusFilter, osFilter, orgFilter, siteFilter, serverFilterIds]);
+  }, [devices, query, statusFilter, osFilter, roleFilter, orgFilter, siteFilter, serverFilterIds]);
 
   const totalPages = Math.ceil(filteredDevices.length / pageSize);
   const startIndex = (currentPage - 1) * pageSize;
@@ -267,6 +275,21 @@ export default function DeviceList({
             <option value="macos">macOS</option>
             <option value="linux">Linux</option>
           </select>
+          <select
+            value={roleFilter}
+            onChange={event => {
+              setRoleFilter(event.target.value);
+              setCurrentPage(1);
+            }}
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-36"
+          >
+            <option value="all">All Roles</option>
+            {DEVICE_ROLES.map(role => (
+              <option key={role} value={role}>
+                {getDeviceRoleLabel(role)}
+              </option>
+            ))}
+          </select>
           {orgs.length > 0 && (
             <select
               value={orgFilter}
@@ -334,6 +357,13 @@ export default function DeviceList({
                 </button>
                 <button
                   type="button"
+                  onClick={() => handleBulkAction('deploy-software')}
+                  className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
+                >
+                  Deploy Software
+                </button>
+                <button
+                  type="button"
                   onClick={() => handleBulkAction('maintenance-on')}
                   className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
                 >
@@ -386,6 +416,7 @@ export default function DeviceList({
               <th className="px-4 py-3">Organization</th>
               <th className="px-4 py-3">Site</th>
               <th className="px-4 py-3">OS</th>
+              <th className="px-4 py-3">Role</th>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">CPU %</th>
               <th className="px-4 py-3">RAM %</th>
@@ -396,7 +427,7 @@ export default function DeviceList({
           <tbody className="divide-y">
             {paginatedDevices.length === 0 ? (
               <tr>
-                <td colSpan={10} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                <td colSpan={11} className="px-4 py-6 text-center text-sm text-muted-foreground">
                   No devices found. Try adjusting your search or filters.
                 </td>
               </tr>
@@ -416,10 +447,22 @@ export default function DeviceList({
                       className="h-4 w-4 rounded border-gray-300"
                     />
                   </td>
-                  <td className="px-4 py-3 text-sm font-medium">{device.hostname}</td>
+                  <td className="px-4 py-3 text-sm font-medium">{device.displayName || device.hostname}</td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">{device.orgName}</td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">{device.siteName}</td>
                   <td className="px-4 py-3 text-sm">{osLabels[device.os]}</td>
+                  <td className="px-4 py-3 text-sm">
+                    {(() => {
+                      const role = device.deviceRole ?? 'unknown';
+                      const RoleIcon = getDeviceRoleIcon(role);
+                      return (
+                        <span className="inline-flex items-center gap-1.5 rounded-full border bg-muted/50 px-2.5 py-1 text-xs font-medium">
+                          <RoleIcon className="h-3 w-3" />
+                          {getDeviceRoleLabel(role)}
+                        </span>
+                      );
+                    })()}
+                  </td>
                   <td className="px-4 py-3 text-sm">
                     <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}>
                       {statusLabels[device.status]}
@@ -429,8 +472,7 @@ export default function DeviceList({
                     <div className="flex items-center gap-2">
                       <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
                         <div
-                          className={`h-full rounded-full ${device.cpuPercent > 80 ? 'bg-red-500' : device.cpuPercent > 60 ? 'bg-yellow-500' : 'bg-green-500'}`}
-                          style={{ width: `${device.cpuPercent}%` }}
+                          className={`h-full rounded-full ${device.cpuPercent > 80 ? 'bg-red-500' : device.cpuPercent > 60 ? 'bg-yellow-500' : 'bg-green-500'} ${widthPercentClass(device.cpuPercent)}`}
                         />
                       </div>
                       <span className="w-10 text-right">{device.cpuPercent}%</span>
@@ -440,8 +482,7 @@ export default function DeviceList({
                     <div className="flex items-center gap-2">
                       <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
                         <div
-                          className={`h-full rounded-full ${device.ramPercent > 80 ? 'bg-red-500' : device.ramPercent > 60 ? 'bg-yellow-500' : 'bg-green-500'}`}
-                          style={{ width: `${device.ramPercent}%` }}
+                          className={`h-full rounded-full ${device.ramPercent > 80 ? 'bg-red-500' : device.ramPercent > 60 ? 'bg-yellow-500' : 'bg-green-500'} ${widthPercentClass(device.ramPercent)}`}
                         />
                       </div>
                       <span className="w-10 text-right">{device.ramPercent}%</span>

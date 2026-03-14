@@ -177,7 +177,7 @@ func (s *Session) RecvLoop(onMessage func(*Session, *ipc.Envelope)) {
 	for {
 		env, err := s.conn.Recv()
 		if err != nil {
-			log.Info("session recv loop ended", "uid", s.UID, "sessionId", s.SessionID, "error", err)
+			log.Info("session recv loop ended", "uid", s.UID, "sessionId", s.SessionID, "error", err.Error())
 			return
 		}
 		s.Touch()

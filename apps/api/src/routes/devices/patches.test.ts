@@ -19,7 +19,9 @@ vi.mock('../../db', () => ({
     insert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn()
-  }
+  },
+  runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -56,7 +58,8 @@ vi.mock('../../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn(() => async (_c: any, next: any) => next())
+  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 vi.mock('./helpers', () => ({

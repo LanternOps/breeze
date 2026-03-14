@@ -128,7 +128,14 @@ cp .env.example .env
 #   APP_ENCRYPTION_KEY   openssl rand -hex 32
 #   MFA_ENCRYPTION_KEY   openssl rand -hex 32
 
+# Optional — for remote desktop (WebRTC TURN relay):
+#   TURN_HOST            public IP of your TURN server
+#   TURN_SECRET          openssl rand -hex 32
+
 docker compose up -d
+
+# To enable TURN for remote desktop across NATs/firewalls:
+# docker compose --profile turn up -d
 ```
 
 Breeze will be running at `https://your-domain` (or `https://localhost` with a self-signed cert for local testing).

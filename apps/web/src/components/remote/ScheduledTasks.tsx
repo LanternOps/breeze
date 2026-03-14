@@ -23,7 +23,7 @@ import {
   X,
   Filter
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, paddingLeftPxClass } from '@/lib/utils';
 
 // Types
 export type TaskStatus = 'ready' | 'running' | 'disabled' | 'queued' | 'unknown';
@@ -268,9 +268,9 @@ function FolderTree({
           'w-full flex items-center gap-1.5 px-2 py-1.5 text-sm rounded-md transition-colors text-left',
           isSelected
             ? 'bg-blue-500/20 text-blue-700'
-            : 'hover:bg-gray-100 text-gray-700'
+            : 'hover:bg-gray-100 text-gray-700',
+          paddingLeftPxClass(level * 12 + 8)
         )}
-        style={{ paddingLeft: level * 12 + 8 + 'px' }}
       >
         {hasChildren ? (
           expanded ? (

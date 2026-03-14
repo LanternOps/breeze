@@ -19,6 +19,7 @@ import {
 import { enqueueDiscoveryScan, getDiscoveryQueue } from '../jobs/discoveryWorker';
 import { isRedisAvailable } from '../services/redis';
 import { writeRouteAudit } from '../services/auditEvents';
+import { isCronDue } from '../services/automationRuntime';
 
 export const discoveryRoutes = new Hono();
 
@@ -47,7 +48,7 @@ function resolveOrgId(
     if (!requireForNonOrg && accessibleOrgIds.length === 1) {
       return { orgId: accessibleOrgIds[0] } as const;
     }
-    return { error: 'orgId is required for partner scope', status: 400 } as const;
+    return { error: 'orgId is required when partner has multiple organizations', status: 400 } as const;
   }
 
   if (auth.scope === 'system' && !requestedOrgId) {
@@ -67,7 +68,7 @@ async function resolveOrgIdForAsset(
   if (!('error' in orgResult)) return orgResult;
 
   const needsAssetResolution = (
-    orgResult.error === 'orgId is required for partner scope'
+    orgResult.error === 'orgId is required when partner has multiple organizations'
     || orgResult.error === 'orgId is required for system scope'
     || orgResult.error === 'orgId is required'
   );
@@ -167,6 +168,27 @@ const listJobsSchema = z.object({
   orgId: z.string().uuid().optional()
 });
 
+// --- Next-run helpers ---
+
+function getNextCronOccurrence(cronExpr: string, timezone: string, from: Date): Date | null {
+  // Walk minute-by-minute up to 7 days ahead
+  const limit = 7 * 24 * 60;
+  const candidate = new Date(from);
+  candidate.setSeconds(0, 0);
+  candidate.setMinutes(candidate.getMinutes() + 1); // start from next minute
+  for (let i = 0; i < limit; i++) {
+    if (isCronDue(cronExpr, timezone, candidate)) return candidate;
+    candidate.setMinutes(candidate.getMinutes() + 1);
+  }
+  return null;
+}
+
+function getNextIntervalRun(lastRunAt: Date | null, intervalMinutes: number, now: Date): Date {
+  if (!lastRunAt) return now; // due immediately
+  const next = new Date(lastRunAt.getTime() + intervalMinutes * 60 * 1000);
+  return next > now ? next : now; // if overdue, due now
+}
+
 const listAssetsSchema = z.object({
   orgId: z.string().uuid().optional(),
   approvalStatus: z.enum(['pending', 'approved', 'dismissed']).optional(),
@@ -215,26 +237,38 @@ discoveryRoutes.get(
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const where = orgResult.orgId ? eq(discoveryProfiles.orgId, orgResult.orgId) : undefined;
-    const results = await db.select().from(discoveryProfiles)
+    const results = await db.select({
+      profile: discoveryProfiles,
+      lastRunAt: sql<string | null>`(
+        select max(${discoveryJobs.completedAt})
+        from ${discoveryJobs}
+        where ${discoveryJobs.profileId} = ${discoveryProfiles.id}
+          and ${discoveryJobs.status} = 'completed'
+      )`.as('last_run_at')
+    }).from(discoveryProfiles)
       .where(where)
       .orderBy(desc(discoveryProfiles.createdAt));
 
     return c.json({
-      data: results.map((p) => ({
-        id: p.id,
-        orgId: p.orgId,
-        siteId: p.siteId,
-        name: p.name,
-        description: p.description,
-        enabled: p.enabled,
-        subnets: p.subnets,
-        methods: p.methods,
-        schedule: p.schedule,
-        deepScan: p.deepScan,
-        resolveHostnames: p.resolveHostnames,
-        createdAt: p.createdAt.toISOString(),
-        updatedAt: p.updatedAt.toISOString()
-      }))
+      data: results.map((row) => {
+        const p = row.profile;
+        return {
+          id: p.id,
+          orgId: p.orgId,
+          siteId: p.siteId,
+          name: p.name,
+          description: p.description,
+          enabled: p.enabled,
+          subnets: p.subnets,
+          methods: p.methods,
+          schedule: p.schedule,
+          deepScan: p.deepScan,
+          resolveHostnames: p.resolveHostnames,
+          createdAt: p.createdAt.toISOString(),
+          updatedAt: p.updatedAt.toISOString(),
+          lastRunAt: row.lastRunAt ? new Date(row.lastRunAt).toISOString() : null
+        };
+      })
     });
   }
 );
@@ -286,7 +320,7 @@ discoveryRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const profileId = c.req.param('id');
+    const profileId = c.req.param('id')!;
     const orgResult = resolveOrgId(auth);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
@@ -307,7 +341,7 @@ discoveryRoutes.patch(
   zValidator('json', updateProfileSchema),
   async (c) => {
     const auth = c.get('auth');
-    const profileId = c.req.param('id');
+    const profileId = c.req.param('id')!;
     const updates = c.req.valid('json');
     const orgResult = resolveOrgId(auth);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
@@ -364,7 +398,7 @@ discoveryRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const profileId = c.req.param('id');
+    const profileId = c.req.param('id')!;
     const orgResult = resolveOrgId(auth);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
@@ -503,15 +537,96 @@ discoveryRoutes.get(
       .where(where)
       .orderBy(desc(discoveryJobs.createdAt));
 
-    return c.json({
-      data: results.map((j) => ({
-        ...j,
-        createdAt: j.createdAt.toISOString(),
-        scheduledAt: j.scheduledAt?.toISOString() ?? null,
-        startedAt: j.startedAt?.toISOString() ?? null,
-        completedAt: j.completedAt?.toISOString() ?? null
-      }))
-    });
+    type JobRow = {
+      id: string;
+      orgId: string;
+      profileId: string | null;
+      profileName: string | null;
+      agentId: string | null;
+      status: string;
+      scheduledAt: string | null;
+      startedAt: string | null;
+      completedAt: string | null;
+      hostsScanned: number | null;
+      hostsDiscovered: number | null;
+      newAssets: number | null;
+      errors: unknown;
+      createdAt: string;
+    };
+
+    const jobRows: JobRow[] = results.map((j) => ({
+      ...j,
+      status: j.status as string,
+      createdAt: j.createdAt.toISOString(),
+      scheduledAt: j.scheduledAt?.toISOString() ?? null,
+      startedAt: j.startedAt?.toISOString() ?? null,
+      completedAt: j.completedAt?.toISOString() ?? null
+    }));
+
+    // Build synthetic "pending" rows for the next scheduled run of each active profile
+    const profileWhere: SQL[] = [eq(discoveryProfiles.enabled, true)];
+    if (orgResult.orgId) profileWhere.push(eq(discoveryProfiles.orgId, orgResult.orgId));
+
+    const activeProfiles = await db
+      .select({
+        id: discoveryProfiles.id,
+        orgId: discoveryProfiles.orgId,
+        name: discoveryProfiles.name,
+        schedule: discoveryProfiles.schedule
+      })
+      .from(discoveryProfiles)
+      .where(and(...profileWhere));
+
+    // Profiles that already have a scheduled/running job don't need a pending row
+    const activeProfileIds = new Set(
+      jobRows
+        .filter((j) => j.status === 'scheduled' || j.status === 'running')
+        .map((j) => j.profileId)
+    );
+
+    const now = new Date();
+    const pendingRows: typeof jobRows = [];
+
+    for (const profile of activeProfiles) {
+      if (activeProfileIds.has(profile.id)) continue;
+
+      const sched = profile.schedule as { type?: string; cron?: string; intervalMinutes?: number; timezone?: string } | null;
+      if (!sched || sched.type === 'manual') continue;
+
+      let nextRunAt: Date | null = null;
+
+      if (sched.type === 'interval' && sched.intervalMinutes) {
+        // Find the most recent job for this profile to compute next interval
+        const lastJob = jobRows.find((j) => j.profileId === profile.id);
+        const lastRunAt = lastJob?.scheduledAt ? new Date(lastJob.scheduledAt) : null;
+        nextRunAt = getNextIntervalRun(lastRunAt, sched.intervalMinutes, now);
+      } else if (sched.type === 'cron' && sched.cron) {
+        const tz = sched.timezone || 'UTC';
+        nextRunAt = getNextCronOccurrence(sched.cron, tz, now);
+      }
+
+      if (nextRunAt) {
+        pendingRows.push({
+          id: `next-${profile.id}`,
+          orgId: profile.orgId,
+          profileId: profile.id,
+          profileName: profile.name,
+          agentId: null,
+          status: 'pending',
+          scheduledAt: nextRunAt.toISOString(),
+          startedAt: null,
+          completedAt: null,
+          hostsScanned: null,
+          hostsDiscovered: null,
+          newAssets: null,
+          errors: null,
+          createdAt: nextRunAt.toISOString()
+        });
+      }
+    }
+
+    // Pending rows go first, then real jobs by createdAt desc
+    return c.json({ data: [...pendingRows, ...jobRows] });
   }
 );
 
@@ -520,7 +635,7 @@ discoveryRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const jobId = c.req.param('id');
+    const jobId = c.req.param('id')!;
     const orgResult = resolveOrgId(auth);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
@@ -551,7 +666,7 @@ discoveryRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const jobId = c.req.param('id');
+    const jobId = c.req.param('id')!;
     const orgResult = resolveOrgId(auth);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
@@ -745,7 +860,7 @@ discoveryRoutes.patch(
   zValidator('json', updateAssetSchema),
   async (c) => {
     const auth = c.get('auth');
-    const assetId = c.req.param('id');
+    const assetId = c.req.param('id')!;
     const updates = c.req.valid('json');
     const orgResult = await resolveOrgIdForAsset(auth, assetId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
@@ -788,7 +903,7 @@ discoveryRoutes.post(
   zValidator('json', linkAssetSchema),
   async (c) => {
     const auth = c.get('auth');
-    const assetId = c.req.param('id');
+    const assetId = c.req.param('id')!;
     const body = c.req.valid('json');
     const orgResult = await resolveOrgIdForAsset(auth, assetId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
@@ -828,7 +943,7 @@ discoveryRoutes.patch(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     const orgResult = await resolveOrgIdForAsset(auth, id);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
@@ -856,7 +971,7 @@ discoveryRoutes.patch(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     const orgResult = await resolveOrgIdForAsset(auth, id);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
@@ -883,7 +998,7 @@ discoveryRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const assetId = c.req.param('id');
+    const assetId = c.req.param('id')!;
     const orgResult = await resolveOrgIdForAsset(auth, assetId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 

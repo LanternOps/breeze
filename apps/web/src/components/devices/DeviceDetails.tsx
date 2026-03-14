@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react';
 import {
   Monitor,
   Cpu,
@@ -18,7 +18,9 @@ import {
   Shield,
   User,
   Layers,
-  Timer
+  Timer,
+  Usb,
+  ChevronDown
 } from 'lucide-react';
 import { formatUptime } from '../../lib/utils';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
@@ -40,6 +42,9 @@ import DeviceEffectiveConfigTab from './DeviceEffectiveConfigTab';
 import DeviceIpHistoryTab from './DeviceIpHistoryTab';
 import DeviceBootPerformanceTab from './DeviceBootPerformanceTab';
 import DevicePlaybookHistory from './DevicePlaybookHistory';
+import DevicePeripheralsTab from './DevicePeripheralsTab';
+import DeviceWarrantyCard from './DeviceWarrantyCard';
+import { navigateTo } from '@/lib/navigation';
 
 type Tab =
   | 'overview'
@@ -59,7 +64,8 @@ type Tab =
   | 'filesystem'
   | 'ip-history'
   | 'boot-performance'
-  | 'playbooks';
+  | 'playbooks'
+  | 'peripherals';
 
 type DeviceDetailsProps = {
   device: Device;
@@ -113,6 +119,155 @@ function formatLastSeen(dateString: string, timezone?: string): string {
   return date.toLocaleDateString([], timezone ? { timeZone: timezone } : undefined);
 }
 
+function OverflowTabs({ tabs, activeTab, onTabChange }: {
+  tabs: { id: string; label: string; icon: React.ReactNode }[];
+  activeTab: string;
+  onTabChange: (id: string) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const navRef = useRef<HTMLElement>(null);
+  const tabWidths = useRef<number[]>([]);
+  const [visibleCount, setVisibleCount] = useState(tabs.length);
+  const [measured, setMeasured] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRef = useRef<HTMLDivElement>(null);
+
+  // First paint: render all tabs hidden, measure widths, then show computed layout
+  useLayoutEffect(() => {
+    const nav = navRef.current;
+    if (!nav || measured) return;
+    const buttons = nav.querySelectorAll<HTMLButtonElement>(':scope > button');
+    tabWidths.current = Array.from(buttons).map(b => b.offsetWidth);
+    setMeasured(true);
+  }, [measured]);
+
+  const computeVisible = useCallback(() => {
+    const container = containerRef.current;
+    if (!container || tabWidths.current.length === 0) return;
+    const availableWidth = container.clientWidth;
+    const gap = 16;
+    const moreButtonWidth = 120;
+
+    // Check if all tabs fit without "More"
+    let totalAll = 0;
+    for (let i = 0; i < tabWidths.current.length; i++) {
+      totalAll += tabWidths.current[i] + (i > 0 ? gap : 0);
+    }
+    if (totalAll <= availableWidth) {
+      setVisibleCount(tabs.length);
+      return;
+    }
+
+    // Find how many fit alongside the "More" button
+    let total = 0;
+    let fits = 0;
+    for (let i = 0; i < tabWidths.current.length; i++) {
+      total += tabWidths.current[i] + (i > 0 ? gap : 0);
+      if (total + gap + moreButtonWidth <= availableWidth) {
+        fits = i + 1;
+      } else {
+        break;
+      }
+    }
+    setVisibleCount(Math.max(1, fits));
+  }, [tabs.length]);
+
+  // Compute after measurement and on resize
+  useLayoutEffect(() => {
+    if (!measured) return;
+    computeVisible();
+  }, [measured, computeVisible]);
+
+  useEffect(() => {
+    if (!measured) return;
+    const container = containerRef.current;
+    if (!container) return;
+    const ro = new ResizeObserver(() => computeVisible());
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, [measured, computeVisible]);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    if (!moreOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (moreRef.current && !moreRef.current.contains(e.target as Node)) {
+        setMoreOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [moreOpen]);
+
+  const visibleTabs = measured ? tabs.slice(0, visibleCount) : tabs;
+  const overflowTabs = measured ? tabs.slice(visibleCount) : [];
+  const activeInOverflow = overflowTabs.some(t => t.id === activeTab);
+  const activeOverflowTab = overflowTabs.find(t => t.id === activeTab);
+
+  const tabClass = (isActive: boolean) =>
+    `flex items-center gap-2 whitespace-nowrap border-b-2 px-1 py-3 text-sm font-medium transition ${
+      isActive
+        ? 'border-primary text-primary'
+        : 'border-transparent text-muted-foreground hover:border-muted-foreground hover:text-foreground'
+    }`;
+
+  return (
+    <div ref={containerRef} className="border-b">
+      <nav
+        ref={navRef as React.RefObject<HTMLElement>}
+        className={`-mb-px flex items-center gap-4 ${measured ? '' : 'invisible'}`}
+      >
+        {visibleTabs.map(tab => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => onTabChange(tab.id)}
+            className={tabClass(activeTab === tab.id)}
+          >
+            {tab.icon}
+            {tab.label}
+          </button>
+        ))}
+        {overflowTabs.length > 0 && (
+          <div ref={moreRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setMoreOpen(!moreOpen)}
+              className={tabClass(activeInOverflow)}
+            >
+              {activeInOverflow && activeOverflowTab ? (
+                <>{activeOverflowTab.icon} {activeOverflowTab.label}</>
+              ) : (
+                <>More</>
+              )}
+              <ChevronDown className={`h-3.5 w-3.5 transition ${moreOpen ? 'rotate-180' : ''}`} />
+            </button>
+            {moreOpen && (
+              <div className="absolute right-0 top-full z-20 mt-1 min-w-[200px] rounded-md border bg-card py-1 shadow-lg">
+                {overflowTabs.map(tab => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => { onTabChange(tab.id); setMoreOpen(false); }}
+                    className={`flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition ${
+                      activeTab === tab.id
+                        ? 'bg-primary/10 text-primary'
+                        : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                    }`}
+                  >
+                    {tab.icon}
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </nav>
+    </div>
+  );
+}
+
 export default function DeviceDetails({ device, timezone, onBack, onAction }: DeviceDetailsProps) {
   const [activeTab, setActiveTab] = useState<Tab>('overview');
 
@@ -127,6 +282,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
     { id: 'patches', label: 'Patch Status', icon: <CheckCircle className="h-4 w-4" /> },
     { id: 'filesystem', label: 'Disk Cleanup', icon: <HardDrive className="h-4 w-4" /> },
     { id: 'security', label: 'Security', icon: <Shield className="h-4 w-4" /> },
+    { id: 'peripherals', label: 'Peripherals', icon: <Usb className="h-4 w-4" /> },
     { id: 'management', label: 'Management', icon: <Server className="h-4 w-4" /> },
     { id: 'effective-config', label: 'Effective Config', icon: <Layers className="h-4 w-4" /> },
     { id: 'alerts', label: 'Alert History', icon: <AlertTriangle className="h-4 w-4" /> },
@@ -150,7 +306,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
             </div>
             <div>
               <div className="flex items-center gap-3">
-                <h1 className="text-2xl font-bold">{device.hostname}</h1>
+                <h1 className="text-2xl font-bold">{device.displayName || device.hostname}</h1>
                 <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}>
                   {statusLabels[device.status]}
                 </span>
@@ -166,25 +322,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
         </div>
       </div>
 
-      <div className="border-b">
-        <nav className="-mb-px flex gap-4 overflow-x-auto">
-          {tabs.map(tab => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2 whitespace-nowrap border-b-2 px-1 py-3 text-sm font-medium transition ${
-                activeTab === tab.id
-                  ? 'border-primary text-primary'
-                  : 'border-transparent text-muted-foreground hover:border-muted-foreground hover:text-foreground'
-              }`}
-            >
-              {tab.icon}
-              {tab.label}
-            </button>
-          ))}
-        </nav>
-      </div>
+      <OverflowTabs tabs={tabs} activeTab={activeTab} onTabChange={(id) => setActiveTab(id as Tab)} />
 
       {activeTab === 'overview' && (
         <div className="grid gap-6 lg:grid-cols-3">
@@ -228,6 +366,8 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
             </div>
 
             <DevicePerformanceGraphs deviceId={device.id} compact />
+
+            <DeviceWarrantyCard deviceId={device.id} compact />
           </div>
 
           <DeviceAlertHistory deviceId={device.id} timezone={effectiveTimezone} showFilters={false} limit={4} />
@@ -259,13 +399,17 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
               onAction('files', device);
               return;
             }
-            window.location.href = `/remote/files/${device.id}`;
+            void navigateTo(`/remote/files/${device.id}`);
           }}
         />
       )}
 
       {activeTab === 'security' && (
         <DeviceSecurityTab deviceId={device.id} timezone={effectiveTimezone} />
+      )}
+
+      {activeTab === 'peripherals' && (
+        <DevicePeripheralsTab deviceId={device.id} timezone={effectiveTimezone} />
       )}
 
       {activeTab === 'management' && (

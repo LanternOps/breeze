@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { ArrowLeft, History } from 'lucide-react';
 import ScriptForm, { type ScriptFormValues } from './ScriptForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type ScriptEditPageProps = {
   scriptId?: string;
@@ -24,7 +25,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
       const response = await fetchWithAuth(`/scripts/${scriptId}`);
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to fetch script');
@@ -71,7 +72,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
         throw new Error(data.error || 'Failed to save script');
       }
 
-      window.location.href = '/scripts';
+      void navigateTo('/scripts');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -80,7 +81,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
   };
 
   const handleCancel = () => {
-    window.location.href = '/scripts';
+    void navigateTo('/scripts');
   };
 
   if (loading) {

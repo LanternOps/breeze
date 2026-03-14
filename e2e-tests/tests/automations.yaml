@@ -1,0 +1,586 @@
+# Automations E2E Tests
+# Tests the full automation lifecycle: list page, create, view detail, enable/disable,
+# trigger manually, view run history, and delete.
+# Verification uses API queries for backend state confirmation.
+
+tests:
+  - id: automations_page_loads
+    name: "Automations Page Loads with Table and Action Button"
+    description: "Verify the Automations page renders with the list table, header, and New Automation button"
+    tags: [automations, smoke]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_to_automations
+        action: ui
+        description: "Navigate to /automations and verify page structure"
+        playwright:
+          - goto: "/automations"
+          - waitFor: "h1:has-text('Automations')"
+            timeout: 15000
+          - waitFor: "text=Create and manage automated workflows."
+
+      - id: verify_new_automation_button
+        action: ui
+        description: "Confirm the New Automation link is present"
+        playwright:
+          - assert:
+              selector: "a[href='/automations/new']:has-text('New Automation')"
+              exists: true
+
+      - id: verify_automations_table
+        action: ui
+        description: "Confirm the automations table has the expected column headers"
+        playwright:
+          - waitFor: "h2:has-text('Automations')"
+            timeout: 10000
+          - assert:
+              selector: "th:has-text('Name')"
+              exists: true
+          - assert:
+              selector: "th:has-text('Trigger')"
+              exists: true
+          - assert:
+              selector: "th:has-text('Last Run')"
+              exists: true
+          - assert:
+              selector: "th:has-text('Status')"
+              exists: true
+          - assert:
+              selector: "th:has-text('Enabled')"
+              exists: true
+          - assert:
+              selector: "th:has-text('Actions')"
+              exists: true
+
+      - id: verify_filter_controls
+        action: ui
+        description: "Confirm search and trigger/status filter dropdowns are present"
+        playwright:
+          - assert:
+              selector: "input[placeholder='Search automations...']"
+              exists: true
+          - assert:
+              selector: "select:has(option[value='schedule'])"
+              exists: true
+          - assert:
+              selector: "select:has(option[value='enabled'])"
+              exists: true
+
+  - id: create_manual_automation
+    name: "Create Manual Automation with Run Script Action"
+    description: "Navigate to /automations/new, fill the form with a manual trigger and run_script action, save"
+    tags: [automations, crud, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_to_new_automation
+        action: ui
+        description: "Navigate to /automations/new and verify the form page"
+        playwright:
+          - goto: "/automations/new"
+          - waitFor: "h1:has-text('Create Automation')"
+            timeout: 15000
+          - waitFor: "text=Build an automated workflow with triggers, conditions, and actions."
+
+      - id: verify_form_back_button
+        action: ui
+        description: "Confirm the back navigation link is present"
+        playwright:
+          - assert:
+              selector: "a[href='/automations']"
+              exists: true
+
+      - id: fill_basic_info
+        action: ui
+        description: "Enter automation name and description"
+        playwright:
+          - fill:
+              "#automation-name": "E2E Manual Cleanup Automation"
+          - fill:
+              "#automation-description": "Manually triggered cleanup automation created by E2E test"
+
+      - id: select_manual_trigger
+        action: ui
+        description: "Select the Manual trigger type card"
+        playwright:
+          # Manual trigger is a button card inside the Trigger section
+          - click: "button:has-text('Manual'):has-text('Run manually only')"
+          - waitFor: "text=This automation will only run when triggered manually from the UI or API."
+            timeout: 5000
+
+      - id: configure_action
+        action: ui
+        description: "Select 'Run Script' as the action type (it is the default)"
+        playwright:
+          - assert:
+              selector: "select:has(option[value='run_script'])"
+              exists: true
+          - selectOption:
+              "select:has(option[value='run_script'])": "run_script"
+
+      - id: select_on_failure_behavior
+        action: ui
+        description: "Select Continue as the on-failure behavior"
+        playwright:
+          - click: "button:has-text('Continue'):has-text('Continue with remaining actions')"
+
+      - id: submit_automation
+        action: ui
+        description: "Submit the form and verify redirect to /automations"
+        playwright:
+          - click: "button[type='submit']:has-text('Create Automation')"
+          - waitFor:
+              url: "**/automations"
+              timeout: 20000
+          - waitFor: "h1:has-text('Automations')"
+
+      - id: verify_automation_in_list
+        action: ui
+        description: "Confirm the new automation appears in the table with Manual trigger badge"
+        playwright:
+          - waitFor: "td:has-text('E2E Manual Cleanup Automation')"
+            timeout: 10000
+          - assert:
+              selector: "tr:has-text('E2E Manual Cleanup Automation') span:has-text('Manual')"
+              exists: true
+
+      - id: verify_automation_created_via_api
+        action: api
+        description: "Confirm the new automation exists in the API"
+        request:
+          method: GET
+          path: "/api/v1/automations"
+        poll:
+          maxAttempts: 5
+          intervalMs: 2000
+          until: "response.data.some(a => a.name === 'E2E Manual Cleanup Automation')"
+        expect:
+          data: []
+          pagination:
+            page: 1
+
+  - id: create_scheduled_automation
+    name: "Create Scheduled Automation with Cron Expression"
+    description: "Create an automation with a schedule trigger and verify the cron description renders"
+    tags: [automations, crud, schedule]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_to_new_automation
+        action: ui
+        description: "Navigate to /automations/new"
+        playwright:
+          - goto: "/automations/new"
+          - waitFor: "h1:has-text('Create Automation')"
+            timeout: 15000
+
+      - id: fill_automation_name
+        action: ui
+        description: "Enter the automation name"
+        playwright:
+          - fill:
+              "#automation-name": "E2E Daily Scheduled Automation"
+          - fill:
+              "#automation-description": "Runs every day at 9 AM - created by E2E test"
+
+      - id: select_schedule_trigger
+        action: ui
+        description: "Select the Schedule trigger type card"
+        playwright:
+          - click: "button:has-text('Schedule'):has-text('Run on a cron schedule')"
+          - waitFor: "label:has-text('Cron Expression')"
+            timeout: 5000
+
+      - id: set_cron_expression
+        action: ui
+        description: "Set cron expression to daily at 9 AM and verify human-readable description"
+        playwright:
+          - fill:
+              "#cron-expression": "0 9 * * *"
+          - waitFor: "text=Every day at 9:00 AM"
+            timeout: 5000
+
+      - id: use_cron_preset
+        action: ui
+        description: "Click the 'Weekdays 9 AM' preset button and verify the cron changes"
+        playwright:
+          - click: "button:has-text('Weekdays 9 AM')"
+          - waitFor: "text=Weekdays at 9:00 AM"
+            timeout: 5000
+          - assert:
+              selector: "#cron-expression"
+              value: "0 9 * * 1-5"
+
+      - id: submit_scheduled_automation
+        action: ui
+        description: "Save the automation and verify redirect"
+        playwright:
+          - click: "button[type='submit']:has-text('Create Automation')"
+          - waitFor:
+              url: "**/automations"
+              timeout: 20000
+          - waitFor: "h1:has-text('Automations')"
+
+      - id: verify_scheduled_automation_in_list
+        action: ui
+        description: "Confirm it appears in the list with Schedule trigger badge"
+        playwright:
+          - waitFor: "td:has-text('E2E Daily Scheduled Automation')"
+            timeout: 10000
+          - assert:
+              selector: "tr:has-text('E2E Daily Scheduled Automation') span:has-text('Schedule')"
+              exists: true
+
+  - id: enable_disable_automation
+    name: "Enable and Disable Automation via Toggle"
+    description: "Use the toggle switch in the automation row to enable then disable an automation"
+    tags: [automations, enable-disable]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_to_automations
+        action: ui
+        description: "Go to /automations"
+        playwright:
+          - goto: "/automations"
+          - waitFor: "h1:has-text('Automations')"
+            timeout: 15000
+          - waitFor: "tr:has-text('E2E Manual Cleanup Automation')"
+            timeout: 10000
+
+      - id: disable_automation
+        action: ui
+        description: "Click the toggle switch on the E2E Manual Cleanup Automation row to disable it"
+        playwright:
+          # The toggle is a peer-based checkbox inside a label — we click the label
+          - click: "tr:has-text('E2E Manual Cleanup Automation') td:has(input[type='checkbox']) label"
+          - waitFor: "text=E2E Manual Cleanup Automation"
+            timeout: 5000
+
+      - id: filter_by_disabled
+        action: ui
+        description: "Filter by Disabled status to confirm the automation is now disabled"
+        playwright:
+          - selectOption:
+              "select:has(option[value='enabled'])": "disabled"
+          - waitFor: "tr:has-text('E2E Manual Cleanup Automation')"
+            timeout: 10000
+
+      - id: re_enable_automation
+        action: ui
+        description: "Toggle the automation back to enabled"
+        playwright:
+          - click: "tr:has-text('E2E Manual Cleanup Automation') td:has(input[type='checkbox']) label"
+          - waitFor: "text=E2E Manual Cleanup Automation"
+            timeout: 5000
+
+      - id: verify_re_enabled
+        action: ui
+        description: "Filter by Enabled to confirm the automation is back in the enabled list"
+        playwright:
+          - selectOption:
+              "select:has(option[value='disabled'])": "enabled"
+          - waitFor: "tr:has-text('E2E Manual Cleanup Automation')"
+            timeout: 10000
+
+      - id: verify_enabled_state_via_api
+        action: api
+        description: "Confirm the automation is enabled in the API"
+        request:
+          method: GET
+          path: "/api/v1/automations"
+        poll:
+          maxAttempts: 5
+          intervalMs: 2000
+          until: "response.data.find(a => a.name === 'E2E Manual Cleanup Automation')?.enabled === true"
+        expect:
+          data: []
+          pagination:
+            page: 1
+
+  - id: trigger_automation_manually_and_view_history
+    name: "Manually Trigger Automation and View Run History"
+    description: "Click the Run button on a manual automation and then view its run history modal"
+    tags: [automations, execution, history]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_to_automations
+        action: ui
+        description: "Go to /automations"
+        playwright:
+          - goto: "/automations"
+          - waitFor: "h1:has-text('Automations')"
+            timeout: 15000
+          - waitFor: "tr:has-text('E2E Manual Cleanup Automation')"
+            timeout: 10000
+
+      - id: trigger_automation
+        action: ui
+        description: "Click the Run (play) button on the E2E Manual Cleanup Automation"
+        playwright:
+          - click: "tr:has-text('E2E Manual Cleanup Automation') button[title='Run now']"
+          - waitFor: "text=E2E Manual Cleanup Automation"
+            timeout: 5000
+
+      - id: verify_run_via_api
+        action: api
+        description: "Confirm a run record was created in the API"
+        request:
+          method: GET
+          path: "/api/v1/automations"
+        poll:
+          maxAttempts: 15
+          intervalMs: 4000
+          until: |
+            response.data.find(a => a.name === 'E2E Manual Cleanup Automation')?.lastRunAt != null
+        expect:
+          data: []
+          pagination:
+            page: 1
+
+      - id: view_run_history_modal
+        action: ui
+        description: "Click the more options (MoreHorizontal) menu and select Run History"
+        playwright:
+          - click: "tr:has-text('E2E Manual Cleanup Automation') div.relative > button"
+          - waitFor: "text=Run History"
+            timeout: 5000
+          - click: "button:has-text('Run History')"
+          - waitFor: "div.fixed"
+            timeout: 10000
+
+      - id: verify_run_history_modal
+        action: ui
+        description: "Confirm the run history modal is open with the automation name"
+        playwright:
+          - waitFor: "h2:has-text('Run History')"
+            timeout: 5000
+          - waitFor: "text=E2E Manual Cleanup Automation"
+            timeout: 5000
+          # Close button is the X icon button in the modal header (div.border-b)
+          - assert:
+              selector: "div.fixed .border-b button"
+              exists: true
+          - click: "div.fixed .border-b button"
+
+  - id: edit_automation
+    name: "Edit Existing Automation"
+    description: "Click the edit pencil button to navigate to the automation edit page and update its description"
+    tags: [automations, crud]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_to_automations
+        action: ui
+        description: "Go to /automations"
+        playwright:
+          - goto: "/automations"
+          - waitFor: "h1:has-text('Automations')"
+            timeout: 15000
+          - waitFor: "tr:has-text('E2E Manual Cleanup Automation')"
+            timeout: 10000
+
+      - id: click_edit
+        action: ui
+        description: "Click the Pencil (edit) icon on the automation row"
+        playwright:
+          - click: "tr:has-text('E2E Manual Cleanup Automation') button[title='Edit']"
+          - waitFor: "h1:has-text('Edit Automation')"
+            timeout: 15000
+          - waitFor: "text=Modify the automation configuration."
+
+      - id: update_description
+        action: ui
+        description: "Change the description and save"
+        playwright:
+          - fill:
+              "#automation-description": "Updated description via E2E edit test"
+          - click: "button[type='submit']:has-text('Save Changes')"
+          - waitFor:
+              url: "**/automations"
+              timeout: 20000
+          - waitFor: "h1:has-text('Automations')"
+
+      - id: verify_automation_still_in_list
+        action: ui
+        description: "Confirm the edited automation still appears in the list"
+        playwright:
+          - waitFor: "tr:has-text('E2E Manual Cleanup Automation')"
+            timeout: 10000
+
+  - id: delete_automations_cleanup
+    name: "Delete E2E Test Automations"
+    description: "Delete all automations created by E2E tests using the delete action in the more menu"
+    tags: [automations, crud, cleanup]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_to_automations
+        action: ui
+        description: "Go to /automations"
+        playwright:
+          - goto: "/automations"
+          - waitFor: "h1:has-text('Automations')"
+            timeout: 15000
+
+      - id: delete_manual_automation
+        action: ui
+        description: "Open the more menu and select Delete for the E2E Manual Cleanup Automation"
+        playwright:
+          - waitFor: "tr:has-text('E2E Manual Cleanup Automation')"
+            timeout: 10000
+          - click: "tr:has-text('E2E Manual Cleanup Automation') div.relative > button"
+          - waitFor: "button:has-text('Delete')"
+            timeout: 5000
+          - click: "button:has-text('Delete')"
+          - waitFor: "h2:has-text('Delete Automation')"
+            timeout: 10000
+          - assert:
+              selector: "p:has-text('Are you sure you want to delete')"
+              exists: true
+          - click: "button.bg-destructive:has-text('Delete')"
+          - assertNotExists: "tr:has-text('E2E Manual Cleanup Automation')"
+            timeout: 10000
+
+      - id: delete_scheduled_automation
+        action: ui
+        description: "Also delete the E2E Daily Scheduled Automation"
+        playwright:
+          - waitFor: "tr:has-text('E2E Daily Scheduled Automation')"
+            timeout: 5000
+          - click: "tr:has-text('E2E Daily Scheduled Automation') div.relative > button"
+          - waitFor: "button:has-text('Delete')"
+            timeout: 5000
+          - click: "button:has-text('Delete')"
+          - waitFor: "h2:has-text('Delete Automation')"
+            timeout: 10000
+          - click: "button.bg-destructive:has-text('Delete')"
+          - assertNotExists: "tr:has-text('E2E Daily Scheduled Automation')"
+            timeout: 10000
+        optional: true
+
+      - id: verify_deleted_via_api
+        action: api
+        description: "Confirm neither automation exists in the API after deletion"
+        request:
+          method: GET
+          path: "/api/v1/automations"
+        poll:
+          maxAttempts: 5
+          intervalMs: 2000
+          until: |
+            !response.data.some(a =>
+              a.name === 'E2E Manual Cleanup Automation' ||
+              a.name === 'E2E Daily Scheduled Automation'
+            )
+        expect:
+          data: []
+          pagination:
+            page: 1

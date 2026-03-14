@@ -222,7 +222,34 @@ async function helperStreamRequest(
   const listen = await getTauriListen();
 
   if (invoke && listen) {
-    // Tauri path: use Rust backend for mTLS support
+    // Tauri path: use Rust backend for mTLS support.
+    //
+    // IMPORTANT: Register the event listener BEFORE invoking helper_fetch.
+    // The Rust backend spawns a background task that emits stream chunks
+    // immediately after the HTTP response arrives. If the response is
+    // buffered by a reverse proxy (e.g. Caddy), all data arrives at once
+    // and events fire before a post-invoke listener would be ready.
+    let streamId: string | null = null;
+    let unlisten: (() => void) | null = null;
+
+    unlisten = await listen('helper-fetch-stream', (ev: { payload: unknown }) => {
+      const data = ev.payload as StreamChunkEvent;
+      if (!streamId || data.stream_id !== streamId) return;
+
+      if (data.done) {
+        if (data.error) {
+          onDone(data.error);
+        } else {
+          onDone();
+        }
+        // Clean up listener
+        if (unlisten) { unlisten(); unlisten = null; }
+      } else if (data.chunk) {
+        onChunk(data.chunk);
+      }
+    }) as unknown as () => void;
+
+    // Now make the request — listener is already active
     const resp = (await invoke('helper_fetch', {
       request: {
         url,
@@ -234,10 +261,11 @@ async function helperStreamRequest(
     })) as HelperFetchResponse;
 
     const isOk = resp.status >= 200 && resp.status < 300;
-    const streamId = resp.stream_id;
+    streamId = resp.stream_id;
 
     if (!streamId) {
       // No streaming -- body was returned inline (error responses, etc.)
+      if (unlisten) { unlisten(); unlisten = null; }
       if (resp.body) {
         onChunk(resp.body);
       }
@@ -245,34 +273,12 @@ async function helperStreamRequest(
       return { ok: isOk, status: resp.status, headers: resp.headers, cancel: () => {} };
     }
 
-    let unlisten: (() => void) | null = null;
-
-    const unlistenPromise = listen('helper-fetch-stream', (ev: { payload: unknown }) => {
-      const data = ev.payload as StreamChunkEvent;
-      if (data.stream_id !== streamId) return;
-
-      if (data.done) {
-        if (data.error) {
-          onDone(data.error);
-        } else {
-          onDone();
-        }
-        // Clean up listener
-        if (unlisten) unlisten();
-      } else if (data.chunk) {
-        onChunk(data.chunk);
-      }
-    });
-
-    // Store the unlisten function for cleanup
-    unlisten = await unlistenPromise as unknown as () => void;
-
     return {
       ok: resp.status >= 200 && resp.status < 300,
       status: resp.status,
       headers: resp.headers,
       cancel: () => {
-        if (unlisten) unlisten();
+        if (unlisten) { unlisten(); unlisten = null; }
       },
     };
   }
@@ -593,6 +599,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const trimmed = content.trim();
     if (!trimmed) return;
 
+    // Notify backend that chat is active
+    getTauriInvoke().then((inv) => { if (inv) inv('update_chat_active', { active: true }); });
+
     // Optimistic user message
     const userMsgId = crypto.randomUUID();
     const userMsg: ChatMessage = {
@@ -669,6 +678,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           if (error) {
             set(() => ({ error, isStreaming: false }));
           }
+          // Notify backend that chat is idle (stream finished)
+          getTauriInvoke().then((inv) => { if (inv) inv('update_chat_active', { active: false }); });
         },
       );
 
@@ -700,6 +711,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         error: err instanceof Error ? err.message : String(err),
         isStreaming: false,
       });
+      // Notify backend that chat is idle (error path)
+      getTauriInvoke().then((inv) => { if (inv) inv('update_chat_active', { active: false }); });
     } finally {
       const state = get();
       if (state.isStreaming) {
@@ -722,6 +735,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         console.error('[Helper] Failed to close session:', err);
       }
     }
+
+    // Notify backend that chat is idle (session cleared)
+    const invoke = await getTauriInvoke();
+    if (invoke) invoke('update_chat_active', { active: false });
 
     set({
       sessionId: null,

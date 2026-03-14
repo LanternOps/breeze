@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, sql, desc, like, inArray, or, isNull } from 'drizzle-orm';
+import { escapeLike } from '../utils/sql';
 import { db } from '../db';
 import {
   scripts,
@@ -207,14 +208,14 @@ scriptRoutes.get(
 
     if (query.osType) {
       // Check if osType is in the osTypes array
-      conditions.push(sql`${query.osType} = ANY(${scripts.osTypes})` as ReturnType<typeof eq>);
+      conditions.push(sql`${sql.param(query.osType)} = ANY(${scripts.osTypes})` as ReturnType<typeof eq>);
     }
 
     if (query.search) {
       conditions.push(
         or(
-          like(scripts.name, `%${query.search}%`),
-          like(scripts.description, `%${query.search}%`)
+          like(scripts.name, `%${escapeLike(query.search)}%`),
+          like(scripts.description, `%${escapeLike(query.search)}%`)
         ) as ReturnType<typeof eq>
       );
     }
@@ -276,7 +277,7 @@ scriptRoutes.post(
   zValidator('json', z.object({ orgId: z.string().uuid().optional() })),
   async (c) => {
     const auth = c.get('auth');
-    const sourceId = c.req.param('id');
+    const sourceId = c.req.param('id')!!;
     const body = c.req.valid('json');
 
     // Fetch the system script
@@ -374,7 +375,7 @@ scriptRoutes.get(
   requirePermission(PERMISSIONS.SCRIPTS_READ.resource, PERMISSIONS.SCRIPTS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const scriptId = c.req.param('id');
+    const scriptId = c.req.param('id')!!;
 
     const script = await getScriptWithOrgCheck(scriptId, auth);
     if (!script) {
@@ -406,9 +407,15 @@ scriptRoutes.post(
       orgId = auth.orgId;
     } else if (auth.scope === 'partner') {
       if (!orgId) {
-        return c.json({ error: 'orgId is required for partner scope' }, 400);
+        // Auto-select if partner only has one org
+        const singleOrg = auth.accessibleOrgIds?.[0];
+        if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
+          orgId = singleOrg;
+        } else {
+          return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
+        }
       }
-      const hasAccess = ensureOrgAccess(orgId, auth);
+      const hasAccess = ensureOrgAccess(orgId!, auth);
       if (!hasAccess) {
         return c.json({ error: 'Access to this organization denied' }, 403);
       }
@@ -463,7 +470,7 @@ scriptRoutes.put(
   zValidator('json', updateScriptSchema),
   async (c) => {
     const auth = c.get('auth');
-    const scriptId = c.req.param('id');
+    const scriptId = c.req.param('id')!!;
     const data = c.req.valid('json');
 
     if (Object.keys(data).length === 0) {
@@ -528,7 +535,7 @@ scriptRoutes.delete(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
-    const scriptId = c.req.param('id');
+    const scriptId = c.req.param('id')!!;
 
     const script = await getScriptWithOrgCheck(scriptId, auth);
     if (!script) {
@@ -588,7 +595,7 @@ scriptRoutes.post(
   zValidator('json', executeScriptSchema),
   async (c) => {
     const auth = c.get('auth');
-    const scriptId = c.req.param('id');
+    const scriptId = c.req.param('id')!!;
     const data = c.req.valid('json');
 
     const script = await getScriptWithOrgCheck(scriptId, auth);
@@ -783,7 +790,7 @@ scriptRoutes.get(
   zValidator('query', listExecutionsSchema),
   async (c) => {
     const auth = c.get('auth');
-    const scriptId = c.req.param('id');
+    const scriptId = c.req.param('id')!!;
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
@@ -851,7 +858,7 @@ scriptRoutes.get(
   requirePermission(PERMISSIONS.SCRIPTS_READ.resource, PERMISSIONS.SCRIPTS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const executionId = c.req.param('id');
+    const executionId = c.req.param('id')!!;
 
     // Get execution with script and device info
     const [execution] = await db
@@ -906,7 +913,7 @@ scriptRoutes.post(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
-    const executionId = c.req.param('id');
+    const executionId = c.req.param('id')!!;
 
     // Get execution
     const [execution] = await db

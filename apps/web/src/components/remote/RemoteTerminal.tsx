@@ -99,26 +99,26 @@ export default function RemoteTerminal({
         lineHeight: 1.2,
         theme: {
           background: '#1a1b26',
-          foreground: '#a9b1d6',
-          cursor: '#c0caf5',
+          foreground: '#e0e4f0',
+          cursor: '#e0e4f0',
           cursorAccent: '#1a1b26',
           selectionBackground: '#33467c',
-          black: '#32344a',
+          black: '#6b7394',
           red: '#f7768e',
           green: '#9ece6a',
           yellow: '#e0af68',
           blue: '#7aa2f7',
-          magenta: '#ad8ee6',
-          cyan: '#449dab',
-          white: '#787c99',
-          brightBlack: '#444b6a',
-          brightRed: '#ff7a93',
-          brightGreen: '#b9f27c',
-          brightYellow: '#ff9e64',
-          brightBlue: '#7da6ff',
-          brightMagenta: '#bb9af7',
-          brightCyan: '#0db9d7',
-          brightWhite: '#acb0d0'
+          magenta: '#bb9af7',
+          cyan: '#7dcfff',
+          white: '#e0e4f0',
+          brightBlack: '#9aa5ce',
+          brightRed: '#ff9e9e',
+          brightGreen: '#c3e88d',
+          brightYellow: '#ffc777',
+          brightBlue: '#82aaff',
+          brightMagenta: '#c8a8f7',
+          brightCyan: '#89ddff',
+          brightWhite: '#f0f2f8'
         },
         scrollback: 10000,
         allowProposedApi: true
@@ -498,10 +498,9 @@ export default function RemoteTerminal({
       <div
         ref={terminalContainerRef}
         className={cn(
-          'flex-1 min-h-[400px] bg-[#1a1b26] cursor-text',
+          'flex-1 min-h-[400px] bg-[#1a1b26] cursor-text p-2 overflow-hidden',
           isFullscreen && 'min-h-0'
         )}
-        style={{ padding: '8px' }}
         onClick={() => terminalRef.current?.focus()}
       />
     </div>

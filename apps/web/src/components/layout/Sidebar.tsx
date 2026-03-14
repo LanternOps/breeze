@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import {
   LayoutDashboard,
   Monitor,
@@ -17,7 +17,6 @@ import {
   ShieldCheck,
   KeyRound,
   Package,
-  Webhook,
   Plug,
   Network,
   HardDrive,
@@ -26,12 +25,38 @@ import {
   Activity,
   Layers,
   ScrollText,
-  Download
+  Download,
+  ClipboardCheck,
+  ScanSearch,
+  Usb,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface SidebarProps {
   currentPath?: string;
+}
+
+// Track the current pathname reactively so persisted sidebar updates on View Transitions
+let pathListeners = new Set<() => void>();
+function subscribeToPath(cb: () => void) {
+  pathListeners.add(cb);
+  return () => { pathListeners.delete(cb); };
+}
+function getPathSnapshot() {
+  return typeof window !== 'undefined' ? window.location.pathname : '/';
+}
+function getServerSnapshot() {
+  return '/';
+}
+if (typeof window !== 'undefined') {
+  // Update after Astro View Transitions swap the DOM
+  document.addEventListener('astro:after-swap', () => {
+    pathListeners.forEach((cb) => cb());
+  });
+  // Also handle popstate for back/forward
+  window.addEventListener('popstate', () => {
+    pathListeners.forEach((cb) => cb());
+  });
 }
 
 const navigation = [
@@ -47,25 +72,29 @@ const navigation = [
 ];
 
 const integrationsNav = [
-  { name: 'Webhooks', href: '/integrations/webhooks', icon: Webhook },
-  { name: 'PSA Connections', href: '/integrations/psa', icon: Plug }
+  { name: 'Integrations', href: '/integrations', icon: Plug }
 ];
 
 const monitoringNav = [
-  { name: 'Monitoring', href: '/monitoring', icon: Activity },
+  { name: 'Network Monitoring', href: '/monitoring', icon: Activity },
   { name: 'Security', href: '/security', icon: ShieldCheck },
-  { name: 'AI Risk Engine', href: '/ai-risk', icon: BrainCircuit }
+  { name: 'Data Discovery', href: '/sensitive-data', icon: ScanSearch },
+  { name: 'Peripherals', href: '/peripherals', icon: Usb },
+  { name: 'AI Risk Engine', href: '/ai-risk', icon: BrainCircuit },
+  { name: 'CIS Benchmarks', href: '/cis-hardening', icon: ClipboardCheck }
 ];
 
 const operationsNav = [
   { name: 'Updates', href: '/patches', icon: Download },
   { name: 'Backup', href: '/backup', icon: HardDrive },
   { name: 'Audit Logs', href: '/audit', icon: FileText },
-  { name: 'Event Logs', href: '/logs', icon: ScrollText }
+  { name: 'Event Logs', href: '/logs', icon: ScrollText },
+  { name: 'Audit Baselines', href: '/audit-baselines', icon: ListChecks }
 ];
 
 const managementNav = [
-  { name: 'Software', href: '/software-inventory', icon: Package },
+  { name: 'App Library', href: '/software', icon: Package },
+  { name: 'App Policies', href: '/software-inventory', icon: Package },
   { name: 'Config Policies', href: '/configuration-policies', icon: Layers },
   { name: 'Organizations', href: '/settings/organizations', icon: Building2 },
   { name: 'Users', href: '/settings/users', icon: Users },
@@ -76,13 +105,13 @@ const managementNav = [
 const settingsNav = [
   { name: 'Organization', href: '/settings/organization', icon: Building },
   { name: 'Custom Fields', href: '/settings/custom-fields', icon: ListChecks },
-  { name: 'Saved Filters', href: '/settings/filters', icon: Filter },
-  { name: 'Integrations', href: '/integrations/webhooks', icon: Plug }
+  { name: 'Saved Filters', href: '/settings/filters', icon: Filter }
 ];
 
 export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
-  const currentPath = initialPath;
+  const livePath = useSyncExternalStore(subscribeToPath, getPathSnapshot, getServerSnapshot);
+  const currentPath = livePath || initialPath;
 
   // Find the single most-specific matching href across all sections
   // so only one nav item highlights at a time
@@ -156,7 +185,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
         {!collapsed && (
           <span className="px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Monitoring
+            Network Monitoring
           </span>
         )}
         {monitoringNav.map((item) => {

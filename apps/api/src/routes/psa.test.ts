@@ -7,6 +7,7 @@ import { psaRoutes } from './psa';
 vi.mock('../services', () => ({}));
 
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({

@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,7 +17,7 @@ const (
 	defaultFrameRate = 30
 	maxFrameRate     = 60
 
-	iceGatherTimeout = 20 * time.Second
+	iceGatherTimeout = 5 * time.Second
 )
 
 // captureMode indicates which capture strategy to use. Returned by the
@@ -242,6 +243,11 @@ func (s *Session) Stop() {
 			"totalSkipped", snap.FramesSkipped,
 			"uptime", snap.Uptime.Round(time.Second),
 		)
+
+		// Desktop sessions allocate large buffers (DXGI textures, NV12
+		// staging, RGBA frames). Return memory to the OS promptly rather
+		// than waiting for the next GC cycle.
+		debug.FreeOSMemory()
 	})
 }
 
@@ -275,7 +281,7 @@ func (s *Session) doCleanup() {
 		}
 
 		if err := GetWallpaperManager().Restore(); err != nil {
-			slog.Warn("Failed to restore wallpaper", "session", s.id, "error", err)
+			slog.Warn("Failed to restore wallpaper", "session", s.id, "error", err.Error())
 		}
 	})
 }

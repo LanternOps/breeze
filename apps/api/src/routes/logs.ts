@@ -202,7 +202,7 @@ logsRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const jobId = c.req.param('jobId');
+    const jobId = c.req.param('jobId')!;
     if (!jobId || jobId.trim().length === 0) {
       return c.json({ error: 'jobId is required' }, 400);
     }
@@ -478,7 +478,7 @@ logsRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
 
     const query = await getSavedLogSearchQuery(auth, id);
     if (!query) {
@@ -494,7 +494,7 @@ logsRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
 
     const existing = await getSavedLogSearchQueryById(auth, id);
     if (!existing) {

@@ -5,7 +5,7 @@ import { db } from '../../db';
 import { devices, patches, devicePatches } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { submitPatchesSchema } from './schemas';
-import { inferPatchOsType, parseDate } from './helpers';
+import { inferPatchOsType, parseDate, sanitizeDate } from './helpers';
 
 export const patchesRoutes = new Hono();
 
@@ -47,7 +47,7 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
           description: patchData.description || null,
           severity: patchData.severity || 'unknown',
           category: patchData.category || null,
-          releaseDate: patchData.releaseDate || null,
+          releaseDate: sanitizeDate(patchData.releaseDate),
           requiresReboot: patchData.requiresRestart || false,
           downloadSizeMb: patchData.size ? Math.ceil(patchData.size / (1024 * 1024)) : null,
           ...(inferredOsType ? { osTypes: [inferredOsType] } : {})

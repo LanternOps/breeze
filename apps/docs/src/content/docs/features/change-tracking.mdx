@@ -1,0 +1,227 @@
+---
+title: Change Tracking
+description: Detect and audit software installs, service changes, network modifications, and configuration drift across your fleet.
+sidebar:
+  order: 41
+  label: Change Tracking
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Change Tracking gives you a continuous audit trail of what changed on every managed device. The Breeze agent monitors six categories of system changes -- software installs and removals, Windows service modifications, startup item additions, network adapter changes, scheduled task updates, and user account mutations -- and ships them to the API in compressed batches. Every change is fingerprinted with a SHA-256 hash to prevent duplicates, then stored with before/after snapshots so you can see exactly what was modified.
+
+This feature is designed for compliance auditing, troubleshooting, and drift detection. When a user reports that something stopped working, you can pull up the device's change timeline and see that a critical service was disabled 20 minutes earlier. When you need to prove to an auditor that no unauthorized software was installed, the change log provides cryptographically deduplicated evidence.
+
+---
+
+## Key Concepts
+
+### Change Types
+
+| Type | Description |
+|---|---|
+| `software` | Application installed, removed, or updated |
+| `service` | Windows service or system daemon added, removed, or modified |
+| `startup` | Startup program or launch agent added, removed, or changed |
+| `network` | Network adapter configuration changed (IP, DNS, gateway) |
+| `scheduled_task` | Scheduled task or cron job added, removed, or modified |
+| `user_account` | Local user account created, deleted, or modified |
+
+### Change Actions
+
+| Action | Description |
+|---|---|
+| `added` | A new item was detected (software installed, user created, etc.) |
+| `removed` | An existing item was deleted (software uninstalled, user removed, etc.) |
+| `modified` | An existing item's properties changed (service startup type, scheduled task trigger, etc.) |
+| `updated` | A version update was applied (software upgraded, definition file refreshed, etc.) |
+
+### Change Record Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | UUID | Unique identifier for the change record |
+| `deviceId` | UUID | Device where the change was detected |
+| `orgId` | UUID | Organization the device belongs to |
+| `fingerprint` | string (64 chars) | SHA-256 hash for deduplication |
+| `timestamp` | datetime | When the change occurred on the device |
+| `changeType` | enum | One of the six change types above |
+| `changeAction` | enum | One of the four change actions above |
+| `subject` | string (max 500) | Human-readable description of what changed (e.g., "Google Chrome 122.0.6261.69") |
+| `beforeValue` | JSON | State before the change (null for `added` actions) |
+| `afterValue` | JSON | State after the change (null for `removed` actions) |
+| `details` | JSON | Additional context (installer path, registry key, etc.) |
+| `createdAt` | datetime | When the record was stored in the database |
+
+---
+
+## How Changes Are Collected
+
+<Steps>
+
+1. **Agent detects a change.** The agent periodically snapshots system state (installed software, services, startup items, etc.) and compares against the previous snapshot. Differences are formatted as change records.
+
+2. **Agent ships changes in a batch.** Changes are serialized as JSON, gzip-compressed, and sent to the API via `PUT /api/v1/agents/:id/changes`. Up to 1,000 changes per request, with a 5 MB compressed body limit and 10 MB decompressed limit.
+
+3. **API deduplicates and stores.** Each change is fingerprinted by hashing the combination of timestamp, change type, action, subject, before/after values, and details. A unique constraint on `(deviceId, fingerprint)` prevents the same change from being inserted twice. Changes are inserted in batches of 200.
+
+4. **Partial success handling.** If some changes in a batch fail to insert (e.g., database error on a subset), the API returns HTTP 207 with a `partial: true` flag, the count of successfully inserted records, and the total submitted.
+
+</Steps>
+
+<Aside type="tip">
+  The gzip compression typically reduces payload size by 80-90%, making it practical for agents to ship hundreds of changes per batch even over constrained connections.
+</Aside>
+
+---
+
+## Querying Changes
+
+The changes API supports filtering by device, time range, change type, and action, with cursor-based pagination for efficient iteration through large result sets.
+
+### Basic Query
+
+```bash
+curl "/api/v1/changes?deviceId=DEVICE_UUID&changeType=software&limit=50" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Available Filters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `deviceId` | UUID | Filter to a single device |
+| `startTime` | ISO 8601 datetime | Only changes at or after this time |
+| `endTime` | ISO 8601 datetime | Only changes at or before this time |
+| `changeType` | enum | One of: `software`, `service`, `startup`, `network`, `scheduled_task`, `user_account` |
+| `changeAction` | enum | One of: `added`, `removed`, `modified`, `updated` |
+| `limit` | integer | Results per page (1 -- 500, default 100) |
+| `cursor` | string | Opaque cursor for the next page |
+
+### Response Format
+
+```json
+{
+  "changes": [
+    {
+      "id": "uuid",
+      "deviceId": "uuid",
+      "hostname": "DESKTOP-ABC123",
+      "timestamp": "2026-02-15T14:30:00.000Z",
+      "changeType": "software",
+      "changeAction": "added",
+      "subject": "Visual Studio Code 1.96.2",
+      "beforeValue": null,
+      "afterValue": {
+        "version": "1.96.2",
+        "vendor": "Microsoft Corporation",
+        "installLocation": "C:\\Program Files\\Microsoft VS Code"
+      },
+      "details": null
+    }
+  ],
+  "total": 1847,
+  "showing": 50,
+  "hasMore": true,
+  "nextCursor": "eyJ0aW1lc3RhbXAiOiIyMDI2..."
+}
+```
+
+### Cursor-Based Pagination
+
+The API uses cursor-based pagination for stable results when new changes arrive during iteration. The `nextCursor` field is a base64url-encoded JSON object containing the timestamp and ID of the last returned record. Pass it as the `cursor` query parameter to get the next page.
+
+```bash
+# First page
+curl "/api/v1/changes?deviceId=DEVICE_UUID&limit=100" \
+  -H "Authorization: Bearer $TOKEN"
+
+# Next page (using nextCursor from the previous response)
+curl "/api/v1/changes?deviceId=DEVICE_UUID&limit=100&cursor=eyJ0aW1lc3RhbXAi..." \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## Agent Ingest Endpoint
+
+The agent pushes changes directly to the API using bearer token authentication.
+
+```bash
+PUT /api/v1/agents/:agentId/changes
+Content-Type: application/json
+Content-Encoding: gzip
+Authorization: Bearer AGENT_TOKEN
+
+{
+  "changes": [
+    {
+      "timestamp": "2026-02-15T14:30:00.000Z",
+      "changeType": "software",
+      "changeAction": "added",
+      "subject": "Visual Studio Code 1.96.2",
+      "afterValue": {
+        "version": "1.96.2",
+        "vendor": "Microsoft Corporation"
+      }
+    }
+  ]
+}
+```
+
+### Ingest Response Codes
+
+| Status | Meaning |
+|---|---|
+| `200` | All changes accepted (or empty batch) |
+| `207` | Partial success -- some changes inserted, some failed |
+| `400` | Invalid request body or decompression failure |
+| `404` | Agent/device not found |
+| `413` | Request body exceeds 5 MB compressed or 10 MB decompressed |
+| `500` | All changes failed to insert |
+
+---
+
+## Fingerprint Deduplication
+
+Every change is assigned a SHA-256 fingerprint computed from a stable concatenation of:
+
+1. Canonical ISO 8601 timestamp
+2. Change type
+3. Change action
+4. Subject
+5. Stable-sorted JSON of `beforeValue`
+6. Stable-sorted JSON of `afterValue`
+7. Stable-sorted JSON of `details`
+
+This fingerprint is stored in a `VARCHAR(64)` column with a unique index on `(deviceId, fingerprint)`. When the agent ships the same change twice (e.g., after a retry), the database `ON CONFLICT DO NOTHING` clause silently skips the duplicate.
+
+Within a single request, the API also deduplicates by fingerprint before attempting insertion, so batch payloads with repeated entries are handled efficiently.
+
+---
+
+## API Reference
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/changes` | List changes with filters and cursor pagination |
+| `PUT` | `/api/v1/agents/:id/changes` | Agent ingest endpoint for shipping change batches |
+
+---
+
+## Troubleshooting
+
+**Changes not appearing for a device**
+Verify the agent is enrolled and the device exists in the platform. The ingest endpoint looks up the device by `agentId`, not by device UUID. If the agent is not enrolled, the endpoint returns 404.
+
+**Duplicate changes appearing**
+This should not happen due to fingerprint deduplication. If you see exact duplicates, check whether the agent is sending changes with different timestamps for the same event (e.g., using local time vs. UTC). The fingerprint includes the timestamp, so a one-second difference produces a different hash.
+
+**Large change volumes after a software deployment**
+This is expected. Mass deployments (e.g., pushing a new application to 500 devices) will generate 500 `software:added` change records. Use the `changeType` and `changeAction` filters to focus on specific categories, and cursor pagination to iterate efficiently.
+
+**207 partial success responses**
+A 207 means some changes in the batch were inserted and some failed. This can happen if the database has transient issues. The agent should not retry the entire batch because the successfully inserted changes would be deduplicated anyway. Check server logs for the underlying database error.
+
+**Request body too large (413)**
+The ingest endpoint limits compressed payloads to 5 MB and decompressed payloads to 10 MB. If agents are hitting this limit, reduce the batch size or increase the shipping frequency. These limits can be tuned with the `CHANGE_INGEST_MAX_BODY_BYTES` and `CHANGE_INGEST_MAX_DECOMPRESSED_BYTES` environment variables.

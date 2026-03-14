@@ -25,6 +25,7 @@ import { normalizeMac, buildApprovalDecision } from '../services/assetApproval';
 import { getRedisConnection } from '../services/redis';
 import { sendCommandToAgent, isAgentConnected, type AgentCommand } from '../routes/agentWs';
 import { isCronDue } from '../services/automationRuntime';
+import { lookupMacVendor, inferAssetTypeFromVendor } from '../services/macVendorLookup';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -476,8 +477,53 @@ async function processResults(data: ProcessResultsJobData): Promise<{
     : [];
   const existingByIp = new Map(existingAssets.map(a => [a.ipAddress, a]));
 
+  // ── Resolve or auto-create baseline for change event tracking ────────
+  let resolvedBaselineId: string | null = null;
+  try {
+    const [existing] = await db
+      .select({ id: networkBaselines.id })
+      .from(networkBaselines)
+      .where(and(eq(networkBaselines.orgId, data.orgId), eq(networkBaselines.siteId, data.siteId)))
+      .limit(1);
+
+    if (existing) {
+      resolvedBaselineId = existing.id;
+    } else if (profileId && data.hosts.length > 0) {
+      // Derive subnet from the first host's IP (assume /24)
+      const firstIp = data.hosts[0]!.ip;
+      const parts = firstIp.split('.');
+      const subnet = parts.length === 4 ? `${parts[0]}.${parts[1]}.${parts[2]}.0/24` : '0.0.0.0/0';
+
+      const [created] = await db
+        .insert(networkBaselines)
+        .values({
+          orgId: data.orgId,
+          siteId: data.siteId,
+          subnet,
+        })
+        .onConflictDoNothing()
+        .returning({ id: networkBaselines.id });
+
+      if (created) {
+        resolvedBaselineId = created.id;
+        console.log(`[DiscoveryWorker] Auto-created baseline ${resolvedBaselineId} for org=${data.orgId} site=${data.siteId} subnet=${subnet}`);
+      } else {
+        // Race: another process created it — re-fetch
+        const [refetched] = await db
+          .select({ id: networkBaselines.id })
+          .from(networkBaselines)
+          .where(and(eq(networkBaselines.orgId, data.orgId), eq(networkBaselines.siteId, data.siteId)))
+          .limit(1);
+        resolvedBaselineId = refetched?.id ?? null;
+      }
+    }
+  } catch (baselineErr) {
+    console.error('[DiscoveryWorker] Failed to resolve/create baseline — network change events for this scan will be dropped:', baselineErr instanceof Error ? baselineErr.message : baselineErr);
+  }
+
   let newCount = 0;
   let updatedCount = 0;
+  let changeEventsCreated = 0;
 
   for (const host of data.hosts) {
     if (!host.ip) continue;
@@ -494,13 +540,25 @@ async function processResults(data: ProcessResultsJobData): Promise<{
       )
       .limit(1);
 
+    // Use agent-provided manufacturer (SNMP); fall back to OUI lookup
+    let resolvedManufacturer = host.manufacturer ?? null;
+    if (!resolvedManufacturer && host.mac) {
+      resolvedManufacturer = lookupMacVendor(host.mac);
+    }
+
+    // Infer asset type from vendor when agent classification returned unknown
+    let resolvedAssetType = mapAssetType(host.assetType);
+    if (resolvedAssetType === 'unknown' && resolvedManufacturer) {
+      resolvedAssetType = inferAssetTypeFromVendor(resolvedManufacturer) ?? 'unknown';
+    }
+
     const assetData = {
       ipAddress: host.ip,
       macAddress: host.mac ?? null,
       hostname: host.hostname ?? null,
       netbiosName: host.netbiosName ?? null,
-      assetType: mapAssetType(host.assetType),
-      manufacturer: host.manufacturer ?? null,
+      assetType: resolvedAssetType,
+      manufacturer: resolvedManufacturer,
       model: host.model ?? null,
       openPorts: host.openPorts ?? null,
       osFingerprint: host.osFingerprint ? { os: host.osFingerprint } : null,
@@ -560,6 +618,21 @@ async function processResults(data: ProcessResultsJobData): Promise<{
               .update(discoveredAssets)
               .set({ linkedDeviceId: match.deviceId, approvalStatus: 'approved' })
               .where(eq(discoveredAssets.id, upsertedAssetId));
+
+            // Propagate asset type to linked device (discovery > auto, but not > manual)
+            if (assetData.assetType && assetData.assetType !== 'unknown') {
+              const [target] = await db
+                .select({ deviceRoleSource: devices.deviceRoleSource })
+                .from(devices)
+                .where(eq(devices.id, match.deviceId))
+                .limit(1);
+
+              if (target && target.deviceRoleSource !== 'manual') {
+                await db.update(devices)
+                  .set({ deviceRole: assetData.assetType, deviceRoleSource: 'discovery', updatedAt: new Date() })
+                  .where(eq(devices.id, match.deviceId));
+              }
+            }
           }
         }
       } catch (linkErr) {
@@ -589,12 +662,12 @@ async function processResults(data: ProcessResultsJobData): Promise<{
     }
 
     // Log change event if needed
-    if (decision.shouldAlert && decision.eventType && profileId) {
+    if (decision.shouldAlert && decision.eventType && profileId && resolvedBaselineId) {
       try {
         await db.insert(networkChangeEvents).values({
           orgId: data.orgId,
           siteId: data.siteId,
-          baselineId: sql`(SELECT id FROM network_baselines WHERE org_id = ${data.orgId} AND site_id = ${data.siteId} LIMIT 1)`,
+          baselineId: resolvedBaselineId,
           profileId: profileId,
           eventType: decision.eventType,
           ipAddress: host.ip,
@@ -606,12 +679,73 @@ async function processResults(data: ProcessResultsJobData): Promise<{
             : null,
           currentState: { macAddress: host.mac, hostname: host.hostname, assetType: host.assetType }
         });
+        changeEventsCreated++;
       } catch (changeErr) {
         console.warn(
           `[DiscoveryWorker] Failed to log change event for ${host.ip}:`,
           changeErr instanceof Error ? changeErr.message : changeErr
         );
       }
+    }
+  }
+
+  // ── Bootstrap change events when alerts are first enabled ────────────
+  // If alerts are enabled with alertOnNew, zero change events were created
+  // during this scan, and no events have EVER been created for this profile,
+  // generate new_device events for all hosts in this scan. This handles the
+  // case where alerts are enabled after assets already exist.
+  if (
+    alertSettings.enabled &&
+    alertSettings.alertOnNew &&
+    changeEventsCreated === 0 &&
+    profileId &&
+    resolvedBaselineId &&
+    data.hosts.length > 0
+  ) {
+    try {
+      const [anyExistingEvent] = await db
+        .select({ id: networkChangeEvents.id })
+        .from(networkChangeEvents)
+        .where(eq(networkChangeEvents.profileId, profileId))
+        .limit(1);
+
+      if (!anyExistingEvent) {
+        let bootstrapped = 0;
+        for (const host of data.hosts) {
+          if (!host.ip) continue;
+          try {
+            await db.insert(networkChangeEvents).values({
+              orgId: data.orgId,
+              siteId: data.siteId,
+              baselineId: resolvedBaselineId,
+              profileId,
+              eventType: 'new_device',
+              ipAddress: host.ip,
+              macAddress: host.mac ?? null,
+              hostname: host.hostname ?? null,
+              assetType: mapAssetType(host.assetType),
+              previousState: null,
+              currentState: { macAddress: host.mac, hostname: host.hostname, assetType: host.assetType }
+            });
+            bootstrapped++;
+          } catch (bootstrapErr) {
+            console.warn(
+              `[DiscoveryWorker] Failed to bootstrap change event for ${host.ip}:`,
+              bootstrapErr instanceof Error ? bootstrapErr.message : bootstrapErr
+            );
+          }
+        }
+        if (bootstrapped > 0) {
+          console.log(
+            `[DiscoveryWorker] Bootstrapped ${bootstrapped} new_device change event(s) for profile ${profileId} (first alert-enabled scan)`
+          );
+        }
+      }
+    } catch (bootstrapQueryErr) {
+      console.warn(
+        '[DiscoveryWorker] Failed to check for existing change events during bootstrap:',
+        bootstrapQueryErr instanceof Error ? bootstrapQueryErr.message : bootstrapQueryErr
+      );
     }
   }
 
@@ -625,12 +759,12 @@ async function processResults(data: ProcessResultsJobData): Promise<{
           .where(eq(discoveredAssets.id, asset.id));
 
         // Log disappeared event if configured
-        if (alertSettings.enabled && alertSettings.alertOnDisappeared && profileId) {
+        if (alertSettings.enabled && alertSettings.alertOnDisappeared && profileId && resolvedBaselineId) {
           try {
             await db.insert(networkChangeEvents).values({
               orgId: data.orgId,
               siteId: data.siteId,
-              baselineId: sql`(SELECT id FROM network_baselines WHERE org_id = ${data.orgId} AND site_id = ${data.siteId} LIMIT 1)`,
+              baselineId: resolvedBaselineId,
               profileId,
               eventType: 'device_disappeared',
               ipAddress: asset.ipAddress,
@@ -968,6 +1102,24 @@ export async function initializeDiscoveryWorker(): Promise<void> {
 
     discoveryWorkerInstance.on('failed', (job, error) => {
       console.error(`[DiscoveryWorker] Job ${job?.id} failed:`, error);
+
+      // Update the discoveryJobs row so the UI doesn't show "running" forever
+      if (job?.data?.type === 'process-results') {
+        const jobId = (job.data as ProcessResultsJobData).jobId;
+        runWithSystemDbAccess(async () => {
+          await db
+            .update(discoveryJobs)
+            .set({
+              status: 'failed',
+              completedAt: new Date(),
+              errors: { message: error?.message ?? 'Unknown worker error' },
+              updatedAt: new Date()
+            })
+            .where(eq(discoveryJobs.id, jobId));
+        }).catch((dbErr) => {
+          console.error(`[DiscoveryWorker] Failed to mark job ${jobId} as failed in DB:`, dbErr);
+        });
+      }
     });
 
     discoveryWorkerInstance.on('completed', (job, result) => {

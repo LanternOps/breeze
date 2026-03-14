@@ -291,7 +291,7 @@ patchRoutes.get(
       conditions.push(eq(patches.severity, query.severity));
     }
     if (query.os) {
-      conditions.push(sql`${query.os} = ANY(${patches.osTypes})`);
+      conditions.push(sql`${sql.param(query.os)} = ANY(${patches.osTypes})`);
     }
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
@@ -811,7 +811,7 @@ patchRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const reportId = c.req.param('id');
+    const reportId = c.req.param('id')!;
 
     const [report] = await db
       .select({
@@ -868,7 +868,7 @@ patchRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const reportId = c.req.param('id');
+    const reportId = c.req.param('id')!;
 
     const [report] = await db
       .select({

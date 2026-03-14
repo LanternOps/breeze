@@ -2,14 +2,11 @@ import { useState, useEffect, useCallback } from 'react';
 import { ChevronDown, ChevronUp, X, Filter, BookmarkIcon } from 'lucide-react';
 import type { FilterConditionGroup, SavedFilter } from '@breeze/shared';
 import { FilterBuilder, DEFAULT_FILTER_FIELDS } from './FilterBuilder';
-import { FilterPreview } from './FilterPreview';
-import { useFilterPreview } from '../../hooks/useFilterPreview';
 import { fetchWithAuth } from '../../stores/auth';
 
 interface DeviceFilterBarProps {
   value: FilterConditionGroup | null;
   onChange: (value: FilterConditionGroup | null) => void;
-  showPreview?: boolean;
   showSavedFilters?: boolean;
   collapsible?: boolean;
   defaultExpanded?: boolean;
@@ -38,7 +35,6 @@ function countConditions(group: FilterConditionGroup): number {
 export function DeviceFilterBar({
   value,
   onChange,
-  showPreview = true,
   showSavedFilters = true,
   collapsible = true,
   defaultExpanded = false,
@@ -50,10 +46,6 @@ export function DeviceFilterBar({
   const [selectedFilterId, setSelectedFilterId] = useState<string>('');
 
   const conditionCount = value ? countConditions(value) : 0;
-  const { preview, loading: previewLoading, error: previewError, refresh } = useFilterPreview(
-    value,
-    { enabled: showPreview && expanded }
-  );
 
   const fetchSavedFilters = useCallback(async () => {
     if (!showSavedFilters) return;
@@ -166,15 +158,6 @@ export function DeviceFilterBar({
             filterFields={DEFAULT_FILTER_FIELDS}
             showPreview={false}
           />
-
-          {showPreview && (
-            <FilterPreview
-              preview={preview}
-              loading={previewLoading}
-              error={previewError}
-              onRefresh={refresh}
-            />
-          )}
         </div>
       )}
     </div>

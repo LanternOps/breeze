@@ -19,6 +19,7 @@ import { deploymentStatusEnum } from './deployments';
 
 export const softwareCatalog = pgTable('software_catalog', {
   id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
   name: varchar('name', { length: 200 }).notNull(),
   vendor: varchar('vendor', { length: 200 }),
   description: text('description'),
@@ -28,6 +29,7 @@ export const softwareCatalog = pgTable('software_catalog', {
   isManaged: boolean('is_managed').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
+  orgIdx: index('software_catalog_org_id_idx').on(table.orgId),
   nameIdx: index('software_catalog_name_idx').on(table.name),
   vendorIdx: index('software_catalog_vendor_idx').on(table.vendor),
   categoryIdx: index('software_catalog_category_idx').on(table.category)
@@ -40,6 +42,9 @@ export const softwareVersions = pgTable('software_versions', {
   releaseDate: timestamp('release_date'),
   releaseNotes: text('release_notes'),
   downloadUrl: text('download_url'),
+  s3Key: text('s3_key'),
+  fileType: varchar('file_type', { length: 20 }),
+  originalFileName: varchar('original_file_name', { length: 500 }),
   checksum: varchar('checksum', { length: 128 }),
   fileSize: bigint('file_size', { mode: 'bigint' }),
   supportedOs: jsonb('supported_os'),

@@ -8,6 +8,7 @@ import {
   pgEnum,
   integer,
   boolean,
+  real,
   index,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
@@ -35,6 +36,10 @@ export const configFeatureTypeEnum = pgEnum('config_feature_type', [
   'automation',
   'event_log',
   'software_policy',
+  'sensitive_data',
+  'peripheral_control',
+  'warranty',
+  'helper',
 ]);
 
 export const configAssignmentLevelEnum = pgEnum('config_assignment_level', [
@@ -79,6 +84,8 @@ export const configPolicyAssignments = pgTable('config_policy_assignments', {
   level: configAssignmentLevelEnum('level').notNull(),
   targetId: uuid('target_id').notNull(),
   priority: integer('priority').notNull().default(0),
+  roleFilter: varchar('role_filter', { length: 30 }).array(),
+  osFilter: varchar('os_filter', { length: 10 }).array(),
   assignedBy: uuid('assigned_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
@@ -197,3 +204,69 @@ export const configPolicyEventLogSettings = pgTable('config_policy_event_log_set
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
+
+// Single-item: one row per feature link (sensitive data scan settings)
+export const configPolicySensitiveDataSettings = pgTable('config_policy_sensitive_data_settings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  featureLinkId: uuid('feature_link_id').notNull().unique().references(() => configPolicyFeatureLinks.id, { onDelete: 'cascade' }),
+  detectionClasses: text('detection_classes').array().notNull().default(['credential']),
+  includePaths: text('include_paths').array().notNull().default([]),
+  excludePaths: text('exclude_paths').array().notNull().default([]),
+  fileTypes: text('file_types').array().notNull().default([]),
+  maxFileSizeBytes: integer('max_file_size_bytes').notNull().default(104857600),
+  workers: integer('workers').notNull().default(4),
+  timeoutSeconds: integer('timeout_seconds').notNull().default(300),
+  suppressPatternIds: text('suppress_pattern_ids').array().notNull().default([]),
+  scheduleType: varchar('schedule_type', { length: 20 }).notNull().default('manual'),
+  intervalMinutes: integer('interval_minutes'),
+  cron: varchar('cron', { length: 120 }),
+  timezone: varchar('timezone', { length: 64 }).notNull().default('UTC'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// ============================================
+// Monitoring (Service & Process) Per-Feature Tables
+// ============================================
+
+export const monitoringWatchTypeEnum = pgEnum('monitoring_watch_type', ['service', 'process']);
+
+// Single-item: one row per feature link (monitoring settings)
+export const configPolicyMonitoringSettings = pgTable('config_policy_monitoring_settings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  featureLinkId: uuid('feature_link_id').notNull().unique().references(() => configPolicyFeatureLinks.id, { onDelete: 'cascade' }),
+  checkIntervalSeconds: integer('check_interval_seconds').notNull().default(60),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Multi-item: one row per watch within a monitoring settings row
+export const configPolicyMonitoringWatches = pgTable('config_policy_monitoring_watches', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  settingsId: uuid('settings_id').notNull().references(() => configPolicyMonitoringSettings.id, { onDelete: 'cascade' }),
+  watchType: monitoringWatchTypeEnum('watch_type').notNull(),
+  name: varchar('name', { length: 255 }).notNull(),
+  displayName: varchar('display_name', { length: 255 }),
+  enabled: boolean('enabled').notNull().default(true),
+
+  // Alert thresholds
+  alertOnStop: boolean('alert_on_stop').notNull().default(true),
+  alertAfterConsecutiveFailures: integer('alert_after_consecutive_failures').notNull().default(2),
+  alertSeverity: alertSeverityEnum('alert_severity').notNull().default('high'),
+
+  // Process-specific thresholds
+  cpuThresholdPercent: real('cpu_threshold_percent'),
+  memoryThresholdMb: real('memory_threshold_mb'),
+  thresholdDurationSeconds: integer('threshold_duration_seconds').notNull().default(300),
+
+  // Auto-remediation
+  autoRestart: boolean('auto_restart').notNull().default(false),
+  maxRestartAttempts: integer('max_restart_attempts').notNull().default(3),
+  restartCooldownSeconds: integer('restart_cooldown_seconds').notNull().default(300),
+
+  sortOrder: integer('sort_order').notNull().default(0),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  settingsIdIdx: index('cpmon_watches_settings_id_idx').on(table.settingsId),
+}));

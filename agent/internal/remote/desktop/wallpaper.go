@@ -75,7 +75,7 @@ func (m *WallpaperManager) Suppress() error {
 	m.savedState = state
 
 	if err := m.writeRecoveryFile(state); err != nil {
-		slog.Warn("Failed to write wallpaper recovery file", "error", err)
+		slog.Warn("Failed to write wallpaper recovery file", "error", err.Error())
 		// Continue — suppression still works, just no crash recovery
 	}
 
@@ -133,7 +133,7 @@ func (m *WallpaperManager) recoverIfNeeded() {
 
 	var state WallpaperState
 	if err := json.Unmarshal(data, &state); err != nil {
-		slog.Warn("Invalid wallpaper recovery file, removing", "error", err)
+		slog.Warn("Invalid wallpaper recovery file, removing", "error", err.Error())
 		_ = os.Remove(m.recoveryPath)
 		return
 	}
@@ -145,7 +145,7 @@ func (m *WallpaperManager) recoverIfNeeded() {
 
 	slog.Info("Recovering wallpaper from previous crash", "path", state.WallpaperPath)
 	if err := m.backend.Restore(&state); err != nil {
-		slog.Warn("Failed to recover wallpaper", "error", err)
+		slog.Warn("Failed to recover wallpaper", "error", err.Error())
 	}
 	_ = os.Remove(m.recoveryPath)
 }

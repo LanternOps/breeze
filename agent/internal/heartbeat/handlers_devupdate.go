@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/updater"
 )
@@ -51,12 +52,15 @@ func handleDevUpdate(h *Heartbeat, cmd Command) tools.CommandResult {
 		return tools.NewErrorResult(fmt.Errorf("failed to resolve symlinks: %w", err), time.Since(start).Milliseconds())
 	}
 
-	backupPath := binaryPath + ".backup"
-	authToken := h.authTokenPlaintext()
+	backupDir := config.GetDataDir()
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		return tools.NewErrorResult(fmt.Errorf("failed to create backup directory %s: %w", backupDir, err), time.Since(start).Milliseconds())
+	}
+	backupPath := filepath.Join(backupDir, "breeze-agent.backup")
 
 	updaterCfg := &updater.Config{
 		ServerURL:      h.config.ServerURL,
-		AuthToken:      authToken,
+		AuthToken:      h.secureToken,
 		CurrentVersion: h.agentVersion,
 		BinaryPath:     binaryPath,
 		BackupPath:     backupPath,

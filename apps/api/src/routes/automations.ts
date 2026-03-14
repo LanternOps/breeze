@@ -287,7 +287,7 @@ automationRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const runId = c.req.param('runId');
+    const runId = c.req.param('runId')!;
 
     const [run] = await db
       .select()
@@ -334,7 +334,7 @@ automationRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const automationId = c.req.param('id');
+    const automationId = c.req.param('id')!;
 
     if (automationId === 'runs') {
       return c.notFound();
@@ -385,7 +385,7 @@ automationRoutes.get(
   zValidator('query', listRunsSchema),
   async (c) => {
     const auth = c.get('auth');
-    const automationId = c.req.param('id');
+    const automationId = c.req.param('id')!;
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
@@ -450,7 +450,12 @@ automationRoutes.post(
       orgId = auth.orgId;
     } else if (auth.scope === 'partner') {
       if (!orgId) {
-        return c.json({ error: 'orgId is required for partner scope' }, 400);
+        const singleOrg = auth.accessibleOrgIds?.[0];
+        if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
+          orgId = singleOrg;
+        } else {
+          return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
+        }
       }
       const hasAccess = ensureOrgAccess(orgId, auth);
       if (!hasAccess) {
@@ -463,6 +468,11 @@ automationRoutes.post(
     const triggerInput = normalizeIncomingTrigger(data);
     if (triggerInput === undefined) {
       return c.json({ error: 'trigger or triggerType is required' }, 400);
+    }
+
+    // Require a secret for webhook-type automations
+    if (isPlainRecord(triggerInput) && triggerInput.type === 'webhook' && !asNonEmptyString(triggerInput.secret)) {
+      return c.json({ error: 'Webhook automations require a secret' }, 400);
     }
 
     if (data.actions === undefined) {
@@ -524,7 +534,7 @@ automationRoutes.post(
 // DEPRECATED: Automations are now managed via Configuration Policies. These routes remain for legacy compatibility.
 async function handleUpdateAutomation(c: Context) {
   const auth = c.get('auth');
-  const automationId = c.req.param('id');
+  const automationId = c.req.param('id')!;
   const rawPayload = await c.req.json().catch(() => ({}));
   const parsedPayload = updateAutomationSchema.safeParse(rawPayload);
   if (!parsedPayload.success) {
@@ -570,6 +580,11 @@ async function handleUpdateAutomation(c: Context) {
             secret: currentSecret,
           };
         }
+      }
+
+      // Require a secret for webhook-type automations (new or updated)
+      if (nextTrigger.type === 'webhook' && !nextTrigger.secret) {
+        return c.json({ error: 'Webhook automations require a secret' }, 400);
       }
 
       updates.trigger = withWebhookDefaults(
@@ -642,7 +657,7 @@ automationRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const automationId = c.req.param('id');
+    const automationId = c.req.param('id')!;
 
     const automation = await getAutomationWithOrgCheck(automationId, auth);
     if (!automation) {
@@ -740,7 +755,7 @@ automationRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const automationId = c.req.param('id');
+    const automationId = c.req.param('id')!;
     return triggerAutomationRun(c, automationId, `manual:${auth.user.id}`);
   },
 );
@@ -750,7 +765,7 @@ automationRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const automationId = c.req.param('id');
+    const automationId = c.req.param('id')!;
     return triggerAutomationRun(c, automationId, `manual:${auth.user.id}`);
   },
 );
@@ -760,7 +775,7 @@ automationRoutes.post(
 // ============================================
 
 automationWebhookRoutes.post('/:id', async (c) => {
-  const automationId = c.req.param('id');
+  const automationId = c.req.param('id')!;
 
   const [automation] = await db
     .select()

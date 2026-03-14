@@ -36,7 +36,8 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
 
   const deviceQuery = or(
     ilike(devices.hostname, searchTerm),
-    ilike(devices.displayName, searchTerm)
+    ilike(devices.displayName, searchTerm),
+    ilike(devices.lastUser, searchTerm)
   );
   const scriptQuery = or(
     ilike(scripts.name, searchTerm),
@@ -53,7 +54,8 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
         id: devices.id,
         title: devices.displayName,
         hostname: devices.hostname,
-        status: devices.status
+        status: devices.status,
+        lastUser: devices.lastUser
       })
       .from(devices)
       .where(orgConditionFor(devices.orgId) ? and(orgConditionFor(devices.orgId) as never, deviceQuery as never) : deviceQuery)
@@ -84,7 +86,7 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
       id: row.id,
       type: 'devices',
       title: row.title || row.hostname,
-      description: row.status || undefined
+      description: [row.status, row.lastUser].filter(Boolean).join(' · ') || undefined
     })),
     ...scriptRows.map((row) => ({
       id: row.id,

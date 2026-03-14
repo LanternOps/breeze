@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { AlertTriangle, CheckCircle, Monitor, Shield, Loader2 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 export type PatchSeveritySummary = {
   total: number;
@@ -131,7 +132,7 @@ function SeveritySummaryCard({
           <span>{progress}%</span>
         </div>
         <div className="mt-2 h-2 rounded-full bg-muted">
-          <div className={cn('h-2 rounded-full', barClass)} style={{ width: `${progress}%` }} />
+          <div className={cn('h-2 rounded-full', barClass, widthPercentClass(progress))} />
         </div>
       </div>
     </div>
@@ -157,7 +158,7 @@ export default function PatchComplianceDashboard({ ringId }: PatchComplianceDash
       const response = await fetchWithAuth(url);
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to fetch compliance data');

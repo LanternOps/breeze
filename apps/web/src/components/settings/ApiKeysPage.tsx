@@ -3,6 +3,7 @@ import ApiKeyList, { type ApiKey } from './ApiKeyList';
 import ApiKeyForm, { CreatedKeyModal, type ApiKeyFormValues } from './ApiKeyForm';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'create' | 'view' | 'rotate' | 'revoke';
 
@@ -25,7 +26,7 @@ export default function ApiKeysPage() {
       const response = await fetchWithAuth(`/api-keys?page=${page}`);
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to fetch API keys');

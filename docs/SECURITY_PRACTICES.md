@@ -12,6 +12,7 @@ This document describes the security controls, practices, and design decisions i
 - [Authentication](#authentication)
 - [Authorization & Multi-Tenancy](#authorization--multi-tenancy)
 - [Agent Security](#agent-security)
+- [Peripheral Control](#peripheral-control)
 - [Encryption](#encryption)
 - [Rate Limiting & Abuse Prevention](#rate-limiting--abuse-prevention)
 - [Input Validation](#input-validation)
@@ -180,8 +181,37 @@ Mutating commands sent to agents are logged to the audit trail:
 - Registry modifications (`REGISTRY_DELETE`, `REGISTRY_KEY_DELETE`)
 - File operations (`FILE_DELETE`)
 - Patch operations (`PATCH_SCAN`, `INSTALL_PATCHES`, `ROLLBACK_PATCHES`)
+- Audit baseline remediation (`APPLY_AUDIT_POLICY_BASELINE`)
 
 Each audit entry captures: command type, target device, exit code, stderr output, and the actor who initiated the command.
+
+Audit baseline remediation additionally uses explicit approval requests with separation of duties: the requester cannot self-approve, and approvals are single-use with expiration.
+
+---
+
+## Peripheral Control
+
+Breeze includes policy-driven USB/peripheral controls for data-exfiltration resistance and forensic visibility.
+
+### Policy Model
+
+- **Classes**: `storage`, `all_usb`, `bluetooth`, `thunderbolt`
+- **Actions**: `allow`, `block`, `read_only`, `alert`
+- **Scope targets**: organization, site, group, or device
+- **Exceptions**: explicit vendor/product/serial overrides for approved media
+
+### High-Risk Change Protections
+
+- Policy mutations require org write permission and MFA when performed through API routes. AI-initiated mutations are gated by tier-3 approval (human confirmation) instead of MFA.
+- Every policy mutation emits an auditable event (`peripheral.policy_changed`).
+- Emergency rollback is first-class via policy disable endpoint.
+
+### Telemetry & Auditability
+
+- Agents submit peripheral telemetry as structured events (`connected`, `blocked`, etc.).
+- Blocked activity emits correlation events (`peripheral.blocked`).
+- Periodic anomaly detection emits `peripheral.unauthorized_device` when blocked activity crosses threshold. Default: 5+ blocked events per device within a 30-minute lookback window, scanned every 15 minutes. Configurable via `PERIPHERAL_ANOMALY_BLOCKED_THRESHOLD`.
+- All ingestion and policy operations are written to audit logs for immutable review.
 
 ---
 
@@ -325,6 +355,19 @@ Every security-relevant operation is recorded in the `audit_logs` table:
 
 - **Synchronous**: `createAuditLog()` — blocks until written (critical operations)
 - **Asynchronous**: `createAuditLogAsync()` — fire-and-forget (non-critical operations)
+
+### Audit Baseline Controls
+
+Breeze enforces event-log audit-policy baselines with continuous drift detection:
+
+- Baseline definitions are stored per-org and per-OS (`audit_baselines`)
+- Endpoint policy snapshots are ingested as evidence (`audit_policy_states`)
+- Compliance evaluations persist score + deviations (`audit_baseline_results`)
+- Security events are emitted for deviations and remediations:
+  - `compliance.audit_deviation`
+  - `compliance.audit_remediated`
+
+Baseline remediation commands (`apply_audit_policy_baseline`) are treated as privileged operations and must pass RBAC checks (`devices:write`) before execution.
 
 ---
 

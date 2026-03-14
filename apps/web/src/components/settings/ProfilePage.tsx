@@ -5,6 +5,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import ChangePasswordForm from './ChangePasswordForm';
 import MFASettings from './MFASettings';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 const profileSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
@@ -79,7 +80,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         const response = await fetchWithAuth('/users/me');
         if (!response.ok) {
           if (response.status === 401) {
-            window.location.href = '/login';
+            void navigateTo('/login', { replace: true });
             return;
           }
           throw new Error('Failed to fetch user data');

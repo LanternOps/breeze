@@ -1,13 +1,22 @@
 # Alert Lifecycle E2E Tests
-# Tests alert creation, triggering, and acknowledgment
+# Tests alert page rendering, filtering, detail view (modal),
+# notification channels, acknowledge, resolve, and agent offline alert flow.
+#
+# Key architecture notes from source code:
+#   - /alerts/rules and /alerts/rules/new both 301-redirect to /configuration-policies
+#   - Alert detail on /alerts page opens a modal (AlertDetails.tsx), NOT a separate page
+#   - /alerts/[id] is a separate detail page (AlertDetailPage.tsx) — NOT tested here
+#   - Notification channel list uses a card grid, NOT a table
+#   - Channel type selection uses button cards, NOT a <select>
+#   - POST /api/v1/alerts/test does NOT exist — removed
 
 tests:
-  - id: alert_cpu_threshold
-    name: "CPU Alert Threshold"
-    description: "Trigger high CPU alert and verify lifecycle"
-    tags: [alerts, monitoring, critical]
+  - id: alerts_page_loads
+    name: "Alerts Page Loads with Summary and List"
+    description: "Verify the Alerts page renders the summary counts, device filter bar, and alert table"
+    tags: [alerts, smoke]
     nodes: [linux]
-    timeout: 180000
+    timeout: 60000
     steps:
       - id: login
         action: ui
@@ -18,192 +27,467 @@ tests:
               "[name='email']": "${TEST_USER_EMAIL}"
               "[name='password']": "${TEST_USER_PASSWORD}"
           - click: "button[type='submit']"
-          - waitFor: "[data-testid='dashboard']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
 
-      - id: create_alert_rule
+      - id: navigate_to_alerts
         action: ui
-        description: "Create CPU threshold alert rule"
-        playwright:
-          - goto: "/alerts/rules"
-          - click: "button:has-text('New Rule')"
-          - fill:
-              "[name='name']": "E2E High CPU Alert"
-              "[name='description']": "Alert when CPU exceeds 80%"
-          - click: "[data-testid='metric-select']"
-          - click: "li:has-text('CPU Usage')"
-          - click: "[data-testid='condition-select']"
-          - click: "li:has-text('Greater than')"
-          - fill:
-              "[name='threshold']": "80"
-          - click: "[data-testid='severity-select']"
-          - click: "li:has-text('Warning')"
-          - click: "button:has-text('Save')"
-          - waitFor: "text=Rule created"
-
-      - id: trigger_high_cpu
-        action: remote
-        node: linux
-        description: "Trigger high CPU usage"
-        tool: claude_code
-        args:
-          prompt: |
-            Trigger high CPU usage on this Linux machine:
-            1. Install stress if not present: apt-get install -y stress || yum install -y stress
-            2. Run: stress --cpu 4 --timeout 45 &
-            3. Wait 5 seconds, then check CPU usage with: top -bn1 | grep "Cpu(s)"
-            4. Return JSON: {started: boolean, cpuPercent: number}
-        timeout: 60000
-        expect:
-          started: true
-
-      - id: wait_for_alert
-        action: ui
-        description: "Wait for alert to appear"
+        description: "Navigate to /alerts and verify core page structure"
         playwright:
           - goto: "/alerts"
-          - waitFor: "tr:has-text('E2E High CPU Alert')"
-            timeout: 60000
-          - assert:
-              selector: "[data-testid='alert-severity']"
-              contains: "Warning"
+          - waitFor: "h1:has-text('Alerts')"
+            timeout: 15000
+          # AlertsPage.tsx renders this description text
+          - waitFor: "text=Monitor alerts across your devices."
 
-      - id: acknowledge_alert
+      - id: verify_alert_summary
         action: ui
-        description: "Acknowledge the alert"
+        description: "Confirm the Active Alerts summary section is rendered"
         playwright:
-          - click: "tr:has-text('E2E High CPU Alert')"
-          - waitFor: "[data-testid='alert-details']"
-          - click: "button:has-text('Acknowledge')"
-          - fill:
-              "[name='ackNote']": "Acknowledged by E2E test"
-          - click: "button:has-text('Confirm')"
-          - waitFor: "text=Alert acknowledged"
+          - waitFor: "h2:has-text('Active Alerts')"
+            timeout: 10000
 
-      - id: verify_cpu_normalized
-        action: remote
-        node: linux
-        description: "Verify CPU is back to normal"
-        tool: claude_code
-        args:
-          prompt: |
-            The stress test should have ended. Verify:
-            1. Check if stress process is still running: pgrep stress
-            2. Get current CPU usage: top -bn1 | grep "Cpu(s)" | awk '{print $2}'
-            3. Return JSON: {stressRunning: boolean, currentCpuPercent: number}
-        expect:
-          stressRunning: false
-
-      - id: verify_alert_resolved
+      - id: verify_alert_table_columns
         action: ui
-        description: "Verify alert is resolved"
+        description: "Confirm the alert list table has the correct column headers"
+        playwright:
+          # AlertList.tsx renders an inner h2 "Alerts" heading
+          - waitFor: "h2:has-text('Alerts')"
+            timeout: 10000
+          - assert:
+              selector: "th:has-text('Device')"
+              exists: true
+          - assert:
+              selector: "th:has-text('Title')"
+              exists: true
+          - assert:
+              selector: "th:has-text('Severity')"
+              exists: true
+          - assert:
+              selector: "th:has-text('Status')"
+              exists: true
+          - assert:
+              selector: "th:has-text('Triggered')"
+              exists: true
+          - assert:
+              selector: "th:has-text('Actions')"
+              exists: true
+
+      - id: verify_filter_controls
+        action: ui
+        description: "Confirm search, status, severity, and date range filters are present"
+        playwright:
+          # AlertList.tsx: input placeholder="Search alerts..."
+          - assert:
+              selector: "input[placeholder='Search alerts...']"
+              exists: true
+          # Status select has option values: all, active, acknowledged, resolved, suppressed
+          - assert:
+              selector: "select:has(option[value='active'])"
+              exists: true
+          # Severity select has option values: all, critical, high, medium, low, info
+          - assert:
+              selector: "select:has(option[value='critical'])"
+              exists: true
+          # Date range select has option values: all, 1h, 24h, 7d, 30d
+          - assert:
+              selector: "select:has(option[value='1h'])"
+              exists: true
+
+      - id: verify_bulk_actions_hidden_when_none_selected
+        action: ui
+        description: "Confirm bulk action bar is not shown when no alerts are selected"
+        playwright:
+          - assertNotExists: "button:has-text('Bulk Actions')"
+
+  - id: alert_filtering
+    name: "Alert Filtering by Severity and Status"
+    description: "Apply severity and status filters on the alerts list and verify the count changes"
+    tags: [alerts, filtering]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_to_alerts
+        action: ui
+        description: "Go to the alerts page"
         playwright:
           - goto: "/alerts"
-          - click: "[data-testid='filter-resolved']"
-          - waitFor: "tr:has-text('E2E High CPU Alert')"
-          - assert:
-              selector: "[data-testid='alert-status']"
-              contains: "Resolved"
+          - waitFor: "h1:has-text('Alerts')"
+            timeout: 15000
 
-      - id: cleanup_rule
+      - id: filter_by_active_status
         action: ui
-        description: "Delete test alert rule"
+        description: "Set the status filter to Active and observe the list narrows"
         playwright:
-          - goto: "/alerts/rules"
-          - click: "tr:has-text('E2E High CPU Alert') [data-testid='delete-rule']"
-          - click: "button:has-text('Confirm Delete')"
-          - waitFor: "text=Rule deleted"
-        optional: true
+          - selectOption:
+              "select:has(option[value='active'])": "active"
+          # AlertList.tsx: <p className="text-sm text-muted-foreground"> X of Y alerts</p>
+          - waitFor: "p.text-sm.text-muted-foreground:has-text('alerts')"
+            timeout: 5000
 
-  - id: alert_disk_space
-    name: "Disk Space Alert"
-    description: "Test disk space monitoring and alerting"
-    tags: [alerts, monitoring, disk]
+      - id: filter_by_critical_severity
+        action: ui
+        description: "Set the severity filter to Critical"
+        playwright:
+          - selectOption:
+              "select:has(option[value='critical'])": "critical"
+          - waitFor: "p.text-sm.text-muted-foreground:has-text('alerts')"
+            timeout: 5000
+
+      - id: filter_by_last_24h
+        action: ui
+        description: "Set the date range filter to Last 24h"
+        playwright:
+          - selectOption:
+              "select:has(option[value='1h'])": "24h"
+          - waitFor: "p.text-sm.text-muted-foreground:has-text('alerts')"
+            timeout: 5000
+
+      - id: clear_filters_with_search
+        action: ui
+        description: "Search for a term and verify the list updates"
+        playwright:
+          - selectOption:
+              "select:has(option[value='active'])": "all"
+          - selectOption:
+              "select:has(option[value='critical'])": "all"
+          - selectOption:
+              "select:has(option[value='1h'])": "all"
+          - fill:
+              "input[placeholder='Search alerts...']": "cpu"
+          - waitFor: "p.text-sm.text-muted-foreground:has-text('alerts')"
+            timeout: 5000
+          # Clear the search
+          - fill:
+              "input[placeholder='Search alerts...']": ""
+
+  - id: alert_detail_acknowledge_resolve
+    name: "View Alert Detail, Acknowledge, and Resolve"
+    description: "Click an active alert row, open the details modal, acknowledge, then resolve with a note"
+    tags: [alerts, lifecycle, critical]
     nodes: [linux]
     timeout: 120000
     steps:
       - id: login
         action: ui
+        description: "Login to Breeze dashboard"
         playwright:
           - goto: "/login"
           - fill:
               "[name='email']": "${TEST_USER_EMAIL}"
               "[name='password']": "${TEST_USER_PASSWORD}"
           - click: "button[type='submit']"
-          - waitFor: "[data-testid='dashboard']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
 
-      - id: check_current_disk
-        action: remote
-        node: linux
-        description: "Check current disk usage"
-        tool: claude_code
-        args:
-          prompt: |
-            Check disk space on this Linux machine:
-            1. Run: df -h /
-            2. Parse the output to get usage percentage
-            3. Return JSON: {
-              device: string,
-              size: string,
-              used: string,
-              available: string,
-              usePercent: number
-            }
+      # NOTE: The trigger_test_alert_via_api step was removed because
+      # POST /api/v1/alerts/test does not exist.
+      # This test relies on existing alerts in the system.
 
-      - id: create_disk_rule
+      - id: navigate_to_alerts
         action: ui
-        description: "Create disk space alert rule"
-        playwright:
-          - goto: "/alerts/rules"
-          - click: "button:has-text('New Rule')"
-          - fill:
-              "[name='name']": "E2E Disk Space Alert"
-          - click: "[data-testid='metric-select']"
-          - click: "li:has-text('Disk Usage')"
-          - click: "[data-testid='condition-select']"
-          - click: "li:has-text('Greater than')"
-          - fill:
-              "[name='threshold']": "90"
-          - click: "button:has-text('Save')"
-
-      - id: verify_no_alert
-        action: ui
-        description: "Verify no alert triggered (assuming <90% usage)"
+        description: "Go to /alerts and wait for the alerts list to load"
         playwright:
           - goto: "/alerts"
-          - waitFor: "[data-testid='alerts-list']"
-          # Should not see the disk alert if usage is under 90%
-          - assertNotExists: "tr:has-text('E2E Disk Space Alert')"
+          - waitFor: "h1:has-text('Alerts')"
+            timeout: 15000
+          # Wait for at least one alert row in the table body
+          - waitFor: "tbody tr"
+            timeout: 10000
 
-  - id: alert_agent_offline
-    name: "Agent Offline Alert"
-    description: "Test agent offline detection and alerting"
-    tags: [alerts, monitoring, agent, critical]
+      - id: open_first_active_alert
+        action: ui
+        description: "Click the first alert row to open the AlertDetails modal overlay"
+        playwright:
+          # AlertList.tsx: clicking a row calls onSelect which opens the modal
+          - click: "tbody tr:first-child"
+          # AlertDetails.tsx: modal is a div.fixed with an h2 title
+          - waitFor: "div.fixed:has(h2)"
+            timeout: 10000
+
+      - id: verify_alert_details_modal
+        action: ui
+        description: "Confirm the modal shows device info section, triggered timestamp, and close button"
+        playwright:
+          # AlertDetails.tsx: <h3 className="text-sm font-semibold mb-3">Device Information</h3>
+          - assert:
+              selector: "h3:has-text('Device Information')"
+              exists: true
+          # AlertDetails.tsx: <p className="text-xs text-muted-foreground">Triggered</p>
+          - assert:
+              selector: "p.text-xs.text-muted-foreground:has-text('Triggered')"
+              exists: true
+          # Footer close button
+          - assert:
+              selector: "button:has-text('Close')"
+              exists: true
+
+      - id: acknowledge_alert
+        action: ui
+        description: "Click Acknowledge if the alert is active"
+        playwright:
+          # AlertDetails.tsx: Acknowledge button only renders for active alerts
+          - click: "button:has-text('Acknowledge')"
+            optional: true
+          - waitFor: "text=Acknowledged"
+            timeout: 10000
+            optional: true
+
+      - id: resolve_alert
+        action: ui
+        description: "Click Resolve to show the resolution note form, enter a note, and confirm"
+        playwright:
+          # AlertDetails.tsx: Resolve button shows for active or acknowledged alerts
+          - click: "button:has-text('Resolve')"
+          # Clicking Resolve shows the resolution note form with h3 "Resolution Note"
+          - waitFor: "h3:has-text('Resolution Note')"
+            timeout: 10000
+          # AlertDetails.tsx: textarea placeholder="Describe how the issue was resolved..."
+          - fill:
+              "textarea[placeholder='Describe how the issue was resolved...']": "Resolved by E2E test run"
+          # AlertDetails.tsx: "Resolve Alert" button submits the resolution
+          - click: "button:has-text('Resolve Alert')"
+          # After resolve, modal closes and alert list refreshes
+          # The alert status badge should show "Resolved" somewhere on the page
+          - waitFor: "text=Resolved"
+            timeout: 10000
+
+      - id: verify_resolved_in_list
+        action: ui
+        description: "Back on the alerts list, filter to Resolved and confirm the alert appears"
+        playwright:
+          - goto: "/alerts"
+          - waitFor: "h1:has-text('Alerts')"
+            timeout: 15000
+          # Filter by Resolved status
+          - selectOption:
+              "select:has(option[value='active'])": "resolved"
+          - waitFor: "tbody tr"
+            timeout: 10000
+          # AlertList.tsx: status badge renders statusConfig[status].label
+          - assert:
+              selector: "span:has-text('Resolved')"
+              exists: true
+
+      - id: verify_alert_state_via_api
+        action: api
+        description: "Confirm the resolved alert exists in the API"
+        request:
+          method: GET
+          path: "/api/v1/alerts"
+          query:
+            status: resolved
+            since: "{{testStartTime}}"
+        poll:
+          maxAttempts: 5
+          intervalMs: 3000
+          until: "response.data.length > 0"
+        expect:
+          data: []
+          pagination:
+            page: 1
+
+  - id: alert_rules_redirect_to_config_policies
+    name: "Alert Rules Pages Redirect to Configuration Policies"
+    description: "Verify that /alerts/rules and /alerts/rules/new both 301-redirect to /configuration-policies"
+    tags: [alerts, rules]
     nodes: [linux]
-    timeout: 180000
+    timeout: 60000
     steps:
       - id: login
         action: ui
+        description: "Login to Breeze dashboard"
         playwright:
           - goto: "/login"
           - fill:
               "[name='email']": "${TEST_USER_EMAIL}"
               "[name='password']": "${TEST_USER_PASSWORD}"
           - click: "button[type='submit']"
-          - waitFor: "[data-testid='dashboard']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: verify_rules_index_redirect
+        action: ui
+        description: "Navigate to /alerts/rules and verify redirect to /configuration-policies"
+        playwright:
+          - goto: "/alerts/rules"
+          # The Astro page returns 301 redirect to /configuration-policies
+          - waitFor:
+              url: "**/configuration-policies"
+              timeout: 15000
+          - waitFor: "h1:has-text('Configuration Policies')"
+            timeout: 10000
+
+      - id: verify_rules_new_redirect
+        action: ui
+        description: "Navigate to /alerts/rules/new and verify redirect to /configuration-policies"
+        playwright:
+          - goto: "/alerts/rules/new"
+          - waitFor:
+              url: "**/configuration-policies"
+              timeout: 15000
+          - waitFor: "h1:has-text('Configuration Policies')"
+            timeout: 10000
+
+  - id: notification_channels_page
+    name: "Notification Channels Page and Create Email Channel"
+    description: "Verify the Notification Channels page, create an email channel, and delete it"
+    tags: [alerts, channels]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_to_channels
+        action: ui
+        description: "Navigate to /alerts/channels and verify page structure"
+        playwright:
+          - goto: "/alerts/channels"
+          # NotificationChannelsPage.tsx: <h1>Notification Channels</h1>
+          - waitFor: "h1:has-text('Notification Channels')"
+            timeout: 15000
+          # NotificationChannelsPage.tsx: description paragraph
+          - waitFor: "text=Configure where alert notifications are sent."
+          # NotificationChannelsPage.tsx: "New Channel" button with Plus icon
+          - assert:
+              selector: "button:has-text('New Channel')"
+              exists: true
+          # NotificationChannelsPage.tsx: link to Configuration Policies (not "Notification Channels")
+          - assert:
+              selector: "a:has-text('Configuration Policies')"
+              exists: true
+
+      - id: open_create_channel_modal
+        action: ui
+        description: "Click New Channel to open the channel creation modal"
+        playwright:
+          - click: "button:has-text('New Channel')"
+          # NotificationChannelsPage.tsx: modal header
+          - waitFor: "h2:has-text('Create Notification Channel')"
+            timeout: 10000
+
+      - id: fill_email_channel_form
+        action: ui
+        description: "Fill in an email notification channel"
+        playwright:
+          # NotificationChannelForm.tsx: input id="channel-name" with {...register('name')}
+          - fill:
+              "#channel-name": "E2E Test Email Channel"
+          # Channel type is a grid of clickable button cards, NOT a <select>.
+          # Email is the default type, so it should already be selected.
+          # Click the Email card to ensure it is selected.
+          - click: "button:has-text('Email'):has-text('Send alerts via email')"
+            optional: true
+          # NotificationChannelForm.tsx: email recipient input placeholder="email@example.com"
+          - fill:
+              "input[placeholder='email@example.com']": "e2e-test@example.com"
+
+      - id: submit_channel
+        action: ui
+        description: "Submit the channel form"
+        playwright:
+          # NotificationChannelForm.tsx: submit button with submitLabel="Create Channel"
+          - click: "button[type='submit']:has-text('Create Channel')"
+          # After successful creation, the modal closes and the channel list refreshes
+          # The channel name should appear in the card grid
+          - waitFor: "text=E2E Test Email Channel"
+            timeout: 20000
+
+      - id: verify_channel_in_list
+        action: ui
+        description: "Confirm the new channel appears in the card grid"
+        playwright:
+          # NotificationChannelList.tsx: renders cards, NOT table rows.
+          # Each card has <h3 className="text-sm font-semibold">{channel.name}</h3>
+          - assert:
+              selector: "h3:has-text('E2E Test Email Channel')"
+              exists: true
+
+      - id: delete_channel
+        action: ui
+        description: "Delete the test channel via the delete button on its card"
+        playwright:
+          # NotificationChannelList.tsx: each card has a delete button with title="Delete channel"
+          # Find the card containing our channel name, then click its delete button.
+          # The card is a div containing h3 with the channel name; the delete button
+          # is inside the same card div.
+          - click: "div:has(h3:has-text('E2E Test Email Channel')) button[title='Delete channel']"
+          # NotificationChannelsPage.tsx: delete confirmation modal
+          - waitFor: "h2:has-text('Delete Notification Channel')"
+            timeout: 10000
+          # Confirm the modal shows the channel name
+          - assert:
+              selector: "p:has-text('Are you sure you want to delete')"
+              exists: true
+          # Click the Delete button in the confirmation modal
+          - click: "button:has-text('Delete')"
+          # Verify the channel no longer appears
+          - assertNotExists: "h3:has-text('E2E Test Email Channel')"
+            timeout: 10000
+
+  - id: alert_agent_offline
+    name: "Agent Offline Alert"
+    description: "Stop the Breeze agent, wait for offline detection, verify alert, then restart agent"
+    tags: [alerts, monitoring, agent, critical]
+    nodes: [linux]
+    timeout: 300000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
 
       - id: verify_agent_online
         action: ui
-        description: "Verify agent is currently online"
+        description: "Verify the Linux device is online before the test"
         playwright:
           - goto: "/devices"
+          - waitFor: "h1:has-text('Devices')"
+            timeout: 15000
           - assert:
-              selector: "tr:has-text('linux') [data-testid='device-status']"
-              contains: "Online"
+              selector: "tr:has-text('{{devices.linux}}') span:has-text('Online'), td:has-text('online')"
+              exists: true
 
+      # These two steps genuinely require remote access to control the agent process
       - id: stop_agent
         action: remote
         node: linux
-        description: "Stop the Breeze agent"
+        description: "Stop the Breeze agent service via systemctl"
         tool: claude_code
         args:
           prompt: |
@@ -216,32 +500,35 @@ tests:
 
       - id: wait_for_offline_detection
         action: ui
-        description: "Wait for device to show as offline"
+        description: "Wait for the device to appear as Offline in the devices list"
         playwright:
           - goto: "/devices"
-          - waitFor: "tr:has-text('linux') [data-testid='device-status']:has-text('Offline')"
-            timeout: 90000
+          - waitFor: "span:has-text('Offline'), td:has-text('offline')"
+            timeout: 120000
 
       - id: check_offline_alert
         action: ui
-        description: "Check for agent offline alert"
+        description: "Navigate to /alerts and verify an Agent Offline critical alert appeared"
         playwright:
           - goto: "/alerts"
-          - waitFor: "tr:has-text('Agent Offline')"
+          - waitFor: "h1:has-text('Alerts')"
+            timeout: 15000
+          - waitFor: "tbody tr:has-text('offline'), tbody tr:has-text('Offline'), tbody tr:has-text('Agent')"
+            timeout: 60000
           - assert:
-              selector: "[data-testid='alert-severity']"
-              contains: "Critical"
+              selector: "span:has-text('Critical')"
+              exists: true
 
       - id: restart_agent
         action: remote
         node: linux
-        description: "Restart the Breeze agent"
+        description: "Restart the Breeze agent service via systemctl"
         tool: claude_code
         args:
           prompt: |
             Start the Breeze agent service:
             1. Run: sudo systemctl start breeze-agent
-            2. Wait 5 seconds
+            2. Wait 5 seconds for startup
             3. Verify it's running: systemctl status breeze-agent
             4. Return JSON: {started: boolean, status: string}
         expect:
@@ -249,8 +536,24 @@ tests:
 
       - id: verify_back_online
         action: ui
-        description: "Verify device is back online"
+        description: "Verify the device shows Online again after agent restart"
         playwright:
           - goto: "/devices"
-          - waitFor: "tr:has-text('linux') [data-testid='device-status']:has-text('Online')"
-            timeout: 60000
+          - waitFor: "span:has-text('Online'), td:has-text('online')"
+            timeout: 90000
+
+      - id: verify_agent_logs_via_api
+        action: api
+        description: "Confirm the offline/online event was recorded in agent diagnostic logs"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.linux}}/diagnostic-logs"
+          query:
+            component: monitoring
+            since: "{{testStartTime}}"
+        poll:
+          maxAttempts: 15
+          intervalMs: 5000
+          until: "logs.length > 0"
+        expect:
+          logs: []

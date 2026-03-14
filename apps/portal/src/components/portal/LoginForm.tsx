@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { Loader2, AlertCircle } from 'lucide-react';
 import { portalLogin, usePortalAuth } from '@/lib/auth';
 import { cn } from '@/lib/utils';
+import { navigateTo } from '@/lib/navigation';
 
 const loginSchema = z.object({
   email: z.string().email('Please enter a valid email address'),
@@ -34,7 +35,7 @@ export function LoginForm() {
 
     if (result.success && result.user && result.tokens) {
       login(result.user, result.tokens);
-      window.location.href = '/devices';
+      await navigateTo('/devices', { replace: true });
     } else {
       setError(result.error || 'Login failed');
     }

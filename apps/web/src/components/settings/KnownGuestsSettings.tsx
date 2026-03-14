@@ -23,11 +23,19 @@ export default function KnownGuestsSettings() {
 
   const fetchGuests = useCallback(async () => {
     setLoading(true);
-    const response = await fetchWithAuth('/partner/known-guests');
-    if (!response.ok) { setError('Failed to load known guests'); setLoading(false); return; }
-    const data = await response.json();
-    setGuests(data.data ?? []);
-    setLoading(false);
+    try {
+      const response = await fetchWithAuth('/partner/known-guests');
+      if (!response.ok) {
+        setError('Failed to load known guests');
+        return;
+      }
+      const data = await response.json();
+      setGuests(data.data ?? []);
+    } catch {
+      setError('Failed to load known guests');
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => { fetchGuests(); }, [fetchGuests]);
@@ -38,24 +46,36 @@ export default function KnownGuestsSettings() {
     if (!label.trim()) { setError('Label is required'); return; }
     setSaving(true);
     setError(null);
-    const response = await fetchWithAuth('/partner/known-guests', {
-      method: 'POST',
-      body: JSON.stringify({ macAddress: mac, label: label.trim(), notes: notes.trim() || undefined })
-    });
-    if (!response.ok) {
-      const data = await response.json().catch(() => null);
-      setError(data?.error ?? 'Failed to add guest');
-    } else {
-      setMac(''); setLabel(''); setNotes('');
-      await fetchGuests();
+    try {
+      const response = await fetchWithAuth('/partner/known-guests', {
+        method: 'POST',
+        body: JSON.stringify({ macAddress: mac, label: label.trim(), notes: notes.trim() || undefined })
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        setError(data?.error ?? 'Failed to add guest');
+      } else {
+        setMac(''); setLabel(''); setNotes('');
+        await fetchGuests();
+      }
+    } catch {
+      setError('Failed to add guest');
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   };
 
   const handleRemove = async (id: string) => {
-    const response = await fetchWithAuth(`/partner/known-guests/${id}`, { method: 'DELETE' });
-    if (!response.ok) { setError('Failed to remove guest'); return; }
-    await fetchGuests();
+    try {
+      const response = await fetchWithAuth(`/partner/known-guests/${id}`, { method: 'DELETE' });
+      if (!response.ok) {
+        setError('Failed to remove guest');
+        return;
+      }
+      await fetchGuests();
+    } catch {
+      setError('Failed to remove guest');
+    }
   };
 
   return (

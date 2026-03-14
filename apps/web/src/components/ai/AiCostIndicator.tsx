@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Coins } from 'lucide-react';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { cn, widthPercentClass } from '@/lib/utils';
 
 interface UsageData {
   daily: { totalCostCents: number; messageCount: number };
@@ -83,8 +84,7 @@ export default function AiCostIndicator({ enabled = true }: AiCostIndicatorProps
       {monthlyBudget && (
         <div className="flex-1 h-1 rounded-full bg-gray-800 overflow-hidden">
           <div
-            className={`h-full rounded-full ${barColor} transition-all`}
-            style={{ width: `${percentage}%` }}
+            className={cn('h-full rounded-full transition-all', barColor, widthPercentClass(percentage))}
           />
         </div>
       )}

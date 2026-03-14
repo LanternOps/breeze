@@ -9,10 +9,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"runtime"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/secmem"
 )
 
 var log = logging.L("updater")
@@ -20,7 +22,7 @@ var log = logging.L("updater")
 // Config holds updater configuration
 type Config struct {
 	ServerURL      string
-	AuthToken      string
+	AuthToken      *secmem.SecureString
 	CurrentVersion string
 	BinaryPath     string
 	BackupPath     string
@@ -146,6 +148,9 @@ func (u *Updater) parseDownloadInfo(resp *http.Response) (downloadInfo, error) {
 // downloadBinary fetches download info from the API and then downloads the binary.
 // Supports both legacy redirect responses and JSON info responses.
 func (u *Updater) downloadBinary(version string) (string, string, error) {
+	if u.config.AuthToken == nil {
+		return "", "", fmt.Errorf("auth token not available")
+	}
 	// Step 1: Get download URL + checksum from API.
 	infoURL := fmt.Sprintf("%s/api/v1/agent-versions/%s/download?platform=%s&arch=%s",
 		u.config.ServerURL, version, runtime.GOOS, runtime.GOARCH)
@@ -154,7 +159,7 @@ func (u *Updater) downloadBinary(version string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+u.config.AuthToken)
+	req.Header.Set("Authorization", "Bearer "+u.config.AuthToken.Reveal())
 
 	resp, err := u.requestWithoutRedirect(req)
 	if err != nil {
@@ -285,6 +290,14 @@ func (u *Updater) replaceBinary(newPath string) error {
 		}
 	}
 
+	// macOS requires ad-hoc codesigning after binary replacement
+	if runtime.GOOS == "darwin" {
+		cmd := exec.Command("codesign", "--force", "--sign", "-", u.config.BinaryPath)
+		if err := cmd.Run(); err != nil {
+			log.Warn("ad-hoc codesign failed, binary may not launch", "error", err.Error())
+		}
+	}
+
 	return nil
 }
 
@@ -347,6 +360,9 @@ func (u *Updater) UpdateFromURL(url, expectedChecksum string) error {
 // downloadFromURL downloads a binary directly from the given URL to a temp file.
 // The URL origin (host and scheme) must match the configured ServerURL to prevent credential leakage.
 func (u *Updater) downloadFromURL(rawURL string) (string, error) {
+	if u.config.AuthToken == nil {
+		return "", fmt.Errorf("auth token not available")
+	}
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return "", fmt.Errorf("invalid download URL: %w", err)
@@ -377,7 +393,7 @@ func (u *Updater) downloadFromURL(rawURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+u.config.AuthToken)
+	req.Header.Set("Authorization", "Bearer "+u.config.AuthToken.Reveal())
 
 	resp, err := u.client.Do(req)
 	if err != nil {

@@ -3,6 +3,7 @@ import { CheckCircle, GitBranch, Link2, Network, TreePine } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import type { AlertSeverity } from './AlertList';
+import { navigateTo } from '@/lib/navigation';
 
 type AlertSummary = {
   id: string;
@@ -59,7 +60,7 @@ export default function AlertCorrelationView() {
       const response = await fetchWithAuth('/alerts?limit=50');
 
       if (response.status === 401) {
-        window.location.href = '/login';
+        void navigateTo('/login', { replace: true });
         return;
       }
 
@@ -97,7 +98,7 @@ export default function AlertCorrelationView() {
       const response = await fetchWithAuth(`/alerts/${selectedAlertId}/correlations`);
 
       if (response.status === 401) {
-        window.location.href = '/login';
+        void navigateTo('/login', { replace: true });
         return;
       }
 
@@ -140,7 +141,7 @@ export default function AlertCorrelationView() {
       });
 
       if (response.status === 401) {
-        window.location.href = '/login';
+        void navigateTo('/login', { replace: true });
         return;
       }
 

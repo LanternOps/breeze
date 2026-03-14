@@ -1,8 +1,19 @@
 ---
 import PortalLayout from '../../layouts/PortalLayout.astro';
 import AssetList from '../../components/portal/AssetList';
+import { portalApi } from '../../lib/api';
+import { buildServerApiConfig } from '../../lib/server';
+
+const response = await portalApi.getAssets(
+  { page: 1, limit: 100 },
+  buildServerApiConfig(Astro.request)
+);
+
+if (response.statusCode === 401) {
+  return Astro.redirect('/login');
+}
 ---
 
 <PortalLayout title="Assets">
-  <AssetList client:load />
+  <AssetList assets={response.data ?? []} error={response.error} />
 </PortalLayout>

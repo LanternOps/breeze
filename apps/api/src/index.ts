@@ -50,10 +50,13 @@ import { portalRoutes } from './routes/portal';
 import { pluginRoutes } from './routes/plugins';
 import { maintenanceRoutes } from './routes/maintenance';
 import { securityRoutes } from './routes/security';
+import { cisHardeningRoutes } from './routes/cisHardening';
 import { reliabilityRoutes } from './routes/reliability';
+import { userRiskRoutes } from './routes/userRisk';
 import { snmpRoutes } from './routes/snmp';
 import { monitorRoutes } from './routes/monitors';
 import { monitoringRoutes } from './routes/monitoring';
+import { auditBaselineRoutes } from './routes/auditBaselines';
 import { softwareRoutes } from './routes/software';
 import { softwarePoliciesRoutes } from './routes/softwarePolicies';
 import { systemRoutes } from './routes/system';
@@ -80,9 +83,17 @@ import { devPushRoutes } from './routes/devPush';
 import { helperRoutes } from './routes/helper';
 import { playbookRoutes } from './routes/playbooks';
 import { seedBuiltInPlaybooks } from './services/builtInPlaybooks';
+import { seedDefaultAuditBaselines } from './services/auditBaselineService';
 import { changesRoutes } from './routes/changes';
 import { dnsSecurityRoutes } from './routes/dnsSecurity';
+import { sentinelOneRoutes } from './routes/sentinelOne';
 import { softwareInventoryRoutes } from './routes/softwareInventory';
+import { huntressRoutes } from './routes/huntress';
+import { sensitiveDataRoutes } from './routes/sensitiveData';
+import { peripheralControlRoutes } from './routes/peripheralControl';
+import { browserSecurityRoutes } from './routes/browserSecurity';
+import { captureException } from './services/sentry';
+import { partnerGuard } from './middleware/partnerGuard';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
@@ -104,13 +115,24 @@ import { initializePolicyEvaluationWorker, shutdownPolicyEvaluationWorker } from
 import { initializeAutomationWorker, shutdownAutomationWorker } from './jobs/automationWorker';
 import { initializeSecurityPostureWorker, shutdownSecurityPostureWorker } from './jobs/securityPostureWorker';
 import { initializeReliabilityWorker, shutdownReliabilityWorker } from './jobs/reliabilityWorker';
+import { initializeUserRiskJobs, shutdownUserRiskJobs } from './jobs/userRiskJobs';
+import { initializeUserRiskRetention, shutdownUserRiskRetention } from './jobs/userRiskRetention';
 import { initializePatchComplianceReportWorker, shutdownPatchComplianceReportWorker } from './jobs/patchComplianceReportWorker';
 import { initializeSoftwareComplianceWorker, shutdownSoftwareComplianceWorker } from './jobs/softwareComplianceWorker';
 import { initializeSoftwareRemediationWorker, shutdownSoftwareRemediationWorker } from './jobs/softwareRemediationWorker';
+import { initializeAuditBaselineJobs, shutdownAuditBaselineJobs } from './jobs/auditBaselineJobs';
 import { initializeDnsSyncJob, shutdownDnsSyncJob } from './jobs/dnsSyncJob';
+import { initializeS1SyncJob, shutdownS1SyncJob } from './jobs/s1Sync';
 import { initializeLogForwardingWorker, shutdownLogForwardingWorker } from './jobs/logForwardingWorker';
 import { initializePatchJobWorkers, shutdownPatchJobWorkers } from './jobs/patchJobExecutor';
 import { initializePatchSchedulerWorker, shutdownPatchSchedulerWorker } from './jobs/patchSchedulerWorker';
+import { initializeBackupWorker, shutdownBackupWorker } from './jobs/backupWorker';
+import { initializeCisJobs, shutdownCisJobs } from './jobs/cisJobs';
+import { initializeHuntressSyncJob, shutdownHuntressSyncJob } from './jobs/huntressSync';
+import { initializeSensitiveDataWorkers, shutdownSensitiveDataWorkers } from './jobs/sensitiveDataJobs';
+import { initializePeripheralJobs, shutdownPeripheralJobs } from './jobs/peripheralJobs';
+import { initializeBrowserSecurityJobs, shutdownBrowserSecurityJobs } from './jobs/browserSecurityJobs';
+import { initializeWarrantyWorker, shutdownWarrantyWorker } from './services/warrantyWorker';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -228,6 +250,7 @@ app.get('/health/live', (c) => {
 // Full readiness check — live DB + Redis connectivity
 app.get('/health/ready', async (c) => {
   const checks: Record<string, string> = {};
+  const isProd = process.env.NODE_ENV === 'production';
 
   // Check database connectivity
   try {
@@ -236,20 +259,24 @@ app.get('/health/ready', async (c) => {
     });
     checks.database = 'ok';
   } catch (error) {
-    checks.database = `error: ${error instanceof Error ? error.message : 'unknown'}`;
+    checks.database = isProd
+      ? 'error: unavailable'
+      : `error: ${error instanceof Error ? error.message : 'unknown'}`;
   }
 
   // Check Redis connectivity
   try {
     const redis = getRedis();
     if (!redis) {
-      checks.redis = 'error: not configured';
+      checks.redis = isProd ? 'error: unavailable' : 'error: not configured';
     } else {
       await redis.ping();
       checks.redis = 'ok';
     }
   } catch (error) {
-    checks.redis = `error: ${error instanceof Error ? error.message : 'unknown'}`;
+    checks.redis = isProd
+      ? 'error: unavailable'
+      : `error: ${error instanceof Error ? error.message : 'unknown'}`;
   }
 
   const allOk = Object.values(checks).every((v) => v === 'ok');
@@ -312,6 +339,7 @@ const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
   /^\/api\/v1\/agents\/[^/]+\/reliability$/,
   /^\/api\/v1\/agents\/[^/]+\/registry-state$/,
   /^\/api\/v1\/agents\/[^/]+\/config-state$/,
+  /^\/api\/v1\/agents\/[^/]+\/browser-inventory$/,
   /^\/api\/v1\/security\/recommendations\/[^/]+\/(complete|dismiss)$/,
   /^\/api\/v1\/system-tools\/devices\/[^/]+\/processes\/[^/]+\/kill$/,
   /^\/api\/v1\/system-tools\/devices\/[^/]+\/registry\/value$/,
@@ -514,6 +542,16 @@ async function resolveFallbackOrgId(c: Context, path: string): Promise<string | 
   return null;
 }
 
+// Generic partner status guard — blocks non-active partners
+api.use('*', async (c, next) => {
+  const path = c.req.path;
+  if (path.startsWith('/api/v1/auth')) { await next(); return; }
+  if (path.startsWith('/api/v1/users/me')) { await next(); return; }
+  if (path === '/api/v1/partner/me' || path.startsWith('/api/v1/partner/me/')) { await next(); return; }
+  if (path.startsWith('/api/v1/agents/')) { await next(); return; }
+  await partnerGuard(c, next);
+});
+
 api.use('*', async (c, next) => {
   await next();
 
@@ -610,10 +648,13 @@ api.route('/portal', portalRoutes);
 api.route('/plugins', pluginRoutes);
 api.route('/maintenance', maintenanceRoutes);
 api.route('/security', securityRoutes);
+api.route('/cis', cisHardeningRoutes);
 api.route('/reliability', reliabilityRoutes);
+api.route('/user-risk', userRiskRoutes);
 api.route('/snmp', snmpRoutes);
 api.route('/monitors', monitorRoutes);
 api.route('/monitoring', monitoringRoutes);
+api.route('/audit-baselines', auditBaselineRoutes);
 api.route('/software', softwareRoutes);
 api.route('/software-policies', softwarePoliciesRoutes);
 api.route('/system', systemRoutes);
@@ -640,7 +681,12 @@ api.route('/helper', helperRoutes);
 api.route('/playbooks', playbookRoutes);
 api.route('/changes', changesRoutes);
 api.route('/dns-security', dnsSecurityRoutes);
+api.route('/s1', sentinelOneRoutes);
+api.route('/huntress', huntressRoutes);
 api.route('/software-inventory', softwareInventoryRoutes);
+api.route('/sensitive-data', sensitiveDataRoutes);
+api.route('/peripherals', peripheralControlRoutes);
+api.route('/browser-security', browserSecurityRoutes);
 
 app.route('/api/v1', api);
 
@@ -826,9 +872,13 @@ async function initializeWorkers(): Promise<void> {
     ['policyEvaluationWorker', initializePolicyEvaluationWorker],
     ['softwareComplianceWorker', initializeSoftwareComplianceWorker],
     ['softwareRemediationWorker', initializeSoftwareRemediationWorker],
+    ['auditBaselineJobs', initializeAuditBaselineJobs],
+    ['cisJobs', initializeCisJobs],
     ['automationWorker', initializeAutomationWorker],
     ['securityPostureWorker', initializeSecurityPostureWorker],
     ['reliabilityWorker', initializeReliabilityWorker],
+    ['userRiskWorker', initializeUserRiskJobs],
+    ['userRiskRetention', initializeUserRiskRetention],
     ['policyAlertBridge', initializePolicyAlertBridge],
     ['eventLogRetention', initializeEventLogRetention],
     ['logCorrelationWorker', initializeLogCorrelationWorker],
@@ -844,9 +894,16 @@ async function initializeWorkers(): Promise<void> {
     ['snmpRetention', initializeSnmpRetention],
     ['patchComplianceReportWorker', initializePatchComplianceReportWorker],
     ['dnsSyncWorker', initializeDnsSyncJob],
+    ['s1SyncWorker', initializeS1SyncJob],
+    ['huntressSyncWorker', initializeHuntressSyncJob],
     ['logForwardingWorker', initializeLogForwardingWorker],
     ['patchJobWorker', initializePatchJobWorkers],
     ['patchSchedulerWorker', initializePatchSchedulerWorker],
+    ['backupWorker', initializeBackupWorker],
+    ['sensitiveDataWorker', initializeSensitiveDataWorkers],
+    ['peripheralJobs', initializePeripheralJobs],
+    ['browserSecurityWorker', initializeBrowserSecurityJobs],
+    ['warrantyWorker', initializeWarrantyWorker],
   ];
 
   await Promise.allSettled(
@@ -932,9 +989,16 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   const shutdownTasks: Array<() => Promise<void>> = [
     shutdownLogForwardingWorker,
     shutdownPatchJobWorkers,
+    shutdownBackupWorker,
     shutdownPatchSchedulerWorker,
+    shutdownSensitiveDataWorkers,
+    shutdownPeripheralJobs,
+    shutdownWarrantyWorker,
+    shutdownBrowserSecurityJobs,
     shutdownPatchComplianceReportWorker,
     shutdownDnsSyncJob,
+    shutdownS1SyncJob,
+    shutdownHuntressSyncJob,
     shutdownSnmpRetention,
     shutdownMonitorWorker,
     shutdownSnmpWorker,
@@ -949,9 +1013,13 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownPlaybookRetention,
     shutdownSecurityPostureWorker,
     shutdownReliabilityWorker,
+    shutdownUserRiskJobs,
+    shutdownUserRiskRetention,
     shutdownAutomationWorker,
     shutdownSoftwareRemediationWorker,
     shutdownSoftwareComplianceWorker,
+    shutdownAuditBaselineJobs,
+    shutdownCisJobs,
     shutdownPolicyEvaluationWorker,
     shutdownNotificationDispatcher,
     shutdownOfflineDetector,
@@ -993,6 +1061,24 @@ function installSignalHandlers(): void {
   process.once('SIGTERM', () => {
     void shutdownRuntime('SIGTERM');
   });
+
+  // Guard against unhandled rejections from the Claude Agent SDK's
+  // fire-and-forget handleControlRequest. When a session is closed while
+  // an MCP tool is still in-flight, the SDK tries to write a response to
+  // the dead subprocess and throws "ProcessTransport is not ready for writing".
+  // This is a benign race condition — log it instead of crashing the process.
+  process.on('unhandledRejection', (reason) => {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    // Only suppress SDK-specific benign rejections from session cleanup
+    if (message.includes('ProcessTransport is not ready for writing') ||
+        (reason instanceof Error && reason.name === 'AbortError') ||
+        (message.includes('Operation aborted') && message.includes('Transport'))) {
+      console.warn('[SDK] Suppressed benign unhandled rejection (session already closed):', message);
+      return;
+    }
+    console.error('[FATAL] Unhandled rejection:', reason);
+    captureException(reason instanceof Error ? reason : new Error(message));
+  });
 }
 
 async function bootstrap(): Promise<void> {
@@ -1021,6 +1107,17 @@ async function bootstrap(): Promise<void> {
     } else {
       console.error('[startup] Failed to seed built-in playbooks:', err);
     }
+  }
+
+  try {
+    await runWithSystemDbAccess(async () => {
+      const seeded = await seedDefaultAuditBaselines();
+      if (seeded.created > 0) {
+        console.log(`[startup] Seeded ${seeded.created} audit baseline template(s)`);
+      }
+    });
+  } catch (err) {
+    console.error('[startup] Failed to seed audit baseline templates:', err);
   }
 
   // Register local agent binaries in DB and optionally sync to S3 (BINARY_SOURCE=local only)

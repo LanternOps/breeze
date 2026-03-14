@@ -5,11 +5,12 @@ import { z } from 'zod';
 import { Loader2, AlertCircle, ArrowLeft } from 'lucide-react';
 import { portalApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { navigateTo } from '@/lib/navigation';
 
 const ticketSchema = z.object({
-  title: z.string().min(5, 'Title must be at least 5 characters'),
+  subject: z.string().min(5, 'Title must be at least 5 characters'),
   description: z.string().min(20, 'Please provide a detailed description (at least 20 characters)'),
-  priority: z.enum(['low', 'medium', 'high', 'critical'])
+  priority: z.enum(['low', 'normal', 'high', 'urgent'])
 });
 
 type TicketFormData = z.infer<typeof ticketSchema>;
@@ -25,7 +26,7 @@ export function NewTicketForm() {
   } = useForm<TicketFormData>({
     resolver: zodResolver(ticketSchema),
     defaultValues: {
-      priority: 'medium'
+      priority: 'normal'
     }
   });
 
@@ -33,13 +34,10 @@ export function NewTicketForm() {
     setIsLoading(true);
     setError(null);
 
-    const result = await portalApi.createTicket({
-      ...data,
-      status: 'open'
-    });
+    const result = await portalApi.createTicket(data);
 
     if (result.data) {
-      window.location.href = `/tickets/${result.data.id}`;
+      await navigateTo(`/tickets/${result.data.id}`);
     } else {
       setError(result.error || 'Failed to create ticket');
     }
@@ -75,25 +73,25 @@ export function NewTicketForm() {
 
           <div>
             <label
-              htmlFor="title"
+              htmlFor="subject"
               className="block text-sm font-medium text-foreground"
             >
               Title
             </label>
             <input
-              id="title"
+              id="subject"
               type="text"
               placeholder="Brief summary of your issue"
-              {...register('title')}
+              {...register('subject')}
               className={cn(
                 'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-sm',
                 'focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary',
-                errors.title && 'border-destructive'
+                errors.subject && 'border-destructive'
               )}
             />
-            {errors.title && (
+            {errors.subject && (
               <p className="mt-1 text-sm text-destructive">
-                {errors.title.message}
+                {errors.subject.message}
               </p>
             )}
           </div>
@@ -114,9 +112,9 @@ export function NewTicketForm() {
               )}
             >
               <option value="low">Low</option>
-              <option value="medium">Medium</option>
+              <option value="normal">Normal</option>
               <option value="high">High</option>
-              <option value="critical">Critical</option>
+              <option value="urgent">Urgent</option>
             </select>
             <p className="mt-1 text-xs text-muted-foreground">
               Select the urgency level of your issue

@@ -26,14 +26,26 @@ const createConnectionSchema = z.object({
   orgId: z.string().uuid().optional(),
   provider: providerSchema,
   name: z.string().min(1).max(255),
-  credentials: z.record(z.any()),
-  settings: z.record(z.any()).optional().default({})
+  credentials: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ),
+  settings: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional().default({})
 });
 
 const updateConnectionSchema = z.object({
   name: z.string().min(1).max(255).optional(),
-  credentials: z.record(z.any()).optional(),
-  settings: z.record(z.any()).optional()
+  credentials: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional(),
+  settings: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional()
 });
 
 const listTicketsSchema = z.object({
@@ -318,7 +330,12 @@ psaRoutes.post(
       orgId = auth.orgId;
     } else if (auth.scope === 'partner') {
       if (!orgId) {
-        return c.json({ error: 'orgId is required for partner scope' }, 400);
+        const singleOrg = auth.accessibleOrgIds?.[0];
+        if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
+          orgId = singleOrg;
+        } else {
+          return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
+        }
       }
       const hasAccess = await ensureOrgAccess(orgId, auth);
       if (!hasAccess) {
@@ -381,7 +398,7 @@ psaRoutes.get(
   requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const connectionId = c.req.param('id');
+    const connectionId = c.req.param('id')!;
 
     const connection = await getConnectionById(connectionId);
     if (!connection) {
@@ -404,7 +421,7 @@ psaRoutes.patch(
   zValidator('json', updateConnectionSchema),
   async (c) => {
     const auth = c.get('auth');
-    const connectionId = c.req.param('id');
+    const connectionId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     if (Object.keys(data).length === 0) {
@@ -481,7 +498,7 @@ psaRoutes.delete(
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   async (c) => {
     const auth = c.get('auth');
-    const connectionId = c.req.param('id');
+    const connectionId = c.req.param('id')!;
 
     const existing = await getConnectionById(connectionId);
     if (!existing) {
@@ -514,7 +531,7 @@ psaRoutes.post(
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   async (c) => {
     const auth = c.get('auth');
-    const connectionId = c.req.param('id');
+    const connectionId = c.req.param('id')!;
 
     const existing = await getConnectionById(connectionId);
     if (!existing) {
@@ -555,7 +572,7 @@ psaRoutes.post(
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   async (c) => {
     const auth = c.get('auth');
-    const connectionId = c.req.param('id');
+    const connectionId = c.req.param('id')!;
 
     const existing = await getConnectionById(connectionId);
     if (!existing) {
@@ -601,7 +618,7 @@ psaRoutes.post(
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   async (c) => {
     const auth = c.get('auth');
-    const connectionId = c.req.param('id');
+    const connectionId = c.req.param('id')!;
 
     const existing = await getConnectionById(connectionId);
     if (!existing) {
@@ -699,7 +716,7 @@ psaRoutes.get(
   zValidator('query', listTicketsSchema),
   async (c) => {
     const auth = c.get('auth');
-    const connectionId = c.req.param('id');
+    const connectionId = c.req.param('id')!;
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 

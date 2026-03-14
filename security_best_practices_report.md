@@ -1,94 +1,162 @@
-# Security Best Practices Report
+# Security Best Practices Review Report
+
+Date: 2026-03-03
+Repository: /Users/toddhebebrand/breeze
+Reviewer mode: `$security-best-practices`
 
 ## Executive Summary
-Review date: **February 22, 2026**.
 
-This assessment found **0 critical**, **2 high**, and **1 medium** security gaps across the TypeScript API and Go agent. The highest-priority issue is that the agent writes a reusable authentication token to a world-readable config file. The second major issue is missing API-wide request body size enforcement, which increases denial-of-service exposure.
+I performed multiple security review passes across backend (Node/TypeScript API), frontends (web/portal), helper desktop app (Tauri/Rust), Go agent, and production dependency advisories.
 
-## Scope
-- `/Users/toddhebebrand/breeze/apps/api`
-- `/Users/toddhebebrand/breeze/apps/web`
-- `/Users/toddhebebrand/breeze/apps/portal`
-- `/Users/toddhebebrand/breeze/agent`
-- `/Users/toddhebebrand/breeze/tools/remote-mcp`
+High-confidence findings: **7 total**
+- Critical: 1
+- High: 3
+- Medium: 3
+- Low: 0
 
-## Findings
+Most urgent risk is agent bearer-token exposure via world-readable config permissions.
 
-### High
+## Method (Multi-Pass)
 
-#### [HIGH-001] Agent auth token is stored in a world-readable file
-- Severity: **High**
-- Rule mapping: `GO-SECRETS-001` / least-privilege secret storage
-- Location:
-  - `/Users/toddhebebrand/breeze/agent/internal/config/config.go:180`
-  - `/Users/toddhebebrand/breeze/agent/internal/config/config.go:201`
-  - `/Users/toddhebebrand/breeze/agent/internal/config/config.go:207`
-  - `/Users/toddhebebrand/breeze/agent/internal/config/config.go:219`
-  - `/Users/toddhebebrand/breeze/agent/internal/config/config.go:220`
-  - `/Users/toddhebebrand/breeze/agent/internal/config/config.go:242`
-  - `/Users/toddhebebrand/breeze/agent/internal/config/config.go:246`
-- Evidence:
-  - `auth_token` is persisted to `agent.yaml`.
-  - Directory permissions are set to `0755` and file permissions are set to `0644`.
-  - Startup permission repair keeps the same `0755/0644` model.
-- Impact: Any local non-privileged user on the host can read the token and impersonate the agent to the control plane.
-- Recommended fix:
-  1. Store secrets with least privilege (`0600` file, `0700` dir where possible).
-  2. If helper access is required, use a dedicated OS group and `0640` instead of world-readable.
-  3. Prefer moving long-lived agent secrets to OS secret storage (Keychain/DPAPI/libsecret) and keep config file non-secret.
+1. Language/framework pass and targeted security-guidance mapping.
+2. Static pattern pass (authn/authz/csrf/cors/xss/ssrf/command-execution/token storage).
+3. Backend route-guard consistency pass (scope vs permission vs MFA).
+4. Desktop helper and Go agent secret-handling pass.
+5. Dependency advisory pass via `pnpm audit --prod --json`.
+6. Follow-up confirmation pass for all candidate findings to remove false positives.
 
-#### [HIGH-002] API does not enforce a global request body size limit
-- Severity: **High**
-- Rule mapping: `EXPRESS-DOS-001` / input size hard limits
-- Location:
-  - `/Users/toddhebebrand/breeze/apps/api/src/index.ts:170`
-  - `/Users/toddhebebrand/breeze/apps/api/src/routes/auth/login.ts:42`
-  - `/Users/toddhebebrand/breeze/apps/api/src/routes/remote/transfers.ts:404`
-  - `/Users/toddhebebrand/breeze/apps/api/src/routes/remote/transfers.ts:419`
-  - `/Users/toddhebebrand/breeze/apps/api/src/routes/remote/transfers.ts:426`
-  - `/Users/toddhebebrand/breeze/apps/api/src/routes/automations.ts:794`
-- Evidence:
-  - Global middleware stack has no body-size limiter.
-  - Public JSON endpoints (for example login and webhook routes) rely on parsing request bodies without a central cap.
-  - Multipart chunk upload reads full body/chunk into memory before rejecting on total-size checks.
-- Impact: Attackers can send oversized payloads to trigger memory/CPU pressure and reduce API availability.
-- Recommended fix:
-  1. Add API-wide request size limits for JSON and multipart bodies.
-  2. Enforce early `Content-Length` ceilings and streaming limits per route.
-  3. Apply stricter per-endpoint limits for unauthenticated/public routes.
+## Critical Findings
 
-### Medium
+### F-001: Agent auth token is written to a world-readable file
+Severity: Critical
 
-#### [MED-001] Automation webhook accepts secrets in URL query strings and uses direct string comparison
-- Severity: **Medium**
-- Rule mapping: `EXPRESS-SECRETS-001` / webhook secret handling
-- Location:
-  - `/Users/toddhebebrand/breeze/apps/api/src/routes/automations.ts:786`
-  - `/Users/toddhebebrand/breeze/apps/api/src/routes/automations.ts:788`
-  - `/Users/toddhebebrand/breeze/apps/api/src/routes/automations.ts:790`
-- Evidence:
-  - Webhook secret is accepted from `?secret=...` query parameters.
-  - Secret validation uses direct string inequality (`providedSecret !== trigger.secret`).
-- Impact: Query-parameter secrets are more likely to leak through logs/proxies, and direct comparison is weaker than constant-time secret checks.
-- Recommended fix:
-  1. Remove query-string secret support and accept secrets only in dedicated headers.
-  2. Compare secrets with `timingSafeEqual` after length checks.
-  3. Add route-specific rate limiting and minimum secret entropy validation.
+Evidence:
+- [/Users/toddhebebrand/breeze/agent/internal/config/config.go:212](/Users/toddhebebrand/breeze/agent/internal/config/config.go:212) writes `auth_token` into `agent.yaml`.
+- [/Users/toddhebebrand/breeze/agent/internal/config/config.go:242](/Users/toddhebebrand/breeze/agent/internal/config/config.go:242) sets `agent.yaml` to `0644`.
+- [/Users/toddhebebrand/breeze/agent/internal/config/config.go:295](/Users/toddhebebrand/breeze/agent/internal/config/config.go:295) re-applies `0644` at startup.
 
-## Positive Controls Observed
-- Cookie-authenticated flows use CSRF token + origin/fetch-site validation and constant-time token comparison:
-  - `/Users/toddhebebrand/breeze/apps/api/src/routes/auth/helpers.ts:187`
-  - `/Users/toddhebebrand/breeze/apps/api/src/routes/auth/helpers.ts:205`
-  - `/Users/toddhebebrand/breeze/apps/api/src/routes/auth/helpers.ts:226`
-- Webhook URL validation includes SSRF-focused checks (HTTPS-only, private-range block, DNS resolution checks):
-  - `/Users/toddhebebrand/breeze/apps/api/src/services/notificationSenders/webhookSender.ts:125`
-  - `/Users/toddhebebrand/breeze/apps/api/src/services/notificationSenders/webhookSender.ts:150`
-  - `/Users/toddhebebrand/breeze/apps/api/src/services/notificationSenders/webhookSender.ts:175`
-- Production config validation blocks insecure placeholders and wildcard CORS:
-  - `/Users/toddhebebrand/breeze/apps/api/src/config/validate.ts:83`
-  - `/Users/toddhebebrand/breeze/apps/api/src/config/validate.ts:100`
+Impact:
+- Any local user/process can read the bearer token and impersonate the agent against API endpoints.
 
-## Secure-by-Default Improvement Plan
-1. Remove world-readable agent secret storage (`0600`/secret-store migration).
-2. Introduce centralized body-size limits and per-route caps for public endpoints.
-3. Harden webhook authentication: header-only secrets, constant-time compare, and rate limiting.
+Recommended fix:
+- Do not store `auth_token` in world-readable `agent.yaml`.
+- Keep token only in root-restricted secrets storage (`0600`) and expose needed helper functionality through privileged IPC, not raw token disclosure.
+- Change `agent.yaml` permission model away from `0644` where secrets may exist.
+
+## High Findings
+
+### F-002: Device command-execution routes lack fine-grained RBAC/MFA enforcement
+Severity: High
+
+Evidence (representative):
+- Permission model defines execute permission: [/Users/toddhebebrand/breeze/apps/api/src/services/permissions.ts:185](/Users/toddhebebrand/breeze/apps/api/src/services/permissions.ts:185).
+- Middleware supports permission and MFA checks: [/Users/toddhebebrand/breeze/apps/api/src/middleware/auth.ts:369](/Users/toddhebebrand/breeze/apps/api/src/middleware/auth.ts:369), [/Users/toddhebebrand/breeze/apps/api/src/middleware/auth.ts:402](/Users/toddhebebrand/breeze/apps/api/src/middleware/auth.ts:402).
+- Command-capable routes with `requireScope(...)` but no `requirePermission(...DEVICES_EXECUTE...)` / `requireMfa()`:
+  - [/Users/toddhebebrand/breeze/apps/api/src/routes/devices/commands.ts:23](/Users/toddhebebrand/breeze/apps/api/src/routes/devices/commands.ts:23), [/Users/toddhebebrand/breeze/apps/api/src/routes/devices/commands.ts:96](/Users/toddhebebrand/breeze/apps/api/src/routes/devices/commands.ts:96)
+  - [/Users/toddhebebrand/breeze/apps/api/src/routes/devices/diagnose.ts:12](/Users/toddhebebrand/breeze/apps/api/src/routes/devices/diagnose.ts:12), [/Users/toddhebebrand/breeze/apps/api/src/routes/devices/diagnose.ts:32](/Users/toddhebebrand/breeze/apps/api/src/routes/devices/diagnose.ts:32)
+  - [/Users/toddhebebrand/breeze/apps/api/src/routes/devices/filesystem.ts:135](/Users/toddhebebrand/breeze/apps/api/src/routes/devices/filesystem.ts:135), [/Users/toddhebebrand/breeze/apps/api/src/routes/devices/filesystem.ts:341](/Users/toddhebebrand/breeze/apps/api/src/routes/devices/filesystem.ts:341)
+  - [/Users/toddhebebrand/breeze/apps/api/src/routes/devices/bootMetrics.ts:93](/Users/toddhebebrand/breeze/apps/api/src/routes/devices/bootMetrics.ts:93), [/Users/toddhebebrand/breeze/apps/api/src/routes/devices/bootMetrics.ts:234](/Users/toddhebebrand/breeze/apps/api/src/routes/devices/bootMetrics.ts:234)
+  - [/Users/toddhebebrand/breeze/apps/api/src/routes/devices/patches.ts:295](/Users/toddhebebrand/breeze/apps/api/src/routes/devices/patches.ts:295), [/Users/toddhebebrand/breeze/apps/api/src/routes/devices/patches.ts:393](/Users/toddhebebrand/breeze/apps/api/src/routes/devices/patches.ts:393)
+- Contrast: high-risk route groups do enforce permission+MFA:
+  - [/Users/toddhebebrand/breeze/apps/api/src/routes/remote/index.ts:12](/Users/toddhebebrand/breeze/apps/api/src/routes/remote/index.ts:12)
+  - [/Users/toddhebebrand/breeze/apps/api/src/routes/systemTools/index.ts:19](/Users/toddhebebrand/breeze/apps/api/src/routes/systemTools/index.ts:19)
+
+Impact:
+- Users with broad scope but insufficient role privilege can still trigger sensitive endpoint actions on managed devices.
+
+Recommended fix:
+- Add `requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action)` and `requireMfa()` to command-executing device routes.
+- Apply at route-group level for non-GET methods to avoid drift.
+
+### F-003: Web dashboard persists access tokens in `localStorage`
+Severity: High
+
+Evidence:
+- Zustand persistence includes `tokens`: [/Users/toddhebebrand/breeze/apps/web/src/stores/auth.ts:85](/Users/toddhebebrand/breeze/apps/web/src/stores/auth.ts:85).
+- Access token is then used directly as bearer token: [/Users/toddhebebrand/breeze/apps/web/src/stores/auth.ts:264](/Users/toddhebebrand/breeze/apps/web/src/stores/auth.ts:264).
+
+Impact:
+- Any XSS in the web origin can exfiltrate bearer tokens and take over sessions.
+
+Recommended fix:
+- Keep access token in memory only; do not persist to `localStorage`.
+- Rely on HttpOnly refresh cookie rotation path for session continuity.
+
+## Medium Findings
+
+### F-004: Helper desktop URL allowlist check is bypassable (`starts_with`)
+Severity: Medium
+
+Evidence:
+- URL validation uses string prefix check: [/Users/toddhebebrand/breeze/apps/helper/src-tauri/src/lib.rs:272](/Users/toddhebebrand/breeze/apps/helper/src-tauri/src/lib.rs:272).
+- Bearer token is attached to outbound request: [/Users/toddhebebrand/breeze/apps/helper/src-tauri/src/lib.rs:309](/Users/toddhebebrand/breeze/apps/helper/src-tauri/src/lib.rs:309).
+
+Why this is bypassable:
+- Prefix matching can be tricked by crafted URLs like `https://trusted.example.com.evil.tld/...` or `https://trusted.example.com@evil.tld/...`.
+
+Impact:
+- If attacker-controlled input reaches this URL field, helper can send authenticated requests to attacker infrastructure.
+
+Recommended fix:
+- Parse both configured base URL and request URL; compare normalized scheme/host/port (and optionally enforce path prefix), not raw string prefix.
+
+### F-005: FORCE_HTTPS redirect depends solely on `x-forwarded-proto`
+Severity: Medium
+
+Evidence:
+- Redirect only occurs when header equals `http`: [/Users/toddhebebrand/breeze/apps/api/src/middleware/security.ts:77](/Users/toddhebebrand/breeze/apps/api/src/middleware/security.ts:77).
+
+Impact:
+- If proxy headers are absent or spoofed/misconfigured, expected HTTPS enforcement can silently fail.
+
+Recommended fix:
+- Derive protocol from trusted proxy context and fail-safe redirect logic.
+- Treat missing/invalid forwarded-proto as non-HTTPS when FORCE_HTTPS is enabled.
+
+### F-006: Swagger UI uses external CDN assets without integrity and persists auth
+Severity: Medium
+
+Evidence:
+- External scripts/styles from unpkg: [/Users/toddhebebrand/breeze/apps/api/src/routes/docs.ts:27](/Users/toddhebebrand/breeze/apps/api/src/routes/docs.ts:27), [/Users/toddhebebrand/breeze/apps/api/src/routes/docs.ts:102](/Users/toddhebebrand/breeze/apps/api/src/routes/docs.ts:102), [/Users/toddhebebrand/breeze/apps/api/src/routes/docs.ts:103](/Users/toddhebebrand/breeze/apps/api/src/routes/docs.ts:103).
+- `persistAuthorization: true`: [/Users/toddhebebrand/breeze/apps/api/src/routes/docs.ts:118](/Users/toddhebebrand/breeze/apps/api/src/routes/docs.ts:118).
+
+Impact:
+- Docs sessions may retain credentials in browser storage; external script supply chain risk exists when docs UI is enabled.
+
+Recommended fix:
+- Self-host Swagger assets or pin with SRI hashes.
+- Disable `persistAuthorization` outside isolated local development.
+
+## Dependency Advisory Findings
+
+### F-007: Production dependency vulnerabilities require upgrade triage
+Severity: Medium
+
+Evidence:
+- `pnpm audit --prod --json` on 2026-03-03 reported: high=16, moderate=4, low=4.
+- High/medium advisories affecting shipped apps include:
+  - `@astrojs/node` (<9.5.4) in web/portal: `GHSA-cj9f-h6r6-4cx2`, `GHSA-qq67-mvv5-fw3g`, `GHSA-jm64-8m5q-4qh8`.
+  - `minimatch` high advisories in transitive chain impacting `apps/api` (`resend` -> `@react-email/render` -> `js-beautify` -> `glob/editorconfig`).
+
+Impact:
+- Known vulnerable dependency graph remains in production scope.
+
+Recommended fix:
+- Upgrade `@astrojs/node` to `>=9.5.4` in both web and portal.
+- Refresh transitive chains for `minimatch` and other high advisories via lockfile update and targeted package bumps.
+- Re-run `pnpm audit --prod --json` and track to zero high/moderate where feasible.
+
+## Notes / Non-Findings
+
+- Mobile app token storage is using `expo-secure-store` (not localStorage/plain AsyncStorage), which is aligned with best practice.
+- Webhook sender SSRF hardening appears strong (HTTPS only, private-range blocking, DNS checks, redirect disabled).
+
+## Suggested Remediation Order
+
+1. F-001 (agent token file permissions/exposure)
+2. F-002 (RBAC+MFA gaps on device execution routes)
+3. F-003 (remove web token persistence)
+4. F-004/F-006 (helper URL validation and docs hardening)
+5. F-007 dependency upgrade pass
+6. F-005 HTTPS enforcement hardening
+

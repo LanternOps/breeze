@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import UserList, { type User } from './UserList';
 import UserInviteForm, { type RoleOption } from './UserInviteForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'invite' | 'edit' | 'remove';
 
@@ -45,7 +46,7 @@ export default function UsersPage() {
       const response = await fetchWithAuth('/users');
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to fetch users');
@@ -196,7 +197,7 @@ export default function UsersPage() {
     setSubmitting(true);
     try {
       const response = await fetchWithAuth(`/users/${selectedUser.id}`, {
-        method: 'PUT',
+        method: 'PATCH',
         body: JSON.stringify(values)
       });
 

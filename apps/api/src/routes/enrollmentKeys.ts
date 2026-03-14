@@ -204,7 +204,12 @@ enrollmentKeyRoutes.post(
       orgId = auth.orgId;
     } else if (auth.scope === 'partner') {
       if (!orgId) {
-        return c.json({ error: 'orgId is required for partner scope' }, 400);
+        const singleOrg = auth.accessibleOrgIds?.[0];
+        if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
+          orgId = singleOrg;
+        } else {
+          return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
+        }
       }
       const hasAccess = await ensureOrgAccess(orgId, auth);
       if (!hasAccess) {
@@ -264,7 +269,7 @@ enrollmentKeyRoutes.get(
   requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const keyId = c.req.param('id');
+    const keyId = c.req.param('id')!;
 
     const [enrollmentKey] = await db
       .select()
@@ -294,7 +299,7 @@ enrollmentKeyRoutes.post(
   zValidator('json', rotateEnrollmentKeySchema),
   async (c) => {
     const auth = c.get('auth');
-    const keyId = c.req.param('id');
+    const keyId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     const [existingKey] = await db
@@ -361,7 +366,7 @@ enrollmentKeyRoutes.delete(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
-    const keyId = c.req.param('id');
+    const keyId = c.req.param('id')!;
 
     const [existingKey] = await db
       .select()

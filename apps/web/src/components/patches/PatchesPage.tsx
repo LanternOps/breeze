@@ -13,6 +13,7 @@ import UpdateRingList, { type UpdateRingItem } from './UpdateRingList';
 import UpdateRingForm, { type UpdateRingFormValues } from './UpdateRingForm';
 import RingSelector, { type UpdateRing } from './RingSelector';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 const severityMap: Record<string, PatchSeverity> = {
   critical: 'critical',
@@ -156,7 +157,7 @@ export default function PatchesPage() {
       setRingsError(undefined);
       const response = await fetchWithAuth('/update-rings');
       if (!response.ok) {
-        if (response.status === 401) { window.location.href = '/login'; return; }
+        if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
         throw new Error('Failed to fetch update rings');
       }
       const data = await response.json();
@@ -183,7 +184,7 @@ export default function PatchesPage() {
         : '/patches';
       const response = await fetchWithAuth(url);
       if (!response.ok) {
-        if (response.status === 401) { window.location.href = '/login'; return; }
+        if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
         throw new Error('Failed to fetch patches');
       }
       const data = await response.json();
@@ -229,7 +230,7 @@ export default function PatchesPage() {
       setScanError(undefined);
       const devResponse = await fetchWithAuth('/devices?limit=100');
       if (!devResponse.ok) {
-        if (devResponse.status === 401) { window.location.href = '/login'; return; }
+        if (devResponse.status === 401) { void navigateTo('/login', { replace: true }); return; }
         throw new Error('Failed to load devices for scan');
       }
       const devData = await devResponse.json();
@@ -245,7 +246,7 @@ export default function PatchesPage() {
         body: JSON.stringify({ deviceIds: ids })
       });
       if (!response.ok) {
-        if (response.status === 401) { window.location.href = '/login'; return; }
+        if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
         throw new Error('Failed to start patch scan');
       }
       await fetchPatches();
@@ -274,7 +275,7 @@ export default function PatchesPage() {
         })
       });
       if (!response.ok) {
-        if (response.status === 401) { window.location.href = '/login'; return; }
+        if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
         throw new Error(isEditing ? 'Failed to update ring' : 'Failed to create update ring');
       }
       await fetchRings();
@@ -291,7 +292,7 @@ export default function PatchesPage() {
     try {
       const response = await fetchWithAuth(`/update-rings/${ring.id}`, { method: 'DELETE' });
       if (!response.ok) {
-        if (response.status === 401) { window.location.href = '/login'; return; }
+        if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
         throw new Error('Failed to delete ring');
       }
       await fetchRings();
@@ -384,7 +385,6 @@ export default function PatchesPage() {
             onChange={setDeviceFilter}
             collapsible
             defaultExpanded={false}
-            showPreview
           />
         </div>
       )}

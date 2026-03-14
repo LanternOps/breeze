@@ -6,6 +6,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { buildPortalApiUrl } from './api';
+import { navigateTo } from './navigation';
 
 const CSRF_HEADER_NAME = 'x-breeze-csrf';
 const CSRF_COOKIE_NAME = 'breeze_portal_csrf_token';
@@ -287,6 +288,6 @@ export function requireAuth(): void {
 
   const { isAuthenticated } = usePortalAuth.getState();
   if (!isAuthenticated) {
-    window.location.href = '/login';
+    void navigateTo('/login', { replace: true });
   }
 }

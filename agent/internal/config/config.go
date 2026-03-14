@@ -36,12 +36,14 @@ type Config struct {
 	BackupLocalPath          string   `mapstructure:"backup_local_path"`
 	BackupS3Bucket           string   `mapstructure:"backup_s3_bucket"`
 	BackupS3Region           string   `mapstructure:"backup_s3_region"`
+	BackupS3AccessKey        string   `mapstructure:"backup_s3_access_key"`
+	BackupS3SecretKey        string   `mapstructure:"backup_s3_secret_key"`
 
 	// Logging configuration
-	LogLevel      string `mapstructure:"log_level"`
-	LogFormat     string `mapstructure:"log_format"`
-	LogFile       string `mapstructure:"log_file"`
-	LogMaxSizeMB  int    `mapstructure:"log_max_size_mb"`
+	LogLevel         string `mapstructure:"log_level"`
+	LogFormat        string `mapstructure:"log_format"`
+	LogFile          string `mapstructure:"log_file"`
+	LogMaxSizeMB     int    `mapstructure:"log_max_size_mb"`
 	LogMaxBackups    int    `mapstructure:"log_max_backups"`
 	LogShippingLevel string `mapstructure:"log_shipping_level"`
 
@@ -84,6 +86,10 @@ type Config struct {
 	// IsService is a runtime flag set when the agent is running as a system service
 	// (Windows SCM, macOS launchd, Linux systemd). It is not persisted to config.
 	IsService bool `mapstructure:"-"`
+
+	// IsHeadless is a runtime flag set when no console/TTY is attached (launchd
+	// daemon, systemd service, etc.). Desktop commands route through IPC when set.
+	IsHeadless bool `mapstructure:"-"`
 }
 
 // defaultLogFile returns the platform-specific default log file path.
@@ -218,27 +224,50 @@ func SaveTo(cfg *Config, cfgFile string) error {
 		cfgPath = cfgFile
 		dir := filepath.Dir(cfgPath)
 		if dir != "." {
-			if err := os.MkdirAll(dir, 0755); err != nil {
+			if err := os.MkdirAll(dir, 0750); err != nil {
 				return err
 			}
 		}
 	} else {
 		cfgPath = filepath.Join(configDir(), "agent.yaml")
-		if err := os.MkdirAll(configDir(), 0755); err != nil {
+		if err := os.MkdirAll(configDir(), 0750); err != nil {
 			return err
 		}
 	}
 
-	if err := viper.WriteConfigAs(cfgPath); err != nil {
+	// Write config to a temp file with correct permissions from the start,
+	// then rename to the final path. This avoids a TOCTOU window where the
+	// file exists with default permissions before Chmod is called.
+	tmpPath := cfgPath + ".tmp"
+	if err := viper.WriteConfigAs(tmpPath); err != nil {
 		return err
 	}
-
-	// Allow the Breeze Helper (running as the logged-in user) to read the
-	// main config file. Secrets are stored separately in secrets.yaml with
-	// root-only permissions.
-	_ = os.Chmod(filepath.Dir(cfgPath), 0755)
-	if err := os.Chmod(cfgPath, 0644); err != nil {
+	// Open with correct permissions atomically (no TOCTOU gap).
+	f, err := os.OpenFile(cfgPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0640)
+	if err != nil {
+		os.Remove(tmpPath)
 		return err
+	}
+	tmpData, err := os.ReadFile(tmpPath)
+	if err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if _, err := f.Write(tmpData); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	f.Close()
+	os.Remove(tmpPath)
+
+	// Defense-in-depth: ensure permissions are correct even if umask interfered.
+	if err := os.Chmod(filepath.Dir(cfgPath), 0750); err != nil {
+		log.Warn("failed to enforce config dir permissions", "error", err.Error())
+	}
+	if err := os.Chmod(cfgPath, 0640); err != nil {
+		log.Warn("failed to enforce config file permissions", "error", err.Error())
 	}
 
 	// Write secrets to a separate root-only file.
@@ -254,11 +283,33 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	sv.Set("mtls_key_pem", cfg.MtlsKeyPEM)
 	sv.Set("mtls_cert_expires", cfg.MtlsCertExpires)
 
-	if err := sv.WriteConfigAs(secretsPath); err != nil {
+	// Write secrets via temp file, then copy to final path opened with 0600.
+	secretsTmp := secretsPath + ".tmp"
+	if err := sv.WriteConfigAs(secretsTmp); err != nil {
 		return fmt.Errorf("writing secrets file: %w", err)
 	}
+	sf, err := os.OpenFile(secretsPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		os.Remove(secretsTmp)
+		return fmt.Errorf("creating secrets file: %w", err)
+	}
+	secretsData, err := os.ReadFile(secretsTmp)
+	if err != nil {
+		sf.Close()
+		os.Remove(secretsTmp)
+		return fmt.Errorf("reading secrets temp file: %w", err)
+	}
+	if _, err := sf.Write(secretsData); err != nil {
+		sf.Close()
+		os.Remove(secretsTmp)
+		return fmt.Errorf("writing secrets file data: %w", err)
+	}
+	sf.Close()
+	os.Remove(secretsTmp)
+
+	// Defense-in-depth: ensure secrets permissions are correct.
 	if err := os.Chmod(secretsPath, 0600); err != nil {
-		return fmt.Errorf("setting secrets file permissions: %w", err)
+		log.Warn("failed to enforce secrets file permissions", "error", err.Error())
 	}
 
 	return nil
@@ -284,13 +335,13 @@ func GetDataDir() string {
 func FixConfigPermissions() {
 	dir := configDir()
 	if info, err := os.Stat(dir); err == nil && info.IsDir() {
-		if err := os.Chmod(dir, 0755); err != nil {
+		if err := os.Chmod(dir, 0750); err != nil {
 			log.Warn("Failed to fix config directory permissions", "dir", dir, "error", err.Error())
 		}
 	}
 	cfgPath := filepath.Join(dir, "agent.yaml")
 	if _, err := os.Stat(cfgPath); err == nil {
-		if err := os.Chmod(cfgPath, 0644); err != nil {
+		if err := os.Chmod(cfgPath, 0640); err != nil {
 			log.Warn("Failed to fix config file permissions", "path", cfgPath, "error", err.Error())
 		}
 	}

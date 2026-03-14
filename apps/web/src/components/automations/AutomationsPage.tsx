@@ -3,6 +3,7 @@ import { Plus } from 'lucide-react';
 import AutomationList, { type Automation } from './AutomationList';
 import AutomationRunHistory, { type AutomationRun as RunHistoryRun } from './AutomationRunHistory';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'delete' | 'history' | 'run';
 
@@ -134,7 +135,7 @@ export default function AutomationsPage() {
   }, [fetchAutomations]);
 
   const handleEdit = (automation: Automation) => {
-    window.location.href = `/automations/${automation.id}`;
+    void navigateTo(`/automations/${automation.id}`);
   };
 
   const handleDelete = (automation: Automation) => {

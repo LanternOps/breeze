@@ -15,6 +15,13 @@
       "when": 1771660800000,
       "tag": "0001_software_policies",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1772064000000,
+      "tag": "0002_user_risk_scoring",
+      "breakpoints": true
     }
   ]
 }

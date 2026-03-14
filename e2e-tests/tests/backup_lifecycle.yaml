@@ -1,0 +1,290 @@
+# Backup Lifecycle E2E Tests
+# Tests the Backup Dashboard, recent jobs, storage providers, overdue devices,
+# attention items, and backup-related API endpoints
+# UI selectors are derived from BackupDashboard.tsx
+# Verification uses API calls, not remote MCP calls
+
+tests:
+  - id: backup_dashboard_loads
+    name: "Backup Dashboard Loads with Overview"
+    description: "Verify the Backup Overview page loads with the correct heading, subtext, and action buttons"
+    tags: [backup, smoke, critical]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: auth
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_backup
+        action: ui
+        description: "Navigate to Backup page and verify heading"
+        playwright:
+          - goto: "/backup"
+          - waitFor: "h2:has-text('Backup Overview')"
+            timeout: 15000
+          - waitFor: "text=Monitor protection coverage, storage trends, and recent activity."
+
+      - id: verify_action_buttons
+        action: ui
+        description: "Verify the Run all backups and View failed action buttons are present"
+        playwright:
+          - waitFor: "button:has-text('Run all backups')"
+          - waitFor: "button:has-text('View failed')"
+
+  - id: backup_dashboard_stat_cards
+    name: "Backup Dashboard Stats and Sections Load"
+    description: "Verify the backup stat cards, Recent Jobs section, and Storage by Provider section render correctly"
+    tags: [backup, dashboard]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: auth
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_backup
+        action: ui
+        description: "Navigate to Backup page"
+        playwright:
+          - goto: "/backup"
+          - waitFor: "h2:has-text('Backup Overview')"
+            timeout: 15000
+
+      - id: verify_recent_jobs_section
+        action: ui
+        description: "Verify the Recent Jobs panel and its View all link are present"
+        playwright:
+          - waitFor: "h3:has-text('Recent Jobs')"
+          - waitFor: "text=Latest backup activity across sites."
+          - waitFor: "button:has-text('View all')"
+
+      - id: verify_storage_provider_section
+        action: ui
+        description: "Verify the Storage by Provider panel is present"
+        playwright:
+          - waitFor: "h3:has-text('Storage by Provider')"
+          - waitFor: "text=Current usage and capacity."
+
+      - id: verify_backup_via_api
+        action: api
+        description: "Verify backup dashboard API returns data"
+        request:
+          method: GET
+          path: "/api/v1/backup/dashboard"
+        expect:
+          data:
+            totals:
+              configs: 0
+            jobsLast24h:
+              completed: 0
+            storage:
+              snapshots: 0
+
+  - id: backup_overdue_devices_section
+    name: "Backup Overdue Devices and Attention Needed"
+    description: "Verify the Devices Needing Backup and Attention Needed sections render with correct content"
+    tags: [backup, alerts]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: auth
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_backup
+        action: ui
+        description: "Navigate to Backup page"
+        playwright:
+          - goto: "/backup"
+          - waitFor: "h2:has-text('Backup Overview')"
+            timeout: 15000
+
+      - id: verify_overdue_section
+        action: ui
+        description: "Verify Devices Needing Backup section with overdue schedule text and Run overdue backups button"
+        playwright:
+          - waitFor: "h3:has-text('Devices Needing Backup')"
+          - waitFor: "text=Overdue based on schedule."
+          - waitFor: "button:has-text('Run overdue backups')"
+
+      - id: verify_attention_section
+        action: ui
+        description: "Verify Attention Needed section with Resolve all button"
+        playwright:
+          - waitFor: "h3:has-text('Attention Needed')"
+          - waitFor: "text=Alerts for backup performance and coverage."
+          - waitFor: "button:has-text('Resolve all')"
+
+      - id: verify_backup_agent_module
+        action: api
+        description: "Verify agent backup module is active via diagnostic logs"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.linux}}/diagnostic-logs"
+          query:
+            component: backup
+            since: "{{testStartTime}}"
+        poll:
+          maxAttempts: 10
+          intervalMs: 3000
+          until: "logs.length > 0"
+        expect:
+          logs: []
+
+  - id: backup_usage_history
+    name: "Backup Usage History API Returns Data"
+    description: "Verify the backup usage-history endpoint returns timeline data used by the storage chart"
+    tags: [backup, storage, api]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: auth
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_backup
+        action: ui
+        description: "Navigate to Backup page"
+        playwright:
+          - goto: "/backup"
+          - waitFor: "h2:has-text('Backup Overview')"
+            timeout: 15000
+
+      - id: verify_usage_history_api
+        action: api
+        description: "Verify the backup usage history endpoint returns points data"
+        request:
+          method: GET
+          path: "/api/v1/backup/usage-history"
+          query:
+            days: "14"
+        expect:
+          data:
+            days: 14
+            points: []
+
+  - id: backup_restore_flow_setup
+    name: "Backup Restore Flow — Test Data Setup and Cleanup"
+    description: "Create test files on the agent that could be used in a restore scenario, then clean up"
+    tags: [backup, restore]
+    nodes: [linux]
+    timeout: 180000
+    steps:
+      - id: auth
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_backup
+        action: ui
+        description: "Navigate to Backup page and confirm it loads"
+        playwright:
+          - goto: "/backup"
+          - waitFor: "h2:has-text('Backup Overview')"
+            timeout: 15000
+
+      - id: create_test_data_on_agent
+        action: api
+        description: "Send command to create test backup data on the Linux agent"
+        request:
+          method: POST
+          path: "/api/v1/devices/{{devices.linux}}/commands"
+          body:
+            type: run_script
+            payload:
+              language: bash
+              content: |
+                mkdir -p /tmp/e2e-backup-test
+                echo "E2E Backup Test File 1 - $(date)" > /tmp/e2e-backup-test/file1.txt
+                echo "E2E Backup Test File 2 - $(date)" > /tmp/e2e-backup-test/file2.txt
+                echo "E2E Backup Test File 3 - $(date)" > /tmp/e2e-backup-test/file3.txt
+                ls /tmp/e2e-backup-test
+        expect:
+          type: run_script
+
+      - id: verify_backup_activity_in_logs
+        action: api
+        description: "Verify backup activity appears in agent diagnostic logs after setup"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.linux}}/diagnostic-logs"
+          query:
+            component: backup
+            since: "{{testStartTime}}"
+            search: "backup"
+        poll:
+          maxAttempts: 15
+          intervalMs: 3000
+          until: "logs.length > 0"
+        expect:
+          logs: []
+
+      - id: cleanup_test_data
+        action: api
+        description: "Clean up test files created on the agent"
+        request:
+          method: POST
+          path: "/api/v1/devices/{{devices.linux}}/commands"
+          body:
+            type: run_script
+            payload:
+              language: bash
+              content: "rm -rf /tmp/e2e-backup-test"
+        expect:
+          type: run_script
+        optional: true

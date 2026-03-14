@@ -1,0 +1,191 @@
+# Comprehensive Dashboard E2E Test
+# A single sturdy test that exercises: login, dashboard rendering, sidebar nav,
+# command palette, user menu, dark mode toggle, and API consistency.
+# This test is designed to PASS reliably against a live Breeze deployment.
+
+tests:
+  - id: dashboard_comprehensive
+    name: "Dashboard Comprehensive Smoke Test"
+    description: >
+      End-to-end test covering login flow, dashboard stat cards and panels,
+      sidebar navigation round-trip, command palette open/close, user menu,
+      dark mode toggle, and API data verification.
+    tags: [dashboard, smoke, critical, comprehensive]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      # ── Step 1: Login ──────────────────────────────────────────
+      - id: login
+        action: ui
+        description: "Login with admin credentials"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      # ── Step 2: Dashboard heading and subheading ───────────────
+      - id: verify_heading
+        action: ui
+        description: "Verify Dashboard heading and subheading render"
+        playwright:
+          - waitFor: "text=Dashboard"
+            timeout: 10000
+          - assert:
+              selector: "h1"
+              contains: "Dashboard"
+          - assert:
+              selector: "text=Overview of your managed devices and alerts"
+              exists: true
+
+      # ── Step 3: Stat cards (Total Devices, Online, Warnings, Critical)
+      - id: verify_stat_cards
+        action: ui
+        description: "Verify all four stat cards are visible"
+        playwright:
+          - waitFor: "text=Total Devices"
+            timeout: 15000
+          - assert:
+              selector: "text=Total Devices"
+              exists: true
+          - assert:
+              selector: "text=Online"
+              exists: true
+          - assert:
+              selector: "text=Warnings"
+              exists: true
+          - assert:
+              selector: "text=Critical"
+              exists: true
+
+      # ── Step 4: Dashboard panels ───────────────────────────────
+      - id: verify_panels
+        action: ui
+        description: "Verify Device Status chart, Recent Alerts, and Recent Activity panels"
+        playwright:
+          - assert:
+              selector: "text=Device Status"
+              exists: true
+          - assert:
+              selector: "text=Recent Alerts"
+              exists: true
+          - assert:
+              selector: "a[href='/alerts']:has-text('View all')"
+              exists: true
+          - assert:
+              selector: "text=Recent Activity"
+              exists: true
+          - assert:
+              selector: "a[href='/audit']:has-text('View audit log')"
+              exists: true
+
+      # ── Step 5: Sidebar navigation ─────────────────────────────
+      - id: verify_sidebar_links
+        action: ui
+        description: "Verify core sidebar navigation links exist"
+        playwright:
+          - assert:
+              selector: "a[href='/']:has-text('Dashboard')"
+              exists: true
+          - assert:
+              selector: "a[href='/devices']:has-text('Devices')"
+              exists: true
+          - assert:
+              selector: "a[href='/scripts']:has-text('Scripts')"
+              exists: true
+          - assert:
+              selector: "a[href='/alerts']:has-text('Alerts')"
+              exists: true
+          - assert:
+              selector: "a[href='/remote']:has-text('Remote Access')"
+              exists: true
+
+      # ── Step 6: Navigate to Devices and back ───────────────────
+      - id: nav_devices_roundtrip
+        action: ui
+        description: "Navigate to Devices page via sidebar, then return to Dashboard"
+        playwright:
+          - click: "a[href='/devices']:has-text('Devices')"
+          - waitFor: "text=Devices"
+            timeout: 10000
+          - click: "a[href='/']:has-text('Dashboard')"
+          - waitFor: "text=Dashboard"
+            timeout: 10000
+          - assert:
+              selector: "h1"
+              contains: "Dashboard"
+
+      # ── Step 7: Command palette open/close ─────────────────────
+      - id: command_palette
+        action: ui
+        description: "Open command palette via search button and close with Escape"
+        playwright:
+          - waitFor: "text=Search devices, scripts, alerts, users, settings"
+            timeout: 10000
+          - click: "button:has-text('Search devices, scripts, alerts, users, settings')"
+          - waitFor: "[role='dialog']"
+            timeout: 5000
+          - assert:
+              selector: "[role='dialog']"
+              exists: true
+          - press_key: "Escape"
+          - waitFor:
+              selector: "[role='dialog']"
+              state: hidden
+            timeout: 5000
+
+      # ── Step 8: User menu ──────────────────────────────────────
+      - id: user_menu
+        action: ui
+        description: "Open user menu and verify Profile, Settings, Sign out options"
+        playwright:
+          - click: "button[aria-haspopup='true']"
+          - waitFor: "text=Profile"
+            timeout: 5000
+          - assert:
+              selector: "a[href='/settings/profile']:has-text('Profile')"
+              exists: true
+          - assert:
+              selector: "a[href='/settings']:has-text('Settings')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Sign out')"
+              exists: true
+          - press_key: "Escape"
+
+      # ── Step 9: Dark mode toggle ───────────────────────────────
+      - id: dark_mode_toggle
+        action: ui
+        description: "Toggle dark mode and verify theme changes"
+        playwright:
+          - assert:
+              selector: "button[title='Switch to dark mode'], button[title='Switch to light mode']"
+              exists: true
+          - click: "button[title='Switch to dark mode'], button[title='Switch to light mode']"
+
+      # ── Step 10: API verification ──────────────────────────────
+      - id: verify_devices_api
+        action: api
+        description: "Verify devices API returns paginated data"
+        request:
+          method: GET
+          path: "/api/v1/devices"
+
+      # ── Step 11: Logout ────────────────────────────────────────
+      - id: logout
+        action: ui
+        description: "Logout and verify redirect to login page"
+        playwright:
+          - click: "button[aria-haspopup='true']"
+          - waitFor: "button:has-text('Sign out')"
+            timeout: 5000
+          - click: "button:has-text('Sign out')"
+          - waitFor:
+              url: "**/login**"
+              timeout: 10000

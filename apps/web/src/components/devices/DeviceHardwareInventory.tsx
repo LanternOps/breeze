@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Cpu, HardDrive, MemoryStick, Network } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import DeviceWarrantyCard from './DeviceWarrantyCard';
 
 type DiskDrive = {
   id?: string;
@@ -306,6 +307,8 @@ export default function DeviceHardwareInventory({ deviceId }: DeviceHardwareInve
           </div>
         </div>
       </div>
+
+      <DeviceWarrantyCard deviceId={deviceId} />
     </div>
   );
 }

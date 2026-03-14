@@ -13,6 +13,10 @@ import { db } from '../db';
 import { deviceMetrics, devices, remoteSessions } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
+import {
+  getS1MetricsSnapshot,
+  setS1MetricsRecorder
+} from '../services/sentinelOne/metrics';
 
 export const metricsRoutes = new Hono();
 const rawMetricsScrapeToken = process.env.METRICS_SCRAPE_TOKEN?.trim();
@@ -145,6 +149,35 @@ const softwareRemediationDecisionsTotal = new Counter({
   registers: [register]
 });
 
+const s1SyncRunsTotal = new Counter({
+  name: 'breeze_s1_sync_runs_total',
+  help: 'SentinelOne sync jobs by job type and outcome',
+  labelNames: ['job', 'outcome'] as const,
+  registers: [register]
+});
+
+const s1SyncDurationSeconds = new Histogram({
+  name: 'breeze_s1_sync_duration_seconds',
+  help: 'SentinelOne sync job duration in seconds',
+  labelNames: ['job', 'outcome'] as const,
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120],
+  registers: [register]
+});
+
+const s1ActionDispatchTotal = new Counter({
+  name: 'breeze_s1_action_dispatch_total',
+  help: 'SentinelOne action dispatch attempts by action and outcome',
+  labelNames: ['action', 'outcome'] as const,
+  registers: [register]
+});
+
+const s1ActionPollTransitionsTotal = new Counter({
+  name: 'breeze_s1_action_poll_transitions_total',
+  help: 'SentinelOne action status transitions observed by poller',
+  labelNames: ['status'] as const,
+  registers: [register]
+});
+
 const processStartTimeGauge = new Gauge({
   name: 'process_start_time_seconds',
   help: 'Start time of the process since unix epoch in seconds',
@@ -170,6 +203,9 @@ scriptsExecutedTotal.inc(0);
 softwarePolicyEvaluationsTotal.labels('allowlist', 'compliant', 'evaluated').inc(0);
 softwarePolicyViolationsTotal.labels('allowlist').inc(0);
 softwareRemediationDecisionsTotal.labels('queued').inc(0);
+s1SyncRunsTotal.labels('sync-integration', 'success').inc(0);
+s1ActionDispatchTotal.labels('isolate', 'accepted').inc(0);
+s1ActionPollTransitionsTotal.labels('queued').inc(0);
 nodejsVersionInfoGauge.labels(process.version).set(1);
 
 interface CounterValue {
@@ -181,6 +217,9 @@ const httpRequestState = new Map<string, CounterValue>();
 const agentHeartbeatState = new Map<string, CounterValue>();
 const softwarePolicyEvaluationState = new Map<string, CounterValue>();
 const softwareRemediationDecisionState = new Map<string, CounterValue>();
+const sensitiveDataFindingState = new Map<string, CounterValue>();
+const sensitiveDataRemediationState = new Map<string, CounterValue>();
+let sensitiveDataScansQueuedTotal = 0;
 
 let devicesActive = 0;
 let organizationsTotal = 0;
@@ -305,6 +344,24 @@ export function recordSoftwarePolicyViolation(
   softwarePolicyViolationsCount += safeCount;
 }
 
+export function recordSensitiveDataFinding(dataType: string, risk: string, count = 1): void {
+  const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  if (safeCount === 0) return;
+  upsertCounterState(sensitiveDataFindingState, { data_type: dataType, risk }, safeCount);
+}
+
+export function recordSensitiveDataRemediationDecision(decision: string, count = 1): void {
+  const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  if (safeCount === 0) return;
+  upsertCounterState(sensitiveDataRemediationState, { decision }, safeCount);
+}
+
+export function recordSensitiveDataScanQueued(count = 1): void {
+  const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  if (safeCount === 0) return;
+  sensitiveDataScansQueuedTotal += safeCount;
+}
+
 export function recordSoftwareRemediationDecision(decision: string, count = 1): void {
   const normalizedDecision = decision.trim().toLowerCase() || 'unknown';
   const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
@@ -314,6 +371,20 @@ export function recordSoftwareRemediationDecision(decision: string, count = 1): 
     decision: normalizedDecision,
   }, safeCount);
 }
+
+setS1MetricsRecorder({
+  onSyncRun: (job, outcome, durationMs) => {
+    const safeDuration = Number.isFinite(durationMs) ? Math.max(durationMs, 0) : 0;
+    s1SyncRunsTotal.labels(job, outcome).inc();
+    s1SyncDurationSeconds.labels(job, outcome).observe(safeDuration / 1000);
+  },
+  onActionDispatch: (action, outcome) => {
+    s1ActionDispatchTotal.labels(action, outcome).inc();
+  },
+  onActionPollTransition: (status) => {
+    s1ActionPollTransitionsTotal.labels(status).inc();
+  }
+});
 
 async function metricsResponse(c: any): Promise<Response> {
   updateProcessMetrics();
@@ -465,6 +536,7 @@ metricsRoutes.get('/scrape', async (c) => {
 });
 
 metricsRoutes.get('/json', authMiddleware, requireScope('system'), async (c) => {
+  const s1Snapshot = getS1MetricsSnapshot();
   return c.json({
     http_requests_total: Array.from(httpRequestState.values()),
     http_requests_in_flight: [{ labels: {}, value: inFlightRequests }],
@@ -475,12 +547,23 @@ metricsRoutes.get('/json', authMiddleware, requireScope('system'), async (c) => 
       breeze_alerts_total: alertsTotal,
       alert_queue_length: alertQueueLength,
       scripts_executed_total: scriptsExecutedCount,
-      software_policy_violations_total: softwarePolicyViolationsCount
+      software_policy_violations_total: softwarePolicyViolationsCount,
+      sensitive_data_scans_queued_total: sensitiveDataScansQueuedTotal
     },
     software_policy: {
       evaluations: Array.from(softwarePolicyEvaluationState.values()),
       remediation_decisions: Array.from(softwareRemediationDecisionState.values()),
       violations_total: softwarePolicyViolationsCount
+    },
+    sentinelone: {
+      sync_runs: s1Snapshot.syncRuns,
+      action_dispatches: s1Snapshot.actionDispatches,
+      action_poll_transitions: s1Snapshot.actionPollTransitions,
+    },
+    sensitive_data: {
+      scans_queued_total: sensitiveDataScansQueuedTotal,
+      findings: Array.from(sensitiveDataFindingState.values()),
+      remediation_decisions: Array.from(sensitiveDataRemediationState.values()),
     },
     agent_heartbeats: Array.from(agentHeartbeatState.values()),
     process: {
@@ -508,15 +591,15 @@ export async function metricsMiddleware(c: any, next: () => Promise<void>): Prom
   } finally {
     httpRequestsInFlight.dec();
     inFlightRequests -= 1;
+
+    const duration = (performance.now() - start) / 1000;
+    const status = c.res?.status ?? 500;
+    const method = c.req.method;
+    const path = c.req.path;
+
+    const auth = c.get('auth');
+    const orgId = auth?.orgId;
+
+    recordHttpRequest(method, path, status, duration, orgId);
   }
-
-  const duration = (performance.now() - start) / 1000;
-  const status = c.res.status;
-  const method = c.req.method;
-  const path = c.req.path;
-
-  const auth = c.get('auth');
-  const orgId = auth?.orgId;
-
-  recordHttpRequest(method, path, status, duration, orgId);
 }

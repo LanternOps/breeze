@@ -5,6 +5,11 @@ import { isIP } from 'node:net';
 // Enrollment
 // ============================================
 
+const DEVICE_ROLES = [
+  'workstation', 'server', 'printer', 'router', 'switch',
+  'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'
+] as const;
+
 export const enrollSchema = z.object({
   enrollmentKey: z.string().min(1),
   enrollmentSecret: z.string().min(1).optional(),
@@ -13,6 +18,7 @@ export const enrollSchema = z.object({
   osVersion: z.string().min(1),
   architecture: z.string().min(1),
   agentVersion: z.string().min(1),
+  deviceRole: z.enum(DEVICE_ROLES).optional(),
   hardwareInfo: z.object({
     cpuModel: z.string().optional(),
     cpuCores: z.number().int().optional(),
@@ -30,7 +36,7 @@ export const enrollSchema = z.object({
     mac: z.string().optional(),
     ip: z.string().optional(),
     isPrimary: z.boolean().optional()
-  })).optional()
+  })).max(100).optional()
 });
 
 // ============================================
@@ -72,6 +78,7 @@ export const heartbeatSchema = z.object({
   metricsAvailable: z.boolean().optional(),
   status: z.enum(['ok', 'warning', 'error']),
   agentVersion: z.string(),
+  helperVersion: z.string().max(20).optional(),
   ipHistoryUpdate: z.object({
     deviceId: z.string().optional(),
     currentIPs: z.array(z.object({
@@ -126,7 +133,11 @@ export const heartbeatSchema = z.object({
   }).optional(),
   pendingReboot: z.boolean().optional(),
   lastUser: z.string().max(255).optional(),
-  uptime: z.number().int().min(0).optional()
+  uptime: z.number().int().min(0).optional(),
+  deviceRole: z.enum(DEVICE_ROLES).optional(),
+  hostname: z.string().min(1).max(255).optional(),
+  osVersion: z.string().min(1).max(255).optional(),
+  osBuild: z.string().max(255).optional()
 });
 
 // ============================================
@@ -136,10 +147,10 @@ export const heartbeatSchema = z.object({
 export const commandResultSchema = z.object({
   status: z.enum(['completed', 'failed', 'timeout']),
   exitCode: z.number().int().optional(),
-  stdout: z.string().optional(),
-  stderr: z.string().optional(),
-  durationMs: z.number().int(),
-  error: z.string().optional()
+  stdout: z.string().max(5_000_000).optional(),
+  stderr: z.string().max(5_000_000).optional(),
+  durationMs: z.number().int().optional(),
+  error: z.string().max(10_000).optional()
 });
 
 // ============================================
@@ -171,9 +182,18 @@ export const securityStatusIngestSchema = z.object({
   threatCount: z.number().int().min(0).optional(),
   firewallEnabled: z.boolean().optional(),
   encryptionStatus: z.string().optional(),
-  encryptionDetails: z.record(z.unknown()).optional(),
-  localAdminSummary: z.record(z.unknown()).optional(),
-  passwordPolicySummary: z.record(z.unknown()).optional(),
+  encryptionDetails: z.record(z.unknown()).optional().refine(
+    (val) => !val || JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ),
+  localAdminSummary: z.record(z.unknown()).optional().refine(
+    (val) => !val || JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ),
+  passwordPolicySummary: z.record(z.unknown()).optional().refine(
+    (val) => !val || JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ),
   gatekeeperEnabled: z.boolean().optional(),
   guardianEnabled: z.boolean().optional(),
   windowsSecurityCenterAvailable: z.boolean().optional(),
@@ -184,9 +204,9 @@ export const securityStatusIngestSchema = z.object({
       realTimeProtection: z.boolean().optional(),
       definitionsUpToDate: z.boolean().optional(),
       productState: z.number().int().optional()
-    }).passthrough()
-  ).optional()
-}).passthrough();
+    })
+  ).max(50).optional()
+});
 
 export type SecurityStatusPayload = z.infer<typeof securityStatusIngestSchema>;
 
@@ -201,6 +221,12 @@ export const securityCommandTypes = {
 } as const;
 
 export const filesystemAnalysisCommandType = 'filesystem_analysis';
+export const sensitiveDataCommandTypes = {
+  scan: 'sensitive_data_scan',
+  encrypt: 'encrypt_file',
+  secureDelete: 'secure_delete_file',
+  quarantine: 'quarantine_file'
+} as const;
 
 // ============================================
 // Management Posture
@@ -231,7 +257,7 @@ export const managementPostureIngestSchema = z.object({
     mdmUrl: z.string().optional(),
     source: z.string(),
   }),
-  errors: z.array(z.string()).optional(),
+  errors: z.array(z.string()).max(100).optional(),
 });
 
 // ============================================
@@ -261,7 +287,7 @@ export const updateSoftwareSchema = z.object({
     uninstallString: z.string().optional(),
     fileHash: z.string().max(128).optional(),
     hashAlgorithm: z.string().max(10).optional(),
-  }))
+  })).max(10000)
 });
 
 export const updateDisksSchema = z.object({
@@ -274,7 +300,7 @@ export const updateDisksSchema = z.object({
     freeGb: z.number(),
     usedPercent: z.number(),
     health: z.string().optional()
-  }))
+  })).max(100)
 });
 
 export const updateNetworkSchema = z.object({
@@ -284,7 +310,7 @@ export const updateNetworkSchema = z.object({
     ipAddress: z.string().optional(),
     ipType: z.enum(['ipv4', 'ipv6']).optional(),
     isPrimary: z.boolean().optional()
-  }))
+  })).max(100)
 });
 
 // ============================================
@@ -298,7 +324,7 @@ export const updateRegistryStateSchema = z.object({
     valueData: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
     valueType: z.string().optional(),
     collectedAt: z.string().optional()
-  })),
+  })).max(5000),
   replace: z.boolean().optional().default(true)
 });
 
@@ -308,7 +334,7 @@ export const updateConfigStateSchema = z.object({
     configKey: z.string().min(1),
     configValue: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
     collectedAt: z.string().optional()
-  })),
+  })).max(5000),
   replace: z.boolean().optional().default(true)
 });
 
@@ -361,7 +387,7 @@ export const submitPatchesSchema = z.object({
     releaseDate: z.string().optional(),
     description: z.string().optional(),
     source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).default('custom')
-  })),
+  })).max(5000),
   installed: z.array(z.object({
     name: z.string().min(1),
     version: z.string().optional(),
@@ -370,7 +396,7 @@ export const submitPatchesSchema = z.object({
     category: z.string().optional(),
     source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).default('custom'),
     installedAt: z.string().optional()
-  })).optional()
+  })).max(5000).optional()
 });
 
 // ============================================
@@ -387,7 +413,7 @@ export const submitConnectionsSchema = z.object({
     state: z.string().optional(),
     pid: z.number().int().optional(),
     processName: z.string().optional()
-  }))
+  })).max(10000)
 });
 
 // ============================================
@@ -399,7 +425,10 @@ export const agentLogEntrySchema = z.object({
   level: z.enum(['debug', 'info', 'warn', 'error']),
   component: z.string().max(100),
   message: z.string(),
-  fields: z.record(z.any()).optional(),
+  fields: z.record(z.any()).optional().refine(
+    (val) => !val || JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ),
   agentVersion: z.string().max(50).optional(),
 });
 
@@ -419,8 +448,11 @@ export const submitEventLogsSchema = z.object({
     source: z.string().min(1),
     eventId: z.string().optional(),
     message: z.string().min(1),
-    details: z.record(z.any()).optional()
-  }))
+    details: z.record(z.any()).optional().refine(
+      (val) => !val || JSON.stringify(val).length <= 65536,
+      { message: 'Object too large (max 64KB)' }
+    )
+  })).max(5000)
 });
 
 // ============================================

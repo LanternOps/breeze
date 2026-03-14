@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Activity, AlertTriangle, RefreshCcw } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, widthPercentClass } from '@/lib/utils';
 
 type DeviceStatus = 'queued' | 'running' | 'completed' | 'failed';
 
@@ -86,7 +86,7 @@ export default function DeploymentProgress() {
           </div>
         </div>
         <div className="mt-4 h-3 w-full rounded-full bg-muted">
-          <div className="h-3 rounded-full bg-primary" style={{ width: `${stats.progress}%` }} />
+          <div className={cn('h-3 rounded-full bg-primary', widthPercentClass(stats.progress))} />
         </div>
 
         <div className="mt-4 grid gap-4 sm:grid-cols-4">

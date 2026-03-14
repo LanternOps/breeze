@@ -47,7 +47,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		webrtc.RTPHeaderExtensionCapability{URI: playoutDelayURI},
 		webrtc.RTPCodecTypeVideo,
 	); regErr != nil {
-		slog.Warn("Failed to register playout-delay extension (non-fatal)", "error", regErr)
+		slog.Warn("Failed to register playout-delay extension (non-fatal)", "error", regErr.Error())
 	}
 	api := webrtc.NewAPI(webrtc.WithMediaEngine(mediaEngine))
 
@@ -110,6 +110,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	go func() {
 		rtcpBuf := make([]byte, 1500)
 		var lastKF time.Time
+		firstKF := true
 		for {
 			n, _, readErr := sender.Read(rtcpBuf)
 			if readErr != nil {
@@ -122,10 +123,12 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			for _, p := range pkts {
 				switch p.(type) {
 				case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
-					// Rate-limit keyframe forcing.
-					if time.Since(lastKF) < 500*time.Millisecond {
+					// Allow the first PLI immediately for fast startup,
+					// then rate-limit subsequent ones to 500ms apart.
+					if !firstKF && time.Since(lastKF) < 500*time.Millisecond {
 						continue
 					}
+					firstKF = false
 					lastKF = time.Now()
 					if session.encoder != nil {
 						_ = session.encoder.ForceKeyframe()
@@ -175,8 +178,11 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		}
 		captureImagePool.Put(probeImg)
 	} else if probeErr != nil {
-		slog.Warn("Probe capture failed, using GetScreenBounds dimensions",
-			"session", sessionID, "error", probeErr.Error())
+		// If the probe capture fails, the display is inaccessible (e.g. the
+		// helper is in a disconnected Windows session with no active display).
+		// Abort instead of returning a WebRTC answer that will stream zero frames.
+		// The defer at line 80 calls StopSession which closes the capturer.
+		return "", fmt.Errorf("screen capture failed (display may be unavailable): %w", probeErr)
 	}
 
 	// Start at 2.5Mbps — matches the viewer's default max-bitrate slider.
@@ -264,7 +270,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	// Create clipboard DataChannel
 	clipboardDC, err := peerConn.CreateDataChannel("clipboard", nil)
 	if err != nil {
-		slog.Warn("Failed to create clipboard DataChannel", "session", sessionID, "error", err)
+		slog.Warn("Failed to create clipboard DataChannel", "session", sessionID, "error", err.Error())
 	} else if clipboardDC != nil {
 		session.clipboardSync = clipboard.NewClipboardSync(clipboardDC, clipboard.NewSystemClipboard())
 		clipboardDC.OnOpen(func() {
@@ -275,7 +281,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	// Create filedrop DataChannel
 	filedropDC, err := peerConn.CreateDataChannel("filedrop", nil)
 	if err != nil {
-		slog.Warn("Failed to create filedrop DataChannel", "session", sessionID, "error", err)
+		slog.Warn("Failed to create filedrop DataChannel", "session", sessionID, "error", err.Error())
 	} else if filedropDC != nil {
 		session.fileDropHandler = filedrop.NewFileDropHandler(filedropDC, "")
 	}
@@ -290,7 +296,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		MaxRetransmits: &maxRetransmits,
 	})
 	if err != nil {
-		slog.Warn("Failed to create cursor DataChannel", "session", sessionID, "error", err)
+		slog.Warn("Failed to create cursor DataChannel", "session", sessionID, "error", err.Error())
 	} else {
 		session.cursorDC = cursorDC
 	}
@@ -307,10 +313,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		"desktop-audio",
 	)
 	if err != nil {
-		slog.Warn("Failed to create audio track", "session", sessionID, "error", err)
+		slog.Warn("Failed to create audio track", "session", sessionID, "error", err.Error())
 	} else {
 		if _, addErr := peerConn.AddTrack(audioTrack); addErr != nil {
-			slog.Warn("Failed to add audio track", "session", sessionID, "error", addErr)
+			slog.Warn("Failed to add audio track", "session", sessionID, "error", addErr.Error())
 		} else {
 			session.audioTrack = audioTrack
 		}
@@ -371,14 +377,47 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		return "", fmt.Errorf("failed to set local description: %w", err)
 	}
 
-	// Wait for ICE gathering to complete
+	// Fast ICE gathering: return as soon as we have usable candidates rather
+	// than waiting for full gathering. Host candidates appear in <10ms, STUN
+	// reflexive candidates in ~50-200ms. We wait for the first candidate,
+	// then collect for a short window before returning.
 	gatherComplete := webrtc.GatheringCompletePromise(peerConn)
-	timer := time.NewTimer(iceGatherTimeout)
-	defer timer.Stop()
+
+	// Channel signalled on first candidate
+	firstCandidate := make(chan struct{}, 1)
+	peerConn.OnICECandidate(func(c *webrtc.ICECandidate) {
+		if c != nil {
+			select {
+			case firstCandidate <- struct{}{}:
+			default:
+			}
+		}
+	})
+
+	hardTimer := time.NewTimer(iceGatherTimeout)
+	defer hardTimer.Stop()
+
+	// Phase 1: wait for first candidate (or full completion / hard timeout)
 	select {
 	case <-gatherComplete:
-	case <-timer.C:
-		return "", fmt.Errorf("ICE gathering timed out after %s", iceGatherTimeout)
+		// All candidates gathered quickly — return immediately
+	case <-firstCandidate:
+		// Got first candidate — give a short window to collect more
+		// (host + STUN candidates typically all arrive within 500ms)
+		collectTimer := time.NewTimer(500 * time.Millisecond)
+		select {
+		case <-gatherComplete:
+			collectTimer.Stop()
+		case <-collectTimer.C:
+			slog.Info("ICE early-exit: returning answer with partial candidates",
+				"session", sessionID,
+				"gatheringState", peerConn.ICEGatheringState().String())
+		case <-session.done:
+			collectTimer.Stop()
+			return "", fmt.Errorf("session stopped during ICE gathering")
+		}
+	case <-hardTimer.C:
+		return "", fmt.Errorf("ICE gathering timed out after %s (no candidates)", iceGatherTimeout)
 	case <-session.done:
 		return "", fmt.Errorf("session stopped during ICE gathering")
 	}

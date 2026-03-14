@@ -1,0 +1,421 @@
+# Reports & Analytics E2E Tests
+# Tests the Reports list page, New Report / Report Builder forms, and the Analytics dashboard.
+# The ReportsPage renders a ReportsList with two tabs: Saved Reports and Recent Runs.
+# The AnalyticsPage renders dashboard widgets with a dashboard selector, date range picker,
+# and a Refresh button.
+
+tests:
+  - id: reports_page_loads
+    name: "Reports Page Loads with Tabs and Action Buttons"
+    description: "Verify /reports renders the Reports heading, the Saved Reports and Recent Runs tabs, and the Ad-hoc Report and New Report action buttons"
+    tags: [reports, smoke, critical]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_reports
+        action: ui
+        description: "Navigate to Reports page"
+        playwright:
+          - goto: "/reports"
+          - waitFor: "text=Reports"
+            timeout: 15000
+          - waitFor: "text=Generate and schedule reports for your infrastructure."
+            timeout: 5000
+
+      - id: verify_tabs
+        action: ui
+        description: "Verify Saved Reports and Recent Runs tabs"
+        playwright:
+          - waitFor: "button:has-text('Saved Reports')"
+            timeout: 5000
+          - waitFor: "button:has-text('Recent Runs')"
+            timeout: 5000
+
+      - id: verify_action_buttons
+        action: ui
+        description: "Verify Ad-hoc Report and New Report buttons"
+        playwright:
+          - waitFor: "a:has-text('Ad-hoc Report')"
+            timeout: 5000
+          - waitFor: "a:has-text('New Report')"
+            timeout: 5000
+          - waitFor: "a[href='/reports/builder']"
+            timeout: 5000
+          - waitFor: "a[href='/reports/new']"
+            timeout: 5000
+
+      - id: verify_reports_api
+        action: api
+        description: "Confirm the reports list API returns a valid response"
+        request:
+          method: GET
+          path: "/api/v1/reports"
+        assert:
+          status: 200
+        expect:
+          pagination: {}
+
+  - id: reports_saved_reports_table
+    name: "Saved Reports Tab Shows Table Columns"
+    description: "On the Saved Reports tab, verify the reports table renders the Name, Type, Schedule, Format, Last Generated, and Actions columns"
+    tags: [reports, table]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_reports
+        action: ui
+        description: "Navigate to Reports page"
+        playwright:
+          - goto: "/reports"
+          - waitFor: "text=Reports"
+            timeout: 15000
+
+      - id: click_saved_reports_tab
+        action: ui
+        description: "Click the Saved Reports tab"
+        playwright:
+          - click: "button:has-text('Saved Reports')"
+          - waitFor: "text=Reports"
+            timeout: 5000
+
+      - id: verify_table_or_empty_state
+        action: ui
+        description: "Verify either the table columns or the empty state CTA is shown"
+        playwright:
+          - waitFor: "text=Reports"
+            timeout: 5000
+
+  - id: reports_recent_runs_tab
+    name: "Recent Runs Tab Renders"
+    description: "Switch to the Recent Runs tab and verify either the runs table columns (Report, Status, Started, Completed, Actions) or the empty state message are shown"
+    tags: [reports, runs]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_reports
+        action: ui
+        description: "Navigate to Reports page"
+        playwright:
+          - goto: "/reports"
+          - waitFor: "text=Reports"
+            timeout: 15000
+
+      - id: click_recent_runs_tab
+        action: ui
+        description: "Click the Recent Runs tab"
+        playwright:
+          - click: "button:has-text('Recent Runs')"
+          - waitFor: "text=Reports"
+            timeout: 5000
+
+      - id: verify_recent_runs_api
+        action: api
+        description: "Confirm the report runs endpoint responds"
+        request:
+          method: GET
+          path: "/api/v1/reports/runs"
+          query:
+            limit: "20"
+        assert:
+          status: 200
+        expect:
+          pagination: {}
+
+  - id: reports_new_report_page
+    name: "Create Report Page Loads"
+    description: "Navigate to /reports/new and verify the Create Report heading, subtitle, and the ReportBuilder form renders with data-source type cards (Devices, Alerts, Patches, Compliance, Activity)"
+    tags: [reports, create, form]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_new_report
+        action: ui
+        description: "Navigate to the Create Report page"
+        playwright:
+          - goto: "/reports/new"
+          - waitFor: "text=Create Report"
+            timeout: 15000
+          - waitFor: "text=Configure a new report to track and analyze your infrastructure."
+            timeout: 5000
+
+      - id: verify_report_type_cards
+        action: ui
+        description: "Verify the five report type option cards in the builder"
+        playwright:
+          - waitFor: "text=Devices"
+            timeout: 10000
+          - waitFor: "text=Inventory and health posture across managed endpoints"
+            timeout: 5000
+          - waitFor: "text=Alerts"
+            timeout: 5000
+          - waitFor: "text=Alert volume, severity, and response performance"
+            timeout: 5000
+          - waitFor: "text=Patches"
+            timeout: 5000
+          - waitFor: "text=Compliance"
+            timeout: 5000
+          - waitFor: "text=Activity"
+            timeout: 5000
+
+  - id: reports_builder_page
+    name: "Report Builder (Ad-hoc) Page Loads"
+    description: "Navigate to /reports/builder and verify the Report Builder heading, subtitle, and builder form renders"
+    tags: [reports, builder]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_report_builder
+        action: ui
+        description: "Navigate to the Report Builder page"
+        playwright:
+          - goto: "/reports/builder"
+          - waitFor: "text=Report Builder"
+            timeout: 15000
+          - waitFor: "text=Design, schedule, and distribute reports with live previews."
+            timeout: 5000
+
+      - id: verify_builder_type_cards
+        action: ui
+        description: "Verify the report type cards are rendered in the builder"
+        playwright:
+          - waitFor: "text=Devices"
+            timeout: 10000
+          - waitFor: "text=Alerts"
+            timeout: 5000
+          - waitFor: "text=Patches"
+            timeout: 5000
+
+  - id: analytics_dashboard_loads
+    name: "Analytics Dashboard Loads with Widget Grid"
+    description: "Navigate to /analytics, verify the Analytics heading, the dashboard selector (Operations Overview, Capacity Planning, SLA Compliance), the date range picker, and the Refresh button"
+    tags: [analytics, smoke, critical]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_analytics
+        action: ui
+        description: "Navigate to Analytics page"
+        playwright:
+          - goto: "/analytics"
+          - waitFor: "text=Analytics"
+            timeout: 15000
+          - waitFor: "text=Insights across your fleet and services"
+            timeout: 5000
+
+      - id: verify_controls
+        action: ui
+        description: "Verify the dashboard selector, date range dropdown, and Refresh button"
+        playwright:
+          - waitFor: "select:has(option[value='operations'])"
+            timeout: 10000
+          - waitFor: "select:has(option[value='7d'])"
+            timeout: 5000
+          - waitFor: "button:has-text('Refresh')"
+            timeout: 5000
+
+      - id: verify_dashboard_options
+        action: ui
+        description: "Verify the three dashboard view options exist in the selector"
+        playwright:
+          - assert:
+              selector: "select:has(option:has-text('Operations Overview'))"
+              exists: true
+          - assert:
+              selector: "select:has(option:has-text('Capacity Planning'))"
+              exists: true
+          - assert:
+              selector: "select:has(option:has-text('SLA Compliance'))"
+              exists: true
+
+      - id: verify_date_range_options
+        action: ui
+        description: "Verify date range options in the date picker"
+        playwright:
+          - assert:
+              selector: "select:has(option:has-text('Last 24 hours'))"
+              exists: true
+          - assert:
+              selector: "select:has(option:has-text('Last 7 days'))"
+              exists: true
+          - assert:
+              selector: "select:has(option:has-text('Last 30 days'))"
+              exists: true
+          - assert:
+              selector: "select:has(option:has-text('Custom range'))"
+              exists: true
+
+  - id: analytics_change_dashboard_view
+    name: "Analytics Dashboard View Selector Switches Layout"
+    description: "Switch the dashboard selector from Operations Overview to Capacity Planning and verify the page re-renders without error"
+    tags: [analytics, dashboard-selector]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_analytics
+        action: ui
+        description: "Navigate to Analytics and wait for initial load"
+        playwright:
+          - goto: "/analytics"
+          - waitFor: "text=Analytics"
+            timeout: 15000
+          - waitFor: "select:has(option[value='operations'])"
+            timeout: 10000
+
+      - id: switch_to_capacity_planning
+        action: ui
+        description: "Select Capacity Planning from the dashboard selector"
+        playwright:
+          - select: "select:has(option[value='capacity'])"
+            value: "capacity"
+          - waitFor: "text=Analytics"
+            timeout: 5000
+
+      - id: switch_to_sla_compliance
+        action: ui
+        description: "Select SLA Compliance from the dashboard selector"
+        playwright:
+          - select: "select:has(option[value='sla'])"
+            value: "sla"
+          - waitFor: "text=Analytics"
+            timeout: 5000
+
+  - id: analytics_refresh_button
+    name: "Analytics Refresh Button Reloads Data"
+    description: "Click the Refresh button on the Analytics page and verify the updated timestamp appears"
+    tags: [analytics, refresh]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_analytics
+        action: ui
+        description: "Navigate to Analytics and wait for page to be ready"
+        playwright:
+          - goto: "/analytics"
+          - waitFor: "text=Analytics"
+            timeout: 15000
+          - waitFor: "button:has-text('Refresh')"
+            timeout: 10000
+
+      - id: click_refresh
+        action: ui
+        description: "Click the Refresh button and verify the 'Updated' timestamp appears"
+        playwright:
+          - click: "button:has-text('Refresh')"
+          - waitFor: "text=Updated"
+            timeout: 20000
+
+      - id: verify_executive_summary_api
+        action: api
+        description: "Confirm the analytics executive summary endpoint responds"
+        request:
+          method: GET
+          path: "/api/v1/analytics/executive-summary"
+        assert:
+          status: 200
+        expect:
+          data:
+            devices: {}

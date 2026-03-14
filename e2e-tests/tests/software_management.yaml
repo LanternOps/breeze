@@ -1,0 +1,300 @@
+# Software Management E2E Tests
+# Tests app library (catalog), software inventory, software policies, and config policies
+# Verification uses API queries; no remote MCP calls
+
+tests:
+  - id: software_catalog_page_loads
+    name: "Software Catalog Page Loads"
+    description: "Verify the Software Catalog page renders with header and search controls"
+    tags: [software, catalog, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_software_catalog
+        action: ui
+        description: "Navigate to Software Catalog (/software)"
+        playwright:
+          - goto: "/software"
+          - waitFor: "text=Software Catalog"
+            timeout: 15000
+
+      - id: verify_catalog_controls
+        action: ui
+        description: "Verify search input, category filter, Add Package and Bulk Deploy buttons"
+        playwright:
+          - waitFor: "input[placeholder*='Search software']"
+            timeout: 10000
+          - waitFor: "button:has-text('Add Package')"
+            timeout: 5000
+          - waitFor: "button:has-text('Bulk Deploy')"
+            timeout: 5000
+          - waitFor: "select"
+            timeout: 5000
+
+  - id: software_catalog_search_filter
+    name: "Software Catalog Search and Category Filter"
+    description: "Verify search and category filtering narrow the software list"
+    tags: [software, catalog, search]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_catalog
+        action: ui
+        description: "Navigate to Software Catalog"
+        playwright:
+          - goto: "/software"
+          - waitFor: "text=Software Catalog"
+            timeout: 15000
+
+      - id: search_software
+        action: ui
+        description: "Type in search box and verify list responds"
+        playwright:
+          - fill:
+              "input[placeholder*='Search software']": "chrome"
+          - waitFor: "text=Browse and deploy approved software"
+            timeout: 5000
+
+      - id: clear_search_and_filter_category
+        action: ui
+        description: "Clear search and select a category from the dropdown"
+        playwright:
+          - fill:
+              "input[placeholder*='Search software']": ""
+          - selectOption:
+              "select": "browser"
+          - waitFor: "text=Software Catalog"
+            timeout: 5000
+
+      - id: verify_via_api
+        action: api
+        description: "Verify software catalog API returns data"
+        request:
+          method: GET
+          path: "/api/v1/software/catalog"
+        assert:
+          status: 200
+        expect:
+          pagination: {}
+
+  - id: software_inventory_page_loads
+    name: "Software Inventory Page Loads"
+    description: "Verify the Software Inventory tab shows the aggregate install view"
+    tags: [software, inventory, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_software_inventory
+        action: ui
+        description: "Navigate to /software-inventory (inventory tab)"
+        playwright:
+          - goto: "/software-inventory"
+          - waitFor: "text=Software"
+            timeout: 15000
+
+      - id: verify_inventory_tabs
+        action: ui
+        description: "Verify the Inventory and Policies tabs are present"
+        playwright:
+          - waitFor: "button:has-text('Inventory')"
+            timeout: 10000
+          - waitFor: "button:has-text('Policies')"
+            timeout: 5000
+
+      - id: verify_agent_software_data
+        action: api
+        description: "Verify agent has reported software inventory via diagnostic logs"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.linux}}/diagnostic-logs"
+          query:
+            component: software
+            since: "{{testStartTime}}"
+        poll:
+          maxAttempts: 15
+          intervalMs: 3000
+          until: "logs.length > 0"
+        expect:
+          offset: 0
+
+  - id: software_policies_page_loads
+    name: "Software Policies (Compliance) Page Loads"
+    description: "Verify the Software Policies tab renders the compliance/allowlist controls"
+    tags: [software, policies, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_software_policies
+        action: ui
+        description: "Navigate to /software-policies (policies tab)"
+        playwright:
+          - goto: "/software-policies"
+          - waitFor: "text=Software"
+            timeout: 15000
+
+      - id: click_policies_tab
+        action: ui
+        description: "Click the Policies tab to ensure compliance dashboard loads"
+        playwright:
+          - click: "button:has-text('Policies')"
+          - waitFor: "text=Software"
+            timeout: 10000
+
+      - id: verify_api_policies
+        action: api
+        description: "Verify software policies API is reachable"
+        request:
+          method: GET
+          path: "/api/v1/software/policies"
+        assert:
+          status: 200
+        expect:
+          pagination: {}
+
+  - id: software_add_package_to_catalog
+    name: "Add Package to Software Catalog"
+    description: "Open the Add Package form, fill details, and cancel (no destructive change)"
+    tags: [software, catalog, forms]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_catalog
+        action: ui
+        description: "Navigate to Software Catalog"
+        playwright:
+          - goto: "/software"
+          - waitFor: "text=Software Catalog"
+            timeout: 15000
+
+      - id: open_add_package_form
+        action: ui
+        description: "Click Add Package to open the add form"
+        playwright:
+          - click: "button:has-text('Add Package')"
+          - waitFor: "text=Add Package"
+            timeout: 10000
+
+      - id: fill_package_form
+        action: ui
+        description: "Fill in package name and vendor fields"
+        playwright:
+          - fill:
+              "input[placeholder*='Package name'], input[name='name']": "E2E Test Package"
+          - waitFor: "text=Add Package"
+            timeout: 5000
+
+      - id: cancel_form
+        action: ui
+        description: "Cancel the form to avoid creating test data"
+        optional: true
+        playwright:
+          - click: "button:has-text('Cancel')"
+
+  - id: software_windows_inventory
+    name: "Windows Software Inventory Collection"
+    description: "Verify Windows agent reports software inventory and the UI reflects it"
+    tags: [software, inventory, windows]
+    nodes: [windows]
+    timeout: 180000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: verify_windows_software_in_logs
+        action: api
+        description: "Verify Windows agent has reported software via diagnostic logs"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.windows}}/diagnostic-logs"
+          query:
+            component: software
+            since: "{{testStartTime}}"
+        poll:
+          maxAttempts: 15
+          intervalMs: 3000
+          until: "logs.length > 0"
+        expect:
+          offset: 0
+
+      - id: navigate_software_inventory
+        action: ui
+        description: "Navigate to Software Inventory page and confirm load"
+        playwright:
+          - goto: "/software-inventory"
+          - waitFor: "text=Software"
+            timeout: 15000

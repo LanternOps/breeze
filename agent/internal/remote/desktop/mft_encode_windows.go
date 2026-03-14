@@ -144,10 +144,10 @@ func (m *mftEncoder) createSample(nv12 []byte) (uintptr, error) {
 	m.frameIdx++
 
 	if _, err := comCall(pSample, vtblSetSampleTime, uintptr(sampleTime)); err != nil {
-		slog.Debug("SetSampleTime failed (non-fatal)", "error", err)
+		slog.Debug("SetSampleTime failed (non-fatal)", "error", err.Error())
 	}
 	if _, err := comCall(pSample, vtblSetSampleDuration, uintptr(frameDuration100ns)); err != nil {
-		slog.Debug("SetSampleDuration failed (non-fatal)", "error", err)
+		slog.Debug("SetSampleDuration failed (non-fatal)", "error", err.Error())
 	}
 
 	// Add buffer to sample
@@ -425,7 +425,7 @@ func (m *mftEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 	if m.gpuConv == nil {
 		conv, err := newGPUConverter(m.d3d11Device, m.d3d11Context, bgraTexture, m.width, m.height)
 		if err != nil {
-			slog.Warn("GPU converter init failed, falling back to CPU path permanently", "error", err)
+			slog.Warn("GPU converter init failed, falling back to CPU path permanently", "error", err.Error())
 			m.gpuEnabled = false
 			m.gpuFailed = true
 			// Tear down DXGI device manager so MFT reverts to CPU buffer mode

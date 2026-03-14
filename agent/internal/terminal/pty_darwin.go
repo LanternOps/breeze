@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"syscall"
 	"unsafe"
 )
@@ -65,21 +66,42 @@ func (s *Session) start() error {
 		return fmt.Errorf("failed to set window size: %w", err)
 	}
 
-	// Create the shell command
-	cmd := exec.Command(s.Shell)
-	cmd.Env = append(os.Environ(),
+	// Create the shell command as a login shell (-l) so that
+	// profile scripts are sourced and readline/line editing is
+	// fully initialised — matching what SSH and terminal emulators do.
+	cmd := exec.Command(s.Shell, "-l")
+
+	// Build environment. LaunchDaemons have a very minimal env, so
+	// ensure HOME/USER/LOGNAME/SHELL are set — zsh needs these to
+	// source profile scripts and render a prompt.
+	env := os.Environ()
+	if os.Getenv("HOME") == "" {
+		if u, err := user.Current(); err == nil {
+			env = append(env, "HOME="+u.HomeDir, "USER="+u.Username, "LOGNAME="+u.Username)
+		} else {
+			env = append(env, "HOME=/var/root", "USER=root", "LOGNAME=root")
+		}
+	}
+	if os.Getenv("SHELL") == "" {
+		env = append(env, "SHELL="+s.Shell)
+	}
+	env = append(env,
 		"TERM=xterm-256color",
 		fmt.Sprintf("COLUMNS=%d", s.Cols),
 		fmt.Sprintf("LINES=%d", s.Rows),
 	)
+	cmd.Env = env
 
-	// Set up the command to use the TTY
+	// Set up the command to use the TTY.
+	// NOTE: Do NOT use Setctty in SysProcAttr on macOS with CGO.
+	// After CGO calls (posix_openpt, grantpt, etc.), internal libc locks may
+	// be held by other threads. fork() copies these locked mutexes into the
+	// child, and the TIOCSCTTY ioctl (called via libc trampoline) deadlocks.
 	cmd.Stdin = slave
 	cmd.Stdout = slave
 	cmd.Stderr = slave
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid:  true,
-		Setctty: true,
+		Setsid: true,
 	}
 
 	// Start the command
@@ -88,6 +110,7 @@ func (s *Session) start() error {
 		slave.Close()
 		return fmt.Errorf("failed to start shell: %w", err)
 	}
+	log.Info("PTY session started", "sessionId", s.ID, "pid", cmd.Process.Pid)
 
 	// Close the slave in the parent - child has its own reference
 	slave.Close()

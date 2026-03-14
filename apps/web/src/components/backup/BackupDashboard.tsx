@@ -11,7 +11,7 @@ import {
   TrendingUp,
   XCircle
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 
 type StatChangeType = 'positive' | 'negative' | 'neutral';
@@ -128,6 +128,11 @@ const attentionIconMap: Record<string, typeof AlertTriangle> = {
   info: HardDrive,
   success: CheckCircle2
 };
+
+function resolveProviderColor(name: string) {
+  const key = name.toLowerCase();
+  return providerColorMap[key] ?? 'bg-primary';
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
@@ -281,10 +286,7 @@ function UsageHistoryChart({ points }: { points: UsageHistoryPoint[] }) {
               key={provider}
               className="inline-flex items-center gap-1 rounded-full border bg-background px-2 py-0.5 text-muted-foreground"
             >
-              <span
-                className="h-2 w-2 rounded-full"
-                style={{ backgroundColor: providerStrokeMap[provider.toLowerCase()] ?? '#2563eb' }}
-              />
+              <span className={cn('h-2 w-2 rounded-full', resolveProviderColor(provider))} />
               {provider}
             </span>
           ))}
@@ -438,11 +440,6 @@ export default function BackupDashboard() {
       return 'failed';
     }
     return 'warning';
-  };
-
-  const resolveProviderColor = (name: string) => {
-    const key = name.toLowerCase();
-    return providerColorMap[key] ?? 'bg-primary';
   };
 
   const resolveProviderPercent = (provider: StorageProvider) => {
@@ -627,7 +624,7 @@ export default function BackupDashboard() {
                       </span>
                     </div>
                     <div className="h-2 w-full rounded-full bg-muted">
-                      <div className={cn('h-2 rounded-full', color)} style={{ width: `${percent}%` }} />
+                      <div className={cn('h-2 rounded-full', color, widthPercentClass(percent))} />
                     </div>
                   </div>
                 );

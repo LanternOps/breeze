@@ -2,12 +2,14 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { List, Grid, Plus, CheckCircle, XCircle, Copy, Loader2, X } from 'lucide-react';
 import type { FilterConditionGroup } from '@breeze/shared';
 import DeviceList, { type Device, type DeviceStatus, type OSType } from './DeviceList';
+import type { DeviceRole } from '@/lib/deviceRoles';
 import DeviceCard from './DeviceCard';
 import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
 import DeviceSettingsModal from './DeviceSettingsModal';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { fetchWithAuth } from '../../stores/auth';
 import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices } from '../../services/deviceActions';
+import { navigateTo } from '@/lib/navigation';
 
 type ViewMode = 'list' | 'grid';
 
@@ -120,7 +122,9 @@ export default function DevicesPage() {
           siteId: (d.siteId ?? '') as string,
           siteName: '', // Will be resolved from sites
           agentVersion: (d.agentVersion ?? '') as string,
-          tags: (d.tags ?? []) as string[]
+          tags: (d.tags ?? []) as string[],
+          deviceRole: d.deviceRole as DeviceRole | undefined,
+          deviceRoleSource: d.deviceRoleSource as string | undefined
         };
       });
 
@@ -181,7 +185,7 @@ export default function DevicesPage() {
 
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         let errorMessage = 'Failed to generate installation token';
@@ -242,7 +246,7 @@ export default function DevicesPage() {
   };
 
   const handleSelectDevice = (device: Device) => {
-    window.location.href = `/devices/${device.id}`;
+    void navigateTo(`/devices/${device.id}`);
   };
 
   const openScriptPicker = (targetDevices: Device[]) => {
@@ -302,12 +306,16 @@ export default function DevicesPage() {
           await fetchDevices();
           break;
 
+        case 'deploy-software':
+          void navigateTo('/software');
+          return;
+
         case 'terminal':
-          window.location.href = `/remote/terminal/${device.id}`;
+          void navigateTo(`/remote/terminal/${device.id}`);
           return;
 
         case 'files':
-          window.location.href = `/remote/files/${device.id}`;
+          void navigateTo(`/remote/files/${device.id}`);
           return;
 
         case 'run-script':
@@ -342,6 +350,11 @@ export default function DevicesPage() {
 
     if (action === 'run-script') {
       openScriptPicker(selectedDevices);
+      return;
+    }
+
+    if (action === 'deploy-software') {
+      void navigateTo('/software');
       return;
     }
 
@@ -496,7 +509,6 @@ export default function DevicesPage() {
       <DeviceFilterBar
         value={advancedFilter}
         onChange={setAdvancedFilter}
-        showPreview={true}
         showSavedFilters={true}
         collapsible={true}
       />
@@ -596,8 +608,8 @@ export default function DevicesPage() {
                 const token = onboardingToken || '<TOKEN>';
 
                 const secretFlag = enrollmentSecret ? ` --enrollment-secret "${enrollmentSecret}"` : '';
-                const winCmd = `Invoke-WebRequest -Uri "${ghBase}/breeze-agent-windows-amd64.exe" -OutFile breeze-agent.exe; .\\breeze-agent.exe enroll "${token}" --server "${apiUrl}"${secretFlag}`;
-                const unixCmd = `curl -fsSL -o breeze-agent "${ghBase}/breeze-agent-$(uname -s | tr A-Z a-z)-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" && chmod +x breeze-agent && sudo ./breeze-agent enroll "${token}" --server "${apiUrl}"${secretFlag}`;
+                const winCmd = `Invoke-WebRequest -Uri "${ghBase}/breeze-agent-windows-amd64.exe" -OutFile breeze-agent.exe; .\\breeze-agent.exe service install; .\\breeze-agent.exe enroll "${token}" --server "${apiUrl}"${secretFlag}; .\\breeze-agent.exe service start`;
+                const unixCmd = `curl -fsSL -o breeze-agent "${ghBase}/breeze-agent-$(uname -s | tr A-Z a-z)-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" && chmod +x breeze-agent && sudo ./breeze-agent service install && sudo breeze-agent enroll "${token}" --server "${apiUrl}"${secretFlag} && sudo breeze-agent service start`;
 
                 return (
                   <>

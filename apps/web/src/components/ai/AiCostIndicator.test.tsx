@@ -2,14 +2,17 @@ import { act, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import AiCostIndicator from './AiCostIndicator';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
-  useAuthStore: vi.fn(),
+  useAuthStore: vi.fn((selector: (state: { isAuthenticated: boolean }) => boolean) =>
+    selector({ isAuthenticated: true })
+  ),
 }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
+const useAuthStoreMock = vi.mocked(useAuthStore);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
@@ -23,6 +26,7 @@ describe('AiCostIndicator polling behavior', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
+    useAuthStoreMock.mockImplementation((selector: any) => selector({ isAuthenticated: true }));
   });
 
   afterEach(() => {

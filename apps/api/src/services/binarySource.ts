@@ -5,13 +5,13 @@ const GITHUB_RELEASE_BASE = 'https://github.com/lanternops/breeze/releases';
 let binarySourceWarned = false;
 
 export function getBinarySource(): BinarySource {
-  const raw = (process.env.BINARY_SOURCE || 'local').trim().toLowerCase();
-  if (raw === 'github') return 'github';
-  if (raw !== 'local' && !binarySourceWarned) {
-    console.warn(`[binarySource] Unrecognized BINARY_SOURCE="${raw}", defaulting to "local"`);
+  const raw = (process.env.BINARY_SOURCE || 'github').trim().toLowerCase();
+  if (raw === 'local') return 'local';
+  if (raw !== 'github' && !binarySourceWarned) {
+    console.warn(`[binarySource] Unrecognized BINARY_SOURCE="${raw}", defaulting to "github"`);
     binarySourceWarned = true;
   }
-  return 'local';
+  return 'github';
 }
 
 export function getGithubReleaseVersion(): string {
@@ -41,5 +41,17 @@ export const VIEWER_FILENAMES: Record<string, string> = {
 export function getGithubViewerUrl(platform: string): string {
   const filename = VIEWER_FILENAMES[platform];
   if (!filename) throw new Error(`Unknown viewer platform: ${platform}`);
+  return `${githubDownloadBase()}/${filename}`;
+}
+
+export const HELPER_FILENAMES: Record<string, string> = {
+  darwin: 'breeze-helper-macos.dmg',
+  windows: 'breeze-helper-windows.msi',
+  linux: 'breeze-helper-linux.AppImage',
+};
+
+export function getGithubHelperUrl(os: string): string {
+  const filename = HELPER_FILENAMES[os];
+  if (!filename) throw new Error(`Unknown helper OS: ${os}`);
   return `${githubDownloadBase()}/${filename}`;
 }

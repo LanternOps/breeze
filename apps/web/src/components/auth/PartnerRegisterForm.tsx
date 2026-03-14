@@ -3,6 +3,7 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Building2 } from 'lucide-react';
+import { cn, widthPercentClass } from '@/lib/utils';
 
 const partnerRegisterSchema = z
   .object({
@@ -174,8 +175,7 @@ export default function PartnerRegisterForm({
           </div>
           <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
             <div
-              className={`h-full transition-all ${strength.className}`}
-              style={{ width: `${strength.percent}%` }}
+              className={cn('h-full transition-all', strength.className, widthPercentClass(strength.percent))}
             />
           </div>
         </div>

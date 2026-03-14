@@ -63,6 +63,10 @@ var handlerRegistry = map[string]CommandHandler{
 	tools.CmdManageStartupItem:         handleManageStartupItem,
 	tools.CmdCollectReliabilityMetrics: handleCollectReliabilityMetrics,
 
+	// Audit policy compliance
+	tools.CmdCollectAuditPolicy:       handleCollectAuditPolicy,
+	tools.CmdApplyAuditPolicyBaseline: handleApplyAuditPolicyBaseline,
+
 	// File operations
 	tools.CmdFileList:           handleFileList,
 	tools.CmdFileRead:           handleFileRead,
@@ -280,7 +284,10 @@ func handleFileListDrives(_ *Heartbeat, cmd Command) tools.CommandResult {
 }
 
 func handleTerminalStart(h *Heartbeat, cmd Command) tools.CommandResult {
-	return tools.StartTerminal(h.terminalMgr, cmd.Payload, h.sendTerminalOutput)
+	log.Info("handleTerminalStart ENTER", "cmdId", cmd.ID)
+	result := tools.StartTerminal(h.terminalMgr, cmd.Payload, h.sendTerminalOutput)
+	log.Info("handleTerminalStart EXIT", "cmdId", cmd.ID, "status", result.Status, "error", result.Error)
+	return result
 }
 
 func handleTerminalData(h *Heartbeat, cmd Command) tools.CommandResult {

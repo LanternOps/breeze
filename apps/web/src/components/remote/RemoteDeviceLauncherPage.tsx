@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, Loader2, Monitor, RefreshCcw, Search } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type LauncherMode = 'terminal' | 'files';
 
@@ -140,7 +141,7 @@ export default function RemoteDeviceLauncherPage({ mode }: RemoteDeviceLauncherP
   }, [devices, query]);
 
   const handleLaunch = (deviceId: string) => {
-    window.location.href = `${config.pathPrefix}/${deviceId}`;
+    void navigateTo(`${config.pathPrefix}/${deviceId}`);
   };
 
   return (

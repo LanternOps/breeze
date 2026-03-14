@@ -36,7 +36,7 @@ Located at `docker/Caddyfile.prod`:
   header {
     Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
     X-Content-Type-Options "nosniff"
-    X-Frame-Options "DENY"
+    X-Frame-Options "SAMEORIGIN"
     Referrer-Policy "strict-origin-when-cross-origin"
   }
 }
@@ -118,7 +118,7 @@ If you prefer nginx, here's an equivalent configuration:
 </Tabs>
 
 <Aside type="caution">
-  When using nginx instead of Caddy, remove the `caddy` service from `docker-compose.prod.yml` and set `TRUST_PROXY_HEADERS=true` in your `.env.prod`.
+  When using nginx instead of Caddy, remove the `caddy` service from `docker-compose.yml` and set `TRUST_PROXY_HEADERS=true` in your `.env`.
 </Aside>
 
 ## Security Headers
@@ -129,5 +129,5 @@ Both configurations include these security headers:
 |---|---|---|
 | `Strict-Transport-Security` | `max-age=31536000; includeSubDomains; preload` | Force HTTPS for 1 year |
 | `X-Content-Type-Options` | `nosniff` | Prevent MIME sniffing |
-| `X-Frame-Options` | `DENY` | Prevent clickjacking |
+| `X-Frame-Options` | `SAMEORIGIN` | Prevent clickjacking (allows same-origin framing) |
 | `Referrer-Policy` | `strict-origin-when-cross-origin` | Control referrer information |

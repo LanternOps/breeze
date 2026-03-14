@@ -114,6 +114,7 @@ export type AiStreamEvent =
   | { type: 'approval_mode_changed'; mode: AiApprovalMode }
   | { type: 'title_updated'; title: string }
   | { type: 'message_end'; inputTokens: number; outputTokens: number }
+  | { type: 'warning'; message: string; context?: string }
   | { type: 'error'; message: string }
   | { type: 'done' };
 

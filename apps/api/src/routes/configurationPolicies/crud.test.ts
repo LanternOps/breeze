@@ -162,10 +162,14 @@ describe('configurationPolicies CRUD routes', () => {
       expect(res.status).toBe(403);
     });
 
-    it('requires orgId for partner scope', async () => {
+    it('requires orgId for partner scope with multiple orgs', async () => {
       const appPartner = new Hono();
       appPartner.use('*', async (c, next) => {
-        c.set('auth', makeAuth({ scope: 'partner', orgId: null }));
+        c.set('auth', makeAuth({
+          scope: 'partner',
+          orgId: null,
+          accessibleOrgIds: [ORG_ID, '33333333-3333-3333-3333-333333333333'],
+        }));
         await next();
       });
       appPartner.route('/', crudRoutes);

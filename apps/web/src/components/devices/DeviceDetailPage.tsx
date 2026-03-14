@@ -7,6 +7,7 @@ import type { Device, DeviceStatus, OSType } from './DeviceList';
 import { fetchWithAuth } from '../../stores/auth';
 import { sendDeviceCommand, executeScript, toggleMaintenanceMode, decommissionDevice, clearDeviceSessions } from '../../services/deviceActions';
 import { useAiStore } from '@/stores/aiStore';
+import { navigateTo } from '@/lib/navigation';
 
 type DeviceDetailPageProps = {
   deviceId: string;
@@ -102,7 +103,7 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
   }, [device, setPageContext]);
 
   const handleBack = () => {
-    window.location.href = '/devices';
+    void navigateTo('/devices');
   };
 
   const handleAction = async (action: string, device: Device) => {
@@ -128,11 +129,15 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         }
 
         case 'files':
-          window.location.href = `/remote/files/${device.id}`;
+          void navigateTo(`/remote/files/${device.id}`);
           return;
 
         case 'remote-tools':
-          window.location.href = `/remote/tools?deviceId=${device.id}&deviceName=${encodeURIComponent(device.hostname)}&os=${device.os}`;
+          void navigateTo(`/remote/tools?deviceId=${device.id}&deviceName=${encodeURIComponent(device.hostname)}&os=${device.os}`);
+          return;
+
+        case 'deploy-software':
+          void navigateTo('/software');
           return;
 
         case 'run-script':
@@ -152,7 +157,7 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         case 'decommission':
           await decommissionDevice(device.id);
           showToast('success', `${device.hostname} has been decommissioned`);
-          window.location.href = '/devices';
+          void navigateTo('/devices');
           return;
 
         default:

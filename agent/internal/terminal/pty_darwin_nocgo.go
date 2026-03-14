@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"syscall"
 	"unsafe"
 )
@@ -50,21 +51,40 @@ func (s *Session) start() error {
 		return fmt.Errorf("failed to set window size: %w", err)
 	}
 
-	// Create the shell command
-	cmd := exec.Command(s.Shell)
-	cmd.Env = append(os.Environ(),
+	// Create the shell command as a login shell (-l) so that
+	// profile scripts are sourced and readline/line editing is
+	// fully initialised — matching what SSH and terminal emulators do.
+	cmd := exec.Command(s.Shell, "-l")
+
+	// Build environment. LaunchDaemons have a very minimal env, so
+	// ensure HOME/USER/LOGNAME/SHELL are set for the shell to work.
+	env := os.Environ()
+	if os.Getenv("HOME") == "" {
+		if u, err := user.Current(); err == nil {
+			env = append(env, "HOME="+u.HomeDir, "USER="+u.Username, "LOGNAME="+u.Username)
+		} else {
+			env = append(env, "HOME=/var/root", "USER=root", "LOGNAME=root")
+		}
+	}
+	if os.Getenv("SHELL") == "" {
+		env = append(env, "SHELL="+s.Shell)
+	}
+	env = append(env,
 		"TERM=xterm-256color",
 		fmt.Sprintf("COLUMNS=%d", s.Cols),
 		fmt.Sprintf("LINES=%d", s.Rows),
 	)
+	cmd.Env = env
 
 	// Set up the command to use the TTY
 	cmd.Stdin = slave
 	cmd.Stdout = slave
 	cmd.Stderr = slave
+	// NOTE: Do NOT use Setctty on macOS — it causes the child to deadlock
+	// on the TIOCSCTTY ioctl after fork in a multithreaded process.
+	// Setsid alone is sufficient; macOS auto-assigns the controlling terminal.
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid:  true,
-		Setctty: true,
+		Setsid: true,
 	}
 
 	// Start the command
@@ -134,8 +154,8 @@ func setWinsize(fd uintptr, cols, rows uint16) error {
 // On macOS, TIOCPTYGNAME is used instead of Linux's TIOCGPTN.
 func ptsnameFd(fd uintptr) (string, error) {
 	// TIOCPTYGNAME on macOS returns the slave device path directly
-	// It's defined as _IOC(IOC_OUT, 't', 41, 128) = 0x40807441
-	const TIOCPTYGNAME = 0x40807441
+	// _IOC(IOC_OUT, 't', 41, 128) = 0x40000000 | (128<<16) | ('t'<<8) | 41 = 0x40807429
+	const TIOCPTYGNAME = 0x40807429
 	buf := make([]byte, 128)
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, TIOCPTYGNAME, uintptr(unsafe.Pointer(&buf[0])))
 	if errno != 0 {

@@ -94,7 +94,12 @@ policiesRoutes.post(
       orgId = auth.orgId;
     } else if (auth.scope === 'partner') {
       if (!orgId) {
-        return c.json({ error: 'orgId is required for partner scope' }, 400);
+        const singleOrg = auth.accessibleOrgIds?.[0];
+        if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
+          orgId = singleOrg;
+        } else {
+          return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
+        }
       }
       const hasAccess = ensureOrgAccess(orgId, auth);
       if (!hasAccess) {
@@ -138,7 +143,7 @@ policiesRoutes.put(
   zValidator('json', updatePolicySchema),
   async (c) => {
     const auth = c.get('auth');
-    const policyId = c.req.param('id');
+    const policyId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     if (Object.keys(data).length === 0) {
@@ -186,7 +191,7 @@ policiesRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const policyId = c.req.param('id');
+    const policyId = c.req.param('id')!;
 
     const policy = await getEscalationPolicyWithOrgCheck(policyId, auth);
     if (!policy) {

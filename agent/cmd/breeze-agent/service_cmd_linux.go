@@ -41,11 +41,11 @@ StartLimitBurst=5
 # Security hardening
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/etc/breeze /var/lib/breeze /var/log/breeze
+ReadWritePaths=/etc/breeze /var/lib/breeze /var/log/breeze /var/cache/apt /var/lib/apt /var/lib/dpkg /var/log/apt
 PrivateTmp=true
 NoNewPrivileges=false
-CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
-AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_FOWNER
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_FOWNER
 
 # Logging (stdout goes to journald)
 StandardOutput=journal

@@ -5,6 +5,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
+	"github.com/breeze-rmm/agent/internal/secmem"
 )
 
 // initTestShipper initializes a global shipper so SetShipperLevel succeeds in tests.
@@ -13,7 +14,7 @@ func initTestShipper(t *testing.T) {
 	logging.InitShipper(logging.ShipperConfig{
 		ServerURL:    "http://localhost:3001",
 		AgentID:      "test-agent",
-		AuthToken:    "test-token",
+		AuthToken:    secmem.NewSecureString("test-token"),
 		AgentVersion: "1.0.0",
 		MinLevel:     "warn",
 	})

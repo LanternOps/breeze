@@ -168,6 +168,8 @@ coreRoutes.get(
         hostname: devices.hostname,
         displayName: devices.displayName,
         osType: devices.osType,
+        deviceRole: devices.deviceRole,
+        deviceRoleSource: devices.deviceRoleSource,
         osVersion: devices.osVersion,
         osBuild: devices.osBuild,
         architecture: devices.architecture,
@@ -252,6 +254,8 @@ coreRoutes.get(
         hostname: d.hostname,
         displayName: d.displayName,
         osType: d.osType,
+        deviceRole: d.deviceRole,
+        deviceRoleSource: d.deviceRoleSource,
         osVersion: d.osVersion,
         osBuild: d.osBuild,
         architecture: d.architecture,
@@ -296,7 +300,7 @@ coreRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {
@@ -383,7 +387,7 @@ coreRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {
@@ -406,7 +410,7 @@ coreRoutes.patch(
   zValidator('json', updateDeviceSchema),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
     const data = c.req.valid('json');
 
     if (Object.keys(data).length === 0) {
@@ -440,6 +444,10 @@ coreRoutes.patch(
     if (data.displayName !== undefined) updates.displayName = data.displayName;
     if (data.siteId !== undefined) updates.siteId = data.siteId;
     if (data.tags !== undefined) updates.tags = data.tags;
+    if (data.deviceRole !== undefined) {
+      updates.deviceRole = data.deviceRole;
+      updates.deviceRoleSource = 'manual';
+    }
     if (data.customFields !== undefined) {
       // Merge with existing custom fields rather than replacing
       const raw = device.customFields;
@@ -477,7 +485,7 @@ coreRoutes.post(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {
@@ -522,7 +530,7 @@ coreRoutes.delete(
   requirePermission(PERMISSIONS.DEVICES_DELETE.resource, PERMISSIONS.DEVICES_DELETE.action),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {

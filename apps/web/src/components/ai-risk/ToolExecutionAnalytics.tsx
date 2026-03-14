@@ -28,13 +28,6 @@ const STATUS_COLORS: Record<string, string> = {
   executing: '#8b5cf6',
 };
 
-const chartTooltipStyle = {
-  backgroundColor: 'hsl(var(--card))',
-  border: '1px solid hsl(var(--border))',
-  borderRadius: '0.5rem',
-  fontSize: '12px',
-};
-
 export function ToolExecutionAnalytics({ data, loading }: Props) {
   if (loading || !data) {
     return (
@@ -96,7 +89,7 @@ export function ToolExecutionAnalytics({ data, loading }: Props) {
                     tickFormatter={(v) => v.slice(5)}
                   />
                   <YAxis tick={{ fontSize: 10 }} className="text-muted-foreground" />
-                  <Tooltip contentStyle={chartTooltipStyle} />
+                  <Tooltip wrapperClassName="chart-tooltip" />
                   <Bar dataKey="completed" stackId="a" fill="#22c55e" name="Completed" />
                   <Bar dataKey="failed" stackId="a" fill="#ef4444" name="Failed" />
                   <Bar dataKey="rejected" stackId="a" fill="#f59e0b" name="Rejected" />
@@ -123,7 +116,7 @@ export function ToolExecutionAnalytics({ data, loading }: Props) {
                     className="text-muted-foreground"
                     tickFormatter={formatToolName}
                   />
-                  <Tooltip contentStyle={chartTooltipStyle} />
+                  <Tooltip wrapperClassName="chart-tooltip" />
                   <Bar dataKey="count" fill="#3b82f6" name="Executions" radius={[0, 4, 4, 0]} />
                 </BarChart>
               </ResponsiveContainer>
@@ -155,10 +148,10 @@ export function ToolExecutionAnalytics({ data, loading }: Props) {
                       />
                     ))}
                   </Pie>
-                  <Tooltip contentStyle={chartTooltipStyle} />
+                  <Tooltip wrapperClassName="chart-tooltip" />
                   <Legend
                     iconSize={8}
-                    wrapperStyle={{ fontSize: '11px' }}
+                    wrapperStyle={{ fontSize: '0.75rem' }}
                   />
                 </PieChart>
               </ResponsiveContainer>
@@ -189,7 +182,7 @@ export function ToolExecutionAnalytics({ data, loading }: Props) {
                       height={50}
                     />
                     <YAxis tick={{ fontSize: 10 }} className="text-muted-foreground" />
-                    <Tooltip contentStyle={chartTooltipStyle} />
+                    <Tooltip wrapperClassName="chart-tooltip" />
                     <Bar dataKey="avgMs" fill="#8b5cf6" name="Avg ms" radius={[4, 4, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>

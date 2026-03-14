@@ -1,15 +1,16 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { randomUUID } from 'crypto';
+import { eq, and, desc, gte, lte, sql } from 'drizzle-orm';
+import { db } from '../../db';
+import { backupJobs, backupConfigs, backupPolicies } from '../../db/schema';
 import { writeRouteAudit } from '../../services/auditEvents';
-import type { BackupJob } from './types';
-import { resolveScopedOrgId, toDateOrNull } from './helpers';
-import { backupConfigs, backupJobs, backupPolicies, configOrgById, jobOrgById, policyOrgById } from './store';
+import { resolveScopedOrgId } from './helpers';
 import { jobListSchema } from './schemas';
+import type { BackupPolicyTargets } from './types';
 
 export const jobsRoutes = new Hono();
 
-jobsRoutes.get('/jobs', zValidator('query', jobListSchema), (c) => {
+jobsRoutes.get('/jobs', zValidator('query', jobListSchema), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -18,48 +19,48 @@ jobsRoutes.get('/jobs', zValidator('query', jobListSchema), (c) => {
 
   const query = c.req.valid('query');
   const deviceFilter = query.deviceId ?? query.device;
-  const from = toDateOrNull(query.from);
-  const to = toDateOrNull(query.to);
 
-  let results = backupJobs.filter((job) => jobOrgById.get(job.id) === orgId);
+  const conditions = [eq(backupJobs.orgId, orgId)];
 
   if (query.status) {
-    results = results.filter((job) => job.status === query.status);
+    conditions.push(eq(backupJobs.status, query.status as any));
   }
 
   if (deviceFilter) {
-    results = results.filter((job) => job.deviceId === deviceFilter);
+    conditions.push(eq(backupJobs.deviceId, deviceFilter));
+  }
+
+  if (query.from) {
+    const fromDate = new Date(query.from);
+    if (!Number.isNaN(fromDate.getTime())) {
+      conditions.push(gte(backupJobs.createdAt, fromDate));
+    }
+  }
+
+  if (query.to) {
+    const toDate = new Date(query.to);
+    if (!Number.isNaN(toDate.getTime())) {
+      conditions.push(lte(backupJobs.createdAt, toDate));
+    }
   }
 
   if (query.date) {
     const datePrefix = query.date.slice(0, 10);
-    results = results.filter((job) => (job.startedAt ?? job.createdAt).startsWith(datePrefix));
+    conditions.push(
+      sql`${backupJobs.createdAt}::date = ${datePrefix}::date`
+    );
   }
 
-  if (from) {
-    results = results.filter((job) => {
-      const timestamp = toDateOrNull(job.startedAt ?? job.createdAt);
-      return timestamp !== null && timestamp >= from;
-    });
-  }
+  const rows = await db
+    .select()
+    .from(backupJobs)
+    .where(and(...conditions))
+    .orderBy(desc(backupJobs.createdAt));
 
-  if (to) {
-    results = results.filter((job) => {
-      const timestamp = toDateOrNull(job.startedAt ?? job.createdAt);
-      return timestamp !== null && timestamp <= to;
-    });
-  }
-
-  results.sort((a, b) => {
-    const aTime = toDateOrNull(a.startedAt ?? a.createdAt) ?? 0;
-    const bTime = toDateOrNull(b.startedAt ?? b.createdAt) ?? 0;
-    return bTime - aTime;
-  });
-
-  return c.json({ data: results });
+  return c.json({ data: rows.map(toJobResponse) });
 });
 
-jobsRoutes.get('/jobs/:id', (c) => {
+jobsRoutes.get('/jobs/:id', async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -67,17 +68,19 @@ jobsRoutes.get('/jobs/:id', (c) => {
   }
 
   const jobId = c.req.param('id');
-  if (jobOrgById.get(jobId) !== orgId) {
+  const [row] = await db
+    .select()
+    .from(backupJobs)
+    .where(and(eq(backupJobs.id, jobId), eq(backupJobs.orgId, orgId)))
+    .limit(1);
+
+  if (!row) {
     return c.json({ error: 'Job not found' }, 404);
   }
-  const job = backupJobs.find((item) => item.id === jobId);
-  if (!job) {
-    return c.json({ error: 'Job not found' }, 404);
-  }
-  return c.json(job);
+  return c.json(toJobResponse(row));
 });
 
-jobsRoutes.post('/jobs/run/:deviceId', (c) => {
+jobsRoutes.post('/jobs/run/:deviceId', async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -85,41 +88,73 @@ jobsRoutes.post('/jobs/run/:deviceId', (c) => {
   }
 
   const deviceId = c.req.param('deviceId');
-  const policy = backupPolicies.find(
-    (item) => item.targets.deviceIds.includes(deviceId) && policyOrgById.get(item.id) === orgId
-  );
-  const configId = policy?.configId ?? backupConfigs.find((item) => configOrgById.get(item.id) === orgId)?.id;
-  if (!configId || configOrgById.get(configId) !== orgId) {
+
+  // Find a policy targeting this device, or a default config
+  const policies = await db
+    .select()
+    .from(backupPolicies)
+    .where(eq(backupPolicies.orgId, orgId));
+
+  const policy = policies.find((p) => {
+    const targets = p.targets as BackupPolicyTargets;
+    return targets?.deviceIds?.includes(deviceId);
+  });
+
+  let configId = policy?.configId;
+  if (!configId) {
+    const [fallbackConfig] = await db
+      .select({ id: backupConfigs.id })
+      .from(backupConfigs)
+      .where(eq(backupConfigs.orgId, orgId))
+      .limit(1);
+    configId = fallbackConfig?.id;
+  }
+
+  if (!configId) {
     return c.json({ error: 'No backup config available' }, 400);
   }
 
-  const now = new Date().toISOString();
-  const job: BackupJob = {
-    id: randomUUID(),
-    type: 'backup',
-    trigger: 'manual',
-    deviceId,
-    configId,
-    policyId: policy?.id ?? null,
-    status: 'running',
-    startedAt: now,
-    createdAt: now,
-    updatedAt: now
-  };
+  const now = new Date();
+  const [row] = await db
+    .insert(backupJobs)
+    .values({
+      orgId,
+      configId,
+      policyId: policy?.id ?? null,
+      deviceId,
+      status: 'pending',
+      type: 'manual',
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning();
 
-  backupJobs.push(job);
-  jobOrgById.set(job.id, orgId);
+  if (!row) {
+    return c.json({ error: 'Failed to create job' }, 500);
+  }
+
+  // Enqueue BullMQ job to dispatch to agent
+  try {
+    const { enqueueBackupDispatch } = await import(
+      '../../jobs/backupWorker'
+    );
+    await enqueueBackupDispatch(row.id, row.configId, orgId, deviceId);
+  } catch (err) {
+    console.error('[BackupJobs] Failed to enqueue dispatch:', err);
+  }
+
   writeRouteAudit(c, {
     orgId,
     action: 'backup.job.run',
     resourceType: 'backup_job',
-    resourceId: job.id,
-    details: { deviceId, configId, policyId: policy?.id ?? null }
+    resourceId: row.id,
+    details: { deviceId, configId, policyId: policy?.id ?? null },
   });
-  return c.json(job, 201);
+
+  return c.json(toJobResponse(row), 201);
 });
 
-jobsRoutes.post('/jobs/:id/cancel', (c) => {
+jobsRoutes.post('/jobs/:id/cancel', async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -127,30 +162,63 @@ jobsRoutes.post('/jobs/:id/cancel', (c) => {
   }
 
   const jobId = c.req.param('id');
-  if (jobOrgById.get(jobId) !== orgId) {
-    return c.json({ error: 'Job not found' }, 404);
-  }
-  const job = backupJobs.find((item) => item.id === jobId);
-  if (!job) {
+  const [current] = await db
+    .select()
+    .from(backupJobs)
+    .where(and(eq(backupJobs.id, jobId), eq(backupJobs.orgId, orgId)))
+    .limit(1);
+
+  if (!current) {
     return c.json({ error: 'Job not found' }, 404);
   }
 
-  if (job.status !== 'running' && job.status !== 'queued') {
+  if (current.status !== 'running' && current.status !== 'pending') {
     return c.json({ error: 'Job is not cancelable' }, 409);
   }
 
-  job.status = 'canceled';
-  job.completedAt = new Date().toISOString();
-  job.updatedAt = job.completedAt;
-  job.error = 'Canceled by user';
+  const now = new Date();
+  const [row] = await db
+    .update(backupJobs)
+    .set({
+      status: 'cancelled',
+      completedAt: now,
+      updatedAt: now,
+      errorLog: 'Canceled by user',
+    })
+    .where(eq(backupJobs.id, jobId))
+    .returning();
+
+  if (!row) {
+    return c.json({ error: 'Job not found' }, 404);
+  }
 
   writeRouteAudit(c, {
     orgId,
     action: 'backup.job.cancel',
     resourceType: 'backup_job',
-    resourceId: job.id,
-    details: { deviceId: job.deviceId }
+    resourceId: row.id,
+    details: { deviceId: row.deviceId },
   });
 
-  return c.json(job);
+  return c.json(toJobResponse(row));
 });
+
+function toJobResponse(row: typeof backupJobs.$inferSelect) {
+  return {
+    id: row.id,
+    type: row.type,
+    deviceId: row.deviceId,
+    configId: row.configId,
+    policyId: row.policyId ?? null,
+    snapshotId: row.snapshotId ?? null,
+    status: row.status,
+    startedAt: row.startedAt?.toISOString() ?? null,
+    completedAt: row.completedAt?.toISOString() ?? null,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    totalSize: row.totalSize ?? null,
+    fileCount: row.fileCount ?? null,
+    errorCount: row.errorCount ?? null,
+    errorLog: row.errorLog ?? null,
+  };
+}

@@ -881,7 +881,6 @@ breeze/
 │   └── agent.md
 │
 ├── scripts/
-│   └── setup.sh
 │
 ├── turbo.json                      # Turborepo config
 ├── pnpm-workspace.yaml

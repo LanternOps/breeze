@@ -219,7 +219,7 @@ func (v *VideoEncoder) Flush() {
 	type flusher interface{ Flush() error }
 	if f, ok := v.backend.(flusher); ok {
 		if err := f.Flush(); err != nil {
-			slog.Warn("Encoder flush failed", "error", err)
+			slog.Warn("Encoder flush failed", "error", err.Error())
 		}
 	}
 }

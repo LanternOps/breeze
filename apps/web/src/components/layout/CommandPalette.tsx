@@ -14,6 +14,7 @@ import {
   type LucideIcon
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth } from '../../stores/auth';
 
 type SearchCategory = 'devices' | 'scripts' | 'alerts' | 'users' | 'settings';
@@ -361,7 +362,7 @@ export default function CommandPalette() {
   const handleSelectItem = useCallback(
     (item: CommandItem) => {
       if (item.href && typeof window !== 'undefined') {
-        window.location.href = item.href;
+        void navigateTo(item.href);
       }
       addRecentItem(item);
       setOpen(false);

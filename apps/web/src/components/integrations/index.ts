@@ -7,6 +7,8 @@ export { default as PSAMappingEditor } from './PSAMappingEditor';
 export { default as WebhookEditor } from './WebhookEditor';
 export { default as WebhookList } from './WebhookList';
 export { default as WebhookTestPanel } from './WebhookTestPanel';
+export { default as SecurityIntegration } from './SecurityIntegration';
+export { default as HuntressIntegration } from './HuntressIntegration';
 
 // Type exports
 export type { WebhookStatus, WebhookItem } from './WebhookList';

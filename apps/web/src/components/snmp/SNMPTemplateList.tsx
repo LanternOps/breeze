@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Loader2, Pencil, PlusCircle, Trash2, Layers } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { navigateTo } from '@/lib/navigation';
 
 type TemplateRow = {
   id: string;
@@ -92,7 +93,7 @@ export default function SNMPTemplateList({
       ]);
 
       if (templatesResponse.status === 401 || dashboardResponse.status === 401) {
-        window.location.href = '/login';
+        void navigateTo('/login', { replace: true });
         return;
       }
 

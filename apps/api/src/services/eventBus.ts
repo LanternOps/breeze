@@ -14,6 +14,7 @@ export type EventType =
   | 'alert.triggered'
   | 'alert.acknowledged'
   | 'alert.resolved'
+  | 'alert.suppressed'
   | 'alert.escalated'
   // Script events
   | 'script.started'
@@ -28,6 +29,9 @@ export type EventType =
   | 'policy.violation'
   | 'policy.compliant'
   | 'policy.remediation.triggered'
+  // Audit baseline compliance events
+  | 'compliance.audit_deviation'
+  | 'compliance.audit_remediated'
   // Patch events
   | 'patch.available'
   | 'patch.approved'
@@ -36,6 +40,25 @@ export type EventType =
   | 'patch.rollback'
   // Security events
   | 'security.score_changed'
+  // CIS compliance events
+  | 'compliance.cis_deviation'
+  | 'compliance.cis_score_changed'
+  | 'compliance.cis_remediation_applied'
+  | 's1.threat_detected'
+  | 's1.device_isolated'
+  | 's1.threat_action_completed'
+  | 'huntress.incident_created'
+  | 'huntress.incident_updated'
+  | 'huntress.agent_offline'
+  | 'compliance.sensitive_data_found'
+  | 'compliance.credential_exposed'
+  | 'compliance.sensitive_data_remediated'
+  // Browser security events
+  | 'compliance.browser_policy_applied'
+  // Peripheral control events
+  | 'peripheral.unauthorized_device'
+  | 'peripheral.blocked'
+  | 'peripheral.policy_changed'
   // Remote events
   | 'remote.session.started'
   | 'remote.session.ended'
@@ -44,9 +67,15 @@ export type EventType =
   | 'user.login'
   | 'user.logout'
   | 'user.mfa.enabled'
+  | 'user.risk_score_high'
+  | 'user.risk_score_spike'
+  | 'user.training_assigned'
   // Device user-session events (BE-8)
   | 'session.login'
-  | 'session.logout';
+  | 'session.logout'
+  // Service & process monitoring events
+  | 'monitoring.check_failed'
+  | 'monitoring.check_recovered';
 
 export type EventPriority = 'low' | 'normal' | 'high' | 'critical';
 
@@ -283,13 +312,22 @@ class EventBus {
   ): Promise<void> {
     // Parse event from fields
     const eventJson = fields[1]; // fields = ['event', '{...}']
-    if (!eventJson) return;
+    if (!eventJson) {
+      console.error(`[EventBus] Missing event JSON in message: ${messageId}`);
+      // Acknowledge and push to DLQ to prevent blocking
+      await redis.xack(`${STREAM_PREFIX}:unknown`, CONSUMER_GROUP, messageId);
+      await redis.lpush(`${STREAM_PREFIX}:dlq`, JSON.stringify({ messageId, error: 'missing event JSON' }));
+      return;
+    }
 
     let event: BreezeEvent;
     try {
       event = JSON.parse(eventJson);
     } catch {
       console.error(`[EventBus] Failed to parse event: ${messageId}`);
+      // Acknowledge and push to DLQ to prevent blocking
+      await redis.xack(`${STREAM_PREFIX}:unknown`, CONSUMER_GROUP, messageId);
+      await redis.lpush(`${STREAM_PREFIX}:dlq`, JSON.stringify({ messageId, raw: eventJson, error: 'JSON parse failure' }));
       return;
     }
 
@@ -350,10 +388,17 @@ class EventBus {
 
     const results = await redis.xrange(streamKey, fromId, toId, 'COUNT', '1000');
 
-    return results.map(([, fields]) => {
-      const eventJson = fields[1] || '{}';
-      return JSON.parse(eventJson) as BreezeEvent;
-    });
+    const events: BreezeEvent[] = [];
+    for (const [, fields] of results) {
+      const eventJson = fields[1];
+      if (!eventJson) continue;
+      try {
+        events.push(JSON.parse(eventJson) as BreezeEvent);
+      } catch {
+        // Skip malformed entries during replay
+      }
+    }
+    return events;
   }
 
   /**
@@ -467,6 +512,18 @@ export const EVENT_TYPES = {
   PATCH_ROLLBACK: 'patch.rollback' as const,
   // Security
   SECURITY_SCORE_CHANGED: 'security.score_changed' as const,
+  CIS_DEVIATION: 'compliance.cis_deviation' as const,
+  CIS_SCORE_CHANGED: 'compliance.cis_score_changed' as const,
+  CIS_REMEDIATION_APPLIED: 'compliance.cis_remediation_applied' as const,
+  S1_THREAT_DETECTED: 's1.threat_detected' as const,
+  S1_DEVICE_ISOLATED: 's1.device_isolated' as const,
+  S1_THREAT_ACTION_COMPLETED: 's1.threat_action_completed' as const,
+  HUNTRESS_INCIDENT_CREATED: 'huntress.incident_created' as const,
+  HUNTRESS_INCIDENT_UPDATED: 'huntress.incident_updated' as const,
+  HUNTRESS_AGENT_OFFLINE: 'huntress.agent_offline' as const,
+  COMPLIANCE_SENSITIVE_DATA_FOUND: 'compliance.sensitive_data_found' as const,
+  COMPLIANCE_CREDENTIAL_EXPOSED: 'compliance.credential_exposed' as const,
+  COMPLIANCE_SENSITIVE_DATA_REMEDIATED: 'compliance.sensitive_data_remediated' as const,
   // Remote
   REMOTE_SESSION_STARTED: 'remote.session.started' as const,
   REMOTE_SESSION_ENDED: 'remote.session.ended' as const,
@@ -477,5 +534,12 @@ export const EVENT_TYPES = {
   USER_MFA_ENABLED: 'user.mfa.enabled' as const,
   // Device sessions
   SESSION_LOGIN: 'session.login' as const,
-  SESSION_LOGOUT: 'session.logout' as const
+  SESSION_LOGOUT: 'session.logout' as const,
+  // Compliance
+  COMPLIANCE_AUDIT_DEVIATION: 'compliance.audit_deviation' as const,
+  COMPLIANCE_AUDIT_REMEDIATED: 'compliance.audit_remediated' as const,
+  // Peripheral control
+  PERIPHERAL_UNAUTHORIZED_DEVICE: 'peripheral.unauthorized_device' as const,
+  PERIPHERAL_BLOCKED: 'peripheral.blocked' as const,
+  PERIPHERAL_POLICY_CHANGED: 'peripheral.policy_changed' as const,
 };

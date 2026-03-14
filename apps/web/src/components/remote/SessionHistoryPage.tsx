@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import { History, X } from 'lucide-react';
 import SessionHistory, { normalizeRemoteSession, type RemoteSession, type RemoteSessionApi } from './SessionHistory';
 import { fetchWithAuth } from '@/stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type SessionHistoryPageProps = {
   limit?: number;
@@ -249,7 +250,7 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
                 type="button"
                 onClick={() => {
                   // Navigate to device page
-                  window.location.href = `/devices/${selectedSession.deviceId}`;
+                  void navigateTo(`/devices/${selectedSession.deviceId}`);
                 }}
                 className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
               >

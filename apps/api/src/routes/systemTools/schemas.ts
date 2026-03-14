@@ -77,14 +77,6 @@ export const taskHistoryQuerySchema = z.object({
   limit: z.string().optional()
 });
 
-export const fileListQuerySchema = z.object({
-  path: z.string().min(1).max(2048)
-});
-
-export const fileDownloadQuerySchema = z.object({
-  path: z.string().min(1).max(2048)
-});
-
 export const paginationQuerySchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional()
@@ -97,6 +89,14 @@ const filePathString = z.string().min(1).max(2048).refine(
   (val) => !val.includes('\0') && !/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(val),
   { message: 'Invalid path: null bytes and path traversal (..) are not allowed' }
 );
+
+export const fileListQuerySchema = z.object({
+  path: filePathString
+});
+
+export const fileDownloadQuerySchema = z.object({
+  path: filePathString
+});
 
 export const fileCopyBodySchema = z.object({
   items: z.array(z.object({
@@ -132,6 +132,6 @@ export const fileTrashPurgeBodySchema = z.object({
 
 export const fileUploadBodySchema = z.object({
   path: filePathString,
-  content: z.string().min(0),
+  content: z.string().min(0).max(50_000_000),
   encoding: z.enum(['base64', 'text']).optional().default('text'),
 });

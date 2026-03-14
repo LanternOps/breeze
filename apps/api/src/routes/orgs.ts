@@ -18,9 +18,9 @@ const createPartnerSchema = z.object({
   name: z.string().min(1),
   slug: z.string().min(1).max(100),
   type: z.enum(['msp', 'enterprise', 'internal']).optional(),
-  plan: z.enum(['free', 'pro', 'enterprise', 'unlimited']).optional(),
+  // plan and maxDevices are managed by the billing service (via direct DB writes).
+  // They are intentionally excluded from the API schema to prevent self-service changes.
   maxOrganizations: z.number().int().nullable().optional(),
-  maxDevices: z.number().int().nullable().optional(),
   settings: z.any().optional(),
   ssoConfig: z.any().optional(),
   billingEmail: z.string().email().optional()
@@ -34,7 +34,7 @@ const createOrganizationSchema = z.object({
   slug: z.string().min(1).max(100),
   type: z.enum(['customer', 'internal']).optional(),
   status: z.enum(['active', 'suspended', 'trial', 'churned']).optional(),
-  maxDevices: z.number().int().nullable().optional(),
+  // maxDevices is managed by the billing service — excluded from API schema
   settings: z.any().optional(),
   ssoConfig: z.any().optional(),
   contractStart: z.string().nullable().optional(),
@@ -171,9 +171,7 @@ orgRoutes.post('/partners', requireScope('system'), zValidator('json', createPar
       name: data.name,
       slug: data.slug,
       type: data.type,
-      plan: data.plan,
       maxOrganizations: data.maxOrganizations,
-      maxDevices: data.maxDevices,
       settings: data.settings,
       ssoConfig: data.ssoConfig,
       billingEmail: data.billingEmail
@@ -199,7 +197,7 @@ orgRoutes.post('/partners', requireScope('system'), zValidator('json', createPar
 });
 
 orgRoutes.get('/partners/:id', requireScope('system'), async (c) => {
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
 
   const [partner] = await db
     .select()
@@ -216,7 +214,7 @@ orgRoutes.get('/partners/:id', requireScope('system'), async (c) => {
 
 orgRoutes.patch('/partners/:id', requireScope('system', 'partner'), zValidator('json', updatePartnerSchema), async (c) => {
   const auth = c.get('auth');
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
 
   // Partner-scoped users may only update their own partner
   if (auth.scope === 'partner' && auth.partnerId !== id) {
@@ -259,7 +257,7 @@ orgRoutes.patch('/partners/:id', requireScope('system', 'partner'), zValidator('
 
 orgRoutes.delete('/partners/:id', requireScope('system'), async (c) => {
   const auth = c.get('auth');
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
 
   const [partner] = await db
     .update(partners)
@@ -390,13 +388,19 @@ const listOrganizationsSchema = z.object({
   limit: z.string().optional()
 });
 
-orgRoutes.get('/organizations', requireScope('partner', 'system'), zValidator('query', listOrganizationsSchema), async (c) => {
+orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'), zValidator('query', listOrganizationsSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const { partnerId: queryPartnerId, ...pagination } = c.req.valid('query');
   const { page, limit, offset } = getPagination(pagination);
 
   let conditions;
-  if (auth.scope === 'partner') {
+  if (auth.scope === 'organization') {
+    // Organization-scoped users can only see their own organization
+    if (!auth.orgId) {
+      return c.json({ data: [], pagination: { page, limit, total: 0 } });
+    }
+    conditions = and(eq(organizations.id, auth.orgId), isNull(organizations.deletedAt));
+  } else if (auth.scope === 'partner') {
     const orgIds = auth.accessibleOrgIds ?? [];
     if (orgIds.length === 0) {
       return c.json({
@@ -458,7 +462,6 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), zValidator('
     slug: data.slug,
     type: data.type,
     status: data.status,
-    maxDevices: data.maxDevices,
     settings: data.settings,
     ssoConfig: data.ssoConfig,
     contractStart: data.contractStart ? new Date(data.contractStart) : null,
@@ -484,7 +487,7 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), zValidator('
 
 orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
 
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
     return c.json({ error: 'Organization not found' }, 404);
@@ -505,9 +508,9 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), async (c)
   return c.json(organization);
 });
 
-orgRoutes.patch('/organizations/:id', requireScope('partner', 'system'), zValidator('json', updateOrganizationSchema), async (c) => {
+const updateOrgHandler = [requireScope('partner', 'system'), zValidator('json', updateOrganizationSchema), async (c: any) => {
   const auth = c.get('auth') as AuthContext;
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
   const data = c.req.valid('json');
 
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
@@ -523,7 +526,6 @@ orgRoutes.patch('/organizations/:id', requireScope('partner', 'system'), zValida
   if (data.slug !== undefined) updates.slug = data.slug;
   if (data.type !== undefined) updates.type = data.type;
   if (data.status !== undefined) updates.status = data.status;
-  if (data.maxDevices !== undefined) updates.maxDevices = data.maxDevices;
   if (data.settings !== undefined) updates.settings = data.settings;
   if (data.ssoConfig !== undefined) updates.ssoConfig = data.ssoConfig;
   if (data.billingContact !== undefined) updates.billingContact = data.billingContact;
@@ -556,11 +558,14 @@ orgRoutes.patch('/organizations/:id', requireScope('partner', 'system'), zValida
   });
 
   return c.json(organization);
-});
+}] as const;
+
+orgRoutes.patch('/organizations/:id', ...updateOrgHandler);
+orgRoutes.put('/organizations/:id', ...updateOrgHandler);
 
 orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
 
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
     return c.json({ error: 'Organization not found' }, 404);
@@ -683,7 +688,7 @@ orgRoutes.post('/sites', requireScope('organization', 'partner', 'system'), zVal
 
 orgRoutes.get('/sites/:id', requireScope('organization', 'partner', 'system'), async (c) => {
   const auth = c.get('auth');
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
 
   const [site] = await db
     .select()
@@ -705,7 +710,7 @@ orgRoutes.get('/sites/:id', requireScope('organization', 'partner', 'system'), a
 
 orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'), zValidator('json', updateSiteSchema), async (c) => {
   const auth = c.get('auth');
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
   const data = c.req.valid('json');
 
   if (Object.keys(data).length === 0) {
@@ -747,7 +752,7 @@ orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'),
 
 orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system'), async (c) => {
   const auth = c.get('auth');
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
 
   const [site] = await db
     .select()

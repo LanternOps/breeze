@@ -1,6 +1,6 @@
 import { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { createHash } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
 import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { devices } from '../db/schema';
@@ -70,7 +70,14 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     throw new HTTPException(401, { message: 'Invalid agent credentials' });
   }
 
-  if (device.agentTokenHash !== tokenHash) {
+  const storedBuf = Buffer.from(device.agentTokenHash, 'hex');
+  const computedBuf = Buffer.from(tokenHash, 'hex');
+  if (storedBuf.length !== computedBuf.length) {
+    // Hash format mismatch — treat as auth failure
+    throw new HTTPException(401, { message: 'Invalid agent credentials' });
+  }
+  const hashMatch = timingSafeEqual(storedBuf, computedBuf);
+  if (!hashMatch) {
     throw new HTTPException(401, { message: 'Invalid agent credentials' });
   }
 

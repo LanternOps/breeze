@@ -1,0 +1,1236 @@
+# Monitoring & Security Dashboard E2E Tests
+# Tests security posture dashboard, all security sub-pages, monitoring, peripheral control,
+# sensitive data discovery, and audit log verification.
+# Verification uses API log queries instead of remote MCP calls.
+
+tests:
+  - id: security_dashboard_overview
+    name: "Security Posture Dashboard Overview"
+    description: "Verify security dashboard loads with all stat cards and navigation links"
+    tags: [security, dashboard, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_security
+        action: ui
+        description: "Navigate to Security dashboard"
+        playwright:
+          - goto: "/security"
+          - waitFor: "h2:has-text('Security')"
+            timeout: 15000
+
+      - id: verify_page_heading
+        action: ui
+        description: "Verify main heading and subtext are visible"
+        playwright:
+          - assert:
+              selector: "h2"
+              contains: "Security"
+          - assert:
+              selector: "p"
+              contains: "Track protection coverage"
+
+      - id: verify_refresh_button
+        action: ui
+        description: "Verify Refresh button is present and functional"
+        playwright:
+          - assert:
+              selector: "button"
+              contains: "Refresh"
+          - click: "button:has-text('Refresh')"
+
+      - id: verify_security_score_card
+        action: ui
+        description: "Verify Security Score card with score and View details link"
+        playwright:
+          - assert:
+              selector: "p"
+              contains: "Security Score"
+          - assert:
+              selector: "p"
+              contains: "/ 100"
+          - assert:
+              selector: "a[href='/security/score']"
+              contains: "View details"
+
+      - id: verify_trend_chart_card
+        action: ui
+        description: "Verify Security Score Trend card is present"
+        playwright:
+          - assert:
+              selector: "p"
+              contains: "Security Score Trend"
+          - assert:
+              selector: "a[href='/security/trends']"
+              contains: "View details"
+
+      - id: verify_vulnerabilities_card
+        action: ui
+        description: "Verify Vulnerabilities card shows severity breakdown"
+        playwright:
+          - assert:
+              selector: "p"
+              contains: "Vulnerabilities"
+          - assert:
+              selector: "span, div"
+              contains: "Critical"
+          - assert:
+              selector: "span, div"
+              contains: "High"
+          - assert:
+              selector: "a[href='/security/vulnerabilities']"
+              contains: "View details"
+
+      - id: verify_antivirus_card
+        action: ui
+        description: "Verify Antivirus Coverage card shows protected/unprotected counts"
+        playwright:
+          - assert:
+              selector: "p"
+              contains: "Antivirus Coverage"
+          - assert:
+              selector: "span"
+              contains: "Protected"
+          - assert:
+              selector: "span"
+              contains: "Unprotected"
+          - assert:
+              selector: "a[href='/security/antivirus']"
+              contains: "View details"
+
+      - id: verify_firewall_card
+        action: ui
+        description: "Verify Firewall Status card shows enabled/disabled counts"
+        playwright:
+          - assert:
+              selector: "p"
+              contains: "Firewall Status"
+          - assert:
+              selector: "span"
+              contains: "Enabled"
+          - assert:
+              selector: "span"
+              contains: "Disabled"
+          - assert:
+              selector: "a[href='/security/firewall']"
+              contains: "View details"
+
+      - id: verify_encryption_card
+        action: ui
+        description: "Verify Encryption Status card shows BitLocker and FileVault counts"
+        playwright:
+          - assert:
+              selector: "p"
+              contains: "Encryption Status"
+          - assert:
+              selector: "span"
+              contains: "BitLocker enabled"
+          - assert:
+              selector: "span"
+              contains: "FileVault enabled"
+          - assert:
+              selector: "a[href='/security/encryption']"
+              contains: "View details"
+
+      - id: verify_password_card
+        action: ui
+        description: "Verify Password Policy card shows compliance percentage"
+        playwright:
+          - assert:
+              selector: "p"
+              contains: "Password Policy"
+          - assert:
+              selector: "span"
+              contains: "compliant"
+          - assert:
+              selector: "a[href='/security/password-policy']"
+              contains: "View details"
+
+      - id: verify_admin_audit_card
+        action: ui
+        description: "Verify Admin Account Audit card shows default and weak admin counts"
+        playwright:
+          - assert:
+              selector: "p"
+              contains: "Admin Account Audit"
+          - assert:
+              selector: "p"
+              contains: "Default admins"
+          - assert:
+              selector: "p"
+              contains: "Weak admins"
+          - assert:
+              selector: "a[href='/security/admin-audit']"
+              contains: "View details"
+
+      - id: verify_recommendations_card
+        action: ui
+        description: "Verify Security Recommendations section is present with remediation guidance link"
+        playwright:
+          - assert:
+              selector: "p"
+              contains: "Security Recommendations"
+          - assert:
+              selector: "a[href='/security/recommendations']"
+              contains: "View details"
+
+      - id: verify_via_api
+        action: api
+        description: "Verify security posture data collected by agent"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.linux}}/diagnostic-logs"
+          query:
+            component: security
+            since: "{{testStartTime}}"
+        poll:
+          maxAttempts: 10
+          intervalMs: 3000
+          until: "logs.length > 0"
+        expect:
+          offset: 0
+
+  - id: security_score_detail
+    name: "Security Score Detail Page"
+    description: "Verify score breakdown page shows grade, component table, and stat cards"
+    tags: [security, score]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_score
+        action: ui
+        description: "Navigate to Security Score detail page"
+        playwright:
+          - goto: "/security/score"
+          - waitFor: "text=Security Score"
+            timeout: 15000
+
+      - id: verify_score_header
+        action: ui
+        description: "Verify page title and subtitle"
+        playwright:
+          - assert:
+              selector: "h2, h1"
+              contains: "Security Score"
+          - assert:
+              selector: "p"
+              contains: "Score breakdown by category"
+
+      - id: verify_stat_cards
+        action: ui
+        description: "Verify Overall Score, Grade, and Devices Audited stat cards"
+        playwright:
+          - assert:
+              selector: "div"
+              contains: "Overall Score"
+          - assert:
+              selector: "div"
+              contains: "Grade"
+          - assert:
+              selector: "div"
+              contains: "Devices Audited"
+
+      - id: verify_breakdown_table
+        action: ui
+        description: "Verify score breakdown table has all expected columns"
+        playwright:
+          - assert:
+              selector: "table thead"
+              contains: "Category"
+          - assert:
+              selector: "table thead"
+              contains: "Score"
+          - assert:
+              selector: "table thead"
+              contains: "Weight"
+          - assert:
+              selector: "table thead"
+              contains: "Status"
+          - assert:
+              selector: "table thead"
+              contains: "Affected"
+
+      - id: verify_refresh
+        action: ui
+        description: "Verify Refresh button triggers data reload"
+        playwright:
+          - click: "button:has-text('Refresh')"
+
+  - id: antivirus_page
+    name: "Antivirus Coverage Page"
+    description: "Verify antivirus page shows stat cards, provider chart, device table, and filters"
+    tags: [security, antivirus]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_antivirus
+        action: ui
+        description: "Navigate to Antivirus Coverage page"
+        playwright:
+          - goto: "/security/antivirus"
+          - waitFor: "text=Antivirus Coverage"
+            timeout: 15000
+
+      - id: verify_header_and_stat_cards
+        action: ui
+        description: "Verify page header and four stat cards (Total, Protected, Unprotected, Coverage)"
+        playwright:
+          - assert:
+              selector: "h2"
+              contains: "Antivirus Coverage"
+          - assert:
+              selector: "p"
+              contains: "Endpoint protection status across all devices"
+          - assert:
+              selector: "div"
+              contains: "Total Devices"
+          - assert:
+              selector: "div"
+              contains: "Protected"
+          - assert:
+              selector: "div"
+              contains: "Unprotected"
+          - assert:
+              selector: "div"
+              contains: "Coverage"
+
+      - id: verify_filter_controls
+        action: ui
+        description: "Verify search input and status/OS filter dropdowns are present"
+        playwright:
+          - assert:
+              selector: "input[type='search'][placeholder='Search devices...']"
+              visible: true
+          - assert:
+              selector: "select option[value='protected']"
+              visible: true
+          - assert:
+              selector: "select option[value='at_risk']"
+              visible: true
+          - assert:
+              selector: "select option[value='unprotected']"
+              visible: true
+          - assert:
+              selector: "select option[value='offline']"
+              visible: true
+
+      - id: verify_device_table
+        action: ui
+        description: "Verify device table has Device, OS, Provider, Status, Real-time columns"
+        playwright:
+          - assert:
+              selector: "table thead"
+              contains: "Device"
+          - assert:
+              selector: "table thead"
+              contains: "OS"
+          - assert:
+              selector: "table thead"
+              contains: "Provider"
+          - assert:
+              selector: "table thead"
+              contains: "Status"
+          - assert:
+              selector: "table thead"
+              contains: "Real-time"
+
+      - id: filter_by_status
+        action: ui
+        description: "Filter devices by Protected status"
+        playwright:
+          - selectOption:
+              "select:has(option[value='protected'])": "protected"
+          - waitFor:
+              selector: "table tbody"
+              timeout: 5000
+
+  - id: firewall_page
+    name: "Firewall Status Page"
+    description: "Verify firewall page shows coverage summary, expandable device rows, and profile details"
+    tags: [security, firewall]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_firewall
+        action: ui
+        description: "Navigate to Firewall Status page"
+        playwright:
+          - goto: "/security/firewall"
+          - waitFor: "text=Firewall Status"
+            timeout: 15000
+
+      - id: verify_stat_cards
+        action: ui
+        description: "Verify Total Devices, Enabled, Disabled, and Coverage stat cards"
+        playwright:
+          - assert:
+              selector: "div"
+              contains: "Total Devices"
+          - assert:
+              selector: "div"
+              contains: "Enabled"
+          - assert:
+              selector: "div"
+              contains: "Disabled"
+          - assert:
+              selector: "div"
+              contains: "Coverage"
+
+      - id: verify_table_columns
+        action: ui
+        description: "Verify firewall table has Device, OS, Firewall, Rules columns"
+        playwright:
+          - assert:
+              selector: "table thead"
+              contains: "Device"
+          - assert:
+              selector: "table thead"
+              contains: "OS"
+          - assert:
+              selector: "table thead"
+              contains: "Firewall"
+          - assert:
+              selector: "table thead"
+              contains: "Rules"
+
+      - id: verify_filter_controls
+        action: ui
+        description: "Verify firewall status and OS filter dropdowns"
+        playwright:
+          - assert:
+              selector: "select option[value='enabled']"
+              visible: true
+          - assert:
+              selector: "select option[value='disabled']"
+              visible: true
+
+  - id: encryption_page
+    name: "Encryption Status Page"
+    description: "Verify encryption page shows method counts, device table with TPM and recovery key columns"
+    tags: [security, encryption]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_encryption
+        action: ui
+        description: "Navigate to Encryption Status page"
+        playwright:
+          - goto: "/security/encryption"
+          - waitFor: "text=Encryption Status"
+            timeout: 15000
+
+      - id: verify_stat_cards
+        action: ui
+        description: "Verify Total Devices, Fully Encrypted, Partial, and Unencrypted stat cards"
+        playwright:
+          - assert:
+              selector: "div"
+              contains: "Total Devices"
+          - assert:
+              selector: "div"
+              contains: "Fully Encrypted"
+          - assert:
+              selector: "div"
+              contains: "Partial"
+          - assert:
+              selector: "div"
+              contains: "Unencrypted"
+
+      - id: verify_method_counts
+        action: ui
+        description: "Verify BitLocker, FileVault, LUKS, and None method count cards"
+        playwright:
+          - assert:
+              selector: "p"
+              contains: "BitLocker"
+          - assert:
+              selector: "p"
+              contains: "FileVault"
+          - assert:
+              selector: "p"
+              contains: "LUKS"
+
+      - id: verify_table_columns
+        action: ui
+        description: "Verify device table includes Method, Status, TPM, and Recovery Key columns"
+        playwright:
+          - assert:
+              selector: "table thead"
+              contains: "Method"
+          - assert:
+              selector: "table thead"
+              contains: "Status"
+          - assert:
+              selector: "table thead"
+              contains: "TPM"
+          - assert:
+              selector: "table thead"
+              contains: "Recovery Key"
+
+  - id: password_policy_page
+    name: "Password Policy Page"
+    description: "Verify password policy page shows compliance summary, common failures, and expandable device checks"
+    tags: [security, password]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_password_policy
+        action: ui
+        description: "Navigate to Password Policy page"
+        playwright:
+          - goto: "/security/password-policy"
+          - waitFor: "text=Password Policy"
+            timeout: 15000
+
+      - id: verify_stat_cards
+        action: ui
+        description: "Verify Total Devices, Compliant, Non-compliant, and Compliance % stat cards"
+        playwright:
+          - assert:
+              selector: "div"
+              contains: "Total Devices"
+          - assert:
+              selector: "div"
+              contains: "Compliant"
+          - assert:
+              selector: "div"
+              contains: "Non-compliant"
+          - assert:
+              selector: "div"
+              contains: "Compliance"
+
+      - id: verify_table_columns
+        action: ui
+        description: "Verify device table has Device, OS, Status, Local Accts, Admin Accts columns"
+        playwright:
+          - assert:
+              selector: "table thead"
+              contains: "Device"
+          - assert:
+              selector: "table thead"
+              contains: "OS"
+          - assert:
+              selector: "table thead"
+              contains: "Status"
+          - assert:
+              selector: "table thead"
+              contains: "Local Accts"
+          - assert:
+              selector: "table thead"
+              contains: "Admin Accts"
+
+      - id: verify_compliance_filter
+        action: ui
+        description: "Verify compliant/non-compliant filter dropdown"
+        playwright:
+          - assert:
+              selector: "select option[value='compliant']"
+              visible: true
+          - assert:
+              selector: "select option[value='non_compliant']"
+              visible: true
+
+  - id: vulnerabilities_page
+    name: "Vulnerabilities Page"
+    description: "Verify vulnerabilities page shows threat table with bulk actions, severity filters, and pagination"
+    tags: [security, vulnerabilities, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_vulnerabilities
+        action: ui
+        description: "Navigate to Vulnerabilities page"
+        playwright:
+          - goto: "/security/vulnerabilities"
+          - waitFor: "text=Vulnerabilities"
+            timeout: 15000
+
+      - id: verify_stat_cards
+        action: ui
+        description: "Verify Total, Critical, Active, and Quarantined stat cards"
+        playwright:
+          - assert:
+              selector: "div"
+              contains: "Total"
+          - assert:
+              selector: "div"
+              contains: "Critical"
+          - assert:
+              selector: "div"
+              contains: "Active"
+          - assert:
+              selector: "div"
+              contains: "Quarantined"
+
+      - id: verify_filter_controls
+        action: ui
+        description: "Verify severity, status, and category filters"
+        playwright:
+          - assert:
+              selector: "select option[value='critical']"
+              visible: true
+          - assert:
+              selector: "select option[value='high']"
+              visible: true
+          - assert:
+              selector: "select option[value='active']"
+              visible: true
+          - assert:
+              selector: "select option[value='quarantined']"
+              visible: true
+          - assert:
+              selector: "select option[value='trojan']"
+              visible: true
+          - assert:
+              selector: "select option[value='ransomware']"
+              visible: true
+
+      - id: verify_table_columns
+        action: ui
+        description: "Verify threat table has Device, Threat, Category, Severity, Status, Detected columns"
+        playwright:
+          - assert:
+              selector: "table thead"
+              contains: "Device"
+          - assert:
+              selector: "table thead"
+              contains: "Threat"
+          - assert:
+              selector: "table thead"
+              contains: "Category"
+          - assert:
+              selector: "table thead"
+              contains: "Severity"
+          - assert:
+              selector: "table thead"
+              contains: "Status"
+          - assert:
+              selector: "table thead"
+              contains: "Detected"
+
+      - id: filter_by_severity
+        action: ui
+        description: "Filter threats by Critical severity"
+        playwright:
+          - selectOption:
+              "select:has(option[value='critical'])": "critical"
+          - waitFor:
+              selector: "table tbody"
+              timeout: 5000
+
+  - id: security_trends_page
+    name: "Security Trends Page"
+    description: "Verify trends page shows summary stats, period toggles, line selector, and chart"
+    tags: [security, trends]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_trends
+        action: ui
+        description: "Navigate to Security Trends page"
+        playwright:
+          - goto: "/security/trends"
+          - waitFor: "text=Security Trends"
+            timeout: 15000
+
+      - id: verify_header
+        action: ui
+        description: "Verify page title and subtitle"
+        playwright:
+          - assert:
+              selector: "h2"
+              contains: "Security Trends"
+          - assert:
+              selector: "p"
+              contains: "Score movement over time"
+
+      - id: verify_stat_cards
+        action: ui
+        description: "Verify Current Score, Previous Score, Change, and Trend stat cards"
+        playwright:
+          - assert:
+              selector: "div"
+              contains: "Current Score"
+          - assert:
+              selector: "div"
+              contains: "Previous Score"
+          - assert:
+              selector: "div"
+              contains: "Change"
+          - assert:
+              selector: "div"
+              contains: "Trend"
+
+      - id: verify_period_toggles
+        action: ui
+        description: "Verify 7 Days, 30 Days, and 90 Days period buttons"
+        playwright:
+          - assert:
+              selector: "button"
+              contains: "7 Days"
+          - assert:
+              selector: "button"
+              contains: "30 Days"
+          - assert:
+              selector: "button"
+              contains: "90 Days"
+
+      - id: switch_to_7d
+        action: ui
+        description: "Switch to 7-day period and verify reload"
+        playwright:
+          - click: "button:has-text('7 Days')"
+          - waitFor:
+              selector: "div"
+              timeout: 5000
+
+      - id: verify_line_toggles
+        action: ui
+        description: "Verify category line toggles (Overall, Antivirus, Firewall, Encryption)"
+        playwright:
+          - assert:
+              selector: "button"
+              contains: "Overall"
+          - assert:
+              selector: "button"
+              contains: "Antivirus"
+          - assert:
+              selector: "button"
+              contains: "Firewall"
+          - assert:
+              selector: "button"
+              contains: "Encryption"
+
+  - id: security_recommendations_page
+    name: "Security Recommendations Page"
+    description: "Verify recommendations page shows summary, filters, recommendation cards with steps, and action buttons"
+    tags: [security, recommendations]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_recommendations
+        action: ui
+        description: "Navigate to Security Recommendations page"
+        playwright:
+          - goto: "/security/recommendations"
+          - waitFor: "text=Security Recommendations"
+            timeout: 15000
+
+      - id: verify_header
+        action: ui
+        description: "Verify page title and subtitle"
+        playwright:
+          - assert:
+              selector: "h2"
+              contains: "Security Recommendations"
+          - assert:
+              selector: "p"
+              contains: "Prioritized remediation guidance"
+
+      - id: verify_stat_cards
+        action: ui
+        description: "Verify Total, Open, Critical + High, and Completed stat cards"
+        playwright:
+          - assert:
+              selector: "div"
+              contains: "Total"
+          - assert:
+              selector: "div"
+              contains: "Open"
+          - assert:
+              selector: "div"
+              contains: "Critical"
+          - assert:
+              selector: "div"
+              contains: "Completed"
+
+      - id: verify_filter_controls
+        action: ui
+        description: "Verify priority, category, and status filter dropdowns"
+        playwright:
+          - assert:
+              selector: "select option[value='critical']"
+              visible: true
+          - assert:
+              selector: "select option[value='antivirus']"
+              visible: true
+          - assert:
+              selector: "select option[value='open']"
+              visible: true
+          - assert:
+              selector: "select option[value='completed']"
+              visible: true
+          - assert:
+              selector: "select option[value='dismissed']"
+              visible: true
+
+      - id: filter_by_priority
+        action: ui
+        description: "Filter recommendations by Critical priority"
+        playwright:
+          - selectOption:
+              "select:has(option[value='critical'])": "critical"
+          - waitFor:
+              selector: "div"
+              timeout: 5000
+
+  - id: admin_audit_page
+    name: "Admin Account Audit Page"
+    description: "Verify admin audit page shows 6 summary stat cards, expandable device rows, and issue filtering"
+    tags: [security, admin-audit, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_admin_audit
+        action: ui
+        description: "Navigate to Admin Account Audit page"
+        playwright:
+          - goto: "/security/admin-audit"
+          - waitFor: "text=Admin Account Audit"
+            timeout: 15000
+
+      - id: verify_header
+        action: ui
+        description: "Verify page title and subtitle"
+        playwright:
+          - assert:
+              selector: "h2"
+              contains: "Admin Account Audit"
+          - assert:
+              selector: "p"
+              contains: "Privileged account review across all devices"
+
+      - id: verify_stat_cards
+        action: ui
+        description: "Verify all 6 stat cards: Total Devices, With Issues, Total Admins, Default Accts, Weak Passwords, Stale Accts"
+        playwright:
+          - assert:
+              selector: "div"
+              contains: "Total Devices"
+          - assert:
+              selector: "div"
+              contains: "With Issues"
+          - assert:
+              selector: "div"
+              contains: "Total Admins"
+          - assert:
+              selector: "div"
+              contains: "Default Accts"
+          - assert:
+              selector: "div"
+              contains: "Weak Passwords"
+          - assert:
+              selector: "div"
+              contains: "Stale Accts"
+
+      - id: verify_table_and_filters
+        action: ui
+        description: "Verify device table columns and issue filter dropdown"
+        playwright:
+          - assert:
+              selector: "table thead"
+              contains: "Device"
+          - assert:
+              selector: "table thead"
+              contains: "OS"
+          - assert:
+              selector: "table thead"
+              contains: "Admins"
+          - assert:
+              selector: "table thead"
+              contains: "Issues"
+          - assert:
+              selector: "select option[value='default_account']"
+              visible: true
+          - assert:
+              selector: "select option[value='weak_password']"
+              visible: true
+          - assert:
+              selector: "select option[value='stale_account']"
+              visible: true
+
+      - id: verify_search
+        action: ui
+        description: "Verify search input accepts text"
+        playwright:
+          - fill:
+              "input[placeholder='Search devices or users...']": "admin"
+          - waitFor:
+              selector: "table tbody"
+              timeout: 5000
+          - fill:
+              "input[placeholder='Search devices or users...']": ""
+
+  - id: monitoring_dashboard
+    name: "Monitoring Dashboard"
+    description: "Verify application monitoring dashboard navigates and loads"
+    tags: [monitoring, dashboard]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_monitoring
+        action: ui
+        description: "Navigate to Monitoring page"
+        playwright:
+          - goto: "/monitoring"
+          - waitFor: "text=Monitor"
+            timeout: 15000
+
+      - id: check_system_metrics
+        action: api
+        description: "Verify system metrics collected by agent"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.linux}}/diagnostic-logs"
+          query:
+            component: monitoring
+            since: "{{testStartTime}}"
+            search: "metrics"
+        poll:
+          maxAttempts: 10
+          intervalMs: 3000
+          until: "logs.length > 0"
+        expect:
+          offset: 0
+
+  - id: peripheral_control
+    name: "Peripheral Device Control"
+    description: "Verify USB/peripheral device monitoring page loads"
+    tags: [security, peripherals]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_peripherals
+        action: ui
+        description: "Navigate to Peripherals page"
+        playwright:
+          - goto: "/peripherals"
+          - waitFor: "text=Peripheral"
+            timeout: 15000
+
+      - id: check_usb_devices
+        action: api
+        description: "Verify peripheral inventory collected by agent"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.linux}}/diagnostic-logs"
+          query:
+            component: peripherals
+            since: "{{testStartTime}}"
+        poll:
+          maxAttempts: 10
+          intervalMs: 3000
+          until: "logs.length > 0"
+        expect:
+          offset: 0
+
+  - id: sensitive_data_discovery
+    name: "Sensitive Data Discovery"
+    description: "Verify sensitive data discovery page loads"
+    tags: [security, sensitive-data]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_sensitive_data
+        action: ui
+        description: "Navigate to Sensitive Data page"
+        playwright:
+          - goto: "/sensitive-data"
+          - waitFor: "text=Data"
+            timeout: 15000
+
+  - id: audit_log_verification
+    name: "Audit Log Verification"
+    description: "Verify audit logs page loads and shows login events in a table"
+    tags: [audit, logging, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_audit
+        action: ui
+        description: "Navigate to Audit Logs page"
+        playwright:
+          - goto: "/audit"
+          - waitFor: "text=Audit"
+            timeout: 15000
+
+      - id: verify_audit_table
+        action: ui
+        description: "Verify audit log table is present with data"
+        playwright:
+          - waitFor: "table"
+            timeout: 10000
+
+  - id: security_sub_page_navigation
+    name: "Security Sub-page Navigation"
+    description: "Verify all security sub-pages are reachable via direct navigation"
+    tags: [security, navigation]
+    nodes: [linux]
+    timeout: 180000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_score
+        action: ui
+        description: "Navigate to /security/score"
+        playwright:
+          - goto: "/security/score"
+          - waitFor: "text=Security Score"
+            timeout: 15000
+
+      - id: navigate_antivirus
+        action: ui
+        description: "Navigate to /security/antivirus"
+        playwright:
+          - goto: "/security/antivirus"
+          - waitFor: "text=Antivirus Coverage"
+            timeout: 15000
+
+      - id: navigate_firewall
+        action: ui
+        description: "Navigate to /security/firewall"
+        playwright:
+          - goto: "/security/firewall"
+          - waitFor: "text=Firewall Status"
+            timeout: 15000
+
+      - id: navigate_encryption
+        action: ui
+        description: "Navigate to /security/encryption"
+        playwright:
+          - goto: "/security/encryption"
+          - waitFor: "text=Encryption Status"
+            timeout: 15000
+
+      - id: navigate_password_policy
+        action: ui
+        description: "Navigate to /security/password-policy"
+        playwright:
+          - goto: "/security/password-policy"
+          - waitFor: "text=Password Policy"
+            timeout: 15000
+
+      - id: navigate_vulnerabilities
+        action: ui
+        description: "Navigate to /security/vulnerabilities"
+        playwright:
+          - goto: "/security/vulnerabilities"
+          - waitFor: "text=Vulnerabilities"
+            timeout: 15000
+
+      - id: navigate_trends
+        action: ui
+        description: "Navigate to /security/trends"
+        playwright:
+          - goto: "/security/trends"
+          - waitFor: "text=Security Trends"
+            timeout: 15000
+
+      - id: navigate_recommendations
+        action: ui
+        description: "Navigate to /security/recommendations"
+        playwright:
+          - goto: "/security/recommendations"
+          - waitFor: "text=Security Recommendations"
+            timeout: 15000
+
+      - id: navigate_admin_audit
+        action: ui
+        description: "Navigate to /security/admin-audit"
+        playwright:
+          - goto: "/security/admin-audit"
+          - waitFor: "text=Admin Account Audit"
+            timeout: 15000

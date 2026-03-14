@@ -1,0 +1,442 @@
+# Peripheral Control and Sensitive Data Discovery E2E Tests
+# Tests the Peripheral Control page (Policies and Activity Log tabs)
+# and the Sensitive Data Discovery page (Dashboard, Findings, Scans, Policies tabs)
+# UI selectors are derived from PeripheralPage.tsx, PeripheralPoliciesList.tsx,
+# PeripheralActivityLog.tsx, SensitiveDataPage.tsx, DashboardTab.tsx,
+# FindingsTab.tsx, and ScansTab.tsx
+# Verification uses API calls, not remote MCP calls
+
+tests:
+  - id: peripherals_page_loads
+    name: "Peripheral Control Page Loads with Policies Tab"
+    description: "Verify the Peripheral Control page loads with the correct heading, Usb icon, and two tab buttons"
+    tags: [peripherals, smoke, critical]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_peripherals
+        action: ui
+        description: "Navigate to Peripheral Control page and verify heading"
+        playwright:
+          - goto: "/peripherals"
+          - waitFor: "text=Peripheral Control"
+            timeout: 15000
+
+      - id: verify_tabs
+        action: ui
+        description: "Verify Policies and Activity Log tab buttons are present"
+        playwright:
+          - waitFor: "button:has-text('Policies')"
+          - waitFor: "button:has-text('Activity Log')"
+
+  - id: peripherals_policies_list
+    name: "Peripheral Policies List Shows Table with Filters"
+    description: "Verify the Policies tab renders the filter bar, Create Policy button, and policies table with correct columns"
+    tags: [peripherals, policies]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_peripherals_policies
+        action: ui
+        description: "Navigate to Peripheral Control page (Policies tab is default)"
+        playwright:
+          - goto: "/peripherals"
+          - waitFor: "text=Peripheral Control"
+            timeout: 15000
+
+      - id: verify_filter_bar
+        action: ui
+        description: "Verify the device class, action, and status filter dropdowns"
+        playwright:
+          - waitFor: "select:has(option[value='storage'])"
+          - waitFor: "select:has(option[value='allow'])"
+          - waitFor: "select:has(option[value='true']:has-text('Active'))"
+          - waitFor: "button:has-text('Create Policy')"
+
+      - id: verify_policies_table_columns
+        action: ui
+        description: "Verify policies table has correct column headers"
+        playwright:
+          - waitFor: "th:has-text('Name')"
+          - waitFor: "th:has-text('Device Class')"
+          - waitFor: "th:has-text('Action')"
+          - waitFor: "th:has-text('Active')"
+          - waitFor: "th:has-text('Exceptions')"
+          - waitFor: "th:has-text('Created')"
+
+      - id: filter_by_device_class
+        action: ui
+        description: "Filter policies by Storage device class"
+        playwright:
+          - selectOption: "select:has(option[value='storage'])=storage"
+          - waitFor: "table"
+            timeout: 5000
+
+      - id: filter_by_action
+        action: ui
+        description: "Filter policies by Block action"
+        playwright:
+          - selectOption: "select:has(option[value='block'])=block"
+          - waitFor: "table"
+            timeout: 5000
+
+      - id: verify_policies_api
+        action: api
+        description: "Verify the peripheral policies API returns data"
+        request:
+          method: GET
+          path: "/api/v1/peripherals/policies"
+        expect:
+          pagination: {}
+
+  - id: peripherals_create_policy
+    name: "Create Peripheral Policy via UI Modal"
+    description: "Click Create Policy and verify the policy form modal opens"
+    tags: [peripherals, policies, create]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_peripherals
+        action: ui
+        description: "Navigate to Peripheral Control page"
+        playwright:
+          - goto: "/peripherals"
+          - waitFor: "text=Peripheral Control"
+            timeout: 15000
+
+      - id: click_create_policy
+        action: ui
+        description: "Click the Create Policy button to open the policy form"
+        playwright:
+          - click: "button:has-text('Create Policy')"
+          - waitFor: "text=Create Policy"
+            timeout: 5000
+
+  - id: peripherals_activity_log
+    name: "Peripheral Activity Log Tab Shows Event Table"
+    description: "Switch to Activity Log tab and verify the filter bar and event table columns render"
+    tags: [peripherals, activity]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_peripherals_activity
+        action: ui
+        description: "Navigate to Peripheral Control page and switch to Activity Log tab"
+        playwright:
+          - goto: "/peripherals"
+          - waitFor: "text=Peripheral Control"
+            timeout: 15000
+          - click: "button:has-text('Activity Log')"
+          - waitFor: "table"
+            timeout: 10000
+
+      - id: verify_activity_filter_bar
+        action: ui
+        description: "Verify the event type filter dropdown and peripheral type/vendor inputs are present"
+        playwright:
+          - waitFor: "select:has(option[value='connected'])"
+          - waitFor: "input[placeholder='Peripheral type']"
+          - waitFor: "input[placeholder='Vendor']"
+
+      - id: verify_activity_table_columns
+        action: ui
+        description: "Verify activity table has correct column headers"
+        playwright:
+          - waitFor: "th:has-text('Occurred At')"
+          - waitFor: "th:has-text('Event Type')"
+          - waitFor: "th:has-text('Peripheral Type')"
+          - waitFor: "th:has-text('Vendor')"
+          - waitFor: "th:has-text('Product')"
+          - waitFor: "th:has-text('Serial Number')"
+          - waitFor: "th:has-text('Policy')"
+
+      - id: filter_activity_by_event_type
+        action: ui
+        description: "Filter activity log by Connected event type"
+        playwright:
+          - selectOption: "select:has(option[value='connected'])=connected"
+          - waitFor: "table"
+            timeout: 5000
+
+      - id: verify_activity_api
+        action: api
+        description: "Verify the peripheral activity API endpoint returns data"
+        request:
+          method: GET
+          path: "/api/v1/peripherals/activity"
+          query:
+            limit: "50"
+            offset: "0"
+        expect:
+          pagination: {}
+
+  - id: sensitive_data_page_loads
+    name: "Sensitive Data Discovery Page Loads with Tabs"
+    description: "Verify the Sensitive Data Discovery page loads with the correct heading and four tab buttons"
+    tags: [sensitive-data, smoke, critical]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_sensitive_data
+        action: ui
+        description: "Navigate to Sensitive Data Discovery page and verify heading"
+        playwright:
+          - goto: "/sensitive-data"
+          - waitFor: "text=Sensitive Data Discovery"
+            timeout: 15000
+
+      - id: verify_tabs
+        action: ui
+        description: "Verify Dashboard, Findings, Scans, and Policies tab buttons are present"
+        playwright:
+          - waitFor: "button:has-text('Dashboard')"
+          - waitFor: "button:has-text('Findings')"
+          - waitFor: "button:has-text('Scans')"
+          - waitFor: "button:has-text('Policies')"
+
+  - id: sensitive_data_dashboard_tab
+    name: "Sensitive Data Dashboard Tab Shows Stat Cards and Charts"
+    description: "Verify the Dashboard tab renders the four stat cards and two charts"
+    tags: [sensitive-data, dashboard]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_sensitive_data_dashboard
+        action: ui
+        description: "Navigate to Sensitive Data page (Dashboard tab is default)"
+        playwright:
+          - goto: "/sensitive-data"
+          - waitFor: "text=Sensitive Data Discovery"
+            timeout: 15000
+
+      - id: verify_stat_cards
+        action: ui
+        description: "Verify the four summary stat cards: Total Findings, Critical Open, Remediated (24h), Open Findings"
+        playwright:
+          - waitFor: "text=Total Findings"
+          - waitFor: "text=Critical Open"
+          - waitFor: "text=Remediated (24h)"
+          - waitFor: "text=Open Findings"
+
+      - id: verify_charts
+        action: ui
+        description: "Verify the Findings by Data Type bar chart and Risk Distribution pie chart"
+        playwright:
+          - waitFor: "text=Findings by Data Type"
+          - waitFor: "text=Risk Distribution"
+
+      - id: verify_dashboard_api
+        action: api
+        description: "Verify the sensitive data dashboard API returns data"
+        request:
+          method: GET
+          path: "/api/v1/sensitive-data/dashboard"
+        expect:
+          data:
+            totals: {}
+
+  - id: sensitive_data_findings_tab
+    name: "Sensitive Data Findings Tab with Filters"
+    description: "Switch to the Findings tab and verify the filter dropdowns, search input, and findings table"
+    tags: [sensitive-data, findings]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_sensitive_data_findings
+        action: ui
+        description: "Navigate to Sensitive Data Findings tab via hash"
+        playwright:
+          - goto: "/sensitive-data#findings"
+          - waitFor: "text=Sensitive Data Discovery"
+            timeout: 15000
+          - waitFor: "input[placeholder='Search file paths...']"
+            timeout: 10000
+
+      - id: verify_filter_dropdowns
+        action: ui
+        description: "Verify data type, risk, and status filter dropdowns are present"
+        playwright:
+          - waitFor: "select:has(option:has-text('All Types'))"
+          - waitFor: "select:has(option:has-text('All Risks'))"
+          - waitFor: "select:has(option:has-text('All Statuses'))"
+
+      - id: verify_findings_table_columns
+        action: ui
+        description: "Verify findings table has correct column headers"
+        playwright:
+          - waitFor: "th:has-text('File Path')"
+          - waitFor: "th:has-text('Type')"
+          - waitFor: "th:has-text('Pattern')"
+          - waitFor: "th:has-text('Risk')"
+          - waitFor: "th:has-text('Confidence')"
+          - waitFor: "th:has-text('Status')"
+          - waitFor: "th:has-text('Device')"
+          - waitFor: "th:has-text('Found')"
+
+      - id: search_findings_by_path
+        action: ui
+        description: "Use the file path search to filter findings"
+        playwright:
+          - fill: "input[placeholder='Search file paths...']"
+            value: "/home"
+          - waitFor: "table"
+            timeout: 5000
+
+      - id: verify_findings_api
+        action: api
+        description: "Verify the sensitive data report API returns findings"
+        request:
+          method: GET
+          path: "/api/v1/sensitive-data/report"
+          query:
+            page: "1"
+            limit: "25"
+        expect:
+          pagination: {}
+
+  - id: sensitive_data_scans_tab
+    name: "Sensitive Data Scans Tab Shows Scan Table and New Scan Button"
+    description: "Switch to the Scans tab and verify the Scans heading, New Scan button, and scan table"
+    tags: [sensitive-data, scans]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_sensitive_data_scans
+        action: ui
+        description: "Navigate to Sensitive Data Scans tab via hash"
+        playwright:
+          - goto: "/sensitive-data#scans"
+          - waitFor: "text=Sensitive Data Discovery"
+            timeout: 15000
+          - waitFor: "h2:has-text('Scans')"
+            timeout: 10000
+
+      - id: verify_scans_actions
+        action: ui
+        description: "Verify Refresh and New Scan buttons are present"
+        playwright:
+          - waitFor: "button:has-text('Refresh')"
+          - waitFor: "button:has-text('New Scan')"
+
+      - id: verify_scans_table_columns
+        action: ui
+        description: "Verify scans table has correct column headers"
+        playwright:
+          - waitFor: "th:has-text('Scan ID')"
+          - waitFor: "th:has-text('Device')"
+          - waitFor: "th:has-text('Status')"
+          - waitFor: "th:has-text('Findings')"
+          - waitFor: "th:has-text('Started')"
+          - waitFor: "th:has-text('Duration')"
+
+      - id: open_new_scan_modal
+        action: ui
+        description: "Click New Scan and verify the create scan modal opens"
+        playwright:
+          - click: "button:has-text('New Scan')"
+          - waitFor: "text=New Scan"
+            timeout: 5000

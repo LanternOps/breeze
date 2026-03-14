@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import RegisterForm from './RegisterForm';
 import { useAuthStore, apiRegister } from '../../stores/auth';
+import { navigateTo } from '../../lib/navigation';
 
 export default function RegisterPage() {
   const [error, setError] = useState<string>();
@@ -22,7 +23,8 @@ export default function RegisterPage() {
 
     if (result.user && result.tokens) {
       login(result.user, result.tokens);
-      window.location.href = '/';
+      await navigateTo('/');
+      return;
     }
 
     setLoading(false);

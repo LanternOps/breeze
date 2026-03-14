@@ -259,6 +259,18 @@ func (c *Client) readPump() {
 			continue
 		}
 
+		// Respond to server-side application-level pings so the server
+		// doesn't close the connection for pong timeout (code 4008).
+		if msg.Type == "ping" {
+			pong, _ := json.Marshal(map[string]any{"type": "pong", "timestamp": time.Now().UnixMilli()})
+			select {
+			case c.sendChan <- pong:
+			default:
+				log.Warn("pong dropped, send channel full")
+			}
+			continue
+		}
+
 		// Skip non-command messages (connected, ack, heartbeat_ack, error, etc.)
 		// Commands have both an ID and a type like "run_script", "list_processes", etc.
 		if msg.ID == "" {
@@ -342,7 +354,7 @@ func (c *Client) processCommand(cmd Command) {
 	result.CommandID = cmd.ID
 
 	if err := c.SendResult(result); err != nil {
-		log.Error("failed to send command result", "error", err)
+		log.Error("failed to send command result", "commandId", cmd.ID, "error", err)
 	}
 }
 

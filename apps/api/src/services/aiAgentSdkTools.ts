@@ -9,7 +9,8 @@
 import { z } from 'zod';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { AuthContext } from '../middleware/auth';
-import { db, withSystemDbAccessContext } from '../db';
+import { db, withSystemDbAccessContext, withDbAccessContext, runOutsideDbContext } from '../db';
+import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
 import { executeTool } from './aiTools';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
@@ -52,12 +53,22 @@ export const TOOL_TIERS = {
   get_user_experience_metrics: 1,
   manage_alerts: 1, // Base tier; action-level escalation handled in guardrails
   get_dns_security: 1,
+  get_huntress_status: 1,
+  get_huntress_incidents: 1,
   manage_dns_policy: 2,
+  get_s1_status: 1,
+  get_s1_threats: 1,
+  s1_isolate_device: 3,
+  s1_threat_action: 3,
+  sync_huntress_data: 2,
   execute_command: 3,
   run_script: 3,
   manage_services: 3,
   security_scan: 3,
   get_security_posture: 1,
+  get_cis_compliance: 1,
+  get_cis_device_report: 1,
+  apply_cis_remediation: 3,
   get_fleet_health: 1,
   file_operations: 1, // Base tier; write/delete/mkdir/rename escalated to 3 in guardrails
   analyze_disk_usage: 1,
@@ -69,7 +80,6 @@ export const TOOL_TIERS = {
   analyze_screen: 2,
   computer_control: 3,
   // Fleet orchestration tools
-  manage_policies: 1,        // Action-level escalation in guardrails
   manage_deployments: 1,     // Action-level escalation in guardrails
   manage_patches: 1,         // Action-level escalation in guardrails
   manage_groups: 1,          // Action-level escalation in guardrails
@@ -93,6 +103,9 @@ export const TOOL_TIERS = {
   detect_log_correlations: 2,
   // Configuration policy tools
   list_configuration_policies: 1,
+  get_configuration_policy: 1,
+  manage_configuration_policy: 1, // Action-level escalation in guardrails
+  configuration_policy_compliance: 1,
   get_effective_configuration: 1,
   preview_configuration_change: 1,
   apply_configuration_policy: 2,
@@ -102,6 +115,10 @@ export const TOOL_TIERS = {
   execute_playbook: 3,
   get_playbook_history: 1,
   propose_action_plan: 1,
+  // Monitoring tools
+  query_monitors: 1,
+  manage_monitors: 1,           // Action-level escalation in guardrails
+  get_service_monitoring_status: 1,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
 // All tool names, prefixed for SDK MCP format
@@ -113,7 +130,38 @@ export const BREEZE_MCP_TOOL_NAMES = Object.keys(TOOL_TIERS).map(
 // Helper: Create tool handler that delegates to executeTool
 // ============================================
 
-const TOOL_EXECUTION_TIMEOUT_MS = 60_000; // 60s safety timeout
+const TOOL_EXECUTION_TIMEOUT_MS = 60_000; // 60s default safety timeout
+const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
+
+/**
+ * Per-tool timeout overrides for tools that legitimately need more (or less) time.
+ * Tools not listed here use TOOL_EXECUTION_TIMEOUT_MS (60s).
+ */
+const TOOL_TIMEOUT_OVERRIDES: Record<string, number> = {
+  // Command execution — waits for agent round-trip
+  execute_command: 120_000,
+  run_script: 120_000,
+  // Disk operations — can scan large filesystems
+  analyze_disk_usage: 90_000,
+  disk_cleanup: 90_000,
+  // Security scans — multi-step agent operations
+  security_scan: 120_000,
+  apply_cis_remediation: 120_000,
+  // Patching — downloads + installs
+  manage_patches: 180_000,
+  // Network discovery — port scanning is slow
+  network_discovery: 120_000,
+  // Desktop / vision — WebRTC setup + capture
+  take_screenshot: 30_000,
+  analyze_screen: 30_000,
+  computer_control: 30_000,
+  // Report generation — aggregates across many devices
+  generate_report: 90_000,
+};
+
+function getToolTimeout(toolName: string): number {
+  return TOOL_TIMEOUT_OVERRIDES[toolName] ?? TOOL_EXECUTION_TIMEOUT_MS;
+}
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -125,13 +173,52 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
+/**
+ * Fire postToolUse with a timeout — if DB writes hang, don't block the conversation.
+ * The postToolUse callback already emits SSE events synchronously before DB writes,
+ * so even on timeout the UI receives the tool_result event.
+ */
+async function safePostToolUse(
+  onPostToolUse: PostToolUseCallback | undefined,
+  toolName: string,
+  args: Record<string, unknown>,
+  output: string,
+  isError: boolean,
+  durationMs: number,
+): Promise<void> {
+  if (!onPostToolUse) return;
+  try {
+    await withTimeout(
+      onPostToolUse(toolName, args, output, isError, durationMs),
+      POST_TOOL_USE_TIMEOUT_MS,
+      `postToolUse:${toolName}`,
+    );
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : 'Unknown error';
+    console.error(`[AI-SDK] PostToolUse failed for ${toolName} (${durationMs}ms): ${reason}`);
+  }
+}
+
 function makeHandler(
   toolName: string,
   getAuth: () => AuthContext,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
 ) {
+  const toolTimeout = getToolTimeout(toolName);
+
   return async (args: Record<string, unknown>) => {
+    // CRITICAL: Escape any inherited AsyncLocalStorage DB context from the SDK's
+    // MCP callback chain. Without this, dbContextStorage.getStore() may return a
+    // stale/committed transaction from a prior withSystemDbAccessContext call,
+    // causing withDbAccessContext to skip creating a new transaction and execute
+    // on the dead connection — which hangs until the PostgreSQL idle timeout.
+    //
+    // This wraps the ENTIRE handler (preToolUse, executeTool, postToolUse) so all
+    // DB operations start with a clean context. Previously only executeTool was
+    // wrapped, leaving preToolUse (approval DB writes) and postToolUse (tool_result
+    // persistence) vulnerable to stale context hangs.
+    return runOutsideDbContext(async () => {
     const startTime = Date.now();
 
     // Pre-execution check (guardrails, RBAC, rate limits, approval)
@@ -140,14 +227,12 @@ function makeHandler(
       try {
         check = await onPreToolUse(toolName, args);
       } catch (err) {
-        console.error(`[AI-SDK] PreToolUse threw for ${toolName}:`, err);
-        check = { allowed: false, error: 'Internal guardrails error. Tool execution blocked.' };
+        const reason = err instanceof Error ? err.message : 'Unknown error';
+        console.error(`[AI-SDK] PreToolUse threw for ${toolName}: ${reason}`);
+        check = { allowed: false, error: `Guardrails check failed: ${reason}` };
       }
       if (!check.allowed) {
-        if (onPostToolUse) {
-          try { await onPostToolUse(toolName, args, JSON.stringify({ error: check.error }), true, 0); }
-          catch (err) { console.error('[AI-SDK] PostToolUse callback failed:', err); }
-        }
+        await safePostToolUse(onPostToolUse, toolName, args, JSON.stringify({ error: check.error }), true, 0);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({ error: check.error }) }],
           isError: true,
@@ -156,12 +241,16 @@ function makeHandler(
     }
     try {
       const auth = getAuth();
-      // Tool handlers query RLS-protected tables (e.g. devices via verifyDeviceAccess).
-      // The background processor runs outside the request's DB context, so we must
-      // wrap execution in withSystemDbAccessContext for RLS to pass.
+      // Use the user's actual auth scope instead of system context so that
+      // RLS policies and DB-level tenant isolation are enforced.
+      const dbContext: DbAccessContext = {
+        scope: auth.scope as DbAccessContext['scope'],
+        orgId: auth.orgId ?? null,
+        accessibleOrgIds: auth.accessibleOrgIds ?? null,
+      };
       const result = await withTimeout(
-        withSystemDbAccessContext(() => executeTool(toolName, args, auth)),
-        TOOL_EXECUTION_TIMEOUT_MS,
+        withDbAccessContext(dbContext, () => executeTool(toolName, args, auth)),
+        toolTimeout,
         toolName,
       );
       const compactResult = compactToolResultForChat(toolName, result);
@@ -177,10 +266,7 @@ function makeHandler(
           } else if (parsed.imageBase64) {
             const imageBase64 = parsed.imageBase64;
             const durationMs = Date.now() - startTime;
-            if (onPostToolUse) {
-              try { await onPostToolUse(toolName, args, JSON.stringify({ actionExecuted: parsed.actionExecuted, width: parsed.width, height: parsed.height, format: parsed.format, sizeBytes: parsed.sizeBytes, capturedAt: parsed.capturedAt }), false, durationMs); }
-              catch (err) { console.error('[AI-SDK] PostToolUse callback failed:', err); }
-            }
+            await safePostToolUse(onPostToolUse, toolName, args, JSON.stringify({ actionExecuted: parsed.actionExecuted, width: parsed.width, height: parsed.height, format: parsed.format, sizeBytes: parsed.sizeBytes, capturedAt: parsed.capturedAt }), false, durationMs);
             // MCP ImageContent format: { type: 'image', data: base64, mimeType: string }
             const contentBlocks: Array<{ type: string; data?: string; mimeType?: string; text?: string }> = [
               {
@@ -222,25 +308,29 @@ function makeHandler(
         }
       }
 
+      // Detect error responses returned as JSON strings by tool handlers
+      let isToolError = false;
+      try {
+        const parsed = JSON.parse(compactResult);
+        if (parsed && typeof parsed === 'object' && 'error' in parsed && !('success' in parsed) && !('data' in parsed) && !('configured' in parsed)) {
+          isToolError = true;
+        }
+      } catch { /* not JSON, treat as success */ }
+
       const durationMs = Date.now() - startTime;
-      if (onPostToolUse) {
-        try { await onPostToolUse(toolName, args, compactResult, false, durationMs); }
-        catch (err) { console.error('[AI-SDK] PostToolUse callback failed:', err); }
-      }
-      return { content: [{ type: 'text' as const, text: compactResult }] };
+      await safePostToolUse(onPostToolUse, toolName, args, compactResult, isToolError, durationMs);
+      return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Tool execution failed';
       const durationMs = Date.now() - startTime;
-      console.error(`[AI-SDK] Tool ${toolName} failed in ${durationMs}ms:`, message);
-      if (onPostToolUse) {
-        try { await onPostToolUse(toolName, args, JSON.stringify({ error: message }), true, durationMs); }
-        catch (cbErr) { console.error('[AI-SDK] PostToolUse callback failed:', cbErr); }
-      }
+      console.error(`[AI-SDK] Tool ${toolName} failed in ${durationMs}ms: ${message}`);
+      await safePostToolUse(onPostToolUse, toolName, args, JSON.stringify({ error: message }), true, durationMs);
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({ error: message }) }],
         isError: true,
       };
     }
+    }); // end runOutsideDbContext
   };
 }
 
@@ -352,6 +442,33 @@ export function createBreezeMcpServer(
     ),
 
     tool(
+      'get_huntress_status',
+      'Get Huntress integration sync health, agent coverage, and incident summary counts.',
+      {
+        orgId: uuid.optional(),
+        integrationId: uuid.optional(),
+      },
+      makeHandler('get_huntress_status', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_huntress_incidents',
+      'Query Huntress incidents with filters for status, severity, and device mapping.',
+      {
+        orgId: uuid.optional(),
+        integrationId: uuid.optional(),
+        status: z.string().max(30).optional(),
+        severity: z.string().max(20).optional(),
+        deviceId: uuid.optional(),
+        search: z.string().max(200).optional(),
+        includeResolved: z.boolean().optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+        offset: z.number().int().min(0).optional(),
+      },
+      makeHandler('get_huntress_incidents', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
       'manage_dns_policy',
       'Add or remove domains from DNS blocklist/allowlist and synchronize with the provider.',
       {
@@ -361,6 +478,62 @@ export function createBreezeMcpServer(
         reason: z.string().max(2000).optional(),
       },
       makeHandler('manage_dns_policy', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_s1_status',
+      'Get SentinelOne integration health, endpoint coverage, and action backlog.',
+      {
+        orgId: uuid.optional(),
+      },
+      makeHandler('get_s1_status', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_s1_threats',
+      'Query SentinelOne threats with filters for severity, status, and device.',
+      {
+        orgId: uuid.optional(),
+        severity: z.enum(['critical', 'high', 'medium', 'low', 'unknown']).optional(),
+        status: z.enum(['active', 'in_progress', 'quarantined', 'resolved']).optional(),
+        deviceId: uuid.optional(),
+        search: z.string().max(200).optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+      },
+      makeHandler('get_s1_threats', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      's1_isolate_device',
+      'Isolate or unisolate one or more devices via SentinelOne. Requires user approval.',
+      {
+        orgId: uuid.optional(),
+        deviceId: uuid.optional(),
+        deviceIds: z.array(uuid).min(1).max(200).optional(),
+        isolate: z.boolean().optional(),
+      },
+      makeHandler('s1_isolate_device', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      's1_threat_action',
+      'Execute SentinelOne threat actions (kill, quarantine, rollback). Requires user approval.',
+      {
+        orgId: uuid.optional(),
+        action: z.enum(['kill', 'quarantine', 'rollback']),
+        threatIds: z.array(z.string().min(1).max(128)).min(1).max(200),
+      },
+      makeHandler('s1_threat_action', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'sync_huntress_data',
+      'Trigger a manual Huntress sync for an accessible integration.',
+      {
+        orgId: uuid.optional(),
+        integrationId: uuid.optional(),
+      },
+      makeHandler('sync_huntress_data', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -425,6 +598,46 @@ export function createBreezeMcpServer(
         limit: z.number().int().min(1).max(500).optional(),
       },
       makeHandler('get_security_posture', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_cis_compliance',
+      'Retrieve CIS benchmark compliance status across devices, including latest score, failed checks, and baseline metadata.',
+      {
+        orgId: uuid.optional(),
+        baselineId: uuid.optional(),
+        deviceId: uuid.optional(),
+        osType: z.enum(['windows', 'macos', 'linux']).optional(),
+        minScore: z.number().int().min(0).max(100).optional(),
+        maxScore: z.number().int().min(0).max(100).optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+      },
+      makeHandler('get_cis_compliance', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_cis_device_report',
+      'Get detailed CIS benchmark findings and evidence for a specific device.',
+      {
+        deviceId: uuid,
+        baselineId: uuid.optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('get_cis_device_report', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'apply_cis_remediation',
+      'Queue approved CIS remediation actions for one device and one or more failed checks.',
+      {
+        deviceId: uuid,
+        baselineId: uuid.optional(),
+        baselineResultId: uuid.optional(),
+        checkIds: z.array(z.string().min(1).max(120)).min(1).max(100),
+        action: z.enum(['apply', 'rollback']).optional(),
+        reason: z.string().max(1000).optional(),
+      },
+      makeHandler('apply_cis_remediation', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -567,25 +780,6 @@ export function createBreezeMcpServer(
     // Fleet orchestration tools
 
     tool(
-      'manage_policies',
-      'Manage compliance policies: list, get, check compliance, evaluate, create, update, activate/deactivate, delete, remediate.',
-      {
-        action: z.enum(['list', 'get', 'compliance_status', 'compliance_summary', 'evaluate', 'create', 'update', 'activate', 'deactivate', 'delete', 'remediate']),
-        policyId: uuid.optional(),
-        enforcement: z.enum(['monitor', 'warn', 'enforce']).optional(),
-        enabled: z.boolean().optional(),
-        name: z.string().max(255).optional(),
-        description: z.string().max(2000).optional(),
-        rules: z.record(z.unknown()).optional(),
-        targets: z.record(z.unknown()).optional(),
-        checkIntervalMinutes: z.number().int().min(1).max(1440).optional(),
-        remediationScriptId: uuid.optional(),
-        limit: z.number().int().min(1).max(100).optional(),
-      },
-      makeHandler('manage_policies', getAuth, onPreToolUse, onPostToolUse)
-    ),
-
-    tool(
       'manage_deployments',
       'Manage staged deployments: list, get details, device status, create, start, pause, resume, cancel.',
       {
@@ -684,7 +878,7 @@ export function createBreezeMcpServer(
 
     tool(
       'manage_alert_rules',
-      'Manage alert rules: list/get/create/update/delete rules, test rules, list channels, alert summary.',
+      'Manage alert rules: list/get/create/update/delete rules, test rules, list channels, alert summary. Supports condition types including service_stopped, process_stopped, process_cpu_high, and process_memory_high for service/process monitoring alerts.',
       {
         action: z.enum(['list_rules', 'get_rule', 'create_rule', 'update_rule', 'delete_rule', 'test_rule', 'list_channels', 'alert_summary']),
         ruleId: uuid.optional(),
@@ -922,6 +1116,40 @@ export function createBreezeMcpServer(
       makeHandler('remove_configuration_policy_assignment', getAuth, onPreToolUse, onPostToolUse)
     ),
 
+    tool(
+      'get_configuration_policy',
+      'Get a single configuration policy by ID with its feature links and assignment count.',
+      {
+        policyId: uuid,
+      },
+      makeHandler('get_configuration_policy', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_configuration_policy',
+      'Create, update, activate, deactivate, or delete configuration policies. Configuration policies bundle feature settings (patch, alert, compliance, monitoring, etc.) and are assigned to targets in the hierarchy.',
+      {
+        action: z.enum(['create', 'update', 'activate', 'deactivate', 'delete']),
+        policyId: uuid.optional(),
+        name: z.string().max(255).optional(),
+        description: z.string().max(2000).optional(),
+        status: z.enum(['active', 'inactive', 'archived']).optional(),
+        orgId: uuid.optional(),
+      },
+      makeHandler('manage_configuration_policy', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'configuration_policy_compliance',
+      'Check compliance status for configuration policies. Use "summary" for org-wide overview, or "status" for per-device compliance for a specific policy.',
+      {
+        action: z.enum(['summary', 'status']),
+        policyId: uuid.optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('configuration_policy_compliance', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
     // Playbook tools
 
     tool(
@@ -955,6 +1183,55 @@ export function createBreezeMcpServer(
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('get_playbook_history', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Monitoring tools
+
+    tool(
+      'query_monitors',
+      'List network monitors with their current status, uptime, and response time statistics. Filter by status, monitor type, active state, or search by name/target.',
+      {
+        status: z.enum(['online', 'offline', 'degraded', 'unknown']).optional(),
+        monitorType: z.string().max(50).optional(),
+        isActive: z.boolean().optional(),
+        search: z.string().max(200).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('query_monitors', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_monitors',
+      'Get monitor details with recent check history, or create/update/delete network monitors.',
+      {
+        action: z.enum(['get', 'create', 'update', 'delete']),
+        monitorId: uuid.optional(),
+        name: z.string().max(255).optional(),
+        monitorType: z.enum(['icmp_ping', 'tcp_port', 'http_check', 'dns_check']).optional(),
+        target: z.string().max(500).optional(),
+        pollingInterval: z.number().int().min(10).max(86400).optional(),
+        timeout: z.number().int().min(1).max(120).optional(),
+        config: z.record(z.unknown()).optional(),
+        isActive: z.boolean().optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('manage_monitors', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_service_monitoring_status',
+      'Query service and process monitoring status for managed devices. Use "status" for a health overview (healthy/degraded/critical), "summary" for latest result per watcher, "results" for check history with filters, or "known_services" to discover service/process names in the org.',
+      {
+        action: z.enum(['status', 'summary', 'results', 'known_services']),
+        deviceId: uuid.optional(),
+        watchType: z.enum(['service', 'process']).optional(),
+        name: z.string().max(255).optional(),
+        since: z.string().datetime({ offset: true }).optional(),
+        until: z.string().datetime({ offset: true }).optional(),
+        search: z.string().max(255).optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+      },
+      makeHandler('get_service_monitoring_status', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Action Plan tool (for action_plan and hybrid_plan modes)

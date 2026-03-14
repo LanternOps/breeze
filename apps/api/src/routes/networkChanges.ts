@@ -25,6 +25,7 @@ const listNetworkChangesSchema = z.object({
   orgId: z.string().uuid().optional(),
   siteId: z.string().uuid().optional(),
   baselineId: z.string().uuid().optional(),
+  profileId: z.string().uuid().optional(),
   eventType: z.enum(networkEventTypes).optional(),
   acknowledged: optionalQueryBooleanSchema,
   since: z.string().datetime().optional(),
@@ -114,6 +115,10 @@ networkChangeRoutes.get(
       conditions.push(eq(networkChangeEvents.baselineId, query.baselineId));
     }
 
+    if (query.profileId) {
+      conditions.push(eq(networkChangeEvents.profileId, query.profileId));
+    }
+
     if (query.eventType) {
       conditions.push(eq(networkChangeEvents.eventType, query.eventType));
     }
@@ -172,7 +177,7 @@ networkChangeRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const eventId = c.req.param('id');
+    const eventId = c.req.param('id')!;
 
     const event = await getChangeEventWithAccess(eventId, auth);
     if (!event) {
@@ -199,7 +204,7 @@ networkChangeRoutes.post(
   zValidator('json', acknowledgeChangeSchema),
   async (c) => {
     const auth = c.get('auth');
-    const eventId = c.req.param('id');
+    const eventId = c.req.param('id')!;
     const body = c.req.valid('json');
 
     const event = await getChangeEventWithAccess(eventId, auth);
@@ -249,7 +254,7 @@ networkChangeRoutes.post(
   zValidator('json', linkDeviceSchema),
   async (c) => {
     const auth = c.get('auth');
-    const eventId = c.req.param('id');
+    const eventId = c.req.param('id')!;
     const body = c.req.valid('json');
 
     const event = await getChangeEventWithAccess(eventId, auth);

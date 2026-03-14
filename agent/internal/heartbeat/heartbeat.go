@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/audit"
 	"github.com/breeze-rmm/agent/internal/backup"
+	"github.com/breeze-rmm/agent/internal/helper"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
@@ -31,8 +33,10 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/mgmtdetect"
+	"github.com/breeze-rmm/agent/internal/monitoring"
 	"github.com/breeze-rmm/agent/internal/mtls"
 	"github.com/breeze-rmm/agent/internal/patching"
+	"github.com/breeze-rmm/agent/internal/peripheral"
 	"github.com/breeze-rmm/agent/internal/privilege"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -57,16 +61,31 @@ type HeartbeatPayload struct {
 	PendingReboot    bool                      `json:"pendingReboot,omitempty"`
 	LastUser         string                    `json:"lastUser,omitempty"`
 	UptimeSeconds    int64                     `json:"uptime,omitempty"`
+	DeviceRole       string                    `json:"deviceRole,omitempty"`
 	HealthStatus     map[string]any            `json:"healthStatus,omitempty"`
 	DroppedLogs      int64                     `json:"droppedLogs,omitempty"`
+	HelperVersion    string                    `json:"helperVersion,omitempty"`
+	Hostname         string                    `json:"hostname,omitempty"`
+	OSVersion        string                    `json:"osVersion,omitempty"`
+	OSBuild          string                    `json:"osBuild,omitempty"`
 }
 
 type HeartbeatResponse struct {
-	Commands      []Command      `json:"commands"`
-	ConfigUpdate  map[string]any `json:"configUpdate,omitempty"`
-	UpgradeTo     string         `json:"upgradeTo,omitempty"`
-	RenewCert     bool           `json:"renewCert,omitempty"`
-	HelperEnabled bool           `json:"helperEnabled,omitempty"`
+	Commands       []Command       `json:"commands"`
+	ConfigUpdate   map[string]any  `json:"configUpdate,omitempty"`
+	UpgradeTo      string          `json:"upgradeTo,omitempty"`
+	RenewCert      bool            `json:"renewCert,omitempty"`
+	HelperEnabled   bool            `json:"helperEnabled,omitempty"`
+	HelperSettings  *HelperSettings `json:"helperSettings,omitempty"`
+	HelperUpgradeTo string          `json:"helperUpgradeTo,omitempty"`
+}
+
+type HelperSettings struct {
+	Enabled            bool   `json:"enabled"`
+	ShowOpenPortal     bool   `json:"showOpenPortal"`
+	ShowDeviceInfo     bool   `json:"showDeviceInfo"`
+	ShowRequestSupport bool   `json:"showRequestSupport"`
+	PortalUrl          string `json:"portalUrl,omitempty"`
 }
 
 type Command struct {
@@ -112,9 +131,10 @@ type Heartbeat struct {
 	lastReliabilityUpdate time.Time
 
 	// User session helper (IPC)
-	sessionBroker   *sessionbroker.Broker
-	isService       bool
-	scmSessionCh    chan sessionbroker.SCMSessionEvent // fed by SCM handler
+	sessionBroker *sessionbroker.Broker
+	isService     bool
+	isHeadless    bool
+	scmSessionCh  chan sessionbroker.SCMSessionEvent // fed by SCM handler
 
 	// Resilience & observability
 	pool        *workerpool.Pool
@@ -136,6 +156,17 @@ type Heartbeat struct {
 
 	// Helper chat enabled flag from org settings
 	helperEnabled atomic.Bool
+	helperMgr     *helper.Manager
+
+	// Service & process monitoring
+	monitor *monitoring.Monitor
+
+	// Cached device role classification (computed once at startup)
+	cachedDeviceRole string
+
+	// Cached system info (hostname, OS version) — refreshed every 10 min
+	cachedSysInfo      *collectors.SystemInfo
+	lastSysInfoRefresh time.Time
 }
 
 func New(cfg *config.Config) *Heartbeat {
@@ -194,6 +225,65 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	}
 	h.accepting.Store(true)
 	h.isService = cfg.IsService
+	h.isHeadless = cfg.IsHeadless
+
+	// Classify device role once at startup and cache system info
+	if sysInfo, err := h.hardwareCol.CollectSystemInfo(); err == nil {
+		h.cachedSysInfo = sysInfo
+		h.lastSysInfoRefresh = time.Now()
+		if hwInfo, err := h.hardwareCol.CollectHardware(); err == nil {
+			h.cachedDeviceRole = collectors.ClassifyDeviceRole(sysInfo, hwInfo)
+		} else {
+			h.cachedDeviceRole = collectors.ClassifyDeviceRole(sysInfo, nil)
+		}
+	} else {
+		h.cachedDeviceRole = "workstation"
+	}
+
+	// Initialize Breeze Assist manager
+	helperCtx, helperCancel := context.WithCancel(context.Background())
+	go func() { <-h.stopChan; helperCancel() }()
+
+	if runtime.GOOS == "windows" && cfg.IsService {
+		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID,
+			helper.WithSpawnFunc(func(binaryPath string) error {
+				detector := sessionbroker.NewSessionDetector()
+				sessions, err := detector.ListSessions()
+				if err != nil {
+					return fmt.Errorf("list sessions: %w", err)
+				}
+				var launched int
+				for _, s := range sessions {
+					if s.Session == "0" || s.Type == "services" {
+						continue
+					}
+					if s.State != "active" && s.State != "connected" {
+						continue
+					}
+					sessionNum, parseErr := strconv.ParseUint(s.Session, 10, 32)
+					if parseErr != nil {
+						log.Warn("invalid session id", "session", s.Session, "error", parseErr.Error())
+						continue
+					}
+					if spawnErr := sessionbroker.SpawnProcessInSession(binaryPath, uint32(sessionNum)); spawnErr != nil {
+						log.Warn("failed to spawn breeze assist in session",
+							"sessionId", sessionNum, "error", spawnErr.Error())
+						continue
+					}
+					launched++
+				}
+				if launched == 0 {
+					return helper.ErrNoActiveSession
+				}
+				return nil
+			}),
+		)
+	} else {
+		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID)
+	}
+
+	// Initialize service & process monitoring
+	h.monitor = monitoring.New(h.sendMonitoringResults)
 
 	// Trigger wallpaper crash recovery (restores wallpaper if agent crashed mid-session)
 	_ = desktop.GetWallpaperManager()
@@ -213,7 +303,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// Always enable when running as a Windows service — the helper is required
 	// for desktop capture, input injection, and other interactive operations
 	// that cannot work from Session 0.
-	if cfg.UserHelperEnabled || cfg.IsService {
+	if cfg.UserHelperEnabled || cfg.IsService || cfg.IsHeadless {
 		socketPath := cfg.IPCSocketPath
 		if socketPath == "" {
 			socketPath = ipc.DefaultSocketPath()
@@ -222,6 +312,8 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		reason := "config"
 		if cfg.IsService {
 			reason = "windows-service"
+		} else if cfg.IsHeadless {
+			reason = "headless-daemon"
 		}
 		log.Info("user helper IPC enabled", "socket", socketPath, "reason", reason)
 
@@ -254,7 +346,13 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		var backupProvider providers.BackupProvider
 		switch cfg.BackupProvider {
 		case "s3":
-			backupProvider = providers.NewS3Provider(cfg.BackupS3Bucket, cfg.BackupS3Region, "", "", "")
+			backupProvider = providers.NewS3Provider(
+				cfg.BackupS3Bucket,
+				cfg.BackupS3Region,
+				cfg.BackupS3AccessKey,
+				cfg.BackupS3SecretKey,
+				"",
+			)
 		default:
 			localPath := cfg.BackupLocalPath
 			if localPath == "" {
@@ -284,7 +382,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 
 	// For direct mode (non-service), notify API when WebRTC peer drops.
 	// In service mode this is handled via IPC from the user helper.
-	if !cfg.IsService {
+	if !cfg.IsService && !cfg.IsHeadless {
 		h.desktopMgr.OnSessionStopped = func(sessionID string) {
 			h.sendDesktopDisconnectNotification(sessionID)
 		}
@@ -559,14 +657,57 @@ func (h *Heartbeat) Stop() {
 		if h.backupMgr != nil {
 			h.backupMgr.Stop()
 		}
+		if h.monitor != nil {
+			h.monitor.Stop()
+		}
 		if h.auditLog != nil {
 			h.auditLog.Log(audit.EventAgentStop, "", nil)
 			h.auditLog.Close()
+		}
+		if h.helperMgr != nil {
+			h.helperMgr.Shutdown()
 		}
 		// Close stopChan first — this signals broker.Listen() to call broker.Close()
 		// internally. The broker's Close() is idempotent via its closed flag.
 		close(h.stopChan)
 	})
+}
+
+// sendMonitoringResults ships service/process check results to the API.
+func (h *Heartbeat) sendMonitoringResults(results []monitoring.CheckResult) {
+	if len(results) == 0 {
+		return
+	}
+
+	payload := map[string]any{
+		"results": results,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		log.Error("failed to marshal monitoring results", "error", err.Error())
+		return
+	}
+
+	url := fmt.Sprintf("%s/api/v1/agents/%s/monitoring-results", h.config.ServerURL, h.config.AgentID)
+	headers := http.Header{
+		"Content-Type":  {"application/json"},
+		"Authorization": {h.authHeader()},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	resp, err := httputil.Do(ctx, h.client, "PUT", url, body, headers, h.retryCfg)
+	if err != nil {
+		log.Warn("failed to send monitoring results", "error", err.Error(), "count", len(results))
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Warn("monitoring results returned non-OK status", "status", resp.StatusCode, "count", len(results))
+	}
 }
 
 // sendInventory collects and sends hardware, software, disk, network, connections, and patch inventory.
@@ -607,15 +748,6 @@ func (h *Heartbeat) authHeader() string {
 	return "Bearer "
 }
 
-// authTokenPlaintext returns the raw token string for use in external APIs
-// (e.g., updater) that require a plain string, not a Bearer header.
-func (h *Heartbeat) authTokenPlaintext() string {
-	if h.secureToken != nil && !h.secureToken.IsZeroed() {
-		return h.secureToken.Reveal()
-	}
-	return h.config.AuthToken
-}
-
 // sendInventoryData marshals the payload and sends it to the given endpoint via PUT.
 func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string) {
 	body, err := json.Marshal(payload)
@@ -645,6 +777,34 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 	} else {
 		log.Warn("inventory send failed", "label", label, "status", resp.StatusCode)
 	}
+}
+
+// submitPeripheralEvents sends detected peripheral events to the server.
+func (h *Heartbeat) submitPeripheralEvents(events []peripheral.PeripheralEvent) error {
+	body, err := json.Marshal(peripheral.EventSubmission{Events: events})
+	if err != nil {
+		return fmt.Errorf("marshal peripheral events: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/api/v1/agents/%s/peripherals/events", h.config.ServerURL, h.config.AgentID)
+	headers := http.Header{
+		"Content-Type":  {"application/json"},
+		"Authorization": {h.authHeader()},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := httputil.Do(ctx, h.client, "PUT", url, body, headers, h.retryCfg)
+	if err != nil {
+		return fmt.Errorf("PUT peripheral events: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("peripheral events submission failed: HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func (h *Heartbeat) sendHardwareInventory() {
@@ -926,6 +1086,18 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	}
 	if hasEL {
 		h.applyEventLogConfig(elRaw)
+	}
+
+	// Apply monitoring_settings if present.
+	// The API may send config keys in either snake_case or camelCase; check both.
+	monRaw, hasMon := update["monitoring_settings"]
+	if !hasMon {
+		monRaw, hasMon = update["monitoringSettings"]
+	}
+	if hasMon && h.monitor != nil {
+		if cfg, ok := monitoring.ParseMonitorConfig(monRaw); ok {
+			h.monitor.ApplyConfig(cfg)
+		}
 	}
 
 	registryRaw, hasRegistry := update["policy_registry_state_probes"]
@@ -1237,12 +1409,12 @@ func (h *Heartbeat) collectPatchInventoryFromCollectors() ([]map[string]any, []m
 	installedItems := make([]map[string]any, len(installedPatches))
 	for i, patch := range installedPatches {
 		m := map[string]any{
-			"name":       patch.Name,
-			"version":    patch.Version,
-			"category":   patch.Category,
-			"source":     h.mapPatchSource(patch.Source),
+			"name":        patch.Name,
+			"version":     patch.Version,
+			"category":    patch.Category,
+			"source":      h.mapPatchSource(patch.Source),
 			"installedAt": patch.InstalledAt,
-			"externalId": patch.KBNumber,
+			"externalId":  patch.KBNumber,
 		}
 		if patch.KBNumber != "" {
 			m["kbNumber"] = patch.KBNumber
@@ -1494,10 +1666,30 @@ func (h *Heartbeat) sendHeartbeat() {
 		status = "warning"
 	}
 
+	// Refresh cached system info every 10 minutes to pick up hostname/OS changes
+	h.mu.Lock()
+	if time.Since(h.lastSysInfoRefresh) > 10*time.Minute {
+		if freshInfo, infoErr := h.hardwareCol.CollectSystemInfo(); infoErr == nil {
+			h.cachedSysInfo = freshInfo
+			h.lastSysInfoRefresh = time.Now()
+		}
+	}
+	sysInfo := h.cachedSysInfo
+	h.mu.Unlock()
+
 	payload := HeartbeatPayload{
-		Status:       status,
-		AgentVersion: h.agentVersion,
-		HealthStatus: h.healthMon.Summary(),
+		Status:        status,
+		AgentVersion:  h.agentVersion,
+		HelperVersion: h.helperMgr.InstalledVersion(),
+		HealthStatus:  h.healthMon.Summary(),
+		DeviceRole:    h.cachedDeviceRole,
+	}
+
+	// Include hostname/OS version so the server can detect changes
+	if sysInfo != nil {
+		payload.Hostname = sysInfo.Hostname
+		payload.OSVersion = sysInfo.OSVersion
+		payload.OSBuild = sysInfo.OSBuild
 	}
 	if metricsAvailable {
 		payload.Metrics = metrics
@@ -1625,8 +1817,22 @@ func (h *Heartbeat) sendHeartbeat() {
 		go h.handleCertRenewal()
 	}
 
-	// Update helper enabled state from org settings
+	// Handle helper upgrade if requested
+	if response.HelperUpgradeTo != "" {
+		h.helperMgr.CheckUpdate(response.HelperUpgradeTo)
+	}
+
+	// Update helper enabled state and apply full settings
 	h.handleHelperEnabled(response.HelperEnabled)
+	if response.HelperSettings != nil {
+		h.helperMgr.Apply(&helper.Settings{
+			Enabled:            response.HelperSettings.Enabled,
+			ShowOpenPortal:     response.HelperSettings.ShowOpenPortal,
+			ShowDeviceInfo:     response.HelperSettings.ShowDeviceInfo,
+			ShowRequestSupport: response.HelperSettings.ShowRequestSupport,
+			PortalUrl:          response.HelperSettings.PortalUrl,
+		})
+	}
 }
 
 // IsHelperEnabled returns whether the helper chat is enabled for this device's org.
@@ -1821,8 +2027,9 @@ func (h *Heartbeat) markCommandSeen(id string) bool {
 
 	h.seenCommands[id] = time.Now()
 
-	// Evict entries older than 2 minutes when map grows past 100
-	if len(h.seenCommands) > 100 {
+	// Always evict stale entries to prevent unbounded growth.
+	// Previously only ran when >100 entries, but the map should stay small.
+	if len(h.seenCommands) > 50 {
 		cutoff := time.Now().Add(-2 * time.Minute)
 		for k, t := range h.seenCommands {
 			if t.Before(cutoff) {
@@ -2200,12 +2407,16 @@ func (h *Heartbeat) handleUpgrade(targetVersion string) {
 		return
 	}
 
-	backupPath := binaryPath + ".backup"
+	backupDir := config.GetDataDir()
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		log.Error("failed to create backup directory", "path", backupDir, "error", err.Error())
+		return
+	}
+	backupPath := filepath.Join(backupDir, "breeze-agent.backup")
 
-	authToken := h.authTokenPlaintext()
 	updaterCfg := &updater.Config{
 		ServerURL:      h.config.ServerURL,
-		AuthToken:      authToken,
+		AuthToken:      h.secureToken,
 		CurrentVersion: h.agentVersion,
 		BinaryPath:     binaryPath,
 		BackupPath:     backupPath,

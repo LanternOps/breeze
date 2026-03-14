@@ -1,0 +1,279 @@
+---
+title: User Sessions
+description: Track active user sessions, login/logout events, idle time, and activity states across all managed devices.
+sidebar:
+  order: 48
+  label: User Sessions
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+User Sessions gives you real-time visibility into who is logged into every managed device, how they connected, and whether they are actively working or idle. The Breeze agent continuously monitors OS-level session events -- console logins, RDP connections, SSH sessions, lock/unlock transitions -- and reports them to the API every five minutes. Login and logout events are published to the event bus in real time so you can trigger automations, generate alerts, or feed session data into your SIEM.
+
+This feature is designed for security auditing, license compliance, and helpdesk workflows. When a technician needs to know if someone is actively using a workstation before pushing a reboot, they can check the session list. When compliance requires proof that only authorized users accessed a server, the session history provides timestamped evidence with per-session deduplication.
+
+---
+
+## Key Concepts
+
+### Session Types
+
+| Type | Description |
+|---|---|
+| `console` | Local interactive login at the physical console or display |
+| `rdp` | Remote Desktop Protocol session (Windows) or remote graphical session |
+| `ssh` | Secure Shell session (typically Linux/macOS, or PuTTY on Windows) |
+| `other` | Any session type that does not match the above categories |
+
+### Activity States
+
+| State | Description |
+|---|---|
+| `active` | User is actively interacting with the session |
+| `idle` | Session is open but no recent input has been detected |
+| `locked` | Session is locked (e.g., Win+L or screen lock) |
+| `away` | Session state could not be determined or user is otherwise unavailable |
+| `disconnected` | Session was disconnected but not fully logged out (common with RDP) |
+
+### Session Event Types
+
+| Event | Description |
+|---|---|
+| `login` | User logged into the device |
+| `logout` | User logged out of the device |
+| `lock` | User locked their session |
+| `unlock` | User unlocked their session |
+| `switch` | Active session was switched (e.g., fast user switching) |
+
+### Session Record Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | UUID | Unique identifier for the session record |
+| `orgId` | UUID | Organization the device belongs to |
+| `deviceId` | UUID | Device where the session was detected |
+| `username` | string (max 255) | Username of the logged-in user |
+| `sessionType` | enum | One of `console`, `rdp`, `ssh`, `other` |
+| `osSessionId` | string (max 128) | OS-level session identifier (e.g., Windows session ID, TTY name) |
+| `loginAt` | datetime | When the user logged in |
+| `logoutAt` | datetime | When the user logged out (null if still active) |
+| `durationSeconds` | integer | Total session duration in seconds (computed at logout) |
+| `idleMinutes` | integer | Current idle time in minutes (0-10080, i.e., up to 7 days) |
+| `activityState` | enum | Current activity state (see table above) |
+| `loginPerformanceSeconds` | integer | Time from login initiation to desktop ready (0-36000) |
+| `isActive` | boolean | Whether the session is currently active |
+| `lastActivityAt` | datetime | Timestamp of the most recent user activity |
+| `metadata` | text | Optional additional metadata |
+| `createdAt` | datetime | When the record was created |
+| `updatedAt` | datetime | When the record was last updated |
+
+---
+
+## How Session Data Is Collected
+
+<Steps>
+
+1. **Agent starts the session collector**
+
+   When the Breeze agent starts, it initializes a `SessionCollector` that calls into the platform-specific `SessionDetector`. The detector uses native OS APIs to enumerate active sessions:
+
+   <Tabs>
+   <TabItem label="Windows">
+   Uses the Windows Terminal Services API (WTS) to enumerate sessions. Detects console, RDP, and service sessions. Reports the Windows session ID, username, and connection state. Monitors `WM_WTSSESSION_CHANGE` messages for real-time login, logout, lock, unlock, and disconnect events.
+   </TabItem>
+   <TabItem label="macOS">
+   Uses `utmpx` records and system calls to detect console and SSH sessions. Identifies remote sessions by checking the display environment and TTY names. Falls back to non-cgo detection when compiled without cgo support.
+   </TabItem>
+   <TabItem label="Linux">
+   Queries `systemd-logind` (via D-Bus) or falls back to parsing `utmp`/`wtmp` records. Detects console seats, SSH sessions (identified by `pts/*` TTY names), and graphical display sessions. Monitors D-Bus signals for real-time session change notifications.
+   </TabItem>
+   </Tabs>
+
+2. **Periodic refresh and event watching**
+
+   The collector runs two concurrent loops:
+
+   - A **full refresh** every 5 minutes that re-enumerates all active sessions from the OS, reconciling them against the known session map. Sessions with empty usernames (e.g., Windows Session 0 / services) are automatically filtered out.
+   - A **real-time event watcher** that subscribes to OS session change notifications and immediately updates the session map when a login, logout, lock, unlock, or switch event occurs.
+
+3. **Session type inference**
+
+   The agent infers the session type based on the OS-reported metadata:
+
+   - If the session is flagged as remote and the display is empty or a TTY (`tty`, `pts/*`), it is classified as `ssh`.
+   - If the session is flagged as remote with a graphical display, it is classified as `rdp`.
+   - All non-remote sessions are classified as `console`.
+
+4. **Activity state mapping**
+
+   Raw OS session states are normalized to the Breeze activity state enum:
+
+   | OS-Reported State | Breeze State |
+   |---|---|
+   | `active`, `online` | `active` |
+   | `idle` | `idle` |
+   | `locked` | `locked` |
+   | `closing`, `disconnected` | `disconnected` |
+   | Anything else | `away` |
+
+5. **Data is submitted to the API**
+
+   During each heartbeat cycle, the agent calls `PUT /agents/:id/sessions` with the current session list and any queued events. The payload includes up to 128 active sessions and up to 256 events per submission.
+
+</Steps>
+
+---
+
+## Session Deduplication
+
+The API uses a composite identity key to deduplicate sessions:
+
+```
+username (lowercase) :: sessionType :: osSessionId
+```
+
+When the agent submits a session update, the API compares the incoming sessions against the existing active sessions for that device using this key:
+
+- **New sessions** (key not found in existing active set) are inserted as new rows.
+- **Existing sessions** (key matches an active row) have their `idleMinutes`, `activityState`, `loginPerformanceSeconds`, and `lastActivityAt` fields updated.
+- **Stale sessions** (active rows whose key is not present in the incoming set) are automatically marked as logged out. The API sets `isActive = false`, records `logoutAt`, computes `durationSeconds`, and sets the activity state to `disconnected`.
+
+This approach ensures that even if the agent restarts or misses a logout event, the session state eventually converges to the correct state on the next submission.
+
+---
+
+## Event Publishing
+
+Login and logout events are published to the Breeze event bus in real time, enabling downstream automations and integrations:
+
+| Event Type | Published When |
+|---|---|
+| `session.login` | A `login` event is included in the submission |
+| `session.logout` | A `logout` event is included in the submission |
+
+Each published event includes:
+
+| Field | Description |
+|---|---|
+| `deviceId` | The device UUID |
+| `hostname` | The device hostname |
+| `username` | The user who logged in or out |
+| `sessionType` | The session type (`console`, `rdp`, `ssh`, `other`) |
+| `sessionId` | The OS session ID (if available) |
+| `activityState` | The activity state at the time of the event |
+| `timestamp` | When the event occurred |
+
+<Aside type="tip">
+You can use these events to trigger automations -- for example, sending a Slack notification when an admin account logs into a server via RDP, or creating a ticket when a user logs into a workstation outside business hours.
+</Aside>
+
+---
+
+## API Reference
+
+| Method | Path | Description |
+|---|---|---|
+| `PUT` | `/agents/:id/sessions` | Submit current session state and events for a device (agent auth required) |
+
+### PUT /agents/:id/sessions
+
+Submits the current session list and any queued login/logout/lock/unlock events for a device. This endpoint is called by the agent during each heartbeat cycle.
+
+**Request body:**
+
+```json
+{
+  "sessions": [
+    {
+      "username": "jdoe",
+      "sessionType": "console",
+      "sessionId": "1",
+      "loginAt": "2026-03-02T10:30:00Z",
+      "idleMinutes": 5,
+      "activityState": "active",
+      "loginPerformanceSeconds": 12,
+      "isActive": true,
+      "lastActivityAt": "2026-03-02T14:25:00Z"
+    }
+  ],
+  "events": [
+    {
+      "type": "login",
+      "username": "jdoe",
+      "sessionType": "console",
+      "sessionId": "1",
+      "timestamp": "2026-03-02T10:30:00Z",
+      "activityState": "active"
+    }
+  ],
+  "collectedAt": "2026-03-02T14:30:00Z"
+}
+```
+
+**Response (200):**
+
+```json
+{
+  "success": true,
+  "activeSessions": 1,
+  "events": 1
+}
+```
+
+### Validation Constraints
+
+| Field | Constraint |
+|---|---|
+| `sessions` | Array of up to 128 session objects |
+| `sessions[].username` | Required, 1-255 characters |
+| `sessions[].sessionType` | Required, one of `console`, `rdp`, `ssh`, `other` |
+| `sessions[].sessionId` | Optional, max 128 characters |
+| `sessions[].idleMinutes` | Optional, integer 0-10080 (7 days) |
+| `sessions[].loginPerformanceSeconds` | Optional, integer 0-36000 (10 hours) |
+| `events` | Optional array of up to 256 event objects |
+| `events[].type` | Required, one of `login`, `logout`, `lock`, `unlock`, `switch` |
+| `events[].username` | Required, 1-255 characters |
+| `events[].sessionType` | Required, one of `console`, `rdp`, `ssh`, `other` |
+
+---
+
+## Database Indexes
+
+The `device_sessions` table has the following indexes for efficient querying:
+
+| Index | Columns | Use Case |
+|---|---|---|
+| `device_sessions_org_active_idx` | `org_id`, `is_active` | List all active sessions across an organization |
+| `device_sessions_device_active_idx` | `device_id`, `is_active` | List active sessions for a specific device |
+| `device_sessions_device_login_idx` | `device_id`, `login_at` | Query session history by login time |
+| `device_sessions_device_user_idx` | `device_id`, `username` | Find sessions by username on a device |
+
+---
+
+## Troubleshooting
+
+### No sessions appear for a device
+
+- Verify the agent is online and sending heartbeats. Session data is submitted during the heartbeat cycle.
+- Check that the agent version supports session collection (the `SessionCollector` must be initialized).
+- On Linux, ensure the agent has access to `systemd-logind` via D-Bus, or that `utmp`/`wtmp` files are readable.
+
+### Sessions show as "disconnected" immediately
+
+- This occurs when the agent submits a session list that does not include a previously active session. The API marks the missing session as logged out.
+- If the agent restarted, it may not have retained the previous session state. The next full refresh (within 5 minutes) will re-detect active sessions.
+
+### RDP sessions show as "ssh" or vice versa
+
+- Session type inference relies on the OS-reported remote flag and the display/TTY name. If a remote session uses an unusual display name, it may be misclassified.
+- On Linux, `pts/*` TTY sessions are classified as SSH regardless of the actual connection method. If you use a remote desktop tool that creates a `pts` TTY, it will be classified as SSH.
+
+### Windows Session 0 / service sessions appear
+
+- Sessions with empty usernames are automatically filtered out by both the agent and the API. Windows Session 0 (the services session) typically has no username and is excluded.
+- If service accounts are logging in interactively, they will appear as regular sessions with their service account username.
+
+### Idle time is always 0
+
+- The `idleMinutes` field is currently set to 0 during full refreshes unless the OS provides idle time data. Real-time idle detection depends on the platform-specific session detector implementation.
+- On Windows, idle time is available via the WTS API. On Linux and macOS, idle time detection may require additional configuration.

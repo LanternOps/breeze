@@ -37,6 +37,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     transaction: vi.fn(async (handler: (tx: any) => Promise<unknown>) => {
       const tx = {

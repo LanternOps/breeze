@@ -10,15 +10,30 @@ import (
 )
 
 const (
-	secureDesktopMinFPS        = 8
-	secureDesktopMaxFPS        = 12
+	secureDesktopMinFPS        = 20
+	secureDesktopMaxFPS        = 30
 	secureDesktopKeyframeStall = 900 * time.Millisecond
 	secureDesktopKeyframeEvery = 2 * time.Second
 
 	enableFramePixelDiagnostics = false
 
-	startupFrameWarmupWindow = 4 * time.Second
-	startupFrameRepaintEvery = 200 * time.Millisecond
+	startupFrameWarmupWindow = 1 * time.Second
+	startupFrameRepaintEvery = 100 * time.Millisecond
+
+	// staticDesktopResendInterval is the minimum interval between frame sends
+	// on a static normal desktop. Provides a ~8fps floor to prevent WebRTC
+	// jitter accumulation and decoder frame drops during idle periods.
+	staticDesktopResendInterval = 125 * time.Millisecond
+
+	// staticDesktopKeyframeEvery forces periodic keyframes during sustained
+	// idle so the decoder stays synchronized with cached-frame resends.
+	staticDesktopKeyframeEvery = 10 * time.Second
+
+	// maxFrameSizeBytes caps individual encoded frames to prevent sustained
+	// bitrate spikes. Must be large enough for IDR keyframes at high resolutions
+	// (2560x1440 IDRs are typically 60-150KB). Dropping keyframes causes decoder
+	// corruption — garbled blocks and color artifacts until the next IDR arrives.
+	maxFrameSizeBytes = 512_000 // 512KB — safe for 1440p IDR keyframes
 )
 
 var encodedFramePool = sync.Pool{
@@ -130,7 +145,43 @@ func (s *Session) maybeResendCachedFrameOnSecureDesktop(cap ScreenCapturer, fram
 		Duration: frameDuration,
 	}
 	if err := s.videoTrack.WriteSample(sample); err != nil {
-		slog.Debug("Failed to resend cached secure-desktop frame", "session", s.id, "error", err)
+		slog.Debug("Failed to resend cached secure-desktop frame", "session", s.id, "error", err.Error())
+		return false
+	}
+	s.metrics.RecordSend(size)
+	s.noteVideoWrite()
+	return true
+}
+
+// maybeResendCachedFrameOnIdle resends the last encoded frame when the normal
+// desktop has been static for too long. This prevents WebRTC jitter from
+// accumulating by maintaining a minimum ~2fps floor even with no dirty rects.
+func (s *Session) maybeResendCachedFrameOnIdle(frameDuration time.Duration) bool {
+	last := s.lastVideoWriteUnixNano.Load()
+	if last == 0 {
+		return false
+	}
+	if time.Since(time.Unix(0, last)) < staticDesktopResendInterval {
+		return false
+	}
+
+	s.lastEncodedMu.RLock()
+	cached := s.lastEncodedFrame
+	if len(cached) == 0 {
+		s.lastEncodedMu.RUnlock()
+		return false
+	}
+	frame := make([]byte, len(cached))
+	copy(frame, cached)
+	size := len(frame)
+	s.lastEncodedMu.RUnlock()
+
+	sample := media.Sample{
+		Data:     frame,
+		Duration: frameDuration,
+	}
+	if err := s.videoTrack.WriteSample(sample); err != nil {
+		slog.Debug("Failed to resend cached idle frame", "session", s.id, "error", err.Error())
 		return false
 	}
 	s.metrics.RecordSend(size)
@@ -143,6 +194,12 @@ func (s *Session) maybeResendCachedFrameOnSecureDesktop(cap ScreenCapturer, fram
 // return to this function instead of calling each other recursively, avoiding
 // unbounded stack growth on repeated desktop switches.
 func (s *Session) captureLoop() {
+	// Attach the capture goroutine to the input desktop. On Windows, this pins
+	// the goroutine to a single OS thread and calls SetThreadDesktop so that
+	// both DXGI and GDI capture work in helper processes spawned into user
+	// sessions (Session 0 → Session 1 SYSTEM helper).
+	prepareCaptureThread()
+
 	s.mu.RLock()
 	cap := s.capturer
 	s.mu.RUnlock()
@@ -190,6 +247,7 @@ func (s *Session) captureLoopDXGI() captureMode {
 	postSwitchRepaints := 0
 	var lastRepaintTime time.Time
 	var lastSecureKeyframe time.Time
+	var lastIdleKeyframe time.Time
 	startupWarmupUntil := time.Now().Add(startupFrameWarmupWindow)
 	var lastStartupRepaint time.Time
 
@@ -242,10 +300,10 @@ func (s *Session) captureLoopDXGI() captureMode {
 			// Update encoder dimensions for the new monitor
 			if w, h, err := newCap.GetScreenBounds(); err == nil && s.encoder != nil {
 				if dimErr := s.encoder.SetDimensions(w, h); dimErr != nil {
-					slog.Warn("Failed to set encoder dimensions after monitor switch", "session", s.id, "error", dimErr)
+					slog.Warn("Failed to set encoder dimensions after monitor switch", "session", s.id, "error", dimErr.Error())
 				}
 				if kfErr := s.encoder.ForceKeyframe(); kfErr != nil {
-					slog.Warn("Failed to force keyframe after monitor switch", "session", s.id, "error", kfErr)
+					slog.Warn("Failed to force keyframe after monitor switch", "session", s.id, "error", kfErr.Error())
 				}
 			}
 			// Second repaint nudge — the first (in handleControlMessage) may
@@ -295,6 +353,13 @@ func (s *Session) captureLoopDXGI() captureMode {
 			}
 		}
 
+		// Periodic keyframe during normal desktop idle — keeps decoder
+		// synchronized when the capture loop is resending cached frames.
+		if !onSecure && consecutiveSkips >= 30 && time.Since(lastIdleKeyframe) >= staticDesktopKeyframeEvery {
+			_ = s.encoder.ForceKeyframe()
+			lastIdleKeyframe = time.Now()
+		}
+
 		// If the capturer falls back to a non-blocking mode (e.g. DXGI→GDI),
 		// switch to the ticker loop to avoid spinning.
 		if h, ok := currentCap.(TightLoopHint); ok && !h.TightLoop() {
@@ -325,7 +390,7 @@ func (s *Session) captureLoopDXGI() captureMode {
 			fps = newFPS
 			frameDuration = time.Second / time.Duration(fps)
 			if err := s.encoder.SetFPS(fps); err != nil {
-				slog.Debug("Failed to apply dynamic FPS to encoder", "session", s.id, "fps", fps, "error", err)
+				slog.Debug("Failed to apply dynamic FPS to encoder", "session", s.id, "fps", fps, "error", err.Error())
 			}
 		}
 
@@ -353,13 +418,24 @@ func (s *Session) captureLoopDXGI() captureMode {
 					} else if consecutiveSkips >= idleThreshold {
 						sleepDur = idleSleep // idle mode: poll less often
 					}
+					// Minimum framerate floor: on normal desktops, resend the
+					// last cached frame every 500ms to prevent jitter climbing
+					// and decoder frame drops during static-screen idle.
+					if !onSecure && !frameSent {
+						if s.maybeResendCachedFrameOnIdle(frameDuration) {
+							frameSent = true
+							// Nudge DXGI so it may produce a fresh frame next iteration
+							forceDesktopRepaint()
+						}
+					}
 				} else {
-					// Scene change keyframe: if screen was static for a while and
-					// we just got a new frame, force IDR for fast decoder recovery.
+					// Scene change: screen was idle and now has activity.
+					// Force IDR for fast decoder recovery.
 					if wasIdle || consecutiveSkips >= 30 {
 						_ = s.encoder.ForceKeyframe()
 					}
 					consecutiveSkips = 0
+					lastIdleKeyframe = time.Time{} // reset idle keyframe timer
 				}
 				wasIdle = consecutiveSkips >= idleThreshold
 				if elapsed := time.Since(loopStart); elapsed < sleepDur {
@@ -458,7 +534,7 @@ func (s *Session) captureLoopTicker() captureMode {
 				frameDuration = time.Second / time.Duration(fps)
 				ticker.Reset(frameDuration)
 				if err := s.encoder.SetFPS(fps); err != nil {
-					slog.Debug("Failed to apply dynamic FPS to encoder", "session", s.id, "fps", fps, "error", err)
+					slog.Debug("Failed to apply dynamic FPS to encoder", "session", s.id, "fps", fps, "error", err.Error())
 				}
 			}
 			s.captureAndSendFrame(frameDuration)
@@ -485,7 +561,10 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	}
 	if img == nil {
 		// DXGI: no new frame available (AccumulatedFrames==0)
-		_ = s.maybeResendCachedFrameOnSecureDesktop(cap, frameDuration)
+		resent := s.maybeResendCachedFrameOnSecureDesktop(cap, frameDuration)
+		if !resent {
+			s.maybeResendCachedFrameOnIdle(frameDuration)
+		}
 		s.metrics.RecordSkip()
 		return
 	}
@@ -558,7 +637,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	captureImagePool.Put(img)
 
 	if err != nil {
-		slog.Warn("H264 encode error", "session", s.id, "error", err)
+		slog.Warn("H264 encode error", "session", s.id, "error", err.Error())
 		return
 	}
 	if h264Data == nil {
@@ -568,13 +647,21 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 
 	s.metrics.RecordEncode(encodeTime, len(h264Data))
 
+	// Drop oversized frames (MFT keyframe bursts) — same guard as GPU path.
+	if s.frameIdx > 5 && len(h264Data) > maxFrameSizeBytes {
+		slog.Debug("Dropping oversized frame (CPU path)",
+			"session", s.id, "bytes", len(h264Data), "maxBytes", maxFrameSizeBytes)
+		s.metrics.RecordDrop()
+		return
+	}
+
 	// 5. Write as pion media.Sample
 	sample := media.Sample{
 		Data:     h264Data,
 		Duration: frameDuration,
 	}
 	if err := s.videoTrack.WriteSample(sample); err != nil {
-		slog.Warn("Failed to write H264 sample", "session", s.id, "error", err)
+		slog.Debug("Failed to write H264 sample", "session", s.id, "error", err.Error())
 		s.metrics.RecordDrop()
 		return
 	}
@@ -651,12 +738,22 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 		)
 	}
 
+	// Drop oversized frames (MFT keyframe bursts can be 2-4x the bitrate target).
+	// The encoder will produce a smaller P-frame on the next capture cycle.
+	// Skip the check for the first 5 frames to allow initial keyframes through.
+	if s.frameIdx > 5 && len(h264Data) > maxFrameSizeBytes {
+		slog.Debug("Dropping oversized frame to prevent jitter burst",
+			"session", s.id, "bytes", len(h264Data), "maxBytes", maxFrameSizeBytes)
+		s.metrics.RecordDrop()
+		return true, false, false
+	}
+
 	sample := media.Sample{
 		Data:     h264Data,
 		Duration: frameDuration,
 	}
 	if err := s.videoTrack.WriteSample(sample); err != nil {
-		slog.Warn("Failed to write H264 sample", "session", s.id, "error", err)
+		slog.Debug("Failed to write H264 sample (GPU)", "session", s.id, "error", err.Error())
 		s.metrics.RecordDrop()
 		return true, false, false
 	}
@@ -727,7 +824,7 @@ func (s *Session) handleDesktopSwitch() {
 func applyDisplayOffset(handler InputHandler, displayIndex int, cursorOffX, cursorOffY *atomic.Int32) {
 	monitors, err := ListMonitors()
 	if err != nil {
-		slog.Warn("applyDisplayOffset: ListMonitors failed", "error", err)
+		slog.Warn("applyDisplayOffset: ListMonitors failed", "error", err.Error())
 		handler.SetDisplayOffset(0, 0)
 		cursorOffX.Store(0)
 		cursorOffY.Store(0)

@@ -27,9 +27,12 @@ var (
 
 const (
 	wtsCurrentServerHandle = 0
+	wtsConnectState        = 4 // WTSInfoClass: WTSConnectState
 	wtsUserName            = 5
 	wtsDomainName          = 7
 	wtsClientProtocolType  = 16
+
+	wtsDisconnected = 4 // WTS_CONNECTSTATE_CLASS: WTSDisconnected
 )
 
 type wtsSessionInfo struct {
@@ -204,4 +207,35 @@ func wtsStateString(state uint32) string {
 	default:
 		return "unknown"
 	}
+}
+
+// IsSessionDisconnected returns true if the Windows session with the given ID
+// is in a disconnected state (no active display). A helper in a disconnected
+// session cannot capture the screen or inject input.
+func IsSessionDisconnected(winSessionID string) bool {
+	var id uint32
+	if _, err := fmt.Sscanf(winSessionID, "%d", &id); err != nil {
+		log.Warn("IsSessionDisconnected: failed to parse session ID",
+			"winSessionID", winSessionID, "error", err.Error())
+		return false
+	}
+
+	var buf uintptr
+	var bytesReturned uint32
+	r1, _, callErr := procWTSQuerySessionInfo.Call(
+		wtsCurrentServerHandle,
+		uintptr(id),
+		wtsConnectState,
+		uintptr(unsafe.Pointer(&buf)),
+		uintptr(unsafe.Pointer(&bytesReturned)),
+	)
+	if r1 == 0 || buf == 0 {
+		log.Warn("WTSQuerySessionInfo failed for disconnect check, assuming active",
+			"winSessionID", winSessionID, "error", callErr.Error())
+		return false
+	}
+	defer procWTSFreeMemory.Call(buf)
+
+	state := *(*uint32)(unsafe.Pointer(buf))
+	return state == wtsDisconnected
 }

@@ -2,7 +2,8 @@ import { Hono } from 'hono';
 import { db } from '../../db';
 import { deviceBootMetrics } from '../../db/schema';
 import { eq, desc } from 'drizzle-orm';
-import { authMiddleware, requireScope } from '../../middleware/auth';
+import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
+import { PERMISSIONS } from '../../services/permissions';
 import { getDeviceWithOrgCheck } from './helpers';
 import {
   normalizeStartupItems,
@@ -41,7 +42,7 @@ bootMetricsRoutes.get(
   '/:id/boot-metrics',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
     try {
       const auth = c.get('auth');
       const limit = Math.min(Number(c.req.query('limit')) || 30, 100);
@@ -93,8 +94,9 @@ bootMetricsRoutes.get(
 bootMetricsRoutes.post(
   '/:id/collect-boot-metrics',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   async (c) => {
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
     try {
       const auth = c.get('auth');
 
@@ -127,7 +129,7 @@ bootMetricsRoutes.get(
   '/:id/startup-items',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
     try {
       const auth = c.get('auth');
 
@@ -167,11 +169,12 @@ bootMetricsRoutes.get(
 bootMetricsRoutes.post(
   '/:id/startup-items/:itemName/disable',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   async (c) => {
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
     try {
       const auth = c.get('auth');
-      const itemName = decodeURIComponent(c.req.param('itemName'));
+      const itemName = decodeURIComponent(c.req.param('itemName')!);
       let actionBody = parseActionBody({});
       try {
         actionBody = parseActionBody(await c.req.json());
@@ -257,11 +260,12 @@ bootMetricsRoutes.post(
 bootMetricsRoutes.post(
   '/:id/startup-items/:itemName/enable',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   async (c) => {
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
     try {
       const auth = c.get('auth');
-      const itemName = decodeURIComponent(c.req.param('itemName'));
+      const itemName = decodeURIComponent(c.req.param('itemName')!);
       let actionBody = parseActionBody({});
       try {
         actionBody = parseActionBody(await c.req.json());

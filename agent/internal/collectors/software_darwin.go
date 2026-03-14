@@ -114,7 +114,6 @@ func parseInstallDate(dateStr string) string {
 		}
 	}
 
-	// If we can't parse the date, return the original string
-	// This ensures we don't lose data even if the format is unexpected
-	return dateStr
+	// Unparseable — return empty so the API inserts NULL rather than crashing
+	return ""
 }

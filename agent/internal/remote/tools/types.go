@@ -48,13 +48,18 @@ const (
 	CmdLock     = "lock"
 
 	// Software inventory
-	CmdCollectSoftware = "collect_software"
+	CmdCollectSoftware   = "collect_software"
 	CmdSoftwareUninstall = "software_uninstall"
+	CmdSoftwareInstall   = "software_install"
 
 	// Boot performance
 	CmdCollectBootPerformance    = "collect_boot_performance"
 	CmdManageStartupItem         = "manage_startup_item"
 	CmdCollectReliabilityMetrics = "collect_reliability_metrics"
+
+	// Audit policy compliance
+	CmdCollectAuditPolicy       = "collect_audit_policy"
+	CmdApplyAuditPolicyBaseline = "apply_audit_policy_baseline"
 
 	// File transfer
 	CmdFileTransfer   = "file_transfer"
@@ -97,6 +102,10 @@ const (
 	CmdSecurityThreatQuarantine = "security_threat_quarantine"
 	CmdSecurityThreatRemove     = "security_threat_remove"
 	CmdSecurityThreatRestore    = "security_threat_restore"
+	CmdSensitiveDataScan        = "sensitive_data_scan"
+	CmdEncryptFile              = "encrypt_file"
+	CmdSecureDeleteFile         = "secure_delete_file"
+	CmdQuarantineFile           = "quarantine_file"
 
 	// File operations
 	CmdFileList           = "file_list"
@@ -129,9 +138,10 @@ const (
 	CmdScriptListRunning = "script_list_running"
 
 	// Backup management
-	CmdBackupRun  = "backup_run"
-	CmdBackupList = "backup_list"
-	CmdBackupStop = "backup_stop"
+	CmdBackupRun     = "backup_run"
+	CmdBackupList    = "backup_list"
+	CmdBackupStop    = "backup_stop"
+	CmdBackupRestore = "backup_restore"
 
 	// Log shipping
 	CmdSetLogLevel = "set_log_level"
@@ -147,6 +157,13 @@ const (
 
 	// Session management
 	CmdListSessions = "list_sessions"
+
+	// CIS benchmark compliance
+	CmdCisBenchmark        = "cis_benchmark"
+	CmdApplyCisRemediation = "apply_cis_remediation"
+
+	// Peripheral control
+	CmdPeripheralPolicySync = "peripheral_policy_sync"
 )
 
 // CommandResult represents the result of a command execution

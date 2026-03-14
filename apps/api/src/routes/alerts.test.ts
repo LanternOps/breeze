@@ -19,8 +19,29 @@ vi.mock('../services/notificationSenders/smsSender', async () => {
   };
 });
 
+vi.mock('../services/notificationSenders', async () => {
+  const actual = await vi.importActual<typeof import('../services/notificationSenders')>('../services/notificationSenders');
+  return {
+    ...actual,
+    sendSmsNotification: sendSmsNotificationMock,
+    sendEmailNotification: vi.fn().mockResolvedValue({ success: true }),
+    sendWebhookNotification: vi.fn().mockResolvedValue({ success: true }),
+    sendPagerDutyNotification: vi.fn().mockResolvedValue({ success: true }),
+    testWebhook: vi.fn().mockResolvedValue({ success: true })
+  };
+});
+
 vi.mock('../services/eventBus', () => ({
   publishEvent: publishEventMock
+}));
+
+vi.mock('../services/alertCooldown', () => ({
+  setCooldown: vi.fn().mockResolvedValue(undefined),
+  markConfigPolicyRuleCooldown: vi.fn().mockResolvedValue(undefined)
+}));
+
+vi.mock('../services/auditEvents', () => ({
+  writeRouteAudit: vi.fn()
 }));
 
 vi.mock('../db', () => ({
@@ -47,7 +68,9 @@ vi.mock('../db', () => ({
     delete: vi.fn(() => ({
       where: vi.fn(() => Promise.resolve())
     }))
-  }
+  },
+  runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
 }));
 
 vi.mock('../db/schema', () => ({
@@ -197,12 +220,13 @@ describe('alert routes', () => {
 
   describe('POST /alerts/:id/acknowledge', () => {
     it('should acknowledge an active alert', async () => {
+      const alertId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([
               {
-                id: 'alert-123',
+                id: alertId,
                 orgId: '11111111-1111-1111-1111-111111111111',
                 status: 'active'
               }
@@ -215,7 +239,7 @@ describe('alert routes', () => {
           where: vi.fn().mockReturnValue({
             returning: vi.fn().mockResolvedValue([
               {
-                id: 'alert-123',
+                id: alertId,
                 status: 'acknowledged',
                 acknowledgedBy: 'user-123'
               }
@@ -224,7 +248,7 @@ describe('alert routes', () => {
         })
       } as any);
 
-      const res = await app.request('/alerts/alert-123/acknowledge', {
+      const res = await app.request(`/alerts/${alertId}/acknowledge`, {
         method: 'POST',
         headers: { Authorization: 'Bearer token' }
       });
@@ -238,12 +262,13 @@ describe('alert routes', () => {
 
   describe('POST /alerts/:id/resolve', () => {
     it('should resolve an alert with a note', async () => {
+      const alertId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([
               {
-                id: 'alert-456',
+                id: alertId,
                 orgId: '11111111-1111-1111-1111-111111111111',
                 status: 'active'
               }
@@ -256,7 +281,7 @@ describe('alert routes', () => {
           where: vi.fn().mockReturnValue({
             returning: vi.fn().mockResolvedValue([
               {
-                id: 'alert-456',
+                id: alertId,
                 status: 'resolved',
                 resolvedBy: 'user-123',
                 resolutionNote: 'Issue fixed'
@@ -266,7 +291,7 @@ describe('alert routes', () => {
         })
       } as any);
 
-      const res = await app.request('/alerts/alert-456/resolve', {
+      const res = await app.request(`/alerts/${alertId}/resolve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
         body: JSON.stringify({ note: 'Issue fixed' })
@@ -281,25 +306,26 @@ describe('alert routes', () => {
 
   describe('GET /alerts/summary', () => {
     it('should return severity and status breakdowns', async () => {
+      const groupByMock1 = vi.fn().mockResolvedValue([
+        { severity: 'critical', count: 2 },
+        { severity: 'high', count: 1 }
+      ]);
+      const whereMock1 = vi.fn().mockReturnValue({ groupBy: groupByMock1 });
+      const groupByMock2 = vi.fn().mockResolvedValue([
+        { status: 'active', count: 2 },
+        { status: 'resolved', count: 1 }
+      ]);
+      const whereMock2 = vi.fn().mockReturnValue({ groupBy: groupByMock2 });
+
       vi.mocked(db.select)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              groupBy: vi.fn().mockResolvedValue([
-                { severity: 'critical', count: 2 },
-                { severity: 'high', count: 1 }
-              ])
-            })
+            where: whereMock1
           })
         } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              groupBy: vi.fn().mockResolvedValue([
-                { status: 'active', count: 2 },
-                { status: 'resolved', count: 1 }
-              ])
-            })
+            where: whereMock2
           })
         } as any)
         .mockReturnValueOnce({
@@ -413,11 +439,12 @@ describe('alert routes', () => {
     });
 
     it('rejects updating a webhook channel with an unsafe URL', async () => {
+      const channelId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([{
-              id: 'channel-123',
+              id: channelId,
               orgId: '11111111-1111-1111-1111-111111111111',
               type: 'webhook'
             }])
@@ -425,7 +452,7 @@ describe('alert routes', () => {
         })
       } as any);
 
-      const res = await app.request('/alerts/channels/channel-123', {
+      const res = await app.request(`/alerts/channels/${channelId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
         body: JSON.stringify({
@@ -458,11 +485,12 @@ describe('alert routes', () => {
     });
 
     it('uses sms sender when testing an sms channel', async () => {
+      const smsChannelId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([{
-              id: 'channel-sms-1',
+              id: smsChannelId,
               orgId: '11111111-1111-1111-1111-111111111111',
               name: 'Primary SMS',
               type: 'sms',
@@ -478,7 +506,7 @@ describe('alert routes', () => {
         failedCount: 0
       });
 
-      const res = await app.request('/alerts/channels/channel-sms-1/test', {
+      const res = await app.request(`/alerts/channels/${smsChannelId}/test`, {
         method: 'POST',
         headers: { Authorization: 'Bearer token' }
       });

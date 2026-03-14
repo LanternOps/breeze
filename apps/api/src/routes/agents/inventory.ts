@@ -16,6 +16,7 @@ import {
   updateDisksSchema,
   updateNetworkSchema,
 } from './schemas';
+import { sanitizeDate } from './helpers';
 
 export const inventoryRoutes = new Hono();
 
@@ -78,7 +79,7 @@ inventoryRoutes.put('/:id/software', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
           name: item.name,
           version: item.version || null,
           vendor: item.vendor || null,
-          installDate: item.installDate || null,
+          installDate: sanitizeDate(item.installDate),
           installLocation: item.installLocation || null,
           uninstallString: item.uninstallString || null,
           fileHash: item.fileHash || null,

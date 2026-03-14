@@ -1,6 +1,10 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
+export interface UserPreferences {
+  theme?: 'light' | 'dark' | 'system';
+}
+
 export interface User {
   id: string;
   email: string;
@@ -8,6 +12,7 @@ export interface User {
   mfaEnabled: boolean;
   avatarUrl?: string;
   requiresSetup?: boolean;
+  preferences?: UserPreferences;
 }
 
 export interface Tokens {
@@ -262,7 +267,20 @@ export async function fetchWithAuth(url: string, options: RequestInit = {}): Pro
 
   headers.set('Content-Type', 'application/json');
 
-  let response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include' });
+  // Use caller-provided signal or create a 30-second timeout to prevent indefinite hangs
+  const externalSignal = options.signal;
+  const controller = !externalSignal ? new AbortController() : null;
+  const timeout = controller ? setTimeout(() => controller.abort(), 30_000) : null;
+  const signal = externalSignal ?? controller!.signal;
+
+  let response: Response;
+  try {
+    response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include', signal });
+  } catch (err) {
+    if (timeout) clearTimeout(timeout);
+    throw err;
+  }
+  if (timeout) clearTimeout(timeout);
 
   // If unauthorized, attempt cookie-backed refresh once
   if (response.status === 401) {
@@ -283,6 +301,23 @@ export async function fetchWithAuth(url: string, options: RequestInit = {}): Pro
         // Refresh failed and no newer token exists; logout.
         logout();
       }
+    }
+  }
+
+  // If the partner is inactive, redirect to the account inactive page.
+  // This catches any API call that hits the server-side partner guard.
+  if (response.status === 403) {
+    try {
+      const cloned = response.clone();
+      const body = await cloned.json();
+      if (body?.code === 'PARTNER_INACTIVE') {
+        const path = window.location.pathname;
+        if (!path.startsWith('/account/') && !path.startsWith('/login')) {
+          window.location.href = '/account/inactive';
+        }
+      }
+    } catch {
+      // Not JSON or parse failed — treat as normal 403
     }
   }
 
@@ -377,6 +412,7 @@ export interface Partner {
   id: string;
   name: string;
   slug: string;
+  status?: string;
 }
 
 export async function apiRegister(
@@ -423,6 +459,7 @@ export async function apiRegisterPartner(
   user?: User;
   partner?: Partner;
   tokens?: Tokens;
+  redirectUrl?: string;
   error?: string;
 }> {
   try {
@@ -443,7 +480,8 @@ export async function apiRegisterPartner(
       success: true,
       user: data.user,
       partner: data.partner,
-      tokens: data.tokens
+      tokens: data.tokens,
+      redirectUrl: data.redirectUrl,
     };
   } catch {
     return { success: false, error: 'Network error' };
@@ -477,6 +515,36 @@ export async function apiLogout(): Promise<void> {
     localStorage.removeItem('breeze-ai-chat');
   } catch {
     // localStorage may be unavailable
+  }
+}
+
+function applyThemePreference(theme: string | undefined): void {
+  if (!theme || typeof document === 'undefined') return;
+
+  const resolved = theme === 'system'
+    ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+    : theme;
+
+  if (resolved === 'dark') {
+    document.documentElement.classList.add('dark');
+  } else {
+    document.documentElement.classList.remove('dark');
+  }
+  localStorage.setItem('theme', theme);
+}
+
+export async function fetchAndApplyPreferences(): Promise<void> {
+  try {
+    const response = await fetchWithAuth('/users/me');
+    if (!response.ok) return;
+
+    const data = await response.json();
+    if (data.preferences) {
+      useAuthStore.getState().updateUser({ preferences: data.preferences });
+      applyThemePreference(data.preferences.theme);
+    }
+  } catch {
+    // Non-critical — localStorage still has the cached theme
   }
 }
 

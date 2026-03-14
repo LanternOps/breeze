@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { fetchWithAuth } from '@/stores/auth';
 import {
   Search,
   Calendar,
@@ -337,7 +338,7 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/reports/schedules');
+      const response = await fetchWithAuth('/reports/schedules');
       if (!response.ok) {
         throw new Error('Failed to fetch schedules');
       }
@@ -352,7 +353,7 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
 
   const fetchReports = useCallback(async () => {
     try {
-      const response = await fetch('/api/reports');
+      const response = await fetchWithAuth('/reports');
       if (!response.ok) {
         return;
       }
@@ -428,9 +429,8 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
 
     setCreateSubmitting(true);
     try {
-      const response = await fetch('/api/reports/schedules', {
+      const response = await fetchWithAuth('/reports/schedules', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(createForm)
       });
 
@@ -451,9 +451,8 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
   const handleToggle = async (schedule: ReportSchedule, enabled: boolean) => {
     setTogglingIds(prev => new Set([...prev, schedule.id]));
     try {
-      const response = await fetch(`/api/reports/schedules/${schedule.id}`, {
+      const response = await fetchWithAuth(`/reports/schedules/${schedule.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled })
       });
       if (!response.ok) {
@@ -476,7 +475,7 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
   const handleRunNow = async (schedule: ReportSchedule) => {
     setRunningIds(prev => new Set([...prev, schedule.id]));
     try {
-      const response = await fetch(`/api/reports/schedules/${schedule.id}/run`, {
+      const response = await fetchWithAuth(`/reports/schedules/${schedule.id}/run`, {
         method: 'POST'
       });
       if (!response.ok) {
@@ -520,9 +519,8 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
 
     setEditSubmitting(true);
     try {
-      const response = await fetch(`/api/reports/schedules/${editSchedule.id}`, {
+      const response = await fetchWithAuth(`/reports/schedules/${editSchedule.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(editForm)
       });
       if (!response.ok) {
@@ -543,7 +541,7 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
     if (!deleteTarget) return;
     setDeleteSubmitting(true);
     try {
-      const response = await fetch(`/api/reports/schedules/${deleteTarget.id}`, {
+      const response = await fetchWithAuth(`/reports/schedules/${deleteTarget.id}`, {
         method: 'DELETE'
       });
       if (!response.ok) {
@@ -563,7 +561,7 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
     setHistoryRuns([]);
     setHistoryLoading(true);
     try {
-      const response = await fetch(`/api/reports/schedules/${schedule.id}/runs`);
+      const response = await fetchWithAuth(`/reports/schedules/${schedule.id}/runs`);
       if (response.ok) {
         const data = await response.json();
         setHistoryRuns(data.data ?? data.runs ?? data ?? []);

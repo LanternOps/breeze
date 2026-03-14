@@ -468,7 +468,9 @@ export async function getLogAggregation(auth: AuthContext, input: LogAggregation
     conditions.push(inArray(devices.siteId, input.siteIds));
   }
 
-  const bucketUnit = bucket === 'day' ? sql.raw('day') : sql.raw('hour');
+  const bucketExpr = bucket === 'day'
+    ? sql`date_trunc('day', ${deviceEventLogs.timestamp})`
+    : sql`date_trunc('hour', ${deviceEventLogs.timestamp})`;
 
   const groupingExpression = (() => {
     switch (groupBy) {
@@ -489,21 +491,15 @@ export async function getLogAggregation(auth: AuthContext, input: LogAggregation
   const [timeSeries, totals] = await Promise.all([
     db
       .select({
-        bucket: sql<Date>`date_trunc(${bucketUnit}, ${deviceEventLogs.timestamp})`,
+        bucket: sql<string>`${bucketExpr}::text`,
         group: sql<string>`${groupingExpression}`,
         count: sql<number>`count(*)`,
       })
       .from(deviceEventLogs)
       .leftJoin(devices, eq(deviceEventLogs.deviceId, devices.id))
       .where(whereCondition)
-      .groupBy(
-        sql`date_trunc(${bucketUnit}, ${deviceEventLogs.timestamp})`,
-        groupingExpression
-      )
-      .orderBy(
-        asc(sql`date_trunc(${bucketUnit}, ${deviceEventLogs.timestamp})`),
-        desc(sql`count(*)`)
-      )
+      .groupBy(bucketExpr, groupingExpression)
+      .orderBy(asc(bucketExpr), desc(sql`count(*)`))
       .limit(limit),
     db
       .select({
@@ -524,7 +520,7 @@ export async function getLogAggregation(auth: AuthContext, input: LogAggregation
     start: start.toISOString(),
     end: end.toISOString(),
     series: timeSeries.map((row) => ({
-      bucket: row.bucket.toISOString(),
+      bucket: typeof row.bucket === 'string' ? row.bucket : new Date(row.bucket).toISOString(),
       group: row.group,
       count: Number(row.count ?? 0),
     })),
@@ -614,7 +610,7 @@ export async function getLogTrends(auth: AuthContext, input: LogTrendsInput) {
       .limit(limit),
     db
       .select({
-        bucket: sql<Date>`date_trunc('hour', ${deviceEventLogs.timestamp})`,
+        bucket: sql<string>`date_trunc('hour', ${deviceEventLogs.timestamp})::text`,
         count: sql<number>`count(*)`,
       })
       .from(deviceEventLogs)
@@ -634,10 +630,12 @@ export async function getLogTrends(auth: AuthContext, input: LogTrendsInput) {
   const standardDeviation = Math.sqrt(variance);
   const spikeThreshold = Math.max(3, Math.ceil(average + (standardDeviation * 2)));
 
+  const toBucketIso = (b: string | Date) => typeof b === 'string' ? b : new Date(b).toISOString();
+
   const spikes = errorTimeline
     .filter((point) => Number(point.count ?? 0) >= spikeThreshold)
     .map((point) => ({
-      timestamp: point.bucket.toISOString(),
+      timestamp: toBucketIso(point.bucket),
       count: Number(point.count ?? 0),
     }));
 
@@ -663,7 +661,7 @@ export async function getLogTrends(auth: AuthContext, input: LogTrendsInput) {
       criticalCount: Number(row.criticalCount ?? 0),
     })),
     errorTimeline: errorTimeline.map((point) => ({
-      timestamp: point.bucket.toISOString(),
+      timestamp: toBucketIso(point.bucket),
       count: Number(point.count ?? 0),
     })),
     spikes,

@@ -9,6 +9,9 @@ import {
   configPolicyPatchSettings,
   configPolicyMaintenanceSettings,
   configPolicyEventLogSettings,
+  configPolicySensitiveDataSettings,
+  configPolicyMonitoringSettings,
+  configPolicyMonitoringWatches,
   devices,
   organizations,
   deviceGroupMemberships,
@@ -19,16 +22,18 @@ import {
   automationPolicies,
   maintenanceWindows,
   softwarePolicies,
+  sensitiveDataPolicies,
+  peripheralPolicies,
 } from '../db/schema';
 import { and, eq, desc, sql, inArray, asc, SQL } from 'drizzle-orm';
-import { eventLogInlineSettingsSchema } from '@breeze/shared/validators';
+import { eventLogInlineSettingsSchema, monitoringInlineSettingsSchema } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 
 // ============================================
 // Types
 // ============================================
 
-type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy';
+type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data' | 'peripheral_control' | 'warranty' | 'helper';
 type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
 
 const LEVEL_PRIORITY: Record<ConfigAssignmentLevel, number> = {
@@ -261,15 +266,30 @@ async function decomposeInlineSettings(
         const VALID_ENFORCEMENT = ['monitor', 'warn', 'enforce'] as const;
         type Enforcement = (typeof VALID_ENFORCEMENT)[number];
         await tx.insert(configPolicyComplianceRules).values(
-          items.map((item: Record<string, unknown>, idx: number) => ({
-            featureLinkId: linkId,
-            name: String(item.name ?? `Compliance Rule ${idx + 1}`),
-            rules: item.rules ?? {},
-            enforcementLevel: (VALID_ENFORCEMENT.includes(item.enforcementLevel as Enforcement) ? item.enforcementLevel : 'monitor') as Enforcement,
-            checkIntervalMinutes: typeof item.checkIntervalMinutes === 'number' ? item.checkIntervalMinutes : 60,
-            remediationScriptId: typeof item.remediationScriptId === 'string' ? item.remediationScriptId : null,
-            sortOrder: typeof item.sortOrder === 'number' ? item.sortOrder : idx,
-          }))
+          items.map((item: Record<string, unknown>, idx: number) => {
+            // Extract remediationScriptId from per-rule remediation for backward compat
+            let scriptId: string | null = null;
+            if (typeof item.remediationScriptId === 'string') {
+              scriptId = item.remediationScriptId;
+            } else if (Array.isArray(item.rules)) {
+              const firstScript = (item.rules as Record<string, unknown>[]).find(
+                (r) => (r.remediation as Record<string, unknown>)?.type === 'script'
+              );
+              if (firstScript) {
+                const rem = firstScript.remediation as Record<string, unknown>;
+                if (typeof rem?.scriptId === 'string') scriptId = rem.scriptId;
+              }
+            }
+            return {
+              featureLinkId: linkId,
+              name: String(item.name ?? `Compliance Rule ${idx + 1}`),
+              rules: item.rules ?? {},
+              enforcementLevel: (VALID_ENFORCEMENT.includes(item.enforcementLevel as Enforcement) ? item.enforcementLevel : 'monitor') as Enforcement,
+              checkIntervalMinutes: typeof item.checkIntervalMinutes === 'number' ? item.checkIntervalMinutes : 60,
+              remediationScriptId: scriptId,
+              sortOrder: typeof item.sortOrder === 'number' ? item.sortOrder : idx,
+            };
+          })
         );
       }
       break;
@@ -317,8 +337,106 @@ async function decomposeInlineSettings(
       break;
     }
 
+    case 'sensitive_data': {
+      await tx.insert(configPolicySensitiveDataSettings).values({
+        featureLinkId: linkId,
+        detectionClasses: Array.isArray(s.detectionClasses) ? s.detectionClasses as string[] : ['credential'],
+        includePaths: Array.isArray(s.includePaths) ? s.includePaths as string[] : [],
+        excludePaths: Array.isArray(s.excludePaths) ? s.excludePaths as string[] : [],
+        fileTypes: Array.isArray(s.fileTypes) ? s.fileTypes as string[] : [],
+        maxFileSizeBytes: typeof s.maxFileSizeBytes === 'number' ? s.maxFileSizeBytes : 104857600,
+        workers: typeof s.workers === 'number' ? s.workers : 4,
+        timeoutSeconds: typeof s.timeoutSeconds === 'number' ? s.timeoutSeconds : 300,
+        suppressPatternIds: Array.isArray(s.suppressPatternIds) ? s.suppressPatternIds as string[] : [],
+        scheduleType: typeof s.scheduleType === 'string' ? s.scheduleType : 'manual',
+        intervalMinutes: typeof s.intervalMinutes === 'number' ? s.intervalMinutes : null,
+        cron: typeof s.cron === 'string' ? s.cron : null,
+        timezone: typeof s.timezone === 'string' ? s.timezone : 'UTC',
+      });
+      break;
+    }
+
+    case 'monitoring': {
+      const parsed = monitoringInlineSettingsSchema.parse(s);
+      const [settingsRow] = await tx.insert(configPolicyMonitoringSettings).values({
+        featureLinkId: linkId,
+        checkIntervalSeconds: parsed.checkIntervalSeconds,
+      }).returning();
+      if (settingsRow && parsed.watches.length > 0) {
+        const VALID_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
+        type AlertSeverity = (typeof VALID_SEVERITIES)[number];
+        await tx.insert(configPolicyMonitoringWatches).values(
+          parsed.watches.map((w, idx) => ({
+            settingsId: settingsRow.id,
+            watchType: w.watchType as 'service' | 'process',
+            name: w.name,
+            displayName: w.displayName ?? null,
+            enabled: w.enabled,
+            alertOnStop: w.alertOnStop,
+            alertAfterConsecutiveFailures: w.alertAfterConsecutiveFailures,
+            alertSeverity: (VALID_SEVERITIES.includes(w.alertSeverity as AlertSeverity) ? w.alertSeverity : 'high') as AlertSeverity,
+            cpuThresholdPercent: w.cpuThresholdPercent ?? null,
+            memoryThresholdMb: w.memoryThresholdMb ?? null,
+            thresholdDurationSeconds: w.thresholdDurationSeconds,
+            autoRestart: w.autoRestart,
+            maxRestartAttempts: w.maxRestartAttempts,
+            restartCooldownSeconds: w.restartCooldownSeconds,
+            sortOrder: idx,
+          }))
+        );
+      }
+
+      // Insert event log alert rules (only enabled ones)
+      if (parsed.eventLogAlerts?.length > 0) {
+        const VALID_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
+        type AlertSev = (typeof VALID_SEVERITIES)[number];
+        for (const alert of parsed.eventLogAlerts) {
+          if (!alert.enabled) continue;
+          await tx.insert(configPolicyAlertRules).values({
+            featureLinkId: linkId,
+            name: alert.name,
+            severity: (VALID_SEVERITIES.includes(alert.severity as AlertSev) ? alert.severity : 'high') as AlertSev,
+            conditions: [{
+              type: 'event_log' as const,
+              category: alert.category,
+              level: alert.level,
+              sourcePattern: alert.sourcePattern || undefined,
+              messagePattern: alert.messagePattern || undefined,
+              countThreshold: alert.countThreshold,
+              windowMinutes: alert.windowMinutes,
+            }],
+            cooldownMinutes: alert.windowMinutes,
+            autoResolve: true,
+          });
+        }
+      }
+
+      // Insert metric/status/custom alert rules
+      if (parsed.alertRules?.length > 0) {
+        const VALID_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
+        type AlertSev = (typeof VALID_SEVERITIES)[number];
+        await tx.insert(configPolicyAlertRules).values(
+          parsed.alertRules.map((item, idx) => ({
+            featureLinkId: linkId,
+            name: item.name,
+            severity: (VALID_SEVERITIES.includes(item.severity as AlertSev) ? item.severity : 'medium') as AlertSev,
+            conditions: item.conditions,
+            cooldownMinutes: item.cooldownMinutes,
+            autoResolve: item.autoResolve,
+            sortOrder: 1000 + idx,
+          }))
+        );
+      }
+      break;
+    }
+
+    case 'warranty':
+    case 'helper':
+      // Pure JSONB — no normalized table needed
+      break;
+
     default:
-      // monitoring, backup, security — no normalized tables yet
+      // backup, security — no normalized tables yet
       break;
   }
 }
@@ -350,6 +468,20 @@ async function deleteNormalizedRows(
       break;
     case 'event_log':
       await tx.delete(configPolicyEventLogSettings).where(eq(configPolicyEventLogSettings.featureLinkId, linkId));
+      break;
+    case 'sensitive_data':
+      await tx.delete(configPolicySensitiveDataSettings).where(eq(configPolicySensitiveDataSettings.featureLinkId, linkId));
+      break;
+    case 'monitoring': {
+      // Watches cascade-delete from settings, so just delete settings
+      await tx.delete(configPolicyMonitoringSettings).where(eq(configPolicyMonitoringSettings.featureLinkId, linkId));
+      // Also delete event log alert rules stored under this monitoring feature link
+      await tx.delete(configPolicyAlertRules).where(eq(configPolicyAlertRules.featureLinkId, linkId));
+      break;
+    }
+    case 'warranty':
+    case 'helper':
+      // Pure JSONB — no normalized table to delete
       break;
     default:
       break;
@@ -489,6 +621,110 @@ async function assembleInlineSettings(
       };
     }
 
+    case 'sensitive_data': {
+      const [row] = await db
+        .select()
+        .from(configPolicySensitiveDataSettings)
+        .where(eq(configPolicySensitiveDataSettings.featureLinkId, linkId))
+        .limit(1);
+      if (!row) return null;
+      return {
+        detectionClasses: row.detectionClasses,
+        includePaths: row.includePaths,
+        excludePaths: row.excludePaths,
+        fileTypes: row.fileTypes,
+        maxFileSizeBytes: row.maxFileSizeBytes,
+        workers: row.workers,
+        timeoutSeconds: row.timeoutSeconds,
+        suppressPatternIds: row.suppressPatternIds,
+        scheduleType: row.scheduleType,
+        intervalMinutes: row.intervalMinutes,
+        cron: row.cron,
+        timezone: row.timezone,
+      };
+    }
+
+    case 'monitoring': {
+      const [settingsRow] = await db
+        .select()
+        .from(configPolicyMonitoringSettings)
+        .where(eq(configPolicyMonitoringSettings.featureLinkId, linkId))
+        .limit(1);
+      if (!settingsRow) return null;
+      const watches = await db
+        .select()
+        .from(configPolicyMonitoringWatches)
+        .where(eq(configPolicyMonitoringWatches.settingsId, settingsRow.id))
+        .orderBy(asc(configPolicyMonitoringWatches.sortOrder));
+
+      // Reconstruct event log alerts from alert rules stored under this monitoring feature link
+      const alertRules = await db
+        .select()
+        .from(configPolicyAlertRules)
+        .where(eq(configPolicyAlertRules.featureLinkId, linkId));
+
+      const eventLogAlerts = alertRules
+        .filter((r) => {
+          const conds = r.conditions as unknown[];
+          return Array.isArray(conds) && conds.length === 1 && (conds[0] as Record<string, unknown>)?.type === 'event_log';
+        })
+        .map((r) => {
+          const cond = (r.conditions as Record<string, unknown>[])[0]!;
+          return {
+            name: r.name,
+            category: cond.category as string,
+            level: cond.level as string,
+            sourcePattern: cond.sourcePattern as string | undefined,
+            messagePattern: cond.messagePattern as string | undefined,
+            countThreshold: cond.countThreshold as number,
+            windowMinutes: cond.windowMinutes as number,
+            severity: r.severity,
+            enabled: true, // only enabled rules are stored
+          };
+        });
+
+      // Reconstruct metric/status/custom alert rules (non-event_log)
+      const metricAlertRules = alertRules
+        .filter((r) => {
+          const conds = r.conditions as unknown[];
+          if (!Array.isArray(conds) || conds.length === 0) return false;
+          return (conds[0] as Record<string, unknown>)?.type !== 'event_log';
+        })
+        .map((r) => ({
+          name: r.name,
+          severity: r.severity,
+          conditions: r.conditions,
+          cooldownMinutes: r.cooldownMinutes,
+          autoResolve: r.autoResolve,
+        }));
+
+      return {
+        checkIntervalSeconds: settingsRow.checkIntervalSeconds,
+        watches: watches.map((w) => ({
+          watchType: w.watchType,
+          name: w.name,
+          displayName: w.displayName,
+          enabled: w.enabled,
+          alertOnStop: w.alertOnStop,
+          alertAfterConsecutiveFailures: w.alertAfterConsecutiveFailures,
+          alertSeverity: w.alertSeverity,
+          cpuThresholdPercent: w.cpuThresholdPercent,
+          memoryThresholdMb: w.memoryThresholdMb,
+          thresholdDurationSeconds: w.thresholdDurationSeconds,
+          autoRestart: w.autoRestart,
+          maxRestartAttempts: w.maxRestartAttempts,
+          restartCooldownSeconds: w.restartCooldownSeconds,
+        })),
+        eventLogAlerts,
+        alertRules: metricAlertRules,
+      };
+    }
+
+    case 'warranty':
+    case 'helper':
+      // Pure JSONB — settings stored directly on feature link
+      return null;
+
     default:
       return null;
   }
@@ -611,7 +847,9 @@ export async function assignPolicy(
   level: ConfigAssignmentLevel,
   targetId: string,
   priority: number = 0,
-  userId: string
+  userId: string,
+  roleFilter?: string[],
+  osFilter?: string[]
 ) {
   const [assignment] = await db
     .insert(configPolicyAssignments)
@@ -620,6 +858,8 @@ export async function assignPolicy(
       level,
       targetId,
       priority,
+      roleFilter: roleFilter?.length ? roleFilter : null,
+      osFilter: osFilter?.length ? osFilter : null,
       assignedBy: userId,
     })
     .returning();
@@ -888,6 +1128,8 @@ const FEATURE_TABLE_MAP: Partial<Record<ConfigFeatureType, { table: any; orgIdCo
   compliance: { table: automationPolicies, orgIdCol: automationPolicies.orgId },
   maintenance: { table: maintenanceWindows, orgIdCol: maintenanceWindows.orgId },
   software_policy: { table: softwarePolicies, orgIdCol: softwarePolicies.orgId },
+  sensitive_data: { table: sensitiveDataPolicies, orgIdCol: sensitiveDataPolicies.orgId },
+  peripheral_control: { table: peripheralPolicies, orgIdCol: peripheralPolicies.orgId },
 };
 
 export async function validateFeaturePolicyExists(
@@ -902,6 +1144,9 @@ export async function validateFeaturePolicyExists(
     }
     return { valid: true };
   }
+
+  // sensitive_data supports both linked policy and inline settings
+  // If featurePolicyId is provided, it can reference a sensitiveDataPolicies record or a config policy
 
   if (!featurePolicyId) {
     return { valid: true }; // inline-only is allowed; schema ensures inlineSettings is present

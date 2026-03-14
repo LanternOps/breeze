@@ -3,6 +3,7 @@ import { restoreAccessTokenFromCookie, useAuthStore } from '../../stores/auth';
 import { Loader2 } from 'lucide-react';
 import Sidebar from './Sidebar';
 import Header from './Header';
+import { navigateTo } from '../../lib/navigation';
 
 interface DashboardWrapperProps {
   children: ReactNode;
@@ -56,7 +57,7 @@ export default function DashboardWrapper({ children, currentPath }: DashboardWra
         if (currentPath !== '/login' && currentPath !== '/register') {
           sessionStorage.setItem('redirectAfterLogin', currentPath);
         }
-        window.location.href = '/login';
+        void navigateTo('/login', { replace: true });
       }
     }
     return () => {

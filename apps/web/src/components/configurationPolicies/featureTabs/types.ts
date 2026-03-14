@@ -1,4 +1,4 @@
-export type FeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy';
+export type FeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data' | 'peripheral_control' | 'warranty' | 'helper';
 
 export type FeatureLink = {
   id: string;
@@ -28,10 +28,14 @@ export const FEATURE_META: Record<FeatureType, {
   alert_rule:   { label: 'Alerts',       fetchUrl: '/alerts/rules',        description: 'Alert rule configuration' },
   backup:       { label: 'Backup',       fetchUrl: '/backup/configs',      description: 'Backup schedule and retention' },
   security:     { label: 'Security',     fetchUrl: '/security/policies',   description: 'Security policy settings' },
-  monitoring:   { label: 'Monitoring',   fetchUrl: '/monitoring',          description: 'Monitoring check configuration' },
+  monitoring:   { label: 'Monitoring',   fetchUrl: '/monitoring',          description: 'Service/process monitoring, event log alerts, and metric alert rules' },
   maintenance:  { label: 'Maintenance',  fetchUrl: '/maintenance/windows', description: 'Maintenance window settings' },
   compliance:   { label: 'Compliance',   fetchUrl: '/policies',            description: 'Compliance rules and enforcement' },
   automation:   { label: 'Automations',  fetchUrl: '/automations',         description: 'Automated tasks and responses' },
   event_log:    { label: 'Event Logs',   fetchUrl: null,                   description: 'Event log collection and retention' },
   software_policy: { label: 'Software Policy', fetchUrl: '/software-policies', description: 'Allowlist/blocklist software rules' },
+  sensitive_data: { label: 'Data Discovery', fetchUrl: '/sensitive-data/policies', description: 'Sensitive data scanning configuration' },
+  peripheral_control: { label: 'Peripheral Control', fetchUrl: '/peripherals/policies', description: 'USB, Bluetooth, and Thunderbolt device policies' },
+  warranty:    { label: 'Warranty',    fetchUrl: null,                   description: 'Warranty expiry alert thresholds' },
+  helper:      { label: 'Breeze Assist',     fetchUrl: null,                   description: 'End-user Breeze Assist tray application' },
 };

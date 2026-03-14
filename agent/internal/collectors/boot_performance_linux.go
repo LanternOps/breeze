@@ -18,30 +18,35 @@ import (
 	"github.com/shirou/gopsutil/v3/host"
 )
 
-// systemdTimeRegex matches systemd-analyze output like "1.234s" or "456ms"
-var systemdTimeRegex = regexp.MustCompile(`([\d.]+)(ms|s)`)
+// systemdTimeRegex matches systemd-analyze output like "1.234s", "456ms", or
+// European-locale variants with comma decimals like "1,234s".
+var systemdTimeRegex = regexp.MustCompile(`([\d.,]+)(ms|s)`)
 
 // systemdAnalyzeRegex parses the full "Startup finished in ..." line.
 // Groups: firmware, loader, kernel, userspace, total
 // Some fields may be absent on certain systems (e.g. no firmware/loader on VMs).
+// Accepts comma or period as decimal separator for European locale compatibility.
 var systemdAnalyzeRegex = regexp.MustCompile(
 	`Startup finished in\s+` +
-		`(?:([\d.]+(?:ms|s))\s+\(firmware\)\s+\+\s+)?` +
-		`(?:([\d.]+(?:ms|s))\s+\(loader\)\s+\+\s+)?` +
-		`(?:([\d.]+(?:ms|s))\s+\(kernel\)\s+\+\s+)?` +
-		`([\d.]+(?:ms|s))\s+\(userspace\)\s+=\s+([\d.]+(?:ms|s))`,
+		`(?:([\d.,]+(?:ms|s))\s+\(firmware\)\s+\+\s+)?` +
+		`(?:([\d.,]+(?:ms|s))\s+\(loader\)\s+\+\s+)?` +
+		`(?:([\d.,]+(?:ms|s))\s+\(kernel\)\s+\+\s+)?` +
+		`([\d.,]+(?:ms|s))\s+\(userspace\)\s+=\s+([\d.,]+(?:ms|s))`,
 )
 
 // safeServiceNameRegex validates service names to prevent command injection.
 var safeServiceNameRegex = regexp.MustCompile(`^[a-zA-Z0-9._@-]+$`)
 
 // parseSystemdTime converts a systemd time string like "1.234s" or "456ms" to seconds.
+// Handles European locale comma decimals (e.g. "1,234s") by normalizing to period.
 func parseSystemdTime(s string) float64 {
 	matches := systemdTimeRegex.FindStringSubmatch(s)
 	if len(matches) < 3 {
 		return 0
 	}
-	val, err := strconv.ParseFloat(matches[1], 64)
+	// Normalize comma decimal separator to period for ParseFloat
+	numStr := strings.ReplaceAll(matches[1], ",", ".")
+	val, err := strconv.ParseFloat(numStr, 64)
 	if err != nil {
 		return 0
 	}

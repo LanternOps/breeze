@@ -37,7 +37,7 @@ function resolveOrgId(
     if (!requireForNonOrg && accessibleOrgIds.length === 1) {
       return { orgId: accessibleOrgIds[0] } as const;
     }
-    return { error: 'orgId is required for partner scope', status: 400 } as const;
+    return { error: 'orgId is required when partner has multiple organizations', status: 400 } as const;
   }
 
   if (auth.scope === 'system' && !requestedOrgId) {
@@ -273,7 +273,7 @@ snmpRoutes.get(
   '/templates/:id',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
-    const templateId = c.req.param('id');
+    const templateId = c.req.param('id')!;
     const [template] = await db.select().from(snmpTemplates)
       .where(eq(snmpTemplates.id, templateId)).limit(1);
     if (!template) return c.json({ error: 'Template not found.' }, 404);
@@ -298,7 +298,7 @@ snmpRoutes.patch(
   requireScope('organization', 'partner', 'system'),
   zValidator('json', updateTemplateSchema),
   async (c) => {
-    const templateId = c.req.param('id');
+    const templateId = c.req.param('id')!;
     const payload = c.req.valid('json');
 
     const [template] = await db.select().from(snmpTemplates)
@@ -351,7 +351,7 @@ snmpRoutes.delete(
   '/templates/:id',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
-    const templateId = c.req.param('id');
+    const templateId = c.req.param('id')!;
 
     const [template] = await db.select().from(snmpTemplates)
       .where(eq(snmpTemplates.id, templateId)).limit(1);
