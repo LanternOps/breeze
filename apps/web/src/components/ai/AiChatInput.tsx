@@ -39,7 +39,7 @@ export default function AiChatInput({ onSend, onInterrupt, disabled, isStreaming
   };
 
   return (
-    <div className="border-t border-gray-700 p-3">
+    <div className="border-t border-gray-200 p-3 dark:border-gray-700">
       <div className="flex items-end gap-2">
         <textarea
           ref={textareaRef}
@@ -50,7 +50,7 @@ export default function AiChatInput({ onSend, onInterrupt, disabled, isStreaming
           placeholder={isStreaming ? 'Waiting for response...' : 'Ask about your devices...'}
           disabled={disabled || isStreaming}
           rows={1}
-          className="flex-1 resize-none rounded-lg border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
+          className="flex-1 resize-none rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500"
         />
         {isStreaming ? (
           <button
@@ -75,7 +75,7 @@ export default function AiChatInput({ onSend, onInterrupt, disabled, isStreaming
           </button>
         )}
       </div>
-      <p className="mt-1 text-xs text-gray-500">
+      <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
         {isStreaming ? 'AI is thinking... click stop to cancel' : 'Cmd+Enter to send'}
       </p>
     </div>

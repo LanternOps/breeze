@@ -27,8 +27,8 @@ export default function WorkspaceTab({
       className={cn(
         'group relative flex min-w-0 max-w-[200px] items-center gap-1.5 rounded-t-lg border border-b-0 px-3 py-2 text-sm font-medium transition-colors',
         isActive
-          ? 'border-gray-600 bg-gray-800 text-gray-100'
-          : 'border-transparent bg-gray-900/50 text-gray-400 hover:bg-gray-800/50 hover:text-gray-300'
+          ? 'border-gray-300 bg-gray-50 text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100'
+          : 'border-transparent bg-gray-50/50 text-gray-500 hover:bg-gray-100/50 hover:text-gray-700 dark:bg-gray-900/50 dark:text-gray-400 dark:hover:bg-gray-800/50 dark:hover:text-gray-300'
       )}
     >
       {/* Streaming indicator */}
@@ -59,8 +59,8 @@ export default function WorkspaceTab({
           onClose();
         }}
         className={cn(
-          'ml-1 shrink-0 rounded p-0.5 transition-colors hover:bg-gray-600',
-          isActive ? 'text-gray-400 hover:text-gray-200' : 'text-gray-600 opacity-0 group-hover:opacity-100'
+          'ml-1 shrink-0 rounded p-0.5 transition-colors hover:bg-gray-200 dark:hover:bg-gray-600',
+          isActive ? 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200' : 'text-gray-400 opacity-0 group-hover:opacity-100 dark:text-gray-600'
         )}
       >
         <X className="h-3 w-3" />

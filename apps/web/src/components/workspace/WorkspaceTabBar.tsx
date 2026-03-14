@@ -20,7 +20,7 @@ export default function WorkspaceTabBar({
   onNewTab,
 }: WorkspaceTabBarProps) {
   return (
-    <div className="flex items-end gap-0.5 border-b border-gray-700 bg-gray-900 px-2 pt-2">
+    <div className="flex items-end gap-0.5 border-b border-gray-200 bg-white px-2 pt-2 dark:border-gray-700 dark:bg-gray-900">
       {tabs.map((tab) => (
         <WorkspaceTab
           key={tab.id}
@@ -38,7 +38,7 @@ export default function WorkspaceTabBar({
       {tabs.length < MAX_TABS && (
         <button
           onClick={onNewTab}
-          className="mb-0.5 flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs text-gray-500 transition-colors hover:bg-gray-800 hover:text-gray-300"
+          className="mb-0.5 flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:text-gray-500 dark:hover:bg-gray-800 dark:hover:text-gray-300"
           title="New tab (Cmd+Shift+N)"
         >
           <Plus className="h-3.5 w-3.5" />

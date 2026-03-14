@@ -27,14 +27,14 @@ export default function WorkspaceChatPanel({ tab }: WorkspaceChatPanelProps) {
 
       {/* Context badge */}
       {tab.pageContext && (
-        <div className="border-b border-gray-700/50 px-4 py-2">
+        <div className="border-b border-gray-200/50 px-4 py-2 dark:border-gray-700/50">
           <AiContextBadge context={tab.pageContext} />
         </div>
       )}
 
       {/* Error banner */}
       {tab.error && (
-        <div className="flex items-center justify-between border-b border-red-800/50 bg-red-900/20 px-4 py-2">
+        <div className="flex items-center justify-between border-b border-red-300/50 bg-red-100/50 px-4 py-2 dark:border-red-800/50 dark:bg-red-900/20">
           <span className="text-xs text-red-400">{tab.error}</span>
           <button
             onClick={() => clearError(tab.id)}

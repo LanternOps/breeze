@@ -35,7 +35,7 @@ export default function AiToolCallCard({ toolName, input, output, isError, isExe
   const formatToolName = (name: string) => name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
   return (
-    <div className="my-1 rounded-md border border-gray-700 bg-gray-800/50">
+    <div className="my-1 rounded-md border border-gray-200 bg-gray-50/50 dark:border-gray-700 dark:bg-gray-800/50">
       <button
         onClick={() => setExpanded(!expanded)}
         className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs"
@@ -46,26 +46,26 @@ export default function AiToolCallCard({ toolName, input, output, isError, isExe
           <ChevronRight className="h-3 w-3 text-gray-500" />
         )}
         <StatusIcon />
-        <span className="font-medium text-gray-300">{formatToolName(toolName)}</span>
+        <span className="font-medium text-gray-700 dark:text-gray-300">{formatToolName(toolName)}</span>
         {isExecuting && <span className="text-gray-500">Running...</span>}
       </button>
 
       {expanded && (
-        <div className="border-t border-gray-700 px-3 py-2 text-xs">
+        <div className="border-t border-gray-200 px-3 py-2 text-xs dark:border-gray-700">
           {input && (
             <div className="mb-2">
-              <span className="font-medium text-gray-400">Input:</span>
-              <pre className="mt-1 max-h-32 overflow-auto rounded bg-gray-900 p-2 text-gray-300">
+              <span className="font-medium text-gray-500 dark:text-gray-400">Input:</span>
+              <pre className="mt-1 max-h-32 overflow-auto rounded bg-gray-100 p-2 text-gray-700 dark:bg-gray-900 dark:text-gray-300">
                 {inputPreview}
               </pre>
             </div>
           )}
           {output !== undefined && (
             <div>
-              <span className={`font-medium ${isError ? 'text-red-400' : 'text-gray-400'}`}>
+              <span className={`font-medium ${isError ? 'text-red-400' : 'text-gray-500 dark:text-gray-400'}`}>
                 {isError ? 'Error:' : 'Output:'}
               </span>
-              <pre className="mt-1 max-h-40 overflow-auto rounded bg-gray-900 p-2 text-gray-300">
+              <pre className="mt-1 max-h-40 overflow-auto rounded bg-gray-100 p-2 text-gray-700 dark:bg-gray-900 dark:text-gray-300">
                 {outputPreview}
               </pre>
             </div>

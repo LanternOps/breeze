@@ -55,7 +55,7 @@ export default function WorkspacePage() {
   }, [activeTabId, tabs, createTab, closeTab, switchTab]);
 
   return (
-    <div className="flex h-full flex-col bg-gray-900">
+    <div className="flex h-full flex-col bg-white dark:bg-gray-900">
       {tabs.length > 0 ? (
         <>
           <WorkspaceTabBar

@@ -94,10 +94,10 @@ function DeviceBadge({ ctx }: { ctx: DeviceContext }) {
   const deviceIdleText = !isOnline ? formatDeviceIdle(ctx.lastSeenAt) : null;
 
   return (
-    <div className="mt-2 rounded-md bg-gray-800/60 px-2.5 py-1.5 text-xs">
+    <div className="mt-2 rounded-md bg-gray-100/60 px-2.5 py-1.5 text-xs dark:bg-gray-800/60">
       <div className="flex items-center gap-2">
         <Monitor className="h-3.5 w-3.5 text-gray-400 shrink-0" />
-        <span className="font-medium text-gray-200 truncate">{name}</span>
+        <span className="font-medium text-gray-900 truncate dark:text-gray-200">{name}</span>
         <span className="text-gray-600">&middot;</span>
         <span className={isOnline ? 'text-green-400' : 'text-gray-500'}>
           {isOnline ? 'online' : (deviceIdleText ? `offline ${deviceIdleText}` : 'offline')}
@@ -140,11 +140,11 @@ export default function AiApprovalDialog({ toolName, description, input, deviceC
   const hasVisibleInput = Object.keys(visibleInput).length > 0;
 
   return (
-    <div className="my-2 rounded-lg border border-amber-600/50 bg-amber-950/30 p-3">
+    <div className="my-2 rounded-lg border border-amber-600/50 bg-amber-100/30 p-3 dark:bg-amber-950/30">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <ShieldAlert className="h-4 w-4 text-amber-400" />
-          <span className="text-sm font-medium text-amber-300">Approval Required</span>
+          <span className="text-sm font-medium text-amber-700 dark:text-amber-300">Approval Required</span>
         </div>
         <div className="flex items-center gap-1.5 text-xs text-gray-500">
           <Clock className="h-3 w-3" />
@@ -153,7 +153,7 @@ export default function AiApprovalDialog({ toolName, description, input, deviceC
       </div>
 
       {/* Countdown progress bar */}
-      <div className="mt-2 h-0.5 w-full overflow-hidden rounded-full bg-gray-800">
+      <div className="mt-2 h-0.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800">
         <div
           className={cn(
             'h-full rounded-full bg-amber-500/60 transition-all duration-1000 ease-linear',
@@ -162,7 +162,7 @@ export default function AiApprovalDialog({ toolName, description, input, deviceC
         />
       </div>
 
-      <p className="mt-2 text-sm text-gray-300">{description}</p>
+      <p className="mt-2 text-sm text-gray-700 dark:text-gray-300">{description}</p>
 
       {deviceContext && <DeviceBadge ctx={deviceContext} />}
 
@@ -171,7 +171,7 @@ export default function AiApprovalDialog({ toolName, description, input, deviceC
           <summary className="cursor-pointer text-xs text-gray-500 hover:text-gray-400 select-none">
             Show parameters
           </summary>
-          <pre className="mt-1 max-h-24 overflow-auto rounded bg-gray-900 px-3 py-2 text-xs text-gray-400">
+          <pre className="mt-1 max-h-24 overflow-auto rounded bg-gray-100 px-3 py-2 text-xs text-gray-500 dark:bg-gray-900 dark:text-gray-400">
             {JSON.stringify(visibleInput, null, 2)}
           </pre>
         </details>
@@ -187,7 +187,7 @@ export default function AiApprovalDialog({ toolName, description, input, deviceC
         </button>
         <button
           onClick={onReject}
-          className="flex items-center gap-1.5 rounded-md bg-gray-700 px-3 py-1.5 text-xs font-medium text-gray-300 transition-colors hover:bg-gray-600"
+          className="flex items-center gap-1.5 rounded-md bg-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
         >
           <X className="h-3.5 w-3.5" />
           Reject
