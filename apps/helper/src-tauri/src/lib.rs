@@ -607,7 +607,7 @@ pub fn run() {
             .inner_size(380.0, 600.0)
             .resizable(true)
             .decorations(false)
-            .center(true);
+            .center();
 
             #[cfg(target_os = "windows")]
             {
