@@ -105,7 +105,10 @@ const updateScriptSchema = z.object({
 
 const executeScriptSchema = z.object({
   deviceIds: z.array(z.string().uuid()).min(1),
-  parameters: z.record(z.any()).optional(),
+  parameters: z.record(z.any()).refine(
+    (val) => JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  ).optional(),
   triggerType: z.enum(['manual', 'scheduled', 'alert', 'policy']).optional(),
   runAs: z.enum(['system', 'user']).optional()
 });
@@ -116,6 +119,8 @@ const listExecutionsSchema = z.object({
   status: z.enum(['pending', 'queued', 'running', 'completed', 'failed', 'timeout', 'cancelled']).optional(),
   deviceId: z.string().uuid().optional()
 });
+
+const scriptIdParamSchema = z.object({ id: z.string().uuid() });
 
 // Apply auth middleware to all routes
 scriptRoutes.use('*', authMiddleware);
@@ -274,10 +279,11 @@ scriptRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.SCRIPTS_WRITE.resource, PERMISSIONS.SCRIPTS_WRITE.action),
   requireMfa(),
+  zValidator('param', scriptIdParamSchema),
   zValidator('json', z.object({ orgId: z.string().uuid().optional() })),
   async (c) => {
     const auth = c.get('auth');
-    const sourceId = c.req.param('id')!!;
+    const { id: sourceId } = c.req.valid('param');
     const body = c.req.valid('json');
 
     // Fetch the system script
@@ -373,9 +379,10 @@ scriptRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.SCRIPTS_READ.resource, PERMISSIONS.SCRIPTS_READ.action),
+  zValidator('param', scriptIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const scriptId = c.req.param('id')!!;
+    const { id: scriptId } = c.req.valid('param');
 
     const script = await getScriptWithOrgCheck(scriptId, auth);
     if (!script) {
@@ -467,10 +474,11 @@ scriptRoutes.put(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.SCRIPTS_WRITE.resource, PERMISSIONS.SCRIPTS_WRITE.action),
   requireMfa(),
+  zValidator('param', scriptIdParamSchema),
   zValidator('json', updateScriptSchema),
   async (c) => {
     const auth = c.get('auth');
-    const scriptId = c.req.param('id')!!;
+    const { id: scriptId } = c.req.valid('param');
     const data = c.req.valid('json');
 
     if (Object.keys(data).length === 0) {
@@ -533,9 +541,10 @@ scriptRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.SCRIPTS_DELETE.resource, PERMISSIONS.SCRIPTS_DELETE.action),
   requireMfa(),
+  zValidator('param', scriptIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const scriptId = c.req.param('id')!!;
+    const { id: scriptId } = c.req.valid('param');
 
     const script = await getScriptWithOrgCheck(scriptId, auth);
     if (!script) {
@@ -592,10 +601,11 @@ scriptRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.SCRIPTS_EXECUTE.resource, PERMISSIONS.SCRIPTS_EXECUTE.action),
   requireMfa(),
+  zValidator('param', scriptIdParamSchema),
   zValidator('json', executeScriptSchema),
   async (c) => {
     const auth = c.get('auth');
-    const scriptId = c.req.param('id')!!;
+    const { id: scriptId } = c.req.valid('param');
     const data = c.req.valid('json');
 
     const script = await getScriptWithOrgCheck(scriptId, auth);
@@ -787,10 +797,11 @@ scriptRoutes.get(
   '/:id/executions',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.SCRIPTS_READ.resource, PERMISSIONS.SCRIPTS_READ.action),
+  zValidator('param', scriptIdParamSchema),
   zValidator('query', listExecutionsSchema),
   async (c) => {
     const auth = c.get('auth');
-    const scriptId = c.req.param('id')!!;
+    const { id: scriptId } = c.req.valid('param');
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
@@ -856,9 +867,10 @@ scriptRoutes.get(
   '/executions/:id',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.SCRIPTS_READ.resource, PERMISSIONS.SCRIPTS_READ.action),
+  zValidator('param', scriptIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const executionId = c.req.param('id')!!;
+    const { id: executionId } = c.req.valid('param');
 
     // Get execution with script and device info
     const [execution] = await db
@@ -911,9 +923,10 @@ scriptRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.SCRIPTS_EXECUTE.resource, PERMISSIONS.SCRIPTS_EXECUTE.action),
   requireMfa(),
+  zValidator('param', scriptIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const executionId = c.req.param('id')!!;
+    const { id: executionId } = c.req.valid('param');
 
     // Get execution
     const [execution] = await db

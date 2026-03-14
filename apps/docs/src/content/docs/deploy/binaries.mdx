@@ -73,6 +73,9 @@ services:
       AGENT_BINARY_DIR: /data/binaries/agent
       VIEWER_BINARY_DIR: /data/binaries/viewer
       HELPER_BINARY_DIR: /data/binaries/helper
+depends_on:
+      binaries-init:
+        condition: service_completed_successfully
 ```
 
 The init container:

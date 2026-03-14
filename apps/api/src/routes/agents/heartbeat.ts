@@ -213,11 +213,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         )
         .limit(1);
 
-      if (latestHelper) {
-        const cmp = compareAgentVersions(latestHelper.version, data.helperVersion);
-        if (cmp > 0 || (cmp === 0 && latestHelper.version !== data.helperVersion)) {
-          helperUpgradeTo = latestHelper.version;
-        }
+if (latestHelper && compareAgentVersions(latestHelper.version, data.helperVersion) > 0) {
+        helperUpgradeTo = latestHelper.version;
       }
     } catch (err) {
       console.error(`[agents] failed to evaluate helper upgrade target for ${agentId}:`, err);

@@ -65,7 +65,7 @@ type HeartbeatPayload struct {
 	HealthStatus     map[string]any            `json:"healthStatus,omitempty"`
 	DroppedLogs      int64                     `json:"droppedLogs,omitempty"`
 	HelperVersion    string                    `json:"helperVersion,omitempty"`
-	Hostname         string                    `json:"hostname,omitempty"`
+Hostname         string                    `json:"hostname,omitempty"`
 	OSVersion        string                    `json:"osVersion,omitempty"`
 	OSBuild          string                    `json:"osBuild,omitempty"`
 }

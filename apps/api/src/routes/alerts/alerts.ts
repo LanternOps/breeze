@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
+import { z } from 'zod';
 import { and, eq, sql, desc, gte, lte, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import {
@@ -18,6 +19,8 @@ import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, bulkAlertAct
 import { getPagination, ensureOrgAccess, getAlertWithOrgCheck } from './helpers';
 
 export const alertsRoutes = new Hono();
+
+const alertIdParamSchema = z.object({ id: z.string().uuid() });
 
 // GET /alerts - List alerts with filters
 alertsRoutes.get(
@@ -340,9 +343,10 @@ alertsRoutes.post(
 alertsRoutes.post(
   '/:id/acknowledge',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', alertIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const alertId = c.req.param('id')!!;
+    const { id: alertId } = c.req.valid('param');
 
     const alert = await getAlertWithOrgCheck(alertId, auth);
     if (!alert) {
@@ -403,10 +407,11 @@ alertsRoutes.post(
 alertsRoutes.post(
   '/:id/resolve',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', alertIdParamSchema),
   zValidator('json', resolveAlertSchema),
   async (c) => {
     const auth = c.get('auth');
-    const alertId = c.req.param('id')!!;
+    const { id: alertId } = c.req.valid('param');
     const data = c.req.valid('json');
 
     const alert = await getAlertWithOrgCheck(alertId, auth);
@@ -498,10 +503,11 @@ alertsRoutes.post(
 alertsRoutes.post(
   '/:id/suppress',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', alertIdParamSchema),
   zValidator('json', suppressAlertSchema),
   async (c) => {
     const auth = c.get('auth');
-    const alertId = c.req.param('id')!!;
+    const { id: alertId } = c.req.valid('param');
     const data = c.req.valid('json');
 
     const alert = await getAlertWithOrgCheck(alertId, auth);
@@ -551,9 +557,10 @@ alertsRoutes.post(
 alertsRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', alertIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const alertId = c.req.param('id')!!;
+    const { id: alertId } = c.req.valid('param');
 
     // Skip if this is a route like /alerts/rules, /alerts/channels, etc.
     if (['rules', 'channels', 'policies', 'summary'].includes(alertId)) {
