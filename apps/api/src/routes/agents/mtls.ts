@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
+import { z } from 'zod';
 import { and, desc, eq } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db, withSystemDbAccessContext } from '../../db';
@@ -11,6 +12,9 @@ import { orgMtlsSettingsSchema, orgHelperSettingsSchema, orgLogForwardingSetting
 import { getOrgMtlsSettings, getOrgHelperSettings, issueMtlsCertForDevice, isObject } from './helpers';
 
 export const mtlsRoutes = new Hono();
+
+const deviceIdParamSchema = z.object({ id: z.string().uuid() });
+const orgIdParamSchema = z.object({ orgId: z.string().uuid() });
 
 // ============================================
 // mTLS Certificate Renewal
@@ -31,7 +35,15 @@ mtlsRoutes.post('/renew-cert', async (c) => {
 
   const device = await withSystemDbAccessContext(async () => {
     const [row] = await db
-      .select()
+      .select({
+        id: devices.id,
+        orgId: devices.orgId,
+        agentId: devices.agentId,
+        hostname: devices.hostname,
+        status: devices.status,
+        mtlsCertExpiresAt: devices.mtlsCertExpiresAt,
+        mtlsCertCfId: devices.mtlsCertCfId,
+      })
       .from(devices)
       .where(eq(devices.agentTokenHash, tokenHash))
       .limit(1);
@@ -167,12 +179,18 @@ mtlsRoutes.get('/quarantined', authMiddleware, requirePermission('devices', 'rea
   return c.json({ devices: rows });
 });
 
-mtlsRoutes.post('/:id/approve', authMiddleware, requirePermission('devices', 'write'), async (c) => {
-  const deviceId = c.req.param('id')!!;
+mtlsRoutes.post('/:id/approve', authMiddleware, requirePermission('devices', 'write'), zValidator('param', deviceIdParamSchema), async (c) => {
+  const { id: deviceId } = c.req.valid('param');
   const auth = c.get('auth') as { orgId?: string; user?: { id: string }; canAccessOrg?: (id: string) => boolean };
 
   const [device] = await db
-    .select()
+    .select({
+      id: devices.id,
+      orgId: devices.orgId,
+      agentId: devices.agentId,
+      hostname: devices.hostname,
+      status: devices.status,
+    })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
@@ -218,12 +236,18 @@ mtlsRoutes.post('/:id/approve', authMiddleware, requirePermission('devices', 'wr
   });
 });
 
-mtlsRoutes.post('/:id/deny', authMiddleware, requirePermission('devices', 'write'), async (c) => {
-  const deviceId = c.req.param('id')!!;
+mtlsRoutes.post('/:id/deny', authMiddleware, requirePermission('devices', 'write'), zValidator('param', deviceIdParamSchema), async (c) => {
+  const { id: deviceId } = c.req.valid('param');
   const auth = c.get('auth') as { orgId?: string; user?: { id: string }; canAccessOrg?: (id: string) => boolean };
 
   const [device] = await db
-    .select()
+    .select({
+      id: devices.id,
+      orgId: devices.orgId,
+      agentId: devices.agentId,
+      hostname: devices.hostname,
+      status: devices.status,
+    })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
@@ -269,9 +293,10 @@ mtlsRoutes.patch(
   '/org/:orgId/settings/mtls',
   authMiddleware,
   requirePermission('orgs', 'write'),
+  zValidator('param', orgIdParamSchema),
   zValidator('json', orgMtlsSettingsSchema),
   async (c) => {
-    const orgId = c.req.param('orgId')!!;
+    const { orgId } = c.req.valid('param');
     const data = c.req.valid('json');
     const auth = c.get('auth') as { user?: { id: string }; canAccessOrg?: (id: string) => boolean };
 
@@ -328,8 +353,9 @@ mtlsRoutes.get(
   '/org/:orgId/settings/helper',
   authMiddleware,
   requirePermission('orgs', 'read'),
+  zValidator('param', orgIdParamSchema),
   async (c) => {
-    const orgId = c.req.param('orgId')!!;
+    const { orgId } = c.req.valid('param');
     const auth = c.get('auth') as { canAccessOrg?: (id: string) => boolean };
 
     if (auth.canAccessOrg && !auth.canAccessOrg(orgId)) {
@@ -345,9 +371,10 @@ mtlsRoutes.patch(
   '/org/:orgId/settings/helper',
   authMiddleware,
   requirePermission('orgs', 'write'),
+  zValidator('param', orgIdParamSchema),
   zValidator('json', orgHelperSettingsSchema),
   async (c) => {
-    const orgId = c.req.param('orgId')!!;
+    const { orgId } = c.req.valid('param');
     const data = c.req.valid('json');
     const auth = c.get('auth') as { user?: { id: string }; canAccessOrg?: (id: string) => boolean };
 
@@ -403,8 +430,9 @@ mtlsRoutes.get(
   '/org/:orgId/settings/log-forwarding',
   authMiddleware,
   requirePermission('orgs', 'read'),
+  zValidator('param', orgIdParamSchema),
   async (c) => {
-    const orgId = c.req.param('orgId')!!;
+    const { orgId } = c.req.valid('param');
     const auth = c.get('auth') as { canAccessOrg?: (id: string) => boolean };
 
     if (auth.canAccessOrg && !auth.canAccessOrg(orgId)) {
@@ -437,9 +465,10 @@ mtlsRoutes.patch(
   '/org/:orgId/settings/log-forwarding',
   authMiddleware,
   requirePermission('orgs', 'write'),
+  zValidator('param', orgIdParamSchema),
   zValidator('json', orgLogForwardingSettingsSchema),
   async (c) => {
-    const orgId = c.req.param('orgId')!!;
+    const { orgId } = c.req.valid('param');
     const data = c.req.valid('json');
     const auth = c.get('auth') as { user?: { id: string }; canAccessOrg?: (id: string) => boolean };
 

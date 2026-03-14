@@ -13,8 +13,16 @@ import (
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
-// spawnGuard prevents concurrent helper spawns for the same target session.
-var spawnGuard sync.Mutex
+// spawnGuards holds a per-session mutex so that spawns into different Windows
+// sessions can proceed in parallel. The sync.Map key is the target session ID
+// string (or "" for auto-detect).
+var spawnGuards sync.Map
+
+// sessionSpawnMu returns a mutex for the given session key, creating one if needed.
+func sessionSpawnMu(sessionKey string) *sync.Mutex {
+	val, _ := spawnGuards.LoadOrStore(sessionKey, &sync.Mutex{})
+	return val.(*sync.Mutex)
+}
 
 // isWinSessionDisconnected checks whether the given Windows session ID is
 // disconnected (no active display). Helpers in disconnected sessions cannot
@@ -50,8 +58,9 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 	}
 
 	if session == nil {
-		// Serialize spawns to prevent duplicate helpers for the same session
-		spawnGuard.Lock()
+		// Serialize spawns per target session so independent sessions can spawn concurrently
+		mu := sessionSpawnMu(targetSession)
+		mu.Lock()
 		// Re-check after acquiring lock — another goroutine may have spawned it
 		session = h.sessionBroker.FindCapableSession("capture", targetSession)
 		if session != nil && isWinSessionDisconnected(session.WinSessionID) {
@@ -60,7 +69,7 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 		}
 		if session == nil {
 			if err := h.spawnHelperForDesktop(targetSession); err != nil {
-				spawnGuard.Unlock()
+				mu.Unlock()
 				return tools.NewErrorResult(fmt.Errorf("no capable helper session and spawn failed: %w", err), 0)
 			}
 			// Poll for the helper to connect (up to 5s, every 100ms)
@@ -73,7 +82,7 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 				session = nil
 			}
 		}
-		spawnGuard.Unlock()
+		mu.Unlock()
 		if session == nil {
 			return tools.NewErrorResult(fmt.Errorf("helper spawned but did not connect within 5s"), 0)
 		}

@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { getConfig } from '../config/validate';
 
 interface HookPayload {
@@ -35,6 +36,16 @@ export async function dispatchHook(
 
   const url = `${baseUrl}/${event}`;
   const payload: HookPayload = { event, partnerId, data };
+const bodyString = JSON.stringify(payload);
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+
+  // When PARTNER_HOOKS_SECRET is set, sign the payload with HMAC-SHA256
+  const secret = process.env.PARTNER_HOOKS_SECRET;
+  if (secret) {
+    const signature = createHmac('sha256', secret).update(bodyString).digest('hex');
+    headers['X-Breeze-Signature'] = `sha256=${signature}`;
+  }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
@@ -42,8 +53,8 @@ export async function dispatchHook(
   try {
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+headers,
+      body: bodyString,
       signal: controller.signal,
     });
 

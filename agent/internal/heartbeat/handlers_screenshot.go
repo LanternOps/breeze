@@ -30,12 +30,13 @@ func handleTakeScreenshot(h *Heartbeat, cmd Command) tools.CommandResult {
 func (h *Heartbeat) executeToolViaHelper(cmdType string, payload map[string]any, start time.Time) tools.CommandResult {
 	session := h.sessionBroker.FindCapableSession("capture", "")
 	if session == nil {
-		// Try spawning a helper
-		spawnGuard.Lock()
+		// Try spawning a helper (use per-session lock for auto-detect "")
+		mu := sessionSpawnMu("")
+		mu.Lock()
 		session = h.sessionBroker.FindCapableSession("capture", "")
 		if session == nil {
 			if err := h.spawnHelperForDesktop(""); err != nil {
-				spawnGuard.Unlock()
+				mu.Unlock()
 				return tools.NewErrorResult(
 					fmt.Errorf("no user helper available for %s (spawn failed: %w)", cmdType, err),
 					time.Since(start).Milliseconds(),
@@ -49,7 +50,7 @@ func (h *Heartbeat) executeToolViaHelper(cmdType string, payload map[string]any,
 				}
 			}
 		}
-		spawnGuard.Unlock()
+		mu.Unlock()
 		if session == nil {
 			return tools.NewErrorResult(
 				fmt.Errorf("helper spawned but did not connect within 5s for %s", cmdType),

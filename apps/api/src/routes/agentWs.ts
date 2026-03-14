@@ -1023,13 +1023,14 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
       }
     },
 
-    onClose: async (_event: unknown, ws: WSContext) => {
+onClose: async (_event: unknown, ws: WSContext) => {
       // Clean up ping interval
       const pingState = agentPingStates.get(agentId);
       if (pingState) {
         clearInterval(pingState.pingInterval);
         agentPingStates.delete(agentId);
       }
+
 
       // Only remove from active connections if this ws is still the current one.
       // A reconnecting agent may have already replaced us in the map — deleting
@@ -1055,7 +1056,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         clearInterval(pingState.pingInterval);
         agentPingStates.delete(agentId);
       }
-      if (activeConnections.get(agentId) === ws) {
+if (activeConnections.get(agentId) === ws) {
         activeConnections.delete(agentId);
       }
       if (agentDb) {

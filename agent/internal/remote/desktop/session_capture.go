@@ -430,9 +430,15 @@ func (s *Session) captureLoopDXGI() captureMode {
 					}
 				} else {
 					// Scene change: screen was idle and now has activity.
-					// Force IDR for fast decoder recovery.
 					if wasIdle || consecutiveSkips >= 30 {
+						// Force IDR for fast decoder recovery.
 						_ = s.encoder.ForceKeyframe()
+						// Temporarily cap bitrate to prevent overwhelming the
+						// jitter buffer with a sudden spike from idle → active.
+						// The adaptive controller will ramp back up smoothly.
+						if s.adaptive != nil {
+							s.adaptive.SoftResetForActivity()
+						}
 					}
 					consecutiveSkips = 0
 					lastIdleKeyframe = time.Time{} // reset idle keyframe timer

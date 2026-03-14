@@ -78,6 +78,7 @@ const envSchema = z
     REDIS_URL: z.string().default('redis://localhost:6379'),
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     PARTNER_HOOKS_URL: z.string().url().optional(),
+PARTNER_HOOKS_SECRET: z.string().min(16).optional(),
   })
   // --- Cross-field refinements (insecure defaults for required secrets) -------
   .superRefine((data, ctx) => {
@@ -256,6 +257,7 @@ export function validateConfig(): AppConfig {
     NODE_ENV: env.NODE_ENV,
     E2E_MODE: env.E2E_MODE,
     PARTNER_HOOKS_URL: env.PARTNER_HOOKS_URL,
+PARTNER_HOOKS_SECRET: env.PARTNER_HOOKS_SECRET,
   });
 
   if (!result.success) {
