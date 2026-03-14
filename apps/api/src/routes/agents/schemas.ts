@@ -134,7 +134,10 @@ export const heartbeatSchema = z.object({
   pendingReboot: z.boolean().optional(),
   lastUser: z.string().max(255).optional(),
   uptime: z.number().int().min(0).optional(),
-  deviceRole: z.enum(DEVICE_ROLES).optional()
+  deviceRole: z.enum(DEVICE_ROLES).optional(),
+  hostname: z.string().min(1).max(255).optional(),
+  osVersion: z.string().min(1).max(255).optional(),
+  osBuild: z.string().max(255).optional()
 });
 
 // ============================================

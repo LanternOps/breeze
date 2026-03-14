@@ -28,6 +28,7 @@ export type Device = {
   uptimeSeconds?: number;
   deviceRole?: DeviceRole;
   deviceRoleSource?: string;
+  displayName?: string;
 };
 
 type DeviceListProps = {
@@ -172,7 +173,8 @@ export default function DeviceList({
 
       const matchesQuery = normalizedQuery.length === 0
         ? true
-        : device.hostname.toLowerCase().includes(normalizedQuery);
+        : device.hostname.toLowerCase().includes(normalizedQuery) ||
+          (device.displayName?.toLowerCase().includes(normalizedQuery) ?? false);
       const matchesStatus = statusFilter === 'all' ? true : device.status === statusFilter;
       const matchesOs = osFilter === 'all' ? true : device.os === osFilter;
       const matchesRole = roleFilter === 'all' ? true : device.deviceRole === roleFilter;
@@ -445,7 +447,7 @@ export default function DeviceList({
                       className="h-4 w-4 rounded border-gray-300"
                     />
                   </td>
-                  <td className="px-4 py-3 text-sm font-medium">{device.hostname}</td>
+                  <td className="px-4 py-3 text-sm font-medium">{device.displayName || device.hostname}</td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">{device.orgName}</td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">{device.siteName}</td>
                   <td className="px-4 py-3 text-sm">{osLabels[device.os]}</td>
