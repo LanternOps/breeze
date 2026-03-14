@@ -123,7 +123,7 @@ func (s *Session) start() error {
 
 	// Wait for process to exit in a goroutine
 	go func() {
-		err := cmd.Wait()
+		err := s.waitCmd()
 		if s.onClose != nil {
 			s.onClose(err)
 		}
