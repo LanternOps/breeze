@@ -205,16 +205,19 @@ func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
 	// SYSTEM in Session 1), the thread is not automatically attached to the
 	// input desktop. DuplicateOutput and GDI BitBlt both require the calling
 	// thread to be on the correct desktop. Pin the thread and switch before
-	// any display API calls.
+	// any display API calls. The thread MUST stay locked through initDXGI —
+	// UnlockOSThread would let Go migrate the goroutine to a different thread
+	// that hasn't been desktop-switched.
 	runtime.LockOSThread()
 	switchThreadToInputDesktop()
-	runtime.UnlockOSThread()
 
 	c := &dxgiCapturer{config: config}
 	if err := c.initDXGI(); err != nil {
+		runtime.UnlockOSThread()
 		slog.Warn("DXGI Desktop Duplication unavailable, falling back to GDI", "error", err.Error())
 		return &gdiCapturer{config: config}, nil
 	}
+	runtime.UnlockOSThread()
 	slog.Info("DXGI Desktop Duplication initialized",
 		"display", config.DisplayIndex, "width", c.width, "height", c.height)
 	return c, nil
