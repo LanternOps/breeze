@@ -17,7 +17,7 @@ type DeviceSettingsModalProps = {
 };
 
 export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, onAction }: DeviceSettingsModalProps) {
-  const [displayName, setDisplayName] = useState(device.hostname);
+  const [displayName, setDisplayName] = useState(device.displayName || device.hostname);
   const [siteId, setSiteId] = useState(device.siteId);
   const [tags, setTags] = useState<string[]>(device.tags ?? []);
   const [newTag, setNewTag] = useState('');
@@ -28,7 +28,7 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
   useEffect(() => {
     if (!isOpen) return;
     // Reset form to current device values when opened
-    setDisplayName(device.hostname);
+    setDisplayName(device.displayName || device.hostname);
     setSiteId(device.siteId);
     setTags(device.tags ?? []);
     setNewTag('');
@@ -68,7 +68,9 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
 
     try {
       const body: Record<string, unknown> = {};
-      if (displayName !== device.hostname) body.displayName = displayName;
+      const effectiveName = displayName.trim() || undefined;
+      const originalName = device.displayName || undefined;
+      if (effectiveName !== originalName) body.displayName = effectiveName ?? null;
       if (siteId !== device.siteId) body.siteId = siteId;
       const tagsChanged = JSON.stringify(tags) !== JSON.stringify(device.tags ?? []);
       if (tagsChanged) body.tags = tags;

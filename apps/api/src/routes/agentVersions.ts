@@ -6,23 +6,14 @@ import { db } from '../db';
 import { agentVersions } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import { syncFromGitHub } from '../services/binarySync';
 
-const GITHUB_REPO = process.env.GITHUB_REPO || 'LanternOps/breeze';
-
-// Map Go GOOS names to DB platform names
+// Map Go GOOS / user-facing platform names to DB platform names
 const PLATFORM_MAP: Record<string, string> = {
   linux: 'linux',
   darwin: 'macos',
   windows: 'windows'
 };
-
-// Supported platform/arch combos (must match release matrix)
-const ASSET_TARGETS = [
-  { goos: 'linux', goarch: 'amd64' },
-  { goos: 'darwin', goarch: 'amd64' },
-  { goos: 'darwin', goarch: 'arm64' },
-  { goos: 'windows', goarch: 'amd64' }
-] as const;
 
 export const agentVersionRoutes = new Hono();
 
@@ -211,189 +202,32 @@ agentVersionRoutes.post(
 );
 
 // POST /agent-versions/sync-github - Sync latest release from GitHub (admin only)
+// Optional query param ?version=v0.11.3-rc.1 to sync a specific (e.g. prerelease) version
 agentVersionRoutes.post(
   '/sync-github',
   authMiddleware,
   requireScope('system'),
   async (c) => {
     const auth = c.get('auth');
+    const requestedVersion = c.req.query('version');
 
-    // Fetch latest release from GitHub
-    const ghResp = await fetch(
-      `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`,
-      {
-        headers: {
-          Accept: 'application/vnd.github.v3+json',
-          'User-Agent': 'breeze-api'
-        }
-      }
-    );
-    if (!ghResp.ok) {
-      return c.json({ error: `GitHub API error: ${ghResp.status}` }, 502);
+    try {
+      const result = await syncFromGitHub(requestedVersion);
+
+      writeRouteAudit(c, {
+        orgId: auth.orgId,
+        action: 'agent_version.sync_github',
+        resourceType: 'agent_version',
+        resourceId: result.version,
+        resourceName: `v${result.version}`,
+        details: { targets: result.synced }
+      });
+
+      return c.json(result);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const status = msg.includes('GitHub API error') ? 502 : 422;
+      return c.json({ error: msg }, status);
     }
-
-    const release = (await ghResp.json()) as {
-      tag_name: string;
-      body?: string;
-      assets: Array<{
-        name: string;
-        browser_download_url: string;
-        size: number;
-      }>;
-    };
-
-    const version = release.tag_name.replace(/^v/, '');
-
-    // Find and download checksums.txt
-    const checksumAsset = release.assets.find((a) => a.name === 'checksums.txt');
-    if (!checksumAsset) {
-      return c.json({ error: 'No checksums.txt found in release assets' }, 422);
-    }
-
-    const checksumResp = await fetch(checksumAsset.browser_download_url, {
-      headers: { 'User-Agent': 'breeze-api' }
-    });
-    if (!checksumResp.ok) {
-      return c.json({ error: 'Failed to download checksums.txt' }, 502);
-    }
-    const checksumText = await checksumResp.text();
-
-    // Parse checksums: "hash  filename\n"
-    const checksums = new Map<string, string>();
-    for (const line of checksumText.split('\n')) {
-      const match = line.match(/^([a-f0-9]{64})\s+(.+)$/);
-      if (match && match[2] && match[1]) {
-        checksums.set(match[2].trim(), match[1]);
-      }
-    }
-
-    const upserted: string[] = [];
-
-    for (const target of ASSET_TARGETS) {
-      const suffix = target.goos === 'windows' ? '.exe' : '';
-      const assetName = `breeze-agent-${target.goos}-${target.goarch}${suffix}`;
-
-      const asset = release.assets.find((a) => a.name === assetName);
-      if (!asset) continue;
-
-      const checksum = checksums.get(assetName);
-      if (!checksum) continue;
-
-      const platform = PLATFORM_MAP[target.goos];
-      if (!platform) continue;
-
-      // Unset isLatest for this platform/arch/component combo
-      await db
-        .update(agentVersions)
-        .set({ isLatest: false })
-        .where(
-          and(
-            eq(agentVersions.platform, platform),
-            eq(agentVersions.architecture, target.goarch),
-            eq(agentVersions.component, 'agent'),
-            eq(agentVersions.isLatest, true)
-          )
-        );
-
-      // Upsert version record
-      await db
-        .insert(agentVersions)
-        .values({
-          version,
-          platform,
-          architecture: target.goarch,
-          downloadUrl: asset.browser_download_url,
-          checksum,
-          fileSize: BigInt(asset.size),
-          releaseNotes: release.body ?? null,
-          isLatest: true,
-          component: 'agent'
-        })
-        .onConflictDoUpdate({
-          target: [agentVersions.version, agentVersions.platform, agentVersions.architecture, agentVersions.component],
-          set: {
-            downloadUrl: asset.browser_download_url,
-            checksum,
-            fileSize: BigInt(asset.size),
-            releaseNotes: release.body ?? null,
-            isLatest: true
-          }
-        });
-
-      upserted.push(`agent:${platform}/${target.goarch}`);
-    }
-
-    // Sync helper assets
-    // macOS DMG is a universal binary (arm64+x86_64), so both arch rows share the same asset.
-    const HELPER_ASSETS = [
-      { goos: 'windows', goarch: 'amd64', assetName: 'breeze-helper-windows.msi' },
-      { goos: 'darwin', goarch: 'amd64', assetName: 'breeze-helper-macos.dmg' },
-      { goos: 'darwin', goarch: 'arm64', assetName: 'breeze-helper-macos.dmg' },
-      { goos: 'linux', goarch: 'amd64', assetName: 'breeze-helper-linux.AppImage' },
-    ];
-
-    for (const target of HELPER_ASSETS) {
-      const asset = release.assets.find((a) => a.name === target.assetName);
-      if (!asset) continue;
-
-      const checksum = checksums.get(target.assetName);
-      if (!checksum) continue;
-
-      const platform = PLATFORM_MAP[target.goos];
-      if (!platform) continue;
-
-      await db
-        .update(agentVersions)
-        .set({ isLatest: false })
-        .where(
-          and(
-            eq(agentVersions.platform, platform),
-            eq(agentVersions.architecture, target.goarch),
-            eq(agentVersions.component, 'helper'),
-            eq(agentVersions.isLatest, true)
-          )
-        );
-
-      await db
-        .insert(agentVersions)
-        .values({
-          version,
-          platform,
-          architecture: target.goarch,
-          downloadUrl: asset.browser_download_url,
-          checksum,
-          fileSize: BigInt(asset.size),
-          releaseNotes: release.body ?? null,
-          isLatest: true,
-          component: 'helper'
-        })
-        .onConflictDoUpdate({
-          target: [agentVersions.version, agentVersions.platform, agentVersions.architecture, agentVersions.component],
-          set: {
-            downloadUrl: asset.browser_download_url,
-            checksum,
-            fileSize: BigInt(asset.size),
-            releaseNotes: release.body ?? null,
-            isLatest: true
-          }
-        });
-
-      upserted.push(`helper:${platform}/${target.goarch}`);
-    }
-
-    writeRouteAudit(c, {
-      orgId: auth.orgId,
-      action: 'agent_version.sync_github',
-      resourceType: 'agent_version',
-      resourceId: version,
-      resourceName: `v${version}`,
-      details: { repo: GITHUB_REPO, targets: upserted }
-    });
-
-    return c.json({
-      version,
-      synced: upserted,
-      releaseNotes: release.body ?? null
-    });
   }
 );

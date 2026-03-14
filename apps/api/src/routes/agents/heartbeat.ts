@@ -53,6 +53,17 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.deviceRole = data.deviceRole;
   }
 
+  // Update hostname/OS version when agent reports changes
+  if (data.hostname && data.hostname !== device.hostname) {
+    deviceUpdates.hostname = data.hostname;
+  }
+  if (data.osVersion && data.osVersion !== device.osVersion) {
+    deviceUpdates.osVersion = data.osVersion;
+  }
+  if (data.osBuild !== undefined && data.osBuild !== device.osBuild) {
+    deviceUpdates.osBuild = data.osBuild;
+  }
+
   await db
     .update(devices)
     .set(deviceUpdates)
@@ -176,8 +187,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
       if (latestVersion) {
         const cmp = compareAgentVersions(latestVersion.version, data.agentVersion);
-        // cmp > 0: latest is newer; cmp === 0 && versions differ: agent runs unparseable dev build
-        if (cmp > 0 || (cmp === 0 && latestVersion.version !== data.agentVersion)) {
+        // cmp > 0: latest is newer. Skip dev builds (dev-*) to avoid overwriting dev-push binaries.
+        if (cmp > 0 && !data.agentVersion.startsWith('dev-')) {
           upgradeTo = latestVersion.version;
         }
       }
