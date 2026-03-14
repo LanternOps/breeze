@@ -27,11 +27,10 @@ services:
       CADDYEOF
       caddy run --config /etc/caddy/Caddyfile --adapter caddyfile'
 
-binaries-init:
+  binaries-init:
     image: alpine:3.19
     platform: linux/amd64
     entrypoint: ["sh", "-c", "mkdir -p /target/agent /target/viewer /target/helper && echo '0.9.4-2' > /target/VERSION && echo 'Stub binaries volume created'"]
-
 
   web:
     platform: linux/amd64
