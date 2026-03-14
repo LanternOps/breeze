@@ -18,6 +18,7 @@ x-healthcheck-defaults: &healthcheck
 services:
   binaries-init:
     image: ghcr.io/lanternops/breeze/binaries:${BREEZE_VERSION:-latest}
+    pull_policy: always
     container_name: breeze-binaries-init
     volumes:
       - binaries:/target
@@ -104,7 +105,8 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      BINARY_SOURCE: ${BINARY_SOURCE:-local}
+      BREEZE_VERSION: ${BREEZE_VERSION:-latest}
+      BINARY_SOURCE: ${BINARY_SOURCE:-github}
       AGENT_BINARY_DIR: /data/binaries/agent
       VIEWER_BINARY_DIR: /data/binaries/viewer
       HELPER_BINARY_DIR: /data/binaries/helper

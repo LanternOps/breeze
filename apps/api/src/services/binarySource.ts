@@ -5,13 +5,13 @@ const GITHUB_RELEASE_BASE = 'https://github.com/lanternops/breeze/releases';
 let binarySourceWarned = false;
 
 export function getBinarySource(): BinarySource {
-  const raw = (process.env.BINARY_SOURCE || 'local').trim().toLowerCase();
-  if (raw === 'github') return 'github';
-  if (raw !== 'local' && !binarySourceWarned) {
-    console.warn(`[binarySource] Unrecognized BINARY_SOURCE="${raw}", defaulting to "local"`);
+  const raw = (process.env.BINARY_SOURCE || 'github').trim().toLowerCase();
+  if (raw === 'local') return 'local';
+  if (raw !== 'github' && !binarySourceWarned) {
+    console.warn(`[binarySource] Unrecognized BINARY_SOURCE="${raw}", defaulting to "github"`);
     binarySourceWarned = true;
   }
-  return 'local';
+  return 'github';
 }
 
 export function getGithubReleaseVersion(): string {

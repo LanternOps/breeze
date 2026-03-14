@@ -5,6 +5,7 @@ package desktop
 import (
 	"fmt"
 	"log/slog"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -200,11 +201,30 @@ type dxgiCapturer struct {
 
 // newPlatformCapturer tries DXGI Desktop Duplication first, falls back to GDI.
 func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
+	// When running as a helper process spawned into a user session (e.g.,
+	// SYSTEM in Session 1), the thread is not automatically attached to the
+	// input desktop. DuplicateOutput and GDI BitBlt both require the calling
+	// thread to be on the correct desktop. Pin the thread and switch before
+	// any display API calls. The thread MUST stay locked through initDXGI —
+	// UnlockOSThread would let Go migrate the goroutine to a different thread
+	// that hasn't been desktop-switched.
+	runtime.LockOSThread()
+	switchThreadToInputDesktop()
+
 	c := &dxgiCapturer{config: config}
 	if err := c.initDXGI(); err != nil {
-		slog.Warn("DXGI Desktop Duplication unavailable, falling back to GDI", "error", err.Error())
-		return &gdiCapturer{config: config}, nil
+		runtime.UnlockOSThread()
+		slog.Warn("DXGI Desktop Duplication unavailable, using internal GDI fallback", "error", err.Error())
+		// Return the dxgiCapturer with GDI fallback instead of a standalone
+		// gdiCapturer. The dxgiCapturer's checkDesktopSwitch() will detect
+		// desktop transitions (e.g. login after lock screen) and reinit DXGI
+		// when the desktop becomes available. A standalone gdiCapturer has no
+		// desktop switch detection and would be stuck forever.
+		c.gdiFallback = &gdiCapturer{config: config}
+		c.secureDesktopFlag.Store(true)
+		return c, nil
 	}
+	runtime.UnlockOSThread()
 	slog.Info("DXGI Desktop Duplication initialized",
 		"display", config.DisplayIndex, "width", c.width, "height", c.height)
 	return c, nil
