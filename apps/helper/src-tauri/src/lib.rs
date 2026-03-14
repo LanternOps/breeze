@@ -318,13 +318,27 @@ async fn read_agent_config() -> Result<AgentConfig, String> {
         token: state.config.token.clone(),
         agent_id: state.config.agent_id.clone(),
         has_mtls: state.config.mtls_cert_pem.is_some() && state.config.mtls_key_pem.is_some(),
-        os_username: whoami::username(),
+        os_username: get_os_username(),
     })
 }
 
 #[tauri::command]
 fn get_os_username() -> String {
-    whoami::username()
+    // When running as SYSTEM (spawned by agent service), whoami returns "SYSTEM".
+    // Fall back to the USERNAME environment variable which is set to the
+    // logged-in user's name even for SYSTEM processes in user sessions.
+    let name = whoami::username();
+    if name.eq_ignore_ascii_case("system") || name.ends_with('$') {
+        if let Ok(env_user) = std::env::var("USERNAME") {
+            if !env_user.is_empty()
+                && !env_user.eq_ignore_ascii_case("system")
+                && !env_user.ends_with('$')
+            {
+                return env_user;
+            }
+        }
+    }
+    name
 }
 
 #[tauri::command]
