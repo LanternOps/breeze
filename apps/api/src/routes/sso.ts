@@ -271,9 +271,6 @@ function resolveOrgIdForProviderRoute(
   return { error: 'Organization ID required', status: 400 };
 }
 
-const providerIdParamSchema = z.object({ id: z.string().uuid() });
-const orgIdParamSchema = z.object({ orgId: z.string().uuid() });
-
 // ============================================
 // Provider Management Routes (Admin)
 // ============================================
@@ -314,9 +311,9 @@ ssoRoutes.get('/providers', authMiddleware, requireScope('organization', 'partne
 });
 
 // Get SSO provider details
-ssoRoutes.get('/providers/:id', authMiddleware, requireScope('organization', 'partner', 'system'), zValidator('param', providerIdParamSchema), async (c) => {
+ssoRoutes.get('/providers/:id', authMiddleware, requireScope('organization', 'partner', 'system'), async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const { id: providerId } = c.req.valid('param');
+  const providerId = c.req.param('id')!!;
 
   const [provider] = await db
     .select()
@@ -429,11 +426,10 @@ ssoRoutes.patch(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
-  zValidator('param', providerIdParamSchema),
   zValidator('json', updateProviderSchema),
   async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const { id: providerId } = c.req.valid('param');
+  const providerId = c.req.param('id')!!;
   const body = c.req.valid('json');
 
   const [existing] = await db
@@ -490,10 +486,9 @@ ssoRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
-  zValidator('param', providerIdParamSchema),
   async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const { id: providerId } = c.req.valid('param');
+  const providerId = c.req.param('id')!!;
 
   const [existing] = await db
     .select({ id: ssoProviders.id, orgId: ssoProviders.orgId })
@@ -541,11 +536,10 @@ ssoRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
-  zValidator('param', providerIdParamSchema),
   zValidator('json', z.object({ status: z.enum(['active', 'inactive', 'testing']) })),
   async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const { id: providerId } = c.req.valid('param');
+  const providerId = c.req.param('id')!!;
   const { status } = c.req.valid('json');
 
   const [existing] = await db
@@ -592,10 +586,9 @@ ssoRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
-  zValidator('param', providerIdParamSchema),
   async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const { id: providerId } = c.req.valid('param');
+  const providerId = c.req.param('id')!!;
 
   const [provider] = await db
     .select()
@@ -661,8 +654,8 @@ ssoRoutes.post(
 // ============================================
 
 // Initiate SSO login
-ssoRoutes.get('/login/:orgId', zValidator('param', orgIdParamSchema), async (c) => {
-  const { orgId } = c.req.valid('param');
+ssoRoutes.get('/login/:orgId', async (c) => {
+  const orgId = c.req.param('orgId')!!;
   const redirectUrl = normalizeRedirectPath(c.req.query('redirect'));
 
   const [provider] = await db
@@ -974,8 +967,8 @@ ssoRoutes.post('/exchange', zValidator('json', tokenExchangeSchema), async (c) =
 });
 
 // Get SSO login URL for organization (public endpoint for login page)
-ssoRoutes.get('/check/:orgId', zValidator('param', orgIdParamSchema), async (c) => {
-  const { orgId } = c.req.valid('param');
+ssoRoutes.get('/check/:orgId', async (c) => {
+  const orgId = c.req.param('orgId')!!;
 
   const [provider] = await db
     .select({

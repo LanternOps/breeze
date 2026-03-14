@@ -106,8 +106,6 @@ const updateApiKeySchema = z.object({
 // Routes
 // ============================================
 
-const keyIdParamSchema = z.object({ id: z.string().uuid() });
-
 // Apply auth middleware to all routes
 apiKeyRoutes.use('*', authMiddleware);
 
@@ -287,10 +285,9 @@ apiKeyRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
-  zValidator('param', keyIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const { id: keyId } = c.req.valid('param');
+    const keyId = c.req.param('id')!!;
 
     // Get API key (excluding keyHash)
     const [apiKey] = await db
@@ -333,11 +330,10 @@ apiKeyRoutes.patch(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
-  zValidator('param', keyIdParamSchema),
   zValidator('json', updateApiKeySchema),
   async (c) => {
     const auth = c.get('auth');
-    const { id: keyId } = c.req.valid('param');
+    const keyId = c.req.param('id')!!;
     const data = c.req.valid('json');
 
     if (Object.keys(data).length === 0) {
@@ -417,10 +413,9 @@ apiKeyRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
-  zValidator('param', keyIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const { id: keyId } = c.req.valid('param');
+    const keyId = c.req.param('id')!!;
 
     // Get existing API key
     const [existingKey] = await db
@@ -487,10 +482,9 @@ apiKeyRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
-  zValidator('param', keyIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const { id: keyId } = c.req.valid('param');
+    const keyId = c.req.param('id')!!;
 
     // Get existing API key
     const [existingKey] = await db
