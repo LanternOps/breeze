@@ -2,7 +2,9 @@ package collectors
 
 import (
 	"os"
+	"os/exec"
 	"runtime"
+	"strings"
 
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
@@ -49,6 +51,16 @@ func (c *HardwareCollector) CollectSystemInfo() (*SystemInfo, error) {
 		info.OSType = normalizeOSType(hostInfo.OS)
 		info.OSVersion = hostInfo.Platform + " " + hostInfo.PlatformVersion
 		info.OSBuild = hostInfo.KernelVersion
+	}
+
+	// On macOS, prefer LocalHostName (e.g. "MacBook-Pro-3") over the
+	// short DNS hostname (e.g. "Mac") which can be generic.
+	if runtime.GOOS == "darwin" {
+		if out, scErr := exec.Command("scutil", "--get", "LocalHostName").Output(); scErr == nil {
+			if name := strings.TrimSpace(string(out)); name != "" {
+				info.Hostname = name
+			}
+		}
 	}
 
 	return info, nil
