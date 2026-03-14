@@ -2,6 +2,7 @@ import { Context, Next } from 'hono';
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { partners } from '../db/schema';
+import { verifyToken } from '../services/jwt';
 
 export async function partnerGuard(c: Context, next: Next) {
   const authHeader = c.req.header('Authorization');
@@ -11,16 +12,12 @@ export async function partnerGuard(c: Context, next: Next) {
   }
 
   const token = authHeader.slice(7);
-  const parts = token.split('.');
-  if (parts.length !== 3) {
-    await next();
-    return;
-  }
 
+  // Verify the JWT signature before trusting any claims
   let partnerId: string | null = null;
   try {
-    const payload = JSON.parse(Buffer.from(parts[1]!, 'base64url').toString());
-    partnerId = payload.partnerId ?? null;
+    const payload = await verifyToken(token);
+    partnerId = payload?.partnerId ?? null;
   } catch {
     await next();
     return;

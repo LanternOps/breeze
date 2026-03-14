@@ -22,6 +22,13 @@
       "when": 1772064000000,
       "tag": "0002_user_risk_scoring",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1772668800000,
+      "tag": "0003_solid_marvel_zombies",
+      "breakpoints": true
     }
   ]
 }

@@ -66,7 +66,9 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       throw new HTTPException(400, { message: 'Enrollment key must be associated with a site' });
     }
 
-    // Device limit check: join org → partner to get maxDevices
+    // Fetch partner device limit (used inside transaction below)
+    let deviceLimitPartnerId: string | null = null;
+    let maxDevices: number | null = null;
     const [org] = await db
       .select({ partnerId: organizations.partnerId })
       .from(organizations)
@@ -81,38 +83,8 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         .limit(1);
 
       if (partner?.maxDevices != null) {
-        // Count active (non-decommissioned) devices across all partner orgs
-        const partnerOrgIds = db
-          .select({ id: organizations.id })
-          .from(organizations)
-          .where(eq(organizations.partnerId, org.partnerId));
-
-        const [countResult] = await db
-          .select({ count: sql<number>`count(*)` })
-          .from(devices)
-          .where(
-            and(
-              sql`${devices.orgId} IN (${partnerOrgIds})`,
-              ne(devices.status, 'decommissioned')
-            )
-          );
-
-        const activeCount = Number(countResult?.count ?? 0);
-        if (activeCount >= partner.maxDevices) {
-          const hookResponse = await dispatchHook('device-limit', org.partnerId, {
-            currentDevices: activeCount,
-            maxDevices: partner.maxDevices,
-          });
-
-          return c.json({
-            error: 'Device limit reached',
-            code: 'DEVICE_LIMIT_REACHED',
-            currentDevices: activeCount,
-            maxDevices: partner.maxDevices,
-            ...(hookResponse?.upgradeUrl ? { upgradeUrl: hookResponse.upgradeUrl } : {}),
-            ...(hookResponse?.message ? { message: hookResponse.message } : {}),
-          }, 403);
-        }
+        deviceLimitPartnerId = org.partnerId;
+        maxDevices = partner.maxDevices;
       }
     }
 
@@ -141,6 +113,41 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     }
 
     const device = await db.transaction(async (tx) => {
+      // Device limit check inside transaction to prevent TOCTOU race
+      if (maxDevices != null && deviceLimitPartnerId && !existingDevice) {
+        const partnerOrgIds = tx
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(eq(organizations.partnerId, deviceLimitPartnerId));
+
+        const [countResult] = await tx
+          .select({ count: sql<number>`count(*)` })
+          .from(devices)
+          .where(
+            and(
+              sql`${devices.orgId} IN (${partnerOrgIds})`,
+              ne(devices.status, 'decommissioned')
+            )
+          );
+
+        const activeCount = Number(countResult?.count ?? 0);
+        if (activeCount >= maxDevices) {
+          // Fire-and-forget hook outside transaction (non-blocking)
+          dispatchHook('device-limit', deviceLimitPartnerId, {
+            currentDevices: activeCount,
+            maxDevices,
+          }).catch(() => {});
+          throw new HTTPException(403, {
+            message: JSON.stringify({
+              error: 'Device limit reached',
+              code: 'DEVICE_LIMIT_REACHED',
+              currentDevices: activeCount,
+              maxDevices,
+            }),
+          });
+        }
+      }
+
       let dev;
       if (existingDevice) {
         [dev] = await tx
