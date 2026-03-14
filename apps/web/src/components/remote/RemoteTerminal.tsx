@@ -99,8 +99,8 @@ export default function RemoteTerminal({
         lineHeight: 1.2,
         theme: {
           background: '#1a1b26',
-          foreground: '#e0e4f0',
-          cursor: '#e0e4f0',
+          foreground: '#f8f8f2',
+          cursor: '#f8f8f2',
           cursorAccent: '#1a1b26',
           selectionBackground: '#33467c',
           black: '#6b7394',
@@ -110,7 +110,7 @@ export default function RemoteTerminal({
           blue: '#7aa2f7',
           magenta: '#bb9af7',
           cyan: '#7dcfff',
-          white: '#e0e4f0',
+          white: '#f8f8f2',
           brightBlack: '#9aa5ce',
           brightRed: '#ff9e9e',
           brightGreen: '#c3e88d',
@@ -498,7 +498,7 @@ export default function RemoteTerminal({
       <div
         ref={terminalContainerRef}
         className={cn(
-          'flex-1 min-h-[400px] bg-[#1a1b26] cursor-text p-2 overflow-hidden',
+          'flex-1 min-h-[400px] bg-[#1a1b26] text-[#f8f8f2] cursor-text p-2 overflow-hidden',
           isFullscreen && 'min-h-0'
         )}
         onClick={() => terminalRef.current?.focus()}
