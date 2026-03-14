@@ -24,6 +24,7 @@ type Session struct {
 	cmd      *exec.Cmd
 	mu       sync.Mutex
 	closed   bool
+	waitOnce sync.Once // ensures cmd.Wait() is called exactly once
 	onOutput func(data []byte)
 	onClose  func(err error)
 }
@@ -206,12 +207,25 @@ func (s *Session) close() error {
 	// Kill process if still running
 	if s.cmd != nil && s.cmd.Process != nil {
 		s.cmd.Process.Kill()
-		s.cmd.Wait()
+		s.waitCmd()
 	}
 
 	log.Debug("session closed", "sessionId", s.ID)
 
 	return closeErr
+}
+
+// waitCmd calls cmd.Wait() exactly once, regardless of how many goroutines
+// call it. This prevents the data race between the background Wait goroutine
+// spawned by start() and the close() method.
+func (s *Session) waitCmd() error {
+	var err error
+	s.waitOnce.Do(func() {
+		if s.cmd != nil {
+			err = s.cmd.Wait()
+		}
+	})
+	return err
 }
 
 // readLoop reads output from the PTY and sends it to the callback

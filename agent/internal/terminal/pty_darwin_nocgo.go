@@ -105,7 +105,7 @@ func (s *Session) start() error {
 
 	// Wait for process to exit in a goroutine
 	go func() {
-		err := cmd.Wait()
+		err := s.waitCmd()
 		if s.onClose != nil {
 			s.onClose(err)
 		}
@@ -153,9 +153,10 @@ func setWinsize(fd uintptr, cols, rows uint16) error {
 // ptsnameFd returns the name of the slave PTY.
 // On macOS, TIOCPTYGNAME is used instead of Linux's TIOCGPTN.
 func ptsnameFd(fd uintptr) (string, error) {
-	// TIOCPTYGNAME on macOS returns the slave device path directly
-	// _IOC(IOC_OUT, 't', 41, 128) = 0x40000000 | (128<<16) | ('t'<<8) | 41 = 0x40807429
-	const TIOCPTYGNAME = 0x40807429
+	// TIOCPTYGNAME on macOS returns the slave device path directly.
+	// _IOC(IOC_OUT, 't', 83, 128) = 0x40000000 | (128<<16) | ('t'<<8) | 83 = 0x40807453
+	// Matches golang.org/x/sys/unix.TIOCPTYGNAME on darwin.
+	const TIOCPTYGNAME = 0x40807453
 	buf := make([]byte, 128)
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, TIOCPTYGNAME, uintptr(unsafe.Pointer(&buf[0])))
 	if errno != 0 {
@@ -170,15 +171,22 @@ func ptsnameFd(fd uintptr) (string, error) {
 	return string(buf), nil
 }
 
-// grantptFd is a no-op on macOS when using /dev/ptmx
-// (the kernel handles granting automatically).
+// grantptFd grants access to the slave PTY via ioctl.
+// TIOCPTYGRANT = _IO('t', 84) = 0x20007454
 func grantptFd(fd uintptr) error {
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, 0x20007454, 0)
+	if errno != 0 {
+		return errno
+	}
 	return nil
 }
 
-// unlockptFd unlocks the slave PTY on macOS.
+// unlockptFd unlocks the slave PTY via ioctl.
+// TIOCPTYUNLK = _IO('t', 82) = 0x20007452
 func unlockptFd(fd uintptr) error {
-	// On macOS, TIOCSPTLCK is not available; the PTY is unlocked by default
-	// when opened via /dev/ptmx. No action needed.
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, 0x20007452, 0)
+	if errno != 0 {
+		return errno
+	}
 	return nil
 }
