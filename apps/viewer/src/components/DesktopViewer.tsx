@@ -396,25 +396,28 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     oldRtc?.close();
 
     reconnectInFlightRef.current = true;
+    const originalTransport = transportRef.current;
     try {
-      // Try WebRTC first
-      const webrtcOk = await connectWebRTC(auth);
-      if (cancelledRef.current || userDisconnectRef.current) return;
+      if (originalTransport === 'websocket') {
+        // Original connection was WebSocket — reconnect with WS only
+        const cleanup = await connectWebSocket(auth);
+        if (cancelledRef.current || userDisconnectRef.current) {
+          cleanup?.();
+          return;
+        }
+        if (cleanup) {
+          wsCleanupRef.current = cleanup;
+          stopReconnect();
+        }
+      } else {
+        // Original connection was WebRTC (or unknown) — reconnect with WebRTC only
+        const webrtcOk = await connectWebRTC(auth);
+        if (cancelledRef.current || userDisconnectRef.current) return;
 
-      if (webrtcOk) {
-        stopReconnect();
-        return;
-      }
-
-      // Try WebSocket fallback
-      const cleanup = await connectWebSocket(auth);
-      if (cancelledRef.current || userDisconnectRef.current) {
-        cleanup?.();
-        return;
-      }
-      if (cleanup) {
-        wsCleanupRef.current = cleanup;
-        stopReconnect();
+        if (webrtcOk) {
+          stopReconnect();
+        }
+        // If WebRTC fails, let the interval retry — don't fall back to WS
       }
     } catch (err) {
       console.warn('Reconnect attempt failed (will retry):', err);

@@ -186,10 +186,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         .limit(1);
 
       if (latestVersion) {
-        const cmp = compareAgentVersions(latestVersion.version, data.agentVersion);
-        // cmp > 0: latest is newer. Skip dev builds (dev-*) to avoid overwriting dev-push binaries.
-        if (cmp > 0 && !data.agentVersion.startsWith('dev-')) {
+        // Dev builds (dev-*) can't be compared via semver — always upgrade them to latest release.
+        if (data.agentVersion.startsWith('dev-')) {
           upgradeTo = latestVersion.version;
+        } else {
+          const cmp = compareAgentVersions(latestVersion.version, data.agentVersion);
+          if (cmp > 0) {
+            upgradeTo = latestVersion.version;
+          }
         }
       }
     } catch (err) {
