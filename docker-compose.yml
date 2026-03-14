@@ -16,13 +16,10 @@ x-healthcheck-defaults: &healthcheck
   retries: 3
 
 services:
-  # Optional: only needed when BINARY_SOURCE=local (air-gapped environments).
-  # Most deployments use BINARY_SOURCE=github (the default) and don't need this.
   binaries-init:
     image: ghcr.io/lanternops/breeze/binaries:${BREEZE_VERSION:-latest}
     pull_policy: always
     container_name: breeze-binaries-init
-    profiles: ['local-binaries']
     volumes:
       - binaries:/target
     restart: "no"
@@ -128,6 +125,8 @@ services:
       - api_data:/data
       - binaries:/data/binaries:ro
     depends_on:
+      binaries-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
