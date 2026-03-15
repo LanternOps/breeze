@@ -252,4 +252,34 @@ describe('connections routes', () => {
       expect(body.count).toBe(4);
     });
   });
+
+  // ----------------------------------------------------------------
+  // Multi-tenant isolation
+  // ----------------------------------------------------------------
+
+  describe('multi-tenant isolation', () => {
+    it('returns 404 when agent ID belongs to a different org (no device match)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/agents/agent-cross-org/connections', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          connections: [
+            { protocol: 'tcp', localAddr: '0.0.0.0', localPort: 443 },
+          ],
+        }),
+      });
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toContain('Device not found');
+    });
+  });
 });

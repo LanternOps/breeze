@@ -263,4 +263,27 @@ describe('system routes', () => {
       expect(vi.mocked(authMiddleware)).toHaveBeenCalled();
     });
   });
+
+  // ────────────────────── Multi-tenant isolation ──────────────────────
+  describe('multi-tenant isolation', () => {
+    it('returns 403 for org-scoped user accessing config-status (partner-only route)', async () => {
+      setAuth({ scope: 'organization', orgId: ORG_ID });
+
+      const res = await app.request('/system/config-status');
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe('Forbidden');
+    });
+
+    it('denies config-status when canAccessOrg returns false for all orgs', async () => {
+      setAuth({
+        scope: 'organization',
+        orgId: ORG_ID,
+        canAccessOrg: () => false,
+      });
+
+      const res = await app.request('/system/config-status');
+      expect(res.status).toBe(403);
+    });
+  });
 });

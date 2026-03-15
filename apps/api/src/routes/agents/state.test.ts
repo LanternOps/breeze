@@ -418,4 +418,54 @@ describe('state routes', () => {
       expect(body.count).toBe(3);
     });
   });
+
+  // ----------------------------------------------------------------
+  // Multi-tenant isolation
+  // ----------------------------------------------------------------
+
+  describe('multi-tenant isolation', () => {
+    it('returns 404 for registry-state when agent ID does not match any device', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/agents/agent-other-org/registry-state', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entries: [{ registryPath: 'HKLM\\Test', valueName: 'V', valueData: '1' }],
+        }),
+      });
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toContain('Device not found');
+    });
+
+    it('returns 404 for config-state when agent ID does not match any device', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/agents/agent-other-org/config-state', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entries: [{ filePath: '/etc/test', configKey: 'key', configValue: 'val' }],
+        }),
+      });
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toContain('Device not found');
+    });
+  });
 });

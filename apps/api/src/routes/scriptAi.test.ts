@@ -502,4 +502,34 @@ describe('scriptAi routes', () => {
       expect(vi.mocked(authMiddleware)).toHaveBeenCalled();
     });
   });
+
+  // ────────────────────── Multi-tenant isolation ──────────────────────
+  describe('multi-tenant isolation', () => {
+    const ORG_ID_2 = '99999999-9999-9999-9999-999999999999';
+
+    it('returns 404 when session belongs to a different org', async () => {
+      // Session exists but belongs to a different org
+      vi.mocked(getScriptBuilderSession).mockResolvedValue({
+        id: SESSION_ID,
+        orgId: ORG_ID_2,
+        type: 'script_builder',
+      } as any);
+
+      const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}`);
+      expect(res.status).toBe(404);
+    });
+
+    it('returns 404 when interrupting session from a different org', async () => {
+      vi.mocked(getScriptBuilderSession).mockResolvedValue({
+        id: SESSION_ID,
+        orgId: ORG_ID_2,
+      } as any);
+
+      const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}/interrupt`, {
+        method: 'POST',
+      });
+
+      expect(res.status).toBe(404);
+    });
+  });
 });

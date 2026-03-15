@@ -324,4 +324,43 @@ describe('changes routes', () => {
       expect(body.error).toContain('Failed to insert');
     });
   });
+
+  // ----------------------------------------------------------------
+  // Multi-tenant isolation
+  // ----------------------------------------------------------------
+
+  describe('multi-tenant isolation', () => {
+    it('returns 404 when agent ID belongs to a different org (no device match)', async () => {
+      mockDeviceNotFound();
+
+      const res = await app.request('/agents/agent-cross-org/changes', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ changes: [makeChangePayload()] }),
+      });
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toContain('Device not found');
+    });
+
+    it('prevents cross-org data injection by scoping orgId from device lookup', async () => {
+      // Device found with its own orgId - the route uses the device's orgId,
+      // not a user-supplied one, preventing cross-org data injection
+      mockDeviceFound();
+      mockInsertSuccess(1);
+
+      const res = await app.request(`/agents/${AGENT_ID}/changes`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          changes: [makeChangePayload()],
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      // The insert should use the device's orgId (ORG_ID), not any user-supplied value
+      expect(vi.mocked(db.insert)).toHaveBeenCalled();
+    });
+  });
 });

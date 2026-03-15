@@ -40,12 +40,12 @@ vi.mock('../db/schema', () => ({
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
-      user: { id: USER_ID, email: 'test@example.com', name: 'Test User' },
+      user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
-      orgId: ORG_ID,
+      orgId: '11111111-1111-1111-1111-111111111111',
       partnerId: null,
-      accessibleOrgIds: [ORG_ID],
-      canAccessOrg: (orgId: string) => orgId === ORG_ID
+      accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
+      canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111'
     });
     return next();
   })
