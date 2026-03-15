@@ -51,12 +51,12 @@ export default function AiPlanReviewCard({ steps, onApprove, onReject }: AiPlanR
   const progressPct = (remainingMs / AUTO_REJECT_MS) * 100;
 
   return (
-    <div className="my-2 rounded-lg border border-purple-600/50 bg-purple-950/20 p-3">
+    <div className="my-2 rounded-lg border border-purple-600/50 bg-purple-100/30 p-3 dark:bg-purple-950/20">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <ListChecks className="h-4 w-4 text-purple-400" />
-          <span className="text-sm font-medium text-purple-300">Action Plan</span>
-          <span className="rounded-full bg-purple-900/50 px-2 py-0.5 text-xs text-purple-300">
+          <span className="text-sm font-medium text-purple-700 dark:text-purple-300">Action Plan</span>
+          <span className="rounded-full bg-purple-200/50 px-2 py-0.5 text-xs text-purple-700 dark:bg-purple-900/50 dark:text-purple-300">
             {steps.length} step{steps.length !== 1 ? 's' : ''}
           </span>
         </div>
@@ -67,7 +67,7 @@ export default function AiPlanReviewCard({ steps, onApprove, onReject }: AiPlanR
       </div>
 
       {/* Countdown progress bar */}
-      <div className="mt-2 h-0.5 w-full overflow-hidden rounded-full bg-gray-800">
+      <div className="mt-2 h-0.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800">
         <div
           className={cn(
             'h-full rounded-full bg-purple-500/60 transition-all duration-1000 ease-linear',
@@ -84,12 +84,12 @@ export default function AiPlanReviewCard({ steps, onApprove, onReject }: AiPlanR
           const hasVisibleInput = Object.keys(visibleInput).length > 0;
 
           return (
-            <div key={stepIdx} className="rounded-md bg-gray-800/40 px-2.5 py-2">
+            <div key={stepIdx} className="rounded-md bg-gray-100/40 px-2.5 py-2 dark:bg-gray-800/40">
               <button
                 onClick={() => setExpandedStep(isExpanded ? null : stepIdx)}
                 className="flex w-full items-center gap-2 text-left"
               >
-                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gray-700 text-xs text-gray-300">
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gray-200 text-xs text-gray-700 dark:bg-gray-700 dark:text-gray-300">
                   {stepIdx + 1}
                 </span>
                 {isExpanded ? (
@@ -97,7 +97,7 @@ export default function AiPlanReviewCard({ steps, onApprove, onReject }: AiPlanR
                 ) : (
                   <ChevronRight className="h-3 w-3 shrink-0 text-gray-500" />
                 )}
-                <span className="text-xs font-medium text-gray-200 truncate">
+                <span className="text-xs font-medium text-gray-900 truncate dark:text-gray-200">
                   {formatToolName(step.toolName)}
                 </span>
               </button>
@@ -105,7 +105,7 @@ export default function AiPlanReviewCard({ steps, onApprove, onReject }: AiPlanR
                 <div className="mt-1.5 pl-10 space-y-1">
                   <p className="text-xs text-gray-400">{step.reasoning}</p>
                   {hasVisibleInput && (
-                    <pre className="max-h-20 overflow-auto rounded bg-gray-900 px-2 py-1 text-xs text-gray-500">
+                    <pre className="max-h-20 overflow-auto rounded bg-gray-100 px-2 py-1 text-xs text-gray-500 dark:bg-gray-900">
                       {JSON.stringify(visibleInput, null, 2)}
                     </pre>
                   )}
@@ -127,7 +127,7 @@ export default function AiPlanReviewCard({ steps, onApprove, onReject }: AiPlanR
         </button>
         <button
           onClick={onReject}
-          className="flex items-center gap-1.5 rounded-md bg-gray-700 px-3 py-1.5 text-xs font-medium text-gray-300 transition-colors hover:bg-gray-600"
+          className="flex items-center gap-1.5 rounded-md bg-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
         >
           <X className="h-3.5 w-3.5" />
           Reject

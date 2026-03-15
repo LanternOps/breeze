@@ -33,3 +33,8 @@ func (b *Broker) setupSocket() error {
 	b.listener = listener
 	return nil
 }
+
+// peerWinSessionID is a no-op on non-Windows platforms.
+func peerWinSessionID(pid int) uint32 {
+	return 0
+}

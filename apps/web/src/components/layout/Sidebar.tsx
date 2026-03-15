@@ -29,6 +29,7 @@ import {
   ClipboardCheck,
   ScanSearch,
   Usb,
+  MessagesSquare
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -68,6 +69,7 @@ const navigation = [
   { name: 'Reports', href: '/reports', icon: FileText },
   { name: 'Analytics', href: '/analytics', icon: BarChart3 },
   { name: 'Fleet', href: '/fleet', icon: BrainCircuit },
+  { name: 'AI Workspace', href: '/workspace', icon: MessagesSquare },
   { name: 'Remote Access', href: '/remote', icon: Terminal }
 ];
 

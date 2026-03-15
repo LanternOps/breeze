@@ -1,6 +1,8 @@
 package desktop
 
 import (
+	"fmt"
+	"image"
 	"log/slog"
 	"runtime/debug"
 	"sync"
@@ -181,6 +183,73 @@ func parseICEServers(raw []ICEServerConfig) []webrtc.ICEServer {
 		return []webrtc.ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}}
 	}
 	return servers
+}
+
+// CaptureScreenshot captures a single frame from the active session's capturer.
+// This allows AI tools (take_screenshot, computer_action) to reuse the existing
+// DXGI/ScreenCaptureKit capturer instead of creating a new one, which would
+// conflict with the WebRTC session's capture pipeline (destroying shared global
+// C state on Close()).
+// Returns ErrNoActiveSession if no session is currently streaming.
+func (m *SessionManager) CaptureScreenshot(displayIndex int) (*image.RGBA, int, int, error) {
+	m.mu.RLock()
+	var target, fallback *Session
+	for _, s := range m.sessions {
+		s.mu.RLock()
+		active := s.isActive
+		idx := s.displayIndex
+		s.mu.RUnlock()
+		if !active {
+			continue
+		}
+		if idx == displayIndex {
+			target = s
+			break
+		}
+		if fallback == nil {
+			fallback = s
+		}
+	}
+	if target == nil && fallback != nil {
+		fallback.mu.RLock()
+		actualIdx := fallback.displayIndex
+		fallback.mu.RUnlock()
+		slog.Warn("CaptureScreenshot: no session on requested display, using fallback",
+			"requestedDisplay", displayIndex, "actualDisplay", actualIdx)
+		target = fallback
+	}
+	m.mu.RUnlock()
+
+	if target == nil {
+		return nil, 0, 0, ErrNoActiveSession
+	}
+
+	target.mu.RLock()
+	cap := target.capturer
+	target.mu.RUnlock()
+
+	if cap == nil {
+		return nil, 0, 0, ErrNoActiveSession
+	}
+
+	img, err := cap.Capture()
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("capture from active session: %w", err)
+	}
+	if img == nil {
+		return nil, 0, 0, fmt.Errorf("capture from active session: no frame available")
+	}
+
+	w, h, err := cap.GetScreenBounds()
+	if err != nil {
+		// Image is guaranteed non-nil (checked above), use its dimensions
+		slog.Debug("GetScreenBounds failed, using image dimensions",
+			"error", err.Error(), "width", img.Bounds().Dx(), "height", img.Bounds().Dy())
+		w = img.Bounds().Dx()
+		h = img.Bounds().Dy()
+	}
+
+	return img, w, h, nil
 }
 
 // StopSession stops and removes a session

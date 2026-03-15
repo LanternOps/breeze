@@ -36,8 +36,11 @@ const (
 	IdleCheckInterval = 60 * time.Second
 )
 
-// defaultScopes are the allowed scopes for user helpers.
-var defaultScopes = []string{"notify", "tray", "clipboard", "desktop", "run_as_user"}
+// Role-based scopes: SYSTEM helpers own desktop capture, user-token helpers own script execution.
+var (
+	systemHelperScopes = []string{"notify", "tray", "clipboard", "desktop"}
+	userHelperScopes   = []string{"notify", "clipboard", "run_as_user"}
+)
 
 // MessageHandler is called when a user helper sends a message that isn't
 // a response to a pending command.
@@ -49,10 +52,11 @@ type Broker struct {
 	listener    net.Listener
 	rateLimiter *ipc.RateLimiter
 
-	mu         sync.RWMutex
-	sessions   map[string]*Session   // sessionID -> Session
-	byIdentity map[string][]*Session // identity key -> Sessions (UID string on Unix, SID on Windows)
-	closed     bool
+	mu           sync.RWMutex
+	sessions     map[string]*Session   // sessionID -> Session
+	byIdentity   map[string][]*Session // identity key -> Sessions (UID string on Unix, SID on Windows)
+	staleHelpers map[string][]int      // winSessionID -> PIDs of disconnected helpers
+	closed       bool
 
 	onMessage MessageHandler
 	selfHash  string // SHA-256 of our own binary
@@ -62,10 +66,11 @@ type Broker struct {
 func New(socketPath string, onMessage MessageHandler) *Broker {
 	b := &Broker{
 		socketPath:  socketPath,
-		rateLimiter: ipc.NewRateLimiter(RateLimitAttempts, RateLimitWindow),
-		sessions:    make(map[string]*Session),
-		byIdentity:  make(map[string][]*Session),
-		onMessage:   onMessage,
+		rateLimiter:  ipc.NewRateLimiter(RateLimitAttempts, RateLimitWindow),
+		sessions:     make(map[string]*Session),
+		byIdentity:   make(map[string][]*Session),
+		staleHelpers: make(map[string][]int),
+		onMessage:    onMessage,
 	}
 	b.selfHash = b.computeSelfHash()
 	return b
@@ -246,6 +251,32 @@ func (b *Broker) HasHelperForWinSession(winSessionID string) bool {
 	return false
 }
 
+// HasHelperForWinSessionRole returns true if a helper with the given role
+// is connected in the specified Windows session.
+func (b *Broker) HasHelperForWinSessionRole(winSessionID, role string) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for _, s := range b.sessions {
+		if s.WinSessionID == winSessionID && s.HelperRole == role {
+			return true
+		}
+	}
+	return false
+}
+
+// FindUserSession returns the first connected session with HelperRole=="user"
+// in the given Windows session. Used to route run_as_user scripts.
+func (b *Broker) FindUserSession(winSessionID string) *Session {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for _, s := range b.sessions {
+		if s.WinSessionID == winSessionID && s.HelperRole == ipc.HelperRoleUser {
+			return s
+		}
+	}
+	return nil
+}
+
 // SendCommandAndWait forwards a command to a session and waits for the response.
 func (b *Broker) SendCommandAndWait(session *Session, id, cmdType string, payload any, timeout time.Duration) (*ipc.Envelope, error) {
 	return session.SendCommand(id, cmdType, payload, timeout)
@@ -409,11 +440,55 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
+	// Determine helper role and scopes. Default to "system" for backward compat
+	// with helpers that don't send the role field.
+	helperRole := authReq.HelperRole
+	if helperRole == "" {
+		helperRole = ipc.HelperRoleSystem
+	}
+
+	// Step 10: Validate role matches peer identity to prevent privilege escalation.
+	// On Windows, SYSTEM helpers must run as SYSTEM (S-1-5-18), and user helpers
+	// must NOT run as SYSTEM. This prevents a non-SYSTEM process from claiming
+	// system role to get desktop scopes, or SYSTEM from claiming user role.
+	if runtime.GOOS == "windows" {
+		const systemSID = "S-1-5-18"
+		if helperRole == ipc.HelperRoleSystem && creds.SID != systemSID {
+			log.Warn("role/identity mismatch: non-SYSTEM process claiming system role",
+				"sid", creds.SID, "pid", creds.PID)
+			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+				Accepted: false,
+				Reason:   "system role requires SYSTEM identity",
+			})
+			conn.Close()
+			return
+		}
+		if helperRole == ipc.HelperRoleUser && creds.SID == systemSID {
+			log.Warn("role/identity mismatch: SYSTEM process claiming user role",
+				"sid", creds.SID, "pid", creds.PID)
+			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+				Accepted: false,
+				Reason:   "user role requires non-SYSTEM identity",
+			})
+			conn.Close()
+			return
+		}
+	}
+
+	var scopes []string
+	switch helperRole {
+	case ipc.HelperRoleUser:
+		scopes = userHelperScopes
+	default:
+		helperRole = ipc.HelperRoleSystem
+		scopes = systemHelperScopes
+	}
+
 	// Send auth response
 	authResp := ipc.AuthResponse{
 		Accepted:      true,
 		SessionKey:    hex.EncodeToString(sessionKey),
-		AllowedScopes: defaultScopes,
+		AllowedScopes: scopes,
 	}
 	if err := conn.SendTyped(env.ID, ipc.TypeAuthResponse, authResp); err != nil {
 		log.Warn("failed to send auth response", "error", err.Error())
@@ -428,8 +503,24 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	rawConn.SetDeadline(time.Time{})
 
 	// Create session
-	session := NewSession(conn, creds.UID, identityKey, authReq.Username, authReq.DisplayEnv, authReq.SessionID, defaultScopes)
-	session.WinSessionID = fmt.Sprintf("%d", authReq.WinSessionID)
+	session := NewSession(conn, creds.UID, identityKey, authReq.Username, authReq.DisplayEnv, authReq.SessionID, scopes)
+	session.PID = int(creds.PID)
+	session.HelperRole = helperRole
+
+	// Use kernel-verified Windows session ID (from peer PID) instead of
+	// trusting the self-reported value, preventing session-jumping attacks.
+	if verifiedSID := peerWinSessionID(creds.PID); verifiedSID != 0 {
+		session.WinSessionID = fmt.Sprintf("%d", verifiedSID)
+		if verifiedSID != authReq.WinSessionID {
+			log.Warn("WinSessionID mismatch — using kernel-verified value",
+				"reported", authReq.WinSessionID,
+				"verified", verifiedSID,
+				"pid", creds.PID,
+			)
+		}
+	} else {
+		session.WinSessionID = fmt.Sprintf("%d", authReq.WinSessionID)
+	}
 
 	// Register session
 	b.mu.Lock()
@@ -443,6 +534,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		"sessionId", authReq.SessionID,
 		"display", authReq.DisplayEnv,
 		"pid", creds.PID,
+		"role", helperRole,
 	)
 
 	// Start receive loop — blocks until disconnect
@@ -502,6 +594,42 @@ func (b *Broker) removeSession(session *Session) {
 	}
 	if len(b.byIdentity[key]) == 0 {
 		delete(b.byIdentity, key)
+	}
+
+	// Track the PID so we can kill it before spawning a replacement.
+	// Don't kill here — the process may still be serving an active desktop session.
+	// Key includes role so SYSTEM and user helper stale PIDs are tracked separately.
+	if session.PID > 0 {
+		staleKey := session.WinSessionID + "-" + session.HelperRole
+		b.trackStaleHelper(staleKey, session.PID)
+	}
+}
+
+// trackStaleHelper records a disconnected helper PID for later cleanup.
+// Called under b.mu lock.
+func (b *Broker) trackStaleHelper(winSessionID string, pid int) {
+	b.staleHelpers[winSessionID] = append(b.staleHelpers[winSessionID], pid)
+}
+
+// KillStaleHelpers kills any disconnected helper processes for the given
+// Windows session. Call this before spawning a new helper to release DXGI
+// Desktop Duplication locks held by orphaned processes.
+func (b *Broker) KillStaleHelpers(winSessionID string) {
+	b.mu.Lock()
+	pids := b.staleHelpers[winSessionID]
+	delete(b.staleHelpers, winSessionID)
+	b.mu.Unlock()
+
+	for _, pid := range pids {
+		if proc, err := os.FindProcess(pid); err == nil {
+			if err := proc.Kill(); err != nil {
+				log.Debug("failed to kill stale userhelper (may have already exited)",
+					"pid", pid, "error", err.Error())
+			} else {
+				log.Info("killed stale userhelper before respawn",
+					"pid", pid, "winSessionID", winSessionID)
+			}
+		}
 	}
 }
 

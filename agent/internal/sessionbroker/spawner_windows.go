@@ -101,6 +101,91 @@ func SpawnHelperInSession(sessionID uint32) error {
 
 	log.Info("spawned user helper in session",
 		"sessionId", sessionID,
+		"role", "system",
+		"pid", pi.ProcessId,
+		"exe", exePath,
+	)
+	return nil
+}
+
+// SpawnUserHelperInSession launches a user-helper process using the logged-in
+// user's token (via WTSQueryUserToken) in the specified Windows session. This
+// helper runs as the interactive user, enabling run_as_user script execution.
+// It does NOT have SYSTEM privileges so it cannot capture UAC/lock screen.
+func SpawnUserHelperInSession(sessionID uint32) error {
+	// 1. Get the logged-in user's token for this session.
+	var userToken windows.Token
+	if err := windows.WTSQueryUserToken(sessionID, &userToken); err != nil {
+		return fmt.Errorf("WTSQueryUserToken(session=%d): %w", sessionID, err)
+	}
+	defer userToken.Close()
+
+	// 2. Duplicate as a primary token for CreateProcessAsUser.
+	var dupToken windows.Token
+	if err := windows.DuplicateTokenEx(
+		userToken,
+		windows.MAXIMUM_ALLOWED,
+		nil,
+		windows.SecurityImpersonation,
+		windows.TokenPrimary,
+		&dupToken,
+	); err != nil {
+		return fmt.Errorf("DuplicateTokenEx (user): %w", err)
+	}
+	defer dupToken.Close()
+
+	// 3. Create the user's environment block.
+	var envBlock *uint16
+	if err := windows.CreateEnvironmentBlock(&envBlock, dupToken, false); err != nil {
+		return fmt.Errorf("CreateEnvironmentBlock: %w", err)
+	}
+	defer windows.DestroyEnvironmentBlock(envBlock)
+
+	// 4. Build command line with --role user flag.
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("os.Executable: %w", err)
+	}
+	cmdLine, err := windows.UTF16PtrFromString(fmt.Sprintf(`"%s" user-helper --role user`, exePath))
+	if err != nil {
+		return fmt.Errorf("UTF16PtrFromString: %w", err)
+	}
+
+	// 5. Target the interactive window station + default desktop.
+	desktop, err := windows.UTF16PtrFromString(`winsta0\Default`)
+	if err != nil {
+		return fmt.Errorf("UTF16PtrFromString desktop: %w", err)
+	}
+
+	si := windows.StartupInfo{
+		Cb:      uint32(unsafe.Sizeof(windows.StartupInfo{})),
+		Desktop: desktop,
+	}
+	var pi windows.ProcessInformation
+
+	// 6. Create the process as the logged-in user with their environment.
+	if err := windows.CreateProcessAsUser(
+		dupToken,
+		nil,
+		cmdLine,
+		nil,
+		nil,
+		false,
+		windows.CREATE_NO_WINDOW|windows.CREATE_UNICODE_ENVIRONMENT,
+		envBlock,
+		nil,
+		&si,
+		&pi,
+	); err != nil {
+		return fmt.Errorf("CreateProcessAsUser(session=%d, role=user): %w", sessionID, err)
+	}
+
+	windows.CloseHandle(pi.Thread)
+	windows.CloseHandle(pi.Process)
+
+	log.Info("spawned user-token helper in session",
+		"sessionId", sessionID,
+		"role", "user",
 		"pid", pi.ProcessId,
 		"exe", exePath,
 	)

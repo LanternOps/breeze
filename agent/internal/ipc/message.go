@@ -55,6 +55,13 @@ type Envelope struct {
 	HMAC    string          `json:"hmac"`
 }
 
+// Helper role constants distinguish SYSTEM helpers (desktop capture) from
+// user-token helpers (script execution as the logged-in user).
+const (
+	HelperRoleSystem = "system"
+	HelperRoleUser   = "user"
+)
+
 // AuthRequest is sent by the user helper to the root daemon after connecting.
 type AuthRequest struct {
 	ProtocolVersion int    `json:"protocolVersion"`
@@ -66,6 +73,7 @@ type AuthRequest struct {
 	PID             int    `json:"pid"`
 	BinaryHash      string `json:"binaryHash"`
 	WinSessionID    uint32 `json:"winSessionId,omitempty"` // Windows session ID (1, 2, etc.)
+	HelperRole      string `json:"helperRole,omitempty"`   // "system" or "user" (default: "system")
 }
 
 // AuthResponse is sent by the root daemon back to the user helper.

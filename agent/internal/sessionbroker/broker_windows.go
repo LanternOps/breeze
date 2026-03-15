@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/Microsoft/go-winio"
+	"golang.org/x/sys/windows"
 )
 
 // SDDL: SYSTEM gets full control, Interactive Users get read/write.
@@ -28,4 +29,14 @@ func (b *Broker) setupSocket() error {
 	b.listener = listener
 	log.Info("named pipe listener created", "pipe", b.socketPath)
 	return nil
+}
+
+// peerWinSessionID returns the Windows session ID for the given process,
+// verified by the kernel via ProcessIdToSessionId. Returns 0 on failure.
+func peerWinSessionID(pid int) uint32 {
+	var sessionID uint32
+	if err := windows.ProcessIdToSessionId(uint32(pid), &sessionID); err != nil {
+		return 0
+	}
+	return sessionID
 }

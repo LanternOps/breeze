@@ -169,5 +169,9 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 		return fmt.Errorf("invalid session ID %q: %w", targetSession, err)
 	}
 
+	// Kill any stale helpers from previous sessions in this Windows session
+	// to release DXGI Desktop Duplication locks before spawning a new one.
+	h.sessionBroker.KillStaleHelpers(targetSession)
+
 	return sessionbroker.SpawnHelperInSession(sessionNum)
 }

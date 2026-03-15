@@ -266,15 +266,24 @@ import (
 	"sync"
 )
 
+// windowsCaptureMu serializes access to the global C statics (g_device,
+// g_context, g_duplication). Only one windowsCapturer may be active at a time.
+// This mirrors darwinCaptureMu on macOS.
+var windowsCaptureMu sync.Mutex
+
 // windowsCapturer implements ScreenCapturer for Windows using DXGI
 type windowsCapturer struct {
-	config CaptureConfig
-	mu     sync.Mutex
+	config          CaptureConfig
+	mu              sync.Mutex
+	holdsGlobalLock bool
 }
 
-// newPlatformCapturer creates a new Windows screen capturer
+// newPlatformCapturer creates a new Windows screen capturer.
+// Acquires the global DXGI lock to prevent concurrent capturers from
+// racing on the shared C statics.
 func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
-	return &windowsCapturer{config: config}, nil
+	windowsCaptureMu.Lock()
+	return &windowsCapturer{config: config, holdsGlobalLock: true}, nil
 }
 
 // Capture captures the entire screen
@@ -330,11 +339,15 @@ func (c *windowsCapturer) GetScreenBounds() (width, height int, err error) {
 	return int(cWidth), int(cHeight), nil
 }
 
-// Close releases resources
+// Close releases resources and unlocks the global DXGI mutex.
 func (c *windowsCapturer) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	C.cleanupDXGI()
+	if c.holdsGlobalLock {
+		c.holdsGlobalLock = false
+		windowsCaptureMu.Unlock()
+	}
 	return nil
 }
 

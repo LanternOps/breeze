@@ -111,3 +111,7 @@ var ErrPermissionDenied = fmt.Errorf("screen capture permission denied")
 
 // ErrDisplayNotFound is returned when the specified display is not found
 var ErrDisplayNotFound = fmt.Errorf("display not found")
+
+// ErrNoActiveSession is returned when CaptureScreenshot is called but no
+// WebRTC desktop session is currently active.
+var ErrNoActiveSession = fmt.Errorf("no active desktop session")

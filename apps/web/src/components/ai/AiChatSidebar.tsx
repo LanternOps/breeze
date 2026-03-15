@@ -108,7 +108,7 @@ export default function AiChatSidebar() {
 
       {/* Sidebar panel */}
       <div
-        className={`fixed right-0 top-0 z-40 flex h-full w-[400px] flex-col border-l border-gray-700 bg-gray-900 shadow-2xl transition-transform duration-300 ${
+        className={`dark fixed right-0 top-0 z-40 flex h-full w-[400px] flex-col border-l border-gray-700 bg-gray-900 shadow-2xl transition-transform duration-300 ${
           isOpen ? 'translate-x-0' : 'translate-x-full'
         }`}
       >

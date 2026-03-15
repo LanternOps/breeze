@@ -3,6 +3,7 @@ package userhelper
 import (
 	"encoding/json"
 	"fmt"
+	"image"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
@@ -45,6 +46,12 @@ func (h *helperDesktopManager) startSession(req *ipc.DesktopStartRequest) (*ipc.
 // stopSession tears down the desktop session.
 func (h *helperDesktopManager) stopSession(sessionID string) {
 	h.mgr.StopSession(sessionID)
+}
+
+// captureScreenshot captures a single frame from the active WebRTC session's
+// capturer. Returns desktop.ErrNoActiveSession if no session is streaming.
+func (h *helperDesktopManager) captureScreenshot(displayIndex int) (*image.RGBA, int, int, error) {
+	return h.mgr.CaptureScreenshot(displayIndex)
 }
 
 // stopAll tears down all active sessions (for shutdown).

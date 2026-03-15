@@ -84,19 +84,30 @@ func resolveRunAsSession(broker *sessionbroker.Broker, runAs string) *sessionbro
 		return nil
 	}
 
-	// runAs=user means "current interactive user". Use the most recently active
-	// connected helper session.
+	// runAs=user means "current interactive user". Prefer a user-role helper
+	// (runs as the logged-in user) over a SYSTEM helper.
 	if strings.EqualFold(target, "user") {
 		sessions := broker.AllSessions()
 		if len(sessions) == 0 {
 			return nil
 		}
+
+		// Find the most recently active session to determine the target Windows session.
 		selected := sessions[0]
 		for i := 1; i < len(sessions); i++ {
 			if sessions[i].LastSeen.After(selected.LastSeen) {
 				selected = sessions[i]
 			}
 		}
+
+		// Prefer the user-role helper in that Windows session.
+		if selected.WinSessionID != "" {
+			if userSession := broker.FindUserSession(selected.WinSessionID); userSession != nil {
+				return userSession
+			}
+		}
+
+		// Fall back to any helper for that user (backward compat / non-Windows).
 		return broker.SessionForUser(selected.Username)
 	}
 
