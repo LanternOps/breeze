@@ -397,6 +397,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
     reconnectInFlightRef.current = true;
     const originalTransport = transportRef.current;
+    if (!originalTransport) {
+      console.warn('Reconnect: transport ref was null, defaulting to WebRTC');
+    }
     try {
       if (originalTransport === 'websocket') {
         // Original connection was WebSocket — reconnect with WS only

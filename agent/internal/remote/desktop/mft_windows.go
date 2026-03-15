@@ -12,6 +12,18 @@ import (
 	"unsafe"
 )
 
+// vbvSizeForBitrate returns the VBV buffer size (in bits) for a given bitrate,
+// targeting 500ms of headroom (bitrate / 2). The floor of 500K bits ensures
+// I-frames remain viable even at MinBitrate (500 Kbps), where the 500ms
+// ratio would yield only 250K — too small for a 1080p keyframe.
+func vbvSizeForBitrate(bitrate int) uint32 {
+	vbvSize := uint32(bitrate / 2)
+	if vbvSize < 500000 {
+		vbvSize = 500000
+	}
+	return vbvSize
+}
+
 // mftEncoder implements encoderBackend using Windows Media Foundation Transform.
 // It discovers and uses hardware H264 encoders (NVENC, QuickSync, AMD VCE)
 // via the MFT enumeration API, falling back to the software H264 MFT.
@@ -246,15 +258,13 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 
 		// 3. VBV buffer: 500ms of bitrate headroom.
 		//    Per-frame buffers (1-3 frames) are too small — a single 1080p
-		//    I-frame (50-150 KB) exceeds them, forcing the encoder to starve
-		//    P-frames until the budget recovers (visible as kbps oscillation
-		//    between ~34 and ~7000). Half-second buffer gives enough room
-		//    to absorb I-frame bursts without adding latency (MF_LOW_LATENCY
-		//    controls actual encode delay, not VBV size).
-		vbvSize := uint32(m.cfg.Bitrate / 2)
-		if vbvSize < 500000 {
-			vbvSize = 500000
-		}
+		//    I-frame (400K–1.2M bits) exceeds them, forcing the encoder to
+		//    starve P-frames until the budget recovers (visible as kbps
+		//    oscillation between ~34 and ~7000). Half-second buffer gives
+		//    enough room to absorb I-frame bursts without adding latency
+		//    (MF_LOW_LATENCY primarily controls encode pipeline delay,
+		//    not the rate-control buffer window).
+		vbvSize := vbvSizeForBitrate(m.cfg.Bitrate)
 		vbv := comVariant{vt: vtUI4, val: uint64(vbvSize)}
 		if _, err := comCall(codecAPI, vtblCodecAPISetValue,
 			uintptr(unsafe.Pointer(&codecAPIAVEncCommonBufferSize)),
@@ -631,18 +641,17 @@ func (m *mftEncoder) SetBitrate(bitrate int) error {
 	slog.Debug("Dynamic bitrate applied via ICodecAPI", "bitrate", bitrate)
 
 	// Update VBV buffer to maintain 500ms ratio at new bitrate.
-	// Without this, a bitrate reduction leaves the VBV oversized (harmless)
-	// but a bitrate increase leaves it undersized (causes burst-starve).
-	vbvSize := uint32(bitrate / 2)
-	if vbvSize < 500000 {
-		vbvSize = 500000
-	}
+	// Without this, a bitrate reduction leaves the VBV oversized (allows
+	// transient rate spikes, less severe than the inverse) but a bitrate
+	// increase leaves it undersized (causes burst-starve).
+	vbvSize := vbvSizeForBitrate(bitrate)
 	vbv := comVariant{vt: vtUI4, val: uint64(vbvSize)}
 	if _, err := comCall(m.codecAPI, vtblCodecAPISetValue,
 		uintptr(unsafe.Pointer(&codecAPIAVEncCommonBufferSize)),
 		uintptr(unsafe.Pointer(&vbv)),
 	); err != nil {
-		slog.Debug("ICodecAPI SetValue(BufferSize) failed during bitrate update", "vbvSize", vbvSize, "error", err.Error())
+		slog.Warn("ICodecAPI SetValue(BufferSize) failed during bitrate update — encoder VBV/bitrate mismatch",
+			"vbvSize", vbvSize, "bitrate", bitrate, "error", err.Error())
 	}
 
 	return nil
