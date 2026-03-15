@@ -10,3 +10,8 @@ import "fmt"
 func SpawnHelperInSession(sessionID uint32) error {
 	return fmt.Errorf("helper spawning not supported on this platform")
 }
+
+// SpawnUserHelperInSession is only implemented on Windows.
+func SpawnUserHelperInSession(sessionID uint32) error {
+	return fmt.Errorf("user helper spawning not supported on this platform")
+}

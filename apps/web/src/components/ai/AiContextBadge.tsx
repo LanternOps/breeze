@@ -30,7 +30,7 @@ export default function AiContextBadge({ context }: AiContextBadgeProps) {
   }
 
   return (
-    <div className="flex items-center gap-1.5 rounded-full bg-gray-700 px-2.5 py-0.5 text-xs text-gray-300">
+    <div className="flex items-center gap-1.5 rounded-full bg-gray-200 px-2.5 py-0.5 text-xs text-gray-700 dark:bg-gray-700 dark:text-gray-300">
       {icon}
       <span className="max-w-[200px] truncate">{label}</span>
     </div>

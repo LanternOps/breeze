@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useChatStore } from './stores/chatStore';
@@ -285,14 +287,13 @@ function DeviceInfoView({ onClose }: { onClose: () => void }) {
     setLoading(true);
     setError(null);
 
-    (window as any).__TAURI__.core
-      .invoke('helper_fetch', {
+    invoke<{ status: number; body: string }>('helper_fetch', {
         request: {
           url: `${agentConfig.api_url}/api/v1/devices/by-agent/${agentConfig.agent_id}`,
           method: 'GET',
         },
       })
-      .then((res: { status: number; body: string }) => {
+      .then((res) => {
         if (res.status >= 200 && res.status < 300) {
           const data = JSON.parse(res.body);
           setDevice({
@@ -392,12 +393,9 @@ export default function App() {
   // Listen for tray menu "Device Info" click
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    const tauriEvents = (window as any).__TAURI__?.event;
-    if (tauriEvents?.listen) {
-      tauriEvents.listen('show-device-info', () => {
-        setShowDeviceInfo(true);
-      }).then((fn: () => void) => { unlisten = fn; });
-    }
+    listen('show-device-info', () => {
+      setShowDeviceInfo(true);
+    }).then((fn: () => void) => { unlisten = fn; });
     return () => { unlisten?.(); };
   }, []);
 
@@ -497,14 +495,14 @@ export default function App() {
             New
           </button>
           <button
-            onClick={() => (window as any).__TAURI__?.core?.invoke('minimize_window')}
+            onClick={() => invoke('minimize_window')}
             className="helper-btn-window"
             title="Minimize"
           >
             &#8211;
           </button>
           <button
-            onClick={() => (window as any).__TAURI__?.core?.invoke('hide_window')}
+            onClick={() => invoke('hide_window')}
             className="helper-btn-window helper-btn-window-close"
             title="Close to tray"
           >

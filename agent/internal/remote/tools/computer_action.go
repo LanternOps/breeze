@@ -1,17 +1,27 @@
 package tools
 
 import (
-	"encoding/base64"
+	"errors"
 	"fmt"
+	"image"
+	"log/slog"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 )
 
-// ComputerAction executes an input action on the device and optionally
-// captures a screenshot afterward. This gives Claude full computer-use
-// capabilities through a single atomic command round-trip.
+// ComputerAction executes an input action using a standalone capturer.
+// Use ComputerActionWithCapture when a WebRTC session may be active.
 func ComputerAction(payload map[string]any) CommandResult {
+	return ComputerActionWithCapture(payload, nil)
+}
+
+// ComputerActionWithCapture executes an input action on the device and
+// optionally captures a screenshot afterward. If capFn is non-nil and
+// succeeds, it reuses the active session's capturer for the screenshot
+// instead of creating a new one (which would conflict with the WebRTC
+// session's capture pipeline).
+func ComputerActionWithCapture(payload map[string]any, capFn CaptureFunc) CommandResult {
 	start := time.Now()
 
 	action := GetPayloadString(payload, "action", "")
@@ -55,7 +65,7 @@ func ComputerAction(payload map[string]any) CommandResult {
 
 	// Capture screenshot if requested
 	if captureAfter {
-		screenshot, err := captureScreenshot(monitor)
+		screenshot, err := captureScreenshotWithFn(monitor, capFn)
 		if err != nil {
 			resp.ScreenshotError = fmt.Sprintf("action succeeded but screenshot failed: %v", err)
 		} else {
@@ -114,7 +124,30 @@ func executeInputAction(action string, x, y int, text, key string, modifiers []s
 	}
 }
 
-func captureScreenshot(monitor int) (*ScreenshotResponse, error) {
+// captureScreenshotWithFn captures a screenshot, preferring capFn if provided.
+// Falls back to creating a standalone capturer when capFn is nil or fails.
+func captureScreenshotWithFn(monitor int, capFn CaptureFunc) (*ScreenshotResponse, error) {
+	var img *image.RGBA
+	var width, height int
+
+	// Try injected capture function first (reuses active session's capturer)
+	if capFn != nil {
+		var err error
+		img, width, height, err = capFn(monitor)
+		if err == nil {
+			return encodeScreenshotResponse(img, width, height, monitor)
+		}
+		// Only fall back to standalone capturer if no session exists.
+		// If a session IS active but errored, standalone would destroy its
+		// shared global capture state — the exact bug this fix prevents.
+		if !errors.Is(err, desktop.ErrNoActiveSession) {
+			slog.Warn("session capturer failed (standalone fallback unsafe)",
+				"monitor", monitor, "error", err.Error())
+			return nil, fmt.Errorf("active session capture failed: %w", err)
+		}
+	}
+
+	// Standalone capture path
 	cfg := desktop.DefaultConfig()
 	cfg.Quality = 85
 	cfg.DisplayIndex = monitor
@@ -125,49 +158,16 @@ func captureScreenshot(monitor int) (*ScreenshotResponse, error) {
 	}
 	defer capturer.Close()
 
-	img, err := capturer.Capture()
+	img, err = capturer.Capture()
 	if err != nil {
 		return nil, fmt.Errorf("failed to capture screen: %w", err)
 	}
 
-	width, height, err := capturer.GetScreenBounds()
+	width, height, err = capturer.GetScreenBounds()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get screen bounds: %w", err)
 	}
 
-	// Scale down if wider than 1920px
-	if width > 1920 {
-		factor := 1920.0 / float64(width)
-		img = desktop.ScaleImageFast(img, factor)
-		bounds := img.Bounds()
-		width = bounds.Dx()
-		height = bounds.Dy()
-	}
-
-	// Encode as JPEG at quality 85
-	jpegData, err := desktop.EncodeJPEG(img, 85)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode screenshot: %w", err)
-	}
-
-	b64 := base64.StdEncoding.EncodeToString(jpegData)
-
-	// Re-encode at lower quality if base64 exceeds 1MB
-	if len(b64) > 1_000_000 {
-		jpegData, err = desktop.EncodeJPEG(img, 60)
-		if err != nil {
-			return nil, fmt.Errorf("failed to re-encode screenshot: %w", err)
-		}
-		b64 = base64.StdEncoding.EncodeToString(jpegData)
-	}
-
-	return &ScreenshotResponse{
-		ImageBase64: b64,
-		Width:       width,
-		Height:      height,
-		Format:      "jpeg",
-		SizeBytes:   len(jpegData),
-		Monitor:     monitor,
-		CapturedAt:  time.Now().UTC().Format(time.RFC3339),
-	}, nil
+	return encodeScreenshotResponse(img, width, height, monitor)
 }
+

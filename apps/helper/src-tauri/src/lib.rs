@@ -318,13 +318,27 @@ async fn read_agent_config() -> Result<AgentConfig, String> {
         token: state.config.token.clone(),
         agent_id: state.config.agent_id.clone(),
         has_mtls: state.config.mtls_cert_pem.is_some() && state.config.mtls_key_pem.is_some(),
-        os_username: whoami::username(),
+        os_username: get_os_username(),
     })
 }
 
 #[tauri::command]
 fn get_os_username() -> String {
-    whoami::username()
+    // When running as SYSTEM (spawned by agent service), whoami returns "SYSTEM".
+    // Fall back to the USERNAME environment variable which is set to the
+    // logged-in user's name even for SYSTEM processes in user sessions.
+    let name = whoami::username();
+    if name.eq_ignore_ascii_case("system") || name.ends_with('$') {
+        if let Ok(env_user) = std::env::var("USERNAME") {
+            if !env_user.is_empty()
+                && !env_user.eq_ignore_ascii_case("system")
+                && !env_user.ends_with('$')
+            {
+                return env_user;
+            }
+        }
+    }
+    name
 }
 
 #[tauri::command]
@@ -593,6 +607,44 @@ pub fn run() {
             update_chat_active,
         ])
         .setup(|app| {
+            // Create main window manually (not from config) so we can set
+            // a custom WebView2 data directory when running as SYSTEM.
+            // The agent service spawns this process with a SYSTEM token
+            // (session ID overridden), causing WebView2's default data path
+            // to resolve to system32\config\systemprofile which isn't writable.
+            let mut wb = tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("Breeze Helper")
+            .inner_size(380.0, 600.0)
+            .resizable(true)
+            .decorations(false)
+            .center();
+
+            #[cfg(target_os = "windows")]
+            {
+                let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+                if local.to_lowercase().contains("systemprofile") || local.is_empty() {
+                    let pd = std::env::var("ProgramData")
+                        .unwrap_or_else(|_| "C:\\ProgramData".into());
+                    let data_dir = PathBuf::from(pd)
+                        .join("Breeze")
+                        .join("helper-webview");
+                    eprintln!(
+                        "[helper] SYSTEM context detected, WebView2 data dir: {}",
+                        data_dir.display()
+                    );
+                    wb = wb.data_directory(data_dir);
+                }
+            }
+
+            wb.build().map_err(|e| {
+                eprintln!("[helper] Failed to create main window: {}", e);
+                e
+            })?;
+
             let handle = app.handle().clone();
 
             // Load initial config and build tray context menu

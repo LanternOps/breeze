@@ -186,10 +186,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         .limit(1);
 
       if (latestVersion) {
-        const cmp = compareAgentVersions(latestVersion.version, data.agentVersion);
-        // cmp > 0: latest is newer. Skip dev builds (dev-*) to avoid overwriting dev-push binaries.
-        if (cmp > 0 && !data.agentVersion.startsWith('dev-')) {
+        // Dev builds (dev-*) can't be compared via semver — always upgrade them to latest release.
+        if (data.agentVersion.startsWith('dev-')) {
           upgradeTo = latestVersion.version;
+        } else {
+          const cmp = compareAgentVersions(latestVersion.version, data.agentVersion);
+          if (cmp > 0) {
+            upgradeTo = latestVersion.version;
+          }
         }
       }
     } catch (err) {
@@ -198,7 +202,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   }
 
   let helperUpgradeTo: string | null = null;
-  if (data.helperVersion && normalizedArch) {
+  // Check for helper upgrade even if agent doesn't report a version yet
+  // (bootstraps the first install or recovers from a broken helper that never wrote status)
+  if (normalizedArch) {
     try {
       const [latestHelper] = await db
         .select({ version: agentVersions.version })
@@ -213,8 +219,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         )
         .limit(1);
 
-if (latestHelper && compareAgentVersions(latestHelper.version, data.helperVersion) > 0) {
-        helperUpgradeTo = latestHelper.version;
+if (latestHelper) {
+        // If agent reports no helper version, always upgrade (bootstraps first install
+        // or recovers from broken helper that never wrote its status file)
+        if (!data.helperVersion || compareAgentVersions(latestHelper.version, data.helperVersion) > 0) {
+          helperUpgradeTo = latestHelper.version;
+        }
       }
     } catch (err) {
       console.error(`[agents] failed to evaluate helper upgrade target for ${agentId}:`, err);

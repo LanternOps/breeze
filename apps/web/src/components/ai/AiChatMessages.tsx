@@ -77,8 +77,8 @@ export default function AiChatMessages({
   if (messages.length === 0) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center p-6">
-        <Bot className="h-10 w-10 text-gray-600" />
-        <h3 className="mt-3 text-sm font-medium text-gray-300">Breeze AI Assistant</h3>
+        <Bot className="h-10 w-10 text-gray-400 dark:text-gray-600" />
+        <h3 className="mt-3 text-sm font-medium text-gray-700 dark:text-gray-300">Breeze AI Assistant</h3>
         <p className="mt-1 text-xs text-gray-500">
           Ask about your devices, alerts, metrics, or troubleshoot issues.
         </p>
@@ -87,7 +87,7 @@ export default function AiChatMessages({
             <button
               key={action.label}
               onClick={() => onSendQuickAction?.(action.prompt)}
-              className="w-full rounded-md border border-gray-700 bg-gray-800/50 px-3 py-2 text-left text-xs text-gray-400 transition-colors hover:border-purple-600/50 hover:bg-gray-800 hover:text-gray-200"
+              className="w-full rounded-md border border-gray-200 bg-gray-50/50 px-3 py-2 text-left text-xs text-gray-500 transition-colors hover:border-purple-600/50 hover:bg-gray-100 hover:text-gray-900 dark:border-gray-700 dark:bg-gray-800/50 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
             >
               {action.label}
             </button>
@@ -107,7 +107,7 @@ export default function AiChatMessages({
                 <User className="h-3.5 w-3.5 text-white" />
               </div>
               <div className="min-w-0 flex-1">
-                <p className="text-sm text-gray-200 whitespace-pre-wrap">{msg.content}</p>
+                <p className="text-sm text-gray-900 whitespace-pre-wrap dark:text-gray-200">{msg.content}</p>
               </div>
             </div>
           );
@@ -120,7 +120,7 @@ export default function AiChatMessages({
                 <Bot className="h-3.5 w-3.5 text-white" />
               </div>
               <div className="min-w-0 flex-1">
-                <div className="prose prose-sm prose-invert max-w-none text-sm text-gray-200 prose-headings:text-sm prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-pre:my-2 prose-pre:overflow-x-auto prose-code:text-xs prose-code:before:content-none prose-code:after:content-none">
+                <div className="prose prose-sm max-w-none text-sm text-gray-900 prose-headings:text-sm prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-pre:my-2 prose-pre:overflow-x-auto prose-code:text-xs prose-code:before:content-none prose-code:after:content-none dark:prose-invert dark:text-gray-200">
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
                     components={{
@@ -138,7 +138,7 @@ export default function AiChatMessages({
                     {msg.content}
                   </ReactMarkdown>
                   {msg.isStreaming && (
-                    <span className="inline-block h-4 w-1 animate-pulse bg-gray-400" />
+                    <span className="inline-block h-4 w-1 animate-pulse bg-gray-500 dark:bg-gray-400" />
                   )}
                 </div>
               </div>

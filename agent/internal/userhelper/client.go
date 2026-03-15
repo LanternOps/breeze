@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"net"
 	"os"
 	"os/user"
@@ -18,8 +19,8 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/ipc"
-	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
 
 var log = logging.L("userhelper")
@@ -27,6 +28,7 @@ var log = logging.L("userhelper")
 // Client is the user-helper side of the IPC connection to the root daemon.
 type Client struct {
 	socketPath string
+	role       string // "system" or "user"
 	conn       *ipc.Conn
 	sessionKey []byte
 	agentID    string
@@ -38,10 +40,15 @@ type Client struct {
 	sasReqSeq  atomic.Uint64
 }
 
-// New creates a new user helper client.
-func New(socketPath string) *Client {
+// New creates a new user helper client with the given role.
+// Role should be ipc.HelperRoleSystem or ipc.HelperRoleUser.
+func New(socketPath, role string) *Client {
+	if role == "" {
+		role = ipc.HelperRoleSystem
+	}
 	return &Client{
 		socketPath: socketPath,
+		role:       role,
 		stopChan:   make(chan struct{}),
 		desktopMgr: newHelperDesktopManager(),
 		pending:    make(map[string]chan *ipc.Envelope),
@@ -139,6 +146,7 @@ func (c *Client) authenticate() error {
 		PID:             os.Getpid(),
 		BinaryHash:      binaryHash,
 		WinSessionID:    currentWinSessionID(),
+		HelperRole:      c.role,
 	}
 
 	if err := c.conn.SendTyped("auth", ipc.TypeAuthRequest, authReq); err != nil {
@@ -179,6 +187,10 @@ func (c *Client) authenticate() error {
 
 func (c *Client) sendCapabilities() error {
 	caps := detectCapabilities()
+	// User-role helpers cannot capture desktop (no SYSTEM token for UAC/lock screen).
+	if c.role == ipc.HelperRoleUser {
+		caps.CanCapture = false
+	}
 	return c.conn.SendTyped("caps", ipc.TypeCapabilities, caps)
 }
 
@@ -391,6 +403,12 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 // executeToolCommand runs screenshot/computer_action in the user session.
 // These commands require a display (DXGI/GDI) and input APIs (SendInput)
 // that are only available in user sessions, not Session 0 (service).
+//
+// When a WebRTC desktop session is active, the capture function reuses the
+// session's existing capturer instead of creating a standalone one. This
+// prevents the standalone capturer's Close() from destroying shared global
+// capture state (DXGI duplication on Windows, ScreenCaptureKit filter on
+// macOS), which would kill the viewer's stream.
 func (c *Client) executeToolCommand(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 	var payload map[string]any
 	if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
@@ -401,12 +419,18 @@ func (c *Client) executeToolCommand(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 		}
 	}
 
+	// Build a CaptureFunc that borrows the active WebRTC session's capturer.
+	// Returns an error (triggering fallback) if no session is active.
+	capFn := func(displayIndex int) (*image.RGBA, int, int, error) {
+		return c.desktopMgr.captureScreenshot(displayIndex)
+	}
+
 	var toolResult tools.CommandResult
 	switch cmd.Type {
 	case tools.CmdTakeScreenshot:
-		toolResult = tools.TakeScreenshot(payload)
+		toolResult = tools.TakeScreenshotWithCapture(payload, capFn)
 	case tools.CmdComputerAction:
-		toolResult = tools.ComputerAction(payload)
+		toolResult = tools.ComputerActionWithCapture(payload, capFn)
 	default:
 		return ipc.IPCCommandResult{
 			CommandID: cmd.CommandID,

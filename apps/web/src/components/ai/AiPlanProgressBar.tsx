@@ -21,13 +21,13 @@ export default function AiPlanProgressBar({ steps, currentStepIndex, status, onA
   const isFinished = status === 'completed' || status === 'aborted';
 
   return (
-    <div className="my-2 rounded-lg border border-blue-600/40 bg-blue-950/20 p-3">
+    <div className="my-2 rounded-lg border border-blue-600/40 bg-blue-100/30 p-3 dark:bg-blue-950/20">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           {status === 'executing' && <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-400" />}
           {status === 'completed' && <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />}
           {status === 'aborted' && <XCircle className="h-3.5 w-3.5 text-red-400" />}
-          <span className="text-xs font-medium text-gray-300">
+          <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
             {isFinished
               ? status === 'completed'
                 ? `Plan completed (${completedCount}/${steps.length})`
@@ -47,7 +47,7 @@ export default function AiPlanProgressBar({ steps, currentStepIndex, status, onA
       </div>
 
       {/* Progress bar */}
-      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-gray-800">
+      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800">
         <div
           className={cn(
             'h-full rounded-full transition-all duration-500',
@@ -59,9 +59,9 @@ export default function AiPlanProgressBar({ steps, currentStepIndex, status, onA
 
       {/* Current step name */}
       {!isFinished && currentStep && (
-        <p className="mt-1.5 text-xs text-gray-400 truncate">
+        <p className="mt-1.5 text-xs text-gray-500 truncate dark:text-gray-400">
           {formatToolName(currentStep.toolName)}
-          {currentStep.reasoning && <span className="text-gray-600"> — {currentStep.reasoning}</span>}
+          {currentStep.reasoning && <span className="text-gray-400 dark:text-gray-600"> — {currentStep.reasoning}</span>}
         </p>
       )}
 
@@ -74,8 +74,8 @@ export default function AiPlanProgressBar({ steps, currentStepIndex, status, onA
               step.status === 'completed' ? 'bg-green-500' :
               step.status === 'failed' ? 'bg-red-500' :
               step.status === 'executing' ? 'bg-blue-500 animate-pulse' :
-              step.status === 'skipped' ? 'bg-gray-600' :
-              'bg-gray-700'
+              step.status === 'skipped' ? 'bg-gray-400 dark:bg-gray-600' :
+              'bg-gray-300 dark:bg-gray-700'
             }`}
             title={`Step ${i + 1}: ${formatToolName(step.toolName)}`}
           />

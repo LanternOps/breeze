@@ -308,6 +308,143 @@ echo "DHCP lease renewed on en0"`,
     runAs: 'elevated' as const
   },
 
+  // === WINDOWS IDENTITY TEST SCRIPTS ===
+  {
+    name: 'Who Am I? (System Context)',
+    description: 'Shows the current execution identity when running as SYSTEM. Useful for verifying script execution context.',
+    category: 'Troubleshooting',
+    osTypes: ['windows'],
+    language: 'powershell' as const,
+    content: `Write-Host "=== Script Execution Identity ===" -ForegroundColor Cyan
+Write-Host "Username:      $(whoami)"
+Write-Host "Domain\\User:   $env:USERDOMAIN\\$env:USERNAME"
+Write-Host "Computer:      $env:COMPUTERNAME"
+Write-Host "Is Admin:      $([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"
+Write-Host "Session ID:    $([System.Diagnostics.Process]::GetCurrentProcess().SessionId)"
+Write-Host "Temp Path:     $([System.IO.Path]::GetTempPath())"
+Write-Host ""
+Write-Host "If running as SYSTEM, username will be 'NT AUTHORITY\\SYSTEM'" -ForegroundColor Yellow
+Write-Host "Session ID 0 = service context, >0 = user session" -ForegroundColor Yellow`,
+    timeoutSeconds: 30,
+    runAs: 'system' as const
+  },
+  {
+    name: 'Who Am I? (User Context)',
+    description: 'Shows the current execution identity when running as the logged-in user. Useful for verifying script execution context.',
+    category: 'Troubleshooting',
+    osTypes: ['windows'],
+    language: 'powershell' as const,
+    content: `Write-Host "=== Script Execution Identity ===" -ForegroundColor Cyan
+Write-Host "Username:      $(whoami)"
+Write-Host "Domain\\User:   $env:USERDOMAIN\\$env:USERNAME"
+Write-Host "Computer:      $env:COMPUTERNAME"
+Write-Host "Is Admin:      $([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"
+Write-Host "Session ID:    $([System.Diagnostics.Process]::GetCurrentProcess().SessionId)"
+Write-Host "User Profile:  $env:USERPROFILE"
+Write-Host "Temp Path:     $([System.IO.Path]::GetTempPath())"
+Write-Host ""
+Write-Host "If running as logged-in user, username will be 'DOMAIN\\username'" -ForegroundColor Yellow
+Write-Host "Session ID should be >0 (interactive user session)" -ForegroundColor Yellow`,
+    timeoutSeconds: 30,
+    runAs: 'user' as const
+  },
+
+  // === macOS IDENTITY TEST SCRIPTS ===
+  {
+    name: 'Who Am I? (System Context) (macOS)',
+    description: 'Shows the current execution identity when running as root/system. Useful for verifying script execution context.',
+    category: 'Troubleshooting',
+    osTypes: ['macos'],
+    language: 'bash' as const,
+    content: `#!/bin/bash
+echo "=== Script Execution Identity ==="
+echo "Username:      $(whoami)"
+echo "User ID:       $(id -u)"
+echo "Group ID:      $(id -g)"
+echo "Groups:        $(id -Gn)"
+echo "Hostname:      $(hostname)"
+echo "Home Dir:      $HOME"
+echo "Temp Dir:      $TMPDIR"
+echo "Shell:         $SHELL"
+echo ""
+echo "If running as SYSTEM, username will be 'root' (UID 0)"
+echo "If running as user, username will be the logged-in user"`,
+    timeoutSeconds: 30,
+    runAs: 'system' as const
+  },
+  {
+    name: 'Who Am I? (User Context) (macOS)',
+    description: 'Shows the current execution identity when running as the logged-in user. Useful for verifying script execution context.',
+    category: 'Troubleshooting',
+    osTypes: ['macos'],
+    language: 'bash' as const,
+    content: `#!/bin/bash
+echo "=== Script Execution Identity ==="
+echo "Username:      $(whoami)"
+echo "User ID:       $(id -u)"
+echo "Group ID:      $(id -g)"
+echo "Groups:        $(id -Gn)"
+echo "Hostname:      $(hostname)"
+echo "Home Dir:      $HOME"
+echo "Temp Dir:      $TMPDIR"
+echo "Shell:         $SHELL"
+CONSOLE_USER=$(stat -f "%Su" /dev/console 2>/dev/null || echo "unknown")
+echo "Console User:  $CONSOLE_USER"
+echo ""
+echo "If running as logged-in user, username should match Console User"
+echo "If running as root, UID will be 0 and username will be 'root'"`,
+    timeoutSeconds: 30,
+    runAs: 'user' as const
+  },
+
+  // === LINUX IDENTITY TEST SCRIPTS ===
+  {
+    name: 'Who Am I? (System Context) (Linux)',
+    description: 'Shows the current execution identity when running as root/system. Useful for verifying script execution context.',
+    category: 'Troubleshooting',
+    osTypes: ['linux'],
+    language: 'bash' as const,
+    content: `#!/bin/bash
+echo "=== Script Execution Identity ==="
+echo "Username:      $(whoami)"
+echo "User ID:       $(id -u)"
+echo "Group ID:      $(id -g)"
+echo "Groups:        $(id -Gn)"
+echo "Hostname:      $(hostname)"
+echo "Home Dir:      $HOME"
+echo "Temp Dir:      ${'${'}TMPDIR:-/tmp}"
+echo "Shell:         $SHELL"
+echo ""
+echo "If running as SYSTEM, username will be 'root' (UID 0)"
+echo "If running as user, username will be the logged-in user"`,
+    timeoutSeconds: 30,
+    runAs: 'system' as const
+  },
+  {
+    name: 'Who Am I? (User Context) (Linux)',
+    description: 'Shows the current execution identity when running as the logged-in user. Useful for verifying script execution context.',
+    category: 'Troubleshooting',
+    osTypes: ['linux'],
+    language: 'bash' as const,
+    content: `#!/bin/bash
+echo "=== Script Execution Identity ==="
+echo "Username:      $(whoami)"
+echo "User ID:       $(id -u)"
+echo "Group ID:      $(id -g)"
+echo "Groups:        $(id -Gn)"
+echo "Hostname:      $(hostname)"
+echo "Home Dir:      $HOME"
+echo "Temp Dir:      ${'${'}TMPDIR:-/tmp}"
+echo "Shell:         $SHELL"
+CONSOLE_USER=$(who 2>/dev/null | head -1 | awk '{print $1}')
+echo "Console User:  ${'${'}CONSOLE_USER:-unknown}"
+echo ""
+echo "If running as logged-in user, username should match Console User"
+echo "If running as root, UID will be 0 and username will be 'root'"`,
+    timeoutSeconds: 30,
+    runAs: 'user' as const
+  },
+
   // === LINUX SCRIPTS ===
   {
     name: 'Flush DNS Cache (Linux)',
