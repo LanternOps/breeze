@@ -182,12 +182,13 @@ export default function PartnerSettingsPage() {
         }
       };
 
-      if (hasAnyValue(securityData)) settings.security = securityData;
-      if (hasAnyValue(notificationsData)) settings.notifications = notificationsData;
-      if (hasAnyValue(eventLogsData)) settings.eventLogs = eventLogsData;
-      if (hasAnyValue(defaultsData)) settings.defaults = defaultsData;
-      if (hasAnyValue(brandingData)) settings.branding = brandingData;
-      if (hasAnyValue(aiBudgetsData)) settings.aiBudgets = aiBudgetsData;
+      // Always include all categories so clearing all fields removes locks
+      settings.security = securityData;
+      settings.notifications = notificationsData;
+      settings.eventLogs = eventLogsData;
+      settings.defaults = defaultsData;
+      settings.branding = brandingData;
+      settings.aiBudgets = aiBudgetsData;
 
       const response = await fetchWithAuth('/orgs/partners/me', {
         method: 'PATCH',
