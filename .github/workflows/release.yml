@@ -83,7 +83,7 @@ jobs:
 
   build-agent:
     name: Build Agent
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
@@ -92,18 +92,22 @@ jobs:
             goarch: amd64
             suffix: ''
             cgo: '0'
+            runner: ubuntu-latest
           - goos: darwin
             goarch: amd64
             suffix: ''
-            cgo: '0'
+            cgo: '1'
+            runner: macos-13
           - goos: darwin
             goarch: arm64
             suffix: ''
-            cgo: '0'
+            cgo: '1'
+            runner: macos-latest
           - goos: windows
             goarch: amd64
             suffix: '.exe'
             cgo: '0'
+            runner: ubuntu-latest
 
     steps:
       - name: Checkout
