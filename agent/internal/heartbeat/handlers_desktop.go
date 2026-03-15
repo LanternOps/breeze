@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"fmt"
+	"runtime"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -124,8 +125,10 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		displayIndex = int(di)
 	}
 
-	// Route through IPC helper when running headless (no display access)
-	if (h.isService || h.isHeadless) && h.sessionBroker != nil {
+	// Route through IPC helper when running headless (no display access).
+	// macOS launchd daemons are headless but DO have display access via
+	// Screen Recording permissions, so they use the direct path.
+	if runtime.GOOS != "darwin" && (h.isService || h.isHeadless) && h.sessionBroker != nil {
 		result := h.startDesktopViaHelper(sessionID, offer, iceServers, displayIndex, cmd.Payload)
 		result.DurationMs = time.Since(start).Milliseconds()
 		return result

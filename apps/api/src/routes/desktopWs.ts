@@ -16,7 +16,7 @@ const EXCHANGE_CACHE_TTL_MS = 30_000; // 30 seconds
 
 // Zod validation for desktop user messages
 const desktopInputEvent = z.object({
-  type: z.enum(['mousemove', 'mousedown', 'mouseup', 'keydown', 'keyup', 'wheel', 'click', 'dblclick']),
+  type: z.enum(['mousemove', 'mousedown', 'mouseup', 'keydown', 'keyup', 'wheel', 'click', 'dblclick', 'mouse_move', 'mouse_down', 'mouse_up', 'key_down', 'key_up']),
   x: z.number().min(-10000).max(100000).optional(),
   y: z.number().min(-10000).max(100000).optional(),
   button: z.union([z.string().max(20), z.number().int().min(0).max(4)]).optional(),
