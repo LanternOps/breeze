@@ -9,6 +9,7 @@ import (
 	"image"
 	"net"
 	"os"
+	osexec "os/exec"
 	"os/user"
 	"path/filepath"
 	"runtime"
@@ -252,6 +253,9 @@ func (c *Client) commandLoop() error {
 		case ipc.TypeClipboardSet:
 			go c.handleClipboardSet(env)
 
+		case ipc.TypeLaunchProcess:
+			go c.handleLaunchProcess(env)
+
 		case ipc.TypeSASResponse:
 			if !c.resolvePendingResponse(env) {
 				log.Warn("unsolicited sas_response from daemon", "id", env.ID)
@@ -345,6 +349,42 @@ func (c *Client) handleCommand(env *ipc.Envelope) {
 	if err := c.conn.SendTyped(env.ID, ipc.TypeCommandResult, result); err != nil {
 		log.Warn("failed to send command result", "id", env.ID, "error", err)
 	}
+}
+
+func (c *Client) handleLaunchProcess(env *ipc.Envelope) {
+	var req ipc.LaunchProcessRequest
+	if err := json.Unmarshal(env.Payload, &req); err != nil {
+		c.conn.SendTyped(env.ID, ipc.TypeLaunchResult, ipc.LaunchProcessResult{
+			Error: fmt.Sprintf("invalid payload: %v", err),
+		})
+		return
+	}
+
+	if req.BinaryPath == "" {
+		c.conn.SendTyped(env.ID, ipc.TypeLaunchResult, ipc.LaunchProcessResult{
+			Error: "binaryPath is required",
+		})
+		return
+	}
+
+	cmd := osexec.Command(req.BinaryPath)
+	cmd.Dir = filepath.Dir(req.BinaryPath)
+	if err := cmd.Start(); err != nil {
+		log.Warn("failed to launch process", "binary", req.BinaryPath, "error", err.Error())
+		c.conn.SendTyped(env.ID, ipc.TypeLaunchResult, ipc.LaunchProcessResult{
+			Error: err.Error(),
+		})
+		return
+	}
+
+	log.Info("launched process as user", "binary", req.BinaryPath, "pid", cmd.Process.Pid)
+	c.conn.SendTyped(env.ID, ipc.TypeLaunchResult, ipc.LaunchProcessResult{
+		OK:  true,
+		PID: cmd.Process.Pid,
+	})
+
+	// Don't wait for the process — release it so it runs independently.
+	cmd.Process.Release()
 }
 
 func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
