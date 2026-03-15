@@ -22,7 +22,7 @@ type HelperLifecycleManager struct {
 	detector SessionDetector
 	scmCh    <-chan SCMSessionEvent
 	mu       sync.Mutex
-	tracked  map[string]*trackedSession // winSessionID -> state
+	tracked  map[string]*trackedSession // "winSessionID-role" -> state
 }
 
 type trackedSession struct {
@@ -115,7 +115,7 @@ func (m *HelperLifecycleManager) Start(ctx context.Context) {
 	}
 }
 
-// reconcile ensures a helper is running in every eligible session.
+// reconcile ensures both SYSTEM and user helpers are running in every eligible session.
 func (m *HelperLifecycleManager) reconcile() {
 	sessions, err := m.detector.ListSessions()
 	if err != nil {
@@ -123,11 +123,9 @@ func (m *HelperLifecycleManager) reconcile() {
 		return
 	}
 
-	currentIDs := make(map[string]bool, len(sessions))
+	currentKeys := make(map[string]bool, len(sessions)*2)
 
 	for _, s := range sessions {
-		currentIDs[s.Session] = true
-
 		// Skip Session 0 (services) and non-interactive types.
 		if s.Session == "0" || s.Type == "services" {
 			continue
@@ -138,19 +136,28 @@ func (m *HelperLifecycleManager) reconcile() {
 			continue
 		}
 
-		// Already has a helper — nothing to do.
-		if m.broker.HasHelperForWinSession(s.Session) {
-			continue
+		// Spawn SYSTEM helper if missing.
+		systemKey := s.Session + "-system"
+		currentKeys[systemKey] = true
+		if !m.broker.HasHelperForWinSessionRole(s.Session, "system") {
+			m.spawnWithRetry(s.Session, "system")
 		}
 
-		m.spawnWithRetry(s.Session)
+		// Spawn user-token helper if missing. Only for active sessions
+		// (user is actually logged in); "connected" means lock screen
+		// where WTSQueryUserToken may fail.
+		userKey := s.Session + "-user"
+		currentKeys[userKey] = true
+		if s.State == "active" && !m.broker.HasHelperForWinSessionRole(s.Session, "user") {
+			m.spawnWithRetry(s.Session, "user")
+		}
 	}
 
 	// Clean up tracking for sessions that no longer exist.
 	m.mu.Lock()
-	for id := range m.tracked {
-		if !currentIDs[id] {
-			delete(m.tracked, id)
+	for key := range m.tracked {
+		if !currentKeys[key] {
+			delete(m.tracked, key)
 		}
 	}
 	m.mu.Unlock()
@@ -168,24 +175,30 @@ func (m *HelperLifecycleManager) handleSCMEvent(evt SCMSessionEvent) {
 
 	switch evt.EventType {
 	case wtsSessionLogon, wtsSessionUnlock, wtsSessionCreate:
-		if !m.broker.HasHelperForWinSession(sessionID) {
-			m.spawnWithRetry(sessionID)
+		if !m.broker.HasHelperForWinSessionRole(sessionID, "system") {
+			m.spawnWithRetry(sessionID, "system")
+		}
+		if !m.broker.HasHelperForWinSessionRole(sessionID, "user") {
+			m.spawnWithRetry(sessionID, "user")
 		}
 	case wtsSessionLogoff, wtsSessionTerminate:
 		m.mu.Lock()
-		delete(m.tracked, sessionID)
+		delete(m.tracked, sessionID+"-system")
+		delete(m.tracked, sessionID+"-user")
 		m.mu.Unlock()
 	}
 }
 
-// spawnWithRetry spawns a helper into the given Windows session, respecting
-// exponential backoff and a max retry cap on repeated failures.
-func (m *HelperLifecycleManager) spawnWithRetry(winSessionID string) {
+// spawnWithRetry spawns a helper with the given role into the Windows session,
+// respecting exponential backoff and a max retry cap on repeated failures.
+func (m *HelperLifecycleManager) spawnWithRetry(winSessionID, role string) {
+	trackKey := winSessionID + "-" + role
+
 	m.mu.Lock()
-	ts, exists := m.tracked[winSessionID]
+	ts, exists := m.tracked[trackKey]
 	if !exists {
 		ts = &trackedSession{}
-		m.tracked[winSessionID] = ts
+		m.tracked[trackKey] = ts
 	}
 
 	// Give up after too many failures. The tracking entry is cleaned up
@@ -215,7 +228,18 @@ func (m *HelperLifecycleManager) spawnWithRetry(winSessionID string) {
 		return
 	}
 
-	if err := SpawnHelperInSession(uint32(sessionNum)); err != nil {
+	// Kill stale helpers for this specific role before respawning.
+	m.broker.KillStaleHelpers(winSessionID + "-" + role)
+
+	// Spawn the appropriate helper type.
+	switch role {
+	case "user":
+		err = SpawnUserHelperInSession(uint32(sessionNum))
+	default:
+		err = SpawnHelperInSession(uint32(sessionNum))
+	}
+
+	if err != nil {
 		m.mu.Lock()
 		ts.retryCount++
 		ts.lastFailure = time.Now()
@@ -224,11 +248,13 @@ func (m *HelperLifecycleManager) spawnWithRetry(winSessionID string) {
 		if ts.retryCount >= maxSpawnRetries {
 			log.Error("lifecycle: giving up on session after max retries",
 				"winSessionID", winSessionID,
+				"role", role,
 				"retryCount", ts.retryCount,
 			)
 		} else {
 			log.Warn("lifecycle: failed to spawn helper",
 				"winSessionID", winSessionID,
+				"role", role,
 				"retryCount", ts.retryCount,
 				"error", err.Error(),
 			)
@@ -242,5 +268,5 @@ func (m *HelperLifecycleManager) spawnWithRetry(winSessionID string) {
 	ts.lastFailure = time.Time{}
 	m.mu.Unlock()
 
-	log.Info("proactively spawned helper in session", "winSessionID", winSessionID)
+	log.Info("proactively spawned helper in session", "winSessionID", winSessionID, "role", role)
 }

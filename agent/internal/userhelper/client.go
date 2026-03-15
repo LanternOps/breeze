@@ -27,6 +27,7 @@ var log = logging.L("userhelper")
 // Client is the user-helper side of the IPC connection to the root daemon.
 type Client struct {
 	socketPath string
+	role       string // "system" or "user"
 	conn       *ipc.Conn
 	sessionKey []byte
 	agentID    string
@@ -38,10 +39,15 @@ type Client struct {
 	sasReqSeq  atomic.Uint64
 }
 
-// New creates a new user helper client.
-func New(socketPath string) *Client {
+// New creates a new user helper client with the given role.
+// Role should be ipc.HelperRoleSystem or ipc.HelperRoleUser.
+func New(socketPath, role string) *Client {
+	if role == "" {
+		role = ipc.HelperRoleSystem
+	}
 	return &Client{
 		socketPath: socketPath,
+		role:       role,
 		stopChan:   make(chan struct{}),
 		desktopMgr: newHelperDesktopManager(),
 		pending:    make(map[string]chan *ipc.Envelope),
@@ -139,6 +145,7 @@ func (c *Client) authenticate() error {
 		PID:             os.Getpid(),
 		BinaryHash:      binaryHash,
 		WinSessionID:    currentWinSessionID(),
+		HelperRole:      c.role,
 	}
 
 	if err := c.conn.SendTyped("auth", ipc.TypeAuthRequest, authReq); err != nil {
@@ -179,6 +186,10 @@ func (c *Client) authenticate() error {
 
 func (c *Client) sendCapabilities() error {
 	caps := detectCapabilities()
+	// User-role helpers cannot capture desktop (no SYSTEM token for UAC/lock screen).
+	if c.role == ipc.HelperRoleUser {
+		caps.CanCapture = false
+	}
 	return c.conn.SendTyped("caps", ipc.TypeCapabilities, caps)
 }
 

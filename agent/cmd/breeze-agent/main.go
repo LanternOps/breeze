@@ -31,6 +31,7 @@ var (
 	cfgFile          string
 	serverURL        string
 	enrollmentSecret string
+	helperRole       string
 )
 
 var log = logging.L("main")
@@ -90,6 +91,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is /etc/breeze/agent.yaml)")
 	rootCmd.PersistentFlags().StringVar(&serverURL, "server", "", "Breeze server URL")
 	enrollCmd.Flags().StringVar(&enrollmentSecret, "enrollment-secret", "", "Enrollment secret (AGENT_ENROLLMENT_SECRET on the server)")
+	userHelperCmd.Flags().StringVar(&helperRole, "role", "system", "Helper role: 'system' (desktop capture) or 'user' (script execution)")
 
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(enrollCmd)
@@ -523,9 +525,10 @@ func runUserHelper() {
 		"version", version,
 		"socket", socketPath,
 		"pid", os.Getpid(),
+		"role", helperRole,
 	)
 
-	client := userhelper.New(socketPath)
+	client := userhelper.New(socketPath, helperRole)
 
 	// Handle shutdown signals
 	sigChan := make(chan os.Signal, 1)

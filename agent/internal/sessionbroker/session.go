@@ -23,6 +23,7 @@ type Session struct {
 	Capabilities  *ipc.Capabilities
 	AllowedScopes []string
 	WinSessionID  string // Windows session ID string (e.g., "1", "2") for targeting
+	HelperRole    string // "system" or "user" — determines scopes and capabilities
 	ConnectedAt   time.Time
 	LastSeen      time.Time
 
@@ -152,6 +153,7 @@ type SessionInfo struct {
 	ConnectedAt  time.Time          `json:"connectedAt"`
 	LastSeen     time.Time          `json:"lastSeen"`
 	WinSessionID string             `json:"winSessionId,omitempty"`
+	HelperRole   string             `json:"helperRole,omitempty"`
 }
 
 // Info returns a serializable summary of this session.
@@ -168,6 +170,7 @@ func (s *Session) Info() SessionInfo {
 		ConnectedAt:  s.ConnectedAt,
 		LastSeen:     s.LastSeen,
 		WinSessionID: s.WinSessionID,
+		HelperRole:   s.HelperRole,
 	}
 }
 
