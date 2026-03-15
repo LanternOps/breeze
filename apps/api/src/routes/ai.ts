@@ -23,6 +23,7 @@ import { runPreFlightChecks, abortActivePlan } from '../services/aiAgentSdk';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
 import { writeRouteAudit } from '../services/auditEvents';
+import { assertNotLocked } from '../services/effectiveSettings';
 import { db } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions, auditLogs } from '../db/schema';
 import { eq, and, desc, gte, count, avg, sql as drizzleSql } from 'drizzle-orm';
@@ -659,6 +660,13 @@ aiRoutes.put(
     }
 
     const body = c.req.valid('json');
+
+    // Enforce partner locks on AI budget fields
+    const budgetFields = Object.keys(body);
+    if (budgetFields.length > 0) {
+      await assertNotLocked(orgId, 'aiBudgets', budgetFields);
+    }
+
     await updateBudget(orgId, body);
 
     writeRouteAudit(c, {

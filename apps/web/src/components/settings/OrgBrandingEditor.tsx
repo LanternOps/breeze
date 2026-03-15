@@ -17,6 +17,7 @@ type OrgBrandingEditorProps = {
   branding?: BrandingData;
   onDirty?: () => void;
   onSave?: (data: BrandingData) => void;
+  locked?: string[];
 };
 
 const defaultBranding: BrandingData = {
@@ -34,7 +35,17 @@ const themeOptions = [
   { value: 'system', label: 'System' }
 ];
 
-export default function OrgBrandingEditor({ organizationName, branding, onDirty, onSave }: OrgBrandingEditorProps) {
+const portalDomain = (() => {
+  try {
+    const url = import.meta.env.PUBLIC_API_URL || '';
+    return new URL(url).hostname;
+  } catch {
+    return 'breezermm.com';
+  }
+})();
+
+export default function OrgBrandingEditor({ organizationName, branding, onDirty, onSave, locked }: OrgBrandingEditorProps) {
+  const isLocked = (field: string) => locked?.includes(`branding.${field}`) ?? false;
   const initialData = { ...defaultBranding, ...branding };
   const [logoPreview, setLogoPreview] = useState(initialData.logoUrl || '');
   const [logoName, setLogoName] = useState('');
@@ -92,7 +103,7 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
     onSave?.(data);
   };
 
-  const previewUrl = `https://${portalSubdomain || 'your-org'}.breeze.app`;
+  const previewUrl = `https://${portalSubdomain || 'your-org'}.${portalDomain}`;
   const isDarkTheme = theme === 'dark';
   const safeLogoPreview = sanitizeImageSrc(logoPreview);
 
@@ -159,10 +170,13 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
                   <p className="text-xs text-muted-foreground">Selected: {logoName}</p>
                 ) : null}
               </div>
-              <label className="ml-auto inline-flex cursor-pointer items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium transition hover:bg-muted">
-                <input type="file" accept="image/*" className="hidden" onChange={handleLogoChange} />
+              <label className={`ml-auto inline-flex cursor-pointer items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium transition hover:bg-muted ${isLocked('logoUrl') ? 'opacity-60 pointer-events-none' : ''}`}>
+                <input type="file" accept="image/*" className="hidden" disabled={isLocked('logoUrl')} onChange={handleLogoChange} />
                 Upload
               </label>
+              {isLocked('logoUrl') && (
+                <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+              )}
             </div>
           </div>
 
@@ -172,10 +186,11 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
                 <Palette className="h-4 w-4" />
                 Primary color
               </div>
-              <div className="flex items-center gap-3">
+              <div className={`flex items-center gap-3 ${isLocked('primaryColor') ? 'opacity-60' : ''}`}>
                 <input
                   type="color"
                   value={resolvedPrimaryColor}
+                  disabled={isLocked('primaryColor')}
                   onChange={event => {
                     setPrimaryColor(event.target.value);
                     markDirty();
@@ -185,6 +200,7 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
                 <input
                   type="text"
                   value={primaryColor}
+                  disabled={isLocked('primaryColor')}
                   onChange={event => {
                     setPrimaryColor(event.target.value);
                     markDirty();
@@ -192,6 +208,9 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
                   className="h-10 w-full rounded-md border bg-background px-3 text-sm"
                 />
               </div>
+              {isLocked('primaryColor') && (
+                <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+              )}
             </div>
 
             <div className="space-y-2 rounded-lg border bg-muted/40 p-4">
@@ -199,10 +218,11 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
                 <Palette className="h-4 w-4" />
                 Secondary color
               </div>
-              <div className="flex items-center gap-3">
+              <div className={`flex items-center gap-3 ${isLocked('secondaryColor') ? 'opacity-60' : ''}`}>
                 <input
                   type="color"
                   value={resolvedSecondaryColor}
+                  disabled={isLocked('secondaryColor')}
                   onChange={event => {
                     setSecondaryColor(event.target.value);
                     markDirty();
@@ -212,6 +232,7 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
                 <input
                   type="text"
                   value={secondaryColor}
+                  disabled={isLocked('secondaryColor')}
                   onChange={event => {
                     setSecondaryColor(event.target.value);
                     markDirty();
@@ -219,6 +240,9 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
                   className="h-10 w-full rounded-md border bg-background px-3 text-sm"
                 />
               </div>
+              {isLocked('secondaryColor') && (
+                <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+              )}
             </div>
           </div>
         </div>
@@ -231,11 +255,12 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
             </div>
             <select
               value={theme}
+              disabled={isLocked('theme')}
               onChange={event => {
                 setTheme(event.target.value as 'light' | 'dark' | 'system');
                 markDirty();
               }}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+              className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('theme') ? 'opacity-60' : ''}`}
             >
               {themeOptions.map(option => (
                 <option key={option.value} value={option.value}>
@@ -246,6 +271,9 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
             <p className="text-xs text-muted-foreground">
               System respects user OS preference when available.
             </p>
+            {isLocked('theme') && (
+              <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+            )}
           </div>
 
           <div className="space-y-2 rounded-lg border bg-muted/40 p-4">
@@ -264,11 +292,11 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
                 className="h-10 w-full rounded-l-md border border-r-0 bg-background px-3 text-sm"
               />
               <span className="flex h-10 items-center rounded-r-md border bg-muted px-3 text-xs text-muted-foreground">
-                .breeze.app
+                .{portalDomain}
               </span>
             </div>
             <p className="text-xs text-muted-foreground">
-              Available preview URL: https://{portalSubdomain || 'your-org'}.breeze.app
+              Available preview URL: https://{portalSubdomain || 'your-org'}.{portalDomain}
             </p>
           </div>
 
@@ -276,16 +304,20 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
             <div className="text-sm font-medium">Custom CSS (advanced)</div>
             <textarea
               value={customCss}
+              disabled={isLocked('customCss')}
               onChange={event => {
                 setCustomCss(event.target.value);
                 markDirty();
               }}
               rows={7}
-              className="w-full rounded-md border bg-background px-3 py-2 text-xs"
+              className={`w-full rounded-md border bg-background px-3 py-2 text-xs ${isLocked('customCss') ? 'opacity-60' : ''}`}
             />
             <p className="text-xs text-muted-foreground">
               Use custom styles to fine tune spacing, typography, or layout.
             </p>
+            {isLocked('customCss') && (
+              <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+            )}
           </div>
         </div>
       </div>

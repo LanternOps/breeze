@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Bot, DollarSign, Flag, MessageSquare, Zap, Save, Loader2 } from 'lucide-react';
+import { Bot, DollarSign, Flag, MessageSquare, Zap, Save, Loader2, Lock } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 
 interface UsageData {
   daily: { inputTokens: number; outputTokens: number; totalCostCents: number; messageCount: number };
@@ -44,11 +45,13 @@ interface BudgetForm {
 export default function AiUsagePage() {
   const [usage, setUsage] = useState<UsageData | null>(null);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
+  const [locked, setLocked] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showFlaggedOnly, setShowFlaggedOnly] = useState(false);
+  const { currentOrgId } = useOrgStore();
   const [budget, setBudget] = useState<BudgetForm>({
     enabled: true,
     monthlyBudgetDollars: '',
@@ -90,32 +93,59 @@ export default function AiUsagePage() {
         const data = await sessionsRes.json();
         setSessions(data.data || []);
       }
+
+      // Fetch locked fields from partner
+      if (currentOrgId) {
+        try {
+          const effRes = await fetchWithAuth(`/orgs/organizations/${currentOrgId}/effective-settings`);
+          if (effRes.ok) {
+            const effData = await effRes.json();
+            setLocked(effData.locked || []);
+          }
+        } catch (err) {
+          console.warn('[AiUsagePage] Error fetching effective settings:', err);
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load data');
     } finally {
       setLoading(false);
     }
-  }, [showFlaggedOnly]);
+  }, [showFlaggedOnly, currentOrgId]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  const isLocked = (field: string) => locked.includes(`aiBudgets.${field}`);
+
+  const budgetFields = [
+    'enabled', 'monthlyBudgetCents', 'dailyBudgetCents',
+    'maxTurnsPerSession', 'messagesPerMinutePerUser', 'messagesPerHourPerOrg',
+    'approvalMode',
+  ];
+  const allFieldsLocked = budgetFields.every((f) => isLocked(f));
 
   const handleSaveBudget = async () => {
     setSaving(true);
     setSaveSuccess(false);
     try {
+      // Filter out partner-locked fields to prevent 403 errors
+      const payload: Record<string, unknown> = {};
+      if (!isLocked('enabled')) payload.enabled = budget.enabled;
+      if (!isLocked('monthlyBudgetCents')) payload.monthlyBudgetCents = budget.monthlyBudgetDollars ? Math.round(parseFloat(budget.monthlyBudgetDollars) * 100) : null;
+      if (!isLocked('dailyBudgetCents')) payload.dailyBudgetCents = budget.dailyBudgetDollars ? Math.round(parseFloat(budget.dailyBudgetDollars) * 100) : null;
+      if (!isLocked('maxTurnsPerSession')) payload.maxTurnsPerSession = parseInt(budget.maxTurnsPerSession) || 50;
+      if (!isLocked('messagesPerMinutePerUser')) payload.messagesPerMinutePerUser = parseInt(budget.messagesPerMinutePerUser) || 20;
+      if (!isLocked('messagesPerHourPerOrg')) payload.messagesPerHourPerOrg = parseInt(budget.messagesPerHourPerOrg) || 200;
+      if (!isLocked('approvalMode')) payload.approvalMode = budget.approvalMode;
+
       const res = await fetchWithAuth('/ai/budget', {
         method: 'PUT',
-        body: JSON.stringify({
-          enabled: budget.enabled,
-          monthlyBudgetCents: budget.monthlyBudgetDollars ? Math.round(parseFloat(budget.monthlyBudgetDollars) * 100) : null,
-          dailyBudgetCents: budget.dailyBudgetDollars ? Math.round(parseFloat(budget.dailyBudgetDollars) * 100) : null,
-          maxTurnsPerSession: parseInt(budget.maxTurnsPerSession) || 50,
-          messagesPerMinutePerUser: parseInt(budget.messagesPerMinutePerUser) || 20,
-          messagesPerHourPerOrg: parseInt(budget.messagesPerHourPerOrg) || 200,
-          approvalMode: budget.approvalMode,
-        })
+        body: JSON.stringify(payload)
       });
-      if (!res.ok) throw new Error('Failed to save budget');
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || body.message || 'Failed to save budget');
+      }
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err) {
@@ -185,18 +215,25 @@ export default function AiUsagePage() {
             <select
               value={budget.enabled ? 'true' : 'false'}
               onChange={(e) => setBudget({ ...budget, enabled: e.target.value === 'true' })}
-              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+              disabled={isLocked('enabled')}
+              className={`mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('enabled') ? 'opacity-60 cursor-not-allowed' : ''}`}
             >
               <option value="true">Enabled</option>
               <option value="false">Disabled</option>
             </select>
+            {isLocked('enabled') && (
+              <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
+                <Lock className="h-3 w-3" /> Managed by partner
+              </span>
+            )}
           </label>
           <label className="block">
             <span className="text-sm text-muted-foreground">Approval Mode</span>
             <select
               value={budget.approvalMode}
               onChange={(e) => setBudget({ ...budget, approvalMode: e.target.value as ApprovalMode })}
-              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+              disabled={isLocked('approvalMode')}
+              className={`mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('approvalMode') ? 'opacity-60 cursor-not-allowed' : ''}`}
             >
               <option value="per_step">Per Step (default)</option>
               <option value="action_plan">Action Plan</option>
@@ -209,6 +246,11 @@ export default function AiUsagePage() {
               {budget.approvalMode === 'auto_approve' && 'All tools auto-execute with audit logging. A Pause button reverts to per-step.'}
               {budget.approvalMode === 'hybrid_plan' && 'Like Action Plan, plus live screenshots between steps and a persistent Stop button.'}
             </p>
+            {isLocked('approvalMode') && (
+              <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
+                <Lock className="h-3 w-3" /> Managed by partner
+              </span>
+            )}
           </label>
           <label className="block">
             <span className="text-sm text-muted-foreground">Monthly Budget ($)</span>
@@ -218,8 +260,14 @@ export default function AiUsagePage() {
               value={budget.monthlyBudgetDollars}
               onChange={(e) => setBudget({ ...budget, monthlyBudgetDollars: e.target.value })}
               placeholder="No limit"
-              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+              disabled={isLocked('monthlyBudgetCents')}
+              className={`mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('monthlyBudgetCents') ? 'opacity-60 cursor-not-allowed' : ''}`}
             />
+            {isLocked('monthlyBudgetCents') && (
+              <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
+                <Lock className="h-3 w-3" /> Managed by partner
+              </span>
+            )}
           </label>
           <label className="block">
             <span className="text-sm text-muted-foreground">Daily Budget ($)</span>
@@ -229,8 +277,14 @@ export default function AiUsagePage() {
               value={budget.dailyBudgetDollars}
               onChange={(e) => setBudget({ ...budget, dailyBudgetDollars: e.target.value })}
               placeholder="No limit"
-              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+              disabled={isLocked('dailyBudgetCents')}
+              className={`mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('dailyBudgetCents') ? 'opacity-60 cursor-not-allowed' : ''}`}
             />
+            {isLocked('dailyBudgetCents') && (
+              <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
+                <Lock className="h-3 w-3" /> Managed by partner
+              </span>
+            )}
           </label>
           <label className="block">
             <span className="text-sm text-muted-foreground">Max Turns Per Session</span>
@@ -238,8 +292,14 @@ export default function AiUsagePage() {
               type="number"
               value={budget.maxTurnsPerSession}
               onChange={(e) => setBudget({ ...budget, maxTurnsPerSession: e.target.value })}
-              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+              disabled={isLocked('maxTurnsPerSession')}
+              className={`mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('maxTurnsPerSession') ? 'opacity-60 cursor-not-allowed' : ''}`}
             />
+            {isLocked('maxTurnsPerSession') && (
+              <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
+                <Lock className="h-3 w-3" /> Managed by partner
+              </span>
+            )}
           </label>
           <label className="block">
             <span className="text-sm text-muted-foreground">Msgs/Min Per User</span>
@@ -247,8 +307,14 @@ export default function AiUsagePage() {
               type="number"
               value={budget.messagesPerMinutePerUser}
               onChange={(e) => setBudget({ ...budget, messagesPerMinutePerUser: e.target.value })}
-              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+              disabled={isLocked('messagesPerMinutePerUser')}
+              className={`mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('messagesPerMinutePerUser') ? 'opacity-60 cursor-not-allowed' : ''}`}
             />
+            {isLocked('messagesPerMinutePerUser') && (
+              <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
+                <Lock className="h-3 w-3" /> Managed by partner
+              </span>
+            )}
           </label>
           <label className="block">
             <span className="text-sm text-muted-foreground">Msgs/Hr Per Org</span>
@@ -256,20 +322,31 @@ export default function AiUsagePage() {
               type="number"
               value={budget.messagesPerHourPerOrg}
               onChange={(e) => setBudget({ ...budget, messagesPerHourPerOrg: e.target.value })}
-              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+              disabled={isLocked('messagesPerHourPerOrg')}
+              className={`mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('messagesPerHourPerOrg') ? 'opacity-60 cursor-not-allowed' : ''}`}
             />
+            {isLocked('messagesPerHourPerOrg') && (
+              <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
+                <Lock className="h-3 w-3" /> Managed by partner
+              </span>
+            )}
           </label>
         </div>
         <div className="mt-4 flex items-center gap-3">
           <button
             onClick={handleSaveBudget}
-            disabled={saving}
+            disabled={saving || allFieldsLocked}
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
             Save Budget
           </button>
           {saveSuccess && <span className="text-sm text-green-500">Saved successfully</span>}
+          {allFieldsLocked && (
+            <span className="text-sm text-amber-600 dark:text-amber-400 italic">
+              All budget settings are managed by your partner
+            </span>
+          )}
         </div>
       </div>
 

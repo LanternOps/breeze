@@ -19,6 +19,7 @@ type OrgNotificationSettingsProps = {
   notifications?: NotificationsData;
   onDirty?: () => void;
   onSave?: (data: NotificationsData) => void;
+  locked?: string[];
 };
 
 const defaultNotifications: NotificationsData = {
@@ -61,8 +62,10 @@ const getDefaultPreferences = () => {
 export default function OrgNotificationSettings({
   notifications,
   onDirty,
-  onSave
+  onSave,
+  locked
 }: OrgNotificationSettingsProps) {
+  const isLocked = (field: string) => locked?.includes(`notifications.${field}`) ?? false;
   const initialData = { ...defaultNotifications, ...notifications };
   const [fromAddress, setFromAddress] = useState(initialData.fromAddress || '');
   const [replyTo, setReplyTo] = useState(initialData.replyTo || '');
@@ -120,10 +123,10 @@ export default function OrgNotificationSettings({
 
   const smtpFields = useMemo(
     () => [
-      { label: 'SMTP host', value: smtpHost, onChange: setSmtpHost },
-      { label: 'Port', value: smtpPort, onChange: setSmtpPort },
-      { label: 'Username', value: smtpUsername, onChange: setSmtpUsername },
-      { label: 'Password', value: smtpPassword, onChange: setSmtpPassword }
+      { label: 'SMTP host', value: smtpHost, onChange: setSmtpHost, lockKey: 'smtpHost' },
+      { label: 'Port', value: smtpPort, onChange: setSmtpPort, lockKey: 'smtpPort' },
+      { label: 'Username', value: smtpUsername, onChange: setSmtpUsername, lockKey: 'smtpUsername' },
+      { label: 'Password', value: smtpPassword, onChange: setSmtpPassword, lockKey: 'smtpPassword' }
     ],
     [smtpHost, smtpPort, smtpUsername, smtpPassword]
   );
@@ -160,32 +163,41 @@ export default function OrgNotificationSettings({
                 <input
                   type="email"
                   value={fromAddress}
+                  disabled={isLocked('fromAddress')}
                   onChange={event => {
                     setFromAddress(event.target.value);
                     markDirty();
                   }}
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                  className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('fromAddress') ? 'opacity-60' : ''}`}
                 />
+                {isLocked('fromAddress') && (
+                  <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                )}
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">Reply-to address</label>
                 <input
                   type="email"
                   value={replyTo}
+                  disabled={isLocked('replyTo')}
                   onChange={event => {
                     setReplyTo(event.target.value);
                     markDirty();
                   }}
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                  className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('replyTo') ? 'opacity-60' : ''}`}
                 />
+                {isLocked('replyTo') && (
+                  <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                )}
               </div>
             </div>
 
-            <label className="flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2 text-sm">
+            <label className={`flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2 text-sm ${isLocked('useCustomSmtp') ? 'opacity-60' : ''}`}>
               <span>Use custom SMTP server</span>
               <input
                 type="checkbox"
                 checked={useCustomSmtp}
+                disabled={isLocked('useCustomSmtp')}
                 onChange={event => {
                   setUseCustomSmtp(event.target.checked);
                   markDirty();
@@ -193,6 +205,9 @@ export default function OrgNotificationSettings({
                 className="h-4 w-4"
               />
             </label>
+            {isLocked('useCustomSmtp') && (
+              <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+            )}
 
             {useCustomSmtp ? (
               <div className="grid gap-4 md:grid-cols-2">
@@ -202,28 +217,36 @@ export default function OrgNotificationSettings({
                     <input
                       type={field.label === 'Password' ? 'password' : 'text'}
                       value={field.value}
+                      disabled={isLocked(field.lockKey)}
                       onChange={event => {
                         field.onChange(event.target.value);
                         markDirty();
                       }}
-                      className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                      className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked(field.lockKey) ? 'opacity-60' : ''}`}
                     />
+                    {isLocked(field.lockKey) && (
+                      <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                    )}
                   </div>
                 ))}
                 <div className="space-y-2">
                   <label className="text-sm font-medium">Encryption</label>
                   <select
                     value={smtpEncryption}
+                    disabled={isLocked('smtpEncryption')}
                     onChange={event => {
                       setSmtpEncryption(event.target.value);
                       markDirty();
                     }}
-                    className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                    className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('smtpEncryption') ? 'opacity-60' : ''}`}
                   >
                     <option value="tls">TLS</option>
                     <option value="ssl">SSL</option>
                     <option value="none">None</option>
                   </select>
+                  {isLocked('smtpEncryption') && (
+                    <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                  )}
                 </div>
               </div>
             ) : (
@@ -243,23 +266,28 @@ export default function OrgNotificationSettings({
               <input
                 type="text"
                 value={slackWebhookUrl}
+                disabled={isLocked('slackWebhookUrl')}
                 onChange={event => {
                   setSlackWebhookUrl(event.target.value);
                   markDirty();
                 }}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('slackWebhookUrl') ? 'opacity-60' : ''}`}
               />
+              {isLocked('slackWebhookUrl') && (
+                <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+              )}
             </div>
             <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
               <div className="space-y-2">
                 <label className="text-sm font-medium">Default channel</label>
                 <select
                   value={slackChannel}
+                  disabled={isLocked('slackChannel')}
                   onChange={event => {
                     setSlackChannel(event.target.value);
                     markDirty();
                   }}
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                  className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('slackChannel') ? 'opacity-60' : ''}`}
                 >
                   {slackChannels.map(channel => (
                     <option key={channel} value={channel}>
@@ -267,6 +295,9 @@ export default function OrgNotificationSettings({
                     </option>
                   ))}
                 </select>
+                {isLocked('slackChannel') && (
+                  <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                )}
               </div>
               <button
                 type="button"
@@ -287,10 +318,14 @@ export default function OrgNotificationSettings({
               <Webhook className="h-4 w-4" />
               Webhook notifications
             </div>
-            <div className="flex flex-wrap gap-2">
+            {isLocked('webhooks') && (
+              <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+            )}
+            <div className={`flex flex-wrap gap-2 ${isLocked('webhooks') ? 'opacity-60' : ''}`}>
               <input
                 type="text"
                 value={newWebhook}
+                disabled={isLocked('webhooks')}
                 onChange={event => setNewWebhook(event.target.value)}
                 placeholder="https://api.example.com/alerts"
                 className="h-10 flex-1 rounded-md border bg-background px-3 text-sm"
@@ -298,7 +333,8 @@ export default function OrgNotificationSettings({
               <button
                 type="button"
                 onClick={handleAddWebhook}
-                className="inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm font-medium transition hover:bg-muted"
+                disabled={isLocked('webhooks')}
+                className="inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm font-medium transition hover:bg-muted disabled:opacity-50"
               >
                 <Plus className="h-4 w-4" />
                 Add
@@ -350,10 +386,11 @@ export default function OrgNotificationSettings({
                   <tr key={alert.id} className="border-t">
                     <td className="px-2 py-2 text-sm font-medium">{alert.label}</td>
                     {channelOptions.map(channel => (
-                      <td key={channel.id} className="px-2 py-2">
+                      <td key={channel.id} className={`px-2 py-2 ${isLocked('preferences') ? 'opacity-60' : ''}`}>
                         <input
                           type="checkbox"
                           checked={preferences[alert.id][channel.id]}
+                          disabled={isLocked('preferences')}
                           onChange={() => {
                             setPreferences(prev => ({
                               ...prev,
@@ -376,6 +413,9 @@ export default function OrgNotificationSettings({
           <p className="text-xs text-muted-foreground">
             Choose which channels are used for each alert type.
           </p>
+          {isLocked('preferences') && (
+            <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+          )}
         </div>
       </div>
     </section>

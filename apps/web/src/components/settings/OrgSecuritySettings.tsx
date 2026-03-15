@@ -24,6 +24,7 @@ type OrgSecuritySettingsProps = {
   mtls?: MtlsSettings;
   onDirty?: () => void;
   onSave?: (data: SecurityData) => void;
+  locked?: string[];
 };
 
 const defaultSecurity: SecurityData = {
@@ -37,7 +38,9 @@ const defaultSecurity: SecurityData = {
   ipAllowlist: ''
 };
 
-export default function OrgSecuritySettings({ security, mtls, onDirty, onSave }: OrgSecuritySettingsProps) {
+export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, locked }: OrgSecuritySettingsProps) {
+  const isLocked = (field: string) => locked?.includes(`security.${field}`) ?? false;
+
   const initialData = { ...defaultSecurity, ...security };
   const [minLength, setMinLength] = useState(initialData.minLength || 12);
   const [complexity, setComplexity] = useState(initialData.complexity || 'standard');
@@ -138,27 +141,35 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave }:
                 min={8}
                 max={32}
                 value={minLength}
+                disabled={isLocked('minLength')}
                 onChange={event => {
                   setMinLength(Number(event.target.value));
                   markDirty();
                 }}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('minLength') ? 'opacity-60' : ''}`}
               />
+              {isLocked('minLength') && (
+                <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+              )}
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">Complexity</label>
               <select
                 value={complexity}
+                disabled={isLocked('complexity')}
                 onChange={event => {
                   setComplexity(event.target.value);
                   markDirty();
                 }}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('complexity') ? 'opacity-60' : ''}`}
               >
                 <option value="standard">Standard</option>
                 <option value="strict">Strict</option>
                 <option value="passphrase">Passphrase</option>
               </select>
+              {isLocked('complexity') && (
+                <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+              )}
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">Expiration (days)</label>
@@ -167,12 +178,16 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave }:
                 min={30}
                 max={365}
                 value={expirationDays}
+                disabled={isLocked('expirationDays')}
                 onChange={event => {
                   setExpirationDays(Number(event.target.value));
                   markDirty();
                 }}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('expirationDays') ? 'opacity-60' : ''}`}
               />
+              {isLocked('expirationDays') && (
+                <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+              )}
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
@@ -185,11 +200,12 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave }:
             {requireMfa ? <ShieldCheck className="h-4 w-4" /> : <ShieldOff className="h-4 w-4" />}
             MFA settings
           </div>
-          <label className="flex items-center justify-between gap-4 text-sm">
+          <label className={`flex items-center justify-between gap-4 text-sm ${isLocked('requireMfa') ? 'opacity-60' : ''}`}>
             <span>Require MFA for all users</span>
             <input
               type="checkbox"
               checked={requireMfa}
+              disabled={isLocked('requireMfa')}
               onChange={event => {
                 setRequireMfa(event.target.checked);
                 markDirty();
@@ -197,6 +213,9 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave }:
               className="h-4 w-4"
             />
           </label>
+          {isLocked('requireMfa') && (
+            <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+          )}
           <div className="space-y-2">
             <p className="text-xs font-medium uppercase text-muted-foreground">Allowed methods</p>
             <label className="flex items-center justify-between gap-4 text-sm">
@@ -241,12 +260,16 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave }:
                 min={15}
                 max={240}
                 value={sessionTimeout}
+                disabled={isLocked('sessionTimeout')}
                 onChange={event => {
                   setSessionTimeout(Number(event.target.value));
                   markDirty();
                 }}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('sessionTimeout') ? 'opacity-60' : ''}`}
               />
+              {isLocked('sessionTimeout') && (
+                <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+              )}
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">Max sessions</label>
@@ -255,12 +278,16 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave }:
                 min={1}
                 max={10}
                 value={maxSessions}
+                disabled={isLocked('maxSessions')}
                 onChange={event => {
                   setMaxSessions(Number(event.target.value));
                   markDirty();
                 }}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('maxSessions') ? 'opacity-60' : ''}`}
               />
+              {isLocked('maxSessions') && (
+                <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+              )}
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
@@ -275,14 +302,18 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave }:
           </div>
           <textarea
             value={ipAllowlist}
+            disabled={isLocked('ipAllowlist')}
             onChange={event => {
               setIpAllowlist(event.target.value);
               markDirty();
             }}
             rows={5}
-            className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+            className={`w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('ipAllowlist') ? 'opacity-60' : ''}`}
             placeholder="Enter one IP per line"
           />
+          {isLocked('ipAllowlist') && (
+            <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+          )}
           <p className="text-xs text-muted-foreground">
             Leave blank to allow all IPs. Use CIDR notation to allow ranges.
           </p>
