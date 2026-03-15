@@ -151,7 +151,7 @@ export function ToolExecutionAnalytics({ data, loading }: Props) {
                   <Tooltip wrapperClassName="chart-tooltip" />
                   <Legend
                     iconSize={8}
-                    wrapperClassName="chart-legend chart-legend-xs"
+                    wrapperStyle={{ fontSize: '0.75rem' }}
                   />
                 </PieChart>
               </ResponsiveContainer>
