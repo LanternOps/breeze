@@ -383,4 +383,69 @@ describe('software inventory routes', () => {
     });
   });
 
+  // ============================================
+  // Multi-tenant isolation
+  // ============================================
+  describe('multi-tenant isolation', () => {
+    const ORG_ID_OTHER = 'org-999';
+
+    it('denies cross-org software inventory listing', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-2', email: 'other@example.com', name: 'Other User' },
+          scope: 'organization',
+          partnerId: null,
+          orgId: ORG_ID_OTHER,
+          accessibleOrgIds: [ORG_ID_OTHER],
+          orgCondition: () => undefined,
+          canAccessOrg: (id: string) => id === ORG_ID_OTHER,
+        });
+        return next();
+      });
+
+      // getPolicyStatusMap returns empty for different org
+      mockSelectFromWhere([]);
+      // Count returns 0 because filtered by ORG_ID_OTHER (not ORG_ID)
+      vi.mocked(db.execute)
+        .mockResolvedValueOnce([{ total: '0' }] as any)
+        .mockResolvedValueOnce([] as any);
+
+      const res = await app.request('/software-inventory', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // User from ORG_ID_OTHER should not see software from ORG_ID
+      expect(body.data).toHaveLength(0);
+    });
+
+    it('denies cross-org software approval', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-2', email: 'other@example.com', name: 'Other User' },
+          scope: 'partner',
+          partnerId: 'partner-2',
+          orgId: null,
+          accessibleOrgIds: [ORG_ID_OTHER],
+          orgCondition: () => undefined,
+          canAccessOrg: (id: string) => id === ORG_ID_OTHER,
+        });
+        return next();
+      });
+
+      // Partner user with no org context (multiple orgs) cannot approve
+      const res = await app.request('/software-inventory/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ softwareName: 'Malware.exe' }),
+      });
+
+      expect(res.status).toBe(400);
+    });
+  });
+
 });

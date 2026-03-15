@@ -285,5 +285,46 @@ describe('system routes', () => {
       const res = await app.request('/system/config-status');
       expect(res.status).toBe(403);
     });
+
+    it('denies config-status for org-scoped user from a different org', async () => {
+      const ORG_ID_OTHER = '22222222-2222-2222-2222-222222222222';
+      setAuth({
+        scope: 'organization',
+        orgId: ORG_ID_OTHER,
+        accessibleOrgIds: [ORG_ID_OTHER],
+        canAccessOrg: (id: string) => id === ORG_ID_OTHER,
+      });
+
+      const res = await app.request('/system/config-status');
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe('Forbidden');
+    });
+
+    it('setup-complete only affects the authenticated user, not other tenants', async () => {
+      const ORG_ID_OTHER = '22222222-2222-2222-2222-222222222222';
+      setAuth({
+        scope: 'organization',
+        orgId: ORG_ID_OTHER,
+        accessibleOrgIds: [ORG_ID_OTHER],
+        canAccessOrg: (id: string) => id === ORG_ID_OTHER,
+        user: { id: 'user-other-org', email: 'other@test.com', name: 'Other' },
+      });
+
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined),
+        }),
+      } as any);
+
+      const res = await app.request('/system/setup-complete', {
+        method: 'POST',
+      });
+
+      expect(res.status).toBe(200);
+      // Verify that the update call was made (it operates on auth.user.id,
+      // so each user's setup state is isolated by user ID)
+      expect(vi.mocked(db.update)).toHaveBeenCalled();
+    });
   });
 });

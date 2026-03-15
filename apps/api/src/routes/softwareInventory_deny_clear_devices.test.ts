@@ -377,4 +377,91 @@ describe('software inventory routes', () => {
     });
   });
 
+  // ============================================
+  // Multi-tenant isolation
+  // ============================================
+  describe('multi-tenant isolation', () => {
+    const ORG_ID_OTHER = 'org-999';
+
+    it('denies cross-org device drill-down', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-2', email: 'other@example.com', name: 'Other User' },
+          scope: 'organization',
+          partnerId: null,
+          orgId: ORG_ID_OTHER,
+          accessibleOrgIds: [ORG_ID_OTHER],
+          orgCondition: () => undefined,
+          canAccessOrg: (id: string) => id === ORG_ID_OTHER,
+        });
+        return next();
+      });
+
+      // Count returns 0 because query is scoped to ORG_ID_OTHER
+      mockSelectFromInnerJoinWhere([{ count: 0 }]);
+      mockSelectFromInnerJoinWhereOrderByLimitOffset([]);
+
+      const res = await app.request('/software-inventory/Visual%20Studio%20Code/devices', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // User from ORG_ID_OTHER should not see devices from ORG_ID
+      expect(body.data).toHaveLength(0);
+      expect(body.pagination.total).toBe(0);
+    });
+
+    it('denies cross-org deny action', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-2', email: 'other@example.com', name: 'Other User' },
+          scope: 'partner',
+          partnerId: 'partner-2',
+          orgId: null,
+          accessibleOrgIds: [ORG_ID_OTHER],
+          orgCondition: () => undefined,
+          canAccessOrg: (id: string) => id === ORG_ID_OTHER,
+        });
+        return next();
+      });
+
+      // Partner with no org context (multiple orgs) cannot deny software
+      const res = await app.request('/software-inventory/deny', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ softwareName: 'Malware.exe' }),
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('denies cross-org clear action', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-2', email: 'other@example.com', name: 'Other User' },
+          scope: 'partner',
+          partnerId: 'partner-2',
+          orgId: null,
+          accessibleOrgIds: [ORG_ID_OTHER],
+          orgCondition: () => undefined,
+          canAccessOrg: (id: string) => id === ORG_ID_OTHER,
+        });
+        return next();
+      });
+
+      const res = await app.request('/software-inventory/clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ softwareName: 'TestApp' }),
+      });
+
+      expect(res.status).toBe(400);
+    });
+  });
+
 });

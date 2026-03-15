@@ -44,10 +44,10 @@ vi.mock('../middleware/auth', () => ({
     c.set('auth', {
       scope: 'organization',
       partnerId: null,
-      orgId: ORG_ID,
+      orgId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       token: { mfa: true },
       user: { id: 'user-123', email: 'test@example.com' },
-      canAccessOrg: (orgId: string) => orgId === ORG_ID
+      canAccessOrg: (orgId: string) => orgId === 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
     });
     return next();
   }),

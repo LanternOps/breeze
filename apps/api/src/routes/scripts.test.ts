@@ -54,19 +54,19 @@ vi.mock('../middleware/auth', () => ({
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
       partnerId: null,
-      orgId: ORG_ID,
+      orgId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       token: {
         sub: 'user-123',
         email: 'test@example.com',
         roleId: 'role-123',
-        orgId: ORG_ID,
+        orgId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
         partnerId: null,
         scope: 'organization',
         type: 'access',
         mfa: true,
       },
-      accessibleOrgIds: [ORG_ID],
-      canAccessOrg: (orgId: string) => orgId === ORG_ID
+      accessibleOrgIds: ['cccccccc-cccc-4ccc-8ccc-cccccccccccc'],
+      canAccessOrg: (orgId: string) => orgId === 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
     });
     return next();
   }),

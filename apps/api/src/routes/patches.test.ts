@@ -123,8 +123,8 @@ vi.mock('../middleware/auth', () => ({
     };
 
     c.set('auth', {
-      user: { id: USER_ID, email: 'test@example.com', name: 'Test User' },
-      token: { sub: USER_ID, scope: mockAuthState.scope, type: 'access' },
+      user: { id: '33333333-3333-3333-3333-333333333333', email: 'test@example.com', name: 'Test User' },
+      token: { sub: '33333333-3333-3333-3333-333333333333', scope: mockAuthState.scope, type: 'access' },
       scope: mockAuthState.scope,
       orgId: mockAuthState.orgId,
       partnerId: mockAuthState.partnerId,

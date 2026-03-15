@@ -81,10 +81,7 @@ vi.mock('../services/sentry', () => ({
 import { authMiddleware } from '../middleware/auth';
 import { scriptAiRoutes } from './scriptAi';
 import {
-  createScriptBuilderSession,
   getScriptBuilderSession,
-  getScriptBuilderMessages,
-  closeScriptBuilderSession,
 } from '../services/scriptBuilderService';
 import { runPreFlightChecks } from '../services/aiAgentSdk';
 import { streamingSessionManager } from '../services/streamingSessionManager';
@@ -120,139 +117,13 @@ function makeApp() {
 
 // ── Tests ──────────────────────────────────────────────────────────
 
-describe('scriptAi routes', () => {
+describe('scriptAi routes — messages, interrupt, approve', () => {
   let app: Hono;
 
   beforeEach(() => {
     vi.clearAllMocks();
     setAuth();
     app = makeApp();
-  });
-
-  // ────────────────────── POST /sessions ──────────────────────
-  describe('POST /sessions (create session)', () => {
-    it('creates a new session', async () => {
-      const session = {
-        id: SESSION_ID,
-        orgId: ORG_ID,
-        type: 'script_builder',
-        model: 'claude-sonnet-4-20250514',
-      };
-      vi.mocked(createScriptBuilderSession).mockResolvedValue(session as any);
-
-      const res = await app.request('/ai/script-builder/sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: 'Build a backup script' }),
-      });
-
-      expect(res.status).toBe(201);
-      const body = await res.json();
-      expect(body.id).toBe(SESSION_ID);
-    });
-
-    it('returns 400 when organization context is missing', async () => {
-      vi.mocked(createScriptBuilderSession).mockRejectedValue(
-        new Error('Organization context required')
-      );
-
-      const res = await app.request('/ai/script-builder/sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: 'Test' }),
-      });
-
-      expect(res.status).toBe(400);
-      const body = await res.json();
-      expect(body.error).toBe('Organization context required');
-    });
-
-    it('returns 500 on unexpected error', async () => {
-      vi.mocked(createScriptBuilderSession).mockRejectedValue(new Error('DB connection failed'));
-
-      const res = await app.request('/ai/script-builder/sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: 'Test' }),
-      });
-
-      expect(res.status).toBe(500);
-    });
-  });
-
-  // ────────────────────── GET /sessions/:id ──────────────────────
-  describe('GET /sessions/:id (get session)', () => {
-    it('returns session with messages', async () => {
-      const session = { id: SESSION_ID, orgId: ORG_ID, type: 'script_builder' };
-      const messages = [
-        { id: 'msg-1', role: 'user', content: 'Write a disk cleanup script' },
-        { id: 'msg-2', role: 'assistant', content: 'Here is the script...' },
-      ];
-      vi.mocked(getScriptBuilderSession).mockResolvedValue(session as any);
-      vi.mocked(getScriptBuilderMessages).mockResolvedValue(messages as any);
-
-      const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}`);
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.session.id).toBe(SESSION_ID);
-      expect(body.messages).toHaveLength(2);
-    });
-
-    it('returns 404 when session not found', async () => {
-      vi.mocked(getScriptBuilderSession).mockResolvedValue(null);
-
-      const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}`);
-      expect(res.status).toBe(404);
-      const body = await res.json();
-      expect(body.error).toBe('Session not found');
-    });
-
-    it('returns 500 on service error', async () => {
-      vi.mocked(getScriptBuilderSession).mockRejectedValue(new Error('DB error'));
-
-      const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}`);
-      expect(res.status).toBe(500);
-      const body = await res.json();
-      expect(body.error).toBe('Failed to load session');
-    });
-  });
-
-  // ────────────────────── DELETE /sessions/:id ──────────────────────
-  describe('DELETE /sessions/:id (close session)', () => {
-    it('closes a session successfully', async () => {
-      vi.mocked(closeScriptBuilderSession).mockResolvedValue(undefined);
-
-      const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}`, {
-        method: 'DELETE',
-      });
-
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.success).toBe(true);
-      expect(vi.mocked(streamingSessionManager.remove)).toHaveBeenCalledWith(SESSION_ID);
-    });
-
-    it('returns 404 when session not found', async () => {
-      vi.mocked(closeScriptBuilderSession).mockRejectedValue(new Error('Session not found'));
-
-      const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}`, {
-        method: 'DELETE',
-      });
-
-      expect(res.status).toBe(404);
-      const body = await res.json();
-      expect(body.error).toBe('Session not found');
-    });
-
-    it('returns 500 on unexpected close error', async () => {
-      vi.mocked(closeScriptBuilderSession).mockRejectedValue(new Error('Connection reset'));
-
-      const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}`, {
-        method: 'DELETE',
-      });
-
-      expect(res.status).toBe(500);
-    });
   });
 
   // ────────────────────── POST /sessions/:id/messages ──────────────────────
@@ -487,37 +358,9 @@ describe('scriptAi routes', () => {
     });
   });
 
-  // ────────────────────── Auth middleware ──────────────────────
-  describe('authentication', () => {
-    it('all routes require auth middleware', async () => {
-      // The authMiddleware is applied to all routes via use('*')
-      // Verify it was called on a request
-      const res = await app.request('/ai/script-builder/sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: 'Test' }),
-      });
-
-      // Auth middleware is mocked to pass through, so check it was invoked
-      expect(vi.mocked(authMiddleware)).toHaveBeenCalled();
-    });
-  });
-
   // ────────────────────── Multi-tenant isolation ──────────────────────
   describe('multi-tenant isolation', () => {
     const ORG_ID_2 = '99999999-9999-9999-9999-999999999999';
-
-    it('returns 404 when session belongs to a different org', async () => {
-      // Session exists but belongs to a different org
-      vi.mocked(getScriptBuilderSession).mockResolvedValue({
-        id: SESSION_ID,
-        orgId: ORG_ID_2,
-        type: 'script_builder',
-      } as any);
-
-      const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}`);
-      expect(res.status).toBe(404);
-    });
 
     it('returns 404 when interrupting session from a different org', async () => {
       vi.mocked(getScriptBuilderSession).mockResolvedValue({
@@ -528,6 +371,24 @@ describe('scriptAi routes', () => {
       const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}/interrupt`, {
         method: 'POST',
       });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('returns 404 when approving execution in session from a different org', async () => {
+      vi.mocked(getScriptBuilderSession).mockResolvedValue({
+        id: SESSION_ID,
+        orgId: ORG_ID_2,
+      } as any);
+
+      const res = await app.request(
+        `/ai/script-builder/sessions/${SESSION_ID}/approve/${EXECUTION_ID}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ approved: true }),
+        }
+      );
 
       expect(res.status).toBe(404);
     });

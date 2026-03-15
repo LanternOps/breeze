@@ -51,7 +51,7 @@ vi.mock('../../db/schema', () => ({
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
-      user: { id: USER_ID, email: 'test@example.com', name: 'Test User' },
+      user: { id: 'cccccccc-cccc-cccc-cccc-cccccccccccc', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
       orgId: '11111111-1111-1111-1111-111111111111',
       partnerId: null

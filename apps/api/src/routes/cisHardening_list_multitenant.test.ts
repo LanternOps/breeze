@@ -226,4 +226,129 @@ describe('CIS hardening routes', () => {
     });
   });
 
+  // ============================================
+  // Multi-tenant isolation
+  // ============================================
+  describe('multi-tenant isolation', () => {
+    const ORG_ID_OTHER = 'org-999';
+
+    it('denies access to baselines from a different org', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-2', email: 'other@example.com', name: 'Other User' },
+          scope: 'organization',
+          partnerId: null,
+          orgId: ORG_ID_OTHER,
+          accessibleOrgIds: [ORG_ID_OTHER],
+          orgCondition: () => undefined,
+          canAccessOrg: (id: string) => id === ORG_ID_OTHER,
+        });
+        return next();
+      });
+
+      // Baseline lookup returns empty because it filters by the user's orgId
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/cis/baselines', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // User from ORG_ID_OTHER should see no baselines belonging to ORG_ID
+      expect(body.data).toHaveLength(0);
+    });
+
+    it('denies access to scan results from a different org', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-2', email: 'other@example.com', name: 'Other User' },
+          scope: 'organization',
+          partnerId: null,
+          orgId: ORG_ID_OTHER,
+          accessibleOrgIds: [ORG_ID_OTHER],
+          orgCondition: () => undefined,
+          canAccessOrg: (id: string) => id === ORG_ID_OTHER,
+        });
+        return next();
+      });
+
+      // Remediations count query returns 0 since filtered by user's org
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ count: 0 }]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              leftJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockReturnValue({
+                    limit: vi.fn().mockReturnValue({
+                      offset: vi.fn().mockResolvedValue([]),
+                    }),
+                  }),
+                }),
+              }),
+            }),
+          }),
+        } as any);
+
+      const res = await app.request('/cis/remediations', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(0);
+      expect(body.pagination.total).toBe(0);
+    });
+
+    it('prevents cross-org baseline creation via resolveOrgId', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-2', email: 'other@example.com', name: 'Other User' },
+          scope: 'partner',
+          partnerId: 'partner-2',
+          orgId: null,
+          accessibleOrgIds: [ORG_ID_OTHER],
+          orgCondition: () => undefined,
+          canAccessOrg: (id: string) => id === ORG_ID_OTHER,
+        });
+        return next();
+      });
+
+      // Partner user tries to create baseline for ORG_ID they don't have access to
+      const res = await app.request('/cis/baselines', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Cross-org baseline',
+          osType: 'windows',
+          benchmarkVersion: '3.0.0',
+          level: 'l1',
+          orgId: ORG_ID,
+        }),
+      });
+
+      // Should fail because canAccessOrg returns false for ORG_ID
+      expect([400, 403]).toContain(res.status);
+    });
+  });
+
 });

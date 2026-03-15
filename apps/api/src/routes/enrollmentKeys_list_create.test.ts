@@ -91,17 +91,6 @@ function mockSelectFromWhere(rows: any[]) {
   } as any);
 }
 
-/** Mock for db.select().from().where().limit() — single-record lookups */
-function mockSelectFromWhereLimit(rows: any[]) {
-  vi.mocked(db.select).mockReturnValueOnce({
-    from: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue(rows),
-      }),
-    }),
-  } as any);
-}
-
 /** Mock for db.select().from().where().orderBy().limit().offset() — paginated lists */
 function mockSelectFromWhereOrderByLimitOffset(rows: any[]) {
   vi.mocked(db.select).mockReturnValueOnce({
@@ -126,25 +115,7 @@ function mockInsertValuesReturning(rows: any[]) {
   } as any);
 }
 
-/** Mock for db.update().set().where().returning() */
-function mockUpdateSetWhereReturning(rows: any[]) {
-  vi.mocked(db.update).mockReturnValueOnce({
-    set: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue(rows),
-      }),
-    }),
-  } as any);
-}
-
-/** Mock for db.delete().where() */
-function mockDeleteWhere() {
-  vi.mocked(db.delete).mockReturnValueOnce({
-    where: vi.fn().mockResolvedValue(undefined),
-  } as any);
-}
-
-describe('enrollment key routes', () => {
+describe('enrollment key routes — list & create', () => {
   let app: Hono;
 
   beforeEach(() => {
@@ -158,9 +129,7 @@ describe('enrollment key routes', () => {
   // ============================================
   describe('GET /enrollment-keys', () => {
     it('lists enrollment keys for org-scoped user', async () => {
-      // Count query: db.select().from().where()
       mockSelectFromWhere([{ count: 2 }]);
-      // Data query: db.select().from().where().orderBy().limit().offset()
       mockSelectFromWhereOrderByLimitOffset([
         makeEnrollmentKey({ name: 'Key 1' }),
         makeEnrollmentKey({ id: 'key-2', name: 'Key 2' }),
@@ -175,7 +144,6 @@ describe('enrollment key routes', () => {
       const body = await res.json();
       expect(body.data).toHaveLength(2);
       expect(body.pagination.total).toBe(2);
-      // Ensure raw key is not exposed
       expect(body.data[0].key).toBeUndefined();
     });
 
@@ -278,7 +246,6 @@ describe('enrollment key routes', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.name).toBe('Test Key');
-      // Raw key should be returned on creation
       expect(body.key).toBeDefined();
       expect(typeof body.key).toBe('string');
       expect(body.key.length).toBeGreaterThan(0);
@@ -370,157 +337,6 @@ describe('enrollment key routes', () => {
       });
 
       expect(res.status).toBe(400);
-    });
-  });
-
-  // ============================================
-  // GET /:id — Get enrollment key details
-  // ============================================
-  describe('GET /enrollment-keys/:id', () => {
-    it('returns enrollment key details without raw key', async () => {
-      mockSelectFromWhereLimit([makeEnrollmentKey()]);
-
-      const res = await app.request(`/enrollment-keys/${KEY_ID}`, {
-        method: 'GET',
-        headers: { Authorization: 'Bearer token' },
-      });
-
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.id).toBe(KEY_ID);
-      expect(body.name).toBe('Test Key');
-      expect(body.key).toBeUndefined();
-    });
-
-    it('returns 404 for nonexistent key', async () => {
-      mockSelectFromWhereLimit([]);
-
-      const res = await app.request(`/enrollment-keys/${KEY_ID}`, {
-        method: 'GET',
-        headers: { Authorization: 'Bearer token' },
-      });
-
-      expect(res.status).toBe(404);
-    });
-
-    it('returns 403 when accessing key from different org', async () => {
-      mockSelectFromWhereLimit([makeEnrollmentKey({ orgId: 'other-org' })]);
-
-      const res = await app.request(`/enrollment-keys/${KEY_ID}`, {
-        method: 'GET',
-        headers: { Authorization: 'Bearer token' },
-      });
-
-      expect(res.status).toBe(403);
-    });
-  });
-
-  // ============================================
-  // POST /:id/rotate — Rotate enrollment key
-  // ============================================
-  describe('POST /enrollment-keys/:id/rotate', () => {
-    it('rotates key material and resets usage count', async () => {
-      const existing = makeEnrollmentKey({ usageCount: 5 });
-      mockSelectFromWhereLimit([existing]);
-      mockUpdateSetWhereReturning([
-        makeEnrollmentKey({ usageCount: 0, key: 'hashed_newkey' }),
-      ]);
-
-      const res = await app.request(`/enrollment-keys/${KEY_ID}/rotate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-        body: JSON.stringify({}),
-      });
-
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      // New raw key should be returned
-      expect(body.key).toBeDefined();
-      expect(typeof body.key).toBe('string');
-      expect(createAuditLogAsync).toHaveBeenCalledWith(
-        expect.objectContaining({ action: 'enrollment_key.rotate' })
-      );
-    });
-
-    it('allows updating maxUsage during rotation', async () => {
-      mockSelectFromWhereLimit([makeEnrollmentKey()]);
-      mockUpdateSetWhereReturning([makeEnrollmentKey({ maxUsage: 50 })]);
-
-      const res = await app.request(`/enrollment-keys/${KEY_ID}/rotate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-        body: JSON.stringify({ maxUsage: 50 }),
-      });
-
-      expect(res.status).toBe(200);
-    });
-
-    it('returns 404 for nonexistent key', async () => {
-      mockSelectFromWhereLimit([]);
-
-      const res = await app.request(`/enrollment-keys/${KEY_ID}/rotate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-        body: JSON.stringify({}),
-      });
-
-      expect(res.status).toBe(404);
-    });
-
-    it('returns 403 when key belongs to another org', async () => {
-      mockSelectFromWhereLimit([makeEnrollmentKey({ orgId: 'other-org' })]);
-
-      const res = await app.request(`/enrollment-keys/${KEY_ID}/rotate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-        body: JSON.stringify({}),
-      });
-
-      expect(res.status).toBe(403);
-    });
-  });
-
-  // ============================================
-  // DELETE /:id — Delete enrollment key
-  // ============================================
-  describe('DELETE /enrollment-keys/:id', () => {
-    it('deletes an enrollment key', async () => {
-      mockSelectFromWhereLimit([makeEnrollmentKey()]);
-      mockDeleteWhere();
-
-      const res = await app.request(`/enrollment-keys/${KEY_ID}`, {
-        method: 'DELETE',
-        headers: { Authorization: 'Bearer token' },
-      });
-
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.success).toBe(true);
-      expect(createAuditLogAsync).toHaveBeenCalledWith(
-        expect.objectContaining({ action: 'enrollment_key.delete' })
-      );
-    });
-
-    it('returns 404 for nonexistent key', async () => {
-      mockSelectFromWhereLimit([]);
-
-      const res = await app.request(`/enrollment-keys/${KEY_ID}`, {
-        method: 'DELETE',
-        headers: { Authorization: 'Bearer token' },
-      });
-
-      expect(res.status).toBe(404);
-    });
-
-    it('returns 403 when key belongs to another org', async () => {
-      mockSelectFromWhereLimit([makeEnrollmentKey({ orgId: 'other-org' })]);
-
-      const res = await app.request(`/enrollment-keys/${KEY_ID}`, {
-        method: 'DELETE',
-        headers: { Authorization: 'Bearer token' },
-      });
-
-      expect(res.status).toBe(403);
     });
   });
 });
