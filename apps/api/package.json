@@ -17,7 +17,7 @@
     "test:docker": "pnpm test:docker:up && pnpm test:integration; pnpm test:docker:down",
     "lint": "eslint --ext .ts src",
     "clean": "rm -rf dist",
-    "db:generate": "drizzle-kit generate",
+    "db:generate": "drizzle-kit generate && bash scripts/fix-drizzle-enums.sh",
     "db:push": "drizzle-kit push",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:migrate:sql": "tsx src/db/migrations/run.ts",
