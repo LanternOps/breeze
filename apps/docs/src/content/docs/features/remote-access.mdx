@@ -315,9 +315,10 @@ To free session capacity, close active sessions from the Active Sessions list on
 **Session stuck in `connecting`.**
 WebRTC negotiation failed and the viewer has not yet fallen back to WebSocket. Confirm the device is online and the agent WebSocket connection is active (check the device detail page). Common causes:
 
-- **TURN not configured** — Verify `TURN_HOST` and `TURN_SECRET` are set in `.env` and the coturn container is running (`docker compose logs coturn`).
-- **Firewall blocking TURN ports** — Coturn needs UDP and TCP port 3478, plus UDP ports 49152–65535 for media relay. Check `docker compose ps coturn` and verify the ports are reachable.
-- **Wrong `TURN_HOST`** — Must be the server's public IP, not a private address. Agents and viewers connect to this IP directly.
+- **TURN not configured** — Verify `TURN_HOST` and `TURN_SECRET` are set in `.env` and the coturn container is running (`docker compose logs coturn`). If using an external TURN server, check its status via SSH.
+- **Firewall blocking TURN ports** — Coturn needs TCP and UDP port 3478, plus UDP ports in the relay range (default 49152–65535, or tightened to 49152–49252). Verify the ports are reachable with `nc -z -w 3 TURN_IP 3478` (TCP) and `nc -u -z -w 3 TURN_IP 3478` (UDP).
+- **Wrong `TURN_HOST`** — Must be the TURN server's public IP, not a private address. If Breeze is behind Cloudflare Tunnel, TURN must run on a separate host with its own public IP — see [TURN Server](/deploy/turn-server/).
+- **Shared secret mismatch** — `TURN_SECRET` in `.env` must exactly match `static-auth-secret` in the coturn config.
 
 The viewer should automatically fall back to the WebSocket transport after a timeout.
 

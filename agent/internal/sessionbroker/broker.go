@@ -277,6 +277,7 @@ func (b *Broker) FindUserSession(winSessionID string) *Session {
 	return nil
 }
 
+
 // SendCommandAndWait forwards a command to a session and waits for the response.
 func (b *Broker) SendCommandAndWait(session *Session, id, cmdType string, payload any, timeout time.Duration) (*ipc.Envelope, error) {
 	return session.SendCommand(id, cmdType, payload, timeout)
