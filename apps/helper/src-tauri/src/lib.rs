@@ -57,6 +57,23 @@ fn agent_config_path() -> PathBuf {
     }
 }
 
+/// Log a message to the Breeze helper log file.
+/// In SYSTEM service context, stderr is not connected to anything visible,
+/// so we append to a log file in the Breeze data directory instead.
+fn log_helper_error(msg: &str) {
+    eprintln!("{}", msg); // still try stderr for non-service contexts
+    let log_path = agent_config_path().with_file_name("helper.log");
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        let _ = writeln!(f, "[{}] {}", ts, msg);
+    }
+}
+
 /// Parse the agent YAML config from disk.
 fn load_agent_config_full() -> Result<AgentConfigFull, String> {
     let path = agent_config_path();
@@ -610,8 +627,10 @@ pub fn run() {
             // Create main window manually (not from config) so we can set
             // a custom WebView2 data directory when running as SYSTEM.
             // The agent service spawns this process with a SYSTEM token
-            // (session ID overridden), causing WebView2's default data path
-            // to resolve to system32\config\systemprofile which isn't writable.
+            // (session ID overridden to the user's session), causing WebView2's
+            // default data path to resolve to the SYSTEM profile directory
+            // (systemprofile\AppData\Local) which may not exist or be accessible
+            // when running in a user session rather than Session 0.
             let mut wb = tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
@@ -632,16 +651,25 @@ pub fn run() {
                     let data_dir = PathBuf::from(pd)
                         .join("Breeze")
                         .join("helper-webview");
-                    eprintln!(
+                    if let Err(e) = std::fs::create_dir_all(&data_dir) {
+                        let msg = format!(
+                            "[helper] Failed to create WebView2 data dir {}: {}",
+                            data_dir.display(), e
+                        );
+                        log_helper_error(&msg);
+                        return Err(msg.into());
+                    }
+                    log_helper_error(&format!(
                         "[helper] SYSTEM context detected, WebView2 data dir: {}",
                         data_dir.display()
-                    );
+                    ));
                     wb = wb.data_directory(data_dir);
                 }
             }
 
             wb.build().map_err(|e| {
-                eprintln!("[helper] Failed to create main window: {}", e);
+                let msg = format!("[helper] Failed to create main window: {}", e);
+                log_helper_error(&msg);
                 e
             })?;
 
