@@ -65,8 +65,11 @@ const coreNav = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Devices', href: '/devices', icon: Monitor },
   { name: 'Alerts', href: '/alerts', icon: Bell },
-  { name: 'Remote Access', href: '/remote', icon: Terminal },
+  { name: 'Reports', href: '/reports', icon: FileText },
+  { name: 'Analytics', href: '/analytics', icon: BarChart3 },
+  { name: 'Fleet', href: '/fleet', icon: BrainCircuit },
   { name: 'AI Workspace', href: '/workspace', icon: MessagesSquare },
+  { name: 'Remote Access', href: '/remote', icon: Terminal }
 ];
 
 const securityNav = [
