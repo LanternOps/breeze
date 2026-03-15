@@ -6,6 +6,7 @@ import { db } from '../db';
 import { partners, organizations, sites } from '../db/schema';
 import { authMiddleware, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
+import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
 
 export const orgRoutes = new Hono();
 
@@ -305,7 +306,66 @@ const partnerSettingsSchema = z.object({
     email: z.string().email().optional().or(z.literal('')),
     phone: z.string().optional(),
     website: z.string().optional()
-  }).optional()
+  }).optional(),
+  security: z.object({
+    minLength: z.number().int().min(6).max(128).optional(),
+    complexity: z.enum(['standard', 'strict', 'passphrase']).optional(),
+    expirationDays: z.number().int().min(0).optional(),
+    requireMfa: z.boolean().optional(),
+    allowedMethods: z.object({ totp: z.boolean().optional(), sms: z.boolean().optional() }).optional(),
+    sessionTimeout: z.number().int().min(1).optional(),
+    maxSessions: z.number().int().min(1).optional(),
+    ipAllowlist: z.array(z.string()).optional(),
+  }).optional(),
+  notifications: z.object({
+    fromAddress: z.string().optional(),
+    replyTo: z.string().optional(),
+    useCustomSmtp: z.boolean().optional(),
+    smtpHost: z.string().optional(),
+    smtpPort: z.number().int().optional(),
+    smtpUsername: z.string().optional(),
+    smtpEncryption: z.enum(['tls', 'ssl', 'none']).optional(),
+    slackWebhookUrl: z.string().optional(),
+    slackChannel: z.string().optional(),
+    webhooks: z.array(z.string()).optional(),
+    preferences: z.record(z.string(), z.record(z.string(), z.boolean())).optional(),
+  }).optional(),
+  eventLogs: z.object({
+    enabled: z.boolean().optional(),
+    elasticsearchUrl: z.string().optional(),
+    elasticsearchApiKey: z.string().optional(),
+    elasticsearchUsername: z.string().optional(),
+    elasticsearchPassword: z.string().optional(),
+    indexPrefix: z.string().optional(),
+  }).optional(),
+  defaults: z.object({
+    policyDefaults: z.record(z.string(), z.string()).optional(),
+    deviceGroup: z.string().optional(),
+    alertThreshold: z.string().optional(),
+    autoEnrollment: z.object({
+      enabled: z.boolean(),
+      requireApproval: z.boolean(),
+      sendWelcome: z.boolean(),
+    }).optional(),
+    agentUpdatePolicy: z.string().optional(),
+    maintenanceWindow: z.string().optional(),
+  }).optional(),
+  branding: z.object({
+    logoUrl: z.string().optional(),
+    primaryColor: z.string().optional(),
+    secondaryColor: z.string().optional(),
+    theme: z.enum(['light', 'dark', 'system']).optional(),
+    customCss: z.string().optional(),
+  }).optional(),
+  aiBudgets: z.object({
+    enabled: z.boolean().optional(),
+    monthlyBudgetCents: z.number().int().min(0).nullable().optional(),
+    dailyBudgetCents: z.number().int().min(0).nullable().optional(),
+    maxTurnsPerSession: z.number().int().min(1).max(200).optional(),
+    messagesPerMinutePerUser: z.number().int().min(1).max(100).optional(),
+    messagesPerHourPerOrg: z.number().int().min(1).max(10000).optional(),
+    approvalMode: z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']).optional(),
+  }).optional(),
 });
 
 const updatePartnerSettingsSchema = z.object({
@@ -508,10 +568,39 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), async (c)
   return c.json(organization);
 });
 
+orgRoutes.get('/organizations/:id/effective-settings',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const id = c.req.param('id')!;
+
+    if (auth.scope === 'organization' && id !== auth.orgId) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
+    if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
+      return c.json({ error: 'Organization not found' }, 404);
+    }
+
+    const result = await getEffectiveOrgSettings(id);
+    return c.json(result);
+  }
+);
+
 const updateOrgHandler = [requireScope('partner', 'system'), zValidator('json', updateOrganizationSchema), async (c: any) => {
   const auth = c.get('auth') as AuthContext;
   const id = c.req.param('id')!;
   const data = c.req.valid('json');
+
+    // Enforce partner locks on settings categories
+    if (data.settings) {
+      const settingsObj = data.settings as Record<string, unknown>;
+      for (const category of ['security', 'notifications', 'eventLogs', 'defaults', 'branding']) {
+        if (settingsObj[category] && typeof settingsObj[category] === 'object') {
+          const fields = Object.keys(settingsObj[category] as Record<string, unknown>);
+          await assertNotLocked(id, category, fields);
+        }
+      }
+    }
 
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
     return c.json({ error: 'Organization not found' }, 404);

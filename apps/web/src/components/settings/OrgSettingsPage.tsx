@@ -145,6 +145,7 @@ export default function OrgSettingsPage() {
     lastSavedAt: REFERENCE_TIME
   });
   const [orgDetails, setOrgDetails] = useState<OrgDetails | null>(null);
+  const [locked, setLocked] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
 
@@ -170,6 +171,13 @@ export default function OrgSettingsPage() {
       }
       const data = await response.json();
       setOrgDetails(data);
+
+      // Fetch effective settings to determine partner-locked fields
+      const effRes = await fetchWithAuth(`/orgs/organizations/${currentOrgId}/effective-settings`);
+      if (effRes.ok) {
+        const effData = await effRes.json();
+        setLocked(effData.locked || []);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -286,6 +294,7 @@ export default function OrgSettingsPage() {
             branding={orgDetails?.settings?.branding}
             onDirty={handleDirty}
             onSave={(data) => handleSave('branding', data)}
+            locked={locked}
           />
         );
       case 'notifications':
@@ -294,6 +303,7 @@ export default function OrgSettingsPage() {
             notifications={orgDetails?.settings?.notifications}
             onDirty={handleDirty}
             onSave={(data) => handleSave('notifications', data)}
+            locked={locked}
           />
         );
       case 'security':
@@ -303,12 +313,14 @@ export default function OrgSettingsPage() {
             mtls={orgDetails?.settings?.mtls}
             onDirty={handleDirty}
             onSave={(data) => handleSave('security', data)}
+            locked={locked}
           />
         );
       case 'event-logs':
         return (
           <OrgEventLogSettings
             onDirty={handleDirty}
+            locked={locked}
           />
         );
       case 'general':

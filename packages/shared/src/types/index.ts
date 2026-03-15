@@ -430,6 +430,81 @@ export interface DaySchedule {
   closed?: boolean;
 }
 
+export interface InheritableSecuritySettings {
+  minLength?: number;
+  complexity?: 'standard' | 'strict' | 'passphrase';
+  expirationDays?: number;
+  requireMfa?: boolean;
+  allowedMethods?: { totp?: boolean; sms?: boolean };
+  sessionTimeout?: number;
+  maxSessions?: number;
+  ipAllowlist?: string[];
+}
+
+export interface InheritableNotificationSettings {
+  fromAddress?: string;
+  replyTo?: string;
+  useCustomSmtp?: boolean;
+  smtpHost?: string;
+  smtpPort?: number;
+  smtpUsername?: string;
+  smtpEncryption?: 'tls' | 'ssl' | 'none';
+  slackWebhookUrl?: string;
+  slackChannel?: string;
+  webhooks?: string[];
+  preferences?: Record<string, Record<string, boolean>>;
+}
+
+export interface InheritableEventLogSettings {
+  enabled?: boolean;
+  elasticsearchUrl?: string;
+  elasticsearchApiKey?: string;
+  elasticsearchUsername?: string;
+  elasticsearchPassword?: string;
+  indexPrefix?: string;
+}
+
+export interface InheritableDefaultSettings {
+  policyDefaults?: Record<string, string>;
+  deviceGroup?: string;
+  alertThreshold?: string;
+  autoEnrollment?: {
+    enabled: boolean;
+    requireApproval: boolean;
+    sendWelcome: boolean;
+  };
+  agentUpdatePolicy?: string;
+  maintenanceWindow?: string;
+}
+
+export interface InheritableBrandingSettings {
+  logoUrl?: string;
+  primaryColor?: string;
+  secondaryColor?: string;
+  theme?: 'light' | 'dark' | 'system';
+  customCss?: string;
+}
+
+export interface InheritableAiBudgetSettings {
+  enabled?: boolean;
+  monthlyBudgetCents?: number | null;
+  dailyBudgetCents?: number | null;
+  maxTurnsPerSession?: number;
+  messagesPerMinutePerUser?: number;
+  messagesPerHourPerOrg?: number;
+  approvalMode?: 'per_step' | 'action_plan' | 'auto_approve' | 'hybrid_plan';
+}
+
+export interface EffectiveOrgSettings {
+  security?: InheritableSecuritySettings;
+  notifications?: InheritableNotificationSettings;
+  eventLogs?: InheritableEventLogSettings;
+  defaults?: InheritableDefaultSettings;
+  branding?: InheritableBrandingSettings;
+  aiBudgets?: InheritableAiBudgetSettings;
+  locked: string[];
+}
+
 export interface PartnerSettings {
   timezone?: string;
   dateFormat?: DateFormat;
@@ -445,6 +520,13 @@ export interface PartnerSettings {
     phone?: string;
     website?: string;
   };
+  // NEW inheritable categories
+  security?: InheritableSecuritySettings;
+  notifications?: InheritableNotificationSettings;
+  eventLogs?: InheritableEventLogSettings;
+  defaults?: InheritableDefaultSettings;
+  branding?: InheritableBrandingSettings;
+  aiBudgets?: InheritableAiBudgetSettings;
 }
 
 // ============================================

@@ -46,8 +46,8 @@ type SavedBranding = {
 const defaultBranding: BrandingData = {
   organizationName: '',
   portalName: 'Breeze Portal',
-  portalUrl: 'portal.breeze.app',
-  supportEmail: 'support@breeze.io',
+  portalUrl: '',
+  supportEmail: '',
   primaryColor: '#2563eb',
   secondaryColor: '#f97316',
   customCss:

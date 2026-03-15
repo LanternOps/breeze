@@ -6,7 +6,6 @@ import {
   Bell,
   Terminal,
   FileText,
-  Settings,
   Building,
   Building2,
   Filter,
@@ -60,54 +59,58 @@ if (typeof window !== 'undefined') {
   });
 }
 
-const navigation = [
+// --- Org-scoped sections (change with selected organization) ---
+
+const coreNav = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Devices', href: '/devices', icon: Monitor },
-  { name: 'Discovery', href: '/discovery', icon: Network },
-  { name: 'Scripts', href: '/scripts', icon: FileCode },
   { name: 'Alerts', href: '/alerts', icon: Bell },
-  { name: 'Reports', href: '/reports', icon: FileText },
-  { name: 'Analytics', href: '/analytics', icon: BarChart3 },
-  { name: 'Fleet', href: '/fleet', icon: BrainCircuit },
+  { name: 'Remote Access', href: '/remote', icon: Terminal },
   { name: 'AI Workspace', href: '/workspace', icon: MessagesSquare },
-  { name: 'Remote Access', href: '/remote', icon: Terminal }
 ];
 
-const integrationsNav = [
-  { name: 'Integrations', href: '/integrations', icon: Plug }
-];
-
-const monitoringNav = [
-  { name: 'Network Monitoring', href: '/monitoring', icon: Activity },
+const securityNav = [
+  { name: 'Network Monitor', href: '/monitoring', icon: Activity },
   { name: 'Security', href: '/security', icon: ShieldCheck },
-  { name: 'Data Discovery', href: '/sensitive-data', icon: ScanSearch },
+  { name: 'Sensitive Data', href: '/sensitive-data', icon: ScanSearch },
   { name: 'Peripherals', href: '/peripherals', icon: Usb },
   { name: 'AI Risk Engine', href: '/ai-risk', icon: BrainCircuit },
-  { name: 'CIS Benchmarks', href: '/cis-hardening', icon: ClipboardCheck }
+  { name: 'CIS Benchmarks', href: '/cis-hardening', icon: ClipboardCheck },
+  { name: 'Compliance Baselines', href: '/audit-baselines', icon: ListChecks },
 ];
 
 const operationsNav = [
-  { name: 'Updates', href: '/patches', icon: Download },
+  { name: 'Scripts', href: '/scripts', icon: FileCode },
+  { name: 'Patch Management', href: '/patches', icon: Download },
+  { name: 'Network Discovery', href: '/discovery', icon: Network },
+  { name: 'Software Library', href: '/software', icon: Package },
+  { name: 'Software Policies', href: '/software-inventory', icon: Package },
+  { name: 'Config Policies', href: '/configuration-policies', icon: Layers },
   { name: 'Backup', href: '/backup', icon: HardDrive },
-  { name: 'Audit Logs', href: '/audit', icon: FileText },
-  { name: 'Event Logs', href: '/logs', icon: ScrollText },
-  { name: 'Audit Baselines', href: '/audit-baselines', icon: ListChecks }
+  { name: 'Integrations', href: '/integrations', icon: Plug },
 ];
 
-const managementNav = [
-  { name: 'App Library', href: '/software', icon: Package },
-  { name: 'App Policies', href: '/software-inventory', icon: Package },
-  { name: 'Config Policies', href: '/configuration-policies', icon: Layers },
-  { name: 'Organizations', href: '/settings/organizations', icon: Building2 },
-  { name: 'Users', href: '/settings/users', icon: Users },
-  { name: 'Roles', href: '/settings/roles', icon: KeyRound },
-  { name: 'Settings', href: '/settings', icon: Settings }
+const reportingNav = [
+  { name: 'Reports', href: '/reports', icon: FileText },
+  { name: 'Analytics', href: '/analytics', icon: BarChart3 },
+  { name: 'Fleet Insights', href: '/fleet', icon: BrainCircuit },
+  { name: 'Audit Trail', href: '/audit', icon: FileText },
+  { name: 'Event Logs', href: '/logs', icon: ScrollText },
 ];
 
 const settingsNav = [
-  { name: 'Organization', href: '/settings/organization', icon: Building },
+  { name: 'Org Settings', href: '/settings/organization', icon: Building },
+  { name: 'AI Usage & Budget', href: '/settings/ai-usage', icon: BrainCircuit },
   { name: 'Custom Fields', href: '/settings/custom-fields', icon: ListChecks },
-  { name: 'Saved Filters', href: '/settings/filters', icon: Filter }
+  { name: 'Saved Filters', href: '/settings/filters', icon: Filter },
+];
+
+// --- Partner-level (NOT org-dependent) ---
+
+const adminNav = [
+  { name: 'Organizations', href: '/settings/organizations', icon: Building2 },
+  { name: 'Users', href: '/settings/users', icon: Users },
+  { name: 'Roles', href: '/settings/roles', icon: KeyRound },
 ];
 
 export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps) {
@@ -118,8 +121,8 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   // Find the single most-specific matching href across all sections
   // so only one nav item highlights at a time
   const allNavItems = [
-    ...navigation, ...monitoringNav, ...operationsNav,
-    ...integrationsNav, ...managementNav, ...settingsNav,
+    ...coreNav, ...securityNav, ...operationsNav,
+    ...reportingNav, ...settingsNav, ...adminNav,
   ];
   // Paths that should highlight a different nav item
   const pathAliases: Record<string, string> = {
@@ -164,7 +167,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
       </div>
 
       <nav className="flex-1 min-h-0 space-y-1 overflow-y-auto p-2">
-        {navigation.map((item) => {
+        {coreNav.map((item) => {
           const isActive = item.href === activeHref;
           return (
             <a
@@ -187,10 +190,10 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
         {!collapsed && (
           <span className="px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Network Monitoring
+            Security & Monitoring
           </span>
         )}
-        {monitoringNav.map((item) => {
+        {securityNav.map((item) => {
           const isActive = item.href === activeHref;
           return (
             <a
@@ -239,36 +242,10 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
         {!collapsed && (
           <span className="px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Integrations
+            Reporting
           </span>
         )}
-        {integrationsNav.map((item) => {
-          const isActive = item.href === activeHref;
-          return (
-            <a
-              key={item.name}
-              href={item.href}
-              className={cn(
-                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-                isActive
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-              )}
-            >
-              <item.icon className="h-5 w-5 flex-shrink-0" />
-              {!collapsed && <span>{item.name}</span>}
-            </a>
-          );
-        })}
-
-        <div className="my-4 border-t" />
-
-        {!collapsed && (
-          <span className="px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Management
-          </span>
-        )}
-        {managementNav.map((item) => {
+        {reportingNav.map((item) => {
           const isActive = item.href === activeHref;
           return (
             <a
@@ -295,6 +272,32 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           </span>
         )}
         {settingsNav.map((item) => {
+          const isActive = item.href === activeHref;
+          return (
+            <a
+              key={item.name}
+              href={item.href}
+              className={cn(
+                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                isActive
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+              )}
+            >
+              <item.icon className="h-5 w-5 flex-shrink-0" />
+              {!collapsed && <span>{item.name}</span>}
+            </a>
+          );
+        })}
+
+        <div className="my-4 border-t" />
+
+        {!collapsed && (
+          <span className="px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Admin
+          </span>
+        )}
+        {adminNav.map((item) => {
           const isActive = item.href === activeHref;
           return (
             <a
