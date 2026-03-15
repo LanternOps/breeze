@@ -1,9 +1,10 @@
 package tools
 
 import (
-	"encoding/base64"
+	"errors"
 	"fmt"
 	"image"
+	"log/slog"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
@@ -136,7 +137,14 @@ func captureScreenshotWithFn(monitor int, capFn CaptureFunc) (*ScreenshotRespons
 		if err == nil {
 			return encodeScreenshotResponse(img, width, height, monitor)
 		}
-		// Fall through to standalone capturer
+		// Only fall back to standalone capturer if no session exists.
+		// If a session IS active but errored, standalone would destroy its
+		// shared global capture state — the exact bug this fix prevents.
+		if !errors.Is(err, desktop.ErrNoActiveSession) {
+			slog.Warn("session capturer failed (standalone fallback unsafe)",
+				"monitor", monitor, "error", err.Error())
+			return nil, fmt.Errorf("active session capture failed: %w", err)
+		}
 	}
 
 	// Standalone capture path
@@ -163,41 +171,3 @@ func captureScreenshotWithFn(monitor int, capFn CaptureFunc) (*ScreenshotRespons
 	return encodeScreenshotResponse(img, width, height, monitor)
 }
 
-// encodeScreenshotResponse scales and encodes an image into a ScreenshotResponse.
-func encodeScreenshotResponse(img *image.RGBA, width, height, monitor int) (*ScreenshotResponse, error) {
-	// Scale down if wider than 1920px
-	if width > 1920 {
-		factor := 1920.0 / float64(width)
-		img = desktop.ScaleImageFast(img, factor)
-		bounds := img.Bounds()
-		width = bounds.Dx()
-		height = bounds.Dy()
-	}
-
-	// Encode as JPEG at quality 85
-	jpegData, err := desktop.EncodeJPEG(img, 85)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode screenshot: %w", err)
-	}
-
-	b64 := base64.StdEncoding.EncodeToString(jpegData)
-
-	// Re-encode at lower quality if base64 exceeds 1MB
-	if len(b64) > 1_000_000 {
-		jpegData, err = desktop.EncodeJPEG(img, 60)
-		if err != nil {
-			return nil, fmt.Errorf("failed to re-encode screenshot: %w", err)
-		}
-		b64 = base64.StdEncoding.EncodeToString(jpegData)
-	}
-
-	return &ScreenshotResponse{
-		ImageBase64: b64,
-		Width:       width,
-		Height:      height,
-		Format:      "jpeg",
-		SizeBytes:   len(jpegData),
-		Monitor:     monitor,
-		CapturedAt:  time.Now().UTC().Format(time.RFC3339),
-	}, nil
-}

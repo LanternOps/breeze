@@ -2,8 +2,10 @@ package tools
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"image"
+	"log/slog"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
@@ -39,7 +41,14 @@ func TakeScreenshotWithCapture(payload map[string]any, capFn CaptureFunc) Comman
 		if err == nil {
 			return encodeScreenshot(img, width, height, monitor, start)
 		}
-		// Fall through to standalone capturer
+		// Only fall back to standalone capturer if no session exists.
+		// If a session IS active but errored, standalone would destroy its
+		// shared global capture state — the exact bug this fix prevents.
+		if !errors.Is(err, desktop.ErrNoActiveSession) {
+			slog.Warn("session capturer failed (standalone fallback unsafe)",
+				"monitor", monitor, "error", err.Error())
+			return NewErrorResult(fmt.Errorf("active session capture failed: %w", err), time.Since(start).Milliseconds())
+		}
 	}
 
 	// Standalone capture path (no active session)
@@ -66,8 +75,18 @@ func TakeScreenshotWithCapture(payload map[string]any, capFn CaptureFunc) Comman
 	return encodeScreenshot(img, width, height, monitor, start)
 }
 
-// encodeScreenshot scales, encodes, and packages a captured image.
+// encodeScreenshot scales, encodes, and packages a captured image as a CommandResult.
 func encodeScreenshot(img *image.RGBA, width, height, monitor int, start time.Time) CommandResult {
+	resp, err := encodeScreenshotResponse(img, width, height, monitor)
+	if err != nil {
+		return NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	return NewSuccessResult(*resp, time.Since(start).Milliseconds())
+}
+
+// encodeScreenshotResponse scales and encodes an image into a ScreenshotResponse.
+// Used by both screenshot and computer_action encoding paths.
+func encodeScreenshotResponse(img *image.RGBA, width, height, monitor int) (*ScreenshotResponse, error) {
 	// Scale down if wider than 1920px
 	if width > 1920 {
 		factor := 1920.0 / float64(width)
@@ -80,7 +99,7 @@ func encodeScreenshot(img *image.RGBA, width, height, monitor int, start time.Ti
 	// Encode as JPEG at quality 85
 	jpegData, err := desktop.EncodeJPEG(img, 85)
 	if err != nil {
-		return NewErrorResult(fmt.Errorf("failed to encode screenshot: %w", err), time.Since(start).Milliseconds())
+		return nil, fmt.Errorf("failed to encode screenshot: %w", err)
 	}
 
 	b64 := base64.StdEncoding.EncodeToString(jpegData)
@@ -89,12 +108,12 @@ func encodeScreenshot(img *image.RGBA, width, height, monitor int, start time.Ti
 	if len(b64) > 1_000_000 {
 		jpegData, err = desktop.EncodeJPEG(img, 60)
 		if err != nil {
-			return NewErrorResult(fmt.Errorf("failed to re-encode screenshot: %w", err), time.Since(start).Milliseconds())
+			return nil, fmt.Errorf("failed to re-encode screenshot: %w", err)
 		}
 		b64 = base64.StdEncoding.EncodeToString(jpegData)
 	}
 
-	resp := ScreenshotResponse{
+	return &ScreenshotResponse{
 		ImageBase64: b64,
 		Width:       width,
 		Height:      height,
@@ -102,7 +121,5 @@ func encodeScreenshot(img *image.RGBA, width, height, monitor int, start time.Ti
 		SizeBytes:   len(jpegData),
 		Monitor:     monitor,
 		CapturedAt:  time.Now().UTC().Format(time.RFC3339),
-	}
-
-	return NewSuccessResult(resp, time.Since(start).Milliseconds())
+	}, nil
 }

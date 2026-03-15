@@ -193,29 +193,30 @@ func parseICEServers(raw []ICEServerConfig) []webrtc.ICEServer {
 // Returns ErrNoActiveSession if no session is currently streaming.
 func (m *SessionManager) CaptureScreenshot(displayIndex int) (*image.RGBA, int, int, error) {
 	m.mu.RLock()
-	var target *Session
+	var target, fallback *Session
 	for _, s := range m.sessions {
 		s.mu.RLock()
 		active := s.isActive
 		idx := s.displayIndex
 		s.mu.RUnlock()
-		if active && idx == displayIndex {
+		if !active {
+			continue
+		}
+		if idx == displayIndex {
 			target = s
 			break
 		}
-	}
-	// If no session matches the exact display, use any active session's capturer
-	// as a fallback — better than creating a conflicting one.
-	if target == nil {
-		for _, s := range m.sessions {
-			s.mu.RLock()
-			active := s.isActive
-			s.mu.RUnlock()
-			if active {
-				target = s
-				break
-			}
+		if fallback == nil {
+			fallback = s
 		}
+	}
+	if target == nil && fallback != nil {
+		fallback.mu.RLock()
+		actualIdx := fallback.displayIndex
+		fallback.mu.RUnlock()
+		slog.Warn("CaptureScreenshot: no session on requested display, using fallback",
+			"requestedDisplay", displayIndex, "actualDisplay", actualIdx)
+		target = fallback
 	}
 	m.mu.RUnlock()
 
@@ -235,16 +236,17 @@ func (m *SessionManager) CaptureScreenshot(displayIndex int) (*image.RGBA, int, 
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("capture from active session: %w", err)
 	}
+	if img == nil {
+		return nil, 0, 0, fmt.Errorf("capture from active session: no frame available")
+	}
 
 	w, h, err := cap.GetScreenBounds()
 	if err != nil {
-		// Use image dimensions as fallback
-		if img != nil {
-			w = img.Bounds().Dx()
-			h = img.Bounds().Dy()
-		} else {
-			return nil, 0, 0, fmt.Errorf("get screen bounds from active session: %w", err)
-		}
+		// Image is guaranteed non-nil (checked above), use its dimensions
+		slog.Debug("GetScreenBounds failed, using image dimensions",
+			"error", err.Error(), "width", img.Bounds().Dx(), "height", img.Bounds().Dy())
+		w = img.Bounds().Dx()
+		h = img.Bounds().Dy()
 	}
 
 	return img, w, h, nil
