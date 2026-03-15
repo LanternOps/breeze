@@ -17,9 +17,12 @@ type AuthMethod = 'apiKey' | 'basic';
 
 type OrgEventLogSettingsProps = {
   onDirty?: () => void;
+  locked?: string[];
 };
 
-export default function OrgEventLogSettings({ onDirty }: OrgEventLogSettingsProps) {
+export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSettingsProps) {
+  const isLocked = (field: string) => locked?.includes(`eventLogs.${field}`) ?? false;
+  const allFieldsLocked = ['enabled', 'elasticsearchUrl', 'elasticsearchApiKey', 'elasticsearchUsername', 'elasticsearchPassword', 'indexPrefix'].every(f => isLocked(f));
   const { currentOrgId } = useOrgStore();
 
   const [enabled, setEnabled] = useState(false);
@@ -143,7 +146,7 @@ export default function OrgEventLogSettings({ onDirty }: OrgEventLogSettingsProp
           <button
             type="button"
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || allFieldsLocked}
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
             <Save className="h-4 w-4" />
@@ -164,16 +167,20 @@ export default function OrgEventLogSettings({ onDirty }: OrgEventLogSettingsProp
         ) : null}
 
         {/* Enable toggle */}
-        <label className="flex items-center justify-between gap-3 rounded-md border bg-muted/40 px-4 py-3 text-sm">
+        <label className={`flex items-center justify-between gap-3 rounded-md border bg-muted/40 px-4 py-3 text-sm ${isLocked('enabled') ? 'opacity-60' : ''}`}>
           <div>
             <p className="font-medium">Enable log forwarding</p>
             <p className="text-xs text-muted-foreground">
               When enabled, event logs are forwarded to your Elasticsearch cluster on a recurring schedule.
             </p>
+            {isLocked('enabled') && (
+              <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+            )}
           </div>
           <input
             type="checkbox"
             checked={enabled}
+            disabled={isLocked('enabled')}
             onChange={event => {
               setEnabled(event.target.checked);
               markDirty();
@@ -195,14 +202,18 @@ export default function OrgEventLogSettings({ onDirty }: OrgEventLogSettingsProp
                 <input
                   type="text"
                   value={elasticsearchUrl}
+                  disabled={isLocked('elasticsearchUrl')}
                   onChange={event => {
                     setElasticsearchUrl(event.target.value);
                     markDirty();
                   }}
                   placeholder="https://your-cluster.es.example.com:9200"
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                  className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('elasticsearchUrl') ? 'opacity-60' : ''}`}
                 />
                 <p className="text-xs text-muted-foreground">Must use HTTPS.</p>
+                {isLocked('elasticsearchUrl') && (
+                  <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                )}
               </div>
 
               <div className="space-y-2">
@@ -210,16 +221,20 @@ export default function OrgEventLogSettings({ onDirty }: OrgEventLogSettingsProp
                 <input
                   type="text"
                   value={indexPrefix}
+                  disabled={isLocked('indexPrefix')}
                   onChange={event => {
                     setIndexPrefix(event.target.value);
                     markDirty();
                   }}
                   placeholder="breeze-logs"
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                  className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('indexPrefix') ? 'opacity-60' : ''}`}
                 />
                 <p className="text-xs text-muted-foreground">
                   Logs are written to indices named {indexPrefix ? `${indexPrefix}-YYYY.MM.DD` : 'breeze-logs-YYYY.MM.DD'}.
                 </p>
+                {isLocked('indexPrefix') && (
+                  <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                )}
               </div>
             </div>
 
@@ -264,13 +279,17 @@ export default function OrgEventLogSettings({ onDirty }: OrgEventLogSettingsProp
                   <input
                     type="password"
                     value={elasticsearchApiKey}
+                    disabled={isLocked('elasticsearchApiKey')}
                     onChange={event => {
                       setElasticsearchApiKey(event.target.value);
                       markDirty();
                     }}
                     placeholder="Enter Elasticsearch API key"
-                    className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                    className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('elasticsearchApiKey') ? 'opacity-60' : ''}`}
                   />
+                  {isLocked('elasticsearchApiKey') && (
+                    <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                  )}
                 </div>
               ) : (
                 <div className="grid gap-4 md:grid-cols-2">
@@ -279,26 +298,34 @@ export default function OrgEventLogSettings({ onDirty }: OrgEventLogSettingsProp
                     <input
                       type="text"
                       value={elasticsearchUsername}
+                      disabled={isLocked('elasticsearchUsername')}
                       onChange={event => {
                         setElasticsearchUsername(event.target.value);
                         markDirty();
                       }}
                       placeholder="elastic"
-                      className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                      className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('elasticsearchUsername') ? 'opacity-60' : ''}`}
                     />
+                    {isLocked('elasticsearchUsername') && (
+                      <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                    )}
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Password</label>
                     <input
                       type="password"
                       value={elasticsearchPassword}
+                      disabled={isLocked('elasticsearchPassword')}
                       onChange={event => {
                         setElasticsearchPassword(event.target.value);
                         markDirty();
                       }}
                       placeholder="Enter password"
-                      className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                      className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('elasticsearchPassword') ? 'opacity-60' : ''}`}
                     />
+                    {isLocked('elasticsearchPassword') && (
+                      <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                    )}
                   </div>
                 </div>
               )}

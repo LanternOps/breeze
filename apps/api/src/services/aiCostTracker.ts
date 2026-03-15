@@ -10,6 +10,7 @@ import { aiSessions, aiCostUsage, aiBudgets } from '../db/schema';
 import { eq, and, sql, desc, isNotNull } from 'drizzle-orm';
 import { getRedis } from './redis';
 import { rateLimiter } from './rate-limit';
+import { getEffectiveAiBudget } from './effectiveSettings';
 
 // Cost per million tokens (in cents)
 const MODEL_PRICING: Record<string, { inputPerMillion: number; outputPerMillion: number }> = {
@@ -31,14 +32,7 @@ export function calculateCostCents(model: string, inputTokens: number, outputTok
  * Returns null if allowed, or an error message if blocked.
  */
 export async function checkBudget(orgId: string): Promise<string | null> {
-  const [budget] = await db
-    .select()
-    .from(aiBudgets)
-    .where(eq(aiBudgets.orgId, orgId))
-    .limit(1);
-
-  // No budget configured = no limits
-  if (!budget) return null;
+  const budget = await getEffectiveAiBudget(orgId);
   if (!budget.enabled) return 'AI features are disabled for this organization';
 
   const now = new Date();
@@ -96,14 +90,19 @@ export async function checkAiRateLimit(
 ): Promise<string | null> {
   const redis = getRedis();
 
-  // Per-user rate limit: 20 messages/min
-  const userResult = await rateLimiter(redis, `ai:msg:user:${userId}`, 20, 60);
+  // Load effective rate limits (partner overrides org)
+  const budget = await getEffectiveAiBudget(orgId);
+  const msgsPerMin = budget?.messagesPerMinutePerUser ?? 20;
+  const msgsPerHour = budget?.messagesPerHourPerOrg ?? 200;
+
+  // Per-user rate limit
+  const userResult = await rateLimiter(redis, `ai:msg:user:${userId}`, msgsPerMin, 60);
   if (!userResult.allowed) {
     return `Rate limit exceeded. Try again at ${userResult.resetAt.toISOString()}`;
   }
 
-  // Per-org rate limit: 200 messages/hour
-  const orgResult = await rateLimiter(redis, `ai:msg:org:${orgId}`, 200, 3600);
+  // Per-org rate limit
+  const orgResult = await rateLimiter(redis, `ai:msg:org:${orgId}`, msgsPerHour, 3600);
   if (!orgResult.allowed) {
     return `Organization rate limit exceeded. Try again at ${orgResult.resetAt.toISOString()}`;
   }

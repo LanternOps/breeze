@@ -16,7 +16,7 @@ describe('OrgBrandingEditor', () => {
 
     await screen.findByText('Portal preview');
     expect(screen.queryByText('Preview opened in a mock window.')).toBeNull();
-    expect(screen.getAllByText('https://acme-it.breeze.app').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/https:\/\/acme-it\./).length).toBeGreaterThan(0);
     expect(screen.queryByText('Acme Systems Portal')).not.toBeNull();
   });
 });

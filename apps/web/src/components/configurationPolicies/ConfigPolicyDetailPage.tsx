@@ -19,6 +19,7 @@ import {
   LifeBuoy,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { OverflowTabs } from '../shared/OverflowTabs';
 import { fetchWithAuth } from '../../stores/auth';
 import type { FeatureType, FeatureLink } from './featureTabs/types';
 import { FEATURE_META } from './featureTabs/types';
@@ -326,28 +327,7 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
       )}
 
       {/* Tabs */}
-      <div className="border-b">
-        <nav className="-mb-px flex gap-4 overflow-x-auto">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2 whitespace-nowrap border-b-2 px-1 py-3 text-sm font-medium transition ${
-                activeTab === tab.id
-                  ? 'border-primary text-primary'
-                  : 'border-transparent text-muted-foreground hover:border-muted-foreground hover:text-foreground'
-              }`}
-            >
-              {tab.icon}
-              {tab.label}
-              {tab.dot && (
-                <span className="h-2 w-2 rounded-full bg-green-500" />
-              )}
-            </button>
-          ))}
-        </nav>
-      </div>
+      <OverflowTabs tabs={tabs} activeTab={activeTab} onTabChange={(id) => setActiveTab(id as Tab)} />
 
       {/* Overview Tab */}
       {activeTab === 'overview' && (
