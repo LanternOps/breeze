@@ -34,6 +34,10 @@ const (
 
 	// Desktop peer disconnected — helper notifies service when WebRTC drops
 	TypeDesktopPeerDisconnected = "desktop_peer_disconnected"
+
+	// Launch a process as the logged-in user (sent to user-role helper)
+	TypeLaunchProcess  = "launch_process"
+	TypeLaunchResult   = "launch_result"
 )
 
 // MaxMessageSize is the maximum size of a JSON IPC message (16MB).
@@ -184,6 +188,20 @@ type SASResponse struct {
 // this to the API so it can mark the session as disconnected.
 type DesktopPeerDisconnectedNotice struct {
 	SessionID string `json:"sessionId"`
+}
+
+// LaunchProcessRequest asks the user-role helper to launch a binary.
+// The helper is already running as the logged-in user, so no token
+// manipulation is needed.
+type LaunchProcessRequest struct {
+	BinaryPath string `json:"binaryPath"`
+}
+
+// LaunchProcessResult is the response from the user helper.
+type LaunchProcessResult struct {
+	OK    bool   `json:"ok"`
+	PID   int    `json:"pid,omitempty"`
+	Error string `json:"error,omitempty"`
 }
 
 // SessionInfoItem describes one interactive Windows session for the

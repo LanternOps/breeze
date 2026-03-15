@@ -109,39 +109,22 @@ func SpawnHelperInSession(sessionID uint32) error {
 }
 
 // SpawnUserHelperInSession launches a user-helper process using the logged-in
-// user's token (via WTSQueryUserToken) in the specified Windows session. This
-// helper runs as the interactive user, enabling run_as_user script execution.
-// It does NOT have SYSTEM privileges so it cannot capture UAC/lock screen.
+// user's token in the specified Windows session. Tries WTSQueryUserToken first,
+// falls back to explorer.exe token theft for Azure AD sessions.
+// This helper runs as the interactive user, enabling run_as_user script
+// execution and launching the Breeze Helper Tauri app.
 func SpawnUserHelperInSession(sessionID uint32) error {
-	// 1. Get the logged-in user's token for this session.
-	var userToken windows.Token
-	if err := windows.WTSQueryUserToken(sessionID, &userToken); err != nil {
-		return fmt.Errorf("WTSQueryUserToken(session=%d): %w", sessionID, err)
-	}
-	defer userToken.Close()
-
-	// 2. Duplicate as a primary token for CreateProcessAsUser.
-	var dupToken windows.Token
-	if err := windows.DuplicateTokenEx(
-		userToken,
-		windows.MAXIMUM_ALLOWED,
-		nil,
-		windows.SecurityImpersonation,
-		windows.TokenPrimary,
-		&dupToken,
-	); err != nil {
-		return fmt.Errorf("DuplicateTokenEx (user): %w", err)
+	// Try WTSQueryUserToken first, fall back to explorer.exe token.
+	dupToken, envBlock, method, err := acquireUserToken(sessionID)
+	if err != nil {
+		return fmt.Errorf("acquire user token(session=%d): %w", sessionID, err)
 	}
 	defer dupToken.Close()
-
-	// 3. Create the user's environment block.
-	var envBlock *uint16
-	if err := windows.CreateEnvironmentBlock(&envBlock, dupToken, false); err != nil {
-		return fmt.Errorf("CreateEnvironmentBlock: %w", err)
+	if envBlock != nil {
+		defer windows.DestroyEnvironmentBlock(envBlock)
 	}
-	defer windows.DestroyEnvironmentBlock(envBlock)
 
-	// 4. Build command line with --role user flag.
+	// Build command line with --role user flag.
 	exePath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("os.Executable: %w", err)
@@ -151,7 +134,6 @@ func SpawnUserHelperInSession(sessionID uint32) error {
 		return fmt.Errorf("UTF16PtrFromString: %w", err)
 	}
 
-	// 5. Target the interactive window station + default desktop.
 	desktop, err := windows.UTF16PtrFromString(`winsta0\Default`)
 	if err != nil {
 		return fmt.Errorf("UTF16PtrFromString desktop: %w", err)
@@ -163,7 +145,6 @@ func SpawnUserHelperInSession(sessionID uint32) error {
 	}
 	var pi windows.ProcessInformation
 
-	// 6. Create the process as the logged-in user with their environment.
 	if err := windows.CreateProcessAsUser(
 		dupToken,
 		nil,
@@ -188,6 +169,7 @@ func SpawnUserHelperInSession(sessionID uint32) error {
 		"role", "user",
 		"pid", pi.ProcessId,
 		"exe", exePath,
+		"tokenSource", method,
 	)
 	return nil
 }

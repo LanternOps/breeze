@@ -278,6 +278,43 @@ func (b *Broker) FindUserSession(winSessionID string) *Session {
 }
 
 
+// LaunchProcessViaUserHelper asks a connected user-role helper to launch a
+// binary. The helper is already running as the logged-in user, so the
+// launched process inherits the user's identity and environment.
+func (b *Broker) LaunchProcessViaUserHelper(binaryPath string) error {
+	b.mu.RLock()
+	var userSession *Session
+	for _, s := range b.sessions {
+		if s.HelperRole == ipc.HelperRoleUser {
+			userSession = s
+			break
+		}
+	}
+	b.mu.RUnlock()
+
+	if userSession == nil {
+		return fmt.Errorf("no user-role helper connected")
+	}
+
+	id := fmt.Sprintf("launch-%d", time.Now().UnixMilli())
+	resp, err := userSession.SendCommand(id, ipc.TypeLaunchProcess,
+		ipc.LaunchProcessRequest{BinaryPath: binaryPath}, 15*time.Second)
+	if err != nil {
+		return fmt.Errorf("launch_process IPC failed: %w", err)
+	}
+
+	var result ipc.LaunchProcessResult
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return fmt.Errorf("unmarshal launch result: %w", err)
+	}
+	if !result.OK {
+		return fmt.Errorf("user helper launch failed: %s", result.Error)
+	}
+
+	log.Info("process launched via user helper", "binary", binaryPath, "pid", result.PID)
+	return nil
+}
+
 // SendCommandAndWait forwards a command to a session and waits for the response.
 func (b *Broker) SendCommandAndWait(session *Session, id, cmdType string, payload any, timeout time.Duration) (*ipc.Envelope, error) {
 	return session.SendCommand(id, cmdType, payload, timeout)

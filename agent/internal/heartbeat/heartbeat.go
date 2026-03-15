@@ -247,6 +247,18 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	if runtime.GOOS == "windows" && cfg.IsService {
 		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID,
 			helper.WithSpawnFunc(func(binaryPath string) error {
+				// Try launching via connected user-role helper first (runs as
+				// the logged-in user, so the Tauri app inherits user identity).
+				if h.sessionBroker != nil {
+					if err := h.sessionBroker.LaunchProcessViaUserHelper(binaryPath); err == nil {
+						return nil
+					} else {
+						log.Debug("user helper launch failed, falling back to direct spawn",
+							"error", err.Error())
+					}
+				}
+
+				// Fallback: spawn directly in each user session.
 				detector := sessionbroker.NewSessionDetector()
 				sessions, err := detector.ListSessions()
 				if err != nil {
