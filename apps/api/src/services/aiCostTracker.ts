@@ -33,9 +33,6 @@ export function calculateCostCents(model: string, inputTokens: number, outputTok
  */
 export async function checkBudget(orgId: string): Promise<string | null> {
   const budget = await getEffectiveAiBudget(orgId);
-
-  // No budget configured = no limits
-  if (!budget) return null;
   if (!budget.enabled) return 'AI features are disabled for this organization';
 
   const now = new Date();

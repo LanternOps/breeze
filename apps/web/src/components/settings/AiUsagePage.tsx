@@ -116,7 +116,7 @@ export default function AiUsagePage() {
   const isLocked = (field: string) => locked.includes(`aiBudgets.${field}`);
 
   const budgetFields = [
-    'enabled', 'monthlyBudgetDollars', 'dailyBudgetDollars',
+    'enabled', 'monthlyBudgetCents', 'dailyBudgetCents',
     'maxTurnsPerSession', 'messagesPerMinutePerUser', 'messagesPerHourPerOrg',
     'approvalMode',
   ];
@@ -129,8 +129,8 @@ export default function AiUsagePage() {
       // Filter out partner-locked fields to prevent 403 errors
       const payload: Record<string, unknown> = {};
       if (!isLocked('enabled')) payload.enabled = budget.enabled;
-      if (!isLocked('monthlyBudgetDollars')) payload.monthlyBudgetCents = budget.monthlyBudgetDollars ? Math.round(parseFloat(budget.monthlyBudgetDollars) * 100) : null;
-      if (!isLocked('dailyBudgetDollars')) payload.dailyBudgetCents = budget.dailyBudgetDollars ? Math.round(parseFloat(budget.dailyBudgetDollars) * 100) : null;
+      if (!isLocked('monthlyBudgetCents')) payload.monthlyBudgetCents = budget.monthlyBudgetDollars ? Math.round(parseFloat(budget.monthlyBudgetDollars) * 100) : null;
+      if (!isLocked('dailyBudgetCents')) payload.dailyBudgetCents = budget.dailyBudgetDollars ? Math.round(parseFloat(budget.dailyBudgetDollars) * 100) : null;
       if (!isLocked('maxTurnsPerSession')) payload.maxTurnsPerSession = parseInt(budget.maxTurnsPerSession) || 50;
       if (!isLocked('messagesPerMinutePerUser')) payload.messagesPerMinutePerUser = parseInt(budget.messagesPerMinutePerUser) || 20;
       if (!isLocked('messagesPerHourPerOrg')) payload.messagesPerHourPerOrg = parseInt(budget.messagesPerHourPerOrg) || 200;
@@ -255,10 +255,10 @@ export default function AiUsagePage() {
               value={budget.monthlyBudgetDollars}
               onChange={(e) => setBudget({ ...budget, monthlyBudgetDollars: e.target.value })}
               placeholder="No limit"
-              disabled={isLocked('monthlyBudgetDollars')}
-              className={`mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('monthlyBudgetDollars') ? 'opacity-60 cursor-not-allowed' : ''}`}
+              disabled={isLocked('monthlyBudgetCents')}
+              className={`mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('monthlyBudgetCents') ? 'opacity-60 cursor-not-allowed' : ''}`}
             />
-            {isLocked('monthlyBudgetDollars') && (
+            {isLocked('monthlyBudgetCents') && (
               <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
                 <Lock className="h-3 w-3" /> Managed by partner
               </span>
@@ -272,10 +272,10 @@ export default function AiUsagePage() {
               value={budget.dailyBudgetDollars}
               onChange={(e) => setBudget({ ...budget, dailyBudgetDollars: e.target.value })}
               placeholder="No limit"
-              disabled={isLocked('dailyBudgetDollars')}
-              className={`mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('dailyBudgetDollars') ? 'opacity-60 cursor-not-allowed' : ''}`}
+              disabled={isLocked('dailyBudgetCents')}
+              className={`mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('dailyBudgetCents') ? 'opacity-60 cursor-not-allowed' : ''}`}
             />
-            {isLocked('dailyBudgetDollars') && (
+            {isLocked('dailyBudgetCents') && (
               <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
                 <Lock className="h-3 w-3" /> Managed by partner
               </span>

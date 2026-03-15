@@ -591,19 +591,19 @@ const updateOrgHandler = [requireScope('partner', 'system'), zValidator('json', 
   const id = c.req.param('id')!;
   const data = c.req.valid('json');
 
-    // Enforce partner locks on settings categories
-    if (data.settings) {
-      const settingsObj = data.settings as Record<string, unknown>;
-      for (const category of ['security', 'notifications', 'eventLogs', 'defaults', 'branding']) {
-        if (settingsObj[category] && typeof settingsObj[category] === 'object') {
-          const fields = Object.keys(settingsObj[category] as Record<string, unknown>);
-          await assertNotLocked(id, category, fields);
-        }
-      }
-    }
-
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
     return c.json({ error: 'Organization not found' }, 404);
+  }
+
+  // Enforce partner locks on settings categories (after auth check)
+  if (data.settings) {
+    const settingsObj = data.settings as Record<string, unknown>;
+    for (const category of ['security', 'notifications', 'eventLogs', 'defaults', 'branding']) {
+      if (settingsObj[category] && typeof settingsObj[category] === 'object') {
+        const fields = Object.keys(settingsObj[category] as Record<string, unknown>);
+        await assertNotLocked(id, category, fields);
+      }
+    }
   }
 
   if (Object.keys(data).length === 0) {
