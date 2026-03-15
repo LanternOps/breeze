@@ -1,43 +1,43 @@
-CREATE TYPE IF NOT EXISTS "public"."partner_status" AS ENUM('pending', 'active', 'suspended', 'churned');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."ip_assignment_type" AS ENUM('dhcp', 'static', 'vpn', 'link-local', 'unknown');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."initiated_by_type" AS ENUM('manual', 'ai', 'automation', 'policy', 'schedule', 'agent', 'integration');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."discovered_asset_approval_status" AS ENUM('pending', 'approved', 'dismissed');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."network_event_type" AS ENUM('new_device', 'device_disappeared', 'device_changed', 'rogue_device');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."software_policy_mode" AS ENUM('allowlist', 'blocklist', 'audit');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."config_assignment_level" AS ENUM('partner', 'organization', 'site', 'device_group', 'device');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."config_feature_type" AS ENUM('patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."config_policy_status" AS ENUM('active', 'inactive', 'archived');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."monitoring_watch_type" AS ENUM('service', 'process');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."log_correlation_severity" AS ENUM('info', 'warning', 'error', 'critical');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."log_correlation_status" AS ENUM('active', 'resolved', 'ignored');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."trend_direction" AS ENUM('improving', 'stable', 'degrading');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."ai_approval_mode" AS ENUM('per_step', 'action_plan', 'auto_approve', 'hybrid_plan');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."ai_plan_status" AS ENUM('pending', 'approved', 'rejected', 'executing', 'completed', 'aborted');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."agent_log_level" AS ENUM('debug', 'info', 'warn', 'error');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."brain_context_type" AS ENUM('issue', 'quirk', 'followup', 'preference');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."playbook_execution_status" AS ENUM('pending', 'running', 'waiting', 'completed', 'failed', 'rolled_back', 'cancelled');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."playbook_step_type" AS ENUM('diagnose', 'act', 'wait', 'verify', 'rollback');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."change_action" AS ENUM('added', 'removed', 'modified', 'updated');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."change_type" AS ENUM('software', 'service', 'startup', 'network', 'scheduled_task', 'user_account');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."dns_action" AS ENUM('allowed', 'blocked', 'redirected');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."dns_policy_sync_status" AS ENUM('pending', 'synced', 'error');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."dns_policy_type" AS ENUM('blocklist', 'allowlist');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."dns_provider" AS ENUM('umbrella', 'cloudflare', 'dnsfilter', 'pihole', 'opendns', 'quad9');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."dns_threat_category" AS ENUM('malware', 'phishing', 'botnet', 'cryptomining', 'ransomware', 'spam', 'adware', 'adult_content', 'gambling', 'social_media', 'streaming', 'unknown');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."cis_baseline_level" AS ENUM('l1', 'l2', 'custom');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."cis_check_severity" AS ENUM('low', 'medium', 'high', 'critical');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."cis_check_status" AS ENUM('pass', 'fail', 'not_applicable', 'error');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."cis_os_type" AS ENUM('windows', 'macos', 'linux');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."cis_remediation_approval_status" AS ENUM('pending', 'approved', 'rejected');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."cis_remediation_status" AS ENUM('pending_approval', 'queued', 'in_progress', 'completed', 'failed', 'cancelled');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."peripheral_device_class" AS ENUM('storage', 'all_usb', 'bluetooth', 'thunderbolt');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."peripheral_event_type" AS ENUM('connected', 'disconnected', 'blocked', 'mounted_read_only', 'policy_override');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."peripheral_policy_action" AS ENUM('allow', 'block', 'read_only', 'alert');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."peripheral_policy_target_type" AS ENUM('organization', 'site', 'group', 'device');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."check_result_status" AS ENUM('running', 'stopped', 'not_found', 'error');--> statement-breakpoint
-CREATE TYPE IF NOT EXISTS "public"."warranty_status" AS ENUM('active', 'expiring', 'expired', 'unknown');--> statement-breakpoint
-ALTER TYPE "public"."plan_type" ADD VALUE 'starter' BEFORE 'pro';--> statement-breakpoint
-ALTER TYPE "public"."plan_type" ADD VALUE 'community' BEFORE 'pro';--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."partner_status" AS ENUM('pending', 'active', 'suspended', 'churned'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."ip_assignment_type" AS ENUM('dhcp', 'static', 'vpn', 'link-local', 'unknown'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."initiated_by_type" AS ENUM('manual', 'ai', 'automation', 'policy', 'schedule', 'agent', 'integration'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."discovered_asset_approval_status" AS ENUM('pending', 'approved', 'dismissed'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."network_event_type" AS ENUM('new_device', 'device_disappeared', 'device_changed', 'rogue_device'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."software_policy_mode" AS ENUM('allowlist', 'blocklist', 'audit'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."config_assignment_level" AS ENUM('partner', 'organization', 'site', 'device_group', 'device'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."config_feature_type" AS ENUM('patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."config_policy_status" AS ENUM('active', 'inactive', 'archived'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."monitoring_watch_type" AS ENUM('service', 'process'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."log_correlation_severity" AS ENUM('info', 'warning', 'error', 'critical'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."log_correlation_status" AS ENUM('active', 'resolved', 'ignored'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."trend_direction" AS ENUM('improving', 'stable', 'degrading'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."ai_approval_mode" AS ENUM('per_step', 'action_plan', 'auto_approve', 'hybrid_plan'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."ai_plan_status" AS ENUM('pending', 'approved', 'rejected', 'executing', 'completed', 'aborted'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."agent_log_level" AS ENUM('debug', 'info', 'warn', 'error'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."brain_context_type" AS ENUM('issue', 'quirk', 'followup', 'preference'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."playbook_execution_status" AS ENUM('pending', 'running', 'waiting', 'completed', 'failed', 'rolled_back', 'cancelled'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."playbook_step_type" AS ENUM('diagnose', 'act', 'wait', 'verify', 'rollback'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."change_action" AS ENUM('added', 'removed', 'modified', 'updated'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."change_type" AS ENUM('software', 'service', 'startup', 'network', 'scheduled_task', 'user_account'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."dns_action" AS ENUM('allowed', 'blocked', 'redirected'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."dns_policy_sync_status" AS ENUM('pending', 'synced', 'error'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."dns_policy_type" AS ENUM('blocklist', 'allowlist'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."dns_provider" AS ENUM('umbrella', 'cloudflare', 'dnsfilter', 'pihole', 'opendns', 'quad9'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."dns_threat_category" AS ENUM('malware', 'phishing', 'botnet', 'cryptomining', 'ransomware', 'spam', 'adware', 'adult_content', 'gambling', 'social_media', 'streaming', 'unknown'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."cis_baseline_level" AS ENUM('l1', 'l2', 'custom'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."cis_check_severity" AS ENUM('low', 'medium', 'high', 'critical'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."cis_check_status" AS ENUM('pass', 'fail', 'not_applicable', 'error'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."cis_os_type" AS ENUM('windows', 'macos', 'linux'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."cis_remediation_approval_status" AS ENUM('pending', 'approved', 'rejected'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."cis_remediation_status" AS ENUM('pending_approval', 'queued', 'in_progress', 'completed', 'failed', 'cancelled'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."peripheral_device_class" AS ENUM('storage', 'all_usb', 'bluetooth', 'thunderbolt'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."peripheral_event_type" AS ENUM('connected', 'disconnected', 'blocked', 'mounted_read_only', 'policy_override'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."peripheral_policy_action" AS ENUM('allow', 'block', 'read_only', 'alert'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."peripheral_policy_target_type" AS ENUM('organization', 'site', 'group', 'device'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."check_result_status" AS ENUM('running', 'stopped', 'not_found', 'error'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+DO $$ BEGIN CREATE TYPE "public"."warranty_status" AS ENUM('active', 'expiring', 'expired', 'unknown'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+ALTER TYPE "public"."plan_type" ADD VALUE IF NOT EXISTS 'starter' BEFORE 'pro';--> statement-breakpoint
+ALTER TYPE "public"."plan_type" ADD VALUE IF NOT EXISTS 'community' BEFORE 'pro';--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "device_boot_metrics" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"device_id" uuid NOT NULL,
