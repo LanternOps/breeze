@@ -177,6 +177,8 @@ export default function OrgSettingsPage() {
       if (effRes.ok) {
         const effData = await effRes.json();
         setLocked(effData.locked || []);
+      } else {
+        console.warn('[OrgSettingsPage] Failed to fetch effective settings:', effRes.status);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
@@ -205,7 +207,8 @@ export default function OrgSettingsPage() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to save settings');
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || body.message || 'Failed to save settings');
       }
 
       await fetchOrgDetails();

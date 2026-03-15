@@ -290,7 +290,10 @@ export async function getEffectiveAiBudget(
   }
 
   // Partner JSONB wins
-  if (partner) {
+  if (!partner) {
+    throw new HTTPException(404, { message: 'Partner not found' });
+  }
+  {
     const partnerBudget = asRecord(asRecord(partner.settings).aiBudgets);
     for (const field of AI_BUDGET_FIELDS) {
       if (field in partnerBudget && partnerBudget[field] !== undefined) {

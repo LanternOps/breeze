@@ -102,7 +102,9 @@ export default function AiUsagePage() {
             const effData = await effRes.json();
             setLocked(effData.locked || []);
           }
-        } catch { /* non-critical */ }
+        } catch (err) {
+          console.warn('[AiUsagePage] Error fetching effective settings:', err);
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load data');
@@ -140,7 +142,10 @@ export default function AiUsagePage() {
         method: 'PUT',
         body: JSON.stringify(payload)
       });
-      if (!res.ok) throw new Error('Failed to save budget');
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || body.message || 'Failed to save budget');
+      }
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err) {
