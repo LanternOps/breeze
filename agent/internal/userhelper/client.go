@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"net"
 	"os"
 	"os/user"
@@ -18,8 +19,8 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/ipc"
-	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
 
 var log = logging.L("userhelper")
@@ -402,6 +403,12 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 // executeToolCommand runs screenshot/computer_action in the user session.
 // These commands require a display (DXGI/GDI) and input APIs (SendInput)
 // that are only available in user sessions, not Session 0 (service).
+//
+// When a WebRTC desktop session is active, the capture function reuses the
+// session's existing capturer instead of creating a standalone one. This
+// prevents the standalone capturer's Close() from destroying shared global
+// capture state (DXGI duplication on Windows, ScreenCaptureKit filter on
+// macOS), which would kill the viewer's stream.
 func (c *Client) executeToolCommand(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 	var payload map[string]any
 	if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
@@ -412,12 +419,18 @@ func (c *Client) executeToolCommand(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 		}
 	}
 
+	// Build a CaptureFunc that borrows the active WebRTC session's capturer.
+	// Returns an error (triggering fallback) if no session is active.
+	capFn := func(displayIndex int) (*image.RGBA, int, int, error) {
+		return c.desktopMgr.captureScreenshot(displayIndex)
+	}
+
 	var toolResult tools.CommandResult
 	switch cmd.Type {
 	case tools.CmdTakeScreenshot:
-		toolResult = tools.TakeScreenshot(payload)
+		toolResult = tools.TakeScreenshotWithCapture(payload, capFn)
 	case tools.CmdComputerAction:
-		toolResult = tools.ComputerAction(payload)
+		toolResult = tools.ComputerActionWithCapture(payload, capFn)
 	default:
 		return ipc.IPCCommandResult{
 			CommandID: cmd.CommandID,

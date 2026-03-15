@@ -1,6 +1,8 @@
 package desktop
 
 import (
+	"fmt"
+	"image"
 	"log/slog"
 	"runtime/debug"
 	"sync"
@@ -181,6 +183,71 @@ func parseICEServers(raw []ICEServerConfig) []webrtc.ICEServer {
 		return []webrtc.ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}}
 	}
 	return servers
+}
+
+// CaptureScreenshot captures a single frame from the active session's capturer.
+// This allows AI tools (take_screenshot, computer_action) to reuse the existing
+// DXGI/ScreenCaptureKit capturer instead of creating a new one, which would
+// conflict with the WebRTC session's capture pipeline (destroying shared global
+// C state on Close()).
+// Returns ErrNoActiveSession if no session is currently streaming.
+func (m *SessionManager) CaptureScreenshot(displayIndex int) (*image.RGBA, int, int, error) {
+	m.mu.RLock()
+	var target *Session
+	for _, s := range m.sessions {
+		s.mu.RLock()
+		active := s.isActive
+		idx := s.displayIndex
+		s.mu.RUnlock()
+		if active && idx == displayIndex {
+			target = s
+			break
+		}
+	}
+	// If no session matches the exact display, use any active session's capturer
+	// as a fallback — better than creating a conflicting one.
+	if target == nil {
+		for _, s := range m.sessions {
+			s.mu.RLock()
+			active := s.isActive
+			s.mu.RUnlock()
+			if active {
+				target = s
+				break
+			}
+		}
+	}
+	m.mu.RUnlock()
+
+	if target == nil {
+		return nil, 0, 0, ErrNoActiveSession
+	}
+
+	target.mu.RLock()
+	cap := target.capturer
+	target.mu.RUnlock()
+
+	if cap == nil {
+		return nil, 0, 0, ErrNoActiveSession
+	}
+
+	img, err := cap.Capture()
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("capture from active session: %w", err)
+	}
+
+	w, h, err := cap.GetScreenBounds()
+	if err != nil {
+		// Use image dimensions as fallback
+		if img != nil {
+			w = img.Bounds().Dx()
+			h = img.Bounds().Dy()
+		} else {
+			return nil, 0, 0, fmt.Errorf("get screen bounds from active session: %w", err)
+		}
+	}
+
+	return img, w, h, nil
 }
 
 // StopSession stops and removes a session

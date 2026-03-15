@@ -21,7 +21,9 @@ func handleTakeScreenshot(h *Heartbeat, cmd Command) tools.CommandResult {
 		return h.executeToolViaHelper(tools.CmdTakeScreenshot, cmd.Payload, start)
 	}
 
-	return tools.TakeScreenshot(cmd.Payload)
+	// Direct mode: reuse active WebRTC session's capturer if available to avoid
+	// conflicting with the shared global capture state (DXGI/ScreenCaptureKit).
+	return tools.TakeScreenshotWithCapture(cmd.Payload, h.desktopCaptureFn())
 }
 
 // executeToolViaHelper sends a screenshot/computer_action command to the user
