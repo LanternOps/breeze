@@ -2,7 +2,6 @@ package heartbeat
 
 import (
 	"fmt"
-	"runtime"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -126,9 +125,9 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 
 	// Route through IPC helper when running headless (no display access).
-	// macOS launchd daemons are headless but DO have display access via
-	// Screen Recording permissions, so they use the direct path.
-	if runtime.GOOS != "darwin" && (h.isService || h.isHeadless) && h.sessionBroker != nil {
+	// ScreenCaptureKit requires a GUI session (Aqua) — root daemons on macOS
+	// cannot capture the screen directly even with TCC permission.
+	if (h.isService || h.isHeadless) && h.sessionBroker != nil {
 		result := h.startDesktopViaHelper(sessionID, offer, iceServers, displayIndex, cmd.Payload)
 		result.DurationMs = time.Since(start).Milliseconds()
 		return result
@@ -155,8 +154,8 @@ func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		return *errResult
 	}
 
-	// Service mode: relay stop to user helper (macOS handles desktop directly)
-	if runtime.GOOS != "darwin" && (h.isService || h.isHeadless) && h.sessionBroker != nil {
+	// Service/headless mode: relay stop to user helper
+	if (h.isService || h.isHeadless) && h.sessionBroker != nil {
 		targetSession := ""
 		if ts, ok := cmd.Payload["targetSessionId"].(float64); ok && ts > 0 {
 			targetSession = fmt.Sprintf("%d", int(ts))
@@ -226,10 +225,9 @@ func handleListSessions(h *Heartbeat, cmd Command) tools.CommandResult {
 func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 
-	// WS-based desktop streaming cannot work from Session 0 (no display).
-	// The viewer should use WebRTC (start_desktop) when connecting to a service agent.
-	// macOS launchd daemons have display access, so they can stream directly.
-	if runtime.GOOS != "darwin" && (h.isService || h.isHeadless) {
+	// WS-based desktop streaming cannot work from headless mode (no display).
+	// The viewer should use WebRTC (start_desktop) when connecting to a headless agent.
+	if h.isService || h.isHeadless {
 		return serviceUnavailable("desktop_stream_start", start)
 	}
 
@@ -268,8 +266,8 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleDesktopStreamStop(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
-	if runtime.GOOS != "darwin" && (h.isService || h.isHeadless) {
-		// No WS stream running in service mode — return success as a no-op.
+	if h.isService || h.isHeadless {
+		// No WS stream running in headless mode — return success as a no-op.
 		return tools.NewSuccessResult(map[string]any{"stopped": true}, time.Since(start).Milliseconds())
 	}
 	sessionID, errResult := tools.RequirePayloadString(cmd.Payload, "sessionId")
@@ -284,10 +282,9 @@ func handleDesktopStreamStop(h *Heartbeat, cmd Command) tools.CommandResult {
 func handleDesktopInput(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 
-	// Input injection cannot work from Session 0 (SetCursorPos, SendInput fail).
+	// Input injection cannot work from headless mode (no display context).
 	// WebRTC sessions handle input via the data channel in the user helper.
-	// macOS can use CGEventPost from daemons, so it handles input directly.
-	if runtime.GOOS != "darwin" && (h.isService || h.isHeadless) {
+	if h.isService || h.isHeadless {
 		return serviceUnavailable("desktop_input", start)
 	}
 
@@ -340,7 +337,7 @@ func handleDesktopInput(h *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleDesktopConfig(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
-	if runtime.GOOS != "darwin" && (h.isService || h.isHeadless) {
+	if h.isService || h.isHeadless {
 		return serviceUnavailable("desktop_config", start)
 	}
 	sessionID, errResult := tools.RequirePayloadString(cmd.Payload, "sessionId")

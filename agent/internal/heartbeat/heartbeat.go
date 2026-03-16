@@ -406,9 +406,8 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	}
 
 	// For direct mode (non-service), notify API when WebRTC peer drops.
-	// In service mode this is handled via IPC from the user helper.
-	// macOS daemons are headless but handle desktop directly, so they need this hook.
-	if !cfg.IsService && (!cfg.IsHeadless || runtime.GOOS == "darwin") {
+	// In service/headless mode this is handled via IPC from the user helper.
+	if !cfg.IsService && !cfg.IsHeadless {
 		h.desktopMgr.OnSessionStopped = func(sessionID string) {
 			h.sendDesktopDisconnectNotification(sessionID)
 		}

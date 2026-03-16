@@ -130,7 +130,10 @@ endif
 	$(eval DEV_VERSION := dev-$(shell date +%s))
 	$(eval AUTH_HEADER := $(if $(filter brz_%,$(AUTH_TOKEN)),X-API-Key: $(AUTH_TOKEN),Authorization: Bearer $(AUTH_TOKEN)))
 	@echo "Querying device platform..."
-	$(eval PLATFORM := $(shell curl -sf "$(API_URL)/api/v1/devices/$(DEVICE)" -H "$(AUTH_HEADER)" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('os','linux').lower()+'/'+d.get('arch','amd64'))" 2>/dev/null || echo "windows/amd64"))
+	$(eval PLATFORM := $(shell curl -sf "$(API_URL)/api/v1/devices/$(DEVICE)" -H "$(AUTH_HEADER)" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); os_map={'windows':'windows','macos':'darwin','linux':'linux'}; print(os_map.get(d.get('osType','linux'),'linux')+'/'+d.get('architecture','amd64'))" 2>/dev/null || echo ""))
+ifeq ($(PLATFORM),)
+	$(error Failed to query device platform from API. Check DEVICE ID and AUTH_TOKEN.)
+endif
 	$(eval TARGET_GOOS := $(word 1,$(subst /, ,$(PLATFORM))))
 	$(eval TARGET_GOARCH := $(word 2,$(subst /, ,$(PLATFORM))))
 	$(eval BUILD_GOOS := $(shell go env GOOS))
