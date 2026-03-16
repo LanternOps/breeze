@@ -188,8 +188,10 @@ func (c *Client) authenticate() error {
 
 func (c *Client) sendCapabilities() error {
 	caps := detectCapabilities()
-	// User-role helpers cannot capture desktop (no SYSTEM token for UAC/lock screen).
-	if c.role == ipc.HelperRoleUser {
+	// On Windows, user-role helpers cannot capture desktop (no SYSTEM token
+	// for UAC/lock screen). On macOS, the user-role helper is the only process
+	// that CAN capture — the root daemon lacks GUI session access.
+	if c.role == ipc.HelperRoleUser && runtime.GOOS == "windows" {
 		caps.CanCapture = false
 	}
 	return c.conn.SendTyped("caps", ipc.TypeCapabilities, caps)

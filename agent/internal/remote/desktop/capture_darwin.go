@@ -53,7 +53,11 @@ int initCapture(int displayIndex) {
         dispatch_semaphore_signal(sem);
     }];
 
-    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+    // Timeout after 10 seconds — ScreenCaptureKit completion handler may
+    // never fire if the process lacks Screen Recording TCC authorization
+    // (root daemons cannot show the permission dialog).
+    long timedOut = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 10LL * NSEC_PER_SEC));
+    if (timedOut != 0) return 7; // timeout
     if (error != 0 || targetDisplay == nil) return error != 0 ? error : 2;
 
     // SCDisplay.width/height are in points. On Retina displays we must
@@ -102,7 +106,11 @@ ScreenCaptureResult captureFrame(void) {
         dispatch_semaphore_signal(sem);
     }];
 
-    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+    long captureTimedOut = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 10LL * NSEC_PER_SEC));
+    if (captureTimedOut != 0) {
+        result.error = 7;
+        return result;
+    }
     if (result.error != 0 || capturedImage == NULL) return result;
 
     // Convert CGImage to RGBA pixel data
@@ -327,6 +335,8 @@ func translateDarwinError(code int) error {
 		return fmt.Errorf("failed to create bitmap context")
 	case 6:
 		return fmt.Errorf("capturer not initialized — call initCapture first")
+	case 7:
+		return fmt.Errorf("ScreenCaptureKit timed out — process may lack Screen Recording permission (check System Settings > Privacy > Screen Recording)")
 	default:
 		return fmt.Errorf("unknown error: %d", code)
 	}

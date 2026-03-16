@@ -254,8 +254,9 @@ func startAgent() (*agentComponents, error) {
 		}
 	}
 
-	// Propagate service/headless flags so the heartbeat routes desktop
-	// sessions through the IPC user helper instead of capturing directly.
+	// Propagate service/headless flags. On Windows, desktop sessions route
+	// through the IPC user helper. On macOS, the daemon handles desktop
+	// directly but uses IPC for user-context operations (run_as_user, helper).
 	cfg.IsService = isWindowsService()
 	cfg.IsHeadless = isHeadless()
 
@@ -266,7 +267,7 @@ func startAgent() (*agentComponents, error) {
 	}
 
 	if cfg.IsHeadless {
-		log.Info("running in headless mode (no console attached), desktop commands will route via IPC")
+		log.Info("running in headless/daemon mode (no console attached)")
 	}
 
 	// Start heartbeat - this implements the main agent run loop
