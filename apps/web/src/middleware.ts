@@ -53,9 +53,8 @@ function buildFallbackCspDirectives(options: {
     resolveConnectSrcDirective()
   ];
 
-  if (!options.allowInlineStyle) {
-    directives.push("style-src-attr 'none'");
-  }
+  // Note: style-src-attr 'none' is intentionally omitted — xterm.js requires
+  // inline style attributes for terminal cell rendering (colors, cursor).
 
   if (!options.allowInlineScript) {
     directives.push("script-src-attr 'none'");
@@ -111,9 +110,8 @@ function relaxExistingCsp(
     const filtered = directives.filter((directive) => !directive.toLowerCase().startsWith('style-src-attr '));
     directives.length = 0;
     directives.push(...filtered);
-  } else if (!directives.some((directive) => directive.toLowerCase().startsWith('style-src-attr '))) {
-    directives.push("style-src-attr 'none'");
   }
+  // style-src-attr 'none' intentionally omitted — xterm.js requires inline style attributes
 
   return directives.join('; ');
 }
@@ -193,9 +191,7 @@ export const onRequest = defineMiddleware(async (_context, next) => {
     if (!/\bscript-src-attr\b/i.test(patchedCsp)) {
       patchedCsp = `${patchedCsp}; script-src-attr 'none'`;
     }
-    if (!/\bstyle-src-attr\b/i.test(patchedCsp)) {
-      patchedCsp = `${patchedCsp}; style-src-attr 'none'`;
-    }
+    // style-src-attr 'none' intentionally omitted — xterm.js requires inline style attributes
     headers.set('Content-Security-Policy', patchedCsp);
   }
   headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
