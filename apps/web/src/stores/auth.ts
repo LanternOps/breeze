@@ -102,6 +102,12 @@ export const useAuthStore = create<AuthState>()(
   )
 );
 
+// Org-context injection — orgStore registers a provider to avoid circular imports
+let _getOrgId: (() => string | null) | null = null;
+export function registerOrgIdProvider(fn: () => string | null) {
+  _getOrgId = fn;
+}
+
 // API helper functions
 // In development, set PUBLIC_API_URL=http://localhost:3001. In production behind a
 // reverse proxy (Caddy), leave it empty so requests use relative paths (/api/v1/...).
@@ -244,7 +250,15 @@ export async function restoreAccessTokenFromCookie(): Promise<boolean> {
   }
 }
 
-export async function fetchWithAuth(url: string, options: RequestInit = {}): Promise<Response> {
+export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): Promise<Response> {
+  // Auto-inject orgId from the org store so partner/system users always scope API calls
+  let url = rawUrl;
+  const orgId = _getOrgId?.();
+  if (orgId && !url.includes('orgId=')) {
+    const separator = url.includes('?') ? '&' : '?';
+    url = `${url}${separator}orgId=${orgId}`;
+  }
+
   const { tokens: initialTokens, isAuthenticated, logout, setTokens } = useAuthStore.getState();
   let tokens = initialTokens;
   const previousAccessToken = tokens?.accessToken ?? null;

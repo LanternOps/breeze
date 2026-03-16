@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { fetchWithAuth } from './auth';
+import { fetchWithAuth, registerOrgIdProvider } from './auth';
 
 export interface Partner {
   id: string;
@@ -216,6 +216,9 @@ export const useOrgStore = create<OrgState>()(
     }
   )
 );
+
+// Wire up org context so fetchWithAuth auto-injects orgId on every request
+registerOrgIdProvider(() => useOrgStore.getState().currentOrgId);
 
 // Helper to get current organization details
 export function getCurrentOrganization(): Organization | null {
