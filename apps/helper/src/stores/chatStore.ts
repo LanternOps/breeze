@@ -600,7 +600,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!trimmed) return;
 
     // Notify backend that chat is active
-    getTauriInvoke().then((inv) => { if (inv) inv('update_chat_active', { active: true }); });
+    getTauriInvoke().then((inv) => { if (inv) inv('update_chat_active', { active: true }).catch(() => {}); }).catch(() => {});
 
     // Optimistic user message
     const userMsgId = crypto.randomUUID();
@@ -679,7 +679,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             set(() => ({ error, isStreaming: false }));
           }
           // Notify backend that chat is idle (stream finished)
-          getTauriInvoke().then((inv) => { if (inv) inv('update_chat_active', { active: false }); });
+          getTauriInvoke().then((inv) => { if (inv) inv('update_chat_active', { active: false }).catch(() => {}); }).catch(() => {});
         },
       );
 
@@ -712,7 +712,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         isStreaming: false,
       });
       // Notify backend that chat is idle (error path)
-      getTauriInvoke().then((inv) => { if (inv) inv('update_chat_active', { active: false }); });
+      getTauriInvoke().then((inv) => { if (inv) inv('update_chat_active', { active: false }).catch(() => {}); }).catch(() => {});
     } finally {
       const state = get();
       if (state.isStreaming) {
@@ -738,7 +738,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     // Notify backend that chat is idle (session cleared)
     const invoke = await getTauriInvoke();
-    if (invoke) invoke('update_chat_active', { active: false });
+    if (invoke) invoke('update_chat_active', { active: false }).catch(() => {});
 
     set({
       sessionId: null,

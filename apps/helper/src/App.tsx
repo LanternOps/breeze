@@ -314,7 +314,7 @@ function DeviceInfoView({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="helper-container">
-      <div className="helper-header" data-tauri-drag-region>
+      <div className="helper-header">
         <div className="helper-header-left" data-tauri-drag-region>
           <span className="helper-title">Device Info</span>
         </div>
@@ -474,11 +474,12 @@ export default function App() {
   return (
     <div className="helper-container">
       {/* Header — draggable title bar */}
-      <div className="helper-header" data-tauri-drag-region>
+      <div className="helper-header">
         <div className="helper-header-left" data-tauri-drag-region>
           <span className="helper-status-dot helper-status-connected" />
           <span className="helper-title">Breeze Helper</span>
         </div>
+        <div className="helper-header-drag-spacer" data-tauri-drag-region />
         <div className="helper-header-actions">
           <button
             onClick={() => setShowHistory(true)}
@@ -495,14 +496,14 @@ export default function App() {
             New
           </button>
           <button
-            onClick={() => invoke('minimize_window')}
+            onClick={() => invoke('minimize_window').catch(() => {})}
             className="helper-btn-window"
             title="Minimize"
           >
             &#8211;
           </button>
           <button
-            onClick={() => invoke('hide_window')}
+            onClick={() => invoke('hide_window').catch(() => {})}
             className="helper-btn-window helper-btn-window-close"
             title="Close to tray"
           >
