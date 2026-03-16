@@ -84,11 +84,9 @@ func installAutoStart(binaryPath string) error {
 }
 
 func isHelperRunning() bool {
-	out, err := exec.Command("launchctl", "list").Output()
-	if err != nil {
-		return false
-	}
-	return strings.Contains(string(out), plistLabel)
+	// Check for running process directly — the agent starts the helper via
+	// exec.Command, not launchctl bootstrap, so launchctl list won't show it.
+	return exec.Command("pgrep", "-f", "breeze-helper").Run() == nil
 }
 
 func stopHelper() error {

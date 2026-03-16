@@ -87,7 +87,7 @@ func New(ctx context.Context, serverURL string, authToken *secmem.SecureString, 
 func defaultBinaryPath() string {
 	switch runtime.GOOS {
 	case "darwin":
-		return "/Applications/Breeze Helper.app/Contents/MacOS/Breeze Helper"
+		return "/Applications/Breeze Helper.app/Contents/MacOS/breeze-helper"
 	case "windows":
 		pf := os.Getenv("ProgramFiles")
 		if pf == "" {

@@ -67,6 +67,7 @@ interface ChatState {
   sessions: SessionSummary[];
   sessionsLoading: boolean;
   pendingApproval: PendingApproval | null;
+  isFlagged: boolean;
 
   initialize: () => Promise<void>;
   sendMessage: (content: string) => Promise<void>;
@@ -75,6 +76,7 @@ interface ChatState {
   loadSessions: () => Promise<void>;
   loadSession: (id: string) => Promise<void>;
   approveExecution: (executionId: string, approved: boolean) => Promise<void>;
+  flagSession: (reason?: string) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -485,6 +487,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   sessions: [],
   sessionsLoading: false,
   pendingApproval: null,
+  isFlagged: false,
 
   initialize: async () => {
     set({ connectionState: 'connecting', connectionError: null });
@@ -746,6 +749,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       isStreaming: false,
       error: null,
       pendingApproval: null,
+      isFlagged: false,
     });
   },
 
@@ -774,6 +778,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ error: err instanceof Error ? err.message : 'Failed to process approval' });
     } finally {
       set({ pendingApproval: null });
+    }
+  },
+
+  flagSession: async (reason?: string) => {
+    const { agentConfig, sessionId } = get();
+    if (!agentConfig || !sessionId) return;
+
+    try {
+      const res = await helperRequest(
+        agentConfig,
+        `${agentConfig.api_url}/api/v1/helper/chat/sessions/${sessionId}/flag`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason }),
+        },
+      );
+
+      if (res.ok) {
+        set({ isFlagged: true });
+      } else {
+        const data = (() => {
+          try { return JSON.parse(res.body); } catch { return { error: 'Failed to flag session' }; }
+        })();
+        set({ error: data.error || 'Failed to flag session' });
+      }
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : 'Failed to flag session' });
     }
   },
 }));

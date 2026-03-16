@@ -114,6 +114,7 @@ body {
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
+  app-region: drag;
   user-select: none;
   flex-shrink: 0;
 }
@@ -131,6 +132,7 @@ body {
   background: var(--text-muted);
   flex-shrink: 0;
   transition: background var(--transition-normal);
+  pointer-events: none;
 }
 
 .helper-status-connected {
@@ -143,6 +145,7 @@ body {
   font-weight: 600;
   color: var(--text-primary);
   letter-spacing: 0.01em;
+  pointer-events: none;
 }
 
 /* ----------------------------------------------------------
@@ -204,10 +207,29 @@ body {
   transform: scale(0.97);
 }
 
+/* Ensure buttons are always clickable, not draggable */
+.helper-header .helper-btn,
+.helper-header-actions .helper-btn {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
 .helper-btn-sm {
   padding: 3px 10px;
   font-size: 11px;
   border-radius: var(--radius-sm);
+}
+
+.helper-btn-flagged {
+  background: var(--error-bg);
+  border-color: var(--error-border);
+  color: var(--error-text);
+  cursor: default;
+}
+
+.helper-btn-flagged:hover {
+  background: var(--error-bg);
+  border-color: var(--error-border);
 }
 
 .helper-btn-window {
@@ -658,18 +680,34 @@ body {
 }
 
 /* ----------------------------------------------------------
+   macOS Traffic Light Support
+   ---------------------------------------------------------- */
+.helper-header-macos {
+  /* No custom close/minimize — native traffic lights are in the overlay */
+}
+
+.helper-traffic-light-spacer {
+  /* Reserve space for macOS traffic light buttons (close/minimize/maximize) */
+  width: 70px;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
+/* ----------------------------------------------------------
    Header Actions
    ---------------------------------------------------------- */
 .helper-header-drag-spacer {
   flex: 1;
   min-width: 8px;
   -webkit-app-region: drag;
+  app-region: drag;
 }
 
 .helper-header-actions {
   display: flex;
   gap: 6px;
   -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 
 /* ----------------------------------------------------------
@@ -736,11 +774,18 @@ body {
 .helper-history-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   padding: 10px 14px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  -webkit-app-region: drag;
+  app-region: drag;
+  user-select: none;
+}
+
+.helper-history-header .helper-btn {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 
 .helper-history-title {
