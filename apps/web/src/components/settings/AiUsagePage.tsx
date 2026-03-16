@@ -140,6 +140,7 @@ export default function AiUsagePage() {
 
       const res = await fetchWithAuth('/ai/budget', {
         method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
       if (!res.ok) {

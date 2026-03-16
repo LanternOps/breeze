@@ -28,7 +28,10 @@ export default defineConfig({
         resources: ["'self'", 'https://cdn.jsdelivr.net', 'https://static.cloudflareinsights.com']
       },
       styleDirective: {
-        resources: ["'self'", 'https://cdn.jsdelivr.net']
+        // 'unsafe-inline' required because xterm.js injects dynamic inline
+        // styles at runtime for terminal colors, cursor, and cell rendering.
+        // These cannot be pre-hashed at build time.
+        resources: ["'self'", "'unsafe-inline'", 'https://cdn.jsdelivr.net']
       }
     }
   },
