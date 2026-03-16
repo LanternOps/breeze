@@ -76,6 +76,8 @@ const darwinUserPlist = `<?xml version="1.0" encoding="UTF-8"?>
     <array>
         <string>/usr/local/bin/breeze-agent</string>
         <string>user-helper</string>
+        <string>--role</string>
+        <string>user</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -162,13 +164,12 @@ var serviceInstallCmd = &cobra.Command{
 		}
 		fmt.Printf("LaunchDaemon plist installed to %s\n", darwinPlistDst)
 
-		// Optionally install the per-user desktop helper LaunchAgent
-		if withUserHelper {
-			if err := os.WriteFile(darwinUserPlistDst, []byte(darwinUserPlist), 0644); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to write user-helper plist: %v\n", err)
-			} else {
-				fmt.Printf("LaunchAgent plist installed to %s\n", darwinUserPlistDst)
-			}
+		// Always install the per-user desktop helper LaunchAgent (provides
+		// user-context operations: run_as_user scripts, Breeze Helper launch).
+		if err := os.WriteFile(darwinUserPlistDst, []byte(darwinUserPlist), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to write user-helper plist: %v\n", err)
+		} else {
+			fmt.Printf("LaunchAgent plist installed to %s\n", darwinUserPlistDst)
 		}
 
 		// Create breeze group for IPC socket access (best-effort)

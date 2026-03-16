@@ -290,6 +290,17 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 				return nil
 			}),
 		)
+	} else if cfg.IsHeadless && h.sessionBroker != nil {
+		// macOS/Linux headless daemons: launch Breeze Helper via user-role
+		// IPC helper (LaunchAgent) so the Tauri app runs in the user session.
+		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID,
+			helper.WithSpawnFunc(func(binaryPath string) error {
+				if err := h.sessionBroker.LaunchProcessViaUserHelper(binaryPath); err == nil {
+					return nil
+				}
+				return helper.ErrNoActiveSession
+			}),
+		)
 	} else {
 		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID)
 	}
@@ -312,10 +323,12 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	}
 
 	// Initialize session broker for user helpers (IPC).
-	// Always enable when running as a Windows service — the helper is required
-	// for desktop capture, input injection, and other interactive operations
-	// that cannot work from Session 0.
-	if cfg.UserHelperEnabled || cfg.IsService || cfg.IsHeadless {
+	// Enable IPC session broker when running as a service, headless, or when
+	// explicitly configured. macOS daemons handle desktop capture directly
+	// but still need the broker for user-context operations (run_as_user
+	// scripts and Breeze Helper launch).
+	needsBroker := cfg.UserHelperEnabled || cfg.IsService || cfg.IsHeadless
+	if needsBroker {
 		socketPath := cfg.IPCSocketPath
 		if socketPath == "" {
 			socketPath = ipc.DefaultSocketPath()
@@ -394,7 +407,8 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 
 	// For direct mode (non-service), notify API when WebRTC peer drops.
 	// In service mode this is handled via IPC from the user helper.
-	if !cfg.IsService && !cfg.IsHeadless {
+	// macOS daemons are headless but handle desktop directly, so they need this hook.
+	if !cfg.IsService && (!cfg.IsHeadless || runtime.GOOS == "darwin") {
 		h.desktopMgr.OnSessionStopped = func(sessionID string) {
 			h.sendDesktopDisconnectNotification(sessionID)
 		}

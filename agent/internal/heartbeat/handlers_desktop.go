@@ -155,8 +155,8 @@ func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		return *errResult
 	}
 
-	// Service mode: relay stop to user helper
-	if (h.isService || h.isHeadless) && h.sessionBroker != nil {
+	// Service mode: relay stop to user helper (macOS handles desktop directly)
+	if runtime.GOOS != "darwin" && (h.isService || h.isHeadless) && h.sessionBroker != nil {
 		targetSession := ""
 		if ts, ok := cmd.Payload["targetSessionId"].(float64); ok && ts > 0 {
 			targetSession = fmt.Sprintf("%d", int(ts))
@@ -228,7 +228,8 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 
 	// WS-based desktop streaming cannot work from Session 0 (no display).
 	// The viewer should use WebRTC (start_desktop) when connecting to a service agent.
-	if h.isService || h.isHeadless {
+	// macOS launchd daemons have display access, so they can stream directly.
+	if runtime.GOOS != "darwin" && (h.isService || h.isHeadless) {
 		return serviceUnavailable("desktop_stream_start", start)
 	}
 
@@ -267,7 +268,7 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleDesktopStreamStop(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
-	if h.isService || h.isHeadless {
+	if runtime.GOOS != "darwin" && (h.isService || h.isHeadless) {
 		// No WS stream running in service mode — return success as a no-op.
 		return tools.NewSuccessResult(map[string]any{"stopped": true}, time.Since(start).Milliseconds())
 	}
@@ -285,7 +286,8 @@ func handleDesktopInput(h *Heartbeat, cmd Command) tools.CommandResult {
 
 	// Input injection cannot work from Session 0 (SetCursorPos, SendInput fail).
 	// WebRTC sessions handle input via the data channel in the user helper.
-	if h.isService || h.isHeadless {
+	// macOS can use CGEventPost from daemons, so it handles input directly.
+	if runtime.GOOS != "darwin" && (h.isService || h.isHeadless) {
 		return serviceUnavailable("desktop_input", start)
 	}
 
@@ -338,7 +340,7 @@ func handleDesktopInput(h *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleDesktopConfig(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
-	if h.isService || h.isHeadless {
+	if runtime.GOOS != "darwin" && (h.isService || h.isHeadless) {
 		return serviceUnavailable("desktop_config", start)
 	}
 	sessionID, errResult := tools.RequirePayloadString(cmd.Payload, "sessionId")

@@ -132,8 +132,8 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 	if runtime.GOOS != "windows" {
 		return fmt.Errorf(
-			"no user-helper connected; install the LaunchAgent with: " +
-				"sudo breeze-agent service install --with-user-helper")
+			"no user-helper connected; ensure the LaunchAgent is loaded: " +
+				"launchctl load /Library/LaunchAgents/com.breeze.agent-user.plist")
 	}
 
 	if targetSession == "" {
