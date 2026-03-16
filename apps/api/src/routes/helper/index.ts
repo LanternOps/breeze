@@ -635,3 +635,34 @@ helperRoutes.post(
     return c.json({ success: true, approved });
   },
 );
+
+// ============================================
+// POST /chat/sessions/:id/flag — Flag session for review
+// ============================================
+
+helperRoutes.post(
+  '/chat/sessions/:id/flag',
+  zValidator('json', z.object({ reason: z.string().max(1000).optional() })),
+  async (c) => {
+    const device = c.get('helperDevice');
+    const sessionId = c.req.param('id');
+    const { reason } = c.req.valid('json');
+
+    const [session] = await db
+      .select({ id: aiSessions.id })
+      .from(aiSessions)
+      .where(and(eq(aiSessions.id, sessionId), eq(aiSessions.deviceId, device.id)))
+      .limit(1);
+
+    if (!session) {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+
+    await db
+      .update(aiSessions)
+      .set({ flaggedAt: new Date(), flagReason: reason ?? null, updatedAt: new Date() })
+      .where(eq(aiSessions.id, sessionId));
+
+    return c.json({ success: true });
+  },
+);

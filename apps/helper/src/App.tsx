@@ -96,8 +96,10 @@ function SessionHistory({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="helper-history">
-      <div className="helper-history-header">
+      <div className="helper-history-header" data-tauri-drag-region>
+        {isMacOS && <div className="helper-traffic-light-spacer" />}
         <span className="helper-history-title">History</span>
+        <div className="helper-header-drag-spacer" data-tauri-drag-region />
         <button onClick={onClose} className="helper-btn helper-btn-sm">
           Back
         </button>
@@ -314,10 +316,12 @@ function DeviceInfoView({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="helper-container">
-      <div className="helper-header">
+      <div className={`helper-header${isMacOS ? ' helper-header-macos' : ''}`} data-tauri-drag-region>
         <div className="helper-header-left" data-tauri-drag-region>
+          {isMacOS && <div className="helper-traffic-light-spacer" />}
           <span className="helper-title">Device Info</span>
         </div>
+        <div className="helper-header-drag-spacer" data-tauri-drag-region />
         <div className="helper-header-actions">
           <button onClick={onClose} className="helper-btn helper-btn-sm">Back</button>
         </div>
@@ -365,20 +369,25 @@ function DeviceInfoView({ onClose }: { onClose: () => void }) {
   );
 }
 
+const isMacOS = navigator.platform.startsWith('Mac') || navigator.userAgent.includes('Macintosh');
+
 export default function App() {
   const {
     connectionState,
     connectionError,
     agentConfig,
+    sessionId,
     messages,
     isStreaming,
     error,
     username,
     pendingApproval,
+    isFlagged,
     initialize,
     sendMessage,
     clearMessages,
     approveExecution,
+    flagSession,
   } = useChatStore();
 
   const [input, setInput] = useState('');
@@ -474,13 +483,24 @@ export default function App() {
   return (
     <div className="helper-container">
       {/* Header — draggable title bar */}
-      <div className="helper-header">
+      <div className={`helper-header${isMacOS ? ' helper-header-macos' : ''}`} data-tauri-drag-region>
         <div className="helper-header-left" data-tauri-drag-region>
+          {isMacOS && <div className="helper-traffic-light-spacer" />}
           <span className="helper-status-dot helper-status-connected" />
           <span className="helper-title">Breeze Helper</span>
         </div>
         <div className="helper-header-drag-spacer" data-tauri-drag-region />
         <div className="helper-header-actions">
+          {sessionId && (
+            <button
+              onClick={() => flagSession('User flagged from helper')}
+              className={`helper-btn helper-btn-sm${isFlagged ? ' helper-btn-flagged' : ''}`}
+              title={isFlagged ? 'Conversation flagged' : 'Flag conversation for review'}
+              disabled={isFlagged}
+            >
+              {isFlagged ? 'Flagged' : 'Flag'}
+            </button>
+          )}
           <button
             onClick={() => setShowHistory(true)}
             className="helper-btn helper-btn-sm"
@@ -495,20 +515,24 @@ export default function App() {
           >
             New
           </button>
-          <button
-            onClick={() => invoke('minimize_window').catch(() => {})}
-            className="helper-btn-window"
-            title="Minimize"
-          >
-            &#8211;
-          </button>
-          <button
-            onClick={() => invoke('hide_window').catch(() => {})}
-            className="helper-btn-window helper-btn-window-close"
-            title="Close to tray"
-          >
-            &#10005;
-          </button>
+          {!isMacOS && (
+            <>
+              <button
+                onClick={() => invoke('minimize_window').catch(() => {})}
+                className="helper-btn-window"
+                title="Minimize"
+              >
+                &#8211;
+              </button>
+              <button
+                onClick={() => invoke('hide_window').catch(() => {})}
+                className="helper-btn-window helper-btn-window-close"
+                title="Close to tray"
+              >
+                &#10005;
+              </button>
+            </>
+          )}
         </div>
       </div>
 

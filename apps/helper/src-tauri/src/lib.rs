@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, TitleBarStyle};
 use tauri_plugin_shell::open;
 use tokio::sync::Mutex;
 
@@ -635,7 +635,7 @@ pub fn run() {
             // default data path to resolve to the SYSTEM profile directory
             // (systemprofile\AppData\Local) which may not exist or be accessible
             // when running in a user session rather than Session 0.
-            let mut wb = tauri::WebviewWindowBuilder::new(
+            let wb = tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
                 tauri::WebviewUrl::App("index.html".into()),
@@ -643,8 +643,18 @@ pub fn run() {
             .title("Breeze Helper")
             .inner_size(380.0, 600.0)
             .resizable(true)
-            .decorations(false)
             .center();
+
+            // macOS: native traffic light buttons with overlay titlebar, hidden native title
+            #[cfg(target_os = "macos")]
+            let wb = wb
+                .decorations(true)
+                .title_bar_style(TitleBarStyle::Overlay)
+                .hidden_title(true);
+
+            // Windows/Linux: frameless with custom HTML buttons
+            #[cfg(not(target_os = "macos"))]
+            let mut wb = wb.decorations(false);
 
             #[cfg(target_os = "windows")]
             {
