@@ -21,7 +21,7 @@ import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAu
 import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from '../services/aiGuardrails';
 import { db } from '../db';
-import { devices, alerts, scripts, automations } from '../db/schema';
+import { devices, alerts, scripts, automations, organizations } from '../db/schema';
 import { eq, and, desc, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { writeAuditEvent } from '../services/auditEvents';
@@ -240,7 +240,7 @@ mcpServerRoutes.post(
     }
 
     // Build a minimal AuthContext from the API key
-    const auth = buildAuthFromApiKey(apiKey);
+    const auth = await buildAuthFromApiKey(apiKey);
 
     const response = await handleJsonRpc(body, auth, apiKey.scopes);
 
@@ -644,9 +644,25 @@ function jsonRpcError(id: string | number | null, code: number, message: string,
 /**
  * Build a minimal AuthContext from an API key.
  * API keys are always org-scoped (no partner/system access).
+ * Resolves the org's partnerId so partner-level users (who may lack a direct
+ * organizationUsers record) can still pass RBAC checks via their partnerUsers role.
  */
-function buildAuthFromApiKey(apiKey: { id: string; orgId: string; name: string; createdBy: string }): AuthContext {
+async function buildAuthFromApiKey(apiKey: { id: string; orgId: string; name: string; createdBy: string }): Promise<AuthContext> {
   const orgId = apiKey.orgId;
+
+  // Look up the org's partner so getUserPermissions can fall back to partnerUsers
+  let partnerId: string | null = null;
+  try {
+    const [org] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1);
+    partnerId = org?.partnerId ?? null;
+  } catch (err) {
+    console.error('[MCP] Failed to resolve partnerId for org', orgId, err);
+  }
+
   return {
     user: {
       id: apiKey.createdBy,
@@ -654,7 +670,7 @@ function buildAuthFromApiKey(apiKey: { id: string; orgId: string; name: string; 
       name: `API Key: ${apiKey.name}`
     },
     token: {} as AuthContext['token'],
-    partnerId: null,
+    partnerId,
     orgId,
     scope: 'organization',
     accessibleOrgIds: [orgId],
