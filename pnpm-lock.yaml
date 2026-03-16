@@ -198,8 +198,8 @@ importers:
         specifier: ^14.0.0
         version: 14.1.0(expo-font@11.10.3(expo@50.0.21(@babel/core@7.28.6)(@react-native/babel-preset@0.73.21(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6)))(react-native@0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0))(react@18.2.0)))(react-native@0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0))(react@18.2.0)
       '@react-native-async-storage/async-storage':
-        specifier: 1.21.0
-        version: 1.21.0(react-native@0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0))
+        specifier: 3.0.1
+        version: 3.0.1(react-native@0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0))(react@18.2.0)
       '@react-navigation/bottom-tabs':
         specifier: ^6.0.0
         version: 6.6.1(@react-navigation/native@6.1.18(react-native@0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0))(react@18.2.0))(react-native-safe-area-context@4.8.0(react-native@0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0))(react@18.2.0))(react-native-screens@3.29.0(react-native@0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0))(react@18.2.0))(react-native@0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0))(react@18.2.0)
@@ -3362,10 +3362,11 @@ packages:
       react: ^18.2.0
       react-dom: ^18.2.0
 
-  '@react-native-async-storage/async-storage@1.21.0':
-    resolution: {integrity: sha512-JL0w36KuFHFCvnbOXRekqVAUplmOyT/OuCQkogo6X98MtpSaJOKEAeZnYO8JB0U/RIEixZaGI5px73YbRm/oag==}
+  '@react-native-async-storage/async-storage@3.0.1':
+    resolution: {integrity: sha512-VHwHb19sMg4Xh3W5M6YmJ/HSm1uh8RYFa6Dozm9o/jVYTYUgz2BmDXqXF7sum3glQaR34/hlwVc94px1sSdC2A==}
     peerDependencies:
-      react-native: ^0.0.0-0 || >=0.60 <1.0
+      react: '*'
+      react-native: '*'
 
   '@react-native-community/cli-clean@12.1.1':
     resolution: {integrity: sha512-lbEQJ9xO8DmNbES7nFcGIQC0Q15e9q1zwKfkN2ty2eM93ZTFqYzOwsddlNoRN9FO7diakMWoWgielhcfcIeIrQ==}
@@ -6993,6 +6994,9 @@ packages:
     resolution: {integrity: sha512-4fCk79wshMdzMp2rH06qWrJE4iolqLhCUH+OiuIgU++RB0+94NlDL81atO7GX55uUKueo0txHNtvEyI6D7WdMw==}
     engines: {node: '>=0.10.0'}
 
+  idb@8.0.3:
+    resolution: {integrity: sha512-LtwtVyVYO5BqRvcsKuB2iUMnHwPVByPCXFXOpuU96IZPPoPN6xjOGxZQ74pgSVVLQWtUOYgyeL4GE98BY5D3wg==}
+
   ieee754@1.2.1:
     resolution: {integrity: sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA==}
 
@@ -7228,10 +7232,6 @@ packages:
 
   is-path-inside@3.0.3:
     resolution: {integrity: sha512-Fd4gABb+ycGAmKou8eMftCupSir5lRxqf4aD/vd0cD2qc4HL07OjCeuHMr8Ro4CoMaeCKDB0/ECBOVWjTwUvPQ==}
-    engines: {node: '>=8'}
-
-  is-plain-obj@2.1.0:
-    resolution: {integrity: sha512-YWnfyRwxL/+SsrWYfOpUtz5b3YD+nyfkHvjbcanzk8zgyO4ASD67uVMRt8k5bM4lLMDnXfriRhOpemw+NfT1eA==}
     engines: {node: '>=8'}
 
   is-plain-obj@4.1.0:
@@ -7844,10 +7844,6 @@ packages:
 
   memory-cache@0.2.0:
     resolution: {integrity: sha512-OcjA+jzjOYzKmKS6IQVALHLVz+rNTMPoJvCztFaZxwG14wtAW7VRZjwTQu06vKCYOxh4jVnik7ya0SXTB0W+xA==}
-
-  merge-options@3.0.4:
-    resolution: {integrity: sha512-2Sug1+knBjkaMsMgf1ctR1Ujx+Ayku4EdJN4Z+C2+JzoeF7A3OZ9KM2GY0CpQS51NR61LTurMJrRKPhSs3ZRTQ==}
-    engines: {node: '>=10'}
 
   merge-stream@2.0.0:
     resolution: {integrity: sha512-abv/qOcuPfk3URPfDzmZU1LKmuw8kT+0nIHvKrKgFrwifol/doWcdA4ZqsWQ8ENrFKkd67Mfpo/LovbIUsbt3w==}
@@ -14243,9 +14239,10 @@ snapshots:
       react-dom: 19.2.3(react@19.2.3)
       react-promise-suspense: 0.3.4
 
-  '@react-native-async-storage/async-storage@1.21.0(react-native@0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0))':
+  '@react-native-async-storage/async-storage@3.0.1(react-native@0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0))(react@18.2.0)':
     dependencies:
-      merge-options: 3.0.4
+      idb: 8.0.3
+      react: 18.2.0
       react-native: 0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0)
 
   '@react-native-community/cli-clean@12.1.1':
@@ -18945,6 +18942,8 @@ snapshots:
     dependencies:
       safer-buffer: 2.1.2
 
+  idb@8.0.3: {}
+
   ieee754@1.2.1: {}
 
   ignore@5.3.2: {}
@@ -19163,8 +19162,6 @@ snapshots:
   is-path-cwd@2.2.0: {}
 
   is-path-inside@3.0.3: {}
-
-  is-plain-obj@2.1.0: {}
 
   is-plain-obj@4.1.0: {}
 
@@ -19950,10 +19947,6 @@ snapshots:
   memoize-one@5.2.1: {}
 
   memory-cache@0.2.0: {}
-
-  merge-options@3.0.4:
-    dependencies:
-      is-plain-obj: 2.1.0
 
   merge-stream@2.0.0: {}
 
