@@ -660,6 +660,12 @@ body {
 /* ----------------------------------------------------------
    Header Actions
    ---------------------------------------------------------- */
+.helper-header-drag-spacer {
+  flex: 1;
+  min-width: 8px;
+  -webkit-app-region: drag;
+}
+
 .helper-header-actions {
   display: flex;
   gap: 6px;

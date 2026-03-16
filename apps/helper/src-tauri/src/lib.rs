@@ -328,7 +328,9 @@ async fn read_agent_config() -> Result<AgentConfig, String> {
 
     let lock = get_http_state_lock();
     let guard = lock.lock().await;
-    let state = guard.as_ref().unwrap();
+    let state = guard
+        .as_ref()
+        .ok_or_else(|| "HTTP state not initialized".to_string())?;
 
     Ok(AgentConfig {
         api_url: state.config.api_url.clone(),
@@ -408,7 +410,9 @@ async fn helper_fetch(
     let (client, token, api_url) = {
         let lock = get_http_state_lock();
         let guard = lock.lock().await;
-        let state = guard.as_ref().unwrap();
+        let state = guard
+            .as_ref()
+            .ok_or_else(|| "HTTP state not initialized".to_string())?;
         (state.client.clone(), state.config.token.clone(), state.config.api_url.clone())
     };
 
@@ -667,11 +671,23 @@ pub fn run() {
                 }
             }
 
-            wb.build().map_err(|e| {
+            let window = wb.build().map_err(|e| {
                 let msg = format!("[helper] Failed to create main window: {}", e);
                 log_helper_error(&msg);
                 e
             })?;
+
+            // Intercept window close to hide instead of destroy.
+            // Preserves React state and allows re-showing from tray.
+            let close_window = window.clone();
+            window.on_window_event(move |event| {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    if let Err(e) = close_window.hide() {
+                        eprintln!("[helper] Failed to hide window on close: {}", e);
+                    }
+                }
+            });
 
             let handle = app.handle().clone();
 
