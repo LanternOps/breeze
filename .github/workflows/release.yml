@@ -94,11 +94,6 @@ jobs:
             cgo: '0'
             runner: ubuntu-latest
           - goos: darwin
-            goarch: amd64
-            suffix: ''
-            cgo: '1'
-            runner: macos-13
-          - goos: darwin
             goarch: arm64
             suffix: ''
             cgo: '1'
@@ -341,30 +336,15 @@ jobs:
           retention-days: 30
 
   build-macos-agent:
-    name: Build macOS Agent Universal Binary
+    name: Sign macOS Agent Binary
     runs-on: macos-latest
     needs: [build-agent]
     steps:
-      - name: Download darwin/amd64 artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: breeze-agent-darwin-amd64
-          path: staging/
-
       - name: Download darwin/arm64 artifact
         uses: actions/download-artifact@v8
         with:
           name: breeze-agent-darwin-arm64
           path: staging/
-
-      - name: Create universal binary
-        run: |
-          chmod +x staging/breeze-agent-darwin-amd64
-          chmod +x staging/breeze-agent-darwin-arm64
-          lipo -create \
-            staging/breeze-agent-darwin-amd64 \
-            staging/breeze-agent-darwin-arm64 \
-            -output staging/breeze-agent-darwin-universal
 
       - name: Import certificate into keychain
         if: vars.ENABLE_MACOS_SIGNING == 'true'
@@ -424,27 +404,12 @@ jobs:
             echo "Notarized: $(basename "$bin")"
           done
 
-      - name: Upload signed darwin/amd64
-        uses: actions/upload-artifact@v7
-        with:
-          name: breeze-agent-darwin-amd64
-          path: staging/breeze-agent-darwin-amd64
-          overwrite: true
-          retention-days: 30
-
       - name: Upload signed darwin/arm64
         uses: actions/upload-artifact@v7
         with:
           name: breeze-agent-darwin-arm64
           path: staging/breeze-agent-darwin-arm64
           overwrite: true
-          retention-days: 30
-
-      - name: Upload universal binary
-        uses: actions/upload-artifact@v7
-        with:
-          name: breeze-agent-darwin-universal
-          path: staging/breeze-agent-darwin-universal
           retention-days: 30
 
       - name: Cleanup keychain
