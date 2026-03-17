@@ -211,8 +211,8 @@ jobs:
           - goos: darwin
             goarch: amd64
             suffix: ''
-            cgo: '1'
-            runner: macos-13
+            cgo: '0'
+            runner: ubuntu-latest
           - goos: darwin
             goarch: arm64
             suffix: ''
