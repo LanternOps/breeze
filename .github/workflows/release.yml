@@ -94,6 +94,11 @@ jobs:
             cgo: '0'
             runner: ubuntu-latest
           - goos: darwin
+            goarch: amd64
+            suffix: ''
+            cgo: '1'
+            runner: macos-13
+          - goos: darwin
             goarch: arm64
             suffix: ''
             cgo: '1'
@@ -340,6 +345,12 @@ jobs:
     runs-on: macos-latest
     needs: [build-agent]
     steps:
+      - name: Download darwin/amd64 artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: breeze-agent-darwin-amd64
+          path: staging/
+
       - name: Download darwin/arm64 artifact
         uses: actions/download-artifact@v8
         with:
@@ -403,6 +414,14 @@ jobs:
             rm -f "$ZIP_PATH"
             echo "Notarized: $(basename "$bin")"
           done
+
+      - name: Upload signed darwin/amd64
+        uses: actions/upload-artifact@v7
+        with:
+          name: breeze-agent-darwin-amd64
+          path: staging/breeze-agent-darwin-amd64
+          overwrite: true
+          retention-days: 30
 
       - name: Upload signed darwin/arm64
         uses: actions/upload-artifact@v7

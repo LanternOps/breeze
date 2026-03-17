@@ -8,13 +8,11 @@
     "build": "turbo run build",
     "lint": "turbo run lint",
     "test": "turbo run test",
-    "db:generate": "turbo run db:generate --filter=@breeze/api",
-    "db:push": "turbo run db:push --filter=@breeze/api",
     "db:migrate": "turbo run db:migrate --filter=@breeze/api",
+    "db:check-drift": "turbo run db:check-drift --filter=@breeze/api",
     "db:seed": "turbo run db:seed --filter=@breeze/api",
     "db:studio": "turbo run db:studio --filter=@breeze/api",
-    "clean": "turbo run clean && rm -rf node_modules",
-    "check:schema-drift": "tsx scripts/check-schema-drift.ts"
+    "clean": "turbo run clean && rm -rf node_modules"
   },
   "devDependencies": {
     "turbo": "^2.8.7",

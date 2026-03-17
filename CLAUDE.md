@@ -197,12 +197,9 @@ pnpm install
 pnpm dev
 
 # Database operations
-# Drizzle push needs DATABASE_URL exported (turbo spawns child processes)
 export DATABASE_URL="postgresql://breeze:breeze@localhost:5432/breeze"
-pnpm db:push      # Push schema changes (interactive — may prompt for enum decisions)
-pnpm db:studio    # Open Drizzle Studio
-# For targeted migrations, run SQL directly via Docker:
-docker exec -i breeze-postgres-dev psql -U breeze -d breeze < path/to/migration.sql
+pnpm db:check-drift  # Verify schema matches migrations (no drift)
+pnpm db:studio       # Open Drizzle Studio
 
 # Agent development
 cd agent && make run
@@ -210,14 +207,16 @@ cd agent && make run
 
 ### Schema Migration Workflow
 1. Edit schema files in `apps/api/src/db/schema/`
-2. Run `cd apps/api && pnpm db:generate` to generate a Drizzle migration
-3. Commit the new migration file in `apps/api/drizzle/`
-4. CI will fail if schema changes exist without a corresponding migration
+2. Write a hand-written SQL migration in `apps/api/migrations/NNNN-<slug>.sql`
+   - Use the next available 4-digit number (check existing files)
+   - Must be fully idempotent: `IF NOT EXISTS`, `IF EXISTS`, `DO $$ BEGIN ... EXCEPTION`
+   - Never edit a shipped migration — fix forward with a new migration
+3. Run `pnpm db:check-drift` to verify schema matches migrations
+4. Commit the migration file
 
-**Drizzle enum fix:** `drizzle-kit generate` outputs `CREATE TYPE IF NOT EXISTS` which is invalid PostgreSQL syntax. The `db:generate` script auto-runs `scripts/fix-drizzle-enums.sh` to rewrite these to `DO $$ BEGIN ... EXCEPTION WHEN duplicate_object` blocks. CI and `check-schema-drift.ts` also run this fixer. If you ever run `drizzle-kit generate` directly (not via `pnpm db:generate`), run the fixer manually afterward.
+**Drizzle usage:** Drizzle ORM is used for type-safe queries only. `drizzle-kit` is retained for schema drift detection (`db:check-drift`) and Drizzle Studio (`db:studio`). **Do not use `drizzle-kit generate` or `drizzle-kit push` for migrations.**
 
-Never use `db:push` in production — always generate a migration.
-For manual DDL (RLS policies, functions), add to `apps/api/src/db/migrations/`.
+For optional TimescaleDB setup, see `apps/api/migrations/optional/`.
 
 ### Docker Compose Modes
 
