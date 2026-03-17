@@ -487,6 +487,9 @@ export function createSoftwareComplianceWorker(): Worker<SoftwareComplianceJobDa
     {
       connection: getRedisConnection(),
       concurrency: 4,
+      lockDuration: 300_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 2,
       settings: {
         backoffStrategy: (attemptsMade: number) => Math.min(attemptsMade * 5000, 30000),
       },

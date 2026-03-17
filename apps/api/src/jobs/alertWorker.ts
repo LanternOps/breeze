@@ -96,7 +96,10 @@ export function createAlertWorker(): Worker<AlertJobData> {
     },
     {
       connection: getRedisConnection(),
-      concurrency: 10 // Process up to 10 device evaluations in parallel
+      concurrency: 10,
+      lockDuration: 300_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 2,
     }
   );
 }

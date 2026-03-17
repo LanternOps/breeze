@@ -804,6 +804,9 @@ function createHuntressSyncWorker(): Worker<HuntressSyncJobData> {
     {
       connection: getRedisConnection(),
       concurrency: 4,
+      lockDuration: 300_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 2,
     }
   );
 }

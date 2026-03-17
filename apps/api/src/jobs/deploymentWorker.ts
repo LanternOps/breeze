@@ -379,7 +379,10 @@ export function createDeploymentWorker(): Worker {
     },
     {
       connection: getRedisConnection(),
-      concurrency: 5
+      concurrency: 5,
+      lockDuration: 300_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 2,
     }
   );
 }
@@ -503,7 +506,10 @@ export function createDeploymentDeviceWorker(): Worker {
     },
     {
       connection: getRedisConnection(),
-      concurrency: 10
+      concurrency: 10,
+      lockDuration: 300_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 2,
     }
   );
 }
