@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -137,6 +138,12 @@ var serviceInstallCmd = &cobra.Command{
 			return fmt.Errorf("failed to set permissions on %s: %w", darwinConfigDir, err)
 		}
 
+		// Stop existing service before replacing binary (safe for upgrades).
+		if _, err := os.Stat(darwinPlistDst); err == nil {
+			_ = exec.Command("launchctl", "unload", darwinPlistDst).Run()
+			fmt.Println("Stopped existing Breeze Agent service.")
+		}
+
 		// Copy current binary to /usr/local/bin/
 		exePath, err := os.Executable()
 		if err != nil {
@@ -185,12 +192,23 @@ var serviceInstallCmd = &cobra.Command{
 
 		fmt.Println()
 		fmt.Println("Breeze Agent service installed.")
-		fmt.Println()
-		fmt.Println("Next steps:")
-		fmt.Printf("  1. Enroll:  sudo breeze-agent enroll <key> --server https://your-server\n")
-		fmt.Printf("  2. Start:   sudo breeze-agent service start\n")
-		fmt.Printf("  3. Status:  sudo breeze-agent service status\n")
-		fmt.Printf("  4. Logs:    tail -f %s/agent.log\n", darwinLogDir)
+
+		// If already enrolled, skip the enrollment step in Next Steps.
+		existingCfg, _ := config.Load(cfgFile)
+		if existingCfg != nil && existingCfg.AgentID != "" {
+			fmt.Println()
+			fmt.Println("Next steps:")
+			fmt.Printf("  1. Start:   sudo breeze-agent service start\n")
+			fmt.Printf("  2. Status:  sudo breeze-agent service status\n")
+			fmt.Printf("  3. Logs:    tail -f %s/agent.log\n", darwinLogDir)
+		} else {
+			fmt.Println()
+			fmt.Println("Next steps:")
+			fmt.Printf("  1. Enroll:  sudo breeze-agent enroll <key> --server https://your-server\n")
+			fmt.Printf("  2. Start:   sudo breeze-agent service start\n")
+			fmt.Printf("  3. Status:  sudo breeze-agent service status\n")
+			fmt.Printf("  4. Logs:    tail -f %s/agent.log\n", darwinLogDir)
+		}
 		return nil
 	},
 }

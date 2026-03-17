@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -112,6 +113,12 @@ var serviceInstallCmd = &cobra.Command{
 			return fmt.Errorf("failed to set permissions on %s: %w", linuxConfigDir, err)
 		}
 
+		// Stop existing service before replacing binary (safe for upgrades).
+		if _, err := os.Stat(linuxUnitDst); err == nil {
+			_ = exec.Command("systemctl", "stop", linuxServiceName).Run()
+			fmt.Println("Stopped existing Breeze Agent service.")
+		}
+
 		// Copy current binary to /usr/local/bin/
 		exePath, err := os.Executable()
 		if err != nil {
@@ -176,12 +183,23 @@ var serviceInstallCmd = &cobra.Command{
 
 		fmt.Println()
 		fmt.Println("Breeze Agent service installed and enabled.")
-		fmt.Println()
-		fmt.Println("Next steps:")
-		fmt.Printf("  1. Enroll:  sudo breeze-agent enroll <key> --server https://your-server\n")
-		fmt.Printf("  2. Start:   sudo breeze-agent service start\n")
-		fmt.Printf("  3. Status:  sudo breeze-agent service status\n")
-		fmt.Println("  4. Logs:    journalctl -u breeze-agent -f")
+
+		// If already enrolled, skip the enrollment step in Next Steps.
+		existingCfg, _ := config.Load(cfgFile)
+		if existingCfg != nil && existingCfg.AgentID != "" {
+			fmt.Println()
+			fmt.Println("Next steps:")
+			fmt.Printf("  1. Start:   sudo breeze-agent service start\n")
+			fmt.Printf("  2. Status:  sudo breeze-agent service status\n")
+			fmt.Println("  3. Logs:    journalctl -u breeze-agent -f")
+		} else {
+			fmt.Println()
+			fmt.Println("Next steps:")
+			fmt.Printf("  1. Enroll:  sudo breeze-agent enroll <key> --server https://your-server\n")
+			fmt.Printf("  2. Start:   sudo breeze-agent service start\n")
+			fmt.Printf("  3. Status:  sudo breeze-agent service status\n")
+			fmt.Println("  4. Logs:    journalctl -u breeze-agent -f")
+		}
 		return nil
 	},
 }

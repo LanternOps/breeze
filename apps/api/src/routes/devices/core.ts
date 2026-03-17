@@ -561,3 +561,77 @@ coreRoutes.delete(
     return c.json({ success: true, device: updated });
   }
 );
+
+// POST /devices/:id/restore - Restore a decommissioned device
+coreRoutes.post(
+  '/:id/restore',
+  requirePermission(PERMISSIONS.DEVICES_DELETE.resource, PERMISSIONS.DEVICES_DELETE.action),
+  async (c) => {
+    const auth = c.get('auth');
+    const deviceId = c.req.param('id')!;
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    if (device.status !== 'decommissioned') {
+      return c.json({ error: 'Only decommissioned devices can be restored' }, 400);
+    }
+
+    const [updated] = await db
+      .update(devices)
+      .set({
+        status: 'offline',
+        updatedAt: new Date()
+      })
+      .where(eq(devices.id, deviceId))
+      .returning();
+
+    writeRouteAudit(c, {
+      orgId: device.orgId,
+      action: 'device.restore',
+      resourceType: 'device',
+      resourceId: updated?.id ?? deviceId,
+      resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname
+    });
+
+    return c.json({ success: true, device: updated });
+  }
+);
+
+// DELETE /devices/:id/permanent - Permanently delete a device record
+coreRoutes.delete(
+  '/:id/permanent',
+  requirePermission(PERMISSIONS.DEVICES_DELETE.resource, PERMISSIONS.DEVICES_DELETE.action),
+  async (c) => {
+    const auth = c.get('auth');
+    const deviceId = c.req.param('id')!;
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    if (device.status !== 'decommissioned') {
+      return c.json({ error: 'Device must be decommissioned before permanent deletion' }, 400);
+    }
+
+    // Cascade: remove related records first
+    await db.delete(deviceGroupMemberships).where(eq(deviceGroupMemberships.deviceId, deviceId));
+    await db.delete(deviceHardware).where(eq(deviceHardware.deviceId, deviceId));
+    await db.delete(deviceNetwork).where(eq(deviceNetwork.deviceId, deviceId));
+    await db.delete(deviceMetrics).where(eq(deviceMetrics.deviceId, deviceId));
+    await db.delete(devices).where(eq(devices.id, deviceId));
+
+    writeRouteAudit(c, {
+      orgId: device.orgId,
+      action: 'device.permanent_delete',
+      resourceType: 'device',
+      resourceId: deviceId,
+      resourceName: device.hostname ?? device.displayName ?? deviceId
+    });
+
+    return c.json({ success: true });
+  }
+);

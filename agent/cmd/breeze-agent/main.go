@@ -31,6 +31,7 @@ var (
 	cfgFile          string
 	serverURL        string
 	enrollmentSecret string
+	deviceRoleFlag   string
 	helperRole       string
 )
 
@@ -91,6 +92,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is /etc/breeze/agent.yaml)")
 	rootCmd.PersistentFlags().StringVar(&serverURL, "server", "", "Breeze server URL")
 	enrollCmd.Flags().StringVar(&enrollmentSecret, "enrollment-secret", "", "Enrollment secret (AGENT_ENROLLMENT_SECRET on the server)")
+	enrollCmd.Flags().StringVar(&deviceRoleFlag, "device-role", "", "Override auto-detected device role (e.g. server, workstation)")
 	userHelperCmd.Flags().StringVar(&helperRole, "role", "system", "Helper role: 'system' (desktop capture) or 'user' (script execution)")
 
 	rootCmd.AddCommand(runCmd)
@@ -388,7 +390,12 @@ func enrollDevice(enrollmentKey string) {
 	}
 
 	deviceRole := collectors.ClassifyDeviceRole(systemInfo, hardwareInfo)
-	fmt.Printf("Device role: %s\n", deviceRole)
+	if deviceRoleFlag != "" {
+		deviceRole = deviceRoleFlag
+		fmt.Printf("Device role: %s (override)\n", deviceRole)
+	} else {
+		fmt.Printf("Device role: %s\n", deviceRole)
+	}
 
 	enrollReq := &api.EnrollRequest{
 		EnrollmentKey:    enrollmentKey,
@@ -493,6 +500,10 @@ func runUserHelper() {
 		} else {
 			output = f
 		}
+		// Redirect stderr to the same log file so Go panic stack traces
+		// are captured instead of being lost to NUL when spawned with
+		// CREATE_NO_WINDOW from the service.
+		redirectStderr(f)
 	}
 	logging.Init("text", "info", output)
 
