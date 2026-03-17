@@ -808,7 +808,10 @@ function createS1SyncWorker(): Worker<S1SyncJobData> {
     },
     {
       connection: getRedisConnection(),
-      concurrency: 4
+      concurrency: 4,
+      lockDuration: 300_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 2,
     }
   );
 }

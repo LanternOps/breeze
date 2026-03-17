@@ -202,7 +202,10 @@ export function createSecurityPostureWorker(): Worker<SecurityPostureJobData> {
     },
     {
       connection: getRedisConnection(),
-      concurrency: SECURITY_POSTURE_WORKER_CONCURRENCY
+      concurrency: SECURITY_POSTURE_WORKER_CONCURRENCY,
+      lockDuration: 300_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 2,
     }
   );
 }

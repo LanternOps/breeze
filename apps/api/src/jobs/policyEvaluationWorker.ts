@@ -181,7 +181,10 @@ export function createPolicyEvaluationWorker(): Worker<PolicyEvaluationJobData> 
     },
     {
       connection: getRedisConnection(),
-      concurrency: 5,
+      concurrency: 3,
+      lockDuration: 300_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 2,
     }
   );
 }

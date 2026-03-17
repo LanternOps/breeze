@@ -117,6 +117,9 @@ function createPatchJobWorker(): Worker<PatchJobData> {
     {
       connection: getRedisConnection(),
       concurrency: 5,
+      lockDuration: 300_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 2,
     }
   );
 }
@@ -234,6 +237,9 @@ function createPatchJobDeviceWorker(): Worker<PatchJobDeviceData> {
     {
       connection: getRedisConnection(),
       concurrency: 10,
+      lockDuration: 300_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 2,
     }
   );
 }
