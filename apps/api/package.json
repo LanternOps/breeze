@@ -17,10 +17,8 @@
     "test:docker": "pnpm test:docker:up && pnpm test:integration; pnpm test:docker:down",
     "lint": "eslint --ext .ts src",
     "clean": "rm -rf dist",
-    "db:generate": "drizzle-kit generate && bash scripts/fix-drizzle-enums.sh",
-    "db:push": "drizzle-kit push",
-    "db:migrate": "tsx src/db/migrate.ts",
-    "db:migrate:sql": "tsx src/db/migrations/run.ts",
+    "db:migrate": "tsx src/db/autoMigrate.ts",
+    "db:check-drift": "drizzle-kit generate --out .drizzle-tmp && (ls .drizzle-tmp/*.sql 2>/dev/null && echo 'Schema drift detected — write a migration' && rm -rf .drizzle-tmp && exit 1 || (rm -rf .drizzle-tmp && echo 'No drift detected'))",
     "db:seed": "tsx src/db/seed.ts",
     "db:studio": "drizzle-kit studio"
   },
