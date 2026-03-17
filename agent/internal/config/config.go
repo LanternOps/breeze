@@ -238,7 +238,9 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	// Write config to a temp file with correct permissions from the start,
 	// then rename to the final path. This avoids a TOCTOU window where the
 	// file exists with default permissions before Chmod is called.
-	tmpPath := cfgPath + ".tmp"
+	// Temp file must keep the .yaml extension so viper can infer the type.
+	ext := filepath.Ext(cfgPath)
+	tmpPath := cfgPath[:len(cfgPath)-len(ext)] + ".tmp" + ext
 	if err := viper.WriteConfigAs(tmpPath); err != nil {
 		return err
 	}
@@ -284,7 +286,8 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	sv.Set("mtls_cert_expires", cfg.MtlsCertExpires)
 
 	// Write secrets via temp file, then copy to final path opened with 0600.
-	secretsTmp := secretsPath + ".tmp"
+	sExt := filepath.Ext(secretsPath)
+	secretsTmp := secretsPath[:len(secretsPath)-len(sExt)] + ".tmp" + sExt
 	if err := sv.WriteConfigAs(secretsTmp); err != nil {
 		return fmt.Errorf("writing secrets file: %w", err)
 	}
