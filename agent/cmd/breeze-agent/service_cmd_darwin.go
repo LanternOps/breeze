@@ -140,8 +140,11 @@ var serviceInstallCmd = &cobra.Command{
 
 		// Stop existing service before replacing binary (safe for upgrades).
 		if _, err := os.Stat(darwinPlistDst); err == nil {
-			_ = exec.Command("launchctl", "unload", darwinPlistDst).Run()
-			fmt.Println("Stopped existing Breeze Agent service.")
+			if stopErr := exec.Command("launchctl", "unload", darwinPlistDst).Run(); stopErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to stop existing service: %v\n", stopErr)
+			} else {
+				fmt.Println("Stopped existing Breeze Agent service.")
+			}
 		}
 
 		// Copy current binary to /usr/local/bin/

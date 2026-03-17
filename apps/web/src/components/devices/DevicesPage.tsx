@@ -8,7 +8,7 @@ import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './Scr
 import DeviceSettingsModal from './DeviceSettingsModal';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { fetchWithAuth } from '../../stores/auth';
-import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices } from '../../services/deviceActions';
+import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
 
 type ViewMode = 'list' | 'grid';
@@ -329,6 +329,18 @@ export default function DevicesPage() {
         case 'decommission':
           await decommissionDevice(device.id);
           showToast('success', `${device.hostname} has been decommissioned`);
+          await fetchDevices();
+          break;
+
+        case 'restore':
+          await restoreDevice(device.id);
+          showToast('success', `${device.hostname} has been restored`);
+          await fetchDevices();
+          break;
+
+        case 'permanent-delete':
+          await permanentDeleteDevice(device.id);
+          showToast('success', `${device.hostname} has been permanently deleted`);
           await fetchDevices();
           break;
 

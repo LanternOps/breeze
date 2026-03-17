@@ -617,12 +617,41 @@ coreRoutes.delete(
       return c.json({ error: 'Device must be decommissioned before permanent deletion' }, 400);
     }
 
-    // Cascade: remove related records first
-    await db.delete(deviceGroupMemberships).where(eq(deviceGroupMemberships.deviceId, deviceId));
-    await db.delete(deviceHardware).where(eq(deviceHardware.deviceId, deviceId));
-    await db.delete(deviceNetwork).where(eq(deviceNetwork.deviceId, deviceId));
-    await db.delete(deviceMetrics).where(eq(deviceMetrics.deviceId, deviceId));
-    await db.delete(devices).where(eq(devices.id, deviceId));
+    // Cascade: remove all FK-referencing records in a transaction.
+    // Uses raw SQL to cover all child tables without importing each schema.
+    try {
+      await db.transaction(async (tx) => {
+        const tables = [
+          'device_group_memberships', 'device_hardware', 'device_network', 'device_metrics',
+          'device_software', 'device_software_history', 'device_disks', 'device_connections',
+          'device_boot_metrics', 'device_registry_state', 'device_config_state',
+          'device_patches', 'device_patch_history', 'device_patch_state',
+          'device_commands', 'device_event_logs', 'device_analytics',
+          'alerts', 'agent_logs', 'script_executions', 'automation_executions',
+          'sessions', 'remote_sessions', 'remote_desktop_sessions',
+          'changes', 'device_service_processes',
+          'software_policy_device_states', 'sensitive_data_scans',
+          'security_posture_device_details', 'security_scan_history', 'security_findings',
+          'cis_device_results', 'cis_device_scans',
+          'deployment_devices', 'backup_jobs',
+          'browser_security_profiles', 'browser_extension_inventory',
+          'device_filesystem_snapshots', 'device_filesystem_cleanup_runs', 'device_filesystem_scan_state',
+          'audit_baseline_results', 'audit_device_profiles',
+          'peripheral_control_device_policies',
+          'ai_device_contexts', 'brain_device_contexts',
+        ];
+        for (const table of tables) {
+          await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE device_id = ${deviceId}`);
+        }
+        await tx.delete(devices).where(eq(devices.id, deviceId));
+      });
+    } catch (err: unknown) {
+      const pgCode = (err as { code?: string })?.code;
+      if (pgCode === '23503') {
+        return c.json({ error: 'Cannot delete: device still has related records. Please contact support.' }, 409);
+      }
+      throw err;
+    }
 
     writeRouteAudit(c, {
       orgId: device.orgId,
