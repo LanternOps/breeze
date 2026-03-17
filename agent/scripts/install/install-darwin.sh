@@ -14,6 +14,12 @@ fi
 
 echo "Installing Breeze Agent..."
 
+# Stop existing service before replacing binary (safe for upgrades).
+if [ -f "$PLIST_DST" ]; then
+    launchctl unload "$PLIST_DST" 2>/dev/null || true
+    echo "Stopped existing Breeze Agent service."
+fi
+
 # Create directories
 mkdir -p "$CONFIG_DIR" "$LOG_DIR"
 chmod 700 "$CONFIG_DIR"
@@ -83,9 +89,19 @@ chown root:breeze "$CONFIG_DIR" 2>/dev/null || true
 
 echo "Breeze Agent installed."
 echo ""
-echo "Next steps:"
-echo "  1. Enroll:  sudo breeze-agent enroll <enrollment-key> --server https://your-server [--enrollment-secret <secret>]"
-echo "  2. Start:   sudo launchctl load $PLIST_DST"
-echo "  3. Status:  sudo launchctl list | grep breeze"
-echo "  4. Logs:    tail -f $LOG_DIR/agent.log"
-echo "  5. Add users to breeze group:  sudo dscl . -append /Groups/breeze GroupMembership <username>"
+
+# If the agent is already enrolled, skip the enrollment step in Next Steps.
+if [ -f "$CONFIG_DIR/agent.yaml" ] && grep -q 'agent_id:' "$CONFIG_DIR/agent.yaml" 2>/dev/null; then
+    echo "Next steps:"
+    echo "  1. Start:   sudo launchctl load $PLIST_DST"
+    echo "  2. Status:  sudo launchctl list | grep breeze"
+    echo "  3. Logs:    tail -f $LOG_DIR/agent.log"
+    echo "  4. Add users to breeze group:  sudo dscl . -append /Groups/breeze GroupMembership <username>"
+else
+    echo "Next steps:"
+    echo "  1. Enroll:  sudo breeze-agent enroll <enrollment-key> --server https://your-server [--enrollment-secret <secret>]"
+    echo "  2. Start:   sudo launchctl load $PLIST_DST"
+    echo "  3. Status:  sudo launchctl list | grep breeze"
+    echo "  4. Logs:    tail -f $LOG_DIR/agent.log"
+    echo "  5. Add users to breeze group:  sudo dscl . -append /Groups/breeze GroupMembership <username>"
+fi

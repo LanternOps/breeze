@@ -252,6 +252,7 @@ fatal()   { error "$*"; exit 1; }
 BREEZE_SERVER="\${BREEZE_SERVER:-}"
 BREEZE_ENROLLMENT_SECRET="\${BREEZE_ENROLLMENT_SECRET:-}"
 BREEZE_SITE_ID="\${BREEZE_SITE_ID:-}"
+BREEZE_DEVICE_ROLE="\${BREEZE_DEVICE_ROLE:-}"
 
 while [[ \$# -gt 0 ]]; do
   case "\$1" in
@@ -261,6 +262,8 @@ while [[ \$# -gt 0 ]]; do
       BREEZE_ENROLLMENT_SECRET="\$2"; shift 2 ;;
     --site-id)
       BREEZE_SITE_ID="\$2"; shift 2 ;;
+    --device-role)
+      BREEZE_DEVICE_ROLE="\$2"; shift 2 ;;
     *)
       warn "Unknown argument: \$1"; shift ;;
   esac
@@ -342,6 +345,15 @@ fi
 
 success "Downloaded agent binary ($(wc -c < "\$TMPFILE" | tr -d ' ') bytes)"
 
+# ----- Stop existing service before replacing binary (safe for upgrades) -----
+if command -v systemctl &>/dev/null && systemctl is-active --quiet breeze-agent 2>/dev/null; then
+  info "Stopping existing Breeze Agent service..."
+  systemctl stop breeze-agent || true
+elif [ -f /Library/LaunchDaemons/com.breeze.agent.plist ]; then
+  info "Stopping existing Breeze Agent service..."
+  launchctl unload /Library/LaunchDaemons/com.breeze.agent.plist 2>/dev/null || true
+fi
+
 # ----- Install binary -----
 info "Installing to \$INSTALL_DIR/\$BINARY_NAME..."
 mv "\$TMPFILE" "\$INSTALL_DIR/\$BINARY_NAME"
@@ -364,6 +376,9 @@ ENROLL_ARGS=(
 )
 if [[ -n "\$BREEZE_SITE_ID" ]]; then
   ENROLL_ARGS+=(--site-id "\$BREEZE_SITE_ID")
+fi
+if [[ -n "\$BREEZE_DEVICE_ROLE" ]]; then
+  ENROLL_ARGS+=(--device-role "\$BREEZE_DEVICE_ROLE")
 fi
 
 if ! "\$INSTALL_DIR/\$BINARY_NAME" "\${ENROLL_ARGS[@]}"; then

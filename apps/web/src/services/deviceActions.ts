@@ -105,6 +105,32 @@ export async function decommissionDevice(deviceId: string): Promise<{ success: b
   return data.data ?? data;
 }
 
+export async function restoreDevice(deviceId: string): Promise<{ success: boolean }> {
+  const response = await fetchWithAuth(`/devices/${deviceId}/restore`, {
+    method: 'POST'
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, 'Failed to restore device'));
+  }
+
+  const data = await response.json();
+  return data.data ?? data;
+}
+
+export async function permanentDeleteDevice(deviceId: string): Promise<{ success: boolean }> {
+  const response = await fetchWithAuth(`/devices/${deviceId}/permanent`, {
+    method: 'DELETE'
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, 'Failed to permanently delete device'));
+  }
+
+  const data = await response.json();
+  return data.data ?? data;
+}
+
 export async function bulkDecommissionDevices(
   deviceIds: string[]
 ): Promise<{ succeeded: number; failed: number }> {
