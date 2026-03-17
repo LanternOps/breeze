@@ -1,86 +1,50 @@
-import { migrate } from 'drizzle-orm/postgres-js/migrator';
-import { drizzle } from 'drizzle-orm/postgres-js';
-import postgres from 'postgres';
+import { createHash } from 'node:crypto';
+import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
-import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import postgres from 'postgres';
 import { seed } from './seed';
-import { runManualSqlMigrations } from './migrations/run';
+
+const MIGRATION_FILE_PATTERN = /^\d{4}-.*\.sql$/;
+// IMPORTANT: MIGRATION_TABLE is a hardcoded constant — never accept user input.
+const MIGRATION_TABLE = 'breeze_migrations';
 
 /**
- * Runs schema migrations and seeds the database on first boot.
- *
- * Handles three scenarios:
- * 1. Fresh database — applies Drizzle migrations (full schema is in the
- *    initial migration 0000_even_nemesis.sql) then seeds.
- * 2. Existing database from `drizzle-kit push` — baselines current Drizzle
- *    migrations so they aren't re-applied, then applies any new ones.
- * 3. Previously migrated database — applies only pending Drizzle migrations.
+ * Compute a SHA-256 hex hash of SQL content for checksum tracking.
  */
-export async function autoMigrate(): Promise<void> {
-  const connectionString =
-    process.env.DATABASE_URL || 'postgresql://breeze:breeze@localhost:5432/breeze';
+export function hashSql(content: string): string {
+  return createHash('sha256').update(content).digest('hex');
+}
 
-  // Dedicated single-connection client for DDL operations
-  const client = postgres(connectionString, { max: 1 });
-  const migrationDb = drizzle(client);
+/**
+ * Determine the database state based on whether key tables exist.
+ *
+ * - `fresh`  — no `users` table → run every migration from scratch
+ * - `legacy` — `users` exists but `breeze_migrations` is empty → mark 0001-0065 as applied
+ * - `normal` — `breeze_migrations` has rows → run only pending migrations
+ */
+export function detectState(
+  usersExist: boolean,
+  breezeMigrationsExist: boolean,
+): 'fresh' | 'legacy' | 'normal' {
+  if (!usersExist) return 'fresh';
+  if (!breezeMigrationsExist) return 'legacy';
+  return 'normal';
+}
 
+/** Resolve the directory containing numbered .sql migration files. */
+function resolveMigrationsDir(): string {
   try {
-    const migrationsFolder = path.join(process.cwd(), 'drizzle');
-    const metaFolder = path.join(migrationsFolder, 'meta');
-
-    if (!existsSync(metaFolder)) {
-      console.log('[auto-migrate] No migration files found, skipping');
-      return;
-    }
-
-    const hasSchema = await tableExists(client, 'users');
-    const hasMigrationTracking = await schemaExists(client, 'drizzle');
-
-    if (!hasSchema) {
-      // Fresh database — apply all Drizzle migrations
-      console.log('[auto-migrate] Fresh database detected');
-      console.log('[auto-migrate] Applying Drizzle migrations...');
-      await migrate(migrationDb, { migrationsFolder });
-      console.log('[auto-migrate] Drizzle migrations complete');
-    } else {
-      // Existing database — baseline if needed, then apply pending migrations
-      if (!hasMigrationTracking) {
-        console.log('[auto-migrate] Existing database detected, baselining...');
-        await baselineMigrations(client, migrationsFolder);
-      }
-
-      console.log('[auto-migrate] Applying pending Drizzle migrations...');
-      await migrate(migrationDb, { migrationsFolder });
-      console.log('[auto-migrate] Drizzle migrations complete');
-    }
-
-    // Run manual SQL migrations (config policies, RLS, etc.)
-    try {
-      console.log('[auto-migrate] Applying manual SQL migrations...');
-      await runManualSqlMigrations();
-    } catch (err) {
-      console.warn('[auto-migrate] Manual SQL migrations failed (non-fatal):', err instanceof Error ? err.message : err);
-    }
-
-    // Auto-seed when the database is empty (first boot)
-    const result = await client`SELECT id FROM users LIMIT 1`;
-    if (result.length === 0) {
-      console.log('[auto-migrate] No users found, running initial seed...');
-      await seed();
-      console.log('[auto-migrate] Initial seed complete');
-    } else {
-      console.log('[auto-migrate] Database already seeded');
-    }
-  } finally {
-    await client.end();
+    // ESM (dev): autoMigrate.ts lives at src/db/ → resolve ../../migrations
+    const thisFile = fileURLToPath(import.meta.url);
+    return path.resolve(path.dirname(thisFile), '..', '..', 'migrations');
+  } catch {
+    // CJS bundle (Docker): import.meta.url is unavailable
+    return path.join(process.cwd(), 'migrations');
   }
 }
 
-async function tableExists(
-  client: postgres.Sql,
-  tableName: string
-): Promise<boolean> {
+async function tableExists(client: postgres.Sql, tableName: string): Promise<boolean> {
   const result = await client`
     SELECT EXISTS (
       SELECT FROM information_schema.tables
@@ -90,61 +54,197 @@ async function tableExists(
   return result[0]?.exists === true;
 }
 
-async function schemaExists(
-  client: postgres.Sql,
-  schemaName: string
-): Promise<boolean> {
-  const result = await client`
-    SELECT EXISTS (
-      SELECT FROM information_schema.schemata
-      WHERE schema_name = ${schemaName}
-    )
-  `;
+async function trackingTableHasRows(client: postgres.Sql): Promise<boolean> {
+  const result = await client.unsafe(
+    `SELECT EXISTS (SELECT 1 FROM ${MIGRATION_TABLE} LIMIT 1)`,
+  );
   return result[0]?.exists === true;
 }
 
-/**
- * Marks all current Drizzle migrations as applied without executing them.
- * This is necessary for databases that were created with `drizzle-kit push`
- * (which doesn't use the migration tracking table).
- */
-async function baselineMigrations(
-  client: postgres.Sql,
-  migrationsFolder: string
-): Promise<void> {
-  const journalPath = path.join(migrationsFolder, 'meta', '_journal.json');
-  if (!existsSync(journalPath)) return;
-
-  const journal = JSON.parse(readFileSync(journalPath, 'utf8'));
-  const entries = journal.entries || [];
-
-  // Create the tracking schema and table (mirrors what migrate() does internally)
-  await client`CREATE SCHEMA IF NOT EXISTS "drizzle"`;
-  await client`
-    CREATE TABLE IF NOT EXISTS "drizzle"."__drizzle_migrations" (
-      id SERIAL PRIMARY KEY,
-      hash text NOT NULL,
-      created_at bigint
+async function ensureTrackingTable(client: postgres.Sql): Promise<void> {
+  await client.unsafe(`
+    CREATE TABLE IF NOT EXISTS ${MIGRATION_TABLE} (
+      filename TEXT PRIMARY KEY,
+      checksum TEXT NOT NULL,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
-  `;
+  `);
+}
 
-  for (const entry of entries) {
-    const sqlPath = path.join(migrationsFolder, `${entry.tag}.sql`);
-    if (!existsSync(sqlPath)) continue;
+/** Load already-applied migration checksums from the tracking table. */
+async function loadApplied(client: postgres.Sql): Promise<Map<string, string>> {
+  const rows = await client.unsafe<{ filename: string; checksum: string }[]>(
+    `SELECT filename, checksum FROM ${MIGRATION_TABLE}`,
+  );
+  return new Map(rows.map((row) => [row.filename, row.checksum]));
+}
 
-    const sqlContent = readFileSync(sqlPath, 'utf8');
-    const hash = crypto.createHash('sha256').update(sqlContent).digest('hex');
+/** Record a migration as applied. */
+async function recordMigration(
+  sql: postgres.Sql | postgres.TransactionSql,
+  filename: string,
+  checksum: string,
+): Promise<void> {
+  await sql.unsafe(
+    `INSERT INTO ${MIGRATION_TABLE} (filename, checksum) VALUES ($1, $2) ON CONFLICT (filename) DO NOTHING`,
+    [filename, checksum],
+  );
+}
 
-    const existing = await client`
-      SELECT id FROM "drizzle"."__drizzle_migrations" WHERE hash = ${hash}
-    `;
+/** The highest legacy migration number that should be marked as applied for legacy DBs. */
+const LEGACY_CUTOFF = 65;
 
-    if (existing.length === 0) {
-      await client`
-        INSERT INTO "drizzle"."__drizzle_migrations" (hash, created_at)
-        VALUES (${hash}, ${entry.when})
-      `;
-      console.log(`[auto-migrate] Baselined: ${entry.tag}`);
+/**
+ * Single-track migration runner for Breeze.
+ *
+ * Replaces both Drizzle's built-in migrator and the manual SQL runner with one
+ * unified system.  All migrations live in `apps/api/migrations/` as numbered
+ * SQL files (0001-baseline.sql through 0065-xxx.sql and beyond).
+ */
+export async function autoMigrate(): Promise<void> {
+  const connectionString =
+    process.env.DATABASE_URL || 'postgresql://breeze:breeze@localhost:5432/breeze';
+
+  const client = postgres(connectionString, { max: 1 });
+
+  try {
+    const migrationsDir = resolveMigrationsDir();
+    console.log(`[auto-migrate] Migrations directory: ${migrationsDir}`);
+
+    // ── 1. Ensure the tracking table exists ──────────────────────────────
+    await ensureTrackingTable(client);
+
+    // ── 2. Detect database state ─────────────────────────────────────────
+    const usersExist = await tableExists(client, 'users');
+    const hasRows = await trackingTableHasRows(client);
+    const state = detectState(usersExist, hasRows);
+    console.log(`[auto-migrate] Database state: ${state}`);
+
+    // ── 3. Read migration files ──────────────────────────────────────────
+    let allFiles: string[];
+    try {
+      allFiles = (await readdir(migrationsDir))
+        .filter((name) => MIGRATION_FILE_PATTERN.test(name))
+        .sort((a, b) => a.localeCompare(b));
+    } catch {
+      console.log('[auto-migrate] No migration files found, skipping');
+      return;
     }
+
+    if (allFiles.length === 0) {
+      console.log('[auto-migrate] No migration files found, skipping');
+      return;
+    }
+
+    // ── 4. Load already-applied checksums ────────────────────────────────
+    const applied = await loadApplied(client);
+
+    // ── 5. Handle fresh/legacy: baseline pre-consolidation migrations ───
+    if (state === 'fresh') {
+      // Fresh DB: run the baseline (0001) then mark 0002-0065 as applied
+      // since they're already reflected in the baseline.
+      const baseline = allFiles.find((f) => f.startsWith('0001-'));
+      if (baseline) {
+        const sqlPath = path.join(migrationsDir, baseline);
+        const content = await readFile(sqlPath, 'utf8');
+        const checksum = hashSql(content);
+        console.log(`[auto-migrate] Applying baseline: ${baseline}`);
+        await client.begin(async (tx) => {
+          await tx.unsafe(content);
+          await tx.unsafe(
+            `INSERT INTO ${MIGRATION_TABLE} (filename, checksum) VALUES ($1, $2)`,
+            [baseline, checksum],
+          );
+        });
+        applied.set(baseline, checksum);
+      }
+      // Mark 0002-0065 as applied (already in baseline)
+      for (const filename of allFiles) {
+        const num = parseInt(filename.slice(0, 4), 10);
+        if (num <= 1 || num > LEGACY_CUTOFF) continue;
+        if (applied.has(filename)) continue;
+
+        const sqlPath = path.join(migrationsDir, filename);
+        const content = await readFile(sqlPath, 'utf8');
+        const checksum = hashSql(content);
+
+        await recordMigration(client, filename, checksum);
+        applied.set(filename, checksum);
+      }
+      console.log('[auto-migrate] Fresh database: baseline applied, legacy migrations marked');
+    } else if (state === 'legacy') {
+      // Legacy DB: schema already exists, mark 0001-0065 as applied
+      console.log(
+        '[auto-migrate] Legacy database detected, marking existing migrations as applied...',
+      );
+      for (const filename of allFiles) {
+        const num = parseInt(filename.slice(0, 4), 10);
+        if (num > LEGACY_CUTOFF) break;
+        if (applied.has(filename)) continue;
+
+        const sqlPath = path.join(migrationsDir, filename);
+        const content = await readFile(sqlPath, 'utf8');
+        const checksum = hashSql(content);
+
+        await recordMigration(client, filename, checksum);
+        applied.set(filename, checksum);
+        console.log(`[auto-migrate] Baselined: ${filename}`);
+      }
+    }
+
+    // ── 6. Validate checksums for already-applied migrations ─────────────
+    for (const filename of allFiles) {
+      const priorChecksum = applied.get(filename);
+      if (!priorChecksum) continue;
+
+      const sqlPath = path.join(migrationsDir, filename);
+      const content = await readFile(sqlPath, 'utf8');
+      const currentChecksum = hashSql(content);
+
+      if (priorChecksum !== currentChecksum) {
+        throw new Error(
+          `Migration checksum mismatch for ${filename}. ` +
+            'The file changed after being applied. Add a new migration instead.',
+        );
+      }
+    }
+
+    // ── 7. Apply pending migrations ──────────────────────────────────────
+    let appliedCount = 0;
+    for (const filename of allFiles) {
+      if (applied.has(filename)) continue;
+
+      const sqlPath = path.join(migrationsDir, filename);
+      const content = await readFile(sqlPath, 'utf8');
+      const checksum = hashSql(content);
+
+      console.log(`[auto-migrate] Applying: ${filename}`);
+      await client.begin(async (tx) => {
+        await tx.unsafe(content);
+        await tx.unsafe(
+          `INSERT INTO ${MIGRATION_TABLE} (filename, checksum) VALUES ($1, $2)`,
+          [filename, checksum],
+        );
+      });
+      appliedCount++;
+    }
+
+    if (appliedCount > 0) {
+      console.log(`[auto-migrate] Applied ${appliedCount} migration(s)`);
+    } else {
+      console.log('[auto-migrate] All migrations already applied');
+    }
+
+    // ── 8. Auto-seed if no users exist ───────────────────────────────────
+    const userCheck = await client`SELECT id FROM users LIMIT 1`;
+    if (userCheck.length === 0) {
+      console.log('[auto-migrate] No users found, running initial seed...');
+      await seed();
+      console.log('[auto-migrate] Initial seed complete');
+    } else {
+      console.log('[auto-migrate] Database already seeded');
+    }
+  } finally {
+    await client.end();
   }
 }

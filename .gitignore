@@ -84,3 +84,6 @@ docker-compose.override.yml
 
 # Backups
 backups/
+
+# Drizzle drift check temp output
+.drizzle-tmp/

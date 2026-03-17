@@ -51,18 +51,9 @@ jobs:
       - name: Run ESLint
         run: pnpm lint
 
-      - name: Check for uncommitted Drizzle migrations
-        run: |
-          cd apps/api
-          pnpm drizzle-kit generate
-          bash scripts/fix-drizzle-enums.sh
-          if [ -n "$(git diff --name-only drizzle/)" ] || [ -n "$(git ls-files --others --exclude-standard drizzle/)" ]; then
-            echo "::error::Schema changed without generating a migration. Run 'cd apps/api && pnpm db:generate' and commit the result."
-            git diff --stat drizzle/
-            git ls-files --others --exclude-standard drizzle/
-            exit 1
-          fi
-          echo "No schema drift detected."
+      - name: Check for schema drift
+        working-directory: apps/api
+        run: pnpm db:check-drift
 
   typecheck:
     name: Type Check
