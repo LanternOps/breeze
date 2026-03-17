@@ -17,8 +17,11 @@ echo "Installing Breeze Agent..."
 
 # Stop existing service before replacing binary (safe for upgrades).
 if [ -f "$SERVICE_DST" ]; then
-    systemctl stop breeze-agent 2>/dev/null || true
-    echo "Stopped existing Breeze Agent service."
+    if systemctl stop breeze-agent 2>&1; then
+        echo "Stopped existing Breeze Agent service."
+    else
+        echo "Warning: failed to stop existing service cleanly — continuing anyway" >&2
+    fi
 fi
 
 # Create directories

@@ -5,7 +5,7 @@ import DeviceSettingsModal from './DeviceSettingsModal';
 import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
 import { fetchWithAuth } from '../../stores/auth';
-import { sendDeviceCommand, executeScript, toggleMaintenanceMode, decommissionDevice, clearDeviceSessions } from '../../services/deviceActions';
+import { sendDeviceCommand, executeScript, toggleMaintenanceMode, decommissionDevice, clearDeviceSessions, restoreDevice, permanentDeleteDevice } from '../../services/deviceActions';
 import { useAiStore } from '@/stores/aiStore';
 import { navigateTo } from '@/lib/navigation';
 
@@ -157,6 +157,18 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         case 'decommission':
           await decommissionDevice(device.id);
           showToast('success', `${device.hostname} has been decommissioned`);
+          void navigateTo('/devices');
+          return;
+
+        case 'restore':
+          await restoreDevice(device.id);
+          showToast('success', `${device.hostname} has been restored`);
+          await fetchDevice();
+          break;
+
+        case 'permanent-delete':
+          await permanentDeleteDevice(device.id);
+          showToast('success', `${device.hostname} has been permanently deleted`);
           void navigateTo('/devices');
           return;
 

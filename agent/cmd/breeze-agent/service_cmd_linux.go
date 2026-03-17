@@ -115,8 +115,11 @@ var serviceInstallCmd = &cobra.Command{
 
 		// Stop existing service before replacing binary (safe for upgrades).
 		if _, err := os.Stat(linuxUnitDst); err == nil {
-			_ = exec.Command("systemctl", "stop", linuxServiceName).Run()
-			fmt.Println("Stopped existing Breeze Agent service.")
+			if stopErr := exec.Command("systemctl", "stop", linuxServiceName).Run(); stopErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to stop existing service: %v\n", stopErr)
+			} else {
+				fmt.Println("Stopped existing Breeze Agent service.")
+			}
 		}
 
 		// Copy current binary to /usr/local/bin/

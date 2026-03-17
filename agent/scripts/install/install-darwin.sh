@@ -16,8 +16,11 @@ echo "Installing Breeze Agent..."
 
 # Stop existing service before replacing binary (safe for upgrades).
 if [ -f "$PLIST_DST" ]; then
-    launchctl unload "$PLIST_DST" 2>/dev/null || true
-    echo "Stopped existing Breeze Agent service."
+    if launchctl unload "$PLIST_DST" 2>&1; then
+        echo "Stopped existing Breeze Agent service."
+    else
+        echo "Warning: failed to stop existing service cleanly — continuing anyway" >&2
+    fi
 fi
 
 # Create directories

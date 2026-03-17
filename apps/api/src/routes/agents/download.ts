@@ -348,10 +348,14 @@ success "Downloaded agent binary ($(wc -c < "\$TMPFILE" | tr -d ' ') bytes)"
 # ----- Stop existing service before replacing binary (safe for upgrades) -----
 if command -v systemctl &>/dev/null && systemctl is-active --quiet breeze-agent 2>/dev/null; then
   info "Stopping existing Breeze Agent service..."
-  systemctl stop breeze-agent || true
+  if ! systemctl stop breeze-agent 2>&1; then
+    warn "Failed to stop existing service cleanly — continuing anyway"
+  fi
 elif [ -f /Library/LaunchDaemons/com.breeze.agent.plist ]; then
   info "Stopping existing Breeze Agent service..."
-  launchctl unload /Library/LaunchDaemons/com.breeze.agent.plist 2>/dev/null || true
+  if ! launchctl unload /Library/LaunchDaemons/com.breeze.agent.plist 2>&1; then
+    warn "Failed to stop existing service cleanly — continuing anyway"
+  fi
 fi
 
 # ----- Install binary -----
