@@ -19,24 +19,17 @@ type DeviceSettingsModalProps = {
 export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, onAction }: DeviceSettingsModalProps) {
   const [displayName, setDisplayName] = useState(device.displayName || device.hostname);
   const [siteId, setSiteId] = useState(device.siteId);
-  const [deviceRole, setDeviceRole] = useState(device.deviceRole || 'unknown');
   const [tags, setTags] = useState<string[]>(device.tags ?? []);
   const [newTag, setNewTag] = useState('');
   const [sites, setSites] = useState<Site[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
 
-  const DEVICE_ROLES = [
-    'workstation', 'server', 'printer', 'router', 'switch',
-    'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown',
-  ] as const;
-
   useEffect(() => {
     if (!isOpen) return;
     // Reset form to current device values when opened
     setDisplayName(device.displayName || device.hostname);
     setSiteId(device.siteId);
-    setDeviceRole(device.deviceRole || 'unknown');
     setTags(device.tags ?? []);
     setNewTag('');
     setError(undefined);
@@ -79,7 +72,6 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
       const originalName = device.displayName || undefined;
       if (effectiveName !== originalName) body.displayName = effectiveName ?? null;
       if (siteId !== device.siteId) body.siteId = siteId;
-      if (deviceRole !== (device.deviceRole || 'unknown')) body.deviceRole = deviceRole;
       const tagsChanged = JSON.stringify(tags) !== JSON.stringify(device.tags ?? []);
       if (tagsChanged) body.tags = tags;
 
@@ -160,28 +152,6 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
                 <option key={site.id} value={site.id}>{site.name}</option>
               ))}
             </select>
-          </div>
-
-          {/* Device Role */}
-          <div>
-            <label htmlFor="deviceRole" className="block text-sm font-medium mb-1.5">
-              Device Role
-            </label>
-            <select
-              id="deviceRole"
-              value={deviceRole}
-              onChange={e => setDeviceRole(e.target.value)}
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-            >
-              {DEVICE_ROLES.map(role => (
-                <option key={role} value={role}>
-                  {role.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase())}
-                </option>
-              ))}
-            </select>
-            {device.deviceRoleSource === 'auto' && deviceRole === (device.deviceRole || 'unknown') && (
-              <p className="mt-1 text-xs text-muted-foreground">Auto-detected. Changing will set source to manual.</p>
-            )}
           </div>
 
           {/* Tags */}
