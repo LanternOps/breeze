@@ -139,8 +139,41 @@ export async function autoMigrate(): Promise<void> {
     // ── 4. Load already-applied checksums ────────────────────────────────
     const applied = await loadApplied(client);
 
-    // ── 5. Handle legacy state: mark 0001–0065 as applied ───────────────
-    if (state === 'legacy') {
+    // ── 5. Handle fresh/legacy: baseline pre-consolidation migrations ───
+    if (state === 'fresh') {
+      // Fresh DB: run the baseline (0001) then mark 0002-0065 as applied
+      // since they're already reflected in the baseline.
+      const baseline = allFiles.find((f) => f.startsWith('0001-'));
+      if (baseline) {
+        const sqlPath = path.join(migrationsDir, baseline);
+        const content = await readFile(sqlPath, 'utf8');
+        const checksum = hashSql(content);
+        console.log(`[auto-migrate] Applying baseline: ${baseline}`);
+        await client.begin(async (tx) => {
+          await tx.unsafe(content);
+          await tx.unsafe(
+            `INSERT INTO ${MIGRATION_TABLE} (filename, checksum) VALUES ($1, $2)`,
+            [baseline, checksum],
+          );
+        });
+        applied.set(baseline, checksum);
+      }
+      // Mark 0002-0065 as applied (already in baseline)
+      for (const filename of allFiles) {
+        const num = parseInt(filename.slice(0, 4), 10);
+        if (num <= 1 || num > LEGACY_CUTOFF) continue;
+        if (applied.has(filename)) continue;
+
+        const sqlPath = path.join(migrationsDir, filename);
+        const content = await readFile(sqlPath, 'utf8');
+        const checksum = hashSql(content);
+
+        await recordMigration(client, filename, checksum);
+        applied.set(filename, checksum);
+      }
+      console.log('[auto-migrate] Fresh database: baseline applied, legacy migrations marked');
+    } else if (state === 'legacy') {
+      // Legacy DB: schema already exists, mark 0001-0065 as applied
       console.log(
         '[auto-migrate] Legacy database detected, marking existing migrations as applied...',
       );
