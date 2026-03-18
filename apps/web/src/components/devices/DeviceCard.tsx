@@ -18,7 +18,9 @@ type MetricHistoryPoint = {
 const statusColors: Record<DeviceStatus, string> = {
   online: 'bg-green-500',
   offline: 'bg-red-500',
-  maintenance: 'bg-yellow-500'
+  maintenance: 'bg-yellow-500',
+  decommissioned: 'bg-slate-500',
+  quarantined: 'bg-orange-500'
 };
 
 const osIcons: Record<OSType, React.ReactNode> = {

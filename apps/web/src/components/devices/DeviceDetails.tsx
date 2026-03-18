@@ -77,13 +77,17 @@ type DeviceDetailsProps = {
 const statusColors: Record<DeviceStatus, string> = {
   online: 'bg-green-500/20 text-green-700 border-green-500/40',
   offline: 'bg-red-500/20 text-red-700 border-red-500/40',
-  maintenance: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40'
+  maintenance: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40',
+  decommissioned: 'bg-slate-500/20 text-slate-700 border-slate-500/40',
+  quarantined: 'bg-orange-500/20 text-orange-700 border-orange-500/40'
 };
 
 const statusLabels: Record<DeviceStatus, string> = {
   online: 'Online',
   offline: 'Offline',
-  maintenance: 'Maintenance'
+  maintenance: 'Maintenance',
+  decommissioned: 'Decommissioned',
+  quarantined: 'Quarantined'
 };
 
 const osLabels: Record<OSType, string> = {
