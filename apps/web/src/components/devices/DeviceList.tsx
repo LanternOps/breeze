@@ -6,7 +6,7 @@ import ConnectDesktopButton from '../remote/ConnectDesktopButton';
 import { widthPercentClass } from '@/lib/utils';
 import { DEVICE_ROLES, getDeviceRoleLabel, getDeviceRoleIcon, type DeviceRole } from '@/lib/deviceRoles';
 
-export type DeviceStatus = 'online' | 'offline' | 'maintenance';
+export type DeviceStatus = 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined';
 export type OSType = 'windows' | 'macos' | 'linux';
 
 export type Device = {
