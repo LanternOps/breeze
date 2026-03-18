@@ -351,11 +351,11 @@ export async function getDevice(id: string): Promise<Device> {
 
 export async function getDeviceMetrics(id: string): Promise<Device['metrics']> {
   const response = await requestWithPrefix<{
-    data?: Array<{
+    data?: {
       avgCpuPercent?: number;
       avgRamPercent?: number;
       avgDiskPercent?: number;
-    }>;
+    }[];
   }>(`/devices/${id}/metrics`, API_CORE_PREFIX);
   const latest = response.data?.[response.data.length - 1];
   if (!latest) return undefined;

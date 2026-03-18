@@ -87,7 +87,6 @@ export default function SsoProviderForm({
     formState: { errors, isSubmitting },
     setValue,
     control,
-    reset
   } = useForm<SsoProviderFormValues>({
     resolver: zodResolver(ssoProviderSchema),
     defaultValues: {
