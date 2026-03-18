@@ -10,7 +10,7 @@ interface EnrollDeviceStepProps {
   onFinish: () => void;
 }
 
-export default function EnrollDeviceStep({ orgId, siteId, onFinish }: EnrollDeviceStepProps) {
+export default function EnrollDeviceStep({ orgId, siteId, onFinish: _onFinish }: EnrollDeviceStepProps) {
   const [enrollmentKey, setEnrollmentKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();

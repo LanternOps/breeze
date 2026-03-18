@@ -5,7 +5,8 @@ import SNMPTemplateList from './SNMPTemplateList';
 import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
-  fetchWithAuth: vi.fn()
+  fetchWithAuth: vi.fn(),
+  registerOrgIdProvider: vi.fn()
 }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);

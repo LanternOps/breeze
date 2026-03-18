@@ -14,12 +14,6 @@ type TemplateRow = {
   source: 'builtin' | 'custom';
 };
 
-type DashboardTemplateUsage = {
-  templateId: string | null;
-  name: string;
-  deviceCount: number;
-};
-
 type Props = {
   selectedTemplateId?: string;
   onSelectTemplate?: (templateId: string) => void;
