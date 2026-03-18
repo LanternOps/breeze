@@ -391,6 +391,24 @@ func (c *Client) handleLaunchProcess(env *ipc.Envelope) {
 		return
 	}
 
+	// Security: only allow launching the agent's own binary (e.g., Breeze Helper).
+	// Prevents arbitrary code execution if the IPC channel is compromised.
+	selfPath, err := os.Executable()
+	if err == nil {
+		selfPath, _ = filepath.EvalSymlinks(selfPath)
+		candidate, _ := filepath.EvalSymlinks(req.BinaryPath)
+		selfDir := filepath.Dir(filepath.Clean(selfPath))
+		candidateDir := filepath.Dir(filepath.Clean(candidate))
+		if selfDir != candidateDir {
+			log.Warn("launch_process rejected: binary not in agent directory",
+				"requested", req.BinaryPath, "agentDir", selfDir)
+			c.conn.SendTyped(env.ID, ipc.TypeLaunchResult, ipc.LaunchProcessResult{
+				Error: "binary path not in agent directory",
+			})
+			return
+		}
+	}
+
 	cmd := osexec.Command(req.BinaryPath)
 	cmd.Dir = filepath.Dir(req.BinaryPath)
 	if err := cmd.Start(); err != nil {

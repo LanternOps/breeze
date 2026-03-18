@@ -480,15 +480,22 @@ func (h *WindowsInputHandler) SendKeyUp(key string) error {
 // desktop so that SendInput works on the Winlogon/UAC secure desktop.
 // Only re-checks every 500ms to avoid overhead on every input event.
 func (h *WindowsInputHandler) ensureInputDesktop() {
+	h.mu.Lock()
 	now := time.Now()
 	if now.Sub(h.lastDesktopSync) < 500*time.Millisecond {
+		h.mu.Unlock()
 		return
 	}
 	h.lastDesktopSync = now
+	needsLock := !h.threadLocked
+	h.mu.Unlock()
 
-	if !h.threadLocked {
+	// LockOSThread must be called outside the mutex to avoid scheduler issues.
+	if needsLock {
 		runtime.LockOSThread()
+		h.mu.Lock()
 		h.threadLocked = true
+		h.mu.Unlock()
 	}
 
 	hDesk, _, _ := procOpenInputDesktop.Call(0, 0, uintptr(desktopGenericAll))
@@ -504,10 +511,14 @@ func (h *WindowsInputHandler) ensureInputDesktop() {
 	}
 
 	// Successfully switched — close old handle, store new one.
-	if h.currentDesktop != 0 {
-		procCloseDesktop.Call(h.currentDesktop)
-	}
+	h.mu.Lock()
+	oldDesktop := h.currentDesktop
 	h.currentDesktop = hDesk
+	h.mu.Unlock()
+
+	if oldDesktop != 0 {
+		procCloseDesktop.Call(oldDesktop)
+	}
 }
 
 func (h *WindowsInputHandler) HandleEvent(event InputEvent) error {
