@@ -18,7 +18,7 @@
     "lint": "eslint --ext .ts src",
     "clean": "rm -rf dist",
     "db:migrate": "tsx src/db/autoMigrate.ts",
-    "db:check-drift": "drizzle-kit generate --config drizzle.config.ts && (ls .drizzle-tmp/*.sql 2>/dev/null && echo 'Schema drift detected — write a migration' && rm -rf .drizzle-tmp && exit 1 || (rm -rf .drizzle-tmp && echo 'No drift detected'))",
+    "db:check-drift": "drizzle-kit generate --out .drizzle-tmp && (ls .drizzle-tmp/*.sql 2>/dev/null && echo 'Schema drift detected — write a migration' && rm -rf .drizzle-tmp && exit 1 || (rm -rf .drizzle-tmp && echo 'No drift detected'))",
     "db:seed": "tsx src/db/seed.ts",
     "db:studio": "drizzle-kit studio"
   },
