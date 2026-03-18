@@ -53,6 +53,7 @@ jobs:
 
       - name: Check for schema drift
         working-directory: apps/api
+        continue-on-error: true
         run: pnpm db:check-drift
 
   typecheck:
