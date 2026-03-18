@@ -490,7 +490,12 @@ func (m *mftEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 				nonBlack++
 			}
 		}
-		slog.Warn("NV12 content check",
+		// Warn for initial frames (black screen detection), debug afterward
+		logFn := slog.Debug
+		if m.gpuFrameCount <= 3 {
+			logFn = slog.Warn
+		}
+		logFn("NV12 content check",
 			"frame", m.gpuFrameCount,
 			"width", m.width, "height", m.height,
 			"topYSum", topSum,
