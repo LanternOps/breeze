@@ -87,6 +87,11 @@ func encodeScreenshot(img *image.RGBA, width, height, monitor int, start time.Ti
 // encodeScreenshotResponse scales and encodes an image into a ScreenshotResponse.
 // Used by both screenshot and computer_action encoding paths.
 func encodeScreenshotResponse(img *image.RGBA, width, height, monitor int) (*ScreenshotResponse, error) {
+	// Preserve original screen resolution for mouse coordinate mapping.
+	// The AI must send click coordinates in screen space, not image space.
+	screenWidth := width
+	screenHeight := height
+
 	// Scale down if wider than 1920px
 	if width > 1920 {
 		factor := 1920.0 / float64(width)
@@ -114,12 +119,14 @@ func encodeScreenshotResponse(img *image.RGBA, width, height, monitor int) (*Scr
 	}
 
 	return &ScreenshotResponse{
-		ImageBase64: b64,
-		Width:       width,
-		Height:      height,
-		Format:      "jpeg",
-		SizeBytes:   len(jpegData),
-		Monitor:     monitor,
-		CapturedAt:  time.Now().UTC().Format(time.RFC3339),
+		ImageBase64:  b64,
+		Width:        width,
+		Height:       height,
+		ScreenWidth:  screenWidth,
+		ScreenHeight: screenHeight,
+		Format:       "jpeg",
+		SizeBytes:    len(jpegData),
+		Monitor:      monitor,
+		CapturedAt:   time.Now().UTC().Format(time.RFC3339),
 	}, nil
 }

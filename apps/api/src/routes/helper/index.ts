@@ -423,6 +423,42 @@ helperRoutes.post(
 );
 
 // ============================================
+// GET /device-info — Return device details for the authenticated device
+// ============================================
+
+helperRoutes.get('/device-info', async (c) => {
+  const device = c.get('helperDevice');
+
+  const [row] = await db
+    .select({
+      hostname: devices.hostname,
+      displayName: devices.displayName,
+      osType: devices.osType,
+      osVersion: devices.osVersion,
+      status: devices.status,
+      lastSeenAt: devices.lastSeenAt,
+      agentVersion: devices.agentVersion,
+    })
+    .from(devices)
+    .where(eq(devices.id, device.id))
+    .limit(1);
+
+  if (!row) {
+    return c.json({ error: 'Device not found' }, 404);
+  }
+
+  return c.json({
+    hostname: row.hostname,
+    displayName: row.displayName,
+    osType: row.osType,
+    osVersion: row.osVersion,
+    status: row.status,
+    lastSeenAt: row.lastSeenAt,
+    agentVersion: row.agentVersion,
+  });
+});
+
+// ============================================
 // GET /config — Return helper configuration
 // ============================================
 

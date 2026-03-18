@@ -283,6 +283,7 @@ function DeviceInfoView({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { agentConfig } = useChatStore();
+  const helperVersion = agentConfig?.helper_version;
 
   useEffect(() => {
     if (!agentConfig) return;
@@ -291,7 +292,7 @@ function DeviceInfoView({ onClose }: { onClose: () => void }) {
 
     invoke<{ status: number; body: string }>('helper_fetch', {
         request: {
-          url: `${agentConfig.api_url}/api/v1/devices/by-agent/${agentConfig.agent_id}`,
+          url: `${agentConfig.api_url}/api/v1/helper/device-info`,
           method: 'GET',
         },
       })
@@ -360,6 +361,12 @@ function DeviceInfoView({ onClose }: { onClose: () => void }) {
               <div style={{ padding: '12px', border: '1px solid var(--helper-border, #e5e7eb)', borderRadius: '8px' }}>
                 <div style={{ fontSize: '13px', color: 'var(--helper-muted, #6b7280)' }}>Agent Version</div>
                 <div style={{ fontSize: '15px', fontWeight: 600 }}>{device.agentVersion}</div>
+              </div>
+            )}
+            {helperVersion && (
+              <div style={{ padding: '12px', border: '1px solid var(--helper-border, #e5e7eb)', borderRadius: '8px' }}>
+                <div style={{ fontSize: '13px', color: 'var(--helper-muted, #6b7280)' }}>Helper Version</div>
+                <div style={{ fontSize: '15px', fontWeight: 600 }}>{helperVersion}</div>
               </div>
             )}
           </div>

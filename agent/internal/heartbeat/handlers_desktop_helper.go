@@ -36,6 +36,7 @@ func isWinSessionDisconnected(winSessionID string) bool {
 }
 
 // startDesktopViaHelper routes a desktop start request through the IPC user helper.
+// If the helper crashes during the request, it automatically respawns and retries.
 func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []desktop.ICEServerConfig, displayIndex int, payload map[string]any) tools.CommandResult {
 	// Read optional target Windows session ID from payload
 	targetSession := ""
@@ -43,52 +44,7 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 		targetSession = fmt.Sprintf("%d", int(ts))
 	}
 
-	session := h.sessionBroker.FindCapableSession("capture", targetSession)
-
-	// Validate the helper's Windows session is still active. A helper in a
-	// disconnected session (e.g. closed RDP) can't capture the display.
-	if session != nil && isWinSessionDisconnected(session.WinSessionID) {
-		log.Warn("helper is in a disconnected Windows session, spawning new helper",
-			"helperSession", session.SessionID,
-			"winSession", session.WinSessionID)
-		session = nil
-		// Don't re-spawn into the same disconnected session — let auto-detection
-		// find an active one instead.
-		targetSession = ""
-	}
-
-	if session == nil {
-		// Serialize spawns per target session so independent sessions can spawn concurrently
-		mu := sessionSpawnMu(targetSession)
-		mu.Lock()
-		// Re-check after acquiring lock — another goroutine may have spawned it
-		session = h.sessionBroker.FindCapableSession("capture", targetSession)
-		if session != nil && isWinSessionDisconnected(session.WinSessionID) {
-			session = nil
-			targetSession = ""
-		}
-		if session == nil {
-			if err := h.spawnHelperForDesktop(targetSession); err != nil {
-				mu.Unlock()
-				return tools.NewErrorResult(fmt.Errorf("no capable helper session and spawn failed: %w", err), 0)
-			}
-			// Poll for the helper to connect (up to 5s, every 100ms)
-			for i := 0; i < 50; i++ {
-				time.Sleep(100 * time.Millisecond)
-				session = h.sessionBroker.FindCapableSession("capture", targetSession)
-				if session != nil && !isWinSessionDisconnected(session.WinSessionID) {
-					break
-				}
-				session = nil
-			}
-		}
-		mu.Unlock()
-		if session == nil {
-			return tools.NewErrorResult(fmt.Errorf("helper spawned but did not connect within 5s"), 0)
-		}
-	}
-
-	// Marshal ICE servers to json.RawMessage
+	// Marshal ICE servers once (used across retries)
 	var iceRaw json.RawMessage
 	if len(iceServers) > 0 {
 		data, err := json.Marshal(iceServers)
@@ -105,26 +61,96 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 		DisplayIndex: displayIndex,
 	}
 
-	resp, err := session.SendCommand("desk-"+sessionID, ipc.TypeDesktopStart, req, 30*time.Second)
-	if err != nil {
-		return tools.NewErrorResult(fmt.Errorf("IPC desktop start failed: %w", err), 0)
+	// Retry up to 2 times: if the helper crashes during SendCommand, respawn
+	// and retry immediately instead of failing back to the API (which adds
+	// 20-30s of round-trip delay).
+	const maxAttempts = 2
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		session := h.findOrSpawnHelper(targetSession)
+		if session == nil {
+			return tools.NewErrorResult(fmt.Errorf("no capable helper available after spawn attempt"), 0)
+		}
+
+		resp, err := session.SendCommand("desk-"+sessionID, ipc.TypeDesktopStart, req, 15*time.Second)
+		if err != nil {
+			log.Warn("IPC desktop start failed, will retry with new helper",
+				"attempt", attempt+1,
+				"error", err.Error(),
+				"session", session.SessionID,
+			)
+			// Helper likely crashed — clear target so next attempt auto-detects
+			targetSession = ""
+			continue
+		}
+		if resp.Error != "" {
+			return tools.CommandResult{
+				Status: "failed",
+				Error:  resp.Error,
+			}
+		}
+
+		var dResp ipc.DesktopStartResponse
+		if err := json.Unmarshal(resp.Payload, &dResp); err != nil {
+			return tools.NewErrorResult(fmt.Errorf("failed to unmarshal desktop start response: %w", err), 0)
+		}
+
+		return tools.NewSuccessResult(map[string]any{
+			"sessionId": sessionID,
+			"answer":    dResp.Answer,
+		}, 0)
 	}
-	if resp.Error != "" {
-		return tools.CommandResult{
-			Status: "failed",
-			Error:  resp.Error,
+
+	return tools.NewErrorResult(fmt.Errorf("desktop start failed after %d attempts (helper keeps crashing)", maxAttempts), 0)
+}
+
+// findOrSpawnHelper locates a capable helper session, spawning one if needed.
+func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Session {
+	session := h.sessionBroker.FindCapableSession("capture", targetSession)
+
+	// Validate the helper's Windows session is still active.
+	if session != nil && isWinSessionDisconnected(session.WinSessionID) {
+		log.Warn("helper is in a disconnected Windows session, spawning new helper",
+			"helperSession", session.SessionID,
+			"winSession", session.WinSessionID)
+		session = nil
+		targetSession = ""
+	}
+
+	if session != nil {
+		return session
+	}
+
+	// Serialize spawns per target session
+	mu := sessionSpawnMu(targetSession)
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Re-check after lock
+	session = h.sessionBroker.FindCapableSession("capture", targetSession)
+	if session != nil && isWinSessionDisconnected(session.WinSessionID) {
+		session = nil
+		targetSession = ""
+	}
+	if session != nil {
+		return session
+	}
+
+	if err := h.spawnHelperForDesktop(targetSession); err != nil {
+		log.Warn("helper spawn failed", "error", err.Error())
+		return nil
+	}
+
+	// Poll for the helper to connect (up to 10s)
+	for i := 0; i < 100; i++ {
+		time.Sleep(100 * time.Millisecond)
+		session = h.sessionBroker.FindCapableSession("capture", targetSession)
+		if session != nil && !isWinSessionDisconnected(session.WinSessionID) {
+			return session
 		}
 	}
 
-	var dResp ipc.DesktopStartResponse
-	if err := json.Unmarshal(resp.Payload, &dResp); err != nil {
-		return tools.NewErrorResult(fmt.Errorf("failed to unmarshal desktop start response: %w", err), 0)
-	}
-
-	return tools.NewSuccessResult(map[string]any{
-		"sessionId": sessionID,
-		"answer":    dResp.Answer,
-	}, 0)
+	log.Warn("helper spawned but did not connect within 10s")
+	return nil
 }
 
 // spawnHelperForDesktop spawns a user helper in the target session.
@@ -137,29 +163,42 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 	}
 
 	if targetSession == "" {
+		// Prefer the physical console session (WTSGetActiveConsoleSessionId).
+		// This avoids spawning into a disconnected RDP session.
+		consoleID := sessionbroker.GetConsoleSessionID()
+
 		detector := sessionbroker.NewSessionDetector()
 		detected, err := detector.ListSessions()
 		if err != nil {
 			return fmt.Errorf("failed to list sessions: %w", err)
 		}
-		// Prefer active sessions, fall back to connected (lock screen after reboot).
-		var fallback string
+
+		var consoleFallback, activeFallback, connectedFallback string
 		for _, ds := range detected {
 			if ds.Type == "services" {
 				continue
 			}
-			if ds.State == "active" {
-				targetSession = ds.Session
-				break
+			// Console session is always preferred
+			if ds.Session == consoleID && (ds.State == "active" || ds.State == "connected") {
+				consoleFallback = ds.Session
 			}
-			if ds.State == "connected" && fallback == "" {
-				fallback = ds.Session
+			if ds.State == "active" && activeFallback == "" {
+				activeFallback = ds.Session
+			}
+			if ds.State == "connected" && connectedFallback == "" {
+				connectedFallback = ds.Session
 			}
 		}
-		if targetSession == "" {
-			targetSession = fallback
-		}
-		if targetSession == "" {
+
+		// Priority: console > any active > any connected
+		switch {
+		case consoleFallback != "":
+			targetSession = consoleFallback
+		case activeFallback != "":
+			targetSession = activeFallback
+		case connectedFallback != "":
+			targetSession = connectedFallback
+		default:
 			return fmt.Errorf("no active or connected non-services session found")
 		}
 	}

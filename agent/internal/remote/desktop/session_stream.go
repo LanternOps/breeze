@@ -3,6 +3,7 @@ package desktop
 import (
 	"fmt"
 	"log/slog"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +33,17 @@ func (s *Session) startStreaming() {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					buf := make([]byte, 4096)
+					n := runtime.Stack(buf, false)
+					slog.Error("capture loop panic (session will stop)",
+						"session", s.id,
+						"panic", fmt.Sprintf("%v", r),
+						"stack", string(buf[:n]),
+					)
+				}
+			}()
 			s.captureLoop()
 		}()
 		s.wg.Add(1)

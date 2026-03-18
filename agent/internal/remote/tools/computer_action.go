@@ -39,6 +39,30 @@ func ComputerActionWithCapture(payload map[string]any, capFn CaptureFunc) Comman
 	captureAfter := GetPayloadBool(payload, "captureAfter", true)
 	captureDelayMs := GetPayloadInt(payload, "captureDelayMs", 500)
 
+	// The AI sends coordinates in screenshot image space (e.g., 1920x1080
+	// after scaling). If the actual screen is larger (e.g., 2560x1440),
+	// we need to scale the coordinates up. The AI can provide the image
+	// dimensions via coordinateSpaceWidth/Height so we know what to scale from.
+	coordW := GetPayloadInt(payload, "coordinateSpaceWidth", 0)
+	coordH := GetPayloadInt(payload, "coordinateSpaceHeight", 0)
+	if coordW > 0 && coordH > 0 {
+		// Get actual screen resolution for the target monitor
+		screenW, screenH := desktop.GetScreenResolution(monitor)
+		if screenW > 0 && screenH > 0 && (screenW != coordW || screenH != coordH) {
+			scaleX := float64(screenW) / float64(coordW)
+			scaleY := float64(screenH) / float64(coordH)
+			x = int(float64(x) * scaleX)
+			y = int(float64(y) * scaleY)
+			slog.Debug("scaled coordinates from image to screen space",
+				"origX", GetPayloadInt(payload, "x", 0),
+				"origY", GetPayloadInt(payload, "y", 0),
+				"scaledX", x, "scaledY", y,
+				"coordSpace", fmt.Sprintf("%dx%d", coordW, coordH),
+				"screenSpace", fmt.Sprintf("%dx%d", screenW, screenH),
+			)
+		}
+	}
+
 	// Clamp capture delay
 	if captureDelayMs < 0 {
 		captureDelayMs = 0
@@ -112,9 +136,19 @@ func executeInputAction(action string, x, y int, text, key string, modifiers []s
 		if text == "" {
 			return fmt.Errorf("text field is required for type action")
 		}
+		// Prefer TypeChar (Unicode input) for each character — handles all
+		// characters including ":", "!", "@", non-ASCII, etc. Fall back to
+		// SendKeyPress for platforms without TypeChar support.
+		typer, hasTyper := input.(desktop.TypeCharHandler)
 		for _, ch := range text {
-			if err := input.SendKeyPress(string(ch), nil); err != nil {
-				return fmt.Errorf("failed typing character %q: %w", string(ch), err)
+			if hasTyper {
+				if err := typer.TypeChar(ch); err != nil {
+					return fmt.Errorf("failed typing character %q: %w", string(ch), err)
+				}
+			} else {
+				if err := input.SendKeyPress(string(ch), nil); err != nil {
+					return fmt.Errorf("failed typing character %q: %w", string(ch), err)
+				}
 			}
 		}
 		return nil
@@ -161,6 +195,9 @@ func captureScreenshotWithFn(monitor int, capFn CaptureFunc) (*ScreenshotRespons
 	img, err = capturer.Capture()
 	if err != nil {
 		return nil, fmt.Errorf("failed to capture screen: %w", err)
+	}
+	if img == nil {
+		return nil, fmt.Errorf("capturer returned nil image")
 	}
 
 	width, height, err = capturer.GetScreenBounds()

@@ -113,6 +113,7 @@ type Session struct {
 	lastEncodedFrame []byte
 	// Nanoseconds since epoch of the last successful video sample write.
 	lastVideoWriteUnixNano atomic.Int64
+
 }
 
 // SessionManager manages remote desktop sessions
@@ -224,6 +225,11 @@ func (m *SessionManager) CaptureScreenshot(displayIndex int) (*image.RGBA, int, 
 		return nil, 0, 0, ErrNoActiveSession
 	}
 
+	// Force a desktop repaint so DXGI has a dirty frame, then capture it.
+	// The streaming loop runs at 60fps and consumes DXGI frames before
+	// a one-shot Capture() can grab one, so we force new content.
+	forceDesktopRepaint()
+
 	target.mu.RLock()
 	cap := target.capturer
 	target.mu.RUnlock()
@@ -232,19 +238,25 @@ func (m *SessionManager) CaptureScreenshot(displayIndex int) (*image.RGBA, int, 
 		return nil, 0, 0, ErrNoActiveSession
 	}
 
-	img, err := cap.Capture()
-	if err != nil {
-		return nil, 0, 0, fmt.Errorf("capture from active session: %w", err)
+	// Retry a few times — the repaint needs a moment to produce a DXGI frame.
+	var img *image.RGBA
+	var err error
+	for attempt := 0; attempt < 8; attempt++ {
+		img, err = cap.Capture()
+		if err != nil {
+			return nil, 0, 0, fmt.Errorf("capture from active session: %w", err)
+		}
+		if img != nil {
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
 	}
 	if img == nil {
-		return nil, 0, 0, fmt.Errorf("capture from active session: no frame available")
+		return nil, 0, 0, fmt.Errorf("capture from active session: no frame after retries")
 	}
 
 	w, h, err := cap.GetScreenBounds()
 	if err != nil {
-		// Image is guaranteed non-nil (checked above), use its dimensions
-		slog.Debug("GetScreenBounds failed, using image dimensions",
-			"error", err.Error(), "width", img.Bounds().Dx(), "height", img.Bounds().Dy())
 		w = img.Bounds().Dx()
 		h = img.Bounds().Dy()
 	}
