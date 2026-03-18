@@ -206,35 +206,56 @@ func (b *Broker) SessionCount() int {
 	return len(b.sessions)
 }
 
-// FindCapableSession returns the first connected session whose helper reports
+// FindCapableSession returns the best connected session whose helper reports
 // the given capability (e.g., "capture"). If targetWinSession is non-empty,
-// only sessions in that Windows session are considered.
+// only sessions in that Windows session are considered. Otherwise, the console
+// session (physical monitor) is preferred over RDP sessions, and disconnected
+// sessions are skipped.
 func (b *Broker) FindCapableSession(capability string, targetWinSession string) *Session {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	for _, s := range b.sessions {
-		if targetWinSession != "" && targetWinSession != "0" && s.WinSessionID != targetWinSession {
-			continue
-		}
+	// When no target specified, prefer the console session (physical display).
+	if targetWinSession == "" || targetWinSession == "0" {
+		targetWinSession = GetConsoleSessionID()
+	}
+
+	hasCapability := func(s *Session) bool {
 		if s.Capabilities == nil {
-			continue
+			return false
 		}
 		switch capability {
 		case "capture":
-			if s.Capabilities.CanCapture {
-				return s
-			}
+			return s.Capabilities.CanCapture
 		case "clipboard":
-			if s.Capabilities.CanClipboard {
-				return s
-			}
+			return s.Capabilities.CanClipboard
 		case "notify":
-			if s.Capabilities.CanNotify {
-				return s
-			}
+			return s.Capabilities.CanNotify
+		}
+		return false
+	}
+
+	// First pass: find a capable session in the target (console) session.
+	for _, s := range b.sessions {
+		if s.WinSessionID != targetWinSession {
+			continue
+		}
+		if hasCapability(s) {
+			return s
 		}
 	}
+
+	// Second pass: fall back to any capable session that isn't disconnected.
+	for _, s := range b.sessions {
+		if !hasCapability(s) {
+			continue
+		}
+		if IsSessionDisconnected(s.WinSessionID) {
+			continue
+		}
+		return s
+	}
+
 	return nil
 }
 

@@ -63,6 +63,7 @@ func (c *Client) Run() error {
 		return fmt.Errorf("connect: %w", err)
 	}
 	defer c.conn.Close()
+	defer c.desktopMgr.stopAll() // Release DXGI/COM handles on any exit path
 
 	if err := c.authenticate(); err != nil {
 		return fmt.Errorf("authenticate: %w", err)
@@ -232,31 +233,31 @@ func (c *Client) commandLoop() error {
 			// Response to our keepalive ping — no action needed
 
 		case ipc.TypeCommand:
-			go c.handleCommand(env)
+			safeGo("command", func() { c.handleCommand(env) })
 
 		case ipc.TypeNotify:
-			go c.handleNotify(env)
+			safeGo("notify", func() { c.handleNotify(env) })
 
 		case ipc.TypeTrayUpdate:
-			go c.handleTrayUpdate(env)
+			safeGo("tray_update", func() { c.handleTrayUpdate(env) })
 
 		case ipc.TypeDesktopStart:
-			go c.handleDesktopStart(env)
+			safeGo("desktop_start", func() { c.handleDesktopStart(env) })
 
 		case ipc.TypeDesktopStop:
-			go c.handleDesktopStop(env)
+			safeGo("desktop_stop", func() { c.handleDesktopStop(env) })
 
 		case ipc.TypeDesktopInput:
-			go c.handleDesktopInput(env)
+			safeGo("desktop_input", func() { c.handleDesktopInput(env) })
 
 		case ipc.TypeClipboardGet:
-			go c.handleClipboardGet(env)
+			safeGo("clipboard_get", func() { c.handleClipboardGet(env) })
 
 		case ipc.TypeClipboardSet:
-			go c.handleClipboardSet(env)
+			safeGo("clipboard_set", func() { c.handleClipboardSet(env) })
 
 		case ipc.TypeLaunchProcess:
-			go c.handleLaunchProcess(env)
+			safeGo("launch_process", func() { c.handleLaunchProcess(env) })
 
 		case ipc.TypeSASResponse:
 			if !c.resolvePendingResponse(env) {
@@ -323,6 +324,27 @@ func (c *Client) closePendingResponses() {
 	for _, ch := range chans {
 		close(ch)
 	}
+}
+
+// safeGo runs fn in a goroutine with panic recovery. If fn panics, the panic
+// is logged with a stack trace instead of crashing the entire helper process.
+// This prevents Windows API / COM / DXGI panics from killing the IPC pipe and
+// leaving GPU resources locked.
+func safeGo(name string, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				buf := make([]byte, 4096)
+				n := runtime.Stack(buf, false)
+				log.Error("recovered panic in handler",
+					"handler", name,
+					"panic", fmt.Sprintf("%v", r),
+					"stack", string(buf[:n]),
+				)
+			}
+		}()
+		fn()
+	}()
 }
 
 func (c *Client) handleCommand(env *ipc.Envelope) {

@@ -119,6 +119,12 @@ func (m *mftEncoder) createSample(nv12 []byte) (uintptr, error) {
 		return 0, fmt.Errorf("buffer Lock: %w", err)
 	}
 
+	if pData == 0 {
+		comCall(pBuffer, vtblBufUnlock)
+		comRelease(pBuffer)
+		return 0, fmt.Errorf("buffer Lock returned nil pointer")
+	}
+
 	// Copy NV12 data into the buffer
 	dst := unsafe.Slice((*byte)(unsafe.Pointer(pData)), nv12Size)
 	copy(dst, nv12)

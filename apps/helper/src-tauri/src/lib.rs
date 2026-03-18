@@ -24,6 +24,7 @@ pub struct AgentConfig {
     pub agent_id: String,
     pub has_mtls: bool,
     pub os_username: String,
+    pub helper_version: String,
 }
 
 /// Internal struct that also holds the raw PEM material (never sent to frontend).
@@ -338,6 +339,7 @@ async fn read_agent_config() -> Result<AgentConfig, String> {
         agent_id: state.config.agent_id.clone(),
         has_mtls: state.config.mtls_cert_pem.is_some() && state.config.mtls_key_pem.is_some(),
         os_username: get_os_username(),
+        helper_version: env!("CARGO_PKG_VERSION").to_string(),
     })
 }
 
@@ -704,6 +706,12 @@ pub fn run() {
             // Load initial config and build tray context menu
             let config = load_helper_config();
             if let Some(tray) = app.tray_by_id("main") {
+                // Set tray tooltip with version
+                let _ = tray.set_tooltip(Some(&format!(
+                    "Breeze Helper v{}",
+                    env!("CARGO_PKG_VERSION")
+                )));
+
                 // Build and set the context menu (shown on right-click)
                 match build_tray_menu(&handle, &config) {
                     Ok(menu) => {

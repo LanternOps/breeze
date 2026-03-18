@@ -12,6 +12,7 @@ interface AgentConfig {
   agent_id: string;
   has_mtls?: boolean;
   os_username?: string;
+  helper_version?: string;
 }
 
 interface ChatMessage {

@@ -46,5 +46,13 @@ type InputHandler interface {
 	HandleEvent(event InputEvent) error
 }
 
+// TypeCharHandler is an optional interface for input handlers that support
+// typing arbitrary Unicode characters directly (e.g., via KEYEVENTF_UNICODE
+// on Windows). Used by the "type" action for characters that don't have VK
+// code mappings (like ":", "!", "@", non-ASCII characters).
+type TypeCharHandler interface {
+	TypeChar(ch rune) error
+}
+
 // NewInputHandler creates a platform-specific input handler
 // Implementation is in input_*.go files

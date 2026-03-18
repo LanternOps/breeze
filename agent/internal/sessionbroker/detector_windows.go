@@ -19,10 +19,12 @@ func NewSessionDetector() SessionDetector {
 }
 
 var (
-	modWtsapi32            = windows.NewLazySystemDLL("wtsapi32.dll")
-	procWTSEnumerateSessions = modWtsapi32.NewProc("WTSEnumerateSessionsW")
-	procWTSFreeMemory        = modWtsapi32.NewProc("WTSFreeMemory")
-	procWTSQuerySessionInfo  = modWtsapi32.NewProc("WTSQuerySessionInformationW")
+	modWtsapi32                    = windows.NewLazySystemDLL("wtsapi32.dll")
+	modKernel32ForWts              = windows.NewLazySystemDLL("kernel32.dll")
+	procWTSEnumerateSessions       = modWtsapi32.NewProc("WTSEnumerateSessionsW")
+	procWTSFreeMemory              = modWtsapi32.NewProc("WTSFreeMemory")
+	procWTSQuerySessionInfo        = modWtsapi32.NewProc("WTSQuerySessionInformationW")
+	procGetActiveConsoleSessionId  = modKernel32ForWts.NewProc("WTSGetActiveConsoleSessionId")
 )
 
 const (
@@ -194,6 +196,17 @@ func (d *windowsDetector) querySessionUint32(sessionID uint32, infoClass uint32)
 
 	val := *(*uint32)(unsafe.Pointer(buf))
 	return val, true
+}
+
+// GetConsoleSessionID returns the Windows session ID attached to the physical
+// console (monitor). Returns "0" if the API call fails. This is the session
+// that remote desktop should prefer for capture and input injection.
+func GetConsoleSessionID() string {
+	ret, _, _ := procGetActiveConsoleSessionId.Call()
+	if ret == 0xFFFFFFFF { // API returns 0xFFFFFFFF on failure
+		return "0"
+	}
+	return fmt.Sprintf("%d", ret)
 }
 
 func wtsStateString(state uint32) string {

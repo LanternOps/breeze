@@ -27,40 +27,9 @@ func handleTakeScreenshot(h *Heartbeat, cmd Command) tools.CommandResult {
 }
 
 // executeToolViaHelper sends a screenshot/computer_action command to the user
-// helper process via IPC and returns the result. The helper runs in the user
-// session and has access to the display and input APIs.
+// helper process via IPC and returns the result. If the helper crashes, it
+// automatically respawns and retries once.
 func (h *Heartbeat) executeToolViaHelper(cmdType string, payload map[string]any, start time.Time) tools.CommandResult {
-	session := h.sessionBroker.FindCapableSession("capture", "")
-	if session == nil {
-		// Try spawning a helper (use per-session lock for auto-detect "")
-		mu := sessionSpawnMu("")
-		mu.Lock()
-		session = h.sessionBroker.FindCapableSession("capture", "")
-		if session == nil {
-			if err := h.spawnHelperForDesktop(""); err != nil {
-				mu.Unlock()
-				return tools.NewErrorResult(
-					fmt.Errorf("no user helper available for %s (spawn failed: %w)", cmdType, err),
-					time.Since(start).Milliseconds(),
-				)
-			}
-			for i := 0; i < 10; i++ {
-				time.Sleep(500 * time.Millisecond)
-				session = h.sessionBroker.FindCapableSession("capture", "")
-				if session != nil {
-					break
-				}
-			}
-		}
-		mu.Unlock()
-		if session == nil {
-			return tools.NewErrorResult(
-				fmt.Errorf("helper spawned but did not connect within 5s for %s", cmdType),
-				time.Since(start).Milliseconds(),
-			)
-		}
-	}
-
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
 		return tools.NewErrorResult(
@@ -69,54 +38,73 @@ func (h *Heartbeat) executeToolViaHelper(cmdType string, payload map[string]any,
 		)
 	}
 
-	ipcCmd := ipc.IPCCommand{
-		CommandID: fmt.Sprintf("%s-%d", cmdType, time.Now().UnixNano()),
-		Type:      cmdType,
-		Payload:   payloadJSON,
-	}
-
-	resp, err := session.SendCommand(ipcCmd.CommandID, ipc.TypeCommand, ipcCmd, 30*time.Second)
-	if err != nil {
-		return tools.NewErrorResult(
-			fmt.Errorf("IPC %s failed: %w", cmdType, err),
-			time.Since(start).Milliseconds(),
-		)
-	}
-	if resp.Error != "" {
-		return tools.CommandResult{
-			Status:     "failed",
-			Error:      resp.Error,
-			DurationMs: time.Since(start).Milliseconds(),
+	const maxAttempts = 2
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		session := h.findOrSpawnHelper("")
+		if session == nil {
+			return tools.NewErrorResult(
+				fmt.Errorf("no user helper available for %s after spawn attempt", cmdType),
+				time.Since(start).Milliseconds(),
+			)
 		}
-	}
 
-	// Parse the IPCCommandResult from the response
-	var ipcResult ipc.IPCCommandResult
-	if err := json.Unmarshal(resp.Payload, &ipcResult); err != nil {
-		return tools.NewErrorResult(
-			fmt.Errorf("failed to unmarshal %s IPC response: %w", cmdType, err),
-			time.Since(start).Milliseconds(),
-		)
-	}
-
-	if ipcResult.Status != "completed" {
-		return tools.CommandResult{
-			Status:     ipcResult.Status,
-			Error:      ipcResult.Error,
-			DurationMs: time.Since(start).Milliseconds(),
+		ipcCmd := ipc.IPCCommand{
+			CommandID: fmt.Sprintf("%s-%d", cmdType, time.Now().UnixNano()),
+			Type:      cmdType,
+			Payload:   payloadJSON,
 		}
+
+		resp, err := session.SendCommand(ipcCmd.CommandID, ipc.TypeCommand, ipcCmd, 15*time.Second)
+		if err != nil {
+			if attempt < maxAttempts-1 {
+				log.Warn("IPC tool command failed, retrying with new helper",
+					"cmdType", cmdType, "attempt", attempt+1, "error", err.Error())
+				continue
+			}
+			return tools.NewErrorResult(
+				fmt.Errorf("IPC %s failed after %d attempts: %w", cmdType, maxAttempts, err),
+				time.Since(start).Milliseconds(),
+			)
+		}
+
+		if resp.Error != "" {
+			return tools.CommandResult{
+				Status:     "failed",
+				Error:      resp.Error,
+				DurationMs: time.Since(start).Milliseconds(),
+			}
+		}
+
+		// Parse the IPCCommandResult from the response
+		var ipcResult ipc.IPCCommandResult
+		if err := json.Unmarshal(resp.Payload, &ipcResult); err != nil {
+			return tools.NewErrorResult(
+				fmt.Errorf("failed to unmarshal %s IPC response: %w", cmdType, err),
+				time.Since(start).Milliseconds(),
+			)
+		}
+
+		if ipcResult.Status != "completed" {
+			return tools.CommandResult{
+				Status:     ipcResult.Status,
+				Error:      ipcResult.Error,
+				DurationMs: time.Since(start).Milliseconds(),
+			}
+		}
+
+		// The Result field contains the marshaled tools.CommandResult.
+		var innerResult tools.CommandResult
+		if err := json.Unmarshal(ipcResult.Result, &innerResult); err != nil {
+			return tools.NewErrorResult(
+				fmt.Errorf("failed to parse inner %s result: %w", cmdType, err),
+				time.Since(start).Milliseconds(),
+			)
+		}
+
+		innerResult.DurationMs = time.Since(start).Milliseconds()
+		return innerResult
 	}
 
-	// The Result field contains the marshaled tools.CommandResult.
-	// Extract the stdout from the inner result so the API gets the same format.
-	var innerResult tools.CommandResult
-	if err := json.Unmarshal(ipcResult.Result, &innerResult); err != nil {
-		return tools.NewErrorResult(
-			fmt.Errorf("failed to parse inner %s result: %w", cmdType, err),
-			time.Since(start).Milliseconds(),
-		)
-	}
-
-	innerResult.DurationMs = time.Since(start).Milliseconds()
-	return innerResult
+	// Unreachable — loop always returns
+	return tools.NewErrorResult(fmt.Errorf("IPC %s: unexpected exit", cmdType), time.Since(start).Milliseconds())
 }

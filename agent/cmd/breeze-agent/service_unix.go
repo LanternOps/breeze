@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"syscall"
 )
 
 // isWindowsService always returns false on non-Windows platforms.
@@ -24,6 +25,12 @@ func hasConsole() bool {
 // This is the case for launchd daemons and systemd services — both of which
 // redirect stdout/stderr to log files, leaving no character device.
 func isHeadless() bool { return !hasConsole() }
+
+// redirectStderr points fd 2 at the given file so that Go runtime panics
+// are captured in the log file.
+func redirectStderr(f *os.File) {
+	syscall.Dup2(int(f.Fd()), 2)
+}
 
 // runAsService is a no-op stub on non-Windows platforms.
 func runAsService(_ func() (*agentComponents, error)) error {

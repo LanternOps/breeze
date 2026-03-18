@@ -489,15 +489,21 @@ type FilesystemAnalysisResponse struct {
 	Errors              []FilesystemScanError          `json:"errors"`
 }
 
-// ScreenshotResponse represents the result of a screenshot capture
+// ScreenshotResponse represents the result of a screenshot capture.
+// When the image is scaled down (e.g., from 2560x1440 to 1920x1080),
+// Width/Height reflect the IMAGE dimensions while ScreenWidth/ScreenHeight
+// reflect the actual screen resolution. Mouse coordinates should be in
+// screen space (ScreenWidth x ScreenHeight), not image space.
 type ScreenshotResponse struct {
-	ImageBase64 string `json:"imageBase64"`
-	Width       int    `json:"width"`
-	Height      int    `json:"height"`
-	Format      string `json:"format"`
-	SizeBytes   int    `json:"sizeBytes"`
-	Monitor     int    `json:"monitor"`
-	CapturedAt  string `json:"capturedAt"`
+	ImageBase64  string `json:"imageBase64"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
+	ScreenWidth  int    `json:"screenWidth,omitempty"`  // Actual screen resolution
+	ScreenHeight int    `json:"screenHeight,omitempty"` // Use for mouse coordinate space
+	Format       string `json:"format"`
+	SizeBytes    int    `json:"sizeBytes"`
+	Monitor      int    `json:"monitor"`
+	CapturedAt   string `json:"capturedAt"`
 }
 
 // ComputerActionResponse represents the result of a computer action

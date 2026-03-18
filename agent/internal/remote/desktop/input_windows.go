@@ -19,6 +19,7 @@ var (
 	setcursorpos     = user32.NewProc("SetCursorPos")
 	mapvirtualkey    = user32.NewProc("MapVirtualKeyW")
 	getSystemMetrics = user32.NewProc("GetSystemMetrics")
+	vkKeyScanW       = user32.NewProc("VkKeyScanW")
 )
 
 const (
@@ -108,6 +109,11 @@ func (h *WindowsInputHandler) SetDisplayOffset(x, y int) {
 }
 
 func (h *WindowsInputHandler) SendMouseMove(x, y int) error {
+	// Ensure we're on the active input desktop. Without this, SendInput from
+	// a standalone InputHandler (e.g., computer_action) is silently dropped
+	// by Windows for DWM-managed elements (title bar, Start, taskbar).
+	h.ensureInputDesktop()
+
 	h.mu.Lock()
 	dragging := h.buttonDown
 	h.mu.Unlock()
@@ -158,12 +164,69 @@ func (h *WindowsInputHandler) screenToAbsolute(x, y int) (absX, absY int32, ok b
 	if !h.metricsValid {
 		return 0, 0, false
 	}
-	absX = int32(((x - h.cachedVX) * 65536) / h.cachedCW)
-	absY = int32(((y - h.cachedVY) * 65536) / h.cachedCH)
+	absX = int32(((x-h.cachedVX)*65535)/h.cachedCW + 1)
+	absY = int32(((y-h.cachedVY)*65535)/h.cachedCH + 1)
 	return absX, absY, true
 }
 
 func (h *WindowsInputHandler) SendMouseClick(x, y int, button string) error {
+	// Ensure we're on the active input desktop so DWM-managed elements
+	// (title bar buttons, Start menu, taskbar) receive the click.
+	h.ensureInputDesktop()
+
+	// Ensure screen metrics are cached for coordinate conversion.
+	h.mu.Lock()
+	if !h.metricsValid {
+		h.refreshScreenMetrics()
+	}
+	h.mu.Unlock()
+
+	// For non-drag clicks (like computer_action), send an atomic 3-event
+	// sequence: move + button_down + button_up in a single SendInput call.
+	// Many Windows UI frameworks (UWP, WinUI3, Electron) require position
+	// data on the button events themselves and process them as a batch.
+	// Separate SendInput calls can be split by the input queue, causing
+	// window chrome (close/minimize/maximize, taskbar, Start) to ignore clicks.
+	var downFlag, upFlag uint32
+	switch button {
+	case "right":
+		downFlag, upFlag = MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP
+	case "middle":
+		downFlag, upFlag = MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP
+	default:
+		downFlag, upFlag = MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP
+	}
+
+	// Try absolute coordinate path for atomic click
+	vx, vy, ok := h.screenToAbsolute(x, y)
+	if ok {
+		posFlags := MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
+		events := [3]input{
+			{inputType: INPUT_MOUSE},
+			{inputType: INPUT_MOUSE},
+			{inputType: INPUT_MOUSE},
+		}
+		// Event 0: move to position
+		events[0].mi.dx = vx
+		events[0].mi.dy = vy
+		events[0].mi.dwFlags = uint32(posFlags)
+		// Event 1: button down at position
+		events[1].mi.dx = vx
+		events[1].mi.dy = vy
+		events[1].mi.dwFlags = uint32(posFlags) | downFlag
+		// Event 2: button up at position
+		events[2].mi.dx = vx
+		events[2].mi.dy = vy
+		events[2].mi.dwFlags = uint32(posFlags) | upFlag
+
+		ret, _, _ := sendInput.Call(3, uintptr(unsafe.Pointer(&events[0])), unsafe.Sizeof(events[0]))
+		if ret != 3 {
+			slog.Debug("SendInput atomic click: not all events injected", "injected", ret)
+		}
+		return nil
+	}
+
+	// Fallback: SetCursorPos + separate events
 	if err := h.SendMouseMove(x, y); err != nil {
 		return err
 	}
@@ -259,6 +322,7 @@ func (h *WindowsInputHandler) SendMouseScroll(x, y int, delta int) error {
 }
 
 func (h *WindowsInputHandler) SendKeyPress(key string, modifiers []string) error {
+	h.ensureInputDesktop()
 	// Press modifiers
 	for _, mod := range modifiers {
 		h.sendModifierKey(mod, false)
@@ -345,6 +409,7 @@ func isExtendedKey(vk uint16) bool {
 }
 
 func (h *WindowsInputHandler) SendKeyDown(key string) error {
+	h.ensureInputDesktop()
 	vk := charToVK(key)
 	if vk == 0 {
 		slog.Warn("Unknown key — no VK mapping, input dropped", "key", key)
@@ -362,6 +427,29 @@ func (h *WindowsInputHandler) SendKeyDown(key string) error {
 	ret, _, _ := sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
 	if ret == 0 {
 		return fmt.Errorf("SendInput failed for key_down vk=0x%X", vk)
+	}
+	return nil
+}
+
+// TypeChar types a single Unicode character using KEYEVENTF_UNICODE.
+// This bypasses VK code mapping entirely and works for any character
+// including ":", "!", "@", non-ASCII, emoji, etc.
+func (h *WindowsInputHandler) TypeChar(ch rune) error {
+	down := input{inputType: INPUT_KEYBOARD}
+	ki := (*keybdInput)(unsafe.Pointer(&down.mi))
+	ki.wVk = 0
+	ki.wScan = uint16(ch)
+	ki.dwFlags = KEYEVENTF_UNICODE
+
+	up := input{inputType: INPUT_KEYBOARD}
+	kiUp := (*keybdInput)(unsafe.Pointer(&up.mi))
+	kiUp.wVk = 0
+	kiUp.wScan = uint16(ch)
+	kiUp.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
+
+	ret, _, _ := sendInput.Call(2, uintptr(unsafe.Pointer(&down)), unsafe.Sizeof(down))
+	if ret == 0 {
+		return fmt.Errorf("SendInput UNICODE failed for char U+%04X", ch)
 	}
 	return nil
 }
@@ -594,6 +682,18 @@ func charToVK(key string) uint16 {
 		return 0x90 // VK_NUMLOCK
 	case "scrolllock":
 		return 0x91 // VK_SCROLL
+
+	// Modifier keys (when sent as standalone key presses, not modifiers)
+	case "shift":
+		return VK_SHIFT
+	case "control", "ctrl":
+		return VK_CONTROL
+	case "alt":
+		return VK_MENU
+	case "meta", "super", "win", "lwin":
+		return VK_LWIN
+	case "rwin":
+		return 0x5C // VK_RWIN
 
 	// Misc
 	case "printscreen":

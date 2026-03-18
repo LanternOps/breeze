@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -15,6 +16,17 @@ import (
 )
 
 var procGetConsoleWindow = syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleWindow")
+
+// redirectStderr points the Windows STD_ERROR_HANDLE at the given file so that
+// Go runtime panics (which write to fd 2 / stderr) are captured in the log
+// instead of being silently lost to NUL when the process has no console.
+func redirectStderr(f *os.File) {
+	err := windows.SetStdHandle(windows.STD_ERROR_HANDLE, windows.Handle(f.Fd()))
+	if err != nil {
+		return
+	}
+	os.Stderr = f
+}
 
 // isWindowsService reports whether the process was started by the Windows
 // Service Control Manager. Must be called early — before any console I/O.
