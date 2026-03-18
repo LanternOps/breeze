@@ -198,7 +198,7 @@ export function SettingsScreen() {
       } else {
         Alert.alert('Error', 'Unable to open Terms of Service');
       }
-    } catch (_error) {
+    } catch {
       Alert.alert('Error', 'Failed to open Terms of Service');
     }
   };
@@ -211,7 +211,7 @@ export function SettingsScreen() {
       } else {
         Alert.alert('Error', 'Unable to open Privacy Policy');
       }
-    } catch (_error) {
+    } catch {
       Alert.alert('Error', 'Failed to open Privacy Policy');
     }
   };
