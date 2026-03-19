@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   Activity,
   Settings2,
@@ -7,7 +7,8 @@ import {
   Clock,
   Terminal,
   FolderOpen,
-  Monitor
+  Monitor,
+  Loader2
 } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
 
@@ -397,6 +398,10 @@ export default function RemoteToolsPage({
   const [services, setServices] = useState<WindowsService[]>([]);
   const [serviceLoading, setServiceLoading] = useState(false);
 
+  // Agent restart polling state
+  const [agentRestarting, setAgentRestarting] = useState(false);
+  const restartPollRef = useRef<{ interval: ReturnType<typeof setInterval>; timeout: ReturnType<typeof setTimeout> } | null>(null);
+
   // Event logs state
   const [eventLogs, setEventLogs] = useState<EventLog[]>([]);
   const [eventLoading, setEventLoading] = useState(false);
@@ -448,6 +453,16 @@ export default function RemoteToolsPage({
       mounted = false;
     };
   }, [deviceId, deviceName]);
+
+  // Cleanup restart polling on unmount
+  useEffect(() => {
+    return () => {
+      if (restartPollRef.current) {
+        clearInterval(restartPollRef.current.interval);
+        clearTimeout(restartPollRef.current.timeout);
+      }
+    };
+  }, []);
 
   // Process API calls
   const fetchProcesses = useCallback(async () => {
@@ -525,14 +540,46 @@ export default function RemoteToolsPage({
   }, [deviceId, fetchServices]);
 
   const handleRestartService = useCallback(async (name: string) => {
-    const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/services/${encodeURIComponent(name)}/restart`, {
-      method: 'POST'
-    });
+    const isAgent = ['breezeagent', 'breeze-agent', 'com.breeze.agent'].includes(name.toLowerCase());
+
+    const res = await fetchWithAuth(
+      `/system-tools/devices/${deviceId}/services/${encodeURIComponent(name)}/restart`,
+      { method: 'POST' }
+    );
+
     if (!res.ok) {
       const json = await res.json();
       throw new Error(json.error || 'Failed to restart service');
     }
-    await fetchServices();
+
+    if (isAgent) {
+      setAgentRestarting(true);
+      const interval = setInterval(async () => {
+        try {
+          const statusRes = await fetchWithAuth(`/devices/${deviceId}`);
+          if (statusRes.ok) {
+            const data = await statusRes.json();
+            if (data.status === 'online') {
+              clearInterval(interval);
+              if (restartPollRef.current) clearTimeout(restartPollRef.current.timeout);
+              restartPollRef.current = null;
+              setAgentRestarting(false);
+              fetchServices();
+            }
+          }
+        } catch {
+          // Device still offline, keep polling
+        }
+      }, 3000);
+      const timeout = setTimeout(() => {
+        clearInterval(interval);
+        restartPollRef.current = null;
+        setAgentRestarting(false);
+      }, 60000);
+      restartPollRef.current = { interval, timeout };
+    } else {
+      fetchServices();
+    }
   }, [deviceId, fetchServices]);
 
   // Event logs API calls
@@ -803,6 +850,17 @@ export default function RemoteToolsPage({
             onKillProcess={handleKillProcess}
             onGetProcess={handleGetProcess}
           />
+        )}
+        {activeTab === 'services' && agentRestarting && (
+          <div className="mb-4 flex items-center gap-3 rounded-md border border-blue-500/40 bg-blue-500/10 p-4">
+            <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
+            <div>
+              <h3 className="font-medium text-blue-700">Agent Restarting</h3>
+              <p className="text-sm text-blue-600">
+                The Breeze agent is restarting. The device will reconnect automatically...
+              </p>
+            </div>
+          </div>
         )}
         {activeTab === 'services' && isWindows && (
           <ServicesManager
