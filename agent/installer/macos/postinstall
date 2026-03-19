@@ -1,0 +1,41 @@
+#!/bin/bash
+# Breeze Agent macOS .pkg postinstall script
+# Runs as root after the installer places files on disk.
+
+set -e
+
+BINARY="/usr/local/bin/breeze-agent"
+CONFIG_DIR="/Library/Application Support/Breeze"
+LOG_DIR="/Library/Logs/Breeze"
+DAEMON_PLIST="/Library/LaunchDaemons/com.breeze.agent.plist"
+AGENT_PLIST="/Library/LaunchAgents/com.breeze.agent-user.plist"
+
+# Create directories
+mkdir -p "$CONFIG_DIR"
+chmod 0700 "$CONFIG_DIR"
+mkdir -p "$LOG_DIR"
+chmod 0755 "$LOG_DIR"
+
+# Remove quarantine attribute (binary is notarized but raw
+# Mach-O binaries cannot have the ticket stapled)
+xattr -d com.apple.quarantine "$BINARY" 2>/dev/null || true
+
+# Set permissions
+chmod 0755 "$BINARY"
+chmod 0644 "$DAEMON_PLIST"
+chmod 0644 "$AGENT_PLIST"
+
+# Create breeze group for IPC socket access (best-effort)
+if ! dscl . -read /Groups/breeze &>/dev/null; then
+    dscl . -create /Groups/breeze 2>/dev/null || true
+    dscl . -create /Groups/breeze PrimaryGroupID 399 2>/dev/null || true
+fi
+
+# Stop existing service if running
+launchctl bootout system/com.breeze.agent 2>/dev/null || true
+
+# Load the daemon (starts automatically via RunAtLoad)
+launchctl bootstrap system "$DAEMON_PLIST"
+
+echo "Breeze Agent installed and started."
+exit 0
