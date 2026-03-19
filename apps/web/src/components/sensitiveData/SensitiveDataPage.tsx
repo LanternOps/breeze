@@ -39,7 +39,7 @@ export default function SensitiveDataPage() {
     <div className="space-y-6">
       <div className="flex items-center gap-3">
         <ScanSearch className="h-6 w-6 text-primary" />
-        <h1 className="text-2xl font-bold">Sensitive Data Discovery</h1>
+        <h1 className="text-2xl font-bold">Sensitive Data</h1>
       </div>
 
       <div className="border-b">

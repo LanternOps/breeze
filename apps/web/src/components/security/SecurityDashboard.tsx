@@ -570,7 +570,7 @@ export default function SecurityDashboard({ timezone }: SecurityDashboardProps) 
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <h2 className="text-xl font-semibold">Security</h2>
+          <h1 className="text-xl font-semibold">Security</h1>
           <p className="text-sm text-muted-foreground">
             Track protection coverage, vulnerabilities, and policy compliance.
           </p>
