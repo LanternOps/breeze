@@ -412,7 +412,10 @@ jobs:
               --wait --timeout 30m
 
             rm -f "$ZIP_PATH"
-            echo "Notarized: $(basename "$bin")"
+
+            echo "Stapling notarization ticket to $(basename "$bin")..."
+            xcrun stapler staple "$bin"
+            echo "Notarized and stapled: $(basename "$bin")"
           done
 
       - name: Upload signed darwin/amd64
