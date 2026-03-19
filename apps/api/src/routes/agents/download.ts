@@ -366,6 +366,10 @@ fi
 info "Installing to \$INSTALL_DIR/\$BINARY_NAME..."
 mv "\$TMPFILE" "\$INSTALL_DIR/\$BINARY_NAME"
 chmod 755 "\$INSTALL_DIR/\$BINARY_NAME"
+# Remove macOS quarantine flag — the binary is notarized but stapling
+# is not supported for raw Mach-O binaries, so Gatekeeper online
+# validation can fail on older Macs or slow networks.
+xattr -d com.apple.quarantine "\$INSTALL_DIR/\$BINARY_NAME" 2>/dev/null || true
 trap - EXIT
 success "Installed \$INSTALL_DIR/\$BINARY_NAME"
 
