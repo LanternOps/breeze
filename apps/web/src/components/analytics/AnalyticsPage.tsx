@@ -712,7 +712,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <h2 className="text-xl font-semibold">Analytics</h2>
+          <h1 className="text-xl font-semibold">Analytics</h1>
           <p className="text-sm text-muted-foreground">Insights across your fleet and services</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
