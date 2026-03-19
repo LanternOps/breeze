@@ -621,7 +621,8 @@ export default function DevicesPage() {
 
                 const secretFlag = enrollmentSecret ? ` --enrollment-secret "${enrollmentSecret}"` : '';
                 const winCmd = `Invoke-WebRequest -Uri "${ghBase}/breeze-agent-windows-amd64.exe" -OutFile breeze-agent.exe; .\\breeze-agent.exe service install; .\\breeze-agent.exe enroll "${token}" --server "${apiUrl}"${secretFlag}; .\\breeze-agent.exe service start`;
-                const unixCmd = `curl -fsSL -o breeze-agent "${ghBase}/breeze-agent-$(uname -s | tr A-Z a-z)-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" && chmod +x breeze-agent && sudo ./breeze-agent service install && sudo breeze-agent enroll "${token}" --server "${apiUrl}"${secretFlag} && sudo breeze-agent service start`;
+                const macCmd = `curl -fsSL -o /tmp/breeze-agent.pkg "${apiUrl}/api/v1/agents/download/darwin/$(uname -m | sed 's/x86_64/amd64/;s/arm64/arm64/')/pkg" && sudo installer -pkg /tmp/breeze-agent.pkg -target / && sudo breeze-agent enroll "${token}" --server "${apiUrl}"${secretFlag} && sudo launchctl kickstart -k system/com.breeze.agent`;
+                const linuxCmd = `curl -fsSL -o breeze-agent "${ghBase}/breeze-agent-linux-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" && chmod +x breeze-agent && sudo mv breeze-agent /usr/local/bin/ && sudo breeze-agent service install && sudo breeze-agent enroll "${token}" --server "${apiUrl}"${secretFlag} && sudo breeze-agent service start`;
 
                 return (
                   <>
@@ -644,15 +645,33 @@ export default function DevicesPage() {
                     </div>
 
                     <div>
-                      <h3 className="text-sm font-semibold mb-3">macOS / Linux (Terminal)</h3>
+                      <h3 className="text-sm font-semibold mb-3">macOS (Terminal)</h3>
                       <div className="rounded-lg border bg-muted/30 p-4">
                         <div className="flex items-start justify-between gap-2">
                           <code className="text-xs font-mono text-muted-foreground break-all">
-                            {unixCmd}
+                            {macCmd}
                           </code>
                           <button
                             type="button"
-                            onClick={() => handleCopyCommand(unixCmd)}
+                            onClick={() => handleCopyCommand(macCmd)}
+                            className="flex-shrink-0 p-1 hover:bg-muted rounded"
+                          >
+                            <Copy className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div>
+                      <h3 className="text-sm font-semibold mb-3">Linux (Terminal)</h3>
+                      <div className="rounded-lg border bg-muted/30 p-4">
+                        <div className="flex items-start justify-between gap-2">
+                          <code className="text-xs font-mono text-muted-foreground break-all">
+                            {linuxCmd}
+                          </code>
+                          <button
+                            type="button"
+                            onClick={() => handleCopyCommand(linuxCmd)}
                             className="flex-shrink-0 p-1 hover:bg-muted rounded"
                           >
                             <Copy className="h-4 w-4" />
