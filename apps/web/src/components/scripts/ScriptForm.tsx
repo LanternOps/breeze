@@ -87,6 +87,14 @@ export default function ScriptForm({
   loading
 }: ScriptFormProps) {
   const [editorMounted, setEditorMounted] = useState(false);
+  const [editorReady, setEditorReady] = useState(false);
+
+  // Delay editor init by one frame so the container is fully laid out
+  // after Astro View Transitions swap the DOM.
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setEditorReady(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
 
   const {
     register,
@@ -310,24 +318,32 @@ export default function ScriptForm({
                     </div>
                   </div>
                 }>
-                  <Editor
-                    height="600px"
-                    language={monacoLanguage}
-                    value={field.value}
-                    onChange={(value) => field.onChange(value || '')}
-                    onMount={() => setEditorMounted(true)}
-                    theme="vs-dark"
-                    options={{
-                      minimap: { enabled: false },
-                      fontSize: 14,
-                      lineNumbers: 'on',
-                      scrollBeyondLastLine: false,
-                      wordWrap: 'on',
-                      automaticLayout: true,
-                      tabSize: 2,
-                      padding: { top: 12, bottom: 12 }
-                    }}
-                  />
+                  {editorReady ? (
+                    <Editor
+                      height="600px"
+                      language={monacoLanguage}
+                      value={field.value}
+                      onChange={(value) => field.onChange(value || '')}
+                      onMount={(editor) => {
+                        setEditorMounted(true);
+                        // Force relayout after View Transition
+                        requestAnimationFrame(() => editor.layout());
+                      }}
+                      theme="vs-dark"
+                      options={{
+                        minimap: { enabled: false },
+                        fontSize: 14,
+                        lineNumbers: 'on',
+                        scrollBeyondLastLine: false,
+                        wordWrap: 'on',
+                        automaticLayout: true,
+                        tabSize: 2,
+                        padding: { top: 12, bottom: 12 }
+                      }}
+                    />
+                  ) : (
+                    <div className="h-[600px] bg-[#1e1e1e]" />
+                  )}
                 </Suspense>
               )}
             />

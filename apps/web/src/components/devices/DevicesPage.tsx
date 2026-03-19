@@ -91,7 +91,7 @@ export default function DevicesPage() {
 
       // Fetch devices, orgs, and sites in parallel
       const [devicesResponse, orgsResponse, sitesResponse] = await Promise.all([
-        fetchWithAuth('/devices'),
+        fetchWithAuth('/devices?includeDecommissioned=true'),
         fetchWithAuth('/orgs'),
         fetchWithAuth('/orgs/sites')
       ]);

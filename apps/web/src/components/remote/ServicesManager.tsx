@@ -61,6 +61,17 @@ const startupTypeColors: Record<StartupType, string> = {
 
 const startupTypeOptions: StartupType[] = ['Automatic', 'Automatic (Delayed)', 'Manual', 'Disabled'];
 
+// The Breeze agent's own service name per platform
+export const AGENT_SERVICE_NAMES = new Set([
+  'breezeagent',       // Windows (case-insensitive match)
+  'breeze-agent',      // Linux systemd
+  'com.breeze.agent',  // macOS launchd
+]);
+
+export function isAgentService(name: string): boolean {
+  return AGENT_SERVICE_NAMES.has(name.toLowerCase());
+}
+
 export default function ServicesManager({
   deviceId,
   deviceName = 'Unknown Device',
@@ -273,7 +284,54 @@ export default function ServicesManager({
       </div>
 
       {/* Confirmation Dialog */}
-      {confirmAction && (
+      {confirmAction && isAgentService(confirmAction.serviceName) && confirmAction.type === 'stop' && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
+            <h3 className="text-lg font-semibold">Action Blocked</h3>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Stopping the Breeze agent will take this device offline and make it unreachable.
+              Use Restart instead.
+            </p>
+            <div className="mt-4 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setConfirmAction(null)}
+                className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {confirmAction && isAgentService(confirmAction.serviceName) && confirmAction.type === 'restart' && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
+            <h3 className="text-lg font-semibold">Confirm Action</h3>
+            <p className="mt-2 text-sm text-muted-foreground">
+              This will restart the Breeze agent. The device will briefly go offline and
+              reconnect automatically. Continue?
+            </p>
+            <div className="mt-4 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setConfirmAction(null)}
+                className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleAction(confirmAction.type, confirmAction.serviceName)}
+                className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+              >
+                Restart Service
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {confirmAction && !isAgentService(confirmAction.serviceName) && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
             <h3 className="text-lg font-semibold">Confirm Action</h3>
@@ -427,8 +485,8 @@ export default function ServicesManager({
                                   serviceDisplayName: service.displayName
                                 })
                               }
-                              disabled={service.status === 'Stopped'}
-                              title="Stop Service"
+                              disabled={service.status === 'Stopped' || isAgentService(service.name)}
+                              title={isAgentService(service.name) ? 'Cannot stop the Breeze agent' : 'Stop Service'}
                               className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:cursor-not-allowed disabled:opacity-30"
                             >
                               <Square className="h-4 w-4 text-red-600" />

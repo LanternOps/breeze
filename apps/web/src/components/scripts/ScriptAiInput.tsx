@@ -47,6 +47,7 @@ export default function ScriptAiInput() {
         />
         {isStreaming ? (
           <button
+            type="button"
             onClick={interruptResponse}
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border bg-destructive/10 text-destructive hover:bg-destructive/20"
             title="Stop generating"
@@ -55,6 +56,7 @@ export default function ScriptAiInput() {
           </button>
         ) : (
           <button
+            type="button"
             onClick={handleSend}
             disabled={!input.trim() || !sessionId}
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50"

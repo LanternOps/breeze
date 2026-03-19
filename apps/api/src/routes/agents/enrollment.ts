@@ -107,9 +107,11 @@ deviceLimitPartnerId = org.partnerId;
       )
       .limit(1);
 
+    // Auto-restore decommissioned devices on re-enrollment
     if (existingDevice && existingDevice.status === 'decommissioned') {
-      await db.update(enrollmentKeys).set({ usageCount: sql`${enrollmentKeys.usageCount} - 1` }).where(eq(enrollmentKeys.id, key.id));
-      throw new HTTPException(403, { message: 'Device has been decommissioned. Contact an administrator.' });
+      await db.update(devices)
+        .set({ status: 'offline', updatedAt: new Date() })
+        .where(eq(devices.id, existingDevice.id));
     }
 
     const device = await db.transaction(async (tx) => {

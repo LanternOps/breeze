@@ -306,7 +306,11 @@ detect_arch() {
 OS="$(detect_os)"
 ARCH="$(detect_arch)"
 INSTALL_DIR="/usr/local/bin"
-CONFIG_DIR="/etc/breeze"
+if [[ "\$OS" == "darwin" ]]; then
+  CONFIG_DIR="/Library/Application Support/Breeze"
+else
+  CONFIG_DIR="/etc/breeze"
+fi
 BINARY_NAME="breeze-agent"
 DOWNLOAD_URL="\${BREEZE_SERVER}/api/v1/agents/download/\${OS}/\${ARCH}"
 
@@ -427,6 +431,7 @@ SERVICEEOF
 
 install_launchd_service() {
   info "Installing launchd service..."
+  mkdir -p /Library/Logs/Breeze
   local plist_path="/Library/LaunchDaemons/com.breeze.agent.plist"
   cat > "\$plist_path" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -445,9 +450,9 @@ install_launchd_service() {
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/var/log/breeze-agent.log</string>
+    <string>/Library/Logs/Breeze/agent.log</string>
     <key>StandardErrorPath</key>
-    <string>/var/log/breeze-agent.err</string>
+    <string>/Library/Logs/Breeze/agent.err</string>
     <key>ThrottleInterval</key>
     <integer>10</integer>
 </dict>

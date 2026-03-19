@@ -145,7 +145,7 @@ coreRoutes.get(
     }
 
     // Exclude decommissioned by default unless explicitly requested
-    if (!query.status) {
+    if (!query.status && query.includeDecommissioned !== 'true') {
       conditions.push(sql`${devices.status} != 'decommissioned'`);
     }
 
