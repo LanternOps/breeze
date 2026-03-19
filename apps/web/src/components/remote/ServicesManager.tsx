@@ -62,13 +62,13 @@ const startupTypeColors: Record<StartupType, string> = {
 const startupTypeOptions: StartupType[] = ['Automatic', 'Automatic (Delayed)', 'Manual', 'Disabled'];
 
 // The Breeze agent's own service name per platform
-const AGENT_SERVICE_NAMES = new Set([
+export const AGENT_SERVICE_NAMES = new Set([
   'breezeagent',       // Windows (case-insensitive match)
   'breeze-agent',      // Linux systemd
   'com.breeze.agent',  // macOS launchd
 ]);
 
-function isAgentService(name: string): boolean {
+export function isAgentService(name: string): boolean {
   return AGENT_SERVICE_NAMES.has(name.toLowerCase());
 }
 

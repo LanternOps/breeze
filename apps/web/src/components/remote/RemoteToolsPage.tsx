@@ -14,7 +14,7 @@ import { fetchWithAuth } from '@/stores/auth';
 
 // Import actual components
 import ProcessManager, { type Process, type ProcessStatus } from './ProcessManager';
-import ServicesManager, { type WindowsService, type ServiceStatus, type StartupType } from './ServicesManager';
+import ServicesManager, { type WindowsService, type ServiceStatus, type StartupType, isAgentService } from './ServicesManager';
 import EventViewer, { type EventFilter, type EventLog, type EventLogEntry, type EventLevel } from './EventViewer';
 import ScheduledTasks, { type ScheduledTask, type TaskDetails, type TaskHistory, type TaskStatus } from './ScheduledTasks';
 import RegistryEditor from './RegistryEditor';
@@ -540,7 +540,7 @@ export default function RemoteToolsPage({
   }, [deviceId, fetchServices]);
 
   const handleRestartService = useCallback(async (name: string) => {
-    const isAgent = ['breezeagent', 'breeze-agent', 'com.breeze.agent'].includes(name.toLowerCase());
+    const isAgent = isAgentService(name);
 
     const res = await fetchWithAuth(
       `/system-tools/devices/${deviceId}/services/${encodeURIComponent(name)}/restart`,
@@ -567,14 +567,16 @@ export default function RemoteToolsPage({
               fetchServices();
             }
           }
-        } catch {
-          // Device still offline, keep polling
+        } catch (pollError) {
+          console.warn('[RemoteTools] Polling error during agent restart:', pollError);
         }
       }, 3000);
       const timeout = setTimeout(() => {
         clearInterval(interval);
         restartPollRef.current = null;
         setAgentRestarting(false);
+        console.error('[RemoteTools] Agent restart polling timed out after 60s');
+        fetchServices();
       }, 60000);
       restartPollRef.current = { interval, timeout };
     } else {
