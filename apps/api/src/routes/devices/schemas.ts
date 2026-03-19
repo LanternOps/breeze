@@ -6,6 +6,7 @@ export const listDevicesSchema = z.object({
   orgId: z.string().uuid().optional(),
   siteId: z.string().uuid().optional(),
   status: z.enum(['online', 'offline', 'maintenance', 'decommissioned']).optional(),
+  includeDecommissioned: z.enum(['true', 'false']).optional(),
   osType: z.enum(['windows', 'macos', 'linux']).optional(),
   search: z.string().optional()
 });

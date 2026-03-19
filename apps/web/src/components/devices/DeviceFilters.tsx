@@ -23,7 +23,8 @@ type DeviceFiltersProps = {
 const statusOptions: { value: DeviceStatus; label: string; color: string }[] = [
   { value: 'online', label: 'Online', color: 'bg-green-500' },
   { value: 'offline', label: 'Offline', color: 'bg-red-500' },
-  { value: 'maintenance', label: 'Maintenance', color: 'bg-yellow-500' }
+  { value: 'maintenance', label: 'Maintenance', color: 'bg-yellow-500' },
+  { value: 'decommissioned', label: 'Decommissioned', color: 'bg-slate-500' }
 ];
 
 const osOptions: { value: OSType; label: string }[] = [

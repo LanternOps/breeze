@@ -31,6 +31,8 @@ var (
 	cfgFile          string
 	serverURL        string
 	enrollmentSecret string
+	enrollSiteID     string
+	enrollDeviceRole string
 	helperRole       string
 )
 
@@ -91,6 +93,8 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is /etc/breeze/agent.yaml)")
 	rootCmd.PersistentFlags().StringVar(&serverURL, "server", "", "Breeze server URL")
 	enrollCmd.Flags().StringVar(&enrollmentSecret, "enrollment-secret", "", "Enrollment secret (AGENT_ENROLLMENT_SECRET on the server)")
+	enrollCmd.Flags().StringVar(&enrollSiteID, "site-id", "", "Site ID to enroll into (optional, overrides enrollment key default)")
+	enrollCmd.Flags().StringVar(&enrollDeviceRole, "device-role", "", "Device role override (e.g. workstation, server)")
 	userHelperCmd.Flags().StringVar(&helperRole, "role", "system", "Helper role: 'system' (desktop capture) or 'user' (script execution)")
 
 	rootCmd.AddCommand(runCmd)
@@ -387,7 +391,10 @@ func enrollDevice(enrollmentKey string) {
 		secret = os.Getenv("BREEZE_AGENT_ENROLLMENT_SECRET")
 	}
 
-	deviceRole := collectors.ClassifyDeviceRole(systemInfo, hardwareInfo)
+	deviceRole := enrollDeviceRole
+	if deviceRole == "" {
+		deviceRole = collectors.ClassifyDeviceRole(systemInfo, hardwareInfo)
+	}
 	fmt.Printf("Device role: %s\n", deviceRole)
 
 	enrollReq := &api.EnrollRequest{
