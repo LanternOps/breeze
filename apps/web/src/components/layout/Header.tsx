@@ -13,6 +13,7 @@ import {
 import OrgSwitcher from './OrgSwitcher';
 import NotificationCenter from './NotificationCenter';
 import CommandPalette from './CommandPalette';
+import HelpMenu from './HelpMenu';
 import { useAuthStore, apiLogout, fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
 
@@ -80,7 +81,7 @@ export default function Header() {
 
   return (
     <header className="flex h-16 items-center justify-between border-b bg-card px-6">
-      <div className="flex items-center gap-4">
+      <div className={`flex items-center gap-4 transition-opacity duration-150 ${mounted ? 'opacity-100' : 'opacity-0'}`}>
         {/* Organization Switcher */}
         <OrgSwitcher />
 
@@ -88,7 +89,7 @@ export default function Header() {
         <CommandPalette />
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className={`flex items-center gap-2 transition-opacity duration-150 ${mounted ? 'opacity-100' : 'opacity-0'}`}>
         {/* Notifications */}
         {mounted && isAuthenticated && <NotificationCenter />}
 
@@ -101,6 +102,9 @@ export default function Header() {
         >
           {mounted ? (darkMode ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />) : <Moon className="h-5 w-5" />}
         </button>
+
+        {/* Help Menu */}
+        {mounted && isAuthenticated && <HelpMenu />}
 
         {/* User Menu */}
         <div className="relative" ref={dropdownRef}>

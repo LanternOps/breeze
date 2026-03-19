@@ -14,6 +14,7 @@ export type User = {
 
 type UserListProps = {
   users: User[];
+  currentUserId?: string;
   onInvite?: () => void;
   onEdit?: (user: User) => void;
   onRemove?: (user: User) => void;
@@ -27,7 +28,7 @@ const statusStyles: Record<string, string> = {
   pending: 'bg-muted text-muted-foreground'
 };
 
-export default function UserList({ users, onInvite, onEdit, onRemove, onResendInvite }: UserListProps) {
+export default function UserList({ users, currentUserId, onInvite, onEdit, onRemove, onResendInvite }: UserListProps) {
   const [query, setQuery] = useState('');
 
   const filteredUsers = useMemo(() => {
@@ -130,14 +131,18 @@ export default function UserList({ users, onInvite, onEdit, onRemove, onResendIn
                     >
                       Edit
                     </button>
-                    <span className="text-muted-foreground">|</span>
-                    <button
-                      type="button"
-                      onClick={() => onRemove?.(user)}
-                      className="text-sm font-medium text-destructive hover:underline"
-                    >
-                      Remove
-                    </button>
+                    {user.id !== currentUserId && (
+                      <>
+                        <span className="text-muted-foreground">|</span>
+                        <button
+                          type="button"
+                          onClick={() => onRemove?.(user)}
+                          className="text-sm font-medium text-destructive hover:underline"
+                        >
+                          Remove
+                        </button>
+                      </>
+                    )}
                   </div>
                 </td>
               </tr>

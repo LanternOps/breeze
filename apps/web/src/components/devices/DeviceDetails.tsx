@@ -101,6 +101,8 @@ function formatOsVersion(os: OSType, osVersion: string): string {
   let v = osVersion;
   // Strip redundant "Microsoft Windows" prefix since osLabels already shows "Windows"
   v = v.replace(/^Microsoft Windows\s*/i, '');
+  // Strip kernel name prefix (e.g. "darwin 26.3.1" → "26.3.1")
+  v = v.replace(/^(darwin|linux)\s*/i, '');
   // Strip build/version numbers (e.g. "10.0.26200.7623 Build 26200.7623")
   v = v.replace(/\s*\d+\.\d+\.\d+[\d.]*\s*(Build\s*[\d.]+)?/i, '').trim();
   return v ? `${osLabels[os]} ${v}` : osLabels[os];
@@ -161,7 +163,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
             </div>
             <div>
               <div className="flex items-center gap-3">
-                <h1 className="text-2xl font-bold">{device.displayName || device.hostname}</h1>
+                <h1 className="text-2xl font-bold whitespace-nowrap">{device.displayName || device.hostname}</h1>
                 <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}>
                   {statusLabels[device.status]}
                 </span>
@@ -216,7 +218,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
                   <User className="h-4 w-4" />
                   Logged-in User
                 </div>
-                <p className="mt-2 text-2xl font-bold truncate" title={device.lastUser}>{device.lastUser || '—'}</p>
+                <p className="mt-2 text-lg font-bold truncate" title={device.lastUser || undefined}>{device.lastUser || '—'}</p>
               </div>
             </div>
 

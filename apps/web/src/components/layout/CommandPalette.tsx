@@ -233,7 +233,7 @@ const buildResultHref = (result: SearchResult): string => {
 
 export default function CommandPalette() {
   const [open, setOpen] = useState(false);
-  const [modifierLabel, setModifierLabel] = useState('Ctrl');
+  const [modifierLabel, setModifierLabel] = useState('');
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -249,8 +249,8 @@ export default function CommandPalette() {
   const showResults = trimmedQuery.length > 0;
 
   useEffect(() => {
-    if (typeof navigator !== 'undefined' && /mac/i.test(navigator.platform)) {
-      setModifierLabel('Cmd');
+    if (typeof navigator !== 'undefined') {
+      setModifierLabel(/mac/i.test(navigator.platform) ? 'Cmd' : 'Ctrl');
     }
   }, []);
 
@@ -539,7 +539,7 @@ export default function CommandPalette() {
         <Search className="h-4 w-4" />
         <span className="flex-1 text-left">Search devices, scripts, alerts, users, settings</span>
         <span className="rounded border bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">
-          {modifierLabel}+K
+          {modifierLabel ? `${modifierLabel}+K` : 'K'}
         </span>
       </button>
 

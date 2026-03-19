@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Monitor, Cpu, HardDrive, MemoryStick, Shield, Tag, Info, ListChecks, Pencil, Check, X } from 'lucide-react';
+import { Monitor, Cpu, HardDrive, MemoryStick, Shield, Tag, Info, ListChecks, Pencil, Check, X, ShieldCheck, AlertTriangle, CheckCircle2, XCircle } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatUptime } from '../../lib/utils';
 import {
@@ -42,6 +42,12 @@ type DeviceInfo = {
   deviceRoleSource?: string | null;
   tags?: string[];
   customFields?: Record<string, unknown>;
+  tccPermissions?: {
+    screenRecording: boolean;
+    accessibility: boolean;
+    fullDiskAccess: boolean;
+    checkedAt: string;
+  } | null;
   hardware?: {
     serialNumber?: string | null;
     manufacturer?: string | null;
@@ -79,6 +85,23 @@ function formatDate(dateString: string | null | undefined): string {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+const osTypeLabels: Record<string, string> = {
+  windows: 'Windows',
+  macos: 'macOS',
+  linux: 'Linux',
+};
+
+function formatOsType(raw: string | null | undefined): string {
+  if (!raw) return '—';
+  return osTypeLabels[raw.toLowerCase()] ?? raw;
+}
+
+function formatOsVersionForDisplay(raw: string | null | undefined): string {
+  if (!raw) return '—';
+  // Strip kernel name prefix (e.g. "darwin 26.3.1" → "26.3.1")
+  return raw.replace(/^(darwin|linux)\s+/i, '');
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
@@ -339,7 +362,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
     <div className="grid gap-6 lg:grid-cols-2">
       <Section title="System" icon={<Monitor className="h-4 w-4 text-muted-foreground" />}>
         <InfoRow label="Hostname" value={info?.hostname ?? '—'} />
-        <InfoRow label="Display Name" value={info?.displayName ?? '—'} />
+        <InfoRow label="Display Name" value={info?.displayName ?? 'Not set'} />
         <InfoRow label="Serial Number" value={hw?.serialNumber ?? '—'} />
         <InfoRow label="Manufacturer" value={hw?.manufacturer ?? '—'} />
         <InfoRow label="Model" value={hw?.model ?? '—'} />
@@ -430,8 +453,8 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
       </div>
 
       <Section title="Operating System" icon={<Info className="h-4 w-4 text-muted-foreground" />}>
-        <InfoRow label="OS Type" value={info?.osType ?? '—'} />
-        <InfoRow label="OS Version" value={info?.osVersion ?? '—'} />
+        <InfoRow label="OS Type" value={formatOsType(info?.osType)} />
+        <InfoRow label="OS Version" value={formatOsVersionForDisplay(info?.osVersion)} />
         <InfoRow label="OS Build" value={info?.osBuild ?? '—'} />
         <InfoRow label="Architecture" value={info?.architecture ?? '—'} />
       </Section>
@@ -465,6 +488,48 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
           <InfoRow label="Uptime" value={formatUptime(info?.uptimeSeconds)} />
           <InfoRow label="Logged-in User" value={info?.lastUser ?? '—'} />
         </Section>
+
+        {info?.osType === 'macos' && info?.tccPermissions && (
+          <div className="rounded-lg border bg-card p-6 shadow-sm">
+            <div className="flex items-center gap-2 mb-4">
+              <ShieldCheck className="h-4 w-4 text-muted-foreground" />
+              <h3 className="font-semibold">macOS Permissions</h3>
+            </div>
+            {(!info.tccPermissions.screenRecording || !info.tccPermissions.accessibility || !info.tccPermissions.fullDiskAccess) && (
+              <div className="mb-4 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+                <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-amber-600" />
+                <p className="text-sm text-amber-700 dark:text-amber-400">
+                  Some permissions are missing. The agent may not function fully until all permissions are granted in System Settings &gt; Privacy &amp; Security.
+                </p>
+              </div>
+            )}
+            <dl className="divide-y">
+              {([
+                ['Screen Recording', info.tccPermissions.screenRecording],
+                ['Accessibility', info.tccPermissions.accessibility],
+                ['Full Disk Access', info.tccPermissions.fullDiskAccess],
+              ] as const).map(([label, granted]) => (
+                <div key={label} className="flex justify-between py-2">
+                  <dt className="text-sm text-muted-foreground">{label}</dt>
+                  <dd className="text-sm font-medium">
+                    {granted ? (
+                      <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400">
+                        <CheckCircle2 className="h-4 w-4" /> Granted
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-red-600 dark:text-red-400">
+                        <XCircle className="h-4 w-4" /> Missing
+                      </span>
+                    )}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+            <p className="mt-3 text-xs text-muted-foreground">
+              Last checked: {formatDate(info.tccPermissions.checkedAt)}
+            </p>
+          </div>
+        )}
 
         {tags.length > 0 && (
           <div className="rounded-lg border bg-card p-6 shadow-sm">

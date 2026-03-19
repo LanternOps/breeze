@@ -42,6 +42,13 @@ export default function ForgotPasswordForm({
       })}
       className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
     >
+      <div className="space-y-1">
+        <h2 className="text-lg font-semibold">Reset your password</h2>
+        <p className="text-sm text-muted-foreground">
+          Enter your email address and we'll send you a link to reset your password.
+        </p>
+      </div>
+
       <div className="space-y-2">
         <label htmlFor="email" className="text-sm font-medium">
           Email

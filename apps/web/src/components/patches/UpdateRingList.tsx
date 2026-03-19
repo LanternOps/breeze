@@ -49,7 +49,7 @@ function formatDate(dateString?: string): string {
 }
 
 function ComplianceBadge({ percent }: { percent?: number }) {
-  if (percent === undefined) return <span className="text-muted-foreground">\u2014</span>;
+  if (percent === undefined) return <span className="text-muted-foreground">{"\u2014"}</span>;
 
   const color =
     percent >= 90
