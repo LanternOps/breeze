@@ -3,7 +3,7 @@ import { statSync, createReadStream } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { VALID_OS, VALID_ARCH } from './schemas';
 import { isS3Configured, getPresignedUrl } from '../../services/s3Storage';
-import { getBinarySource, getGithubAgentUrl, getGithubHelperUrl, HELPER_FILENAMES } from '../../services/binarySource';
+import { getBinarySource, getGithubAgentUrl, getGithubAgentPkgUrl, getGithubHelperUrl, HELPER_FILENAMES } from '../../services/binarySource';
 
 export const downloadRoutes = new Hono();
 
@@ -110,6 +110,25 @@ downloadRoutes.get('/download/:os/:arch', async (c) => {
       'Cache-Control': 'no-cache',
     },
   });
+});
+
+// ============================================
+// Agent .pkg Installer Download (macOS, public, no auth)
+// ============================================
+
+downloadRoutes.get('/download/:os/:arch/pkg', async (c) => {
+  const os = c.req.param('os');
+  const arch = c.req.param('arch');
+
+  if (os !== 'darwin') {
+    return c.json({ error: 'Installer packages are only available for macOS (darwin)' }, 400);
+  }
+
+  if (!VALID_ARCH.has(arch)) {
+    return c.json({ error: 'Invalid architecture', message: `Supported values: amd64, arm64. Got: ${arch}` }, 400);
+  }
+
+  return c.redirect(getGithubAgentPkgUrl(os, arch), 302);
 });
 
 // ============================================
@@ -313,6 +332,7 @@ else
 fi
 BINARY_NAME="breeze-agent"
 DOWNLOAD_URL="\${BREEZE_SERVER}/api/v1/agents/download/\${OS}/\${ARCH}"
+PKG_URL="\${BREEZE_SERVER}/api/v1/agents/download/\${OS}/\${ARCH}/pkg"
 
 info "Breeze RMM Agent Installer"
 info "  Server:       \$BREEZE_SERVER"
@@ -331,7 +351,62 @@ if ! command -v curl &>/dev/null; then
   fatal "curl is required but not installed. Install it and try again."
 fi
 
-# ----- Download binary -----
+# ----- macOS: use .pkg installer -----
+if [[ "\$OS" == "darwin" ]]; then
+  info "Downloading macOS installer package..."
+  TMPPKG="$(mktemp -d)/breeze-agent.pkg"
+  trap 'rm -rf "$(dirname "\$TMPPKG")"' EXIT
+
+  HTTP_CODE="$(curl -fsSL -w '%{http_code}' -o "\$TMPPKG" "\$PKG_URL" 2>/dev/null)" || true
+
+  if [[ "\$HTTP_CODE" != "200" ]]; then
+    fatal "Failed to download installer package (HTTP \$HTTP_CODE). Check that the server URL is correct."
+  fi
+
+  if [[ ! -s "\$TMPPKG" ]]; then
+    fatal "Downloaded package is empty. The installer may not be available for \$ARCH."
+  fi
+
+  success "Downloaded installer package ($(wc -c < "\$TMPPKG" | tr -d ' ') bytes)"
+
+  info "Installing Breeze Agent..."
+  installer -pkg "\$TMPPKG" -target /
+  success "Package installed (binary, launchd service, directories)"
+
+  rm -rf "$(dirname "\$TMPPKG")"
+  trap - EXIT
+
+  # Enroll agent
+  info "Enrolling agent with Breeze server..."
+  ENROLL_ARGS=(
+    enroll
+    --server "\$BREEZE_SERVER"
+    --enrollment-secret "\$BREEZE_ENROLLMENT_SECRET"
+  )
+  if [[ -n "\$BREEZE_SITE_ID" ]]; then
+    ENROLL_ARGS+=(--site-id "\$BREEZE_SITE_ID")
+  fi
+  if [[ -n "\$BREEZE_DEVICE_ROLE" ]]; then
+    ENROLL_ARGS+=(--device-role "\$BREEZE_DEVICE_ROLE")
+  fi
+
+  if ! "\$INSTALL_DIR/\$BINARY_NAME" "\${ENROLL_ARGS[@]}"; then
+    fatal "Enrollment failed. Check the server URL and enrollment secret."
+  fi
+  success "Agent enrolled successfully"
+
+  # Restart the service so it picks up the new enrollment config
+  launchctl kickstart -k system/com.breeze.agent 2>/dev/null || true
+
+  echo ""
+  success "Breeze agent installation complete!"
+  info "The device should appear in your Breeze dashboard within 60 seconds."
+  info "  Check status:  sudo launchctl list | grep breeze"
+  info "  View logs:     tail -f /Library/Logs/Breeze/agent.log"
+  exit 0
+fi
+
+# ----- Linux: download binary directly -----
 info "Downloading agent binary..."
 TMPFILE="$(mktemp)"
 trap 'rm -f "\$TMPFILE"' EXIT
@@ -342,7 +417,6 @@ if [[ "\$HTTP_CODE" != "200" ]]; then
   fatal "Failed to download agent binary (HTTP \$HTTP_CODE). Check that the server URL is correct and the binary is available."
 fi
 
-# Verify the download is not empty
 if [[ ! -s "\$TMPFILE" ]]; then
   fatal "Downloaded file is empty. The agent binary may not be built for \$OS/\$ARCH."
 fi
@@ -355,21 +429,12 @@ if command -v systemctl &>/dev/null && systemctl is-active --quiet breeze-agent 
   if ! systemctl stop breeze-agent 2>&1; then
     warn "Failed to stop existing service cleanly — continuing anyway"
   fi
-elif [ -f /Library/LaunchDaemons/com.breeze.agent.plist ]; then
-  info "Stopping existing Breeze Agent service..."
-  if ! launchctl unload /Library/LaunchDaemons/com.breeze.agent.plist 2>&1; then
-    warn "Failed to stop existing service cleanly — continuing anyway"
-  fi
 fi
 
 # ----- Install binary -----
 info "Installing to \$INSTALL_DIR/\$BINARY_NAME..."
 mv "\$TMPFILE" "\$INSTALL_DIR/\$BINARY_NAME"
 chmod 755 "\$INSTALL_DIR/\$BINARY_NAME"
-# Remove macOS quarantine flag — the binary is notarized but stapling
-# is not supported for raw Mach-O binaries, so Gatekeeper online
-# validation can fail on older Macs or slow networks.
-xattr -d com.apple.quarantine "\$INSTALL_DIR/\$BINARY_NAME" 2>/dev/null || true
 trap - EXIT
 success "Installed \$INSTALL_DIR/\$BINARY_NAME"
 
@@ -399,7 +464,7 @@ fi
 success "Agent enrolled successfully"
 
 # ----- Install service -----
-install_systemd_service() {
+if command -v systemctl &>/dev/null; then
   info "Installing systemd service..."
   cat > /etc/systemd/system/breeze-agent.service <<SERVICEEOF
 [Unit]
@@ -431,62 +496,15 @@ SERVICEEOF
   systemctl enable breeze-agent
   systemctl start breeze-agent
   success "systemd service installed and started"
-}
-
-install_launchd_service() {
-  info "Installing launchd service..."
-  mkdir -p /Library/Logs/Breeze
-  local plist_path="/Library/LaunchDaemons/com.breeze.agent.plist"
-  cat > "\$plist_path" <<PLISTEOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.breeze.agent</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>$INSTALL_DIR/$BINARY_NAME</string>
-        <string>run</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/Library/Logs/Breeze/agent.log</string>
-    <key>StandardErrorPath</key>
-    <string>/Library/Logs/Breeze/agent.err</string>
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
-</dict>
-</plist>
-PLISTEOF
-
-  chmod 644 "\$plist_path"
-  launchctl load "\$plist_path"
-  success "launchd service installed and started"
-}
-
-case "\$OS" in
-  linux)
-    if command -v systemctl &>/dev/null; then
-      install_systemd_service
-    else
-      warn "systemd not found. Please configure the agent to start on boot manually."
-      info "Run: $INSTALL_DIR/$BINARY_NAME run"
-    fi
-    ;;
-  darwin)
-    install_launchd_service
-    ;;
-esac
+else
+  warn "systemd not found. Please configure the agent to start on boot manually."
+  info "Run: $INSTALL_DIR/$BINARY_NAME run"
+fi
 
 echo ""
 success "Breeze agent installation complete!"
 info "The device should appear in your Breeze dashboard within 60 seconds."
-info "  Check status:  sudo systemctl status breeze-agent  (Linux)"
-info "                 sudo launchctl list | grep breeze    (macOS)"
-info "  View logs:     sudo journalctl -u breeze-agent -f  (Linux)"
+info "  Check status:  sudo systemctl status breeze-agent"
+info "  View logs:     sudo journalctl -u breeze-agent -f"
 `;
 }

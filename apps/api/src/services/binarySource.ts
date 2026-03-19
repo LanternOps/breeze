@@ -32,6 +32,11 @@ export function getGithubAgentUrl(os: string, arch: string): string {
   return `${githubDownloadBase()}/${filename}`;
 }
 
+export function getGithubAgentPkgUrl(os: string, arch: string): string {
+  const filename = `breeze-agent-${os}-${arch}.pkg`;
+  return `${githubDownloadBase()}/${filename}`;
+}
+
 export const VIEWER_FILENAMES: Record<string, string> = {
   macos: 'breeze-viewer-macos.dmg',
   windows: 'breeze-viewer-windows.msi',
