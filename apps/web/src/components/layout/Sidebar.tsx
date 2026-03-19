@@ -96,7 +96,6 @@ const operationsNav = [
 const reportingNav = [
   { name: 'Reports', href: '/reports', icon: FileText },
   { name: 'Analytics', href: '/analytics', icon: BarChart3 },
-  { name: 'Fleet Insights', href: '/fleet', icon: BrainCircuit },
   { name: 'Audit Trail', href: '/audit', icon: FileText },
   { name: 'Event Logs', href: '/logs', icon: ScrollText },
 ];

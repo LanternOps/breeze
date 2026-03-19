@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import UserList, { type User } from './UserList';
 import UserInviteForm, { type RoleOption } from './UserInviteForm';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'invite' | 'edit' | 'remove';
@@ -22,6 +22,7 @@ type Toast = {
 };
 
 export default function UsersPage() {
+  const currentUser = useAuthStore((s) => s.user);
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<RoleOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -277,6 +278,7 @@ export default function UsersPage() {
 
       <UserList
         users={users}
+        currentUserId={currentUser?.id}
         onInvite={handleInvite}
         onEdit={handleEdit}
         onRemove={handleRemove}

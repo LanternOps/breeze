@@ -402,7 +402,7 @@ export default function DeviceList({
         </div>
       )}
 
-      <div className="mt-6 rounded-md border">
+      <div className="mt-6 overflow-x-auto rounded-md border">
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -474,24 +474,32 @@ export default function DeviceList({
                     </span>
                   </td>
                   <td className="px-4 py-3 text-sm">
-                    <div className="flex items-center gap-2">
-                      <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
-                        <div
-                          className={`h-full rounded-full ${device.cpuPercent > 80 ? 'bg-red-500' : device.cpuPercent > 60 ? 'bg-yellow-500' : 'bg-green-500'} ${widthPercentClass(device.cpuPercent)}`}
-                        />
+                    {device.status === 'online' ? (
+                      <div className="flex items-center gap-2">
+                        <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
+                          <div
+                            className={`h-full rounded-full ${device.cpuPercent > 80 ? 'bg-red-500' : device.cpuPercent > 60 ? 'bg-yellow-500' : 'bg-green-500'} ${widthPercentClass(device.cpuPercent)}`}
+                          />
+                        </div>
+                        <span className="w-10 text-right">{device.cpuPercent}%</span>
                       </div>
-                      <span className="w-10 text-right">{device.cpuPercent}%</span>
-                    </div>
+                    ) : (
+                      <span className="text-muted-foreground">&mdash;</span>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-sm">
-                    <div className="flex items-center gap-2">
-                      <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
-                        <div
-                          className={`h-full rounded-full ${device.ramPercent > 80 ? 'bg-red-500' : device.ramPercent > 60 ? 'bg-yellow-500' : 'bg-green-500'} ${widthPercentClass(device.ramPercent)}`}
-                        />
+                    {device.status === 'online' ? (
+                      <div className="flex items-center gap-2">
+                        <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
+                          <div
+                            className={`h-full rounded-full ${device.ramPercent > 80 ? 'bg-red-500' : device.ramPercent > 60 ? 'bg-yellow-500' : 'bg-green-500'} ${widthPercentClass(device.ramPercent)}`}
+                          />
+                        </div>
+                        <span className="w-10 text-right">{device.ramPercent}%</span>
                       </div>
-                      <span className="w-10 text-right">{device.ramPercent}%</span>
-                    </div>
+                    ) : (
+                      <span className="text-muted-foreground">&mdash;</span>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">
                     {formatLastSeen(device.lastSeen, effectiveTimezone)}

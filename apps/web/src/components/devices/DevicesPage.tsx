@@ -481,7 +481,7 @@ export default function DevicesPage() {
         <div>
           <h1 className="text-2xl font-bold">Devices</h1>
           <p className="text-muted-foreground">
-            Manage and monitor your fleet of {devices.length} devices.
+            Manage and monitor your fleet.
           </p>
         </div>
         <div className="flex items-center gap-3">

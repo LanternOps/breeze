@@ -52,7 +52,13 @@ export default function AlertsPage() {
       const response = await fetchWithAuth('/devices');
       if (response.ok) {
         const data = await response.json();
-        setDevices(data.data ?? data.devices ?? (Array.isArray(data) ? data : []));
+        const raw: Record<string, unknown>[] = data.data ?? data.devices ?? (Array.isArray(data) ? data : []);
+        setDevices(
+          raw.map((d) => ({
+            id: String(d.id ?? ''),
+            name: String(d.displayName ?? d.hostname ?? d.name ?? 'Unknown'),
+          }))
+        );
       }
     } catch {
       // Silently fail
