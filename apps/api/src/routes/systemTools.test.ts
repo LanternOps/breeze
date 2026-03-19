@@ -358,7 +358,7 @@ describe('system tools routes', () => {
       });
 
       expect(createAuditLog).toHaveBeenCalledTimes(1);
-      const auditCall = vi.mocked(createAuditLog).mock.calls[0][0];
+      const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0];
       expect(auditCall).toMatchObject({
         action: 'stop_service',
         resourceType: 'device',
@@ -380,7 +380,7 @@ describe('system tools routes', () => {
       });
 
       expect(createAuditLog).toHaveBeenCalledTimes(1);
-      const auditCall = vi.mocked(createAuditLog).mock.calls[0][0];
+      const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0];
       expect(auditCall).toMatchObject({
         action: 'restart_service',
         resourceType: 'device',
