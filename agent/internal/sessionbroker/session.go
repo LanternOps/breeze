@@ -21,6 +21,7 @@ type Session struct {
 	SessionID     string
 	PID           int    // OS process ID of the helper process
 	Capabilities  *ipc.Capabilities
+	TCCStatus     *ipc.TCCStatus
 	AllowedScopes []string
 	WinSessionID  string // Windows session ID string (e.g., "1", "2") for targeting
 	HelperRole    string // "system" or "user" — determines scopes and capabilities
@@ -119,6 +120,20 @@ func (s *Session) SetCapabilities(caps *ipc.Capabilities) {
 	s.mu.Lock()
 	s.Capabilities = caps
 	s.mu.Unlock()
+}
+
+// SetTCCStatus updates the session's macOS TCC permission status.
+func (s *Session) SetTCCStatus(status *ipc.TCCStatus) {
+	s.mu.Lock()
+	s.TCCStatus = status
+	s.mu.Unlock()
+}
+
+// GetTCCStatus returns the session's last-reported TCC permission status.
+func (s *Session) GetTCCStatus() *ipc.TCCStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.TCCStatus
 }
 
 // HasScope checks if this session is authorized for the given scope.

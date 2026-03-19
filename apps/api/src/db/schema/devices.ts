@@ -1,7 +1,7 @@
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique } from 'drizzle-orm/pg-core';
 import { organizations, sites } from './orgs';
 import { users } from './users';
-import type { InterfaceBandwidth } from '@breeze/shared';
+import type { InterfaceBandwidth, TCCPermissions } from '@breeze/shared';
 
 export const osTypeEnum = pgEnum('os_type', ['windows', 'macos', 'linux']);
 export const deviceStatusEnum = pgEnum('device_status', ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined']);
@@ -37,6 +37,7 @@ export const devices = pgTable('devices', {
   tags: text('tags').array().default([]),
   customFields: jsonb('custom_fields').default({}),
   managementPosture: jsonb('management_posture'),
+  tccPermissions: jsonb('tcc_permissions').$type<TCCPermissions | null>(),
   lastUser: varchar('last_user', { length: 255 }),
   uptimeSeconds: integer('uptime_seconds'),
   createdAt: timestamp('created_at').defaultNow().notNull(),

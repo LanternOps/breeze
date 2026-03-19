@@ -137,7 +137,13 @@ export const heartbeatSchema = z.object({
   deviceRole: z.enum(DEVICE_ROLES).optional(),
   hostname: z.string().min(1).max(255).optional(),
   osVersion: z.string().min(1).max(255).optional(),
-  osBuild: z.string().max(255).optional()
+  osBuild: z.string().max(255).optional(),
+  tccPermissions: z.object({
+    screenRecording: z.boolean(),
+    accessibility: z.boolean(),
+    fullDiskAccess: z.boolean(),
+    checkedAt: z.string().datetime({ offset: true }),
+  }).optional()
 });
 
 // ============================================
