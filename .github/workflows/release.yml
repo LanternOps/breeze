@@ -71,7 +71,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Get version from tag
+        id: web-version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - name: Build Web
+        env:
+          PUBLIC_APP_VERSION: ${{ steps.web-version.outputs.version }}
         run: pnpm build --filter=@breeze/web
 
       - name: Upload Web artifact
@@ -345,6 +351,9 @@ jobs:
     runs-on: macos-latest
     needs: [build-agent]
     steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
       - name: Download darwin/amd64 artifact
         uses: actions/download-artifact@v8
         with:
@@ -446,10 +455,14 @@ jobs:
           done
 
       - name: Sign .pkg installers
-        if: vars.ENABLE_MACOS_SIGNING == 'true' && secrets.APPLE_INSTALLER_IDENTITY != ''
+        if: vars.ENABLE_MACOS_SIGNING == 'true'
         env:
           APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
         run: |
+          if [ -z "$APPLE_INSTALLER_IDENTITY" ]; then
+            echo "APPLE_INSTALLER_IDENTITY not set, skipping .pkg signing"
+            exit 0
+          fi
           for pkg in staging/*.pkg; do
             SIGNED="${pkg%.pkg}-signed.pkg"
             productsign --sign "$APPLE_INSTALLER_IDENTITY" "$pkg" "$SIGNED"
@@ -457,13 +470,18 @@ jobs:
             echo "Signed: $(basename "$pkg")"
           done
 
-      - name: Notarize .pkg installers
-        if: vars.ENABLE_MACOS_SIGNING == 'true' && secrets.APPLE_INSTALLER_IDENTITY != ''
+      - name: Notarize and staple .pkg installers
+        if: vars.ENABLE_MACOS_SIGNING == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
         run: |
+          if [ -z "$APPLE_INSTALLER_IDENTITY" ]; then
+            echo "APPLE_INSTALLER_IDENTITY not set, skipping .pkg notarization"
+            exit 0
+          fi
           for pkg in staging/*.pkg; do
             echo "Submitting $(basename "$pkg") for notarization..."
             xcrun notarytool submit "$pkg" \
@@ -1195,6 +1213,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Get version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v6
@@ -1215,6 +1237,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -1245,6 +1269,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Get version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v6
@@ -1265,5 +1293,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            PUBLIC_APP_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
