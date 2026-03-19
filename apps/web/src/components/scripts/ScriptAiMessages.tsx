@@ -81,12 +81,14 @@ function ApprovalCard() {
       </p>
       <div className="mt-2 flex gap-2">
         <button
+          type="button"
           onClick={() => approveExecution(pendingApproval.executionId, true)}
           className="flex items-center gap-1 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700"
         >
           <Check className="h-3 w-3" /> Approve
         </button>
         <button
+          type="button"
           onClick={() => approveExecution(pendingApproval.executionId, false)}
           className="flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
         >

@@ -61,6 +61,7 @@ export default function ScriptAiPanel({ bridge }: ScriptAiPanelProps) {
         <div className="flex items-center gap-1">
           {hasReverted && (
             <button
+              type="button"
               onClick={redo}
               className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
               title="Re-apply AI change"
@@ -71,6 +72,7 @@ export default function ScriptAiPanel({ bridge }: ScriptAiPanelProps) {
           )}
           {hasApplied && (
             <button
+              type="button"
               onClick={revert}
               className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
               title="Revert last AI change"
@@ -80,6 +82,7 @@ export default function ScriptAiPanel({ bridge }: ScriptAiPanelProps) {
             </button>
           )}
           <button
+            type="button"
             onClick={closePanel}
             className="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted"
           >

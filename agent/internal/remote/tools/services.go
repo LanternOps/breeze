@@ -100,6 +100,13 @@ func StopService(payload map[string]any) CommandResult {
 		return NewErrorResult(fmt.Errorf("service name is required"), time.Since(startTime).Milliseconds())
 	}
 
+	if isAgentService(name) {
+		return NewErrorResult(
+			fmt.Errorf("cannot stop the Breeze agent service — the device will go offline and become unreachable"),
+			time.Since(startTime).Milliseconds(),
+		)
+	}
+
 	err := stopServiceOS(name)
 	if err != nil {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
@@ -121,6 +128,10 @@ func RestartService(payload map[string]any) CommandResult {
 	name := GetPayloadString(payload, "name", "")
 	if name == "" {
 		return NewErrorResult(fmt.Errorf("service name is required"), time.Since(startTime).Milliseconds())
+	}
+
+	if isAgentService(name) {
+		return RestartAgentService(startTime)
 	}
 
 	err := restartServiceOS(name)

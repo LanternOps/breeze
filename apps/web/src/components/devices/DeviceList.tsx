@@ -265,6 +265,7 @@ export default function DeviceList({
             <option value="online">Online</option>
             <option value="offline">Offline</option>
             <option value="maintenance">Maintenance</option>
+            <option value="decommissioned">Decommissioned</option>
           </select>
           <select
             value={osFilter}
@@ -559,17 +560,31 @@ export default function DeviceList({
                               Settings
                             </button>
                             <hr className="my-1" />
-                            <button
-                              type="button"
-                              onClick={() => {
-                                onAction?.('decommission', device);
-                                setRowMenuOpenId(null);
-                              }}
-                              className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                              Decommission
-                            </button>
+                            {device.status === 'decommissioned' ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onAction?.('restore', device);
+                                  setRowMenuOpenId(null);
+                                }}
+                                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-green-600 hover:bg-green-50"
+                              >
+                                <RotateCcw className="h-4 w-4" />
+                                Restore
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onAction?.('decommission', device);
+                                  setRowMenuOpenId(null);
+                                }}
+                                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                                Decommission
+                              </button>
+                            )}
                           </div>
                         )}
                       </div>
