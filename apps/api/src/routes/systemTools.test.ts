@@ -299,6 +299,98 @@ describe('system tools routes', () => {
     expect(createAuditLog).toHaveBeenCalled();
   });
 
+  describe('agent self-protection for BreezeAgent service', () => {
+    it('relays agent rejection when stopping the BreezeAgent service', async () => {
+      mockDeviceSelect();
+      mockExecuteCommand.mockResolvedValue({
+        status: 'failed',
+        error: 'Cannot stop the Breeze agent service: operation blocked by self-protection'
+      });
+
+      const res = await app.request(`/system-tools/devices/${deviceId}/services/BreezeAgent/stop`, {
+        method: 'POST'
+      });
+
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toContain('self-protection');
+      expect(createAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'stop_service',
+          result: 'failure',
+          errorMessage: expect.stringContaining('self-protection')
+        })
+      );
+    });
+
+    it('succeeds with delayed restart for the BreezeAgent service', async () => {
+      mockDeviceSelect();
+      mockExecuteCommand.mockResolvedValue({
+        status: 'completed',
+        stdout: JSON.stringify({ success: true, delayed: true })
+      });
+
+      const res = await app.request(`/system-tools/devices/${deviceId}/services/BreezeAgent/restart`, {
+        method: 'POST'
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(body.message).toContain('BreezeAgent');
+      expect(createAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'restart_service',
+          result: 'success'
+        })
+      );
+    });
+
+    it('logs audit with failure result when stop is blocked', async () => {
+      mockDeviceSelect();
+      mockExecuteCommand.mockResolvedValue({
+        status: 'failed',
+        error: 'Cannot stop the Breeze agent service: operation blocked by self-protection'
+      });
+
+      await app.request(`/system-tools/devices/${deviceId}/services/BreezeAgent/stop`, {
+        method: 'POST'
+      });
+
+      expect(createAuditLog).toHaveBeenCalledTimes(1);
+      const auditCall = vi.mocked(createAuditLog).mock.calls[0][0];
+      expect(auditCall).toMatchObject({
+        action: 'stop_service',
+        resourceType: 'device',
+        resourceId: deviceId,
+        details: { name: 'BreezeAgent' },
+        result: 'failure'
+      });
+    });
+
+    it('logs audit with success result when restart is accepted', async () => {
+      mockDeviceSelect();
+      mockExecuteCommand.mockResolvedValue({
+        status: 'completed',
+        stdout: JSON.stringify({ success: true, delayed: true })
+      });
+
+      await app.request(`/system-tools/devices/${deviceId}/services/BreezeAgent/restart`, {
+        method: 'POST'
+      });
+
+      expect(createAuditLog).toHaveBeenCalledTimes(1);
+      const auditCall = vi.mocked(createAuditLog).mock.calls[0][0];
+      expect(auditCall).toMatchObject({
+        action: 'restart_service',
+        resourceType: 'device',
+        resourceId: deviceId,
+        details: { name: 'BreezeAgent' },
+        result: 'success'
+      });
+    });
+  });
+
   it('lists registry keys', async () => {
     mockDeviceSelect();
     mockExecuteCommand.mockResolvedValue({
