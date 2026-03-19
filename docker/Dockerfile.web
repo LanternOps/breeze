@@ -15,7 +15,9 @@ COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
 COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
 COPY . .
 ARG PUBLIC_API_URL=""
+ARG PUBLIC_APP_VERSION="0.1.0"
 ENV PUBLIC_API_URL=${PUBLIC_API_URL}
+ENV PUBLIC_APP_VERSION=${PUBLIC_APP_VERSION}
 RUN pnpm --filter @breeze/web build
 # Create a self-contained deployment (resolves pnpm symlinks)
 RUN pnpm --filter @breeze/web deploy --prod /deployed

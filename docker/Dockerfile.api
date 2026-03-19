@@ -21,6 +21,8 @@ RUN pnpm --filter @breeze/api deploy --prod /deployed
 FROM base AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+ARG APP_VERSION=0.2.0
+ENV APP_VERSION=${APP_VERSION}
 
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 hono

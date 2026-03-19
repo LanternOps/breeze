@@ -26,8 +26,10 @@ WORKDIR /app
 
 ARG NODE_ENV=production
 ARG PUBLIC_API_URL=
+ARG PUBLIC_APP_VERSION=0.1.0
 ENV NODE_ENV=${NODE_ENV}
 ENV PUBLIC_API_URL=${PUBLIC_API_URL}
+ENV PUBLIC_APP_VERSION=${PUBLIC_APP_VERSION}
 
 # Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules
