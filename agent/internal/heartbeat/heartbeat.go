@@ -65,6 +65,7 @@ type HeartbeatPayload struct {
 	HealthStatus     map[string]any            `json:"healthStatus,omitempty"`
 	DroppedLogs      int64                     `json:"droppedLogs,omitempty"`
 	HelperVersion    string                    `json:"helperVersion,omitempty"`
+	TCCPermissions   *ipc.TCCStatus            `json:"tccPermissions,omitempty"`
 Hostname         string                    `json:"hostname,omitempty"`
 	OSVersion        string                    `json:"osVersion,omitempty"`
 	OSBuild          string                    `json:"osBuild,omitempty"`
@@ -1747,6 +1748,13 @@ func (h *Heartbeat) sendHeartbeat() {
 		h.healthMon.Update("ip_history", health.Degraded, ipErr.Error())
 	} else {
 		payload.IPHistoryUpdate = ipUpdate
+	}
+
+	// Include TCC permission status for macOS devices
+	if runtime.GOOS == "darwin" && h.sessionBroker != nil {
+		if tcc := h.sessionBroker.TCCStatus(); tcc != nil {
+			payload.TCCPermissions = tcc
+		}
 	}
 
 	// Include user helper session info in heartbeat

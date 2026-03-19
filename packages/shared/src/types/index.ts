@@ -218,6 +218,17 @@ export interface DeviceGroup {
 }
 
 // ============================================
+// TCC (macOS Permissions) Types
+// ============================================
+
+export interface TCCPermissions {
+  screenRecording: boolean;
+  accessibility: boolean;
+  fullDiskAccess: boolean;
+  checkedAt: string;
+}
+
+// ============================================
 // mTLS Types
 // ============================================
 

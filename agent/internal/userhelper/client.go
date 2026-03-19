@@ -87,6 +87,9 @@ func (c *Client) Run() error {
 		}
 	}
 
+	// Start TCC permission check loop (macOS only; no-op on other platforms)
+	safeGo("tcc_check", func() { RunTCCCheckLoop(c.conn, c.stopChan) })
+
 	log.Info("user helper connected and authenticated", "agentId", c.agentID)
 
 	// Enter command loop

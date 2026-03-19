@@ -1,6 +1,9 @@
 package ipc
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Message type constants for IPC communication.
 const (
@@ -38,6 +41,9 @@ const (
 	// Launch a process as the logged-in user (sent to user-role helper)
 	TypeLaunchProcess  = "launch_process"
 	TypeLaunchResult   = "launch_result"
+
+	// TCC (Transparency, Consent, Control) permission status from macOS helpers
+	TypeTCCStatus = "tcc_status"
 )
 
 // MaxMessageSize is the maximum size of a JSON IPC message (16MB).
@@ -202,6 +208,15 @@ type LaunchProcessResult struct {
 	OK    bool   `json:"ok"`
 	PID   int    `json:"pid,omitempty"`
 	Error string `json:"error,omitempty"`
+}
+
+// TCCStatus reports macOS TCC (Transparency, Consent, Control) permission
+// state from the user helper to the root daemon.
+type TCCStatus struct {
+	ScreenRecording bool      `json:"screenRecording"`
+	Accessibility   bool      `json:"accessibility"`
+	FullDiskAccess  bool      `json:"fullDiskAccess"`
+	CheckedAt       time.Time `json:"checkedAt"`
 }
 
 // SessionInfoItem describes one interactive Windows session for the

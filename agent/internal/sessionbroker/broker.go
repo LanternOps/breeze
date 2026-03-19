@@ -181,6 +181,22 @@ func (b *Broker) AllSessions() []SessionInfo {
 	return infos
 }
 
+// TCCStatus returns the TCC permission status from the first connected helper
+// session that has reported one, or nil if none have. In practice, only one
+// macOS helper per user reports TCC status. Returns a copy to prevent mutation
+// of session-internal state.
+func (b *Broker) TCCStatus() *ipc.TCCStatus {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for _, s := range b.sessions {
+		if tcc := s.GetTCCStatus(); tcc != nil {
+			cp := *tcc
+			return &cp
+		}
+	}
+	return nil
+}
+
 // BroadcastNotification sends a desktop notification to all connected user sessions.
 func (b *Broker) BroadcastNotification(title, body, urgency string) {
 	b.mu.RLock()
@@ -617,6 +633,19 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 					"canCapture", caps.CanCapture,
 					"canClipboard", caps.CanClipboard,
 					"displayServer", caps.DisplayServer,
+				)
+			}
+		case ipc.TypeTCCStatus:
+			var status ipc.TCCStatus
+			if err := json.Unmarshal(env.Payload, &status); err != nil {
+				log.Warn("invalid tcc_status payload", "uid", s.UID, "error", err.Error())
+			} else {
+				s.SetTCCStatus(&status)
+				log.Info("TCC permissions received",
+					"uid", s.UID,
+					"screenRecording", status.ScreenRecording,
+					"accessibility", status.Accessibility,
+					"fullDiskAccess", status.FullDiskAccess,
 				)
 			}
 		case ipc.TypeDisconnect:
