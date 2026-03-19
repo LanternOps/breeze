@@ -431,6 +431,65 @@ jobs:
           overwrite: true
           retention-days: 30
 
+      - name: Build macOS .pkg installers
+        env:
+          BUILD_VERSION: ${{ github.ref_name }}
+        run: |
+          VERSION="${BUILD_VERSION#v}"
+          chmod +x agent/installer/macos/build-pkg.sh
+          for arch in amd64 arm64; do
+            agent/installer/macos/build-pkg.sh \
+              "staging/breeze-agent-darwin-${arch}" \
+              "$VERSION" \
+              "$arch" \
+              "staging/breeze-agent-darwin-${arch}.pkg"
+          done
+
+      - name: Sign .pkg installers
+        if: vars.ENABLE_MACOS_SIGNING == 'true' && secrets.APPLE_INSTALLER_IDENTITY != ''
+        env:
+          APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
+        run: |
+          for pkg in staging/*.pkg; do
+            SIGNED="${pkg%.pkg}-signed.pkg"
+            productsign --sign "$APPLE_INSTALLER_IDENTITY" "$pkg" "$SIGNED"
+            mv "$SIGNED" "$pkg"
+            echo "Signed: $(basename "$pkg")"
+          done
+
+      - name: Notarize .pkg installers
+        if: vars.ENABLE_MACOS_SIGNING == 'true' && secrets.APPLE_INSTALLER_IDENTITY != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for pkg in staging/*.pkg; do
+            echo "Submitting $(basename "$pkg") for notarization..."
+            xcrun notarytool submit "$pkg" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait --timeout 30m
+
+            xcrun stapler staple "$pkg"
+            echo "Notarized and stapled: $(basename "$pkg")"
+          done
+
+      - name: Upload .pkg darwin/amd64
+        uses: actions/upload-artifact@v7
+        with:
+          name: breeze-agent-darwin-amd64-pkg
+          path: staging/breeze-agent-darwin-amd64.pkg
+          retention-days: 30
+
+      - name: Upload .pkg darwin/arm64
+        uses: actions/upload-artifact@v7
+        with:
+          name: breeze-agent-darwin-arm64-pkg
+          path: staging/breeze-agent-darwin-arm64.pkg
+          retention-days: 30
+
       - name: Cleanup keychain
         if: always() && vars.ENABLE_MACOS_SIGNING == 'true'
         run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true

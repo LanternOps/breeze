@@ -1,0 +1,13 @@
+#!/bin/bash
+# Breeze Agent macOS .pkg preinstall script
+# Stops the existing agent service before files are replaced.
+
+# Stop existing daemon gracefully
+launchctl bootout system/com.breeze.agent 2>/dev/null || true
+
+# Unload legacy-style if bootout fails (older macOS)
+if [ -f /Library/LaunchDaemons/com.breeze.agent.plist ]; then
+    launchctl unload /Library/LaunchDaemons/com.breeze.agent.plist 2>/dev/null || true
+fi
+
+exit 0
