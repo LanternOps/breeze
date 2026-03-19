@@ -94,6 +94,7 @@ import { peripheralControlRoutes } from './routes/peripheralControl';
 import { browserSecurityRoutes } from './routes/browserSecurity';
 import { captureException } from './services/sentry';
 import { partnerGuard } from './middleware/partnerGuard';
+import { API_VERSION } from './version';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
@@ -229,7 +230,6 @@ app.use(
   })
 );
 
-const API_VERSION = '0.2.0';
 const startedAt = Date.now();
 
 // Health check — basic liveness with version and uptime

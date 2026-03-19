@@ -3,10 +3,16 @@ import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { users } from '../db/schema';
 import { authMiddleware } from '../middleware/auth';
+import { API_VERSION } from '../version';
 
 export const systemRoutes = new Hono();
 
 systemRoutes.use('*', authMiddleware);
+
+// GET /system/version — returns the current API version
+systemRoutes.get('/version', async (c) => {
+  return c.json({ version: API_VERSION });
+});
 
 // GET /system/config-status — read-only view of env-driven feature status (no secrets)
 systemRoutes.get('/config-status', async (c) => {

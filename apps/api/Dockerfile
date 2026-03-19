@@ -51,6 +51,8 @@ RUN apk add --no-cache wget
 # Set production environment
 ENV NODE_ENV=production
 ENV API_PORT=3001
+ARG APP_VERSION=0.2.0
+ENV APP_VERSION=${APP_VERSION}
 
 # Create non-root user for security
 RUN addgroup --system --gid 1001 nodejs && \
