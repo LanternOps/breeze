@@ -189,10 +189,12 @@ func tccPromptFilePath() string {
 
 // showTCCDialog shows an osascript dialog listing missing permissions with an
 // "Open Settings" button. Times out after 60 seconds to avoid blocking.
+// Uses "tell application \"System Events\"" so the dialog renders as a native
+// window instead of opening Script Editor.
 func showTCCDialog(missing []string) {
 	list := escapeAppleScript(strings.Join(missing, ", "))
 	script := fmt.Sprintf(
-		`display dialog "Breeze Agent needs these macOS permissions to work properly:\n\n%s\n\nPlease grant them in System Settings > Privacy & Security." `+
+		`tell application "System Events" to display dialog "Breeze Agent needs these macOS permissions to work properly:\n\n%s\n\nPlease grant them in System Settings > Privacy & Security." `+
 			`buttons {"Later", "Open Settings"} default button "Open Settings" with title "Breeze: Permissions Required" giving up after 60`,
 		list,
 	)
