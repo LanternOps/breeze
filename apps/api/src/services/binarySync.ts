@@ -197,6 +197,10 @@ export async function syncBinaries(): Promise<void> {
     await syncFromGitHub();
   }
 
+  // Verify the current version is registered — catches stale volumes and missed syncs.
+  // This is the safety net for self-hosted deployments where binaries-init may not refresh.
+  await ensureCurrentVersionRegistered();
+
   // Sync to S3 if configured (runs regardless of whether agent binaries were found)
   if (isS3Configured()) {
     const logSyncResult = (label: string, result: import('./s3Storage').SyncResult) => {
@@ -295,6 +299,37 @@ export async function syncFromGitHub(requestedVersion?: string): Promise<{ versi
 
   console.log(`[binarySync] GitHub sync: registered ${synced.length} binaries (version: ${version})`);
   return { version, synced };
+}
+
+/**
+ * Safety net: verify the agentVersions table has entries for the current
+ * API version. If not, sync from GitHub. This catches stale Docker volumes,
+ * missed CI syncs, and fresh deployments where binaries-init didn't run.
+ */
+async function ensureCurrentVersionRegistered(): Promise<void> {
+  const currentVersion = (process.env.APP_VERSION || process.env.BREEZE_VERSION || '').replace(/^v/, '');
+  if (!currentVersion || currentVersion === 'dev' || currentVersion === 'latest') return;
+
+  try {
+    const [existing] = await db
+      .select({ version: agentVersions.version })
+      .from(agentVersions)
+      .where(
+        and(
+          eq(agentVersions.version, currentVersion),
+          eq(agentVersions.component, 'agent')
+        )
+      )
+      .limit(1);
+
+    if (existing) return; // Already registered
+
+    console.log(`[binarySync] Version ${currentVersion} not found in agentVersions, syncing from GitHub`);
+    const result = await syncFromGitHub(`v${currentVersion}`);
+    console.log(`[binarySync] Auto-synced ${result.synced.length} binaries for v${currentVersion}`);
+  } catch (err) {
+    console.warn(`[binarySync] Failed to auto-sync version ${currentVersion} from GitHub:`, err instanceof Error ? err.message : err);
+  }
 }
 
 async function upsertVersion(
