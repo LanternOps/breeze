@@ -25,10 +25,11 @@ static bool requestScreenRecording(void) {
 }
 
 // checkAccessibility returns true if accessibility access is granted.
-// Uses pure C CoreFoundation calls instead of Objective-C.
+// Uses kAXTrustedCheckOptionPrompt=YES on first call to trigger the
+// macOS system prompt that opens System Settings with the binary highlighted.
 static bool checkAccessibility(void) {
 	CFStringRef key = kAXTrustedCheckOptionPrompt;
-	CFBooleanRef value = kCFBooleanFalse;
+	CFBooleanRef value = kCFBooleanTrue;
 	CFDictionaryRef opts = CFDictionaryCreate(
 		NULL, (const void **)&key, (const void **)&value, 1,
 		&kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);

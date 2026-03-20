@@ -21,6 +21,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/mtls"
 	"github.com/breeze-rmm/agent/internal/secmem"
+	"github.com/breeze-rmm/agent/internal/tcc"
 	"github.com/breeze-rmm/agent/internal/userhelper"
 	"github.com/breeze-rmm/agent/internal/websocket"
 	"github.com/breeze-rmm/agent/pkg/api"
@@ -269,6 +270,26 @@ func startAgent() (*agentComponents, error) {
 	// Only relevant on Windows when running as a service.
 	if cfg.IsService {
 		ensureSASPolicy()
+	}
+
+	// On macOS, the root daemon has Full Disk Access and can write to the
+	// system TCC database. Grant Screen Recording and Accessibility
+	// permissions so the agent doesn't rely on user interaction (bare
+	// binaries can't trigger TCC prompts properly).
+	if runtime.GOOS == "darwin" && os.Getuid() == 0 {
+		results, err := tcc.EnsurePermissions()
+		if err != nil {
+			log.Warn("TCC permission auto-grant incomplete", "error", err.Error())
+		}
+		for _, r := range results {
+			if r.Already {
+				log.Debug("TCC permission pre-existing", "service", r.Name)
+			} else if r.Granted {
+				log.Info("TCC permission auto-granted", "service", r.Name)
+			} else if r.Err != nil {
+				log.Warn("TCC permission grant failed", "service", r.Name, "error", r.Err.Error())
+			}
+		}
 	}
 
 	if cfg.IsHeadless {
