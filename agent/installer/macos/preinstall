@@ -10,4 +10,10 @@ if [ -f /Library/LaunchDaemons/com.breeze.agent.plist ]; then
     launchctl unload /Library/LaunchDaemons/com.breeze.agent.plist 2>/dev/null || true
 fi
 
+# Stop existing user helper for all logged-in GUI users
+for uid in $(ps -axo uid= -o comm= | grep -i '[lL]oginwindow' | awk '{print $1}' | sort -u); do
+    [ "$uid" = "0" ] && continue
+    launchctl bootout "gui/$uid/com.breeze.agent-user" 2>/dev/null || true
+done
+
 exit 0

@@ -11,12 +11,14 @@ import {
   softwareInventory,
 } from '../../db/schema';
 import {
+  agentWarrantyInfoSchema,
   updateHardwareSchema,
   updateSoftwareSchema,
   updateDisksSchema,
   updateNetworkSchema,
 } from './schemas';
 import { sanitizeDate } from './helpers';
+import { upsertAgentWarranty } from '../../services/warrantySync';
 
 export const inventoryRoutes = new Hono();
 
@@ -171,3 +173,42 @@ inventoryRoutes.put('/:id/network', bodyLimit({ maxSize: 5 * 1024 * 1024, onErro
 
   return c.json({ success: true, count: data.adapters.length });
 });
+
+// PUT /:id/warranty-info — agent reports locally-collected warranty data (e.g. Apple plist)
+inventoryRoutes.put(
+  '/:id/warranty-info',
+  bodyLimit({ maxSize: 1 * 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }),
+  zValidator('json', agentWarrantyInfoSchema),
+  async (c) => {
+    const agentId = c.req.param('id');
+    const data = c.req.valid('json');
+
+    const [device] = await db
+      .select({ id: devices.id, orgId: devices.orgId })
+      .from(devices)
+      .where(eq(devices.agentId, agentId))
+      .limit(1);
+
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    // Get serial number from hardware table for the warranty record
+    const [hw] = await db
+      .select({ serialNumber: deviceHardware.serialNumber })
+      .from(deviceHardware)
+      .where(eq(deviceHardware.deviceId, device.id))
+      .limit(1);
+
+    await upsertAgentWarranty(device.id, device.orgId, {
+      source: data.source,
+      manufacturer: data.manufacturer,
+      serialNumber: hw?.serialNumber ?? null,
+      coverageEndDate: data.coverageEndDate ?? null,
+      coverageStartDate: data.coverageStartDate ?? null,
+      coverageType: data.coverageType ?? null,
+    });
+
+    return c.json({ success: true });
+  }
+);

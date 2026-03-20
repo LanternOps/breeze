@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { buildWsUrl, type ConnectionParams } from '../lib/protocol';
 import { createDesktopWsTicket, exchangeDesktopConnectCode } from '../lib/api';
-import { createWebRTCSession, scaleVideoCoords, type AuthenticatedConnectionParams, type WebRTCSession } from '../lib/webrtc';
+import { createWebRTCSession, scaleVideoCoords, AgentSessionError, type AuthenticatedConnectionParams, type WebRTCSession } from '../lib/webrtc';
 import { mapKey, getModifiers, isModifierOnly } from '../lib/keymap';
 import { textToKeyEvents } from '../lib/paste';
 import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
@@ -236,6 +236,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       // Connection state will flip to 'connected' via onconnectionstatechange
       return true;
     } catch (err) {
+      // If the agent reported a session failure (e.g. capture unsupported,
+      // no encoder), propagate it so the viewer shows the real error instead
+      // of silently falling back to WebSocket which will also fail.
+      if (err instanceof AgentSessionError) {
+        throw err;
+      }
       console.warn('WebRTC connection failed:', err);
       return false;
     }
@@ -423,6 +429,15 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         // If WebRTC fails, let the interval retry — don't fall back to WS
       }
     } catch (err) {
+      if (err instanceof AgentSessionError) {
+        stopReconnect();
+        setStatus('error');
+        setConnectedAt(null);
+        setErrorMessage(err.message);
+        onError(err.message);
+        reconnectInFlightRef.current = false;
+        return;
+      }
       console.warn('Reconnect attempt failed (will retry):', err);
     } finally {
       reconnectInFlightRef.current = false;

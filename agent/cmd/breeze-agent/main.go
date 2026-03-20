@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -323,6 +324,22 @@ func runAgent() {
 	// Console mode — start components and wait for OS signal.
 	comps, err := startAgent()
 	if err != nil {
+		if isPermissionError(err) {
+			fmt.Fprintln(os.Stderr, "Error: Permission denied reading agent configuration.")
+			fmt.Fprintln(os.Stderr, "The agent runs as a system service and should not be started manually.")
+			fmt.Fprintln(os.Stderr, "Check service status with:")
+			switch runtime.GOOS {
+			case "darwin":
+				fmt.Fprintln(os.Stderr, "  sudo breeze-agent status")
+				fmt.Fprintln(os.Stderr, "  sudo launchctl list | grep breeze")
+			case "linux":
+				fmt.Fprintln(os.Stderr, "  sudo breeze-agent status")
+				fmt.Fprintln(os.Stderr, "  sudo systemctl status breeze-agent")
+			default:
+				fmt.Fprintln(os.Stderr, "  Try running with elevated privileges (e.g. sudo).")
+			}
+			os.Exit(1)
+		}
 		fmt.Fprintf(os.Stderr, "Failed to start agent: %v\n", err)
 		os.Exit(1)
 	}
@@ -461,12 +478,36 @@ func enrollDevice(enrollmentKey string) {
 	fmt.Println("Enrollment successful!")
 	fmt.Printf("Agent ID: %s\n", cfg.AgentID)
 	fmt.Println("Configuration saved.")
-	fmt.Println("Run 'breeze-agent run' to start the agent.")
+
+	if isSystemServiceRunning() {
+		fmt.Println("Agent is already running via system service.")
+	} else if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
+		fmt.Println("Start the agent with:")
+		fmt.Println("  sudo breeze-agent service start")
+	} else {
+		fmt.Println("Run 'breeze-agent run' to start the agent.")
+	}
 }
 
 func checkStatus() {
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
+		if isPermissionError(err) {
+			fmt.Println("Status: Unable to read configuration (permission denied)")
+			switch runtime.GOOS {
+			case "darwin":
+				fmt.Println("  The agent runs as a system service. Check status with:")
+				fmt.Println("    sudo breeze-agent status")
+				fmt.Println("    sudo launchctl list | grep breeze")
+			case "linux":
+				fmt.Println("  The agent runs as a system service. Check status with:")
+				fmt.Println("    sudo breeze-agent status")
+				fmt.Println("    sudo systemctl status breeze-agent")
+			default:
+				fmt.Println("  Try running with elevated privileges (e.g. sudo).")
+			}
+			return
+		}
 		fmt.Println("Status: Not configured")
 		return
 	}

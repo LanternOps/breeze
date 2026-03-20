@@ -67,6 +67,7 @@ export default function RemoteTerminal({
   const fitAddonRef = useRef<FitAddonInstance | null>(null);
   const webSocketRef = useRef<WebSocket | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const disconnectFiredRef = useRef(false);
 
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [sessionId, setSessionId] = useState<string | null>(initialSessionId || null);
@@ -255,19 +256,34 @@ export default function RemoteTerminal({
         }
       };
 
+      // Reset the disconnect guard for new connections
+      disconnectFiredRef.current = false;
+      const callOnDisconnect = () => {
+        if (!disconnectFiredRef.current) {
+          disconnectFiredRef.current = true;
+          onDisconnect?.();
+        }
+      };
+
       ws.onerror = () => {
         setStatus('failed');
+        setSessionId(null);
         terminalRef.current?.writeln('\x1b[1;31mConnection error\x1b[0m');
         onError?.('WebSocket connection error');
+        callOnDisconnect();
       };
 
       ws.onclose = (event) => {
         if (event.code !== 1000) {
           setStatus('failed');
+          setSessionId(null);
           terminalRef.current?.writeln('\x1b[1;31mConnection closed unexpectedly\x1b[0m');
+          callOnDisconnect();
         } else {
           setStatus('disconnected');
+          setSessionId(null);
           terminalRef.current?.writeln('\x1b[90mSession ended\x1b[0m');
+          callOnDisconnect();
         }
       };
 
@@ -301,7 +317,7 @@ export default function RemoteTerminal({
       terminalRef.current?.writeln(`\x1b[1;31mError: ${message}\x1b[0m`);
       onError?.(message);
     }
-  }, [deviceId, sessionId, onSessionCreated, onError]);
+  }, [deviceId, sessionId, onSessionCreated, onDisconnect, onError]);
 
   // Disconnect from session
   const disconnect = useCallback(async () => {
@@ -331,7 +347,10 @@ export default function RemoteTerminal({
 
     setStatus('disconnected');
     setConnectionTime(null);
-    onDisconnect?.();
+    if (!disconnectFiredRef.current) {
+      disconnectFiredRef.current = true;
+      onDisconnect?.();
+    }
   }, [sessionId, bytesTransferred, onDisconnect]);
 
   // Copy terminal content to clipboard

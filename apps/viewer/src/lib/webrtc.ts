@@ -5,6 +5,19 @@
 
 import { apiFetch } from './api';
 
+/**
+ * Error thrown when the remote agent reports a session failure
+ * (e.g. screen capture unsupported, no H264 encoder).
+ * Distinguished from local WebRTC setup errors so callers can
+ * avoid futile fallback attempts.
+ */
+export class AgentSessionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AgentSessionError';
+  }
+}
+
 export interface AuthenticatedConnectionParams {
   sessionId: string;
   apiUrl: string;
@@ -163,6 +176,8 @@ function waitForIceGathering(pc: RTCPeerConnection, timeoutMs: number): Promise<
 
 /**
  * Poll GET /remote/sessions/:id until webrtcAnswer is populated.
+ * Also checks for session failure so the viewer sees agent-side errors
+ * immediately instead of waiting for the full timeout.
  */
 async function pollForAnswer(params: AuthenticatedConnectionParams, timeoutMs: number): Promise<string> {
   const start = Date.now();
@@ -178,6 +193,10 @@ async function pollForAnswer(params: AuthenticatedConnectionParams, timeoutMs: n
       const data = await resp.json();
       if (data.webrtcAnswer) {
         return data.webrtcAnswer;
+      }
+      // If the agent reported a failure, surface it immediately
+      if (data.status === 'failed') {
+        throw new AgentSessionError(data.errorMessage || 'Remote desktop failed to start on agent');
       }
     }
 

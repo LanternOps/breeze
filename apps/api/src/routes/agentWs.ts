@@ -5,7 +5,7 @@ import { eq, and, sql } from 'drizzle-orm';
 import { createHash, timingSafeEqual } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, networkMonitors, networkMonitorResults, remoteSessions, backupJobs, restoreJobs } from '../db/schema';
-import { handleTerminalOutput } from './terminalWs';
+import { handleTerminalOutput, getActiveTerminalSession, unregisterTerminalOutputCallback } from './terminalWs';
 import { handleDesktopFrame, isDesktopSessionOwnedByAgent } from './desktopWs';
 import { enqueueDiscoveryResults, type DiscoveredHostResult } from '../jobs/discoveryWorker';
 import { enqueueBackupResults } from '../jobs/backupWorker';
@@ -874,7 +874,29 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             console.warn(`[AgentWs] Dropping command_result with oversized commandId from agent ${agentId}`);
             return;
           }
-          if (message.commandId.startsWith('term-')) {
+          if (message.commandId.startsWith('term-') && message.status === 'failed') {
+            // Extract sessionId from commandId (e.g. "term-start-<sessionId>")
+            const parts = message.commandId.split('-');
+            // Format: term-<action>-<sessionId>, sessionId may contain hyphens (UUID)
+            const termSessionId = parts.length >= 3 ? parts.slice(2).join('-') : null;
+            if (termSessionId) {
+              const termSession = getActiveTerminalSession(termSessionId);
+              if (termSession) {
+                const errorDetail = typeof message.error === 'string' ? message.error : 'Unknown error';
+                try {
+                  termSession.userWs.send(JSON.stringify({
+                    type: 'error',
+                    code: 'TERMINAL_START_FAILED',
+                    message: `Agent failed to start terminal: ${errorDetail}`
+                  }));
+                  termSession.userWs.close(4003, 'Terminal start failed');
+                } catch (sendErr) {
+                  console.error(`[AgentWs] Failed to notify user of terminal failure for session ${termSessionId}:`, sendErr);
+                }
+                unregisterTerminalOutputCallback(termSessionId);
+                console.warn(`[AgentWs] Terminal start failed for session ${termSessionId}: ${errorDetail}`);
+              }
+            }
           }
           // Handle WebRTC peer disconnect notifications from agent
           if (message.commandId.startsWith('desk-disconnect-') &&
@@ -942,6 +964,59 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                 });
               } catch (err) {
                 console.error(`[AgentWs] Failed to store WebRTC answer:`, err);
+              }
+            }
+          }
+
+          // Propagate start_desktop failures to the session so the viewer
+          // sees the error immediately instead of polling until timeout.
+          if (message.commandId.startsWith('desk-') &&
+              !message.commandId.startsWith('desk-disconnect-') &&
+              message.status === 'failed') {
+            const failResult = typeof message.result === 'object' && message.result !== null
+              ? message.result as Record<string, unknown>
+              : {};
+            let candidateId = message.commandId.slice('desk-'.length);
+            if (candidateId.startsWith('start-')) candidateId = candidateId.slice('start-'.length);
+            if (candidateId.startsWith('stop-')) candidateId = candidateId.slice('stop-'.length);
+            const sessionId = typeof failResult.sessionId === 'string' && failResult.sessionId.length <= 128
+              ? failResult.sessionId
+              // Fall back to extracting sessionId from commandId (desk-[start-|stop-]<sessionId>)
+              : candidateId.length <= 128
+                ? candidateId
+                : null;
+            const errorMsg = typeof failResult.error === 'string'
+              ? failResult.error.slice(0, 1024)
+              : typeof message.error === 'string'
+                ? (message.error as string).slice(0, 1024)
+                : 'Desktop capture failed on agent';
+            if (sessionId) {
+              try {
+                await runWithAgentDbAccess(async () => {
+                  const result = await db
+                    .update(remoteSessions)
+                    .set({
+                      status: 'failed',
+                      errorMessage: errorMsg,
+                      endedAt: new Date()
+                    })
+                    .where(
+                      and(
+                        eq(remoteSessions.id, sessionId),
+                        eq(remoteSessions.deviceId, authenticatedAgent.deviceId),
+                        eq(remoteSessions.status, 'connecting')
+                      )
+                    )
+                    .returning({ id: remoteSessions.id });
+
+                  if (result.length > 0) {
+                    console.log(`[AgentWs] Session ${sessionId} marked failed: ${errorMsg}`);
+                  } else {
+                    console.warn(`[AgentWs] Failed session ${sessionId} not found or not in connecting state`);
+                  }
+                });
+              } catch (err) {
+                console.error(`[AgentWs] Failed to mark session as failed:`, err);
               }
             }
           }

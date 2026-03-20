@@ -482,7 +482,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
           </div>
           <InfoRow label="Last Seen" value={formatDate(info?.lastSeenAt)} />
           <InfoRow label="Enrolled" value={formatDate(info?.enrolledAt)} />
-          <InfoRow label="Uptime" value={formatUptime(info?.uptimeSeconds)} />
+          <InfoRow label="System Uptime" value={formatUptime(info?.uptimeSeconds)} />
           <InfoRow label="Logged-in User" value={info?.lastUser ?? '—'} />
         </Section>
 

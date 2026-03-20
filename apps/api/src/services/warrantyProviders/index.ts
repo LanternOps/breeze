@@ -9,6 +9,7 @@ const providers: WarrantyProvider[] = [dellProvider, hpProvider, lenovoProvider]
 
 export function normalizeManufacturer(raw: string): string {
   const lower = raw.toLowerCase().trim();
+  if (lower.includes('apple')) return 'apple';
   if (lower.includes('dell')) return 'dell';
   if (lower.includes('hp') || lower.includes('hewlett')) return 'hp';
   if (lower.includes('lenovo')) return 'lenovo';

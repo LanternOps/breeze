@@ -11,6 +11,7 @@ package desktop
 #include <AppKit/AppKit.h>
 #include <ScreenCaptureKit/ScreenCaptureKit.h>
 #include <stdlib.h>
+#include <sys/sysctl.h>
 
 // ScreenCaptureResult holds the capture result
 typedef struct {
@@ -20,6 +21,21 @@ typedef struct {
     int bytesPerRow;
     int error;
 } ScreenCaptureResult;
+
+// darwinMajorVersion returns the Darwin kernel major version.
+// Darwin 23 = macOS 14 (Sonoma), 22 = macOS 13 (Ventura), 21 = macOS 12 (Monterey).
+int darwinMajorVersion(void) {
+    char str[64] = {0};
+    size_t size = sizeof(str);
+    if (sysctlbyname("kern.osrelease", str, &size, NULL, 0) != 0) {
+        return 0;
+    }
+    int major = 0;
+    sscanf(str, "%d", &major);
+    return major;
+}
+
+// ---- ScreenCaptureKit path (macOS 14+) ----
 
 // Cached ScreenCaptureKit objects — initialized once in initCapture(),
 // reused per-frame in captureFrame(). This avoids calling
@@ -203,7 +219,17 @@ import (
 // Only one darwinCapturer may be active at a time.
 var darwinCaptureMu sync.Mutex
 
-// darwinCapturer implements ScreenCapturer for macOS using ScreenCaptureKit.
+// macOSMajorVersion caches the Darwin kernel major version.
+// Darwin 23 = macOS 14 (Sonoma), 22 = macOS 13, 21 = macOS 12.
+var macOSMajorVersion = int(C.darwinMajorVersion())
+
+// hasSCScreenshotManager returns true if running macOS 14+ (Darwin 23+)
+// where SCScreenshotManager is available.
+func hasSCScreenshotManager() bool {
+	return macOSMajorVersion >= 23
+}
+
+// darwinCapturer implements ScreenCapturer for macOS using ScreenCaptureKit (14+).
 // The ScreenCaptureKit display list and filter are queried once at init time
 // (triggering a single permission dialog) and cached for per-frame capture.
 type darwinCapturer struct {
@@ -214,8 +240,17 @@ type darwinCapturer struct {
 }
 
 // newPlatformCapturer creates a new macOS screen capturer.
-// Calls SCShareableContent once to cache the display/filter/config.
+// On macOS 14+, uses ScreenCaptureKit (SCScreenshotManager).
+// On macOS 12-13, falls back to CGWindowListCreateImage.
 func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
+	if hasSCScreenshotManager() {
+		return newSCKCapturer(config)
+	}
+	return newCGCapturer(config)
+}
+
+// newSCKCapturer creates a ScreenCaptureKit-based capturer (macOS 14+).
+func newSCKCapturer(config CaptureConfig) (ScreenCapturer, error) {
 	darwinCaptureMu.Lock()
 	errCode := int(C.initCapture(C.int(config.DisplayIndex)))
 	if errCode != 0 {
@@ -224,6 +259,8 @@ func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
 	}
 	return &darwinCapturer{config: config, initialized: true, holdsGlobalLock: true}, nil
 }
+
+// ---- ScreenCaptureKit capturer (macOS 14+) ----
 
 // Capture captures the entire screen using the cached filter/config.
 func (c *darwinCapturer) Capture() (*image.RGBA, error) {
@@ -242,11 +279,59 @@ func (c *darwinCapturer) Capture() (*image.RGBA, error) {
 
 	defer C.freeCapture(result.data)
 
-	return c.createImage(result)
+	return createImageFromResult(result)
 }
 
 // CaptureRegion captures a specific region of the screen
 func (c *darwinCapturer) CaptureRegion(x, y, width, height int) (*image.RGBA, error) {
+	return captureRegionFromFull(c, x, y, width, height)
+}
+
+// GetScreenBounds returns the screen dimensions
+func (c *darwinCapturer) GetScreenBounds() (width, height int, err error) {
+	return getScreenBoundsC(c.config.DisplayIndex)
+}
+
+// Close releases resources
+func (c *darwinCapturer) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.initialized {
+		C.releaseCapture()
+		c.initialized = false
+	}
+	if c.holdsGlobalLock {
+		c.holdsGlobalLock = false
+		darwinCaptureMu.Unlock()
+	}
+	return nil
+}
+
+// ---- Shared helpers ----
+
+// createImageFromResult creates a Go image from a C ScreenCaptureResult.
+func createImageFromResult(result C.ScreenCaptureResult) (*image.RGBA, error) {
+	width := int(result.width)
+	height := int(result.height)
+	bytesPerRow := int(result.bytesPerRow)
+
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+
+	dataSize := bytesPerRow * height
+	cData := C.GoBytes(result.data, C.int(dataSize))
+
+	for y := 0; y < height; y++ {
+		srcStart := y * bytesPerRow
+		dstStart := y * img.Stride
+		copy(img.Pix[dstStart:dstStart+width*4], cData[srcStart:srcStart+width*4])
+	}
+
+	return img, nil
+}
+
+// captureRegionFromFull captures a region by first capturing the full screen
+// and then cropping to the specified rectangle.
+func captureRegionFromFull(c ScreenCapturer, x, y, width, height int) (*image.RGBA, error) {
 	fullImg, err := c.Capture()
 	if err != nil {
 		return nil, err
@@ -272,52 +357,17 @@ func (c *darwinCapturer) CaptureRegion(x, y, width, height int) (*image.RGBA, er
 	return cropped, nil
 }
 
-// GetScreenBounds returns the screen dimensions
-func (c *darwinCapturer) GetScreenBounds() (width, height int, err error) {
+// getScreenBoundsC calls the C getScreenBounds function.
+func getScreenBoundsC(displayIndex int) (int, int, error) {
 	var cWidth, cHeight, cError C.int
 
-	C.getScreenBounds(C.int(c.config.DisplayIndex), &cWidth, &cHeight, &cError)
+	C.getScreenBounds(C.int(displayIndex), &cWidth, &cHeight, &cError)
 
 	if cError != 0 {
 		return 0, 0, translateDarwinError(int(cError))
 	}
 
 	return int(cWidth), int(cHeight), nil
-}
-
-// Close releases resources
-func (c *darwinCapturer) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.initialized {
-		C.releaseCapture()
-		c.initialized = false
-	}
-	if c.holdsGlobalLock {
-		c.holdsGlobalLock = false
-		darwinCaptureMu.Unlock()
-	}
-	return nil
-}
-
-// createImage creates a Go image from the capture result
-func (c *darwinCapturer) createImage(result C.ScreenCaptureResult) (*image.RGBA, error) {
-	width := int(result.width)
-	height := int(result.height)
-	bytesPerRow := int(result.bytesPerRow)
-
-	img := image.NewRGBA(image.Rect(0, 0, width, height))
-
-	dataSize := bytesPerRow * height
-	cData := C.GoBytes(result.data, C.int(dataSize))
-
-	for y := 0; y < height; y++ {
-		srcStart := y * bytesPerRow
-		dstStart := y * img.Stride
-		copy(img.Pix[dstStart:dstStart+width*4], cData[srcStart:srcStart+width*4])
-	}
-
-	return img, nil
 }
 
 // translateDarwinError converts C error codes to Go errors

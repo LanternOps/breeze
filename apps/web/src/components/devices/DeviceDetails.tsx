@@ -43,6 +43,7 @@ import DeviceBootPerformanceTab from './DeviceBootPerformanceTab';
 import DevicePlaybookHistory from './DevicePlaybookHistory';
 import DevicePeripheralsTab from './DevicePeripheralsTab';
 import DeviceWarrantyCard from './DeviceWarrantyCard';
+import MacOSPermissionsBanner from './MacOSPermissionsBanner';
 import { navigateTo } from '@/lib/navigation';
 import { OverflowTabs } from '../shared/OverflowTabs';
 
@@ -178,6 +179,8 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
           <DeviceActions device={device} onAction={onAction} />
         </div>
       </div>
+
+      <MacOSPermissionsBanner deviceId={device.id} osType={device.os} />
 
       <OverflowTabs tabs={tabs} activeTab={activeTab} onTabChange={(id) => setActiveTab(id as Tab)} />
 

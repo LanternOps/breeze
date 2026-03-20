@@ -102,8 +102,8 @@ jobs:
           - goos: darwin
             goarch: amd64
             suffix: ''
-            cgo: '0'
-            runner: ubuntu-latest
+            cgo: '1'
+            runner: macos-13
           - goos: darwin
             goarch: arm64
             suffix: ''

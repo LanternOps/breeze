@@ -450,9 +450,11 @@ function getHomebrewUrl(patch: PatchItem, osType: OSType): string | null {
 
 // ---------------------------------------------------------------------------
 // Poll interval / duration constants for post-install auto-refresh
+// macOS softwareupdate installs can take several minutes to download + install,
+// and the post-install rescan adds another 10-30s. 5 minutes covers most cases.
 // ---------------------------------------------------------------------------
 const INSTALL_POLL_INTERVAL_MS = 5_000;
-const INSTALL_POLL_MAX_DURATION_MS = 90_000;
+const INSTALL_POLL_MAX_DURATION_MS = 300_000;
 
 export default function DevicePatchStatusTab({ deviceId, timezone, osType }: DevicePatchStatusTabProps) {
   const [payload, setPayload] = useState<PatchPayload | null>(null);

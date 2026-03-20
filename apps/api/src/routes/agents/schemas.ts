@@ -270,6 +270,26 @@ export const managementPostureIngestSchema = z.object({
 // Inventory
 // ============================================
 
+/** Coerce date strings to valid ISO date (YYYY-MM-DD) or null.
+ *  Accepts ISO-8601 datetime or date-only formats. */
+const warrantyDateSchema = z.string().max(50).optional()
+  .transform((val) => {
+    if (!val) return undefined;
+    const d = new Date(val);
+    if (isNaN(d.getTime())) return undefined;
+    // Return date portion only (YYYY-MM-DD) for Postgres date columns
+    return d.toISOString().slice(0, 10);
+  });
+
+export const agentWarrantyInfoSchema = z.object({
+  source: z.string().min(1).max(50),
+  manufacturer: z.string().min(1).max(100),
+  coverageEndDate: warrantyDateSchema,
+  coverageStartDate: warrantyDateSchema,
+  coverageType: z.string().max(200).optional(),
+  deviceName: z.string().max(200).optional(),
+});
+
 export const updateHardwareSchema = z.object({
   cpuModel: z.string().optional(),
   cpuCores: z.number().int().optional(),

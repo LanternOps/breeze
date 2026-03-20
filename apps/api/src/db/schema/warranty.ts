@@ -25,6 +25,7 @@ export const deviceWarranty = pgTable('device_warranty', {
   warrantyStartDate: date('warranty_start_date'),
   warrantyEndDate: date('warranty_end_date'),
   entitlements: jsonb('entitlements').notNull().default([]),
+  dataSource: varchar('data_source', { length: 50 }).default('provider'),
   lastSyncAt: timestamp('last_sync_at'),
   lastSyncError: text('last_sync_error'),
   nextSyncAt: timestamp('next_sync_at'),

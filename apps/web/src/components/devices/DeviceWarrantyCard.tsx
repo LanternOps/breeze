@@ -19,6 +19,7 @@ type WarrantyData = {
   warrantyStartDate: string | null;
   warrantyEndDate: string | null;
   entitlements: WarrantyEntitlement[];
+  dataSource: string | null;
   lastSyncAt: string | null;
   lastSyncError: string | null;
 };
@@ -40,6 +41,15 @@ function formatDate(dateStr: string | null): string {
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return dateStr;
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+function dataSourceLabel(source: string | null): string {
+  if (!source) return '';
+  switch (source) {
+    case 'agent_plist': return 'Agent (macOS plist)';
+    case 'provider': return 'Vendor API';
+    default: return source;
+  }
 }
 
 function timeAgo(dateStr: string | null): string {
@@ -214,6 +224,9 @@ export default function DeviceWarrantyCard({ deviceId, compact = false }: Device
 
       <div className="flex items-center gap-4 text-xs text-muted-foreground">
         <span>Last checked: {timeAgo(warranty.lastSyncAt)}</span>
+        {warranty.dataSource && (
+          <span>Source: {dataSourceLabel(warranty.dataSource)}</span>
+        )}
         {warranty.lastSyncError && (
           <span className="text-red-500">Error: {warranty.lastSyncError}</span>
         )}

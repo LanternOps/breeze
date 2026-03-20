@@ -30,7 +30,9 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('./terminalWs', () => ({
-  handleTerminalOutput: vi.fn()
+  handleTerminalOutput: vi.fn(),
+  getActiveTerminalSession: vi.fn(),
+  unregisterTerminalOutputCallback: vi.fn()
 }));
 
 vi.mock('./desktopWs', () => ({

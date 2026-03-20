@@ -105,6 +105,7 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      APP_VERSION: ${BREEZE_VERSION:-dev}
       BREEZE_VERSION: ${BREEZE_VERSION:-latest}
       BINARY_SOURCE: ${BINARY_SOURCE:-github}
       AGENT_BINARY_DIR: /data/binaries/agent

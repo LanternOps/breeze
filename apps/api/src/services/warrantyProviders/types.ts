@@ -1,5 +1,5 @@
 export interface WarrantyEntitlement {
-  provider: 'dell' | 'hp' | 'lenovo';
+  provider: 'dell' | 'hp' | 'lenovo' | 'apple';
   serviceLevelDescription: string;
   entitlementType: string;
   startDate: string;
