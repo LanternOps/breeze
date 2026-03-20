@@ -4,14 +4,15 @@ package desktop
 
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc
-#cgo LDFLAGS: -framework CoreGraphics -framework CoreFoundation -framework AppKit -framework ScreenCaptureKit
+#cgo LDFLAGS: -framework CoreGraphics -framework CoreFoundation -framework AppKit
 
 #include <CoreGraphics/CoreGraphics.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <AppKit/AppKit.h>
-#include <ScreenCaptureKit/ScreenCaptureKit.h>
 #include <stdlib.h>
 #include <sys/sysctl.h>
+#include <objc/runtime.h>
+#include <objc/message.h>
 
 // ScreenCaptureResult holds the capture result
 typedef struct {
@@ -36,51 +37,60 @@ int darwinMajorVersion(void) {
 }
 
 // ---- ScreenCaptureKit path (macOS 14+) ----
+// All SCK classes are loaded dynamically via NSClassFromString to avoid
+// eager dyld symbol resolution on macOS 12-13 where SCK doesn't exist.
+// The framework is weak-linked (-weak_framework ScreenCaptureKit).
 
-// Cached ScreenCaptureKit objects — initialized once in initCapture(),
-// reused per-frame in captureFrame(). This avoids calling
-// getShareableContentExcludingDesktopWindows: every frame, which triggers
-// the macOS Screen Recording permission dialog repeatedly.
-static SCContentFilter* g_filter = nil;
-static SCStreamConfiguration* g_config = nil;
+// Cached ScreenCaptureKit objects (typed as id to avoid compile-time class refs)
+static id g_filter = nil;
+static id g_config = nil;
+
+// isSCKAvailable checks if ScreenCaptureKit classes can be loaded at runtime.
+static int isSCKAvailable(void) {
+    return NSClassFromString(@"SCShareableContent") != nil;
+}
 
 // initCapture queries the display list once, caches the filter and config
 // for the target display. Returns 0 on success, error code on failure.
 int initCapture(int displayIndex) {
-    // Release any previous state
     g_filter = nil;
     g_config = nil;
 
-    __block SCDisplay* targetDisplay = nil;
+    if (!isSCKAvailable()) return 8; // SCK not available on this macOS version
+
+    Class SCShareableContentClass = NSClassFromString(@"SCShareableContent");
+    __block id targetDisplay = nil;
     __block int error = 0;
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
 
-    [SCShareableContent getShareableContentExcludingDesktopWindows:NO
-                                             onScreenWindowsOnly:YES
-                                             completionHandler:^(SCShareableContent* _Nullable content, NSError* _Nullable err) {
-        if (err != nil || content == nil || content.displays.count == 0) {
+    // [SCShareableContent getShareableContentExcludingDesktopWindows:onScreenWindowsOnly:completionHandler:]
+    SEL sel = NSSelectorFromString(@"getShareableContentExcludingDesktopWindows:onScreenWindowsOnly:completionHandler:");
+    void (*sendMsg)(id, SEL, BOOL, BOOL, void(^)(id, NSError*)) = (void*)objc_msgSend;
+    sendMsg(SCShareableContentClass, sel, NO, YES, ^(id content, NSError* err) {
+        if (err != nil || content == nil) {
+            error = 2;
+            dispatch_semaphore_signal(sem);
+            return;
+        }
+        NSArray *displays = [content valueForKey:@"displays"];
+        if (displays.count == 0) {
             error = 2;
             dispatch_semaphore_signal(sem);
             return;
         }
         NSUInteger idx = (NSUInteger)displayIndex;
-        if (idx >= content.displays.count) idx = 0;
-        targetDisplay = content.displays[idx];
+        if (idx >= displays.count) idx = 0;
+        targetDisplay = displays[idx];
         dispatch_semaphore_signal(sem);
-    }];
+    });
 
-    // Timeout after 10 seconds — ScreenCaptureKit completion handler may
-    // never fire if the process lacks Screen Recording TCC authorization
-    // (root daemons cannot show the permission dialog).
     long timedOut = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 10LL * NSEC_PER_SEC));
-    if (timedOut != 0) return 7; // timeout
+    if (timedOut != 0) return 7;
     if (error != 0 || targetDisplay == nil) return error != 0 ? error : 2;
 
-    // SCDisplay.width/height are in points. On Retina displays we must
-    // multiply by the backing scale factor to capture at native pixel
-    // resolution. Match the SCDisplay to its NSScreen via CGDirectDisplayID.
     CGFloat scaleFactor = 1.0;
-    CGDirectDisplayID targetID = targetDisplay.displayID;
+    NSNumber *displayIDNum = [targetDisplay valueForKey:@"displayID"];
+    CGDirectDisplayID targetID = [displayIDNum unsignedIntValue];
     for (NSScreen *screen in [NSScreen screens]) {
         NSNumber *screenNum = screen.deviceDescription[@"NSScreenNumber"];
         if (screenNum && [screenNum unsignedIntValue] == targetID) {
@@ -89,38 +99,56 @@ int initCapture(int displayIndex) {
         }
     }
 
-    g_filter = [[SCContentFilter alloc] initWithDisplay:targetDisplay excludingWindows:@[]];
-    g_config = [[SCStreamConfiguration alloc] init];
-    g_config.width = (size_t)(targetDisplay.width * scaleFactor);
-    g_config.height = (size_t)(targetDisplay.height * scaleFactor);
-    g_config.showsCursor = YES;
+    Class SCContentFilterClass = NSClassFromString(@"SCContentFilter");
+    Class SCStreamConfigClass = NSClassFromString(@"SCStreamConfiguration");
+
+    // [[SCContentFilter alloc] initWithDisplay:excludingWindows:]
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+    g_filter = [[SCContentFilterClass alloc] performSelector:NSSelectorFromString(@"initWithDisplay:excludingWindows:")
+                                                  withObject:targetDisplay
+                                                  withObject:@[]];
+    #pragma clang diagnostic pop
+    g_config = [[SCStreamConfigClass alloc] init];
+
+    NSNumber *widthNum = [targetDisplay valueForKey:@"width"];
+    NSNumber *heightNum = [targetDisplay valueForKey:@"height"];
+    [g_config setValue:@((size_t)([widthNum doubleValue] * scaleFactor)) forKey:@"width"];
+    [g_config setValue:@((size_t)([heightNum doubleValue] * scaleFactor)) forKey:@"height"];
+    [g_config setValue:@YES forKey:@"showsCursor"];
 
     return 0;
 }
 
 // captureFrame captures a screenshot using the cached filter/config.
-// Must call initCapture() first.
 ScreenCaptureResult captureFrame(void) {
     __block ScreenCaptureResult result = {0};
 
     if (g_filter == nil || g_config == nil) {
-        result.error = 6; // not initialized
+        result.error = 6;
+        return result;
+    }
+
+    Class SCScreenshotManagerClass = NSClassFromString(@"SCScreenshotManager");
+    if (SCScreenshotManagerClass == nil) {
+        result.error = 8;
         return result;
     }
 
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
     __block CGImageRef capturedImage = NULL;
 
-    [SCScreenshotManager captureImageWithFilter:g_filter
-                                  configuration:g_config
-                              completionHandler:^(CGImageRef _Nullable image, NSError* _Nullable error) {
-        if (error != nil || image == NULL) {
+    // [SCScreenshotManager captureImageWithFilter:configuration:completionHandler:]
+    SEL captureSel = NSSelectorFromString(@"captureImageWithFilter:configuration:completionHandler:");
+    void (*sendCapture)(id, SEL, id, id, void(^)(CGImageRef, NSError*)) = (void*)objc_msgSend;
+    sendCapture(SCScreenshotManagerClass, captureSel, g_filter, g_config, ^(CGImageRef image, NSError* capError) {
+        if (capError != nil || image == NULL) {
             result.error = 3;
         } else {
             capturedImage = CGImageRetain(image);
         }
         dispatch_semaphore_signal(sem);
-    }];
+    });
 
     long captureTimedOut = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 10LL * NSEC_PER_SEC));
     if (captureTimedOut != 0) {
