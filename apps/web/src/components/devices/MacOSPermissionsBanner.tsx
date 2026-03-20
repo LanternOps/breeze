@@ -58,7 +58,7 @@ export default function MacOSPermissionsBanner({ deviceId, osType }: MacOSPermis
         <p className="mt-1 text-sm text-amber-700 dark:text-amber-400">
           {fdaMissing
             ? 'Full Disk Access is required. Grant it in System Settings > Privacy & Security > Full Disk Access. Screen Recording and Accessibility will be configured automatically.'
-            : 'Screen Recording and Accessibility are being configured automatically. This should resolve within a few minutes. If not, try restarting the agent.'}
+            : 'Screen Recording and Accessibility are being configured automatically. If this persists, check agent logs or restart the agent.'}
         </p>
         {fdaMissing && (
           <div className="mt-2 flex flex-wrap gap-2">

@@ -17,6 +17,10 @@ func TestSqlStr(t *testing.T) {
 		{"/usr/local/bin/breeze-agent", "'/usr/local/bin/breeze-agent'"},
 		{"", "''"},
 		{"O'Brien's", "'O''Brien''s'"},
+		{"path/with;semicolon", "'path/with;semicolon'"},
+		{"value--comment", "'value--comment'"},
+		{"back\\slash", "'back\\slash'"},
+		{"null\x00byte", "'null\x00byte'"},
 	}
 
 	for _, tt := range tests {

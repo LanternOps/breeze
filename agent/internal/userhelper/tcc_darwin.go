@@ -24,12 +24,25 @@ static bool requestScreenRecording(void) {
 	return CGRequestScreenCaptureAccess();
 }
 
-// checkAccessibility returns true if accessibility access is granted.
-// Uses kAXTrustedCheckOptionPrompt=YES on first call to trigger the
-// macOS system prompt that opens System Settings with the binary highlighted.
-static bool checkAccessibility(void) {
+// checkAccessibilityWithPrompt returns true if accessibility access is granted.
+// Uses kAXTrustedCheckOptionPrompt=YES to trigger the macOS system prompt that
+// opens System Settings with the binary highlighted. Should only be called once.
+static bool checkAccessibilityWithPrompt(void) {
 	CFStringRef key = kAXTrustedCheckOptionPrompt;
 	CFBooleanRef value = kCFBooleanTrue;
+	CFDictionaryRef opts = CFDictionaryCreate(
+		NULL, (const void **)&key, (const void **)&value, 1,
+		&kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+	Boolean trusted = AXIsProcessTrustedWithOptions(opts);
+	CFRelease(opts);
+	return trusted;
+}
+
+// checkAccessibilityNoPrompt returns true if accessibility access is granted.
+// Uses kAXTrustedCheckOptionPrompt=NO so no system prompt is shown.
+static bool checkAccessibilityNoPrompt(void) {
+	CFStringRef key = kAXTrustedCheckOptionPrompt;
+	CFBooleanRef value = kCFBooleanFalse;
 	CFDictionaryRef opts = CFDictionaryCreate(
 		NULL, (const void **)&key, (const void **)&value, 1,
 		&kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
@@ -48,9 +61,17 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+)
+
+// accessibilityPrompted tracks whether we have already triggered the
+// accessibility TCC prompt so we don't re-prompt after helper restarts.
+var (
+	accessibilityPrompted   bool
+	accessibilityPromptedMu sync.Mutex
 )
 
 // tccDBPath is the system TCC database path used to probe Full Disk Access.
@@ -67,11 +88,22 @@ const tccFastCheckInterval = 2 * time.Minute
 // tccFastCheckDuration is how long to use the fast interval after startup.
 const tccFastCheckDuration = 30 * time.Minute
 
-// CheckTCCPermissions probes macOS TCC permissions without triggering prompts.
+// CheckTCCPermissions probes macOS TCC permissions. On the first call,
+// triggers the accessibility system prompt; subsequent calls check silently.
 func CheckTCCPermissions() *ipc.TCCStatus {
+	accessibilityPromptedMu.Lock()
+	var accessibility bool
+	if !accessibilityPrompted {
+		accessibility = bool(C.checkAccessibilityWithPrompt())
+		accessibilityPrompted = true
+	} else {
+		accessibility = bool(C.checkAccessibilityNoPrompt())
+	}
+	accessibilityPromptedMu.Unlock()
+
 	return &ipc.TCCStatus{
 		ScreenRecording: bool(C.checkScreenRecording()),
-		Accessibility:   bool(C.checkAccessibility()),
+		Accessibility:   accessibility,
 		FullDiskAccess:  probeFullDiskAccess(),
 		CheckedAt:       time.Now().UTC(),
 	}
@@ -255,18 +287,22 @@ func showTCCDialog(missing []string) {
 		}
 	}
 
-	var msg string
+	var msg, script string
 	if fdaMissing {
 		msg = "Breeze Agent needs Full Disk Access to function properly.\\n\\nPlease grant it in System Settings > Privacy & Security > Full Disk Access.\\n\\nScreen Recording and Accessibility will be configured automatically."
+		script = fmt.Sprintf(
+			`display dialog "%s" `+
+				`buttons {"Later", "Open Settings"} default button "Open Settings" with title "Breeze: Permissions Required" giving up after 60`,
+			msg,
+		)
 	} else {
-		msg = "Screen Recording and Accessibility are being configured automatically.\\n\\nThis should resolve within a few minutes. If not, try restarting the agent."
+		msg = "Screen Recording and Accessibility are being configured automatically.\\n\\nThis should resolve within a few minutes. If this persists, check agent logs or restart the agent."
+		script = fmt.Sprintf(
+			`display dialog "%s" `+
+				`buttons {"OK"} default button "OK" with title "Breeze: Permissions Configuring" giving up after 60`,
+			msg,
+		)
 	}
-
-	script := fmt.Sprintf(
-		`display dialog "%s" `+
-			`buttons {"Later", "Open Settings"} default button "Open Settings" with title "Breeze: Permissions Required" giving up after 60`,
-		msg,
-	)
 
 	cmd := exec.Command("osascript", "-e", script)
 	output, err := cmd.Output()
@@ -276,7 +312,7 @@ func showTCCDialog(missing []string) {
 	}
 
 	// If user clicked "Open Settings", open the FDA pane (the only manual step)
-	if strings.Contains(string(output), "Open Settings") {
+	if fdaMissing && strings.Contains(string(output), "Open Settings") {
 		openSettingsForPermission("Full Disk Access")
 	}
 }
@@ -295,7 +331,7 @@ func showTCCNotification(missing []string) {
 	if fdaMissing {
 		body = "Full Disk Access is required. Grant it in System Settings > Privacy & Security > Full Disk Access. Other permissions will be configured automatically."
 	} else {
-		body = "Screen Recording and Accessibility are being configured automatically. If this persists, try restarting the agent."
+		body = "Screen Recording and Accessibility are being configured automatically. If this persists, check agent logs or restart the agent."
 	}
 
 	req := ipc.NotifyRequest{

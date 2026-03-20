@@ -55,6 +55,11 @@ func EnsurePermissions() ([]GrantResult, error) {
 		return nil, fmt.Errorf("TCC grant requires root (current uid=%d)", os.Getuid())
 	}
 
+	// Verify sqlite3 is available on PATH
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		return nil, fmt.Errorf("sqlite3 not found — required for TCC auto-grant: %w", err)
+	}
+
 	// Verify the TCC database exists and is readable (i.e. we have FDA)
 	if _, err := os.Stat(systemTCCDBPath); err != nil {
 		return nil, fmt.Errorf("cannot access TCC database at %s: %w", systemTCCDBPath, err)
@@ -142,11 +147,12 @@ func detectTCCSchema() ([]string, error) {
 }
 
 // isAlreadyGranted checks if a TCC entry already exists and is allowed
-// (auth_value=2) for the agent binary.
+// (auth_value=2) for the agent binary. Filters on indirect_object_identifier
+// to avoid ambiguity when both '' and 'UNUSED' rows exist.
 func isAlreadyGranted(service string) (bool, error) {
 	query := fmt.Sprintf(
-		"SELECT auth_value FROM access WHERE service='%s' AND client='%s' AND client_type=1;",
-		service, agentBinaryPath,
+		"SELECT auth_value FROM access WHERE service=%s AND client=%s AND client_type=1 AND indirect_object_identifier='UNUSED';",
+		sqlStr(service), sqlStr(agentBinaryPath),
 	)
 	out, err := runSQLite(query)
 	if err != nil {
@@ -190,7 +196,7 @@ func grantPermission(service string, columns []string) error {
 		"csreq":                           "NULL",
 		"policy_id":                       "NULL",
 		"indirect_object_identifier_type": "0",
-		"indirect_object_identifier":      "''",
+		"indirect_object_identifier":      "'UNUSED'",
 		"indirect_object_code_identity":   "NULL",
 		"flags":                           "0",
 		"last_modified":                   fmt.Sprintf("%d", now),
@@ -200,9 +206,15 @@ func grantPermission(service string, columns []string) error {
 		"last_reminded":                   "0",
 	}
 
+	// Build a set of already-included columns to avoid duplicates
+	insertSet := make(map[string]bool, len(insertCols))
+	for _, c := range insertCols {
+		insertSet[c] = true
+	}
+
 	// Iterate in column order (as reported by PRAGMA) to match table layout
 	for _, col := range columns {
-		if val, ok := optionalDefaults[col]; ok {
+		if val, ok := optionalDefaults[col]; ok && !insertSet[col] {
 			insertCols = append(insertCols, col)
 			insertVals = append(insertVals, val)
 		}
@@ -233,7 +245,7 @@ func grantPermission(service string, columns []string) error {
 // runSQLite executes a SQL statement against the system TCC database using
 // the sqlite3 command-line tool. This avoids adding a CGO sqlite dependency.
 func runSQLite(statement string) (string, error) {
-	cmd := exec.Command("sqlite3", systemTCCDBPath, statement)
+	cmd := exec.Command("sqlite3", "-cmd", ".timeout 5000", systemTCCDBPath, statement)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("sqlite3: %w (output: %s)", err, strings.TrimSpace(string(out)))
