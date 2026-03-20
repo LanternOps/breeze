@@ -79,8 +79,22 @@ func (u *Updater) UpdateTo(version string) error {
 		return nil
 	}
 
-	// 5. Non-Windows: replace binary inline and restart
-	defer os.Remove(tempPath)
+	// 5. macOS: download and install via .pkg if available.
+	//    The .pkg preserves the Apple Developer ID code signature and runs
+	//    pre/post-install scripts. The raw binary approach destroys the
+	//    signature, which invalidates macOS TCC permission grants.
+	if runtime.GOOS == "darwin" {
+		defer os.Remove(tempPath)
+		pkgErr := u.installViaPkg(version)
+		if pkgErr == nil {
+			return nil // .pkg install handles binary replacement + restart
+		}
+		log.Warn("pkg install failed, falling back to binary replacement", "error", pkgErr.Error())
+	} else {
+		defer os.Remove(tempPath)
+	}
+
+	// 6. Non-macOS or pkg fallback: replace binary inline and restart
 	if err := u.replaceBinary(tempPath); err != nil {
 		if rbErr := u.Rollback(); rbErr != nil {
 			log.Error("rollback also failed after replace error", "replaceError", err, "rollbackError", rbErr)
@@ -290,11 +304,17 @@ func (u *Updater) replaceBinary(newPath string) error {
 		}
 	}
 
-	// macOS requires ad-hoc codesigning after binary replacement
+	// macOS: only ad-hoc sign if the binary isn't already properly signed.
+	// Release binaries are Apple Developer ID signed — re-signing with adhoc
+	// destroys the signature, which invalidates TCC permission grants.
 	if runtime.GOOS == "darwin" {
-		cmd := exec.Command("codesign", "--force", "--sign", "-", u.config.BinaryPath)
-		if err := cmd.Run(); err != nil {
-			log.Warn("ad-hoc codesign failed, binary may not launch", "error", err.Error())
+		verifyCmd := exec.Command("codesign", "--verify", "--verbose", u.config.BinaryPath)
+		if err := verifyCmd.Run(); err != nil {
+			// Not signed or signature invalid — apply adhoc signature so macOS allows execution
+			cmd := exec.Command("codesign", "--force", "--sign", "-", u.config.BinaryPath)
+			if err := cmd.Run(); err != nil {
+				log.Warn("ad-hoc codesign failed, binary may not launch", "error", err.Error())
+			}
 		}
 	}
 
@@ -452,4 +472,53 @@ func (u *Updater) Rollback() error {
 	}
 
 	return nil
+}
+
+// installViaPkg downloads the macOS .pkg installer for the given version and
+// runs it via `installer -pkg`. The .pkg preserves the Apple Developer ID
+// code signature and executes pre/post-install scripts (which handle
+// LaunchDaemon/LaunchAgent setup and service restart).
+func (u *Updater) installViaPkg(version string) error {
+	// Download .pkg directly from GitHub releases
+	pkgURL := fmt.Sprintf("https://github.com/LanternOps/breeze/releases/download/v%s/breeze-agent-darwin-%s.pkg",
+		version, runtime.GOARCH)
+	log.Info("downloading pkg for update", "url", pkgURL, "version", version)
+
+	resp, err := u.client.Get(pkgURL)
+	if err != nil {
+		return fmt.Errorf("failed to download pkg: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("pkg download failed with status %d", resp.StatusCode)
+	}
+
+	// Write .pkg to temp file
+	pkgFile, err := os.CreateTemp("", "breeze-agent-*.pkg")
+	if err != nil {
+		return fmt.Errorf("failed to create temp pkg file: %w", err)
+	}
+	pkgPath := pkgFile.Name()
+	defer os.Remove(pkgPath)
+
+	if _, err := io.Copy(pkgFile, resp.Body); err != nil {
+		pkgFile.Close()
+		return fmt.Errorf("failed to write pkg file: %w", err)
+	}
+	pkgFile.Close()
+
+	// Run the .pkg installer (requires root, which the agent service has)
+	log.Info("installing pkg", "path", pkgPath)
+	cmd := exec.Command("installer", "-pkg", pkgPath, "-target", "/")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("installer failed: %w (output: %s)", err, string(output))
+	}
+
+	log.Info("pkg install successful", "output", string(output))
+
+	// The .pkg postinstall script handles service restart via launchctl kickstart.
+	// Give it a moment, then exit — launchd will restart us with the new binary.
+	return Restart()
 }
