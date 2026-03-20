@@ -103,7 +103,7 @@ jobs:
             goarch: amd64
             suffix: ''
             cgo: '1'
-            runner: macos-13
+            runner: macos-latest
           - goos: darwin
             goarch: arm64
             suffix: ''
