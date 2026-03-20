@@ -116,7 +116,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
 
   // Shared fallback content for both compact and full modes
   const fallbackContent = status === 'fallback' ? (
-    <div className="absolute left-0 top-full z-50 mt-2 w-72 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm shadow-lg dark:border-amber-800 dark:bg-amber-950">
+    <div className="absolute right-0 bottom-full z-50 mb-2 w-72 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm shadow-lg dark:border-amber-800 dark:bg-amber-950">
       <div className="flex items-start gap-2.5">
         <Monitor className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
         <div className="flex-1">
