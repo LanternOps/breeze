@@ -507,7 +507,6 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
             </div>
           </div>
         )}
-      </div>
 
       {applicableFields.length > 0 && (
         <div className="rounded-lg border bg-card p-6 shadow-sm lg:col-span-2">
