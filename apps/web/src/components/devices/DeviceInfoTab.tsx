@@ -469,28 +469,27 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         <InfoRow label="BIOS Version" value={hw?.biosVersion ?? '—'} />
       </Section>
 
-      <div className="space-y-6">
-        <Section title="Agent" icon={<Shield className="h-4 w-4 text-muted-foreground" />}>
-          <InfoRow label="Agent Version" value={info?.agentVersion ?? '—'} />
-          <div className="flex justify-between py-2">
-            <dt className="text-sm text-muted-foreground">Status</dt>
-            <dd>
-              <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[status] ?? 'bg-muted/40 text-muted-foreground border-muted'}`}>
-                {status.charAt(0).toUpperCase() + status.slice(1)}
-              </span>
-            </dd>
-          </div>
-          <InfoRow label="Last Seen" value={formatDate(info?.lastSeenAt)} />
-          <InfoRow label="Enrolled" value={formatDate(info?.enrolledAt)} />
-          <InfoRow label="System Uptime" value={formatUptime(info?.uptimeSeconds)} />
-          <InfoRow label="Logged-in User" value={info?.lastUser ?? '—'} />
-        </Section>
+      <Section title="Agent" icon={<Shield className="h-4 w-4 text-muted-foreground" />}>
+        <InfoRow label="Agent Version" value={info?.agentVersion ?? '—'} />
+        <div className="flex justify-between py-2">
+          <dt className="text-sm text-muted-foreground">Status</dt>
+          <dd>
+            <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[status] ?? 'bg-muted/40 text-muted-foreground border-muted'}`}>
+              {status.charAt(0).toUpperCase() + status.slice(1)}
+            </span>
+          </dd>
+        </div>
+        <InfoRow label="Last Seen" value={formatDate(info?.lastSeenAt)} />
+        <InfoRow label="Enrolled" value={formatDate(info?.enrolledAt)} />
+        <InfoRow label="System Uptime" value={formatUptime(info?.uptimeSeconds)} />
+        <InfoRow label="Logged-in User" value={info?.lastUser ?? '—'} />
+      </Section>
 
-        {info?.osType === 'macos' && info?.tccPermissions && (
-          <MacOSPermissionsCard tccPermissions={info.tccPermissions} formatDate={formatDate} />
-        )}
+      {info?.osType === 'macos' && info?.tccPermissions && (
+        <MacOSPermissionsCard tccPermissions={info.tccPermissions} formatDate={formatDate} />
+      )}
 
-        {tags.length > 0 && (
+      {tags.length > 0 && (
           <div className="rounded-lg border bg-card p-6 shadow-sm">
             <div className="flex items-center gap-2 mb-4">
               <Tag className="h-4 w-4 text-muted-foreground" />

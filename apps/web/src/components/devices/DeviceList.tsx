@@ -520,7 +520,7 @@ export default function DeviceList({
                           <MoreVertical className="h-4 w-4" />
                         </button>
                         {rowMenuOpenId === device.id && (
-                          <div className="absolute right-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg">
+                          <div className="absolute right-0 bottom-full z-50 mb-1 w-48 rounded-md border bg-card shadow-lg">
                             <button
                               type="button"
                               disabled={device.status !== 'online'}
