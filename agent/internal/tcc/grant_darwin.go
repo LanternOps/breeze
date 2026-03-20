@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -80,34 +81,59 @@ func EnsurePermissions() ([]GrantResult, error) {
 	var results []GrantResult
 	var errCount int
 
+	// Screen Recording (kTCCServiceScreenCapture) must be granted in BOTH the
+	// system TCC database AND user-level TCC databases. On macOS 10.15+,
+	// CGPreflightScreenCaptureAccess() checks the user-level DB. Other
+	// permissions (Accessibility) only need the system DB.
+	userDBPaths := getUserTCCDBPaths()
+
 	for _, svc := range services {
 		r := GrantResult{Service: svc.Service, Name: svc.Name}
 
-		// Check if already granted
-		granted, checkErr := isAlreadyGranted(svc.Service)
+		// Grant in system TCC database
+		granted, checkErr := isAlreadyGranted(systemTCCDBPath, svc.Service)
 		if checkErr != nil {
 			log.Warn("failed to check existing TCC entry",
 				"service", svc.Name, "error", checkErr.Error())
-			// Continue to try granting anyway
 		}
 
 		if granted {
 			r.Granted = true
 			r.Already = true
-			log.Info("TCC permission already granted", "service", svc.Name)
-			results = append(results, r)
-			continue
+			log.Info("TCC permission already granted (system)", "service", svc.Name)
+		} else {
+			if grantErr := grantPermission(systemTCCDBPath, svc.Service, columns); grantErr != nil {
+				r.Err = grantErr
+				errCount++
+				log.Warn("failed to grant TCC permission (system)",
+					"service", svc.Name, "error", grantErr.Error())
+			} else {
+				r.Granted = true
+				log.Info("TCC permission granted (system)", "service", svc.Name)
+			}
 		}
 
-		// Grant the permission
-		if grantErr := grantPermission(svc.Service, columns); grantErr != nil {
-			r.Err = grantErr
-			errCount++
-			log.Warn("failed to grant TCC permission",
-				"service", svc.Name, "error", grantErr.Error())
-		} else {
-			r.Granted = true
-			log.Info("TCC permission granted successfully", "service", svc.Name)
+		// Screen Recording also needs user-level TCC grants
+		if svc.Service == "kTCCServiceScreenCapture" {
+			for _, userDB := range userDBPaths {
+				userGranted, _ := isAlreadyGranted(userDB, svc.Service)
+				if userGranted {
+					log.Debug("Screen Recording already granted in user DB", "db", userDB)
+					continue
+				}
+				// Detect schema for this user's DB (may differ from system DB)
+				userCols, schemaErr := detectTCCSchemaForDB(userDB)
+				if schemaErr != nil {
+					log.Warn("failed to detect user TCC schema", "db", userDB, "error", schemaErr.Error())
+					continue
+				}
+				if grantErr := grantPermission(userDB, svc.Service, userCols); grantErr != nil {
+					log.Warn("failed to grant Screen Recording in user DB",
+						"db", userDB, "error", grantErr.Error())
+				} else {
+					log.Info("Screen Recording granted in user DB", "db", userDB)
+				}
+			}
 		}
 
 		results = append(results, r)
@@ -122,7 +148,11 @@ func EnsurePermissions() ([]GrantResult, error) {
 // detectTCCSchema queries the TCC database to discover which columns exist
 // in the `access` table. This handles schema changes across macOS versions.
 func detectTCCSchema() ([]string, error) {
-	out, err := runSQLite("PRAGMA table_info(access);")
+	return detectTCCSchemaForDB(systemTCCDBPath)
+}
+
+func detectTCCSchemaForDB(dbPath string) ([]string, error) {
+	out, err := runSQLite(dbPath, "PRAGMA table_info(access);")
 	if err != nil {
 		return nil, fmt.Errorf("PRAGMA table_info failed: %w", err)
 	}
@@ -149,12 +179,12 @@ func detectTCCSchema() ([]string, error) {
 // isAlreadyGranted checks if a TCC entry already exists and is allowed
 // (auth_value=2) for the agent binary. Filters on indirect_object_identifier
 // to avoid ambiguity when both '' and 'UNUSED' rows exist.
-func isAlreadyGranted(service string) (bool, error) {
+func isAlreadyGranted(dbPath, service string) (bool, error) {
 	query := fmt.Sprintf(
 		"SELECT auth_value FROM access WHERE service=%s AND client=%s AND client_type=1 AND indirect_object_identifier='UNUSED';",
 		sqlStr(service), sqlStr(agentBinaryPath),
 	)
-	out, err := runSQLite(query)
+	out, err := runSQLite(dbPath, query)
 	if err != nil {
 		return false, err
 	}
@@ -164,7 +194,7 @@ func isAlreadyGranted(service string) (bool, error) {
 
 // grantPermission inserts or replaces a TCC entry for the given service.
 // It adapts the SQL to the detected schema columns.
-func grantPermission(service string, columns []string) error {
+func grantPermission(dbPath, service string, columns []string) error {
 	colSet := make(map[string]bool, len(columns))
 	for _, c := range columns {
 		colSet[c] = true
@@ -226,12 +256,12 @@ func grantPermission(service string, columns []string) error {
 		strings.Join(insertVals, ", "),
 	)
 
-	if _, err := runSQLite(stmt); err != nil {
+	if _, err := runSQLite(dbPath, stmt); err != nil {
 		return fmt.Errorf("INSERT failed for %s: %w", service, err)
 	}
 
 	// Verify the insert worked
-	granted, verifyErr := isAlreadyGranted(service)
+	granted, verifyErr := isAlreadyGranted(dbPath, service)
 	if verifyErr != nil {
 		return fmt.Errorf("verification query failed after INSERT: %w", verifyErr)
 	}
@@ -242,15 +272,36 @@ func grantPermission(service string, columns []string) error {
 	return nil
 }
 
-// runSQLite executes a SQL statement against the system TCC database using
+// runSQLite executes a SQL statement against a TCC database using
 // the sqlite3 command-line tool. This avoids adding a CGO sqlite dependency.
-func runSQLite(statement string) (string, error) {
-	cmd := exec.Command("sqlite3", "-cmd", ".timeout 5000", systemTCCDBPath, statement)
+func runSQLite(dbPath, statement string) (string, error) {
+	cmd := exec.Command("sqlite3", "-cmd", ".timeout 5000", dbPath, statement)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("sqlite3: %w (output: %s)", err, strings.TrimSpace(string(out)))
 	}
 	return string(out), nil
+}
+
+// getUserTCCDBPaths returns TCC database paths for all local user accounts.
+// Screen Recording grants must be in the user-level TCC database on macOS 10.15+.
+func getUserTCCDBPaths() []string {
+	entries, err := os.ReadDir("/Users")
+	if err != nil {
+		log.Warn("cannot list /Users for user TCC databases", "error", err.Error())
+		return nil
+	}
+	var paths []string
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") || e.Name() == "Shared" {
+			continue
+		}
+		dbPath := filepath.Join("/Users", e.Name(), "Library/Application Support/com.apple.TCC/TCC.db")
+		if _, err := os.Stat(dbPath); err == nil {
+			paths = append(paths, dbPath)
+		}
+	}
+	return paths
 }
 
 // sqlStr wraps a string value for SQL, escaping single quotes.
