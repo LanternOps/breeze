@@ -139,7 +139,6 @@ func probeFullDiskAccess() bool {
 // if not yet granted), then re-checks at a fast interval while permissions are
 // missing, switching to the slower interval once all are granted.
 func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}) {
-	promptFile := tccPromptFilePath()
 	startedAt := time.Now()
 	var seq uint64
 	var consecutiveFailures int
@@ -158,7 +157,11 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}) {
 		} else {
 			consecutiveFailures = 0
 		}
-		handleUserGuidance(status, promptFile)
+		// User guidance via osascript dialogs removed — the web UI banner
+		// handles admin-facing permission messaging. The system-level TCC
+		// prompts (CGRequestScreenCaptureAccess, AXIsProcessTrustedWithOptions)
+		// still trigger on first run via RequestScreenRecording() and
+		// CheckTCCPermissions().
 	}
 
 	// On first run, trigger the Screen Recording system prompt via
