@@ -51,7 +51,30 @@ export async function syncWarrantyForDevice(deviceId: string): Promise<void> {
 
   const provider = getProviderForManufacturer(hw.manufacturer);
   if (!provider) {
-    // No provider available — upsert as unknown
+    // Check if we already have agent-reported warranty data for this device.
+    // If so, don't overwrite it with an error — just skip.
+    const [existing] = await db
+      .select({ dataSource: deviceWarranty.dataSource, status: deviceWarranty.status })
+      .from(deviceWarranty)
+      .where(eq(deviceWarranty.deviceId, deviceId))
+      .limit(1);
+
+    if (existing?.dataSource === 'agent_plist') {
+      // Agent-reported data exists — preserve it regardless of status, just update nextSyncAt
+      const now = new Date();
+      await db
+        .update(deviceWarranty)
+        .set({
+          lastSyncAt: now,
+          lastSyncError: null,
+          nextSyncAt: new Date(now.getTime() + SYNC_CADENCE_MS),
+          updatedAt: now,
+        })
+        .where(eq(deviceWarranty.deviceId, deviceId));
+      return;
+    }
+
+    // No provider and no agent data — upsert as unknown
     await upsertWarranty(deviceId, device.orgId, hw.manufacturer, hw.serialNumber, {
       found: false,
       entitlements: [],
@@ -117,6 +140,7 @@ async function upsertWarranty(
       warrantyStartDate: result.warrantyStartDate,
       warrantyEndDate: result.warrantyEndDate,
       entitlements: result.entitlements,
+      dataSource: 'provider',
       lastSyncAt: now,
       lastSyncError: result.error ?? null,
       nextSyncAt,
@@ -131,12 +155,100 @@ async function upsertWarranty(
         warrantyStartDate: result.warrantyStartDate,
         warrantyEndDate: result.warrantyEndDate,
         entitlements: result.entitlements,
+        dataSource: 'provider',
         lastSyncAt: now,
         lastSyncError: result.error ?? null,
         nextSyncAt,
         updatedAt: now,
       },
     });
+}
+
+/** Upsert warranty data reported directly by the agent (e.g. Apple plist). */
+export interface AgentWarrantyData {
+  source: string;
+  manufacturer: string;
+  serialNumber: string | null;
+  coverageEndDate: string | null;
+  coverageStartDate: string | null;
+  coverageType: string | null;
+}
+
+/** Return the date string if it parses to a valid Date, otherwise null. */
+function sanitizeDateOrNull(val: string | null | undefined): string | null {
+  if (!val) return null;
+  const d = new Date(val);
+  if (isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+
+export async function upsertAgentWarranty(
+  deviceId: string,
+  orgId: string,
+  data: AgentWarrantyData
+): Promise<void> {
+  // Sanitize dates before DB insert to prevent Postgres errors
+  data = {
+    ...data,
+    coverageStartDate: sanitizeDateOrNull(data.coverageStartDate),
+    coverageEndDate: sanitizeDateOrNull(data.coverageEndDate),
+  };
+
+  const status = computeWarrantyStatus(data.coverageEndDate);
+  const now = new Date();
+  const nextSyncAt = new Date(now.getTime() + SYNC_CADENCE_MS);
+
+  // Build entitlements array from agent data
+  const entitlements = data.coverageType
+    ? [{
+        provider: 'apple' as const,
+        serviceLevelDescription: data.coverageType,
+        entitlementType: data.coverageType,
+        startDate: data.coverageStartDate ?? '',
+        endDate: data.coverageEndDate ?? '',
+      }]
+    : [];
+
+  await db
+    .insert(deviceWarranty)
+    .values({
+      deviceId,
+      orgId,
+      manufacturer: normalizeManufacturer(data.manufacturer),
+      serialNumber: data.serialNumber,
+      status,
+      warrantyStartDate: data.coverageStartDate,
+      warrantyEndDate: data.coverageEndDate,
+      entitlements,
+      dataSource: data.source,
+      lastSyncAt: now,
+      lastSyncError: null,
+      nextSyncAt,
+    })
+    .onConflictDoUpdate({
+      target: deviceWarranty.deviceId,
+      set: {
+        orgId,
+        manufacturer: normalizeManufacturer(data.manufacturer),
+        serialNumber: data.serialNumber,
+        status,
+        warrantyStartDate: data.coverageStartDate,
+        warrantyEndDate: data.coverageEndDate,
+        entitlements,
+        dataSource: data.source,
+        lastSyncAt: now,
+        lastSyncError: null,
+        nextSyncAt,
+        updatedAt: now,
+      },
+    });
+
+  // Evaluate warranty alerts after upsert
+  try {
+    await evaluateWarrantyAlerts(deviceId);
+  } catch (err) {
+    console.error(`[WarrantySync] Alert evaluation error for device ${deviceId}:`, err instanceof Error ? err.message : err);
+  }
 }
 
 export async function syncWarrantyBatch(deviceIds: string[]): Promise<void> {

@@ -187,140 +187,195 @@ function createTerminalWsHandlers(sessionId: string, ticket: string | undefined)
 
   return {
     onOpen: async (_event: unknown, ws: WSContext) => {
-      console.log(`Terminal WebSocket onOpen for session ${sessionId}`);
-      await validationPromise;
-      console.log(`Terminal validation result:`, validationResult?.valid, validationResult?.error);
+      let validated = false;
+      try {
+        console.log(`Terminal WebSocket onOpen for session ${sessionId}`);
+        await validationPromise;
+        console.log(`Terminal validation result:`, validationResult?.valid, validationResult?.error);
 
-      if (!validationResult || !validationResult.valid) {
-        console.warn(`Terminal WebSocket rejected for session ${sessionId}: ${validationResult?.error}`);
-        ws.send(JSON.stringify({
-          type: 'error',
-          code: 'AUTH_FAILED',
-          message: validationResult?.error || 'Authentication failed'
-        }));
-        ws.close(4001, 'Authentication failed');
-        return;
-      }
-
-      const { session, device, userId } = validationResult;
-      if (!session || !device || !userId) {
-        ws.close(4001, 'Invalid session data');
-        return;
-      }
-
-      // Check if agent is connected
-      console.log(`Checking if agent ${device.agentId} is connected...`);
-      if (!isAgentConnected(device.agentId)) {
-        console.warn(`Agent ${device.agentId} is not connected via WebSocket`);
-        ws.send(JSON.stringify({
-          type: 'error',
-          code: 'AGENT_OFFLINE',
-          message: 'Agent is not connected via WebSocket'
-        }));
-        ws.close(4002, 'Agent offline');
-        return;
-      }
-      console.log(`Agent ${device.agentId} is connected`);
-
-      // Rate limit user WS connections
-      if (isUserTerminalWsRateLimited(userId)) {
-        console.warn(`Terminal WebSocket rate limited for user ${userId}`);
-        ws.send(JSON.stringify({
-          type: 'error',
-          code: 'RATE_LIMITED',
-          message: 'Too many connection attempts'
-        }));
-        ws.close(4029, 'Rate limited');
-        return;
-      }
-
-      // Store the terminal session
-      const now = Date.now();
-      activeTerminalSessions.set(sessionId, {
-        userWs: ws,
-        agentId: device.agentId,
-        userId,
-        deviceId: device.id,
-        startedAt: new Date(),
-        lastPongAt: now,
-      });
-
-      // Register callback for terminal output
-      registerTerminalOutputCallback(sessionId, (data: string) => {
-        try {
-          ws.send(JSON.stringify({ type: 'output', data }));
-        } catch (error) {
-          console.error(`Failed to send terminal output to session ${sessionId}:`, error);
+        if (!validationResult || !validationResult.valid) {
+          console.warn(`Terminal WebSocket rejected for session ${sessionId}: ${validationResult?.error}`);
+          ws.send(JSON.stringify({
+            type: 'error',
+            code: 'AUTH_FAILED',
+            message: validationResult?.error || 'Authentication failed'
+          }));
+          ws.close(4001, 'Authentication failed');
+          return;
         }
-      });
 
-      console.log(`Terminal session ${sessionId} connected for device ${device.hostname}`);
-
-      // Update session status
-      await db
-        .update(remoteSessions)
-        .set({
-          status: 'active',
-          startedAt: new Date()
-        })
-        .where(eq(remoteSessions.id, sessionId));
-
-      // Send connected message to user
-      ws.send(JSON.stringify({
-        type: 'connected',
-        sessionId,
-        device: {
-          hostname: device.hostname,
-          osType: device.osType
+        const { session, device, userId } = validationResult;
+        if (!session || !device || !userId) {
+          ws.close(4001, 'Invalid session data');
+          return;
         }
-      }));
 
-      // Send terminal_start command to agent
-      const startCommand = {
-        id: `term-start-${sessionId}`,
-        type: 'terminal_start',
-        payload: {
+        // Check if agent is connected
+        console.log(`Checking if agent ${device.agentId} is connected...`);
+        if (!isAgentConnected(device.agentId)) {
+          console.warn(`Agent ${device.agentId} is not connected via WebSocket`);
+          ws.send(JSON.stringify({
+            type: 'error',
+            code: 'AGENT_OFFLINE',
+            message: 'Agent is not connected via WebSocket'
+          }));
+          ws.close(4002, 'Agent offline');
+          return;
+        }
+        console.log(`Agent ${device.agentId} is connected`);
+
+        // Rate limit user WS connections
+        if (isUserTerminalWsRateLimited(userId)) {
+          console.warn(`Terminal WebSocket rate limited for user ${userId}`);
+          ws.send(JSON.stringify({
+            type: 'error',
+            code: 'RATE_LIMITED',
+            message: 'Too many connection attempts'
+          }));
+          ws.close(4029, 'Rate limited');
+          return;
+        }
+
+        // All validation passed — safe to touch DB state for this session
+        validated = true;
+
+        // Store the terminal session
+        const now = Date.now();
+        activeTerminalSessions.set(sessionId, {
+          userWs: ws,
+          agentId: device.agentId,
+          userId,
+          deviceId: device.id,
+          startedAt: new Date(),
+          lastPongAt: now,
+        });
+
+        // Register callback for terminal output
+        registerTerminalOutputCallback(sessionId, (data: string) => {
+          try {
+            ws.send(JSON.stringify({ type: 'output', data }));
+          } catch (error) {
+            console.error(`Failed to send terminal output to session ${sessionId}:`, error);
+          }
+        });
+
+        console.log(`Terminal session ${sessionId} connected for device ${device.hostname}`);
+
+        // Update session status
+        await db
+          .update(remoteSessions)
+          .set({
+            status: 'active',
+            startedAt: new Date()
+          })
+          .where(eq(remoteSessions.id, sessionId));
+
+        // Send connected message to user
+        ws.send(JSON.stringify({
+          type: 'connected',
           sessionId,
-          cols: 80,
-          rows: 24,
-          shell: device.osType === 'windows' ? 'powershell' : undefined
-        }
-      };
-
-      const sent = sendCommandToAgent(device.agentId, startCommand);
-      if (!sent) {
-        ws.send(JSON.stringify({
-          type: 'error',
-          code: 'AGENT_SEND_FAILED',
-          message: 'Failed to send start command to agent'
+          device: {
+            hostname: device.hostname,
+            osType: device.osType
+          }
         }));
-      }
 
-      // Start server-side ping/pong for stale connection detection
-      const pingInterval = setInterval(() => {
-        const termSess = activeTerminalSessions.get(sessionId);
-        if (!termSess) {
-          clearInterval(pingInterval);
+        // Send terminal_start command to agent
+        const startCommand = {
+          id: `term-start-${sessionId}`,
+          type: 'terminal_start',
+          payload: {
+            sessionId,
+            cols: 80,
+            rows: 24,
+            shell: device.osType === 'windows' ? 'powershell' : undefined
+          }
+        };
+
+        const sent = sendCommandToAgent(device.agentId, startCommand);
+        if (!sent) {
+          ws.send(JSON.stringify({
+            type: 'error',
+            code: 'AGENT_SEND_FAILED',
+            message: 'Failed to send start command to agent'
+          }));
+
+          // Clean up: agent is offline, session cannot proceed
+          activeTerminalSessions.delete(sessionId);
+          unregisterTerminalOutputCallback(sessionId);
+          try {
+            await db
+              .update(remoteSessions)
+              .set({ status: 'failed', endedAt: new Date() })
+              .where(eq(remoteSessions.id, sessionId));
+          } catch (dbErr) {
+            console.error(`[TerminalWs] Failed to update session ${sessionId} after agent send failure:`, dbErr);
+          }
+          ws.close(4002, 'Agent send failed');
           return;
         }
-        const elapsed = Date.now() - termSess.lastPongAt;
-        if (elapsed > PING_INTERVAL_MS + PONG_TIMEOUT_MS) {
-          console.warn(`Terminal session ${sessionId} pong timeout (${elapsed}ms), closing`);
-          clearInterval(pingInterval);
-          ws.close(4008, 'Pong timeout');
-          return;
+
+        // Start server-side ping/pong for stale connection detection
+        const pingInterval = setInterval(() => {
+          const termSess = activeTerminalSessions.get(sessionId);
+          if (!termSess) {
+            clearInterval(pingInterval);
+            return;
+          }
+          const elapsed = Date.now() - termSess.lastPongAt;
+          if (elapsed > PING_INTERVAL_MS + PONG_TIMEOUT_MS) {
+            console.warn(`Terminal session ${sessionId} pong timeout (${elapsed}ms), closing`);
+            clearInterval(pingInterval);
+            ws.close(4008, 'Pong timeout');
+            return;
+          }
+          try {
+            ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
+          } catch (err) {
+            console.warn(`[TerminalWs] Ping send failed for session ${sessionId}, cleaning up`, err);
+            clearInterval(pingInterval);
+          }
+        }, PING_INTERVAL_MS);
+
+        const currentSession = activeTerminalSessions.get(sessionId);
+        if (currentSession) {
+          currentSession.pingInterval = pingInterval;
         }
+      } catch (error) {
+        console.error(`[TerminalWs] onOpen failed for session ${sessionId}:`, error);
+
+        // Clean up any state that may have been partially created
+        const partialSession = activeTerminalSessions.get(sessionId);
+        if (partialSession) {
+          if (partialSession.pingInterval) {
+            clearInterval(partialSession.pingInterval);
+          }
+          activeTerminalSessions.delete(sessionId);
+        }
+        unregisterTerminalOutputCallback(sessionId);
+
+        // Best-effort: mark DB session as failed — only if auth/validation already passed
+        if (validated) {
+          try {
+            await db
+              .update(remoteSessions)
+              .set({ status: 'failed', endedAt: new Date() })
+              .where(eq(remoteSessions.id, sessionId));
+          } catch (dbError) {
+            console.error(`[TerminalWs] Failed to update session ${sessionId} status to failed:`, dbError);
+          }
+        }
+
         try {
-          ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
-        } catch (err) {
-          console.warn(`[TerminalWs] Ping send failed for session ${sessionId}, cleaning up`, err);
-          clearInterval(pingInterval);
+          ws.send(JSON.stringify({
+            type: 'error',
+            code: 'INTERNAL_ERROR',
+            message: 'Terminal session setup failed'
+          }));
+          ws.close(4001, 'Session setup failed');
+        } catch (closeError) {
+          console.error(`[TerminalWs] Failed to close WS after onOpen error for session ${sessionId}:`, closeError);
         }
-      }, PING_INTERVAL_MS);
-
-      const currentSession = activeTerminalSessions.get(sessionId);
-      if (currentSession) {
-        currentSession.pingInterval = pingInterval;
       }
     },
 

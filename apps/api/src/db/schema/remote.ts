@@ -21,6 +21,7 @@ export const remoteSessions = pgTable('remote_sessions', {
   durationSeconds: integer('duration_seconds'),
   bytesTransferred: bigint('bytes_transferred', { mode: 'bigint' }),
   recordingUrl: text('recording_url'),
+  errorMessage: text('error_message'),
   createdAt: timestamp('created_at').defaultNow().notNull()
 });
 

@@ -16,6 +16,14 @@ static bool checkScreenRecording(void) {
 	return CGPreflightScreenCaptureAccess();
 }
 
+// requestScreenRecording triggers the macOS system prompt asking the user
+// to grant Screen Recording permission if not already granted. Returns true
+// if permission was already granted. This calls CGRequestScreenCaptureAccess()
+// which will show the TCC prompt on first call.
+static bool requestScreenRecording(void) {
+	return CGRequestScreenCaptureAccess();
+}
+
 // checkAccessibility returns true if accessibility access is granted.
 // Uses pure C CoreFoundation calls instead of Objective-C.
 static bool checkAccessibility(void) {
@@ -48,8 +56,15 @@ import (
 // Apple may move this in future macOS versions.
 const tccDBPath = "/Library/Application Support/com.apple.TCC/TCC.db"
 
-// tccCheckInterval is how often we re-check TCC permissions after the initial check.
+// tccCheckInterval is how often we re-check TCC permissions after all are granted.
 const tccCheckInterval = 60 * time.Minute
+
+// tccFastCheckInterval is how often we re-check when permissions are still missing.
+// Uses a shorter interval so the heartbeat picks up newly-granted permissions quickly.
+const tccFastCheckInterval = 2 * time.Minute
+
+// tccFastCheckDuration is how long to use the fast interval after startup.
+const tccFastCheckDuration = 30 * time.Minute
 
 // CheckTCCPermissions probes macOS TCC permissions without triggering prompts.
 func CheckTCCPermissions() *ipc.TCCStatus {
@@ -59,6 +74,14 @@ func CheckTCCPermissions() *ipc.TCCStatus {
 		FullDiskAccess:  probeFullDiskAccess(),
 		CheckedAt:       time.Now().UTC(),
 	}
+}
+
+// RequestScreenRecording triggers the macOS system prompt for Screen Recording
+// permission. Only triggers the prompt once per process — subsequent calls just
+// check the current state. Should be called on first startup to ensure the user
+// sees the consent dialog.
+func RequestScreenRecording() bool {
+	return bool(C.requestScreenRecording())
 }
 
 // probeFullDiskAccess checks Full Disk Access by attempting to open the system
@@ -79,16 +102,19 @@ func probeFullDiskAccess() bool {
 }
 
 // RunTCCCheckLoop periodically checks TCC permissions and sends status via IPC.
-// It runs an immediate check on start, then re-checks every tccCheckInterval.
-// On each check, if permissions are missing, it shows a dialog (first time) or
-// notification (subsequent times) guiding the user to System Settings.
+// It runs an immediate check on start (triggering the Screen Recording prompt
+// if not yet granted), then re-checks at a fast interval while permissions are
+// missing, switching to the slower interval once all are granted.
 func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}) {
 	promptFile := tccPromptFilePath()
+	startedAt := time.Now()
 	var seq uint64
 	var consecutiveFailures int
+	allGranted := false
 
 	check := func() {
 		status := CheckTCCPermissions()
+		allGranted = len(missingPermissions(status)) == 0
 		if err := sendTCCStatus(conn, status, &seq); err != nil {
 			consecutiveFailures++
 			if consecutiveFailures >= 3 {
@@ -102,13 +128,26 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}) {
 		handleUserGuidance(status, promptFile)
 	}
 
-	// Immediate first check
+	// On first run, trigger the Screen Recording system prompt via
+	// CGRequestScreenCaptureAccess(). This is idempotent — macOS only shows the
+	// dialog once per app. If the user has already granted the permission, this
+	// returns immediately with true.
+	granted := RequestScreenRecording()
+	log.Info("Screen Recording permission request", "alreadyGranted", granted)
+
+	// Immediate first check (sends full TCC status to the service)
 	check()
 	if consecutiveFailures >= 3 {
 		return
 	}
 
-	ticker := time.NewTicker(tccCheckInterval)
+	// Choose interval: fast while permissions are missing or within the fast
+	// check window, slow once everything is granted.
+	currentInterval := tccFastCheckInterval
+	if allGranted {
+		currentInterval = tccCheckInterval
+	}
+	ticker := time.NewTicker(currentInterval)
 	defer ticker.Stop()
 
 	for {
@@ -119,6 +158,17 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}) {
 			check()
 			if consecutiveFailures >= 3 {
 				return
+			}
+
+			// Adjust interval: use fast checks while permissions are missing
+			// or we're still within the fast-check startup window.
+			wantInterval := tccCheckInterval
+			if !allGranted && time.Since(startedAt) < tccFastCheckDuration {
+				wantInterval = tccFastCheckInterval
+			}
+			if wantInterval != currentInterval {
+				currentInterval = wantInterval
+				ticker.Reset(currentInterval)
 			}
 		}
 	}

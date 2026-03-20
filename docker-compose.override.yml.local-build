@@ -60,6 +60,7 @@ services:
       dockerfile: docker/Dockerfile.web
       args:
         PUBLIC_API_URL: ""
+        PUBLIC_APP_VERSION: ${BREEZE_VERSION:-dev}
     ports:
       - '4321:4321'
     healthcheck:

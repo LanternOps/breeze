@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import type { ComponentType } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import { getVersion } from '@tauri-apps/api/app';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import DesktopViewer from './components/DesktopViewer';
 import { parseDeepLink, type ConnectionParams } from './lib/protocol';
@@ -20,10 +21,11 @@ export default function App() {
   const [manualUrl, setManualUrl] = useState('');
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>('checking');
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
   const lastDeepLinkRef = useRef<{ key: string; at: number } | null>(null);
   const windowLabelRef = useRef<string>('main');
 
-  // Get the window label on mount
+  // Get the window label and app version on mount
   useEffect(() => {
     try {
       const win = getCurrentWebviewWindow();
@@ -31,6 +33,17 @@ export default function App() {
     } catch {
       // fallback: main
     }
+
+    getVersion().then((version) => {
+      setAppVersion(version);
+      try {
+        getCurrentWebviewWindow().setTitle(`Breeze Remote Desktop ${version}`);
+      } catch {
+        // non-critical — title bar update is best-effort
+      }
+    }).catch(() => {
+      // version unavailable — leave title as default
+    });
   }, []);
 
   // Check for updates on mount — blocks the app if outdated
@@ -207,7 +220,9 @@ export default function App() {
         <div className="flex items-center justify-center w-16 h-16 bg-blue-600/20 rounded-2xl mx-auto mb-6">
           <MonitorIcon className="w-8 h-8 text-blue-400" />
         </div>
-        <h1 className="text-2xl font-semibold text-white mb-2">Breeze Remote Desktop</h1>
+        <h1 className="text-2xl font-semibold text-white mb-2">
+          Breeze Remote Desktop{appVersion ? ` ${appVersion}` : ''}
+        </h1>
         <p className="text-gray-400 mb-8">
           Launch a remote desktop session from the Breeze web console, or paste a connection URL below.
         </p>

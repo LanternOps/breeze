@@ -37,5 +37,18 @@ launchctl bootout system/com.breeze.agent 2>/dev/null || true
 # Load the daemon (starts automatically via RunAtLoad)
 launchctl bootstrap system "$DAEMON_PLIST"
 
+# Load the user helper LaunchAgent for all currently logged-in GUI users.
+# The plist lives in /Library/LaunchAgents/ so launchd will auto-load it
+# for future logins, but we need to bootstrap it now for anyone already
+# logged in so Remote Desktop works immediately after install.
+for uid in $(ps -axo uid= -o comm= | grep -i '[lL]oginwindow' | awk '{print $1}' | sort -u); do
+    # Skip root (uid 0) — LaunchAgents are user-session only
+    [ "$uid" = "0" ] && continue
+    # Unload any stale instance first
+    launchctl bootout "gui/$uid/com.breeze.agent-user" 2>/dev/null || true
+    # Bootstrap into the user's GUI domain
+    launchctl bootstrap "gui/$uid" "$AGENT_PLIST" 2>/dev/null || true
+done
+
 echo "Breeze Agent installed and started."
 exit 0

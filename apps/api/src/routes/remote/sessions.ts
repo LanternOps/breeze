@@ -483,6 +483,7 @@ sessionRoutes.get(
       durationSeconds: session.durationSeconds,
       bytesTransferred: session.bytesTransferred ? Number(session.bytesTransferred) : null,
       recordingUrl: session.recordingUrl,
+      errorMessage: session.errorMessage,
       createdAt: session.createdAt,
       device: {
         id: device.id,

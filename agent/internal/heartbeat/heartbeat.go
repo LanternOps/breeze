@@ -751,6 +751,7 @@ func (h *Heartbeat) sendInventory() {
 		h.sendPolicyRegistryState,
 		h.sendPolicyConfigState,
 		h.sendSecurityStatus,
+		h.sendAppleWarrantyInfo,
 	}
 	for _, fn := range fns {
 		h.inventoryWg.Add(1)
@@ -840,6 +841,31 @@ func (h *Heartbeat) sendHardwareInventory() {
 		return
 	}
 	h.sendInventoryData("hardware", hw, "hardware")
+}
+
+func (h *Heartbeat) sendAppleWarrantyInfo() {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	info, err := collectors.CollectAppleWarranty()
+	if err != nil {
+		log.Warn("failed to collect Apple warranty info", "error", err.Error())
+		return
+	}
+	if info == nil {
+		log.Debug("no Apple warranty plist data found")
+		return
+	}
+
+	payload := map[string]any{
+		"source":            "agent_plist",
+		"manufacturer":      "Apple",
+		"coverageEndDate":   info.CoverageEndDate,
+		"coverageStartDate": info.CoverageStartDate,
+		"coverageType":      info.CoverageType,
+		"deviceName":        info.DeviceName,
+	}
+	h.sendInventoryData("warranty-info", payload, "apple warranty")
 }
 
 func (h *Heartbeat) sendSoftwareInventory() {

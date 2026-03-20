@@ -110,6 +110,7 @@ services:
       NODE_ENV: development
       HOST: 0.0.0.0
       PORT: 4321
+      PUBLIC_APP_VERSION: dev
     healthcheck:
       test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:4321/']
       start_period: 60s
