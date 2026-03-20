@@ -242,12 +242,30 @@ func tccPromptFilePath() string {
 // "Open Settings" button. Times out after 60 seconds to avoid blocking.
 // Uses bare `display dialog` (no `tell application` wrapper) to avoid
 // triggering Script Editor or requiring System Events accessibility access.
+//
+// The messaging follows the FDA-first approach: if Full Disk Access is missing,
+// that's the only action the user needs to take. Screen Recording and
+// Accessibility are auto-granted by the root daemon once FDA is available.
 func showTCCDialog(missing []string) {
-	list := escapeAppleScript(strings.Join(missing, ", "))
+	fdaMissing := false
+	for _, m := range missing {
+		if m == "Full Disk Access" {
+			fdaMissing = true
+			break
+		}
+	}
+
+	var msg string
+	if fdaMissing {
+		msg = "Breeze Agent needs Full Disk Access to function properly.\\n\\nPlease grant it in System Settings > Privacy & Security > Full Disk Access.\\n\\nScreen Recording and Accessibility will be configured automatically."
+	} else {
+		msg = "Screen Recording and Accessibility are being configured automatically.\\n\\nThis should resolve within a few minutes. If not, try restarting the agent."
+	}
+
 	script := fmt.Sprintf(
-		`display dialog "Breeze Agent needs these macOS permissions to work properly:\n\n%s\n\nPlease grant them in System Settings > Privacy & Security." `+
+		`display dialog "%s" `+
 			`buttons {"Later", "Open Settings"} default button "Open Settings" with title "Breeze: Permissions Required" giving up after 60`,
-		list,
+		msg,
 	)
 
 	cmd := exec.Command("osascript", "-e", script)
@@ -257,18 +275,32 @@ func showTCCDialog(missing []string) {
 		return
 	}
 
-	// If user clicked "Open Settings", open the first missing permission pane
+	// If user clicked "Open Settings", open the FDA pane (the only manual step)
 	if strings.Contains(string(output), "Open Settings") {
-		openSettingsForPermission(missing[0])
+		openSettingsForPermission("Full Disk Access")
 	}
 }
 
 // showTCCNotification shows a macOS notification for subsequent permission reminders.
 func showTCCNotification(missing []string) {
-	list := escapeAppleScript(strings.Join(missing, ", "))
+	fdaMissing := false
+	for _, m := range missing {
+		if m == "Full Disk Access" {
+			fdaMissing = true
+			break
+		}
+	}
+
+	var body string
+	if fdaMissing {
+		body = "Full Disk Access is required. Grant it in System Settings > Privacy & Security > Full Disk Access. Other permissions will be configured automatically."
+	} else {
+		body = "Screen Recording and Accessibility are being configured automatically. If this persists, try restarting the agent."
+	}
+
 	req := ipc.NotifyRequest{
-		Title: "Breeze: Permissions Needed",
-		Body:  fmt.Sprintf("Missing: %s. Open System Settings > Privacy & Security to grant.", list),
+		Title: "Breeze: Permission Required",
+		Body:  body,
 	}
 	showNotificationOS(req)
 }

@@ -38,15 +38,21 @@ func isWinSessionDisconnected(winSessionID string) bool {
 // startDesktopViaHelper routes a desktop start request through the IPC user helper.
 // If the helper crashes during the request, it automatically respawns and retries.
 // On macOS, it pre-checks TCC Screen Recording permission and returns a clear error
-// if the user hasn't granted it yet.
+// if the required permissions haven't been configured yet.
 func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []desktop.ICEServerConfig, displayIndex int, payload map[string]any) tools.CommandResult {
 	// On macOS, check TCC Screen Recording permission before attempting capture.
 	// This gives the admin a clear error instead of a cryptic capture failure.
 	if runtime.GOOS == "darwin" && h.sessionBroker != nil {
 		if tcc := h.sessionBroker.TCCStatus(); tcc != nil && !tcc.ScreenRecording {
+			if !tcc.FullDiskAccess {
+				return tools.CommandResult{
+					Status: "failed",
+					Error:  "Full Disk Access is not granted. The user must enable it in System Settings > Privacy & Security > Full Disk Access. Screen Recording and Accessibility will be configured automatically.",
+				}
+			}
 			return tools.CommandResult{
 				Status: "failed",
-				Error:  "Screen Recording permission is not granted. The user must enable it in System Settings > Privacy & Security > Screen Recording for the Breeze Agent.",
+				Error:  "Screen Recording is being configured automatically. Please wait a few minutes or restart the agent. If the issue persists, verify Full Disk Access is granted.",
 			}
 		}
 	}
