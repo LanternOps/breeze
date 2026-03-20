@@ -574,6 +574,8 @@ jobs:
           MSI_VERSION="${BUILD_VERSION%%-*}"
           # Update tauri.conf.json — match any semver version string
           sed -i.bak 's/"version": "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/"version": "'"$MSI_VERSION"'"/' src-tauri/tauri.conf.json && rm src-tauri/tauri.conf.json.bak
+          # Update window title to include version
+          sed -i.bak 's/"title": "Breeze Remote Desktop"/"title": "Breeze Remote Desktop '"$MSI_VERSION"'"/' src-tauri/tauri.conf.json && rm src-tauri/tauri.conf.json.bak
           # Update Cargo.toml
           sed -i.bak 's/^version = "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/version = "'"$MSI_VERSION"'"/' src-tauri/Cargo.toml && rm src-tauri/Cargo.toml.bak
           # Update package.json
@@ -676,6 +678,8 @@ jobs:
           MSI_VERSION="${BUILD_VERSION%%-*}"
           # Update tauri.conf.json — match any semver version string
           sed -i.bak 's/"version": "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/"version": "'"$MSI_VERSION"'"/' src-tauri/tauri.conf.json && rm src-tauri/tauri.conf.json.bak
+          # Update window title to include version
+          sed -i.bak 's/"title": "Breeze Remote Desktop"/"title": "Breeze Remote Desktop '"$MSI_VERSION"'"/' src-tauri/tauri.conf.json && rm src-tauri/tauri.conf.json.bak
           # Update Cargo.toml
           sed -i.bak 's/^version = "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/version = "'"$MSI_VERSION"'"/' src-tauri/Cargo.toml && rm src-tauri/Cargo.toml.bak
           # Update package.json
