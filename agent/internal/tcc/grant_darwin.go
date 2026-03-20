@@ -114,11 +114,17 @@ func EnsurePermissions() ([]GrantResult, error) {
 		}
 
 		// Screen Recording also needs user-level TCC grants
-		if svc.Service == "kTCCServiceScreenCapture" {
+		if svc.Service == "kTCCServiceScreenCapture" && len(userDBPaths) > 0 {
+			var userDBSucceeded bool
 			for _, userDB := range userDBPaths {
-				userGranted, _ := isAlreadyGranted(userDB, svc.Service)
+				userGranted, userCheckErr := isAlreadyGranted(userDB, svc.Service)
+				if userCheckErr != nil {
+					log.Warn("failed to check user TCC entry",
+						"db", userDB, "error", userCheckErr.Error())
+				}
 				if userGranted {
 					log.Debug("Screen Recording already granted in user DB", "db", userDB)
+					userDBSucceeded = true
 					continue
 				}
 				// Detect schema for this user's DB (may differ from system DB)
@@ -132,7 +138,13 @@ func EnsurePermissions() ([]GrantResult, error) {
 						"db", userDB, "error", grantErr.Error())
 				} else {
 					log.Info("Screen Recording granted in user DB", "db", userDB)
+					userDBSucceeded = true
 				}
+			}
+			if !userDBSucceeded {
+				r.Err = fmt.Errorf("Screen Recording grant failed for all %d user TCC databases", len(userDBPaths))
+				r.Granted = false
+				errCount++
 			}
 		}
 
@@ -177,19 +189,25 @@ func detectTCCSchemaForDB(dbPath string) ([]string, error) {
 }
 
 // isAlreadyGranted checks if a TCC entry already exists and is allowed
-// (auth_value=2) for the agent binary. Filters on indirect_object_identifier
-// to avoid ambiguity when both '' and 'UNUSED' rows exist.
+// (auth_value=2) for the agent binary. Does not filter on
+// indirect_object_identifier because older macOS TCC schemas may lack that
+// column. Instead we check if any matching row has auth_value=2.
 func isAlreadyGranted(dbPath, service string) (bool, error) {
 	query := fmt.Sprintf(
-		"SELECT auth_value FROM access WHERE service=%s AND client=%s AND client_type=1 AND indirect_object_identifier='UNUSED';",
+		"SELECT auth_value FROM access WHERE service=%s AND client=%s AND client_type=1;",
 		sqlStr(service), sqlStr(agentBinaryPath),
 	)
 	out, err := runSQLite(dbPath, query)
 	if err != nil {
 		return false, err
 	}
-	// auth_value=2 means "allowed"
-	return strings.TrimSpace(out) == "2", nil
+	// Check if any returned row has auth_value=2 ("allowed")
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.TrimSpace(line) == "2" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // grantPermission inserts or replaces a TCC entry for the given service.
@@ -285,6 +303,7 @@ func runSQLite(dbPath, statement string) (string, error) {
 
 // getUserTCCDBPaths returns TCC database paths for all local user accounts.
 // Screen Recording grants must be in the user-level TCC database on macOS 10.15+.
+// Uses Lstat and symlink checks to prevent following symlinks to attacker-chosen files.
 func getUserTCCDBPaths() []string {
 	entries, err := os.ReadDir("/Users")
 	if err != nil {
@@ -293,13 +312,39 @@ func getUserTCCDBPaths() []string {
 	}
 	var paths []string
 	for _, e := range entries {
-		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") || e.Name() == "Shared" {
+		// Use e.Type().IsDir() to avoid following symlinks on /Users entries
+		if !e.Type().IsDir() || strings.HasPrefix(e.Name(), ".") || e.Name() == "Shared" {
 			continue
 		}
 		dbPath := filepath.Join("/Users", e.Name(), "Library/Application Support/com.apple.TCC/TCC.db")
-		if _, err := os.Stat(dbPath); err == nil {
-			paths = append(paths, dbPath)
+		userHome := filepath.Join("/Users", e.Name())
+
+		// Use Lstat to avoid following symlinks
+		fi, err := os.Lstat(dbPath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				log.Warn("cannot access user TCC database", "user", e.Name(), "error", err.Error())
+			}
+			continue
 		}
+		// Reject symlinks — a local user could point this at an arbitrary file
+		if fi.Mode()&os.ModeSymlink != 0 {
+			log.Warn("skipping symlinked TCC database", "user", e.Name(), "path", dbPath)
+			continue
+		}
+		// Verify the resolved path stays within the user's home directory
+		resolved, err := filepath.EvalSymlinks(filepath.Dir(dbPath))
+		if err != nil {
+			log.Warn("cannot resolve TCC database directory", "user", e.Name(), "error", err.Error())
+			continue
+		}
+		if !strings.HasPrefix(resolved, userHome) {
+			log.Warn("TCC database path resolves outside user home, skipping",
+				"user", e.Name(), "resolved", resolved)
+			continue
+		}
+
+		paths = append(paths, dbPath)
 	}
 	return paths
 }
