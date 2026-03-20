@@ -24,12 +24,183 @@ type AppleWarrantyInfo struct {
 	Raw map[string]any `json:"raw,omitempty"`
 }
 
-// CollectAppleWarranty reads Apple warranty plists from
-// /Users/*/Library/Application Support/com.apple.NewDeviceOutreach/*.plist
-// and returns the best warranty info found. Since the agent typically runs as root,
-// it can access all user directories.
+// CollectAppleWarranty reads Apple warranty data from macOS NDO coverage caches
+// and plists. The primary source is the JSON coverage details cache at
+// /Users/*/Library/Application Support/com.apple.NewDeviceOutreach/caches/coverageDetails/*.json
+// which contains actual warranty/AppleCare data. Falls back to *.plist files in the
+// NDO directory root. Since the agent typically runs as root, it can access all user directories.
 func CollectAppleWarranty() (*AppleWarrantyInfo, error) {
-	// Glob across all user directories
+	serial := getDeviceSerial()
+
+	// Primary source: NDO coverage details cache (JSON)
+	info, err := collectFromCoverageCache(serial)
+	if err != nil {
+		slog.Warn("failed to read coverage cache", "error", err.Error())
+	}
+	if info != nil {
+		return info, nil
+	}
+
+	// Fallback: plist files in NDO root
+	return collectFromPlists()
+}
+
+// getDeviceSerial returns the hardware serial number via ioreg, or "" if unavailable.
+func getDeviceSerial() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "ioreg", "-rd1", "-c", "IOPlatformExpertDevice").Output()
+	if err != nil {
+		return ""
+	}
+
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.Contains(line, "IOPlatformSerialNumber") {
+			parts := strings.SplitN(line, "=", 2)
+			if len(parts) == 2 {
+				return strings.Trim(strings.TrimSpace(parts[1]), "\"")
+			}
+		}
+	}
+	return ""
+}
+
+// coverageDetailsJSON matches the Apple NDO coverage cache format.
+type coverageDetailsJSON struct {
+	SerialNumber            string `json:"serialNumber"`
+	CoverageLabel           string `json:"coverageLabel"`
+	SettingsCoverageSection struct {
+		CoverageExpirationLabel string `json:"coverageExpirationLabel"`
+		Offer                   struct {
+			Expiration string `json:"expiration"`
+		} `json:"offer"`
+	} `json:"settingsCoverageSection"`
+}
+
+// collectFromCoverageCache reads warranty info from NDO JSON coverage cache files.
+// If serial is non-empty, it tries to match the device's own serial first.
+func collectFromCoverageCache(serial string) (*AppleWarrantyInfo, error) {
+	pattern := "/Users/*/Library/Application Support/com.apple.NewDeviceOutreach/caches/coverageDetails/*.json"
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("glob coverage cache: %w", err)
+	}
+	if len(matches) == 0 {
+		return nil, nil
+	}
+
+	// If we know the serial, try exact match first
+	if serial != "" {
+		for _, path := range matches {
+			base := strings.TrimSuffix(filepath.Base(path), ".json")
+			if base == serial {
+				info, parseErr := parseCoverageDetailsJSON(path)
+				if parseErr != nil {
+					slog.Warn("failed to parse coverage cache", "path", path, "error", parseErr.Error())
+				}
+				if info != nil {
+					return info, nil
+				}
+			}
+		}
+	}
+
+	// No serial match — pick the entry with the latest end date
+	var best *AppleWarrantyInfo
+	var bestEnd time.Time
+	for _, path := range matches {
+		info, parseErr := parseCoverageDetailsJSON(path)
+		if parseErr != nil {
+			slog.Warn("failed to parse coverage cache", "path", path, "error", parseErr.Error())
+			continue
+		}
+		if info == nil {
+			continue
+		}
+		if info.CoverageEndDate != "" {
+			if t, tErr := time.Parse("2006-01-02", info.CoverageEndDate); tErr == nil {
+				if best == nil || t.After(bestEnd) {
+					best = info
+					bestEnd = t
+				}
+				continue
+			}
+		}
+		if best == nil {
+			best = info
+		}
+	}
+	return best, nil
+}
+
+// parseCoverageDetailsJSON reads an NDO coverage cache JSON file.
+func parseCoverageDetailsJSON(path string) (*AppleWarrantyInfo, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var cd coverageDetailsJSON
+	if err := json.Unmarshal(data, &cd); err != nil {
+		return nil, fmt.Errorf("json unmarshal: %w", err)
+	}
+
+	if cd.CoverageLabel == "" {
+		return nil, nil
+	}
+
+	info := &AppleWarrantyInfo{
+		CoverageType: cd.CoverageLabel,
+		DeviceName:   cd.SerialNumber,
+	}
+
+	// Parse end date from Unix timestamp or human-readable label
+	info.CoverageEndDate = parseCoverageExpiration(
+		cd.SettingsCoverageSection.Offer.Expiration,
+		cd.SettingsCoverageSection.CoverageExpirationLabel,
+	)
+
+	// Store raw data for debugging
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err == nil {
+		info.Raw = raw
+	}
+
+	return info, nil
+}
+
+// parseCoverageExpiration extracts a YYYY-MM-DD date from either a Unix timestamp
+// string or a human-readable label like "Renews April 17, 2026" / "Expires October 20, 2026".
+func parseCoverageExpiration(timestampStr, label string) string {
+	// Try Unix timestamp first (non-zero)
+	if timestampStr != "" && timestampStr != "0" {
+		var ts int64
+		if _, err := fmt.Sscanf(timestampStr, "%d", &ts); err == nil && ts > 0 {
+			return time.Unix(ts, 0).UTC().Format("2006-01-02")
+		}
+	}
+
+	// Parse human-readable label: strip "Renews " / "Expires " prefix
+	if label != "" {
+		dateStr := label
+		for _, prefix := range []string{"Renews ", "Expires "} {
+			if strings.HasPrefix(dateStr, prefix) {
+				dateStr = strings.TrimPrefix(dateStr, prefix)
+				break
+			}
+		}
+		// Parse "January 2, 2006" format
+		if t, err := time.Parse("January 2, 2006", dateStr); err == nil {
+			return t.Format("2006-01-02")
+		}
+	}
+
+	return ""
+}
+
+// collectFromPlists reads warranty info from NDO plist files (legacy fallback).
+func collectFromPlists() (*AppleWarrantyInfo, error) {
 	pattern := "/Users/*/Library/Application Support/com.apple.NewDeviceOutreach/*.plist"
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
@@ -37,7 +208,7 @@ func CollectAppleWarranty() (*AppleWarrantyInfo, error) {
 	}
 
 	if len(matches) == 0 {
-		return nil, nil // No plist files found — not an error, just no data
+		return nil, nil
 	}
 
 	var best *AppleWarrantyInfo
@@ -46,7 +217,6 @@ func CollectAppleWarranty() (*AppleWarrantyInfo, error) {
 	for _, path := range matches {
 		info, parseErr := parseAppleWarrantyPlist(path)
 		if parseErr != nil {
-			// Log but continue — some plists may not contain warranty data
 			slog.Warn("failed to parse warranty plist", "path", path, "error", parseErr.Error())
 			continue
 		}
@@ -63,7 +233,6 @@ func CollectAppleWarranty() (*AppleWarrantyInfo, error) {
 				}
 				continue
 			}
-			// Try RFC3339 date format
 			if t, tErr := time.Parse(time.RFC3339, info.CoverageEndDate); tErr == nil {
 				info.CoverageEndDate = t.Format("2006-01-02")
 				if best == nil || t.After(bestEnd) {
@@ -74,7 +243,6 @@ func CollectAppleWarranty() (*AppleWarrantyInfo, error) {
 			}
 		}
 
-		// If no end date parsed but we have no best, use this entry anyway
 		if best == nil {
 			best = info
 		}
