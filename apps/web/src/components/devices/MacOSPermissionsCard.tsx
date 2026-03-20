@@ -21,7 +21,7 @@ export default function MacOSPermissionsCard({ tccPermissions, formatDate }: Mac
           <p className="text-sm text-amber-700 dark:text-amber-400">
             {!tccPermissions.fullDiskAccess
               ? 'Full Disk Access must be granted in System Settings > Privacy & Security. Screen Recording and Accessibility will be configured automatically.'
-              : 'Screen Recording and Accessibility are being configured automatically. This should resolve shortly.'}
+              : 'Screen Recording and Accessibility are being configured automatically. If this persists, check agent logs or restart the agent.'}
           </p>
         </div>
       )}

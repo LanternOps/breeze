@@ -52,7 +52,7 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 			}
 			return tools.CommandResult{
 				Status: "failed",
-				Error:  "Screen Recording is being configured automatically. Please wait a few minutes or restart the agent. If the issue persists, verify Full Disk Access is granted.",
+				Error:  "Screen Recording is being configured automatically. If this persists, check agent logs or restart the agent.",
 			}
 		}
 	}
