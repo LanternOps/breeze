@@ -51,27 +51,22 @@ export default function MacOSPermissionsBanner({ deviceId, osType }: MacOSPermis
     fetchTcc();
   }, [deviceId, osType, fetchTcc]);
 
+  // Derive a stable boolean so the polling effect only resets when the
+  // polling rate actually needs to change, not on every response.
+  const hasMissing = tcc ? (!tcc.fullDiskAccess || !tcc.screenRecording || !tcc.accessibility) : false;
+
   // Poll while any permission is missing
   useEffect(() => {
     if (osType !== 'macos' || !tcc) return;
 
-    const hasMissing = !tcc.fullDiskAccess || !tcc.screenRecording || !tcc.accessibility;
     const interval = hasMissing ? POLL_INTERVAL_MISSING : POLL_INTERVAL_GRANTED;
-
-    const timer = setInterval(() => {
-      fetchTcc();
-    }, interval);
-
+    const timer = setInterval(fetchTcc, interval);
     return () => clearInterval(timer);
-  }, [osType, tcc, fetchTcc]);
+  }, [osType, hasMissing, fetchTcc]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!tcc) return null;
+  if (!tcc || !hasMissing) return null;
 
   const fdaMissing = !tcc.fullDiskAccess;
-  const srMissing = !tcc.screenRecording;
-  const accessibilityMissing = !tcc.accessibility;
-
-  if (!fdaMissing && !srMissing && !accessibilityMissing) return null;
 
   return (
     <div className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3">

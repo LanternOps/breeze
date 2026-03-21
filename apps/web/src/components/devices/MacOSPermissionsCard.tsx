@@ -23,7 +23,10 @@ export default function MacOSPermissionsCard({ deviceId, tccPermissions: initial
   const fetchTcc = useCallback(() => {
     return fetchWithAuth(`/devices/${deviceId}`)
       .then(r => {
-        if (!r.ok) return null;
+        if (!r.ok) {
+          console.debug('[MacOSPermissionsCard] Non-OK response fetching device:', r.status);
+          return null;
+        }
         return r.json();
       })
       .then(data => {
@@ -36,19 +39,16 @@ export default function MacOSPermissionsCard({ deviceId, tccPermissions: initial
       });
   }, [deviceId]);
 
+  // Derive a stable boolean so the polling effect only resets when the
+  // polling rate actually needs to change, not on every response.
+  const hasMissing = !tccPermissions.fullDiskAccess || !tccPermissions.screenRecording || !tccPermissions.accessibility;
+
   // Poll while any permission is missing; slow poll when all granted
   useEffect(() => {
-    const hasMissing = !tccPermissions.fullDiskAccess || !tccPermissions.screenRecording || !tccPermissions.accessibility;
     const interval = hasMissing ? POLL_INTERVAL_MISSING : POLL_INTERVAL_GRANTED;
-
-    const timer = setInterval(() => {
-      fetchTcc();
-    }, interval);
-
+    const timer = setInterval(fetchTcc, interval);
     return () => clearInterval(timer);
-  }, [tccPermissions, fetchTcc]);
-
-  const hasMissing = !tccPermissions.screenRecording || !tccPermissions.accessibility || !tccPermissions.fullDiskAccess;
+  }, [hasMissing, fetchTcc]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">

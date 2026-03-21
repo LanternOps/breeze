@@ -450,9 +450,9 @@ function getHomebrewUrl(patch: PatchItem, osType: OSType): string | null {
 
 // ---------------------------------------------------------------------------
 // Poll interval / duration constants for post-install auto-refresh
-// macOS softwareupdate installs can take 20+ minutes to download + install,
-// and the post-install rescan adds another 60s. Backend timeout is 30 minutes,
-// so the frontend poll must match to avoid premature timeout errors.
+// macOS softwareupdate installs can take 30+ minutes to download + install,
+// and the post-install rescan adds another 60s. The frontend polls for the
+// full duration since the backend uses fire-and-forget command queuing.
 // ---------------------------------------------------------------------------
 const INSTALL_POLL_INTERVAL_MS = 5_000;
 const INSTALL_POLL_MAX_DURATION_MS = 1_800_000;

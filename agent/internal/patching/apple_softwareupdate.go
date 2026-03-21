@@ -61,7 +61,7 @@ func (p *AppleSoftwareUpdateProvider) Install(patchID string) (InstallResult, er
 		}
 	}
 
-	cmd := exec.Command("softwareupdate", "-i", "--agree-to-license", resolvedID)
+	cmd := exec.Command("softwareupdate", "--agree-to-license", "-i", resolvedID)
 	output, err := cmd.CombinedOutput()
 	outStr := strings.TrimSpace(string(output))
 	if err != nil {

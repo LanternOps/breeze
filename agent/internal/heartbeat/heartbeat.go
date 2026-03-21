@@ -2242,9 +2242,19 @@ func (h *Heartbeat) executePatchInstallCommand(payload map[string]any, rollback 
 	// dashboard reflects the new state without waiting up to 15 minutes.
 	if successCount > 0 {
 		go func() {
-			time.Sleep(60 * time.Second) // Wait for macOS to finish installing before rescanning
-			log.Info("post-install patch rescan triggered", "successCount", successCount)
-			h.sendPatchInventory()
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("post-install patch rescan panicked", "recover", r)
+				}
+			}()
+			// Wait for macOS to finish installing before rescanning
+			select {
+			case <-time.After(60 * time.Second):
+				log.Info("post-install patch rescan triggered", "successCount", successCount)
+				h.sendPatchInventory()
+			case <-h.stopChan:
+				log.Info("post-install patch rescan cancelled — agent shutting down")
+			}
 		}()
 	}
 

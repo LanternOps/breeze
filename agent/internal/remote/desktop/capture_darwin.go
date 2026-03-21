@@ -42,9 +42,9 @@ int darwinMajorVersion(void) {
 }
 
 // ---- ScreenCaptureKit path (macOS 14+) ----
-// All SCK classes are loaded dynamically via NSClassFromString to avoid
-// eager dyld symbol resolution on macOS 12-13 where SCK doesn't exist.
-// The framework is weak-linked (-weak_framework ScreenCaptureKit).
+// All SCK classes are resolved at runtime via NSClassFromString to avoid
+// hard dyld symbol references on macOS 12-13 where SCK doesn't exist.
+// The framework is NOT linked; classes are loaded dynamically.
 
 // Cached ScreenCaptureKit objects (typed as id to avoid compile-time class refs)
 static id g_filter = nil;
