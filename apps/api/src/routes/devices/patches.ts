@@ -344,6 +344,8 @@ patchesRoutes.post(
 
     const command = queued.command;
 
+    const patchNames = patchRefs.map(p => p.title).filter(Boolean);
+
     writeRouteAudit(c, {
       orgId: device.orgId,
       action: 'device.patch.install.queue',
@@ -353,7 +355,8 @@ patchesRoutes.post(
       details: {
         commandId: command.id,
         commandStatus: command.status,
-        patchCount: data.patchIds.length
+        patchCount: data.patchIds.length,
+        patchNames
       }
     });
 
@@ -361,7 +364,8 @@ patchesRoutes.post(
       success: true,
       commandId: command.id,
       commandStatus: command.status,
-      patchCount: data.patchIds.length
+      patchCount: data.patchIds.length,
+      patchNames
     });
   }
 );

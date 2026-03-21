@@ -76,14 +76,16 @@ export async function authenticateWithBiometrics(
       return true;
     }
 
-    if (result.error === 'user_cancel') {
-      console.log('User cancelled biometric authentication');
-    } else if (result.error === 'not_enrolled') {
-      console.log('No biometrics enrolled');
-    } else if (result.error === 'lockout') {
-      console.log('Biometric authentication locked out');
-    } else {
-      console.log('Biometric authentication failed:', result.error);
+    if ('error' in result) {
+      if (result.error === 'user_cancel') {
+        console.log('User cancelled biometric authentication');
+      } else if (result.error === 'not_enrolled') {
+        console.log('No biometrics enrolled');
+      } else if (result.error === 'lockout') {
+        console.log('Biometric authentication locked out');
+      } else {
+        console.log('Biometric authentication failed:', result.error);
+      }
     }
 
     return false;

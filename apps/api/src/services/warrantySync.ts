@@ -74,13 +74,12 @@ export async function syncWarrantyForDevice(deviceId: string): Promise<void> {
       return;
     }
 
-    // No provider and no agent data — upsert as unknown
+    // No provider and no agent data — upsert as unknown (not an error)
     await upsertWarranty(deviceId, device.orgId, hw.manufacturer, hw.serialNumber, {
       found: false,
       entitlements: [],
       warrantyStartDate: null,
       warrantyEndDate: null,
-      error: `No configured provider for manufacturer: ${hw.manufacturer}`,
     });
     return;
   }

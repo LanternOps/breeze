@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import {
   View,
   StyleSheet,
@@ -357,7 +357,7 @@ export function SettingsScreen() {
           <Text variant="titleLarge" style={styles.modalTitle}>
             Change Password
           </Text>
-          
+
           <TextInput
             label="Current Password"
             value={currentPassword}
@@ -372,7 +372,7 @@ export function SettingsScreen() {
               />
             }
           />
-          
+
           <TextInput
             label="New Password"
             value={newPassword}
@@ -390,7 +390,7 @@ export function SettingsScreen() {
           <HelperText type="info" visible={true}>
             Password must be at least 8 characters
           </HelperText>
-          
+
           <TextInput
             label="Confirm New Password"
             value={confirmPassword}
@@ -410,7 +410,7 @@ export function SettingsScreen() {
               Passwords do not match
             </HelperText>
           )}
-          
+
           <View style={styles.modalButtons}>
             <Button
               mode="outlined"

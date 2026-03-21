@@ -154,6 +154,11 @@ export default function App() {
     } catch {
       window.open(url, '_blank');
     }
+    try {
+      getCurrentWebviewWindow().close();
+    } catch {
+      // best-effort
+    }
   }, [updateInfo]);
 
   // Forced update gate — blocks everything when outdated

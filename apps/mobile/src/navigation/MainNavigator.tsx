@@ -1,8 +1,6 @@
-import React from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { useTheme } from 'react-native-paper';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useTheme, Icon } from 'react-native-paper';
 
 import { AlertListScreen } from '../screens/alerts/AlertListScreen';
 import { AlertDetailScreen } from '../screens/alerts/AlertDetailScreen';
@@ -126,7 +124,7 @@ export function MainNavigator() {
         options={{
           tabBarLabel: 'Alerts',
           tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="bell-alert" color={color} size={size} />
+            <Icon source="bell-alert" color={color} size={size} />
           ),
         }}
       />
@@ -136,7 +134,7 @@ export function MainNavigator() {
         options={{
           tabBarLabel: 'Devices',
           tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="laptop" color={color} size={size} />
+            <Icon source="laptop" color={color} size={size} />
           ),
         }}
       />
@@ -146,7 +144,7 @@ export function MainNavigator() {
         options={{
           tabBarLabel: 'Settings',
           tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="cog" color={color} size={size} />
+            <Icon source="cog" color={color} size={size} />
           ),
         }}
       />

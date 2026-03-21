@@ -1,4 +1,4 @@
-import React from 'react';
+import { useEffect } from 'react';
 import { View, FlatList, RefreshControl, StyleSheet } from 'react-native';
 import { Text, useTheme, ActivityIndicator } from 'react-native-paper';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -22,7 +22,7 @@ export function AlertListScreen({ navigation }: Props) {
   const isLoading = useAppSelector(selectAlertsLoading);
   const error = useAppSelector(selectAlertsError);
 
-  React.useEffect(() => {
+  useEffect(() => {
     dispatch(fetchAlerts());
   }, [dispatch]);
 
