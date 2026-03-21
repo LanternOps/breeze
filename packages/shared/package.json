@@ -13,7 +13,6 @@
   },
   "scripts": {
     "test": "vitest",
-    "lint": "eslint --ext .ts src",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
