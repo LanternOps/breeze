@@ -7,13 +7,10 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "splash": {
-      "image": "./assets/splash.png",
+      "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
-    "assetBundlePatterns": [
-      "**/*"
-    ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.breeze.rmm",
@@ -39,6 +36,7 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
+      "expo-secure-store",
       [
         "expo-notifications",
         {
