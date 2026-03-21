@@ -62,7 +62,7 @@ export default function MacOSPermissionsBanner({ deviceId, osType }: MacOSPermis
     const interval = hasMissing ? POLL_INTERVAL_MISSING : POLL_INTERVAL_GRANTED;
     const timer = setInterval(fetchTcc, interval);
     return () => clearInterval(timer);
-  }, [osType, hasMissing, fetchTcc]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [osType, hasMissing, fetchTcc]);
 
   if (!tcc || !hasMissing) return null;
 

@@ -48,7 +48,7 @@ export default function MacOSPermissionsCard({ deviceId, tccPermissions: initial
     const interval = hasMissing ? POLL_INTERVAL_MISSING : POLL_INTERVAL_GRANTED;
     const timer = setInterval(fetchTcc, interval);
     return () => clearInterval(timer);
-  }, [hasMissing, fetchTcc]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hasMissing, fetchTcc]);
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
