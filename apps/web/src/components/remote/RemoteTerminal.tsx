@@ -230,6 +230,11 @@ export default function RemoteTerminal({
               }));
             } else if (message.type === 'error') {
               terminalRef.current.writeln(`\x1b[1;31mError: ${message.message}\x1b[0m`);
+            } else if (message.type === 'ping') {
+              // Respond to server ping to keep connection alive
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
+              }
             } else if (message.type === 'connected') {
               // Server has set up the session — now safe to send messages
               serverReady = true;

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { View, FlatList, RefreshControl, StyleSheet } from 'react-native';
 import { Text, useTheme, ActivityIndicator, Searchbar } from 'react-native-paper';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';

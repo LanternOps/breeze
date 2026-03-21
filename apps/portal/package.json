@@ -7,7 +7,6 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "lint": "eslint --ext .ts,.tsx src",
     "clean": "rm -rf dist .astro"
   },
   "dependencies": {

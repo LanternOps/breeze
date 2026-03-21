@@ -1,21 +1,3 @@
-/**
- * Type declarations to fix React types version mismatch between
- * @types/react 19.x and React Native's expected React 18.x types.
- *
- * This fixes the "X cannot be used as a JSX component" errors caused by
- * bigint being included in ReactNode in React 19 but not in React Native's types.
- *
- * React 19 uses an experimental interface to add bigint to ReactNode.
- * By re-declaring this interface as empty, we effectively remove bigint.
- */
-
-declare module 'react' {
-  // This interface is used by React 19 to add bigint to ReactNode.
-  // By declaring it as empty, we remove bigint from the allowed types.
-  // eslint-disable-next-line @typescript-eslint/no-empty-interface
-  interface DO_NOT_USE_OR_YOU_WILL_BE_FIRED_EXPERIMENTAL_REACT_NODES {}
-}
-
 // Declare process.env for React Native environment variables
 declare global {
   const process: {
@@ -27,22 +9,42 @@ declare global {
   };
 }
 
-// Fix expo-notifications trigger input types
-declare module 'expo-notifications' {
-  export enum SchedulableTriggerInputTypes {
-    TIME_INTERVAL = 'timeInterval',
-    DATE = 'date',
-    DAILY = 'daily',
-    WEEKLY = 'weekly',
-    YEARLY = 'yearly',
-    CALENDAR = 'calendar',
-  }
+// Fix react-native-paper types for React 19
+// Paper 5.x's component types use React.ComponentProps<typeof NativeX> which
+// React 19's stricter JSX types don't propagate correctly (verified at 5.15).
+// TODO: Remove when react-native-paper ships React 19-compatible types.
+declare module 'react-native-paper' {
+  import type { TextProps as RNTextProps, TextInputProps as RNTextInputProps, StyleProp, TextStyle, ViewStyle } from 'react-native';
+  import type { ReactNode, RefAttributes } from 'react';
 
-  interface TimeIntervalTriggerInput {
-    type?: SchedulableTriggerInputTypes.TIME_INTERVAL;
-    seconds: number;
-    repeats?: boolean;
-  }
+  // Paper Text: merges RN Text props back in (numberOfLines, etc.)
+  // Note: variant is typed as string rather than the precise VariantProp union
+  // because this override replaces Paper's full type. Accept loss of variant
+  // autocomplete to fix JSX prop propagation errors.
+  const Text: React.FC<RNTextProps & { variant?: string; theme?: unknown; children?: ReactNode }>;
+
+  // Paper TextInput: merges RN TextInput props back in (secureTextEntry, keyboardType, etc.)
+  const TextInput: React.ForwardRefExoticComponent<
+    RNTextInputProps & {
+      mode?: 'flat' | 'outlined';
+      label?: string | ReactNode;
+      left?: ReactNode;
+      right?: ReactNode;
+      disabled?: boolean;
+      error?: boolean;
+      theme?: unknown;
+      underlineColor?: string;
+      activeUnderlineColor?: string;
+      outlineColor?: string;
+      activeOutlineColor?: string;
+      contentStyle?: StyleProp<TextStyle>;
+      outlineStyle?: StyleProp<ViewStyle>;
+      underlineStyle?: StyleProp<ViewStyle>;
+    } & RefAttributes<{ focus: () => void; clear: () => void; blur: () => void; isFocused: () => boolean }>
+  > & {
+    Icon: React.FC<{ icon: string | ((props: { size: number; color: string }) => ReactNode); name?: string; color?: string; size?: number; style?: unknown; forceTextInputFocus?: boolean; onPress?: () => void }>;
+    Affix: React.FC<{ text: string; textStyle?: unknown; onPress?: () => void }>;
+  };
 }
 
 export {};

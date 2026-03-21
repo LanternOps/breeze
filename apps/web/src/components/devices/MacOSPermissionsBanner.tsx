@@ -1,7 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, XCircle } from 'lucide-react';
 import type { TCCPermissions } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
+
+const POLL_INTERVAL_MISSING = 30_000;  // 30s when any permission is missing
+const POLL_INTERVAL_GRANTED = 300_000; // 5 min when all granted
 
 type MacOSPermissionsBannerProps = {
   deviceId: string;
@@ -13,16 +16,15 @@ type MacOSPermissionsBannerProps = {
  * If Full Disk Access is missing, prompts the user to grant it (the only manual step).
  * If FDA is granted but SR/Accessibility are still pending, shows a "configuring" message.
  * Renders nothing for non-macOS devices or when all permissions are granted.
+ *
+ * Polls every 30s while any permission is missing so the UI updates automatically
+ * after the user grants FDA in System Settings.
  */
 export default function MacOSPermissionsBanner({ deviceId, osType }: MacOSPermissionsBannerProps) {
   const [tcc, setTcc] = useState<TCCPermissions | null>(null);
 
-  useEffect(() => {
-    setTcc(null); // Clear stale state from previous device
-
-    if (osType !== 'macos') return;
-
-    fetchWithAuth(`/devices/${deviceId}`)
+  const fetchTcc = useCallback(() => {
+    return fetchWithAuth(`/devices/${deviceId}`)
       .then(r => {
         if (!r.ok) {
           console.debug('[MacOSPermissionsBanner] Non-OK response fetching device:', r.status);
@@ -38,15 +40,33 @@ export default function MacOSPermissionsBanner({ deviceId, osType }: MacOSPermis
       .catch((err) => {
         console.debug('[MacOSPermissionsBanner] Error fetching TCC status:', err);
       });
-  }, [deviceId, osType]);
+  }, [deviceId]);
 
-  if (!tcc) return null;
+  // Initial fetch
+  useEffect(() => {
+    setTcc(null); // Clear stale state from previous device
+
+    if (osType !== 'macos') return;
+
+    fetchTcc();
+  }, [deviceId, osType, fetchTcc]);
+
+  // Derive a stable boolean so the polling effect only resets when the
+  // polling rate actually needs to change, not on every response.
+  const hasMissing = tcc ? (!tcc.fullDiskAccess || !tcc.screenRecording || !tcc.accessibility) : false;
+
+  // Poll while any permission is missing
+  useEffect(() => {
+    if (osType !== 'macos' || !tcc) return;
+
+    const interval = hasMissing ? POLL_INTERVAL_MISSING : POLL_INTERVAL_GRANTED;
+    const timer = setInterval(fetchTcc, interval);
+    return () => clearInterval(timer);
+  }, [osType, hasMissing, fetchTcc]);
+
+  if (!tcc || !hasMissing) return null;
 
   const fdaMissing = !tcc.fullDiskAccess;
-  const srMissing = !tcc.screenRecording;
-  const accessibilityMissing = !tcc.accessibility;
-
-  if (!fdaMissing && !srMissing && !accessibilityMissing) return null;
 
   return (
     <div className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3">

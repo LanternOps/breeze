@@ -227,8 +227,12 @@ export default function DeviceWarrantyCard({ deviceId, compact = false }: Device
         {warranty.dataSource && (
           <span>Source: {dataSourceLabel(warranty.dataSource)}</span>
         )}
+        {/* Legacy: pre-v0.13.9 syncs stored "No configured provider..." as lastSyncError.
+            Post-v0.13.9, lastSyncError is null for no-provider cases. Remove after re-sync cycle. */}
         {warranty.lastSyncError && (
-          <span className="text-red-500">Error: {warranty.lastSyncError}</span>
+          warranty.lastSyncError.includes('No configured provider')
+            ? <span className="text-muted-foreground">Warranty lookup not available for this manufacturer</span>
+            : <span className="text-red-500">Error: {warranty.lastSyncError}</span>
         )}
       </div>
     </div>

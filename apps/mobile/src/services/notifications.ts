@@ -1,13 +1,16 @@
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import { Platform } from 'react-native';
+import type { EventSubscription } from 'expo-notifications';
 
 import { registerPushToken as apiRegisterPushToken } from './api';
 
-// Configure how notifications are handled when the app is in the foreground
+// Configure how notifications are handled when the app is in the foreground.
+// SDK 55: shouldShowAlert is deprecated; use shouldShowBanner + shouldShowList.
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
-    shouldShowAlert: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
     shouldPlaySound: true,
     shouldSetBadge: true,
   }),
@@ -81,7 +84,7 @@ export async function registerForPushNotifications(): Promise<string | null> {
  */
 export function addNotificationReceivedListener(
   listener: (notification: Notifications.Notification) => void
-): Notifications.Subscription {
+): EventSubscription {
   return Notifications.addNotificationReceivedListener(listener);
 }
 
@@ -90,19 +93,22 @@ export function addNotificationReceivedListener(
  */
 export function addNotificationResponseReceivedListener(
   listener: (response: Notifications.NotificationResponse) => void
-): Notifications.Subscription {
+): EventSubscription {
   return Notifications.addNotificationResponseReceivedListener(listener);
 }
 
 /**
  * Remove a notification subscription
  */
-export function removeNotificationSubscription(subscription: Notifications.Subscription): void {
-  Notifications.removeNotificationSubscription(subscription);
+export function removeNotificationSubscription(subscription: EventSubscription): void {
+  if (subscription) {
+    subscription.remove();
+  }
 }
 
 /**
- * Schedule a local notification
+ * Schedule a local notification.
+ * SDK 55: trigger now requires an explicit `type` field using SchedulableTriggerInputTypes.
  */
 export async function scheduleLocalNotification(
   title: string,
@@ -118,6 +124,7 @@ export async function scheduleLocalNotification(
       sound: 'default',
     },
     trigger: {
+      type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
       seconds,
     },
   });
