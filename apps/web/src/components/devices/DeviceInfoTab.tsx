@@ -486,7 +486,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
       </Section>
 
       {info?.osType === 'macos' && info?.tccPermissions && (
-        <MacOSPermissionsCard tccPermissions={info.tccPermissions} formatDate={formatDate} />
+        <MacOSPermissionsCard deviceId={deviceId} tccPermissions={info.tccPermissions} formatDate={formatDate} />
       )}
 
       {tags.length > 0 && (

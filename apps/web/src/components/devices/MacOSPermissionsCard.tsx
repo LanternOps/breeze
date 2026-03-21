@@ -1,12 +1,53 @@
+import { useCallback, useEffect, useState } from 'react';
 import { ShieldCheck, AlertTriangle, CheckCircle2, XCircle } from 'lucide-react';
 import type { TCCPermissions } from '@breeze/shared';
+import { fetchWithAuth } from '../../stores/auth';
+
+const POLL_INTERVAL_MISSING = 30_000;  // 30s when any permission is missing
+const POLL_INTERVAL_GRANTED = 300_000; // 5 min when all granted
 
 type MacOSPermissionsCardProps = {
+  deviceId: string;
   tccPermissions: TCCPermissions;
   formatDate: (dateString: string | null | undefined) => string;
 };
 
-export default function MacOSPermissionsCard({ tccPermissions, formatDate }: MacOSPermissionsCardProps) {
+export default function MacOSPermissionsCard({ deviceId, tccPermissions: initialTcc, formatDate }: MacOSPermissionsCardProps) {
+  const [tccPermissions, setTccPermissions] = useState<TCCPermissions>(initialTcc);
+
+  // Sync local state when parent passes new initial data (e.g. device switch)
+  useEffect(() => {
+    setTccPermissions(initialTcc);
+  }, [initialTcc]);
+
+  const fetchTcc = useCallback(() => {
+    return fetchWithAuth(`/devices/${deviceId}`)
+      .then(r => {
+        if (!r.ok) return null;
+        return r.json();
+      })
+      .then(data => {
+        if (data?.tccPermissions) {
+          setTccPermissions(data.tccPermissions);
+        }
+      })
+      .catch((err) => {
+        console.debug('[MacOSPermissionsCard] Error polling TCC status:', err);
+      });
+  }, [deviceId]);
+
+  // Poll while any permission is missing; slow poll when all granted
+  useEffect(() => {
+    const hasMissing = !tccPermissions.fullDiskAccess || !tccPermissions.screenRecording || !tccPermissions.accessibility;
+    const interval = hasMissing ? POLL_INTERVAL_MISSING : POLL_INTERVAL_GRANTED;
+
+    const timer = setInterval(() => {
+      fetchTcc();
+    }, interval);
+
+    return () => clearInterval(timer);
+  }, [tccPermissions, fetchTcc]);
+
   const hasMissing = !tccPermissions.screenRecording || !tccPermissions.accessibility || !tccPermissions.fullDiskAccess;
 
   return (

@@ -450,11 +450,12 @@ function getHomebrewUrl(patch: PatchItem, osType: OSType): string | null {
 
 // ---------------------------------------------------------------------------
 // Poll interval / duration constants for post-install auto-refresh
-// macOS softwareupdate installs can take several minutes to download + install,
-// and the post-install rescan adds another 10-30s. 5 minutes covers most cases.
+// macOS softwareupdate installs can take 20+ minutes to download + install,
+// and the post-install rescan adds another 60s. Backend timeout is 30 minutes,
+// so the frontend poll must match to avoid premature timeout errors.
 // ---------------------------------------------------------------------------
 const INSTALL_POLL_INTERVAL_MS = 5_000;
-const INSTALL_POLL_MAX_DURATION_MS = 300_000;
+const INSTALL_POLL_MAX_DURATION_MS = 1_800_000;
 
 export default function DevicePatchStatusTab({ deviceId, timezone, osType }: DevicePatchStatusTabProps) {
   const [payload, setPayload] = useState<PatchPayload | null>(null);
@@ -588,7 +589,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         }
         setIsPolling(false);
         setInstallingPatchIds(new Set());
-        setControlNotice({ kind: 'info', message: 'Install may still be in progress. Refresh later to see updated status.' });
+        setControlNotice({ kind: 'info', message: 'Install is taking longer than expected. macOS updates can take 30+ minutes. Refresh the page later to check status.' });
         await fetchPatchStatus(true);
         return;
       }

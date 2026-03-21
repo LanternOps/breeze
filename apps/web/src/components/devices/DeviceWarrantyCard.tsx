@@ -228,7 +228,9 @@ export default function DeviceWarrantyCard({ deviceId, compact = false }: Device
           <span>Source: {dataSourceLabel(warranty.dataSource)}</span>
         )}
         {warranty.lastSyncError && (
-          <span className="text-red-500">Error: {warranty.lastSyncError}</span>
+          warranty.lastSyncError.includes('No configured provider')
+            ? <span className="text-muted-foreground">Warranty lookup not available for this manufacturer</span>
+            : <span className="text-red-500">Error: {warranty.lastSyncError}</span>
         )}
       </div>
     </div>

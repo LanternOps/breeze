@@ -2242,6 +2242,7 @@ func (h *Heartbeat) executePatchInstallCommand(payload map[string]any, rollback 
 	// dashboard reflects the new state without waiting up to 15 minutes.
 	if successCount > 0 {
 		go func() {
+			time.Sleep(60 * time.Second) // Wait for macOS to finish installing before rescanning
 			log.Info("post-install patch rescan triggered", "successCount", successCount)
 			h.sendPatchInventory()
 		}()
