@@ -5,6 +5,7 @@ package desktop
 import (
 	"fmt"
 	"log/slog"
+	"syscall"
 	"unsafe"
 )
 
@@ -94,6 +95,85 @@ func (m *mftEncoder) SetD3D11Device(device, context uintptr) {
 	}
 	m.d3d11Device = device
 	m.d3d11Context = context
+}
+
+// resetForCPUFallback destroys the current MFT, reinitializes a fresh one,
+// and primes it with blank frames so it's immediately ready to encode.
+// The software H264 MFT needs 2-3 frames for stream-change negotiation;
+// on a static desktop with few dirty rects this warm-up may never complete
+// naturally. Preserves gpuFailed and d3d11Device/Context so the capture loop
+// knows GPU is permanently disabled.
+func (m *mftEncoder) resetForCPUFallback() {
+	if !m.inited {
+		return
+	}
+	savedGPUFailed := m.gpuFailed
+	savedDevice := m.d3d11Device
+	savedContext := m.d3d11Context
+	savedWidth := m.width
+	savedHeight := m.height
+	savedStride := m.stride
+	savedCfg := m.cfg
+	savedPixelFormat := m.pixelFormat
+
+	m.shutdown() // resets gpuFailed, d3d11Device, etc.
+
+	m.gpuFailed = savedGPUFailed
+	m.d3d11Device = savedDevice
+	m.d3d11Context = savedContext
+	m.width = savedWidth
+	m.height = savedHeight
+	m.stride = savedStride
+	m.cfg = savedCfg
+	m.pixelFormat = savedPixelFormat
+
+	// Reinitialize immediately so we can prime with blank frames.
+	if savedWidth == 0 || savedHeight == 0 {
+		slog.Info("MFT encoder reset for CPU fallback (deferred reinit, no dimensions)")
+		return
+	}
+	if err := m.initialize(savedWidth, savedHeight, savedStride); err != nil {
+		slog.Warn("MFT reinit for CPU fallback failed", "error", err.Error())
+		return
+	}
+
+	// Prime the encoder: feed blank NV12 frames to get past the stream-change
+	// warm-up phase. Without this, the first 2-3 real Encode() calls return nil
+	// and on a static desktop those frames may arrive minutes apart.
+	nv12Size := savedWidth * savedHeight * 3 / 2
+	blank := make([]byte, nv12Size)
+	// Y plane = 16 (limited-range black), UV plane = 128 (neutral chroma)
+	for i := 0; i < savedWidth*savedHeight; i++ {
+		blank[i] = 16
+	}
+	for i := savedWidth * savedHeight; i < nv12Size; i++ {
+		blank[i] = 128
+	}
+
+	primed := 0
+	for i := 0; i < 5; i++ {
+		sample, err := m.createSample(blank)
+		if err != nil {
+			slog.Warn("MFT prime: createSample failed", "error", err.Error())
+			break
+		}
+		ret, _, _ := syscall.SyscallN(
+			m.vtblFn(vtblProcessInput),
+			m.transform, 0, sample, 0,
+		)
+		comRelease(sample)
+		if int32(ret) < 0 && uint32(ret) != mfENotAccepting {
+			slog.Warn("MFT prime: ProcessInput failed", "hr", fmt.Sprintf("0x%08X", uint32(ret)))
+			break
+		}
+		out, _ := m.drainOutput()
+		if out != nil {
+			primed++
+		}
+	}
+
+	slog.Info("MFT encoder reset and primed for CPU fallback",
+		"width", savedWidth, "height", savedHeight, "primedFrames", primed)
 }
 
 func (m *mftEncoder) SupportsGPUInput() bool {

@@ -17,7 +17,7 @@ const (
 
 	enableFramePixelDiagnostics = false
 
-	startupFrameWarmupWindow = 1 * time.Second
+	startupFrameWarmupWindow = 5 * time.Second
 	startupFrameRepaintEvery = 100 * time.Millisecond
 
 	// staticDesktopResendInterval is the minimum interval between frame sends
@@ -330,12 +330,12 @@ func (s *Session) captureLoopDXGI() captureMode {
 			onSecure = dsn.OnSecureDesktop()
 		}
 
-		// Startup warm-up: on static lock/swipe surfaces there may be no dirty
-		// rects for a while. Force a few repaints until the first frame is sent.
+		// Startup warm-up: on static displays (headless servers, lock screens)
+		// DXGI may produce zero dirty rects. InvalidateRect alone doesn't
+		// work on windowless desktops. Use nudgeSecureDesktop() (mouse jiggle)
+		// unconditionally to generate real input events that DXGI captures.
 		if s.lastVideoWriteUnixNano.Load() == 0 && time.Now().Before(startupWarmupUntil) && time.Since(lastStartupRepaint) >= startupFrameRepaintEvery {
-			if onSecure {
-				nudgeSecureDesktop()
-			}
+			nudgeSecureDesktop()
 			forceDesktopRepaint()
 			lastStartupRepaint = time.Now()
 		}
@@ -509,9 +509,7 @@ func (s *Session) captureLoopTicker() captureMode {
 				onSecure = dsn.OnSecureDesktop()
 			}
 			if s.lastVideoWriteUnixNano.Load() == 0 && time.Now().Before(startupWarmupUntil) && time.Since(lastStartupRepaint) >= startupFrameRepaintEvery {
-				if onSecure {
-					nudgeSecureDesktop()
-				}
+				nudgeSecureDesktop()
 				forceDesktopRepaint()
 				lastStartupRepaint = time.Now()
 			}
