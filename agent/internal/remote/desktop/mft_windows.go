@@ -65,6 +65,9 @@ type mftEncoder struct {
 
 	// Keyframe forcing: set when we want the next output to be an IDR.
 	forceKeyframePending bool
+
+	// Diagnostic: consecutive Encode() calls that returned nil (MFT buffering).
+	consecutiveNilOutputs int
 }
 
 func init() {

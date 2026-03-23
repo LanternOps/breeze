@@ -90,7 +90,28 @@ func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 	}
 
 	// Try to get output
-	return m.drainOutput()
+	out, err := m.drainOutput()
+	if err != nil {
+		return out, err
+	}
+	if out == nil {
+		m.consecutiveNilOutputs++
+		if m.consecutiveNilOutputs == 3 || m.consecutiveNilOutputs == 10 {
+			slog.Warn("MFT encoder not producing output (buffering)",
+				"consecutiveNil", m.consecutiveNilOutputs,
+				"frameIdx", m.frameIdx,
+				"isHW", m.isHW,
+				"gpuFailed", m.gpuFailed,
+			)
+		}
+	} else {
+		if m.consecutiveNilOutputs > 2 {
+			slog.Info("MFT encoder resumed output after buffering",
+				"nilCount", m.consecutiveNilOutputs)
+		}
+		m.consecutiveNilOutputs = 0
+	}
+	return out, nil
 }
 
 func (m *mftEncoder) vtblFn(idx int) uintptr {
@@ -434,8 +455,13 @@ func (m *mftEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 			slog.Warn("GPU converter init failed, falling back to CPU path permanently", "error", err.Error())
 			m.gpuEnabled = false
 			m.gpuFailed = true
-			// Tear down DXGI device manager so MFT reverts to CPU buffer mode
 			m.teardownDXGIManager()
+			// Force a full MFT reinit for the CPU path. The MFT can end up
+			// in a stuck state (accepts ProcessInput but never produces
+			// ProcessOutput) when initialized during a failed GPU pipeline
+			// setup. resetForCPUFallback() handles the full teardown, reinit,
+			// and encoder priming sequence inline.
+			m.resetForCPUFallback()
 			return nil, fmt.Errorf("GPU converter init: %w", err)
 		}
 		m.gpuConv = conv
@@ -517,6 +543,7 @@ func (m *mftEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 			m.gpuConv = nil
 			m.gpuEnabled = false
 			m.gpuFailed = true
+			m.resetForCPUFallback()
 			return nil, fmt.Errorf("GPU converter produced all-black frame (display %dx%d)", m.width, m.height)
 		}
 	}
