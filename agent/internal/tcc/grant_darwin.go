@@ -349,6 +349,32 @@ func getUserTCCDBPaths() []string {
 	return paths
 }
 
+// CheckFDA queries the system TCC database (as root) to determine whether the
+// agent binary has been granted Full Disk Access (kTCCServiceSystemPolicyAllFiles).
+// This is used as a daemon-side fallback when the user helper's os.Open probe
+// returns false — which happens on macOS 12 where even FDA-granted user-context
+// processes cannot open the system TCC database.
+//
+// Returns true only if the agent binary has an explicit auth_value=2 entry.
+// Returns false (without error) if the database is unreadable or the entry is
+// missing, so callers can safely treat the result as a best-effort check.
+func CheckFDA() bool {
+	if os.Getuid() != 0 {
+		log.Debug("CheckFDA skipped — not running as root")
+		return false
+	}
+	if _, err := os.Stat(systemTCCDBPath); err != nil {
+		log.Debug("CheckFDA: cannot stat TCC database", "error", err.Error())
+		return false
+	}
+	granted, err := isAlreadyGranted(systemTCCDBPath, "kTCCServiceSystemPolicyAllFiles")
+	if err != nil {
+		log.Warn("CheckFDA: query failed", "error", err.Error())
+		return false
+	}
+	return granted
+}
+
 // sqlStr wraps a string value for SQL, escaping single quotes.
 func sqlStr(s string) string {
 	escaped := strings.ReplaceAll(s, "'", "''")

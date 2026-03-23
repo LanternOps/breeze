@@ -93,6 +93,14 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 	sessionID, _ := cmd.Payload["sessionId"].(string)
 	offer, _ := cmd.Payload["offer"].(string)
+	log.Info("start_desktop command received",
+		"commandId", cmd.ID,
+		"sessionId", sessionID,
+		"hasOffer", offer != "",
+		"isService", h.isService,
+		"isHeadless", h.isHeadless,
+		"hasBroker", h.sessionBroker != nil,
+	)
 	if sessionID == "" || offer == "" {
 		return tools.CommandResult{
 			Status:     "failed",
