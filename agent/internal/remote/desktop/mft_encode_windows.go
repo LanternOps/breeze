@@ -459,8 +459,8 @@ func (m *mftEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 			// Force a full MFT reinit for the CPU path. The MFT can end up
 			// in a stuck state (accepts ProcessInput but never produces
 			// ProcessOutput) when initialized during a failed GPU pipeline
-			// setup. Destroying and recreating from scratch on the next
-			// Encode() call ensures a clean slate.
+			// setup. resetForCPUFallback() handles the full teardown, reinit,
+			// and encoder priming sequence inline.
 			m.resetForCPUFallback()
 			return nil, fmt.Errorf("GPU converter init: %w", err)
 		}

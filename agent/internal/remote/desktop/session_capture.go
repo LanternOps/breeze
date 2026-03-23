@@ -332,8 +332,9 @@ func (s *Session) captureLoopDXGI() captureMode {
 
 		// Startup warm-up: on static displays (headless servers, lock screens)
 		// DXGI may produce zero dirty rects. InvalidateRect alone doesn't
-		// work on windowless desktops. Use nudgeSecureDesktop() (mouse jiggle)
-		// unconditionally to generate real input events that DXGI captures.
+		// work on windowless desktops (no HWNDs to receive WM_PAINT). Use
+		// nudgeSecureDesktop() (mouse jiggle) unconditionally — the SendInput
+		// triggers DWM compositor repaints that produce dirty rects for DXGI.
 		if s.lastVideoWriteUnixNano.Load() == 0 && time.Now().Before(startupWarmupUntil) && time.Since(lastStartupRepaint) >= startupFrameRepaintEvery {
 			nudgeSecureDesktop()
 			forceDesktopRepaint()

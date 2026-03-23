@@ -116,7 +116,7 @@ func (m *mftEncoder) resetForCPUFallback() {
 	savedCfg := m.cfg
 	savedPixelFormat := m.pixelFormat
 
-	m.shutdown() // resets gpuFailed, d3d11Device, etc.
+	m.shutdown() // resets gpuFailed, gpuEnabled, releases COM handles
 
 	m.gpuFailed = savedGPUFailed
 	m.d3d11Device = savedDevice
@@ -126,6 +126,7 @@ func (m *mftEncoder) resetForCPUFallback() {
 	m.stride = savedStride
 	m.cfg = savedCfg
 	m.pixelFormat = savedPixelFormat
+	m.consecutiveNilOutputs = 0 // fresh encoder, reset diagnostic counter
 
 	// Reinitialize immediately so we can prime with blank frames.
 	if savedWidth == 0 || savedHeight == 0 {
@@ -133,13 +134,17 @@ func (m *mftEncoder) resetForCPUFallback() {
 		return
 	}
 	if err := m.initialize(savedWidth, savedHeight, savedStride); err != nil {
-		slog.Warn("MFT reinit for CPU fallback failed", "error", err.Error())
+		slog.Warn("MFT reinit for CPU fallback failed; will retry on next Encode() call",
+			"error", err.Error(), "width", savedWidth, "height", savedHeight)
 		return
 	}
 
-	// Prime the encoder: feed blank NV12 frames to get past the stream-change
-	// warm-up phase. Without this, the first 2-3 real Encode() calls return nil
-	// and on a static desktop those frames may arrive minutes apart.
+	// Prime the encoder: feed blank NV12 frames to get past the
+	// MF_E_TRANSFORM_STREAM_CHANGE warm-up. The software H264 MFT returns
+	// STREAM_CHANGE on its first output, requiring type renegotiation, then
+	// typically needs 2-3 more frames before producing encoded output. We feed
+	// 5 frames as a safety margin for slower MFT implementations. Without this,
+	// a static desktop may never generate enough dirty rects to prime naturally.
 	nv12Size := savedWidth * savedHeight * 3 / 2
 	blank := make([]byte, nv12Size)
 	// Y plane = 16 (limited-range black), UV plane = 128 (neutral chroma)
@@ -161,12 +166,29 @@ func (m *mftEncoder) resetForCPUFallback() {
 			m.vtblFn(vtblProcessInput),
 			m.transform, 0, sample, 0,
 		)
+		if uint32(ret) == mfENotAccepting {
+			// MFT input buffer full — drain and retry this frame
+			comRelease(sample)
+			out, drainErr := m.drainOutput()
+			if drainErr != nil || !m.inited {
+				slog.Warn("MFT prime: drain failed or encoder shutdown", "error", fmt.Sprintf("%v", drainErr))
+				return
+			}
+			if out != nil {
+				primed++
+			}
+			continue
+		}
 		comRelease(sample)
-		if int32(ret) < 0 && uint32(ret) != mfENotAccepting {
+		if int32(ret) < 0 {
 			slog.Warn("MFT prime: ProcessInput failed", "hr", fmt.Sprintf("0x%08X", uint32(ret)))
 			break
 		}
-		out, _ := m.drainOutput()
+		out, drainErr := m.drainOutput()
+		if drainErr != nil || !m.inited {
+			slog.Warn("MFT prime: drain failed or encoder shutdown", "error", fmt.Sprintf("%v", drainErr))
+			return
+		}
 		if out != nil {
 			primed++
 		}
