@@ -43,6 +43,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/security"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
+	"github.com/breeze-rmm/agent/internal/tcc"
 	"github.com/breeze-rmm/agent/internal/terminal"
 	"github.com/breeze-rmm/agent/internal/updater"
 	"github.com/breeze-rmm/agent/internal/websocket"
@@ -1778,8 +1779,18 @@ func (h *Heartbeat) sendHeartbeat() {
 
 	// Include TCC permission status for macOS devices
 	if runtime.GOOS == "darwin" && h.sessionBroker != nil {
-		if tcc := h.sessionBroker.TCCStatus(); tcc != nil {
-			payload.TCCPermissions = tcc
+		if tccStatus := h.sessionBroker.TCCStatus(); tccStatus != nil {
+			// On macOS 12, the helper's os.Open probe for FDA always returns
+			// false even when FDA is granted, because user-context processes
+			// cannot open the system TCC database. Fall back to a daemon-side
+			// query (running as root) which can read the TCC database directly.
+			if !tccStatus.FullDiskAccess {
+				if tcc.CheckFDA() {
+					log.Debug("FDA helper probe false but daemon check true — overriding")
+					tccStatus.FullDiskAccess = true
+				}
+			}
+			payload.TCCPermissions = tccStatus
 		}
 	}
 
