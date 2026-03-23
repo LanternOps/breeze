@@ -11,9 +11,9 @@ export default defineConfig({
       },
       favicon: '/favicon.svg',
       customCss: ['./src/styles/custom.css'],
-      social: {
-        github: 'https://github.com/LanternOps/breeze',
-      },
+      social: [
+        { icon: 'github', label: 'GitHub', href: 'https://github.com/LanternOps/breeze' },
+      ],
       lastUpdated: true,
       editLink: {
         baseUrl: 'https://github.com/LanternOps/breeze/edit/main/apps/docs/',
