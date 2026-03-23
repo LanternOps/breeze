@@ -1,6 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Package, Search, ChevronLeft, ChevronRight, RefreshCw, X } from 'lucide-react';
+import { Package, Search, ChevronLeft, ChevronRight, RefreshCw, X, Box } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+
+function isApplePublisher(publisher: string): boolean {
+  const p = publisher.toLowerCase();
+  return p === 'apple' || p === 'apple inc.' || p === 'apple inc' || p === 'com.apple' || p.startsWith('com.apple.');
+}
+
+function AppleIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 384 512" fill="currentColor" aria-label="Apple">
+      <path d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-62.1 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z" />
+    </svg>
+  );
+}
 
 type SoftwareItem = {
   id?: string;
@@ -35,6 +48,7 @@ export default function DeviceSoftwareInventory({ deviceId, timezone }: DeviceSo
   const [currentPage, setCurrentPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [publisherFilter, setPublisherFilter] = useState<string>('all');
+  const [typeFilter, setTypeFilter] = useState<'all' | 'apple' | 'third-party'>('all');
   const pageSize = 25;
 
   // Use provided timezone, fetched siteTimezone, or browser default
@@ -85,17 +99,25 @@ export default function DeviceSoftwareInventory({ deviceId, timezone }: DeviceSo
   }, [software]);
 
   const rows = useMemo(() => {
-    return software.map((item, index) => ({
-      id: item.id ?? `${item.name ?? item.title ?? 'software'}-${index}`,
-      name: item.name ?? item.title ?? 'Unknown software',
-      version: item.version || '-',
-      publisher: item.publisher ?? item.vendor ?? '-',
-      installDate: formatDate(item.installDate ?? item.installedAt ?? item.install_date, effectiveTimezone)
-    }));
+    return software.map((item, index) => {
+      const publisher = item.publisher ?? item.vendor ?? '-';
+      return {
+        id: item.id ?? `${item.name ?? item.title ?? 'software'}-${index}`,
+        name: item.name ?? item.title ?? 'Unknown software',
+        version: item.version || '-',
+        publisher,
+        isApple: isApplePublisher(publisher),
+        installDate: formatDate(item.installDate ?? item.installedAt ?? item.install_date, effectiveTimezone)
+      };
+    });
   }, [software, effectiveTimezone]);
 
   const filteredRows = useMemo(() => {
     return rows.filter(item => {
+      // Type filter (Apple vs Third Party)
+      if (typeFilter === 'apple' && !item.isApple) return false;
+      if (typeFilter === 'third-party' && item.isApple) return false;
+
       // Publisher filter
       if (publisherFilter !== 'all' && item.publisher !== publisherFilter) {
         return false;
@@ -113,7 +135,7 @@ export default function DeviceSoftwareInventory({ deviceId, timezone }: DeviceSo
 
       return true;
     });
-  }, [rows, debouncedSearch, publisherFilter]);
+  }, [rows, debouncedSearch, publisherFilter, typeFilter]);
 
   const totalPages = Math.ceil(filteredRows.length / pageSize);
   const startIndex = (currentPage - 1) * pageSize;
@@ -123,10 +145,11 @@ export default function DeviceSoftwareInventory({ deviceId, timezone }: DeviceSo
     setSearch('');
     setDebouncedSearch('');
     setPublisherFilter('all');
+    setTypeFilter('all');
     setCurrentPage(1);
   };
 
-  const hasActiveFilters = search || publisherFilter !== 'all';
+  const hasActiveFilters = search || publisherFilter !== 'all' || typeFilter !== 'all';
 
   if (loading) {
     return (
@@ -190,6 +213,26 @@ export default function DeviceSoftwareInventory({ deviceId, timezone }: DeviceSo
           />
         </div>
 
+        {/* Type filter (Apple vs Third Party) */}
+        <div className="flex items-center rounded-md border bg-background text-sm">
+          {(['all', 'apple', 'third-party'] as const).map(type => (
+            <button
+              key={type}
+              type="button"
+              onClick={() => { setTypeFilter(type); setCurrentPage(1); }}
+              className={`flex items-center gap-1.5 px-3 py-2 transition-colors first:rounded-l-md last:rounded-r-md ${
+                typeFilter === type
+                  ? 'bg-primary text-primary-foreground'
+                  : 'hover:bg-muted'
+              }`}
+            >
+              {type === 'apple' && <AppleIcon className="h-3.5 w-3.5" />}
+              {type === 'third-party' && <Box className="h-3.5 w-3.5" />}
+              {type === 'all' ? 'All' : type === 'apple' ? 'Apple' : '3rd Party'}
+            </button>
+          ))}
+        </div>
+
         {/* Publisher filter */}
         <select
           value={publisherFilter}
@@ -242,7 +285,16 @@ export default function DeviceSoftwareInventory({ deviceId, timezone }: DeviceSo
               ) : (
                 paginatedRows.map(item => (
                   <tr key={item.id} className="text-sm hover:bg-muted/30">
-                    <td className="px-4 py-3 font-medium">{item.name}</td>
+                    <td className="px-4 py-3 font-medium">
+                      <span className="flex items-center gap-2">
+                        {item.isApple ? (
+                          <AppleIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        ) : (
+                          <Box className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        )}
+                        {item.name}
+                      </span>
+                    </td>
                     <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{item.version}</td>
                     <td className="px-4 py-3 text-muted-foreground">{item.publisher}</td>
                     <td className="px-4 py-3 text-muted-foreground">{item.installDate}</td>
