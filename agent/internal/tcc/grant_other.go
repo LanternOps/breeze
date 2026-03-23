@@ -16,3 +16,8 @@ type GrantResult struct {
 func EnsurePermissions() ([]GrantResult, error) {
 	return nil, nil
 }
+
+// CheckFDA is a no-op on non-macOS platforms. Always returns false.
+func CheckFDA() bool {
+	return false
+}

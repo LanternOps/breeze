@@ -657,23 +657,26 @@ sessionRoutes.post(
 
     // Send start_desktop command to agent with the offer and ICE servers
     // The agent will create a pion PeerConnection and return the answer
-    let agentReachable = false;
-    if (device.agentId) {
-      agentReachable = sendCommandToAgent(device.agentId, {
-        id: `desk-${sessionId}`,
-        type: 'start_desktop',
-        payload: { sessionId, offer: data.offer, iceServers: getIceServers(), ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}) }
-      });
-      if (!agentReachable) {
-        console.warn(`[Remote] Agent ${device.agentId} not connected, cannot send start_desktop for session ${sessionId}`);
-      }
+    if (!device.agentId) {
+      console.error(`[Remote] Device ${device.id} has no agentId, cannot send start_desktop for session ${sessionId}`);
+      return c.json({ error: 'Device has no agent connection identifier' }, 502);
+    }
+
+    const agentReachable = sendCommandToAgent(device.agentId, {
+      id: `desk-${sessionId}`,
+      type: 'start_desktop',
+      payload: { sessionId, offer: data.offer, iceServers: getIceServers(), ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}) }
+    });
+
+    if (!agentReachable) {
+      console.warn(`[Remote] Agent ${device.agentId} not connected, cannot send start_desktop for session ${sessionId}`);
+      return c.json({ error: 'Agent is not currently connected. Please verify the device is online and try again.' }, 502);
     }
 
     return c.json({
       id: updated.id,
       status: updated.status,
       webrtcOffer: updated.webrtcOffer,
-      ...(agentReachable ? {} : { warning: 'Agent is not currently connected; the offer will be delivered when it reconnects' })
     });
   }
 );
