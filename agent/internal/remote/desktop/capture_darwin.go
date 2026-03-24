@@ -4,12 +4,12 @@ package desktop
 
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc
-#cgo LDFLAGS: -framework CoreGraphics -framework CoreFoundation -framework AppKit
-// NOTE: ScreenCaptureKit is intentionally NOT linked here. All SCK classes are
-// resolved at runtime via NSClassFromString/objc_getClass to avoid dyld crashes
-// on macOS 12-13 where SCK doesn't exist. If a CI build produces a binary with
-// hard _OBJC_CLASS_$_SC* references, set CGO_LDFLAGS_ALLOW='-weak_framework'
-// and add '-weak_framework ScreenCaptureKit' to these LDFLAGS.
+#cgo LDFLAGS: -framework CoreGraphics -framework CoreFoundation -framework AppKit -weak_framework ScreenCaptureKit
+// ScreenCaptureKit is weak-linked so the binary loads on macOS 12-13 where SCK
+// doesn't exist — dyld sets unresolved SCK symbols to NULL instead of crashing.
+// All SCK classes are still resolved at runtime via NSClassFromString/objc_getClass;
+// the weak link is a safety net for ObjC metadata references the compiler may emit.
+// Requires CGO_LDFLAGS_ALLOW='-weak_framework|ScreenCaptureKit' in the build environment (set in CI).
 
 #include <CoreGraphics/CoreGraphics.h>
 #include <CoreFoundation/CoreFoundation.h>

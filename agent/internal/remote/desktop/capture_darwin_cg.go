@@ -135,6 +135,7 @@ import "C"
 import (
 	"fmt"
 	"image"
+	"log/slog"
 	"sync"
 )
 
@@ -150,6 +151,8 @@ type darwinCGCapturer struct {
 
 // newCGCapturer creates a CoreGraphics-based capturer (macOS 12-13 fallback).
 func newCGCapturer(config CaptureConfig) (ScreenCapturer, error) {
+	slog.Warn("using CoreGraphics fallback for screen capture (macOS 12-13); ScreenCaptureKit unavailable — consider upgrading to macOS 14+",
+		"darwinVersion", macOSMajorVersion, "displayIndex", config.DisplayIndex)
 	darwinCaptureMu.Lock()
 	errCode := int(C.initCaptureCG(C.int(config.DisplayIndex)))
 	if errCode != 0 {
