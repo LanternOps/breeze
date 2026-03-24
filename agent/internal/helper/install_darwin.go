@@ -106,5 +106,10 @@ func consoleUID() string {
 		log.Warn("failed to get console user uid", "error", err.Error())
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	uid := strings.TrimSpace(string(out))
+	if uid == "0" {
+		log.Warn("console owned by root — no user session logged in")
+		return ""
+	}
+	return uid
 }

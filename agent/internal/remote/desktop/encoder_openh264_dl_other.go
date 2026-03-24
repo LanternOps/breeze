@@ -104,7 +104,7 @@ func downloadOpenH264(v struct {
 	}
 
 	var lastErr error
-	for _, url := range []string{v.fallbackURL, v.downloadURL} {
+	for _, url := range []string{v.downloadURL, v.fallbackURL} {
 		if err := downloadAndVerifyLib(url, v.libName, v.sha256, destDir); err != nil {
 			slog.Warn("OpenH264 download failed, trying next source", "url", url, "error", err.Error())
 			lastErr = err
@@ -136,7 +136,9 @@ func downloadAndVerifyLib(url, libName, expectedHash, destDir string) error {
 		return fmt.Errorf("create tmp file: %w", err)
 	}
 
-	written, err := io.Copy(f, io.TeeReader(bzReader, hasher))
+	// Limit decompressed size to prevent decompression bombs (libraries are ~2-5MB)
+	const maxLibSize = 20 * 1024 * 1024
+	written, err := io.Copy(f, io.LimitReader(io.TeeReader(bzReader, hasher), maxLibSize))
 	f.Close()
 	if err != nil {
 		os.Remove(tmpPath)
