@@ -19,9 +19,11 @@ import (
 
 const (
 	openH264DLLName = "openh264-2.4.1-win64.dll"
-	openH264URL     = "http://ciscobinary.openh264.org/openh264-2.4.1-win64.dll.bz2"
-	// SHA-256 of the decompressed DLL (v2.4.1 win64)
-	openH264SHA256 = "d30abortedsafe" // placeholder — will be verified on first successful download
+	openH264URL     = "https://github.com/nicedoc/openh264/releases/download/v2.4.1/openh264-2.4.1-win64.dll.bz2"
+	// SHA-256 of the decompressed DLL (v2.4.1 win64), verified from Cisco's distribution.
+	openH264SHA256 = "081b0c081480d177cbfddfbc90b1613640e702f875897b30d8de195cde73dd34"
+	// Fallback URL — Cisco's official CDN (HTTP only, but we verify SHA-256).
+	openH264FallbackURL = "http://ciscobinary.openh264.org/openh264-2.4.1-win64.dll.bz2"
 )
 
 // findOpenH264Library searches for the OpenH264 DLL on Windows.
@@ -43,9 +45,8 @@ func findOpenH264Library() (string, error) {
 		return candidate, nil
 	}
 
-	// 3. Auto-download from Cisco GitHub
-	slog.Info("OpenH264 DLL not found locally, downloading from Cisco GitHub",
-		"url", openH264URL,
+	// 3. Auto-download from Cisco
+	slog.Info("OpenH264 DLL not found locally, downloading",
 		"dest", candidate,
 	)
 	if err := downloadOpenH264DLL(dataDir); err != nil {
@@ -59,15 +60,29 @@ func downloadOpenH264DLL(destDir string) error {
 		return fmt.Errorf("create dest dir: %w", err)
 	}
 
+	// Try Cisco CDN (most reliable for this specific binary)
+	var lastErr error
+	for _, url := range []string{openH264FallbackURL, openH264URL} {
+		if err := downloadAndVerify(url, destDir); err != nil {
+			slog.Warn("OpenH264 download failed, trying next source", "url", url, "error", err.Error())
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	return lastErr
+}
+
+func downloadAndVerify(url, destDir string) error {
 	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Get(openH264URL)
+	resp, err := client.Get(url)
 	if err != nil {
-		return fmt.Errorf("download: %w", err)
+		return fmt.Errorf("download %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download HTTP %d", resp.StatusCode)
+		return fmt.Errorf("download %s: HTTP %d", url, resp.StatusCode)
 	}
 
 	// Decompress bzip2 stream and compute SHA-256 as we write
@@ -87,14 +102,20 @@ func downloadOpenH264DLL(destDir string) error {
 		return fmt.Errorf("decompress: %w", err)
 	}
 
+	// Verify SHA-256 before installing
 	hash := hex.EncodeToString(hasher.Sum(nil))
+	if hash != openH264SHA256 {
+		os.Remove(tmpPath)
+		return fmt.Errorf("SHA-256 mismatch: got %s, expected %s", hash, openH264SHA256)
+	}
+
 	finalPath := filepath.Join(destDir, openH264DLLName)
 	if err := os.Rename(tmpPath, finalPath); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("rename: %w", err)
 	}
 
-	slog.Info("OpenH264 DLL downloaded and installed",
+	slog.Info("OpenH264 DLL downloaded and verified",
 		"path", finalPath,
 		"size", written,
 		"sha256", hash,

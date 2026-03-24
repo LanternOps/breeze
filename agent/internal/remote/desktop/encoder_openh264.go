@@ -35,7 +35,7 @@ var (
 
 // PreloadOpenH264 eagerly loads the OpenH264 library (downloading if needed).
 // Call during agent startup so the DLL is ready before any desktop sessions.
-// Retries on failure (e.g. first attempt had wrong URL, network was down).
+// Load is attempted once — on failure, the placeholder encoder is used.
 func PreloadOpenH264() {
 	loadOpenH264()
 }
@@ -215,15 +215,19 @@ func (e *openH264Encoder) Encode(frame []byte) ([]byte, error) {
 	e.pinner.Unpin()
 	e.pinner.Pin(&i420[0])
 
-	// Set up source picture
+	// Set up source picture — compute timestamp before struct init to avoid
+	// division by zero when cfg.FPS is 0 (can happen before initEncoder sets it).
+	var tsMs int64
+	if e.cfg.FPS > 0 {
+		tsMs = int64(e.frameIdx) * 1000 / int64(e.cfg.FPS)
+	} else {
+		tsMs = int64(e.frameIdx) * 33 // ~30fps default
+	}
 	srcPic := openh264.SSourcePicture{
 		IColorFormat: openh264.VideoFormatI420,
 		IPicWidth:    int32(e.width),
 		IPicHeight:   int32(e.height),
-		UiTimeStamp:  int64(e.frameIdx) * 1000 / int64(e.cfg.FPS),
-	}
-	if e.cfg.FPS <= 0 {
-		srcPic.UiTimeStamp = int64(e.frameIdx) * 33 // ~30fps default
+		UiTimeStamp:  tsMs,
 	}
 	srcPic.IStride[0] = int32(e.width)     // Y stride
 	srcPic.IStride[1] = int32(e.width / 2) // U stride
@@ -312,6 +316,9 @@ func (e *openH264Encoder) SetFPS(fps int) error {
 }
 
 func (e *openH264Encoder) SetDimensions(width, height int) error {
+	// H264 requires even dimensions for 4:2:0 chroma subsampling
+	width = width &^ 1
+	height = height &^ 1
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.width == width && e.height == height {
