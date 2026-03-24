@@ -196,6 +196,15 @@ func Load(cfgFile string) (*Config, error) {
 	return cfg, nil
 }
 
+// SetAndPersist updates a single config key in viper and writes it to disk
+// without touching other fields. Safe to call when the in-memory Config struct
+// may have cleared sensitive fields (e.g. auth_token after startup).
+func SetAndPersist(key string, value any) error {
+	viper.Set(key, value)
+	cfgPath := filepath.Join(configDir(), "agent.yaml")
+	return viper.WriteConfigAs(cfgPath)
+}
+
 func Save(cfg *Config) error {
 	return SaveTo(cfg, "")
 }

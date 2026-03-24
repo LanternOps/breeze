@@ -189,11 +189,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         .limit(1);
 
       if (latestVersion) {
-        // Dev builds (dev-*) can't be parsed as versions — always upgrade to latest release,
-        // unless already running that exact version (avoids upgrade loops).
-        if (data.agentVersion.startsWith('dev-') && latestVersion.version !== data.agentVersion) {
-          upgradeTo = latestVersion.version;
-        } else if (!data.agentVersion.startsWith('dev-')) {
+        // Dev builds (dev-*) are local dev-push binaries — never auto-upgrade
+        // them back to a release version. The dev-push flow disables auto_update
+        // on the agent side; the server also refrains from sending upgradeTo.
+        if (data.agentVersion.startsWith('dev-')) {
+          // no-op: leave upgradeTo null so agent stays on the dev build
+        } else {
           const cmp = compareAgentVersions(latestVersion.version, data.agentVersion);
           if (cmp > 0) {
             upgradeTo = latestVersion.version;

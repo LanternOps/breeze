@@ -1,8 +1,8 @@
 /**
  * AI Fleet Orchestration Tools
  *
- * 7 fleet-level MCP tools for managing deployments, patches,
- * groups, maintenance windows, automations, alert rules, and reports.
+ * Fleet-level MCP tools for managing deployments, patches,
+ * groups, maintenance windows, automations, alert rules, service monitors, and reports.
  * Each tool wraps existing DB schema and service logic with org-scoped isolation.
  */
 
@@ -37,9 +37,20 @@ import {
 } from '../db/schema/maintenance';
 import {
   alertRules,
+  alertTemplates,
   alerts,
   notificationChannels,
 } from '../db/schema/alerts';
+import {
+  configurationPolicies,
+  configPolicyFeatureLinks,
+  configPolicyMonitoringSettings,
+  configPolicyMonitoringWatches,
+} from '../db/schema/configurationPolicies';
+import {
+  addFeatureLink,
+  updateFeatureLink,
+} from './configurationPolicy';
 import {
   reports,
   reportRuns,
@@ -70,10 +81,16 @@ function safeHandler(toolName: string, fn: FleetHandler): FleetHandler {
   return async (input, auth) => {
     try {
       return await fn(input, auth);
-    } catch (err) {
+    } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Internal error';
+      const code = (err as { code?: string }).code;
       console.error(`[fleet:${toolName}]`, input.action, message, err);
-      return JSON.stringify({ error: `Operation failed. Check server logs for details.` });
+
+      // Surface specific DB constraint errors instead of generic "Operation failed"
+      if (code === '23503') return JSON.stringify({ error: `Referenced record not found — a required ID (template, device, policy, etc.) does not exist or was deleted.` });
+      if (code === '23505') return JSON.stringify({ error: `Duplicate entry — a record with this name or key already exists.` });
+      if (code === '22P02') return JSON.stringify({ error: `Invalid ID format — expected a valid UUID.` });
+      return JSON.stringify({ error: `Operation failed: ${message}` });
     }
   };
 }
@@ -280,11 +297,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'manage_patches',
-      description: 'Manage patches: list available patches, check compliance, trigger scans, approve/decline/defer patches, bulk approve, install on targets, or rollback.',
+      description: 'Manage patches: list available patches, check compliance, trigger scans, approve/decline/defer patches, bulk approve, install on targets, rollback, or setup auto-approval policies.',
       input_schema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback'], description: 'The action to perform' },
+          action: { type: 'string', enum: ['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback', 'setup_auto_approval'], description: 'The action to perform. Use setup_auto_approval to configure automatic patch approval rules.' },
           patchId: { type: 'string', description: 'Patch UUID (for approve/decline/defer/rollback)' },
           patchIds: { type: 'array', items: { type: 'string' }, description: 'Patch UUIDs (for bulk_approve/install)' },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs (for scan/install)' },
@@ -293,6 +310,13 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           status: { type: 'string', enum: ['pending', 'approved', 'rejected', 'deferred'], description: 'Filter by approval status' },
           deferUntil: { type: 'string', description: 'ISO date to defer until (for defer)' },
           notes: { type: 'string', description: 'Approval/decline notes' },
+          configPolicyId: { type: 'string', description: 'Configuration policy UUID to attach patch settings to (for setup_auto_approval). If omitted, creates a new policy.' },
+          autoApprove: { type: 'boolean', description: 'Enable auto-approval of patches (for setup_auto_approval)' },
+          autoApproveSeverities: { type: 'array', items: { type: 'string', enum: ['critical', 'important', 'moderate', 'low'] }, description: 'Which severities to auto-approve (for setup_auto_approval)' },
+          scheduleFrequency: { type: 'string', enum: ['daily', 'weekly', 'monthly'], description: 'Patch scan frequency (for setup_auto_approval, default: weekly)' },
+          scheduleTime: { type: 'string', description: 'Time to run scans in HH:MM format (for setup_auto_approval, default: 02:00)' },
+          rebootPolicy: { type: 'string', enum: ['if_required', 'always', 'never'], description: 'Reboot policy after patching (for setup_auto_approval, default: if_required)' },
+          sources: { type: 'array', items: { type: 'string', enum: ['os', 'third_party', 'custom'] }, description: 'Patch sources to include (for setup_auto_approval, default: ["os"])' },
           limit: { type: 'number', description: 'Max results (default 25)' },
         },
         required: ['action'],
@@ -481,6 +505,82 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         }).returning();
 
         return JSON.stringify({ success: true, rollbackId: rollback?.id, message: 'Rollback initiated' });
+      }
+
+      if (action === 'setup_auto_approval') {
+        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+
+        const patchSettings = {
+          sources: Array.isArray(input.sources) ? input.sources as string[] : ['os'],
+          autoApprove: typeof input.autoApprove === 'boolean' ? input.autoApprove : true,
+          autoApproveSeverities: Array.isArray(input.autoApproveSeverities) ? input.autoApproveSeverities as string[] : ['critical', 'important'],
+          scheduleFrequency: typeof input.scheduleFrequency === 'string' ? input.scheduleFrequency : 'weekly',
+          scheduleTime: typeof input.scheduleTime === 'string' ? input.scheduleTime : '02:00',
+          rebootPolicy: typeof input.rebootPolicy === 'string' ? input.rebootPolicy : 'if_required',
+        };
+
+        const configPolicyId = input.configPolicyId as string | undefined;
+
+        if (configPolicyId) {
+          // Check if policy exists and user has access
+          const oc = orgWhere(auth, configurationPolicies.orgId);
+          const policyConditions: SQL[] = [eq(configurationPolicies.id, configPolicyId)];
+          if (oc) policyConditions.push(oc);
+          const [policy] = await db.select().from(configurationPolicies).where(and(...policyConditions)).limit(1);
+          if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
+
+          // Check if patch feature link already exists
+          const existingLinks = await db.select()
+            .from(configPolicyFeatureLinks)
+            .where(and(
+              eq(configPolicyFeatureLinks.configPolicyId, configPolicyId),
+              eq(configPolicyFeatureLinks.featureType, 'patch'),
+            )).limit(1);
+
+          if (existingLinks.length > 0) {
+            // Update existing feature link
+            const updated = await updateFeatureLink(existingLinks[0]!.id, { inlineSettings: patchSettings }, configPolicyId);
+            if (!updated) return JSON.stringify({ error: 'Failed to update patch settings — the feature link may have been deleted. Try again.' });
+            return JSON.stringify({
+              success: true,
+              message: `Patch auto-approval settings updated on policy "${policy.name}"`,
+              configPolicyId,
+              featureLinkId: existingLinks[0]!.id,
+              settings: patchSettings,
+            });
+          }
+
+          // Add new patch feature link
+          const link = await addFeatureLink(configPolicyId, 'patch', null, patchSettings);
+          return JSON.stringify({
+            success: true,
+            message: `Patch auto-approval configured on policy "${policy.name}"`,
+            configPolicyId,
+            featureLinkId: link.id,
+            settings: patchSettings,
+          });
+        }
+
+        // No configPolicyId — create a new config policy with patch settings
+        const [newPolicy] = await db.insert(configurationPolicies).values({
+          orgId,
+          name: `Patch Auto-Approval Policy`,
+          description: `Auto-approve ${patchSettings.autoApproveSeverities.join(', ')} patches on a ${patchSettings.scheduleFrequency} schedule`,
+          status: 'active',
+          createdBy: auth.user.id,
+        }).returning();
+
+        if (!newPolicy) return JSON.stringify({ error: 'Failed to create configuration policy' });
+
+        const link = await addFeatureLink(newPolicy.id, 'patch', null, patchSettings);
+        return JSON.stringify({
+          success: true,
+          message: `Created new policy "${newPolicy.name}" with patch auto-approval`,
+          configPolicyId: newPolicy.id,
+          featureLinkId: link.id,
+          settings: patchSettings,
+          hint: 'Use apply_configuration_policy to assign this policy to an organization, site, or device group.',
+        });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });
@@ -1090,19 +1190,20 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'manage_alert_rules',
-      description: 'Manage alert rules and notification channels: list/get/create/update/delete rules, test rules, list notification channels, or get alert summary stats.',
+      description: 'Manage alert rules, templates, and notification channels. Use list_templates FIRST to discover available alert template UUIDs, then create_rule to bind a template to targets. Actions: list_templates, list_rules, get_rule, create_rule, update_rule, delete_rule, test_rule, list_channels, alert_summary.',
       input_schema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['list_rules', 'get_rule', 'create_rule', 'update_rule', 'delete_rule', 'test_rule', 'list_channels', 'alert_summary'], description: 'The action to perform' },
+          action: { type: 'string', enum: ['list_templates', 'list_rules', 'get_rule', 'create_rule', 'update_rule', 'delete_rule', 'test_rule', 'list_channels', 'alert_summary'], description: 'The action to perform. Start with list_templates to discover available templates.' },
           ruleId: { type: 'string', description: 'Alert rule UUID (required for get_rule/update_rule/delete_rule/test_rule)' },
           name: { type: 'string', description: 'Rule name (for create_rule/update_rule)' },
-          templateId: { type: 'string', description: 'Alert template UUID (for create_rule)' },
-          targetType: { type: 'string', description: 'Target type (for create_rule)' },
-          targetId: { type: 'string', description: 'Target UUID (for create_rule)' },
-          overrideSettings: { type: 'object', description: 'Override settings (for create_rule/update_rule)' },
+          templateId: { type: 'string', description: 'Alert template UUID from list_templates (for create_rule)' },
+          targetType: { type: 'string', enum: ['device', 'group', 'site', 'org', 'all'], description: 'Target type (for create_rule). Use "org" to apply org-wide.' },
+          targetId: { type: 'string', description: 'Target UUID (for create_rule). For org/all, use the orgId.' },
+          overrideSettings: { type: 'object', description: 'Override template settings: { severity?, conditions?, cooldownMinutes?, notificationChannelIds? }' },
           isActive: { type: 'boolean', description: 'Active state (for update_rule)' },
-          severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'], description: 'Filter by severity (for alert_summary)' },
+          category: { type: 'string', description: 'Filter templates by category (for list_templates)' },
+          severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'], description: 'Filter by severity (for list_templates/alert_summary)' },
           limit: { type: 'number', description: 'Max results (default 25)' },
         },
         required: ['action'],
@@ -1111,6 +1212,41 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     handler: safeHandler('manage_alert_rules', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
+
+      if (action === 'list_templates') {
+        const conditions: SQL[] = [];
+        // Show built-in templates (orgId IS NULL) + custom templates for accessible orgs
+        const oc = orgWhere(auth, alertTemplates.orgId);
+        if (oc) {
+          // Org/partner scope: built-in OR belonging to accessible org(s)
+          conditions.push(sql`(${alertTemplates.isBuiltIn} = true OR ${oc})`);
+        }
+        // System scope (oc undefined): no filter — show all templates
+        if (typeof input.category === 'string') conditions.push(eq(alertTemplates.category, input.category as string));
+        if (typeof input.severity === 'string') conditions.push(eq(alertTemplates.severity, input.severity as any));
+
+        const limit = Math.min(Math.max(1, Number(input.limit) || 50), 100);
+        const rows = await db.select({
+          id: alertTemplates.id,
+          name: alertTemplates.name,
+          description: alertTemplates.description,
+          category: alertTemplates.category,
+          severity: alertTemplates.severity,
+          conditions: alertTemplates.conditions,
+          isBuiltIn: alertTemplates.isBuiltIn,
+          autoResolve: alertTemplates.autoResolve,
+          cooldownMinutes: alertTemplates.cooldownMinutes,
+        }).from(alertTemplates)
+          .where(conditions.length > 0 ? and(...conditions) : undefined)
+          .orderBy(desc(alertTemplates.isBuiltIn), alertTemplates.name)
+          .limit(limit);
+
+        return JSON.stringify({
+          templates: rows,
+          showing: rows.length,
+          hint: 'Use a template id with create_rule to create an alert rule from a template.',
+        });
+      }
 
       if (action === 'list_rules') {
         const conditions: SQL[] = [];
@@ -1160,6 +1296,17 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'create_rule') {
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        if (!input.name) return JSON.stringify({ error: 'name is required for create_rule' });
+        if (!input.templateId) return JSON.stringify({ error: 'templateId is required — use list_templates first to discover available templates' });
+        if (!input.targetType) return JSON.stringify({ error: 'targetType is required (device, group, site, org, or all)' });
+        if (!input.targetId) return JSON.stringify({ error: 'targetId is required' });
+
+        // Verify template exists and user has access (built-in or same-org)
+        const templateConditions: SQL[] = [eq(alertTemplates.id, input.templateId as string)];
+        templateConditions.push(sql`(${alertTemplates.isBuiltIn} = true OR ${alertTemplates.orgId} = ${orgId})`);
+        const [template] = await db.select({ id: alertTemplates.id }).from(alertTemplates).where(and(...templateConditions)).limit(1);
+        if (!template) return JSON.stringify({ error: 'Alert template not found or access denied — use list_templates to discover available templates' });
+
         const [rule] = await db.insert(alertRules).values({
           orgId,
           name: input.name as string,
@@ -1170,7 +1317,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           isActive: input.isActive !== false,
         }).returning();
 
-        return JSON.stringify({ success: true, ruleId: rule?.id, name: rule?.name });
+        if (!rule) return JSON.stringify({ error: 'Failed to create alert rule' });
+        return JSON.stringify({ success: true, ruleId: rule.id, name: rule.name });
       }
 
       if (action === 'update_rule') {
@@ -1542,6 +1690,198 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           rowCount: run.rowCount,
           completedAt: run.completedAt
         });
+      }
+
+      return JSON.stringify({ error: `Unknown action: ${action}` });
+    }),
+  });
+
+  // ============================================
+  // 9. manage_service_monitors — Service/process monitoring setup
+  // ============================================
+
+  registerTool({
+    tier: 1, // Base tier; add/remove escalated by guardrails
+    definition: {
+      name: 'manage_service_monitors',
+      description: 'Manage service and process monitoring watches via configuration policies. List existing monitors, add new service/process watches, update or remove them. Watches alert when a service stops, a process exceeds CPU/memory thresholds, or can auto-restart services.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          action: { type: 'string', enum: ['list', 'add', 'remove'], description: 'The action to perform' },
+          configPolicyId: { type: 'string', description: 'Configuration policy UUID. Required for add. For list, shows all monitors across policies if omitted.' },
+          watchId: { type: 'string', description: 'Watch UUID (required for remove)' },
+          watchType: { type: 'string', enum: ['service', 'process'], description: 'Type of monitor (for add)' },
+          name: { type: 'string', description: 'Service name (e.g. "wuauserv") or process name (e.g. "nginx") (for add)' },
+          displayName: { type: 'string', description: 'Friendly display name (for add)' },
+          alertOnStop: { type: 'boolean', description: 'Alert when service/process stops (default: true)' },
+          alertSeverity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'], description: 'Alert severity (default: high)' },
+          cpuThresholdPercent: { type: 'number', description: 'CPU threshold % to alert on (process only)' },
+          memoryThresholdMb: { type: 'number', description: 'Memory threshold MB to alert on (process only)' },
+          autoRestart: { type: 'boolean', description: 'Auto-restart service on failure (default: false)' },
+          maxRestartAttempts: { type: 'number', description: 'Max auto-restart attempts (default: 3)' },
+          checkIntervalSeconds: { type: 'number', description: 'Check interval in seconds (default: 60, for add when creating new monitoring settings)' },
+        },
+        required: ['action'],
+      },
+    },
+    handler: safeHandler('manage_service_monitors', async (input, auth) => {
+      const action = input.action as string;
+      const orgId = getOrgId(auth);
+
+      if (action === 'list') {
+        // List all monitoring watches, optionally filtered by policy
+        const conditions: SQL[] = [];
+        const oc = orgWhere(auth, configurationPolicies.orgId);
+        if (oc) conditions.push(oc);
+        if (typeof input.configPolicyId === 'string') {
+          conditions.push(eq(configPolicyFeatureLinks.configPolicyId, input.configPolicyId as string));
+        }
+        conditions.push(eq(configPolicyFeatureLinks.featureType, 'monitoring'));
+
+        const rows = await db.select({
+          watchId: configPolicyMonitoringWatches.id,
+          watchType: configPolicyMonitoringWatches.watchType,
+          name: configPolicyMonitoringWatches.name,
+          displayName: configPolicyMonitoringWatches.displayName,
+          enabled: configPolicyMonitoringWatches.enabled,
+          alertOnStop: configPolicyMonitoringWatches.alertOnStop,
+          alertSeverity: configPolicyMonitoringWatches.alertSeverity,
+          cpuThresholdPercent: configPolicyMonitoringWatches.cpuThresholdPercent,
+          memoryThresholdMb: configPolicyMonitoringWatches.memoryThresholdMb,
+          autoRestart: configPolicyMonitoringWatches.autoRestart,
+          policyId: configurationPolicies.id,
+          policyName: configurationPolicies.name,
+          checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds,
+        }).from(configPolicyMonitoringWatches)
+          .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringWatches.settingsId, configPolicyMonitoringSettings.id))
+          .innerJoin(configPolicyFeatureLinks, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyFeatureLinks.id))
+          .innerJoin(configurationPolicies, eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id))
+          .where(conditions.length > 0 ? and(...conditions) : undefined)
+          .orderBy(configurationPolicies.name, configPolicyMonitoringWatches.sortOrder);
+
+        return JSON.stringify({ monitors: rows, showing: rows.length });
+      }
+
+      if (action === 'add') {
+        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        if (!input.watchType) return JSON.stringify({ error: 'watchType is required (service or process)' });
+        if (!['service', 'process'].includes(input.watchType as string)) return JSON.stringify({ error: 'watchType must be "service" or "process"' });
+        if (!input.name) return JSON.stringify({ error: 'name is required (service or process name)' });
+
+        const VALID_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
+        if (typeof input.alertSeverity === 'string' && !VALID_SEVERITIES.includes(input.alertSeverity as typeof VALID_SEVERITIES[number])) {
+          return JSON.stringify({ error: `alertSeverity must be one of: ${VALID_SEVERITIES.join(', ')}` });
+        }
+
+        const watchType = input.watchType as 'service' | 'process';
+        const watchName = input.name as string;
+        let policyId = input.configPolicyId as string | undefined;
+
+        // If no configPolicyId, create a new monitoring policy
+        if (!policyId) {
+          const [newPolicy] = await db.insert(configurationPolicies).values({
+            orgId,
+            name: `Service Monitoring Policy`,
+            description: `Monitoring for ${watchType}s`,
+            status: 'active',
+            createdBy: auth.user.id,
+          }).returning();
+          if (!newPolicy) return JSON.stringify({ error: 'Failed to create configuration policy' });
+          policyId = newPolicy.id;
+        } else {
+          // Verify access
+          const policyConditions: SQL[] = [eq(configurationPolicies.id, policyId)];
+          const oc = orgWhere(auth, configurationPolicies.orgId);
+          if (oc) policyConditions.push(oc);
+          const [policy] = await db.select().from(configurationPolicies).where(and(...policyConditions)).limit(1);
+          if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
+        }
+
+        // Check if monitoring feature link exists on this policy
+        const [existingLink] = await db.select()
+          .from(configPolicyFeatureLinks)
+          .where(and(
+            eq(configPolicyFeatureLinks.configPolicyId, policyId),
+            eq(configPolicyFeatureLinks.featureType, 'monitoring'),
+          )).limit(1);
+
+        let settingsId: string;
+
+        if (existingLink) {
+          // Get existing monitoring settings
+          const [settings] = await db.select()
+            .from(configPolicyMonitoringSettings)
+            .where(eq(configPolicyMonitoringSettings.featureLinkId, existingLink.id))
+            .limit(1);
+          if (!settings) return JSON.stringify({ error: 'Monitoring settings not found — feature link may be corrupted' });
+          settingsId = settings.id;
+        } else {
+          // Create monitoring feature link + settings
+          const link = await addFeatureLink(policyId, 'monitoring', null, {
+            checkIntervalSeconds: typeof input.checkIntervalSeconds === 'number' ? input.checkIntervalSeconds : 60,
+            watches: [],
+          });
+          const [settings] = await db.select()
+            .from(configPolicyMonitoringSettings)
+            .where(eq(configPolicyMonitoringSettings.featureLinkId, link.id))
+            .limit(1);
+          if (!settings) return JSON.stringify({ error: 'Failed to create monitoring settings' });
+          settingsId = settings.id;
+        }
+
+        // Get current max sortOrder
+        const [maxSort] = await db.select({
+          max: sql<number>`coalesce(max(${configPolicyMonitoringWatches.sortOrder}), -1)`,
+        }).from(configPolicyMonitoringWatches)
+          .where(eq(configPolicyMonitoringWatches.settingsId, settingsId));
+
+        const [watch] = await db.insert(configPolicyMonitoringWatches).values({
+          settingsId,
+          watchType,
+          name: watchName,
+          displayName: typeof input.displayName === 'string' ? input.displayName : null,
+          enabled: true,
+          alertOnStop: typeof input.alertOnStop === 'boolean' ? input.alertOnStop : true,
+          alertSeverity: (typeof input.alertSeverity === 'string' ? input.alertSeverity : 'high') as typeof VALID_SEVERITIES[number],
+          cpuThresholdPercent: typeof input.cpuThresholdPercent === 'number' ? input.cpuThresholdPercent : null,
+          memoryThresholdMb: typeof input.memoryThresholdMb === 'number' ? input.memoryThresholdMb : null,
+          autoRestart: typeof input.autoRestart === 'boolean' ? input.autoRestart : false,
+          maxRestartAttempts: typeof input.maxRestartAttempts === 'number' ? input.maxRestartAttempts : 3,
+          sortOrder: (maxSort?.max ?? -1) + 1,
+        }).returning();
+
+        if (!watch) return JSON.stringify({ error: 'Failed to create monitoring watch' });
+        return JSON.stringify({
+          success: true,
+          watchId: watch.id,
+          message: `${watchType} monitor "${input.displayName || watchName}" added`,
+          configPolicyId: policyId,
+          hint: !input.configPolicyId ? 'New policy created. Use apply_configuration_policy to assign it to targets.' : undefined,
+        });
+      }
+
+      if (action === 'remove') {
+        if (!input.watchId) return JSON.stringify({ error: 'watchId is required' });
+
+        // Verify the watch belongs to a policy the user can access — org filter in SQL
+        const watchConditions: SQL[] = [eq(configPolicyMonitoringWatches.id, input.watchId as string)];
+        const oc = orgWhere(auth, configurationPolicies.orgId);
+        if (oc) watchConditions.push(oc);
+
+        const rows = await db.select({
+          watchId: configPolicyMonitoringWatches.id,
+        }).from(configPolicyMonitoringWatches)
+          .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringWatches.settingsId, configPolicyMonitoringSettings.id))
+          .innerJoin(configPolicyFeatureLinks, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyFeatureLinks.id))
+          .innerJoin(configurationPolicies, eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id))
+          .where(and(...watchConditions))
+          .limit(1);
+
+        if (rows.length === 0) return JSON.stringify({ error: 'Monitor not found or access denied' });
+
+        await db.delete(configPolicyMonitoringWatches).where(eq(configPolicyMonitoringWatches.id, input.watchId as string));
+        return JSON.stringify({ success: true, message: 'Monitor removed' });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });

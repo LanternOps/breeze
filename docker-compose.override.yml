@@ -1,1 +1,1 @@
-docker-compose.override.yml.dev
+docker-compose.override.yml.ghcr

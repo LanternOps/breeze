@@ -256,7 +256,7 @@ function applyToolSpecificCompaction(
   const fleetListTools = [
     'manage_deployments', 'manage_patches',
     'manage_groups', 'manage_maintenance_windows', 'manage_automations',
-    'manage_alert_rules', 'generate_report',
+    'manage_alert_rules', 'manage_service_monitors', 'generate_report',
     'list_configuration_policies', 'get_configuration_policy', 'configuration_policy_compliance',
     'query_monitors', 'manage_monitors', 'get_service_monitoring_status',
   ];

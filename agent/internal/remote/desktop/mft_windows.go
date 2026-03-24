@@ -68,6 +68,9 @@ type mftEncoder struct {
 
 	// Diagnostic: consecutive Encode() calls that returned nil (MFT buffering).
 	consecutiveNilOutputs int
+	// lastStallFlush prevents rapid flush loops when the MFT is fundamentally
+	// broken (not just warming up). Minimum 5s between stall-triggered flushes.
+	lastStallFlush time.Time
 }
 
 func init() {
@@ -78,10 +81,52 @@ func newMFTEncoder(cfg EncoderConfig) (encoderBackend, error) {
 	if cfg.Codec != CodecH264 {
 		return nil, fmt.Errorf("MFT encoder only supports H264, got %s", cfg.Codec)
 	}
+	// Probe for hardware MFTs at creation time so the factory fails fast
+	// when no GPU encoder is available. This lets newBackend() fall through
+	// to OpenH264 instead of returning a struct that fails lazily on Encode().
+	if !probeHardwareMFT() {
+		return nil, fmt.Errorf("no hardware H264 MFT available")
+	}
 	return &mftEncoder{
 		cfg:       cfg,
 		startTime: time.Now(),
 	}, nil
+}
+
+// probeHardwareMFT checks if a hardware H264 encoder MFT exists without
+// fully initializing it. Returns false on headless servers / basic GPUs
+// (e.g. Matrox G200) that lack hardware H264 encoding.
+func probeHardwareMFT() bool {
+	// COM init (best-effort, may already be initialized)
+	hr, _, _ := procCoInitializeEx.Call(0, coinitMultithreaded)
+	if int32(hr) < 0 && uint32(hr) != 0x80010106 {
+		return false
+	}
+	procMFStartup.Call(mfVersion, mfStartupFull)
+
+	inputType := mftRegisterTypeInfo{mfMediaTypeVideo, mfVideoFormatNV12}
+	outputType := mftRegisterTypeInfo{mfMediaTypeVideo, mfVideoFormatH264}
+
+	var ppActivate uintptr
+	var count uint32
+	hr, _, _ = procMFTEnumEx.Call(
+		uintptr(unsafe.Pointer(&mftCategoryVideoEncoder)),
+		uintptr(mftEnumFlagHardware|mftEnumFlagSortAndFilter),
+		uintptr(unsafe.Pointer(&inputType)),
+		uintptr(unsafe.Pointer(&outputType)),
+		uintptr(unsafe.Pointer(&ppActivate)),
+		uintptr(unsafe.Pointer(&count)),
+	)
+	if int32(hr) < 0 || count == 0 {
+		return false
+	}
+	// Release all IMFActivate objects and free the array
+	activateArray := unsafe.Slice((*uintptr)(unsafe.Pointer(ppActivate)), count)
+	for _, a := range activateArray {
+		comRelease(a)
+	}
+	procCoTaskMemFree.Call(ppActivate)
+	return true
 }
 
 // initialize sets up COM, finds an MFT H264 encoder, and configures it.
@@ -249,31 +294,65 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 			slog.Debug("ICodecAPI SetValue(BPictureCount=0) failed (non-fatal)", "error", err.Error())
 		}
 
-		// 2. CBR rate control: VBR defers output to optimize compression.
-		//    CBR produces output immediately at the target bitrate.
-		rv := comVariant{vt: vtUI4, val: uint64(eAVEncCommonRateControlMode_CBR)}
+		// 2. Quality-based VBR rate control. CBR on Windows 8+ buffers frames
+		//    internally for bitrate smoothing, causing multi-second stalls where
+		//    ProcessInput succeeds but ProcessOutput returns nothing. Quality VBR
+		//    optimizes for consistent quality per frame, producing output
+		//    immediately without internal buffering. This is critical on Windows
+		//    Server where the software MFT is unsupported and stall-prone.
+		rv := comVariant{vt: vtUI4, val: uint64(eAVEncCommonRateControlMode_Quality)}
 		if _, err := comCall(codecAPI, vtblCodecAPISetValue,
 			uintptr(unsafe.Pointer(&codecAPIAVEncCommonRateControlMode)),
 			uintptr(unsafe.Pointer(&rv)),
 		); err != nil {
-			slog.Debug("ICodecAPI SetValue(RateControl=CBR) failed (non-fatal)", "error", err.Error())
+			slog.Debug("ICodecAPI SetValue(RateControl=Quality) failed, trying CBR", "error", err.Error())
+			// Fall back to CBR if Quality mode isn't supported
+			rv.val = uint64(eAVEncCommonRateControlMode_CBR)
+			if _, cbrErr := comCall(codecAPI, vtblCodecAPISetValue,
+				uintptr(unsafe.Pointer(&codecAPIAVEncCommonRateControlMode)),
+				uintptr(unsafe.Pointer(&rv)),
+			); cbrErr != nil {
+				slog.Warn("CBR rate control also failed — encoder has no rate control configured", "error", cbrErr.Error())
+			}
+			// CBR needs a VBV buffer
+			vbvSize := vbvSizeForBitrate(m.cfg.Bitrate)
+			vbv := comVariant{vt: vtUI4, val: uint64(vbvSize)}
+			if _, vbvErr := comCall(codecAPI, vtblCodecAPISetValue,
+				uintptr(unsafe.Pointer(&codecAPIAVEncCommonBufferSize)),
+				uintptr(unsafe.Pointer(&vbv)),
+			); vbvErr != nil {
+				slog.Warn("VBV buffer configuration failed", "error", vbvErr.Error())
+			}
+		} else {
+			// Quality VBR: set QP target (24 = good balance for screen content)
+			qp := comVariant{vt: vtUI4, val: 24}
+			comCall(codecAPI, vtblCodecAPISetValue,
+				uintptr(unsafe.Pointer(&codecAPIAVEncVideoEncodeQP)),
+				uintptr(unsafe.Pointer(&qp)),
+			)
 		}
 
-		// 3. VBV buffer: 500ms of bitrate headroom.
-		//    Per-frame buffers (1-3 frames) are too small — a single 1080p
-		//    I-frame (400K–1.2M bits) exceeds them, forcing the encoder to
-		//    starve P-frames until the budget recovers (visible as kbps
-		//    oscillation between ~34 and ~7000). Half-second buffer gives
-		//    enough room to absorb I-frame bursts without adding latency
-		//    (MF_LOW_LATENCY primarily controls encode pipeline delay,
-		//    not the rate-control buffer window).
-		vbvSize := vbvSizeForBitrate(m.cfg.Bitrate)
-		vbv := comVariant{vt: vtUI4, val: uint64(vbvSize)}
+		// 3. CODECAPI_AVLowLatencyMode: forces single-frame encoding mode.
+		//    MF_LOW_LATENCY (set via IMFAttributes) is a different property
+		//    that controls pipeline delay. CODECAPI_AVLowLatencyMode controls
+		//    whether the encoder uses multi-frame or single-frame mode.
+		//    VT_BOOL: VARIANT_TRUE = -1
+		llv := comVariant{vt: vtBool, val: uint64(0xFFFF)} // VARIANT_TRUE
 		if _, err := comCall(codecAPI, vtblCodecAPISetValue,
-			uintptr(unsafe.Pointer(&codecAPIAVEncCommonBufferSize)),
-			uintptr(unsafe.Pointer(&vbv)),
+			uintptr(unsafe.Pointer(&codecAPIAVLowLatencyMode)),
+			uintptr(unsafe.Pointer(&llv)),
 		); err != nil {
-			slog.Debug("ICodecAPI SetValue(BufferSize) failed (non-fatal)", "error", err.Error())
+			slog.Debug("ICodecAPI SetValue(AVLowLatencyMode) failed (non-fatal)", "error", err.Error())
+		}
+
+		// 4. Quality vs speed: 0 = fastest encoding, minimize per-frame latency.
+		//    Higher values (up to 100) favor quality over speed.
+		qvs := comVariant{vt: vtUI4, val: 0}
+		if _, err := comCall(codecAPI, vtblCodecAPISetValue,
+			uintptr(unsafe.Pointer(&codecAPIAVEncCommonQualityVsSpeed)),
+			uintptr(unsafe.Pointer(&qvs)),
+		); err != nil {
+			slog.Debug("ICodecAPI SetValue(QualityVsSpeed=0) failed (non-fatal)", "error", err.Error())
 		}
 	} else {
 		slog.Debug("ICodecAPI not available on this MFT (dynamic bitrate disabled)", "error", fmt.Sprintf("%v", qiErr))
@@ -299,6 +378,7 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 		"height", height,
 		"bitrate", m.cfg.Bitrate,
 		"fps", m.cfg.FPS,
+		"rateControl", "quality-vbr",
 		"providesSamples", m.providesSamples,
 		"outputBufSize", m.outputBufSize,
 		"hasCodecAPI", m.codecAPI != 0,
@@ -318,7 +398,10 @@ func (m *mftEncoder) findEncoder(width, height int) (uintptr, bool, error) {
 		guidSubtype:   mfVideoFormatH264,
 	}
 
-	// Try hardware first
+	// Hardware only — software H264 encoding is handled by OpenH264 which
+	// provides deterministic 1-in-1-out encoding. The Windows software MFT
+	// stalls for 20-60 frames on Server editions and is not officially
+	// supported (Microsoft docs: "Minimum supported server: None supported").
 	transform, err := m.enumAndActivate(
 		mftEnumFlagHardware|mftEnumFlagSortAndFilter,
 		&inputType, &outputType,
@@ -327,25 +410,7 @@ func (m *mftEncoder) findEncoder(width, height int) (uintptr, bool, error) {
 		return transform, true, nil
 	}
 
-	// Fall back to sync (software) MFT
-	transform, err = m.enumAndActivate(
-		mftEnumFlagSyncMFT|mftEnumFlagSortAndFilter,
-		&inputType, &outputType,
-	)
-	if err == nil {
-		return transform, false, nil
-	}
-
-	// Last resort: try all
-	transform, err = m.enumAndActivate(
-		mftEnumFlagAll,
-		&inputType, &outputType,
-	)
-	if err == nil {
-		return transform, false, nil
-	}
-
-	return 0, false, fmt.Errorf("no H264 encoder available")
+	return 0, false, fmt.Errorf("no hardware H264 encoder available (software encoding handled by OpenH264)")
 }
 
 func (m *mftEncoder) enumAndActivate(flags uint32, inputType, outputType *mftRegisterTypeInfo) (uintptr, error) {
