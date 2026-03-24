@@ -90,17 +90,20 @@ func isHelperRunning() bool {
 }
 
 func stopHelper() error {
-	uid := currentUID()
+	uid := consoleUID()
 	if uid == "" {
-		return fmt.Errorf("could not determine current user ID")
+		return fmt.Errorf("could not determine console user ID")
 	}
 	return exec.Command("launchctl", "bootout", "gui/"+uid, plistPath).Run()
 }
 
-func currentUID() string {
-	out, err := exec.Command("id", "-u").Output()
+// consoleUID returns the UID of the user who owns the macOS console session.
+// When the agent runs as a root daemon, os.Getuid()/id -u returns 0, which
+// is wrong for launchctl bootout gui/<uid>. Use /dev/console ownership instead.
+func consoleUID() string {
+	out, err := exec.Command("stat", "-f", "%u", "/dev/console").Output()
 	if err != nil {
-		log.Warn("failed to get current uid", "error", err.Error())
+		log.Warn("failed to get console user uid", "error", err.Error())
 		return ""
 	}
 	return strings.TrimSpace(string(out))

@@ -245,6 +245,7 @@ import "C"
 import (
 	"fmt"
 	"image"
+	"log/slog"
 	"sync"
 )
 
@@ -275,9 +276,16 @@ type darwinCapturer struct {
 // newPlatformCapturer creates a new macOS screen capturer.
 // On macOS 14+, uses ScreenCaptureKit (SCScreenshotManager).
 // On macOS 12-13, falls back to CGWindowListCreateImage.
+// Also falls back to CG if SCK init fails at runtime (e.g., classes don't load).
 func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
 	if hasSCScreenshotManager() {
-		return newSCKCapturer(config)
+		cap, err := newSCKCapturer(config)
+		if err != nil {
+			slog.Warn("ScreenCaptureKit init failed, falling back to CoreGraphics",
+				"error", err.Error(), "darwinVersion", macOSMajorVersion)
+			return newCGCapturer(config)
+		}
+		return cap, nil
 	}
 	return newCGCapturer(config)
 }
@@ -420,6 +428,8 @@ func translateDarwinError(code int) error {
 		return fmt.Errorf("capturer not initialized — call initCapture first")
 	case 7:
 		return fmt.Errorf("ScreenCaptureKit timed out — process may lack Screen Recording permission (check System Settings > Privacy > Screen Recording)")
+	case 8:
+		return fmt.Errorf("ScreenCaptureKit not available — classes did not load (weak-link resolved to nil)")
 	default:
 		return fmt.Errorf("unknown error: %d", code)
 	}

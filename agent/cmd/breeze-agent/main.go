@@ -577,6 +577,7 @@ func checkStatus() {
 	}
 
 	fmt.Println("Status: Enrolled")
+	fmt.Printf("Version: %s\n", version)
 	fmt.Printf("Agent ID: %s\n", cfg.AgentID)
 	fmt.Printf("Server: %s\n", cfg.ServerURL)
 	fmt.Printf("Heartbeat Interval: %d seconds\n", cfg.HeartbeatIntervalSeconds)
