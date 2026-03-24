@@ -4,12 +4,12 @@ package desktop
 
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc
-#cgo LDFLAGS: -framework CoreGraphics -framework CoreFoundation -framework AppKit
-// NOTE: ScreenCaptureKit is intentionally NOT linked here. All SCK classes are
-// resolved at runtime via NSClassFromString/objc_getClass to avoid dyld crashes
-// on macOS 12-13 where SCK doesn't exist. If a CI build produces a binary with
-// hard _OBJC_CLASS_$_SC* references, set CGO_LDFLAGS_ALLOW='-weak_framework'
-// and add '-weak_framework ScreenCaptureKit' to these LDFLAGS.
+#cgo LDFLAGS: -framework CoreGraphics -framework CoreFoundation -framework AppKit -weak_framework ScreenCaptureKit
+// ScreenCaptureKit is weak-linked so the binary loads on macOS 12-13 where SCK
+// doesn't exist — dyld sets unresolved SCK symbols to NULL instead of crashing.
+// All SCK classes are still resolved at runtime via NSClassFromString/objc_getClass;
+// the weak link is a safety net for ObjC metadata references the compiler may emit.
+// Requires CGO_LDFLAGS_ALLOW='-weak_framework|ScreenCaptureKit' in the build environment (set in CI).
 
 #include <CoreGraphics/CoreGraphics.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -245,6 +245,7 @@ import "C"
 import (
 	"fmt"
 	"image"
+	"log/slog"
 	"sync"
 )
 
@@ -275,9 +276,16 @@ type darwinCapturer struct {
 // newPlatformCapturer creates a new macOS screen capturer.
 // On macOS 14+, uses ScreenCaptureKit (SCScreenshotManager).
 // On macOS 12-13, falls back to CGWindowListCreateImage.
+// Also falls back to CG if SCK init fails at runtime (e.g., classes don't load).
 func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
 	if hasSCScreenshotManager() {
-		return newSCKCapturer(config)
+		cap, err := newSCKCapturer(config)
+		if err != nil {
+			slog.Warn("ScreenCaptureKit init failed, falling back to CoreGraphics",
+				"error", err.Error(), "darwinVersion", macOSMajorVersion)
+			return newCGCapturer(config)
+		}
+		return cap, nil
 	}
 	return newCGCapturer(config)
 }
@@ -420,6 +428,8 @@ func translateDarwinError(code int) error {
 		return fmt.Errorf("capturer not initialized — call initCapture first")
 	case 7:
 		return fmt.Errorf("ScreenCaptureKit timed out — process may lack Screen Recording permission (check System Settings > Privacy > Screen Recording)")
+	case 8:
+		return fmt.Errorf("ScreenCaptureKit not available — classes did not load (weak-link resolved to nil)")
 	default:
 		return fmt.Errorf("unknown error: %d", code)
 	}

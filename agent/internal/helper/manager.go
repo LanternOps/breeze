@@ -310,6 +310,15 @@ func (m *Manager) applyPendingUpdate() {
 		return
 	}
 
+	// Skip if already at target version — avoids stuck retry loops when
+	// ensureStopped fails (e.g., launchctl bootout as root on macOS).
+	if installed := m.InstalledVersion(); installed == m.pendingHelperVersion {
+		log.Info("helper already at target version, clearing pending update",
+			"version", installed)
+		m.pendingHelperVersion = ""
+		return
+	}
+
 	if !IsIdle(m.configPath) {
 		log.Debug("helper update deferred, chat active", "targetVersion", m.pendingHelperVersion)
 		return

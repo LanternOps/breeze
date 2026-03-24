@@ -144,7 +144,7 @@ jobs:
           BUILD_VERSION: ${{ steps.version.outputs.version }}
           # Allow weak-linking ScreenCaptureKit so the binary runs on macOS 12+
           # where SCK doesn't exist (prevents dyld Symbol not found crash)
-          CGO_LDFLAGS_ALLOW: '-weak_framework'
+          CGO_LDFLAGS_ALLOW: '-weak_framework|ScreenCaptureKit'
         run: |
           go build -ldflags="-s -w -X main.version=${BUILD_VERSION}" \
             -o "breeze-agent-${GOOS}-${GOARCH}${{ matrix.suffix }}" \

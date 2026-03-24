@@ -340,6 +340,9 @@ export function createSoftwareRemediationWorker(): Worker<SoftwareRemediationJob
     {
       connection: getRedisConnection(),
       concurrency: 5,
+      lockDuration: 300_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 2,
       settings: {
         backoffStrategy: (attemptsMade: number) => Math.min(attemptsMade * 5000, 30000),
       },
