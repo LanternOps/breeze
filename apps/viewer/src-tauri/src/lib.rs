@@ -36,12 +36,27 @@ fn register_url_scheme() {
 /// Per-window pending deep link URLs. Key = window label, value = deep link URL.
 struct DeepLinkState(Mutex<HashMap<String, String>>);
 
-/// Maps session_id → window_label for active sessions.
+/// Metadata for an active remote desktop session.
+#[derive(Clone, serde::Serialize)]
+struct SessionEntry {
+    window_label: String,
+    hostname: Option<String>,
+}
+
+/// Maps session_id → SessionEntry for active sessions.
 /// Used to detect duplicate deep links and focus the existing window.
-struct SessionMap(Mutex<HashMap<String, String>>);
+struct SessionMap(Mutex<HashMap<String, SessionEntry>>);
 
 /// Monotonic counter for unique window labels.
 struct WindowCounter(Mutex<u32>);
+
+/// Set to true by the frontend once the update check passes.
+/// Deep links received before this gate opens are queued in PendingUrls.
+struct UpdateGate(Mutex<bool>);
+
+/// URLs received before the update gate opened. Drained into session windows
+/// when set_update_ok is called.
+struct PendingUrls(Mutex<Vec<String>>);
 
 fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
     match mutex.lock() {
@@ -105,7 +120,7 @@ fn register_session(
     state: tauri::State<'_, SessionMap>,
 ) {
     let mut map = lock_or_recover(&state.0, "session_map");
-    map.insert(session_id, window.label().to_string());
+    map.insert(session_id, SessionEntry { window_label: window.label().to_string(), hostname: None });
 }
 
 /// Called by the frontend on disconnect (session no longer active).
@@ -113,20 +128,60 @@ fn register_session(
 fn unregister_session(window: tauri::WebviewWindow, state: tauri::State<'_, SessionMap>) {
     let mut map = lock_or_recover(&state.0, "session_map");
     // Remove all entries that point to this window
-    map.retain(|_, label| label != window.label());
+    map.retain(|_, entry| entry.window_label != window.label());
+}
+
+/// Called by DesktopViewer when the remote hostname is learned.
+/// Uses the calling window's label to find the matching SessionMap entry.
+#[tauri::command]
+fn update_session_hostname(
+    window: tauri::WebviewWindow,
+    hostname: String,
+    state: tauri::State<'_, SessionMap>,
+) {
+    let mut map = lock_or_recover(&state.0, "session_map");
+    for entry in map.values_mut() {
+        if entry.window_label == window.label() {
+            entry.hostname = Some(hostname);
+            return;
+        }
+    }
+}
+
+/// Called by the main window frontend once the update check passes.
+/// Opens the update gate and drains any queued deep link URLs into session windows.
+#[tauri::command]
+fn set_update_ok(app: tauri::AppHandle) {
+    // Open the gate
+    {
+        let gate = app.state::<UpdateGate>();
+        let mut ok = lock_or_recover(&gate.0, "update_gate");
+        *ok = true;
+    }
+    // Drain pending URLs
+    let urls: Vec<String> = {
+        let pending = app.state::<PendingUrls>();
+        let mut queue = lock_or_recover(&pending.0, "pending_urls");
+        queue.drain(..).collect()
+    };
+    for url in urls {
+        create_session_window(&app, url);
+    }
 }
 
 /// Ensure the main window exists, recreating it if it was closed (e.g. macOS
 /// window close without app quit). Returns true if the window exists or was
 /// successfully recreated.
+#[allow(dead_code)]
 fn ensure_main_window(app: &tauri::AppHandle) -> bool {
     if app.get_webview_window("main").is_some() {
         return true;
     }
-    eprintln!("Main window missing — recreating");
+    eprintln!("Main window missing — recreating (hidden)");
     match WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("Breeze Remote Desktop")
-        .inner_size(1280.0, 800.0)
+        .inner_size(500.0, 340.0)
+        .visible(false)
         .build()
     {
         Ok(_) => true,
@@ -137,11 +192,23 @@ fn ensure_main_window(app: &tauri::AppHandle) -> bool {
     }
 }
 
+/// Focus the highest-numbered session window, or do nothing if none exist.
+fn focus_any_session_window(app: &tauri::AppHandle) {
+    let counter = app.state::<WindowCounter>();
+    let n = *lock_or_recover(&counter.0, "window_counter");
+    for i in (1..=n).rev() {
+        let label = format!("session-{}", i);
+        if let Some(window) = app.get_webview_window(&label) {
+            let _ = window.set_focus();
+            return;
+        }
+    }
+}
+
 /// Route an incoming deep link URL to the appropriate window.
 ///
 /// - If the session is already active in a window, focus that window.
-/// - If the main window is idle (no active session), route to it.
-/// - Otherwise, create a new window for the session.
+/// - Otherwise, open a new session window (gated on update check).
 ///
 /// Handles all app states: window visible, window closed (macOS), during
 /// update check, etc. Recreates the main window if it was closed.
@@ -154,7 +221,7 @@ fn route_deep_link(app: &tauri::AppHandle, url: String) {
         let existing_label = {
             let sessions = app.state::<SessionMap>();
             let map = lock_or_recover(&sessions.0, "session_map");
-            map.get(&session_id).cloned()
+            map.get(&session_id).map(|e| e.window_label.clone())
         }; // lock released here
         if let Some(label) = existing_label {
             if let Some(window) = app.get_webview_window(&label) {
@@ -169,35 +236,21 @@ fn route_deep_link(app: &tauri::AppHandle, url: String) {
         }
     }
 
-    // Check if main window has an active session
-    let main_active = {
-        let sessions = app.state::<SessionMap>();
-        let map = lock_or_recover(&sessions.0, "session_map");
-        map.values().any(|label| label == "main")
+    // Always open a new session window. Check update gate first.
+    let gate_open = {
+        let gate = app.state::<UpdateGate>();
+        let guard = lock_or_recover(&gate.0, "update_gate");
+        let val = *guard;
+        drop(guard);
+        val
     };
-
-    if !main_active {
-        // Main window is idle — route the deep link there.
-        // Recreate the main window if it was closed (macOS).
-        if !ensure_main_window(app) {
-            // Last resort: try creating a session window instead
-            create_session_window(app, url);
-            return;
-        }
-        if let Some(state) = app.try_state::<DeepLinkState>() {
-            let mut links = lock_or_recover(&state.0, "deep_link_state");
-            links.insert("main".to_string(), url.clone());
-        }
-        // Emit with retry — the recreated window's webview needs time to load
-        emit_with_retry(app, "main", url);
-        if let Some(window) = app.get_webview_window("main") {
-            if let Err(err) = window.set_focus() {
-                eprintln!("Failed to focus main window: {}", err);
-            }
-        }
-    } else {
-        // Main is busy with another session — open a new window
+    if gate_open {
         create_session_window(app, url);
+    } else {
+        // Queue until the frontend signals the update check passed
+        let pending = app.state::<PendingUrls>();
+        let mut queue = lock_or_recover(&pending.0, "pending_urls");
+        queue.push(url);
     }
 }
 
@@ -242,7 +295,7 @@ fn create_session_window(app: &tauri::AppHandle, url: String) {
     }
 
     match WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
-        .title("Breeze Remote Desktop")
+        .title("Connecting...")
         .inner_size(1280.0, 800.0)
         .build()
     {
@@ -255,17 +308,6 @@ fn create_session_window(app: &tauri::AppHandle, url: String) {
             if let Some(state) = app.try_state::<DeepLinkState>() {
                 let mut links = lock_or_recover(&state.0, "deep_link_state");
                 links.remove(&label);
-            }
-            // Fallback: route to main (will replace active session)
-            if let Some(state) = app.try_state::<DeepLinkState>() {
-                let mut links = lock_or_recover(&state.0, "deep_link_state");
-                links.insert("main".to_string(), url.clone());
-            }
-            if let Err(err) = app.emit_to("main", "deep-link-received", url) {
-                eprintln!(
-                    "Failed to emit deep-link-received to main window after fallback: {}",
-                    err
-                );
             }
         }
     }
@@ -281,6 +323,8 @@ pub fn run() {
             clear_pending_deep_link,
             register_session,
             unregister_session,
+            update_session_hostname,
+            set_update_ok,
         ]);
 
     // Single instance plugin (desktop only) — ensures deep links open in existing process.
@@ -297,18 +341,10 @@ pub fn run() {
                     route_deep_link(&handle, url);
                 });
             } else {
-                // No deep link — just activate/focus. Recreate main window if needed.
+                // No deep link — just activate. Focus most recent session window if any.
                 let handle = app.clone();
                 let _ = app.run_on_main_thread(move || {
-                    ensure_main_window(&handle);
-                    if let Some(window) = handle.get_webview_window("main") {
-                        if let Err(err) = window.set_focus() {
-                            eprintln!(
-                                "Failed to focus main window on single-instance activate: {}",
-                                err
-                            );
-                        }
-                    }
+                    focus_any_session_window(&handle);
                 });
             }
         }));
@@ -319,7 +355,6 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             register_url_scheme();
 
-            // Check for deep link on initial launch
             let initial_url = app
                 .deep_link()
                 .get_current()
@@ -327,32 +362,21 @@ pub fn run() {
                 .flatten()
                 .and_then(|urls| urls.first().map(|u| u.to_string()));
 
-            // Fallback: check command-line args for deep link URL.
-            // On Windows, the protocol handler passes the URL as a CLI argument,
-            // which get_current() may not capture in all Tauri versions.
             let initial_url = initial_url.or_else(|| {
                 std::env::args().find(|arg| arg.starts_with("breeze:"))
             });
 
-            // Initialize state
-            let mut deep_links = HashMap::new();
-            if let Some(ref url) = initial_url {
-                deep_links.insert("main".to_string(), url.clone());
-            }
-            app.manage(DeepLinkState(Mutex::new(deep_links)));
+            app.manage(DeepLinkState(Mutex::new(HashMap::new())));
             app.manage(SessionMap(Mutex::new(HashMap::new())));
             app.manage(WindowCounter(Mutex::new(0)));
+            app.manage(UpdateGate(Mutex::new(false)));
+            let pending = if let Some(url) = initial_url {
+                vec![url]
+            } else {
+                vec![]
+            };
+            app.manage(PendingUrls(Mutex::new(pending)));
 
-            // Emit the initial URL after delays to cover slow webview startup.
-            if let Some(url) = initial_url {
-                emit_with_retry(app.handle(), "main", url);
-            }
-
-            // Listen for deep link events when the app is already running.
-            // Defer via run_on_main_thread so the callback returns (and the
-            // deep-link plugin releases its internal lock) before route_deep_link
-            // calls set_focus/build, which pump the macOS AppKit run loop and
-            // can re-enter the plugin → deadlock.
             let app_handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
                 if let Some(url) = event.urls().first() {
@@ -373,10 +397,9 @@ pub fn run() {
         match event {
             tauri::RunEvent::WindowEvent { label, event, .. } => {
                 if let WindowEvent::Destroyed = event {
-                    // Clean up session and deep link state for destroyed windows
                     if let Some(sessions) = app_handle.try_state::<SessionMap>() {
                         let mut map = lock_or_recover(&sessions.0, "session_map");
-                        map.retain(|_, wl| wl != &label);
+                        map.retain(|_, entry| entry.window_label != label);
                     }
                     if let Some(links) = app_handle.try_state::<DeepLinkState>() {
                         let mut map = lock_or_recover(&links.0, "deep_link_state");
@@ -384,13 +407,9 @@ pub fn run() {
                     }
                 }
             }
-            // macOS: dock icon clicked with no open windows — recreate main window
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => {
-                ensure_main_window(app_handle);
-                if let Some(window) = app_handle.get_webview_window("main") {
-                    let _ = window.set_focus();
-                }
+                focus_any_session_window(app_handle);
             }
             _ => {}
         }

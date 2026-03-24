@@ -15,10 +15,11 @@
     "windows": [
       {
         "title": "Breeze Remote Desktop",
-        "width": 1280,
-        "height": 800,
-        "resizable": true,
-        "fullscreen": false
+        "width": 500,
+        "height": 340,
+        "resizable": false,
+        "fullscreen": false,
+        "visible": false
       }
     ]
   },
