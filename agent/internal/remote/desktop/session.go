@@ -93,6 +93,11 @@ type Session struct {
 	// MFT to warm up after a monitor switch (first frame often fails).
 	gpuEncodeErrors int
 
+	// cpuEncodeErrors tracks consecutive CPU encode failures. After 5+
+	// failures (e.g., VideoToolbox stalling on older Intel Macs), the
+	// encoder is swapped to software (OpenH264) mid-session.
+	cpuEncodeErrors int
+
 	// cursorOffsetX/Y store the active monitor's virtual desktop origin so
 	// cursorStreamLoop can convert absolute GetCursorInfo coords to
 	// display-relative coords before sending to the viewer.
