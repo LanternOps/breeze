@@ -232,7 +232,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       };
 
       setTransportState('webrtc');
-      setHostname('Remote Desktop');
+      // Hostname is already set from the exchange response before connectWebRTC is called.
       // Connection state will flip to 'connected' via onconnectionstatechange
       return true;
     } catch (err) {
@@ -303,7 +303,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         switch (msg.type) {
           case 'connected':
             setStatus('connected');
-            setHostname(msg.device?.hostname || 'Unknown');
+            const deviceHostname = msg.device?.hostname || 'Unknown';
+            setHostname(deviceHostname);
+            // Window title set from Rust in update_session_hostname
+            invoke('update_session_hostname', { hostname: deviceHostname }).catch((err) => {
+              console.warn('Failed to update session hostname:', err);
+            });
             setConnectedAt(new Date());
             setErrorMessage(null);
             // Auto-focus the canvas so keyboard events are captured immediately
@@ -526,6 +531,15 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           accessToken: exchange.accessToken
         };
         authRef.current = authParams;
+
+        // Set hostname from exchange response (available for all transports)
+        if (exchange.hostname) {
+          setHostname(exchange.hostname);
+          // Window title set from Rust in update_session_hostname
+          invoke('update_session_hostname', { hostname: exchange.hostname }).catch((err) => {
+            console.warn('Failed to update session hostname:', err);
+          });
+        }
 
         // Try WebRTC first
         const webrtcOk = await connectWebRTC(authParams);
@@ -1030,9 +1044,17 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const handlePasteAsKeystrokes = useCallback(async () => {
     let text: string;
     try {
-      text = await navigator.clipboard.readText();
-    } catch {
-      return;
+      // Use Tauri native clipboard to bypass macOS "Allow Paste" prompt
+      const { readText } = await import('@tauri-apps/plugin-clipboard-manager');
+      text = await readText();
+    } catch (tauriErr) {
+      console.warn('Tauri clipboard read failed, trying browser API:', tauriErr);
+      try {
+        text = await navigator.clipboard.readText();
+      } catch (browserErr) {
+        console.warn('Browser clipboard read also failed:', browserErr);
+        return;
+      }
     }
     if (!text) return;
 
@@ -1075,7 +1097,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (ne.code === 'KeyV' && !ne.shiftKey && (ne.ctrlKey || ne.metaKey)) {
       const dc = clipboardDCRef.current;
       if (dc && dc.readyState === 'open') {
-        navigator.clipboard.readText().then((text) => {
+        import('@tauri-apps/plugin-clipboard-manager').then(({ readText }) =>
+          readText()
+        ).catch(() =>
+          navigator.clipboard.readText()
+        ).then((text) => {
           if (text && text !== lastClipboardHashRef.current) {
             lastClipboardHashRef.current = text;
             dc.send(JSON.stringify({ type: 'text', text }));
@@ -1274,7 +1300,6 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         onLockWorkstation={handleLockWorkstation}
         onPasteAsKeystrokes={handlePasteAsKeystrokes}
         onCancelPaste={handleCancelPaste}
-        onDisconnect={handleDisconnect}
         reconnectSecondsLeft={reconnectSecondsLeft}
       />
       <div className="flex-1 overflow-hidden flex items-center justify-center bg-black relative">

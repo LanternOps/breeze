@@ -1,6 +1,6 @@
 {
   "productName": "Breeze Viewer",
-  "version": "0.10.0",
+  "version": "0.13.14",
   "identifier": "com.breeze.viewer",
   "build": {
     "beforeBuildCommand": "pnpm build",
@@ -15,10 +15,11 @@
     "windows": [
       {
         "title": "Breeze Remote Desktop",
-        "width": 1280,
-        "height": 800,
-        "resizable": true,
-        "fullscreen": false
+        "width": 500,
+        "height": 340,
+        "resizable": false,
+        "fullscreen": false,
+        "visible": false
       }
     ]
   },
