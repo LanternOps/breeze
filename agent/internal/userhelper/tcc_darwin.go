@@ -10,10 +10,34 @@ package userhelper
 #include <stdbool.h>
 
 // checkScreenRecording returns true if screen capture access is granted.
-// CGPreflightScreenCaptureAccess() checks without triggering a system prompt.
-// Available since macOS 10.15 (Catalina). Linking will fail on older SDKs.
+// First tries CGPreflightScreenCaptureAccess() (available since macOS 10.15).
+// On macOS 26 (Tahoe) this API may return false even when permission is granted,
+// so we fall back to a real capture probe via CGWindowListCreateImage (resolved
+// at runtime via dlsym since the SDK marks it unavailable in macOS 15+).
+#include <dlfcn.h>
+typedef CGImageRef (*CGWindowListCreateImageFunc)(CGRect, CGWindowListOption, CGWindowID, CGWindowImageOption);
 static bool checkScreenRecording(void) {
-	return CGPreflightScreenCaptureAccess();
+	if (CGPreflightScreenCaptureAccess()) {
+		return true;
+	}
+	// Preflight returned false — probe with a real capture to handle macOS 26+.
+	// Resolve CGWindowListCreateImage at runtime (marked unavailable in SDK 15+).
+	static CGWindowListCreateImageFunc fn = NULL;
+	static bool resolved = false;
+	if (!resolved) {
+		fn = (CGWindowListCreateImageFunc)dlsym(RTLD_DEFAULT, "CGWindowListCreateImage");
+		resolved = true;
+	}
+	if (fn == NULL) {
+		return false;
+	}
+	CGRect onePixel = CGRectMake(0, 0, 1, 1);
+	CGImageRef img = fn(onePixel, kCGWindowListOptionOnScreenOnly, kCGNullWindowID, kCGWindowImageDefault);
+	if (img != NULL) {
+		CGImageRelease(img);
+		return true;
+	}
+	return false;
 }
 
 // requestScreenRecording triggers the macOS system prompt asking the user
