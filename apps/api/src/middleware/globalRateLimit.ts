@@ -16,6 +16,12 @@ import { getTrustedClientIp } from '../services/clientIp';
  */
 
 const SKIP_PATHS = new Set(['/health', '/ready']);
+
+// Agent routes have their own per-agent rate limiter (agentAuthMiddleware),
+// so exclude them from the global per-IP limit.  Without this, agent heartbeats
+// and telemetry consume the same IP bucket as the dashboard UI — especially
+// problematic in development where everything originates from localhost.
+const SKIP_PREFIXES = ['/api/v1/agents/', '/api/v1/helper/'];
 const MAX_IN_MEMORY_ENTRIES = 100_000;
 
 // ---------------------------------------------------------------------------
@@ -58,6 +64,11 @@ export function globalRateLimit(options?: GlobalRateLimitOptions): MiddlewareHan
 
     // Skip health checks — used by load balancers / k8s probes
     if (SKIP_PATHS.has(c.req.path)) {
+      return next();
+    }
+
+    // Skip agent routes — they have dedicated per-agent rate limiting
+    if (SKIP_PREFIXES.some(prefix => c.req.path.startsWith(prefix))) {
       return next();
     }
 

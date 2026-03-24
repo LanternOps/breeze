@@ -27,13 +27,15 @@ function tryDeepLink(url: string) {
 export default function ConnectDesktopButton({ deviceId, className = '', compact = false, iconOnly = false, disabled = false }: Props) {
   const [status, setStatus] = useState<'idle' | 'creating' | 'launching' | 'fallback'>('idle');
   const [error, setError] = useState<string | null>(null);
-  const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const autoDismissTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const sessionIdRef = useRef<string | null>(null);
 
-  // Clean up timer on unmount
+  // Clean up timers on unmount
   useEffect(() => {
     return () => {
-      if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+      if (autoDismissTimerRef.current) clearTimeout(autoDismissTimerRef.current);
     };
   }, []);
 
@@ -90,11 +92,45 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       // Use hidden iframe to trigger protocol handler without affecting the page
       tryDeepLink(deepLink);
 
-      // Always show fallback after 3 seconds — if the viewer opened, the user
-      // simply ignores it; if it didn't, they get the download link immediately.
-      fallbackTimerRef.current = setTimeout(() => {
-        setStatus((current) => current === 'launching' ? 'fallback' : current);
-      }, 3000);
+      // Poll session status to detect whether the viewer actually opened.
+      // The session starts as 'pending'; the viewer exchanges the connect code
+      // almost immediately, moving it to 'connecting' then 'active'.
+      // If it stays 'pending' after ~8s the viewer likely didn't launch.
+      const pollSessionId = session.id;
+      let pollCount = 0;
+      const maxPolls = 5; // 5 polls × ~1.5s = ~7.5s window
+
+      const poll = async () => {
+        pollCount++;
+        try {
+          const res = await fetchWithAuth(`/remote/sessions/${pollSessionId}`);
+          if (res.ok) {
+            const data = await res.json();
+            const sessionStatus = data.status ?? data.data?.status;
+            if (sessionStatus && sessionStatus !== 'pending') {
+              // Viewer connected — silently go back to idle
+              setStatus((cur) => cur === 'launching' || cur === 'fallback' ? 'idle' : cur);
+              return;
+            }
+          }
+        } catch { /* network error — keep polling */ }
+
+        if (pollCount >= maxPolls) {
+          // Timed out still pending — viewer didn't open, show fallback
+          setStatus((cur) => cur === 'launching' ? 'fallback' : cur);
+
+          // Auto-dismiss fallback after 20s so it doesn't linger
+          if (autoDismissTimerRef.current) clearTimeout(autoDismissTimerRef.current);
+          autoDismissTimerRef.current = setTimeout(() => {
+            setStatus((cur) => cur === 'fallback' ? 'idle' : cur);
+          }, 20000);
+          return;
+        }
+
+        pollTimerRef.current = setTimeout(poll, 1500);
+      };
+
+      pollTimerRef.current = setTimeout(poll, 1500);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Connection failed');
       setStatus('idle');
@@ -197,8 +233,8 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           type="button"
           onClick={handleConnect}
           disabled={disabled || status === 'creating' || status === 'launching'}
-          title="Connect Desktop"
-          className="flex h-8 w-8 items-center justify-center rounded-md transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+          title={error || 'Connect Desktop'}
+          className={`flex h-8 w-8 items-center justify-center rounded-md transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 ${error ? 'text-red-500' : ''}`}
         >
           {status === 'creating' || status === 'launching' ? (
             <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
@@ -206,9 +242,6 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
             <Monitor className="h-4 w-4" />
           )}
         </button>
-        {error && (
-          <p className="absolute left-0 top-full mt-1 whitespace-nowrap text-xs text-red-500">{error}</p>
-        )}
         {fallbackContent}
       </div>
     );
@@ -221,10 +254,12 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           type="button"
           onClick={handleConnect}
           disabled={status === 'creating' || status === 'launching'}
-          className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+          title={error || undefined}
+          className={`flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 ${error ? 'text-red-500' : ''}`}
         >
           <Monitor className="h-4 w-4" />
-          {status === 'creating' ? 'Connecting...' :
+          {error ? 'Connection failed' :
+           status === 'creating' ? 'Connecting...' :
            status === 'launching' ? 'Launching...' :
            'Connect Desktop'}
         </button>
@@ -239,18 +274,16 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
         type="button"
         onClick={handleConnect}
         disabled={status === 'creating' || status === 'launching'}
-        className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+        title={error || undefined}
+        className={`flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${error ? 'border-red-300 bg-red-50 text-red-600 hover:bg-red-100 dark:border-red-800 dark:bg-red-950 dark:text-red-400 dark:hover:bg-red-900' : 'bg-background hover:bg-muted'}`}
       >
         <Monitor className="h-4 w-4" />
-        {status === 'creating' ? 'Creating session...' :
+        {error ? 'Connection failed' :
+         status === 'creating' ? 'Creating session...' :
          status === 'launching' ? 'Launching viewer...' :
          'Connect Desktop'}
-        {status === 'idle' && <ExternalLink className="w-3.5 h-3.5 opacity-60" />}
+        {status === 'idle' && !error && <ExternalLink className="w-3.5 h-3.5 opacity-60" />}
       </button>
-
-      {error && (
-        <p className="absolute left-0 top-full mt-2 text-sm text-red-500 dark:text-red-400">{error}</p>
-      )}
 
       {fallbackContent}
     </div>
