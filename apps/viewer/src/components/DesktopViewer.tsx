@@ -233,7 +233,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       };
 
       setTransportState('webrtc');
-      setHostname('Remote Desktop');
+      // Hostname is already set from the exchange response before connectWebRTC is called.
       // Connection state will flip to 'connected' via onconnectionstatechange
       return true;
     } catch (err) {
@@ -532,6 +532,15 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           accessToken: exchange.accessToken
         };
         authRef.current = authParams;
+
+        // Set hostname from exchange response (available for all transports)
+        if (exchange.hostname) {
+          setHostname(exchange.hostname);
+          getCurrentWebviewWindow().setTitle(exchange.hostname).catch((err) => {
+            console.error('setTitle failed:', err);
+          });
+          invoke('update_session_hostname', { hostname: exchange.hostname }).catch(() => {});
+        }
 
         // Try WebRTC first
         const webrtcOk = await connectWebRTC(authParams);
@@ -1036,9 +1045,16 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const handlePasteAsKeystrokes = useCallback(async () => {
     let text: string;
     try {
-      text = await navigator.clipboard.readText();
+      // Use Tauri native clipboard to bypass macOS "Allow Paste" prompt
+      const { readText } = await import('@tauri-apps/plugin-clipboard-manager');
+      text = await readText();
     } catch {
-      return;
+      // Fallback to browser clipboard API
+      try {
+        text = await navigator.clipboard.readText();
+      } catch {
+        return;
+      }
     }
     if (!text) return;
 
@@ -1081,7 +1097,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (ne.code === 'KeyV' && !ne.shiftKey && (ne.ctrlKey || ne.metaKey)) {
       const dc = clipboardDCRef.current;
       if (dc && dc.readyState === 'open') {
-        navigator.clipboard.readText().then((text) => {
+        import('@tauri-apps/plugin-clipboard-manager').then(({ readText }) =>
+          readText()
+        ).catch(() =>
+          navigator.clipboard.readText()
+        ).then((text) => {
           if (text && text !== lastClipboardHashRef.current) {
             lastClipboardHashRef.current = text;
             dc.send(JSON.stringify({ type: 'text', text }));

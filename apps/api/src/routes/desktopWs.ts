@@ -550,7 +550,8 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
           id: remoteSessions.id,
           userId: remoteSessions.userId,
           type: remoteSessions.type,
-          status: remoteSessions.status
+          status: remoteSessions.status,
+          deviceId: remoteSessions.deviceId,
         })
         .from(remoteSessions)
         .where(eq(remoteSessions.id, sessionId))
@@ -564,10 +565,22 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
         return c.json({ error: 'Session is not available for connection' }, 400);
       }
 
+      // Look up device hostname for the viewer window title
+      let hostname: string | undefined;
+      if (session.deviceId) {
+        const [device] = await db
+          .select({ hostname: devices.hostname })
+          .from(devices)
+          .where(eq(devices.id, session.deviceId))
+          .limit(1);
+        hostname = device?.hostname ?? undefined;
+      }
+
       const accessToken = await createAccessToken(codeRecord.tokenPayload);
       const result = {
         accessToken,
-        expiresInSeconds: getViewerAccessTokenExpirySeconds()
+        expiresInSeconds: getViewerAccessTokenExpirySeconds(),
+        hostname: hostname ?? null,
       };
 
       // Cache the result briefly for duplicate requests

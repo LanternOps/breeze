@@ -124,13 +124,21 @@ fn unregister_session(window: tauri::WebviewWindow, state: tauri::State<'_, Sess
 }
 
 /// Called by DesktopViewer when the remote hostname is learned.
-/// Uses the calling window's label to find the matching SessionMap entry.
+/// Updates the SessionMap entry and sets the native window title.
 #[tauri::command]
 fn update_session_hostname(
+    app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     hostname: String,
     state: tauri::State<'_, SessionMap>,
 ) {
+    // Update the window title from Rust (more reliable than JS setTitle)
+    if let Some(win) = app.get_webview_window(window.label()) {
+        let title = format!("{} — Breeze Viewer", hostname);
+        if let Err(err) = win.set_title(&title) {
+            eprintln!("Failed to set window title to '{}': {}", title, err);
+        }
+    }
     let mut map = lock_or_recover(&state.0, "session_map");
     for entry in map.values_mut() {
         if entry.window_label == window.label() {
@@ -276,6 +284,7 @@ pub fn run() {
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             get_pending_deep_link,
             clear_pending_deep_link,
@@ -337,12 +346,22 @@ pub fn run() {
             }
 
             let app_handle = app.handle().clone();
+            // Listen for deep link events when the app is already running.
+            // IMPORTANT: on macOS, on_open_url fires on the main thread.
+            // run_on_main_thread may execute synchronously when already on
+            // the main thread, which means route_deep_link → build() would
+            // run while the deep-link plugin still holds its internal lock.
+            // build() pumps the AppKit run loop → re-entry → deadlock.
+            // Fix: spawn a thread so the closure is always queued async.
             app.deep_link().on_open_url(move |event| {
                 if let Some(url) = event.urls().first() {
                     let url = url.to_string();
-                    let handle = app_handle.clone();
-                    let _ = app_handle.run_on_main_thread(move || {
-                        route_deep_link(&handle, url);
+                    let h = app_handle.clone();
+                    std::thread::spawn(move || {
+                        let h2 = h.clone();
+                        let _ = h.run_on_main_thread(move || {
+                            route_deep_link(&h2, url);
+                        });
                     });
                 }
             });

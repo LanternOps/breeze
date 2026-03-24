@@ -1,6 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import type { ComponentType } from 'react';
-import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import DesktopViewer from './components/DesktopViewer';
@@ -88,8 +87,10 @@ export default function App() {
       });
     }, 300);
 
-    // Path 2: Listen for events
-    const unlisten = listen<string>('deep-link-received', (event) => {
+    // Path 2: Listen for events scoped to THIS window only.
+    // Global listen() receives events from all windows — emit_to("session-2")
+    // would also trigger session-1's listener, causing cross-window bleed.
+    const unlisten = getCurrentWebviewWindow().listen<string>('deep-link-received', (event) => {
       applyDeepLink(event.payload);
     });
 

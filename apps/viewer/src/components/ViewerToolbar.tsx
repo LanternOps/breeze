@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import type { ComponentType } from 'react';
-import { Monitor, Wifi, WifiOff, Maximize, Minimize, Power, Keyboard, ClipboardPaste, ChevronDown, X, ArrowLeftRight, Volume2, VolumeX, MousePointer2 } from 'lucide-react';
+import { Monitor, Wifi, WifiOff, Maximize, Minimize, Keyboard, ClipboardPaste, ChevronDown, X, ArrowLeftRight, Volume2, VolumeX, MousePointer2 } from 'lucide-react';
 
 interface MonitorInfo {
   index: number;
@@ -98,7 +98,7 @@ export default function ViewerToolbar({
   onLockWorkstation,
   onPasteAsKeystrokes,
   onCancelPaste,
-  onDisconnect,
+  onDisconnect: _onDisconnect,
   reconnectSecondsLeft,
 }: Props) {
   const MonitorIcon = Monitor as unknown as ComponentType<{ className?: string }>;
@@ -106,7 +106,6 @@ export default function ViewerToolbar({
   const DisconnectedIcon = WifiOff as unknown as ComponentType<{ className?: string }>;
   const MinimizeIcon = Minimize as unknown as ComponentType<{ className?: string }>;
   const MaximizeIcon = Maximize as unknown as ComponentType<{ className?: string }>;
-  const PowerIcon = Power as unknown as ComponentType<{ className?: string }>;
   const KeyboardIcon = Keyboard as unknown as ComponentType<{ className?: string }>;
   const PasteIcon = ClipboardPaste as unknown as ComponentType<{ className?: string }>;
   const ChevronDownIcon = ChevronDown as unknown as ComponentType<{ className?: string }>;
@@ -279,19 +278,24 @@ export default function ViewerToolbar({
       {monitors.length > 1 && transport === 'webrtc' && (
         <>
           <div className="w-px h-5 bg-gray-600" />
-          <div className="flex items-center gap-1.5">
-            <MonitorIcon className="w-3.5 h-3.5 text-gray-400" />
-            <select
-              value={activeMonitor}
-              onChange={(e) => onSwitchMonitor(parseInt(e.target.value))}
-              className="bg-gray-700 text-gray-300 text-xs rounded px-1 py-0.5 border border-gray-600"
-            >
-              {monitors.map((m) => (
-                <option key={m.index} value={m.index}>
-                  {m.name || `Display ${m.index + 1}`}{m.isPrimary ? ' (Primary)' : ''}{m.width ? ` ${m.width}x${m.height}` : ''}
-                </option>
-              ))}
-            </select>
+          <div className="flex items-center gap-1">
+            {monitors.map((m) => (
+              <button
+                key={m.index}
+                onClick={() => onSwitchMonitor(m.index)}
+                title={`${m.name || `Display ${m.index + 1}`}${m.isPrimary ? ' (Primary)' : ''} ${m.width}x${m.height}`}
+                className={`p-1 rounded transition-colors ${
+                  activeMonitor === m.index
+                    ? 'text-blue-400 bg-blue-500/20'
+                    : 'text-gray-500 hover:text-gray-300 hover:bg-gray-700'
+                }`}
+              >
+                <span className="relative inline-flex items-center justify-center w-4 h-4">
+                  <MonitorIcon className="w-4 h-4" />
+                  <span className="absolute text-[7px] font-bold leading-none" style={{ marginTop: '-2px' }}>{m.index + 1}</span>
+                </span>
+              </button>
+            ))}
           </div>
         </>
       )}
@@ -430,14 +434,6 @@ export default function ViewerToolbar({
         {isFullscreen ? <MinimizeIcon className="w-4 h-4" /> : <MaximizeIcon className="w-4 h-4" />}
       </button>
 
-      <button
-        onClick={onDisconnect}
-        className="flex items-center gap-1 px-2 py-1 text-xs text-red-400 hover:text-red-300 hover:bg-gray-700 rounded"
-        title="Disconnect"
-      >
-        <PowerIcon className="w-3.5 h-3.5" />
-        <span>Disconnect</span>
-      </button>
     </div>
   );
 }

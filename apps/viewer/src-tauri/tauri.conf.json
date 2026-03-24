@@ -1,6 +1,6 @@
 {
   "productName": "Breeze Viewer",
-  "version": "0.10.0",
+  "version": "0.13.14",
   "identifier": "com.breeze.viewer",
   "build": {
     "beforeBuildCommand": "pnpm build",
