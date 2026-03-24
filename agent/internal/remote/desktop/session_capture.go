@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -653,9 +654,16 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	captureImagePool.Put(img)
 
 	if err != nil {
-		slog.Warn("H264 encode error", "session", s.id, "error", err.Error())
+		s.cpuEncodeErrors++
+		slog.Warn("H264 encode error", "session", s.id, "error", err.Error(),
+			"consecutive", s.cpuEncodeErrors)
+		if s.cpuEncodeErrors >= 5 && s.encoder.BackendName() != "openh264" {
+			s.swapToSoftwareEncoder()
+		}
 		return
 	}
+	s.cpuEncodeErrors = 0
+
 	if h264Data == nil {
 		// MFT is buffering, no output yet
 		return
@@ -866,4 +874,67 @@ func applyDisplayOffset(handler InputHandler, displayIndex int, cursorOffX, curs
 	handler.SetDisplayOffset(0, 0)
 	cursorOffX.Store(0)
 	cursorOffY.Store(0)
+}
+
+// swapToSoftwareEncoder replaces the current hardware encoder with a software
+// encoder (OpenH264) mid-session. Called when the hardware encoder stalls
+// (e.g., VideoToolbox on older Intel Macs).
+func (s *Session) swapToSoftwareEncoder() {
+	slog.Warn("Hardware encoder stalling, swapping to software encoder",
+		"session", s.id, "backend", s.encoder.BackendName(),
+		"consecutiveErrors", s.cpuEncodeErrors)
+
+	oldEnc := s.encoder
+
+	// Get current dimensions from capturer
+	var w, h int
+	if cap := s.capturer; cap != nil {
+		w, h, _ = cap.GetScreenBounds()
+	}
+
+	newEnc, err := NewVideoEncoder(EncoderConfig{
+		Codec:          CodecH264,
+		Quality:        QualityAuto,
+		Bitrate:        2_500_000,
+		FPS:            30,
+		PreferHardware: false, // force software
+	})
+	if err != nil {
+		slog.Error("Failed to create software encoder fallback",
+			"session", s.id, "error", err.Error())
+		return
+	}
+
+	if newEnc.BackendIsPlaceholder() {
+		slog.Error("Software encoder fallback is placeholder — OpenH264 not available",
+			"session", s.id)
+		newEnc.Close()
+		return
+	}
+
+	if w > 0 && h > 0 {
+		if err := newEnc.SetDimensions(w, h); err != nil {
+			slog.Error("Failed to set dimensions on software encoder",
+				"session", s.id, "error", err.Error())
+			newEnc.Close()
+			return
+		}
+	}
+
+	// Set pixel format to match capturer
+	newEnc.SetPixelFormat(s.encoderPF)
+
+	s.encoder = newEnc
+	s.cpuEncodeErrors = 0
+	oldEnc.Close()
+
+	// Cap ABR for software encoder
+	if s.adaptive != nil {
+		s.adaptive.CapForSoftwareEncoder()
+	}
+
+	slog.Info("Swapped to software encoder",
+		"session", s.id,
+		"backend", newEnc.BackendName(),
+		"dimensions", fmt.Sprintf("%dx%d", w, h))
 }
