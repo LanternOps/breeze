@@ -5,7 +5,9 @@ export const TAURI_ORIGINS = [
   'http://tauri.localhost'
 ] as const;
 
-// Dev-only origins for local development servers
+// Dev-only origins for local development servers.
+// Tauri origins are NOT included here — they're added unconditionally
+// in createCorsOriginResolver() via TAURI_ORIGINS.
 export const DEFAULT_ALLOWED_ORIGINS = [
   'http://localhost:4321',
   'http://127.0.0.1:4321',
@@ -13,7 +15,6 @@ export const DEFAULT_ALLOWED_ORIGINS = [
   'http://127.0.0.1:4322',
   'http://localhost:1420',
   'http://127.0.0.1:1420',
-  ...TAURI_ORIGINS
 ] as const;
 
 type OriginResolverOptions = {
