@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { buildWsUrl, type ConnectionParams } from '../lib/protocol';
 import { createDesktopWsTicket, exchangeDesktopConnectCode } from '../lib/api';
 import { createWebRTCSession, scaleVideoCoords, AgentSessionError, type AuthenticatedConnectionParams, type WebRTCSession } from '../lib/webrtc';
@@ -303,7 +304,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         switch (msg.type) {
           case 'connected':
             setStatus('connected');
-            setHostname(msg.device?.hostname || 'Unknown');
+            const deviceHostname = msg.device?.hostname || 'Unknown';
+            setHostname(deviceHostname);
+            try {
+              getCurrentWebviewWindow().setTitle(deviceHostname);
+            } catch {}
+            invoke('update_session_hostname', { hostname: deviceHostname }).catch(() => {});
             setConnectedAt(new Date());
             setErrorMessage(null);
             // Auto-focus the canvas so keyboard events are captured immediately
