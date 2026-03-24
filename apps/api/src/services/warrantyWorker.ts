@@ -61,6 +61,9 @@ function createWarrantyWorker(): Worker<WarrantyJobData> {
     {
       connection: getRedisConnection(),
       concurrency: 3,
+      lockDuration: 300_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 2,
     }
   );
 }
