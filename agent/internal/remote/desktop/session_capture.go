@@ -879,6 +879,7 @@ func applyDisplayOffset(handler InputHandler, displayIndex int, cursorOffX, curs
 // swapToSoftwareEncoder replaces the current hardware encoder with a software
 // encoder (OpenH264) mid-session. Called when the hardware encoder stalls
 // (e.g., VideoToolbox on older Intel Macs).
+// Must be called from the capture loop goroutine (no mutex needed for s.encoder).
 func (s *Session) swapToSoftwareEncoder() {
 	slog.Warn("Hardware encoder stalling, swapping to software encoder",
 		"session", s.id, "backend", s.encoder.BackendName(),
@@ -889,14 +890,24 @@ func (s *Session) swapToSoftwareEncoder() {
 	// Get current dimensions from capturer
 	var w, h int
 	if cap := s.capturer; cap != nil {
-		w, h, _ = cap.GetScreenBounds()
+		var err error
+		w, h, err = cap.GetScreenBounds()
+		if err != nil {
+			slog.Warn("GetScreenBounds failed during encoder swap",
+				"session", s.id, "error", err.Error())
+		}
 	}
 
+	// Use session's current FPS; cap bitrate for software encoder
+	fps := s.getFPS()
+	if fps <= 0 {
+		fps = 30
+	}
 	newEnc, err := NewVideoEncoder(EncoderConfig{
 		Codec:          CodecH264,
 		Quality:        QualityAuto,
 		Bitrate:        2_500_000,
-		FPS:            30,
+		FPS:            fps,
 		PreferHardware: false, // force software
 	})
 	if err != nil {

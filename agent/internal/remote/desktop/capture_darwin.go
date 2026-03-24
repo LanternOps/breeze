@@ -279,11 +279,15 @@ type darwinCapturer struct {
 // Also falls back to CG if SCK init fails at runtime (e.g., classes don't load).
 func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
 	if hasSCScreenshotManager() {
-		cap, err := newSCKCapturer(config)
-		if err != nil {
+		cap, sckErr := newSCKCapturer(config)
+		if sckErr != nil {
 			slog.Warn("ScreenCaptureKit init failed, falling back to CoreGraphics",
-				"error", err.Error(), "darwinVersion", macOSMajorVersion)
-			return newCGCapturer(config)
+				"error", sckErr.Error(), "darwinVersion", macOSMajorVersion)
+			cgCap, cgErr := newCGCapturer(config)
+			if cgErr != nil {
+				return nil, fmt.Errorf("SCK failed (%v); CG fallback also failed: %w", sckErr, cgErr)
+			}
+			return cgCap, nil
 		}
 		return cap, nil
 	}
