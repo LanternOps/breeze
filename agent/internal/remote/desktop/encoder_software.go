@@ -3,6 +3,7 @@ package desktop
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 )
 
@@ -12,6 +13,11 @@ type softwareEncoder struct {
 }
 
 func newSoftwareEncoder(cfg EncoderConfig) (encoderBackend, error) {
+	if enc, err := newOpenH264Encoder(cfg); err == nil {
+		return enc, nil
+	} else {
+		slog.Warn("OpenH264 unavailable, using placeholder software encoder", "error", err.Error())
+	}
 	return &softwareEncoder{cfg: cfg}, nil
 }
 

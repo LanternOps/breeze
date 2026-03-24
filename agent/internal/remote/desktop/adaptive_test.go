@@ -268,6 +268,100 @@ func TestAdaptive_NoOscillation(t *testing.T) {
 	}
 }
 
+func TestAdaptive_CapForSoftwareEncoder(t *testing.T) {
+	fpsCalls := []int{}
+	a, stub := newTestAdaptive(4_000_000, 500_000, 4_000_000)
+	a.onFPSChange = func(fps int) { fpsCalls = append(fpsCalls, fps) }
+
+	// Simulate: ABR ramps to 4 Mbps, then GPU encoding fails.
+	warmup(a, 50*time.Millisecond, 0.0)
+
+	a.CapForSoftwareEncoder()
+
+	a.mu.Lock()
+	maxBR := a.maxBitrate
+	targetBR := a.targetBitrate
+	maxFPS := a.maxFPS
+	fps := a.currentFPS
+	a.mu.Unlock()
+
+	if maxBR > 3_000_000 {
+		t.Fatalf("expected maxBitrate capped to 3M, got %d", maxBR)
+	}
+	if targetBR > 3_000_000 {
+		t.Fatalf("expected targetBitrate clamped to 3M, got %d", targetBR)
+	}
+	if maxFPS != 45 {
+		t.Fatalf("expected maxFPS=45, got %d", maxFPS)
+	}
+	if fps > 45 {
+		t.Fatalf("expected FPS <= 45, got %d", fps)
+	}
+	if stub.bitrate > 3_000_000 {
+		t.Fatalf("expected encoder bitrate clamped to 3M, got %d", stub.bitrate)
+	}
+	// FPS callback should have been called
+	if len(fpsCalls) == 0 {
+		t.Fatal("expected FPS callback to fire")
+	}
+}
+
+func TestAdaptive_EncoderThroughputCapsFPS(t *testing.T) {
+	fpsCalls := []int{}
+	a, _ := newTestAdaptive(4_000_000, 500_000, 4_000_000)
+	a.onFPSChange = func(fps int) { fpsCalls = append(fpsCalls, fps) }
+
+	// Warm up with clean network stats.
+	warmup(a, 50*time.Millisecond, 0.0)
+
+	// Simulate encoder throughput of ~30% (e.g., 15 encoded out of 50 captured).
+	// Need 3+ samples for the EWMA to settle.
+	for i := 0; i < 4; i++ {
+		a.UpdateEncoderThroughput(uint64(50*(i+1)), uint64(15*(i+1)))
+	}
+
+	// Next ABR update should cap FPS based on encode ratio.
+	a.Update(50*time.Millisecond, 0.0)
+
+	a.mu.Lock()
+	fps := a.currentFPS
+	ratio := a.smoothedEncodeRatio
+	a.mu.Unlock()
+
+	if ratio > 0.5 {
+		t.Fatalf("expected smoothed encode ratio < 0.5, got %.2f", ratio)
+	}
+	// At 30% ratio, FPS should be capped to ~18 (0.3 * 60), not the full 60.
+	if fps > 25 {
+		t.Fatalf("expected FPS capped below 25 due to encoder bottleneck, got %d (ratio=%.2f)", fps, ratio)
+	}
+	if fps < 10 {
+		t.Fatalf("FPS should not go below floor of 10, got %d", fps)
+	}
+}
+
+func TestAdaptive_EncoderThroughputNoCapWhenHealthy(t *testing.T) {
+	a, _ := newTestAdaptive(4_000_000, 500_000, 4_000_000)
+
+	warmup(a, 50*time.Millisecond, 0.0)
+
+	// Simulate healthy encoder: 95% encode ratio.
+	for i := 0; i < 4; i++ {
+		a.UpdateEncoderThroughput(uint64(60*(i+1)), uint64(57*(i+1)))
+	}
+
+	a.Update(50*time.Millisecond, 0.0)
+
+	a.mu.Lock()
+	fps := a.currentFPS
+	a.mu.Unlock()
+
+	// At 95% ratio (above 0.85 threshold), FPS should not be capped.
+	if fps < 50 {
+		t.Fatalf("healthy encoder should not cap FPS, got %d", fps)
+	}
+}
+
 func abs(x int) int {
 	if x < 0 {
 		return -x

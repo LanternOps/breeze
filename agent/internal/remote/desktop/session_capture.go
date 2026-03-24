@@ -231,6 +231,7 @@ func (s *Session) captureLoopDXGI() captureMode {
 	s.mu.RUnlock()
 	tp, hasTP := initCap.(TextureProvider)
 	gpuDisabled := false
+	swCapped := false
 
 	// Dynamic FPS scaling: track consecutive "no new frame" iterations.
 	// After idleThreshold consecutive skips (~3s of static screen), enter idle
@@ -402,6 +403,12 @@ func (s *Session) captureLoopDXGI() captureMode {
 			if disable {
 				gpuDisabled = true
 				slog.Warn("GPU capture disabled, falling back to CPU Capture() path", "session", s.id)
+				// Software MFT can't sustain high bitrate/FPS — cap the ABR
+				// to reduce buffering stalls from rate-control pressure.
+				if !swCapped && s.adaptive != nil {
+					swCapped = true
+					s.adaptive.CapForSoftwareEncoder()
+				}
 			}
 			if handled {
 				frameSent = sent
@@ -451,8 +458,12 @@ func (s *Session) captureLoopDXGI() captureMode {
 				continue
 			}
 		}
+		// CPU-only path: if we reach here without GPU, cap for software encoder.
+		if !swCapped && !s.encoder.BackendIsHardware() && s.adaptive != nil {
+			swCapped = true
+			s.adaptive.CapForSoftwareEncoder()
+		}
 		s.captureAndSendFrame(frameDuration)
-		// CPU path: approximate skip tracking via metrics
 		sleepDur := frameDuration
 		if elapsed := time.Since(loopStart); elapsed < sleepDur {
 			time.Sleep(sleepDur - elapsed)

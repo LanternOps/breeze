@@ -147,12 +147,17 @@ export default function AiChatMessages({
         }
 
         if (msg.role === 'tool_use') {
+          // Find matching tool_result by toolUseId, or fall back to the immediately following tool_result
+          const idx = messages.indexOf(msg);
+          const nextMsg = idx >= 0 && idx + 1 < messages.length ? messages[idx + 1] : undefined;
+          const hasResult = messages.some(m => m.role === 'tool_result' && m.toolUseId && m.toolUseId === msg.toolUseId)
+            || (nextMsg?.role === 'tool_result');
           return (
             <AiToolCallCard
               key={msg.id}
               toolName={msg.toolName ?? 'Unknown tool'}
               input={msg.toolInput}
-              isExecuting={!messages.some(m => m.role === 'tool_result' && m.toolUseId === msg.toolUseId)}
+              isExecuting={!hasResult}
             />
           );
         }

@@ -196,6 +196,15 @@ func Load(cfgFile string) (*Config, error) {
 	return cfg, nil
 }
 
+// SetAndPersist updates a single config key in viper and writes it to the
+// existing config file. Uses viper.WriteConfig (not WriteConfigAs) to write
+// back to the file viper originally read, preserving all existing keys
+// including sensitive fields that may have been cleared from the Config struct.
+func SetAndPersist(key string, value any) error {
+	viper.Set(key, value)
+	return viper.WriteConfig()
+}
+
 func Save(cfg *Config) error {
 	return SaveTo(cfg, "")
 }
