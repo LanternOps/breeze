@@ -393,6 +393,9 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
 export function createSessionPostToolUse(session: ActiveSession): PostToolUseCallback {
   return async (toolName, input, output, isError, durationMs) => {
     const toolUseId = session.toolUseIdQueue.shift();
+    if (!toolUseId) {
+      console.warn(`[AI-SDK] postToolUse: toolUseIdQueue empty for ${toolName} — tool_result will have no toolUseId`);
+    }
     const parsedOutput = safeParseJson(output);
     const sessionId = session.breezeSessionId;
     const orgId = session.auth.orgId ?? undefined;

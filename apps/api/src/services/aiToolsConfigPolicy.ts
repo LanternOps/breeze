@@ -12,6 +12,9 @@ import {
   createConfigPolicy,
   updateConfigPolicy,
   deleteConfigPolicy,
+  addFeatureLink,
+  updateFeatureLink,
+  removeFeatureLink,
   listFeatureLinks,
   listAssignments,
 } from './configurationPolicy';
@@ -489,6 +492,102 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           devices: rows,
           showing: rows.length,
         });
+      }
+
+      return JSON.stringify({ error: `Unknown action: ${action}` });
+    }),
+  });
+
+  // 9. manage_policy_feature_link — Tier 2 (write)
+  registerTool({
+    tier: 2,
+    definition: {
+      name: 'manage_policy_feature_link',
+      description: `Add, update, remove, or list feature links on a configuration policy. Feature links define the actual settings (patch schedule, alert rules, maintenance windows, etc.) bundled into a policy. Each policy can have one link per feature type.
+
+Inline settings shapes by feature type:
+- patch: { sources: ["os","third_party"], autoApprove: true, autoApproveSeverities: ["critical","important"], scheduleFrequency: "weekly", scheduleTime: "02:00", scheduleDayOfWeek: "tue", rebootPolicy: "if_required" }
+- alert_rule: { items: [{ name, severity: "critical"|"high"|"medium"|"low", conditions: {...}, cooldownMinutes?, autoResolve? }] }
+- maintenance: { recurrence: "weekly", durationHours: 3, timezone: "America/New_York", suppressAlerts: true, suppressPatching: true, suppressAutomations: false, suppressScripts: false, notifyOnStart: true, notifyOnEnd: true }
+- monitoring: { checkIntervalSeconds: 60, watches: [{ watchType: "service"|"process", name: "wuauserv", displayName?: "Windows Update", alertOnStop: true, alertSeverity: "high", cpuThresholdPercent?: 90, memoryThresholdMb?: 500, autoRestart: false, maxRestartAttempts: 3 }] }
+- event_log: { items: [{ logName, levels: [...] }] }
+
+For linked policy types (patch, alert_rule, software_policy, backup, security, compliance), you can set featurePolicyId to reference an existing standalone policy instead of inlineSettings.`,
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          action: { type: 'string', enum: ['add', 'update', 'remove', 'list'], description: 'The action to perform' },
+          configPolicyId: { type: 'string', description: 'Configuration policy UUID' },
+          featureLinkId: { type: 'string', description: 'Feature link UUID (required for update/remove)' },
+          featureType: {
+            type: 'string',
+            enum: [
+              'patch', 'alert_rule', 'backup', 'security', 'monitoring',
+              'maintenance', 'compliance', 'automation', 'event_log',
+              'software_policy', 'sensitive_data', 'peripheral_control',
+              'warranty', 'helper',
+            ],
+            description: 'Feature type (required for add)',
+          },
+          featurePolicyId: { type: 'string', description: 'Standalone policy UUID to link (for linked policy types)' },
+          inlineSettings: { type: 'object', description: 'Inline configuration settings (see description for shapes per feature type)' },
+        },
+        required: ['action', 'configPolicyId'],
+      },
+    },
+    handler: safeHandler('manage_policy_feature_link', async (input, auth) => {
+      const action = input.action as string;
+      const configPolicyId = input.configPolicyId as string;
+
+      // Verify access to the parent policy
+      const policy = await getConfigPolicy(configPolicyId, auth);
+      if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
+
+      if (action === 'list') {
+        const links = await listFeatureLinks(configPolicyId);
+        return JSON.stringify({ configPolicyId, policyName: policy.name, featureLinks: links });
+      }
+
+      if (action === 'add') {
+        const featureType = input.featureType as string | undefined;
+        if (!featureType) return JSON.stringify({ error: 'featureType is required for add' });
+
+        try {
+          const link = await addFeatureLink(
+            configPolicyId,
+            featureType as any,
+            (input.featurePolicyId as string) ?? null,
+            input.inlineSettings ?? null
+          );
+          return JSON.stringify({ success: true, featureLink: link });
+        } catch (err: any) {
+          if (err?.code === '23505') {
+            return JSON.stringify({ error: `Feature type "${featureType}" already exists on this policy. Use update action instead.` });
+          }
+          throw err;
+        }
+      }
+
+      if (action === 'update') {
+        const featureLinkId = input.featureLinkId as string | undefined;
+        if (!featureLinkId) return JSON.stringify({ error: 'featureLinkId is required for update' });
+
+        const updates: { featurePolicyId?: string | null; inlineSettings?: unknown } = {};
+        if (input.featurePolicyId !== undefined) updates.featurePolicyId = input.featurePolicyId as string | null;
+        if (input.inlineSettings !== undefined) updates.inlineSettings = input.inlineSettings;
+
+        const updated = await updateFeatureLink(featureLinkId, updates, configPolicyId);
+        if (!updated) return JSON.stringify({ error: 'Feature link not found' });
+        return JSON.stringify({ success: true, featureLink: updated });
+      }
+
+      if (action === 'remove') {
+        const featureLinkId = input.featureLinkId as string | undefined;
+        if (!featureLinkId) return JSON.stringify({ error: 'featureLinkId is required for remove' });
+
+        const deleted = await removeFeatureLink(featureLinkId, configPolicyId);
+        if (!deleted) return JSON.stringify({ error: 'Feature link not found' });
+        return JSON.stringify({ success: true, message: `Feature link removed` });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });

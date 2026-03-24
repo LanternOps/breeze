@@ -33,11 +33,12 @@ const TIER2_ACTIONS: Record<string, string[]> = {
   // Fleet tools — Tier 2 actions (auto-execute + audit)
   manage_configuration_policy: ['activate', 'deactivate'],
   manage_deployments: ['pause', 'resume'],
-  manage_patches: ['approve', 'decline', 'defer', 'bulk_approve'],
+  manage_patches: ['approve', 'decline', 'defer', 'bulk_approve', 'setup_auto_approval'],
   manage_groups: ['add_devices', 'remove_devices'],
   manage_maintenance_windows: ['create', 'update'],
   manage_automations: ['enable', 'disable'],
   manage_alert_rules: ['create_rule', 'update_rule'],
+  manage_service_monitors: ['add'],
   generate_report: ['create', 'update', 'delete', 'generate'],
   // Notification channel & saved filter tools — Tier 2 actions
   manage_notification_channels: ['test'],
@@ -66,6 +67,7 @@ const TIER3_ACTIONS: Record<string, string[]> = {
   manage_maintenance_windows: ['delete'],
   manage_automations: ['create', 'update', 'delete', 'run'],
   manage_alert_rules: ['delete_rule'],
+  manage_service_monitors: ['remove'],
   manage_processes: ['kill'],
   registry_operations: ['set_value', 'create_key', 'delete_key'],
   // Monitoring tools — Tier 3 actions (require user approval)
@@ -152,6 +154,7 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
     bulk_approve: { resource: 'patches', action: 'approve' },
     install: { resource: 'patches', action: 'execute' },
     rollback: { resource: 'patches', action: 'execute' },
+    setup_auto_approval: { resource: 'patches', action: 'approve' },
   },
   manage_groups: {
     list: { resource: 'groups', action: 'read' },
@@ -184,6 +187,7 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
     run: { resource: 'automations', action: 'execute' },
   },
   manage_alert_rules: {
+    list_templates: { resource: 'alerts', action: 'read' },
     list_rules: { resource: 'alerts', action: 'read' },
     get_rule: { resource: 'alerts', action: 'read' },
     create_rule: { resource: 'alerts', action: 'write' },
@@ -192,6 +196,11 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
     test_rule: { resource: 'alerts', action: 'read' },
     list_channels: { resource: 'alerts', action: 'read' },
     alert_summary: { resource: 'alerts', action: 'read' },
+  },
+  manage_service_monitors: {
+    list: { resource: 'monitoring', action: 'read' },
+    add: { resource: 'monitoring', action: 'write' },
+    remove: { resource: 'monitoring', action: 'write' },
   },
   generate_report: {
     list: { resource: 'reports', action: 'read' },
@@ -335,6 +344,7 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   manage_maintenance_windows: { limit: 15, windowSeconds: 300 },
   manage_automations: { limit: 10, windowSeconds: 600 },
   manage_alert_rules: { limit: 15, windowSeconds: 300 },
+  manage_service_monitors: { limit: 15, windowSeconds: 300 },
   generate_report: { limit: 10, windowSeconds: 300 },
   // Brain device context tools
   set_device_context: { limit: 20, windowSeconds: 300 },
@@ -613,6 +623,7 @@ function buildApprovalDescription(
       if (action === 'install') parts.push(`Install ${Array.isArray(input.patchIds) ? input.patchIds.length : 0} patch(es) on ${Array.isArray(input.deviceIds) ? input.deviceIds.length : 0} device(s)`);
       else if (action === 'scan') parts.push(`Trigger patch scan on ${Array.isArray(input.deviceIds) ? input.deviceIds.length : 0} device(s)`);
       else if (action === 'rollback') parts.push(`Rollback patch ${(input.patchId as string)?.slice(0, 8)}...`);
+      else if (action === 'setup_auto_approval') parts.push(`Setup auto-approval for ${Array.isArray(input.autoApproveSeverities) ? (input.autoApproveSeverities as string[]).join(', ') : 'critical, important'} patches`);
       else parts.push(`Patch ${action}: ${(input.patchId as string)?.slice(0, 8) ?? ''}...`);
       break;
 
@@ -637,6 +648,12 @@ function buildApprovalDescription(
     case 'manage_alert_rules':
       if (action === 'delete_rule') parts.push(`Delete alert rule ${(input.ruleId as string)?.slice(0, 8)}...`);
       else parts.push(`Alert rule ${action}: ${(input.ruleId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
+      break;
+
+    case 'manage_service_monitors':
+      if (action === 'add') parts.push(`Add ${input.watchType} monitor "${input.displayName || input.name}"`);
+      else if (action === 'remove') parts.push(`Remove monitor ${(input.watchId as string)?.slice(0, 8)}...`);
+      else parts.push(`Service monitors: ${action}`);
       break;
 
     case 'manage_startup_items':

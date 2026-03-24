@@ -6,8 +6,15 @@ import (
 	"fmt"
 	"log/slog"
 	"syscall"
+	"time"
 	"unsafe"
 )
+
+// mftStallThreshold is the maximum consecutive nil outputs from the MFT before
+// the pipeline is flushed and restarted. Software MFTs can stall for 50+ frames
+// during warm-up, causing multi-second freezes. Flushing at 20 frames (~333ms
+// at 60fps) breaks the stall with acceptable quality loss (one IDR keyframe).
+const mftStallThreshold = 20
 
 // Encode takes RGBA or BGRA pixel data (per SetPixelFormat), converts to NV12, and encodes to H264.
 // Returns nil, nil when the MFT is buffering (no output yet).
@@ -94,23 +101,7 @@ func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 	if err != nil {
 		return out, err
 	}
-	if out == nil {
-		m.consecutiveNilOutputs++
-		if m.consecutiveNilOutputs == 3 || m.consecutiveNilOutputs == 10 {
-			slog.Warn("MFT encoder not producing output (buffering)",
-				"consecutiveNil", m.consecutiveNilOutputs,
-				"frameIdx", m.frameIdx,
-				"isHW", m.isHW,
-				"gpuFailed", m.gpuFailed,
-			)
-		}
-	} else {
-		if m.consecutiveNilOutputs > 2 {
-			slog.Info("MFT encoder resumed output after buffering",
-				"nilCount", m.consecutiveNilOutputs)
-		}
-		m.consecutiveNilOutputs = 0
-	}
+	m.trackNilOutput(out)
 	return out, nil
 }
 
@@ -380,6 +371,18 @@ func (m *mftEncoder) ForceKeyframe() error {
 	return m.forceKeyframeLocked()
 }
 
+// flushLocked drops all buffered frames and restarts streaming. Caller must hold m.mu.
+func (m *mftEncoder) flushLocked() {
+	if !m.inited || m.transform == 0 {
+		return
+	}
+	comCall(m.transform, vtblProcessMessage, mftMessageCommandFlush, 0)
+	comCall(m.transform, vtblProcessMessage, mftMessageNotifyBeginStreaming, 0)
+	comCall(m.transform, vtblProcessMessage, mftMessageNotifyStartOfStream, 0)
+	m.forceKeyframePending = true
+	_ = m.forceKeyframeLocked()
+}
+
 // Flush drops all buffered frames from the MFT encoder pipeline and forces the
 // next output to be an IDR keyframe. Used on mouse clicks so the viewer
 // immediately shows the result of the click instead of displaying stale
@@ -387,24 +390,41 @@ func (m *mftEncoder) ForceKeyframe() error {
 func (m *mftEncoder) Flush() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	if !m.inited || m.transform == 0 {
-		return nil
-	}
-
-	// 1. Flush all buffered input/output from the MFT pipeline.
-	comCall(m.transform, vtblProcessMessage, mftMessageCommandFlush, 0)
-
-	// 2. Restart the streaming session so the MFT accepts new input.
-	comCall(m.transform, vtblProcessMessage, mftMessageNotifyBeginStreaming, 0)
-	comCall(m.transform, vtblProcessMessage, mftMessageNotifyStartOfStream, 0)
-
-	// 3. Force the next output to be an IDR keyframe so the viewer can
-	//    decode immediately without waiting for a reference frame.
-	m.forceKeyframePending = true
-	_ = m.forceKeyframeLocked()
-
+	m.flushLocked()
 	return nil
+}
+
+// trackNilOutput tracks consecutive nil outputs from drainOutput and auto-flushes
+// when the MFT appears stalled (20+ consecutive nil frames). Prevents multi-second
+// freezes from software MFT warm-up stalls. Caller must hold m.mu.
+func (m *mftEncoder) trackNilOutput(out []byte) {
+	if out == nil {
+		m.consecutiveNilOutputs++
+		if m.consecutiveNilOutputs == 3 || m.consecutiveNilOutputs == 10 {
+			slog.Warn("MFT encoder not producing output (buffering)",
+				"consecutiveNil", m.consecutiveNilOutputs,
+				"frameIdx", m.frameIdx,
+				"isHW", m.isHW,
+				"gpuFailed", m.gpuFailed,
+			)
+		}
+		if m.consecutiveNilOutputs >= mftStallThreshold && time.Since(m.lastStallFlush) >= 5*time.Second {
+			slog.Warn("MFT encoder stalled, flushing pipeline to recover",
+				"consecutiveNil", m.consecutiveNilOutputs,
+				"frameIdx", m.frameIdx,
+				"isHW", m.isHW,
+			)
+			m.flushLocked()
+			m.consecutiveNilOutputs = 0
+			m.lastStallFlush = time.Now()
+		}
+	} else {
+		if m.consecutiveNilOutputs > 2 {
+			slog.Info("MFT encoder resumed output after buffering",
+				"nilCount", m.consecutiveNilOutputs)
+		}
+		m.consecutiveNilOutputs = 0
+	}
 }
 
 func (m *mftEncoder) forceKeyframeLocked() error {
@@ -586,5 +606,10 @@ func (m *mftEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 		return nil, fmt.Errorf("ProcessInput (GPU): 0x%08X", uint32(ret))
 	}
 
-	return m.drainOutput()
+	out, err := m.drainOutput()
+	if err != nil {
+		return out, err
+	}
+	m.trackNilOutput(out)
+	return out, nil
 }

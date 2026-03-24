@@ -132,8 +132,11 @@ type SessionManager struct {
 	OnSessionStopped func(sessionID string)
 }
 
-// NewSessionManager creates a new session manager
+// NewSessionManager creates a new session manager.
+// Eagerly loads OpenH264 in the background so the DLL is ready before
+// the first desktop session (avoids download timeout during IPC).
 func NewSessionManager() *SessionManager {
+	go PreloadOpenH264()
 	return &SessionManager{
 		sessions: make(map[string]*Session),
 	}
