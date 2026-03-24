@@ -11,7 +11,7 @@ import { sendCommandToAgent, isAgentConnected } from './agentWs';
 
 // Brief cache for exchange results so duplicate calls (e.g. React effect re-fire)
 // return the same token instead of 401 after the one-time code is consumed.
-const exchangeCache = new Map<string, { result: { accessToken: string; expiresInSeconds: number }; expiresAt: number }>();
+const exchangeCache = new Map<string, { result: { accessToken: string; expiresInSeconds: number; hostname: string | null }; expiresAt: number }>();
 const EXCHANGE_CACHE_TTL_MS = 30_000; // 30 seconds
 
 // Zod validation for desktop user messages
@@ -565,15 +565,19 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
         return c.json({ error: 'Session is not available for connection' }, 400);
       }
 
-      // Look up device hostname for the viewer window title
+      // Look up device hostname for the viewer window title (non-critical)
       let hostname: string | undefined;
       if (session.deviceId) {
-        const [device] = await db
-          .select({ hostname: devices.hostname })
-          .from(devices)
-          .where(eq(devices.id, session.deviceId))
-          .limit(1);
-        hostname = device?.hostname ?? undefined;
+        try {
+          const [device] = await db
+            .select({ hostname: devices.hostname })
+            .from(devices)
+            .where(eq(devices.id, session.deviceId))
+            .limit(1);
+          hostname = device?.hostname ?? undefined;
+        } catch (err) {
+          console.error('Failed to look up device hostname for viewer title:', err);
+        }
       }
 
       const accessToken = await createAccessToken(codeRecord.tokenPayload);

@@ -13,8 +13,8 @@ const AlertIcon = AlertTriangle as unknown as ComponentType<{ className?: string
 type UpdateStatus = 'checking' | 'current' | 'outdated' | 'error';
 
 /**
- * Main window: runs update check, stays hidden unless outdated.
- * Session windows: connect via deep link, show DesktopViewer.
+ * Main window: hidden, serves as process anchor (Tauri requires at least one window).
+ * Session windows: run their own update check, connect via deep link, show DesktopViewer.
  */
 export default function App() {
   const [windowLabel, setWindowLabel] = useState<string>('main');

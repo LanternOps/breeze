@@ -39,7 +39,6 @@ interface Props {
   onLockWorkstation: () => void;
   onPasteAsKeystrokes: () => void;
   onCancelPaste: () => void;
-  onDisconnect: () => void;
 }
 
 interface KeyCombo {
@@ -98,7 +97,6 @@ export default function ViewerToolbar({
   onLockWorkstation,
   onPasteAsKeystrokes,
   onCancelPaste,
-  onDisconnect: _onDisconnect,
   reconnectSecondsLeft,
 }: Props) {
   const MonitorIcon = Monitor as unknown as ComponentType<{ className?: string }>;

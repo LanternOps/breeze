@@ -1,6 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { buildWsUrl, type ConnectionParams } from '../lib/protocol';
 import { createDesktopWsTicket, exchangeDesktopConnectCode } from '../lib/api';
 import { createWebRTCSession, scaleVideoCoords, AgentSessionError, type AuthenticatedConnectionParams, type WebRTCSession } from '../lib/webrtc';
@@ -306,10 +305,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             setStatus('connected');
             const deviceHostname = msg.device?.hostname || 'Unknown';
             setHostname(deviceHostname);
-            try {
-              getCurrentWebviewWindow().setTitle(deviceHostname);
-            } catch {}
-            invoke('update_session_hostname', { hostname: deviceHostname }).catch(() => {});
+            // Window title set from Rust in update_session_hostname
+            invoke('update_session_hostname', { hostname: deviceHostname }).catch((err) => {
+              console.warn('Failed to update session hostname:', err);
+            });
             setConnectedAt(new Date());
             setErrorMessage(null);
             // Auto-focus the canvas so keyboard events are captured immediately
@@ -536,10 +535,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         // Set hostname from exchange response (available for all transports)
         if (exchange.hostname) {
           setHostname(exchange.hostname);
-          getCurrentWebviewWindow().setTitle(exchange.hostname).catch((err) => {
-            console.error('setTitle failed:', err);
+          // Window title set from Rust in update_session_hostname
+          invoke('update_session_hostname', { hostname: exchange.hostname }).catch((err) => {
+            console.warn('Failed to update session hostname:', err);
           });
-          invoke('update_session_hostname', { hostname: exchange.hostname }).catch(() => {});
         }
 
         // Try WebRTC first
@@ -1048,11 +1047,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       // Use Tauri native clipboard to bypass macOS "Allow Paste" prompt
       const { readText } = await import('@tauri-apps/plugin-clipboard-manager');
       text = await readText();
-    } catch {
-      // Fallback to browser clipboard API
+    } catch (tauriErr) {
+      console.warn('Tauri clipboard read failed, trying browser API:', tauriErr);
       try {
         text = await navigator.clipboard.readText();
-      } catch {
+      } catch (browserErr) {
+        console.warn('Browser clipboard read also failed:', browserErr);
         return;
       }
     }
@@ -1300,7 +1300,6 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         onLockWorkstation={handleLockWorkstation}
         onPasteAsKeystrokes={handlePasteAsKeystrokes}
         onCancelPaste={handleCancelPaste}
-        onDisconnect={handleDisconnect}
         reconnectSecondsLeft={reconnectSecondsLeft}
       />
       <div className="flex-1 overflow-hidden flex items-center justify-center bg-black relative">

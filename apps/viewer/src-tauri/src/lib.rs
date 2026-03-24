@@ -148,29 +148,6 @@ fn update_session_hostname(
     }
 }
 
-/// Ensure the main window exists, recreating it if it was closed (e.g. macOS
-/// window close without app quit). Returns true if the window exists or was
-/// successfully recreated.
-#[allow(dead_code)]
-fn ensure_main_window(app: &tauri::AppHandle) -> bool {
-    if app.get_webview_window("main").is_some() {
-        return true;
-    }
-    eprintln!("Main window missing — recreating (hidden)");
-    match WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-        .title("Breeze Remote Desktop")
-        .inner_size(500.0, 340.0)
-        .visible(false)
-        .build()
-    {
-        Ok(_) => true,
-        Err(e) => {
-            eprintln!("Failed to recreate main window: {}", e);
-            false
-        }
-    }
-}
-
 /// Focus the highest-numbered session window, or do nothing if none exist.
 fn focus_any_session_window(app: &tauri::AppHandle) {
     let counter = app.state::<WindowCounter>();
@@ -187,10 +164,7 @@ fn focus_any_session_window(app: &tauri::AppHandle) {
 /// Route an incoming deep link URL to the appropriate window.
 ///
 /// - If the session is already active in a window, focus that window.
-/// - Otherwise, open a new session window (gated on update check).
-///
-/// Handles all app states: window visible, window closed (macOS), during
-/// update check, etc. Recreates the main window if it was closed.
+/// - Otherwise, create a new session window for it.
 fn route_deep_link(app: &tauri::AppHandle, url: String) {
     // Check if this session is already being viewed.
     // Clone the label and drop the lock BEFORE calling set_focus(),
