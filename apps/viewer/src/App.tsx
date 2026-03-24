@@ -35,25 +35,20 @@ export default function App() {
     }
   }, []);
 
-  // ── Main window: update check ──────────────────────────────────────
+  // ── Update check — runs in every session window ─────────────────────
   useEffect(() => {
-    if (windowLabel !== 'main') return;
+    if (windowLabel === 'main') return;
 
     checkForUpdate().then((info) => {
       if (info) {
         setUpdateInfo(info);
         setUpdateStatus('outdated');
-        // Show the main window so the user sees the update prompt
-        try { getCurrentWebviewWindow().show(); } catch {}
       } else {
         setUpdateStatus('current');
-        // Signal Rust that it's safe to create session windows
-        invoke('set_update_ok').catch(() => {});
       }
     }).catch(() => {
       // Can't reach GitHub — allow usage rather than bricking offline
       setUpdateStatus('error');
-      invoke('set_update_ok').catch(() => {});
     });
   }, [windowLabel]);
 
@@ -135,46 +130,46 @@ export default function App() {
     }
   }, [updateInfo]);
 
-  // ── Main window renders ────────────────────────────────────────────
+  // ── Main window: hidden, render nothing ─────────────────────────────
   if (windowLabel === 'main') {
-    // Outdated: show update prompt (window was made visible above)
-    if (updateStatus === 'outdated' && updateInfo) {
-      return (
-        <div className="flex items-center justify-center h-screen bg-gray-900">
-          <div className="text-center max-w-md px-6">
-            <div className="flex items-center justify-center w-16 h-16 bg-amber-600/20 rounded-2xl mx-auto mb-6">
-              <AlertIcon className="w-8 h-8 text-amber-400" />
-            </div>
-            <h1 className="text-2xl font-semibold text-white mb-2">Update Required</h1>
-            <p className="text-gray-400 mb-2">
-              A new version of Breeze Viewer is available. Please update to continue.
-            </p>
-            <div className="mb-8 p-3 bg-gray-800/50 rounded-lg">
-              <p className="text-gray-300 text-sm">
-                Installed: <span className="font-mono text-amber-400">v{updateInfo.currentVersion}</span>
-                <span className="mx-2 text-gray-600">&rarr;</span>
-                Latest: <span className="font-mono text-green-400">v{updateInfo.latestVersion}</span>
-              </p>
-            </div>
-            <button
-              onClick={handleOpenDownload}
-              className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg text-white font-medium transition"
-            >
-              <UpdateIcon className="w-5 h-5" />
-              Download Update
-            </button>
-            <p className="text-gray-600 text-xs mt-4">
-              Install the update and relaunch the viewer.
-            </p>
-          </div>
-        </div>
-      );
-    }
-    // Hidden — render nothing (checking or current)
     return null;
   }
 
-  // ── Session window renders ─────────────────────────────────────────
+  // ── Session window: update gate ─────────────────────────────────────
+  if (updateStatus === 'outdated' && updateInfo) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-gray-900">
+        <div className="text-center max-w-md px-6">
+          <div className="flex items-center justify-center w-16 h-16 bg-amber-600/20 rounded-2xl mx-auto mb-6">
+            <AlertIcon className="w-8 h-8 text-amber-400" />
+          </div>
+          <h1 className="text-2xl font-semibold text-white mb-2">Update Required</h1>
+          <p className="text-gray-400 mb-2">
+            A new version of Breeze Viewer is available. Please update to continue.
+          </p>
+          <div className="mb-8 p-3 bg-gray-800/50 rounded-lg">
+            <p className="text-gray-300 text-sm">
+              Installed: <span className="font-mono text-amber-400">v{updateInfo.currentVersion}</span>
+              <span className="mx-2 text-gray-600">&rarr;</span>
+              Latest: <span className="font-mono text-green-400">v{updateInfo.latestVersion}</span>
+            </p>
+          </div>
+          <button
+            onClick={handleOpenDownload}
+            className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg text-white font-medium transition"
+          >
+            <UpdateIcon className="w-5 h-5" />
+            Download Update
+          </button>
+          <p className="text-gray-600 text-xs mt-4">
+            Install the update and relaunch the viewer.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Session window: viewer ─────────────────────────────────────────
   if (params) {
     return (
       <DesktopViewer
@@ -185,12 +180,14 @@ export default function App() {
     );
   }
 
-  // Waiting for deep link
+  // Waiting for deep link / checking for updates
   return (
     <div className="flex items-center justify-center h-screen bg-gray-900">
       <div className="text-center">
         <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-        <p className="text-gray-400 text-sm">Connecting...</p>
+        <p className="text-gray-400 text-sm">
+          {updateStatus === 'checking' ? 'Checking for updates...' : 'Connecting...'}
+        </p>
         {error && (
           <p className="text-red-400 text-sm mt-2">{error}</p>
         )}

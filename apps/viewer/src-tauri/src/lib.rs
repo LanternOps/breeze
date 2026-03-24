@@ -50,14 +50,6 @@ struct SessionMap(Mutex<HashMap<String, SessionEntry>>);
 /// Monotonic counter for unique window labels.
 struct WindowCounter(Mutex<u32>);
 
-/// Set to true by the frontend once the update check passes.
-/// Deep links received before this gate opens are queued in PendingUrls.
-struct UpdateGate(Mutex<bool>);
-
-/// URLs received before the update gate opened. Drained into session windows
-/// when set_update_ok is called.
-struct PendingUrls(Mutex<Vec<String>>);
-
 fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
     match mutex.lock() {
         Ok(guard) => guard,
@@ -148,27 +140,6 @@ fn update_session_hostname(
     }
 }
 
-/// Called by the main window frontend once the update check passes.
-/// Opens the update gate and drains any queued deep link URLs into session windows.
-#[tauri::command]
-fn set_update_ok(app: tauri::AppHandle) {
-    // Open the gate
-    {
-        let gate = app.state::<UpdateGate>();
-        let mut ok = lock_or_recover(&gate.0, "update_gate");
-        *ok = true;
-    }
-    // Drain pending URLs
-    let urls: Vec<String> = {
-        let pending = app.state::<PendingUrls>();
-        let mut queue = lock_or_recover(&pending.0, "pending_urls");
-        queue.drain(..).collect()
-    };
-    for url in urls {
-        create_session_window(&app, url);
-    }
-}
-
 /// Ensure the main window exists, recreating it if it was closed (e.g. macOS
 /// window close without app quit). Returns true if the window exists or was
 /// successfully recreated.
@@ -236,22 +207,9 @@ fn route_deep_link(app: &tauri::AppHandle, url: String) {
         }
     }
 
-    // Always open a new session window. Check update gate first.
-    let gate_open = {
-        let gate = app.state::<UpdateGate>();
-        let guard = lock_or_recover(&gate.0, "update_gate");
-        let val = *guard;
-        drop(guard);
-        val
-    };
-    if gate_open {
-        create_session_window(app, url);
-    } else {
-        // Queue until the frontend signals the update check passed
-        let pending = app.state::<PendingUrls>();
-        let mut queue = lock_or_recover(&pending.0, "pending_urls");
-        queue.push(url);
-    }
+    // Always open a new session window immediately.
+    // Each session window runs its own update check in the frontend.
+    create_session_window(app, url);
 }
 
 /// Emit a deep-link-received event to a window with retry delays.
@@ -324,7 +282,6 @@ pub fn run() {
             register_session,
             unregister_session,
             update_session_hostname,
-            set_update_ok,
         ]);
 
     // Single instance plugin (desktop only) — ensures deep links open in existing process.
@@ -369,13 +326,15 @@ pub fn run() {
             app.manage(DeepLinkState(Mutex::new(HashMap::new())));
             app.manage(SessionMap(Mutex::new(HashMap::new())));
             app.manage(WindowCounter(Mutex::new(0)));
-            app.manage(UpdateGate(Mutex::new(false)));
-            let pending = if let Some(url) = initial_url {
-                vec![url]
-            } else {
-                vec![]
-            };
-            app.manage(PendingUrls(Mutex::new(pending)));
+
+            // If launched with a deep link, defer session window creation to
+            // the first event loop tick (setup runs before the loop starts).
+            if let Some(url) = initial_url {
+                let handle = app.handle().clone();
+                let _ = app.handle().run_on_main_thread(move || {
+                    create_session_window(&handle, url);
+                });
+            }
 
             let app_handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
