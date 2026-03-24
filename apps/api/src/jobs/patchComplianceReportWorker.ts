@@ -319,7 +319,10 @@ function createPatchComplianceReportWorker(): Worker<PatchComplianceReportJobDat
     },
     {
       connection: getRedisConnection(),
-      concurrency: 2
+      concurrency: 2,
+      lockDuration: 300_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 2,
     }
   );
 }

@@ -246,7 +246,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: ${{ matrix.cgo }}
           BUILD_VERSION: ${{ github.sha }}
-          CGO_LDFLAGS_ALLOW: '-weak_framework'
+          CGO_LDFLAGS_ALLOW: '-weak_framework|ScreenCaptureKit'
         run: |
           go build -ldflags="-s -w -X main.version=${BUILD_VERSION}" \
             -o "breeze-agent-${GOOS}-${GOARCH}${{ matrix.suffix }}" \

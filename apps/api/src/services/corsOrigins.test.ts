@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { createCorsOriginResolver, DEFAULT_ALLOWED_ORIGINS, shouldIncludeDefaultOrigins } from './corsOrigins';
+import { createCorsOriginResolver, DEFAULT_ALLOWED_ORIGINS, TAURI_ORIGINS, shouldIncludeDefaultOrigins } from './corsOrigins';
 
 describe('cors origin resolver', () => {
   it('allows known default origin when explicitly configured', () => {
@@ -53,6 +53,17 @@ describe('cors origin resolver', () => {
 
     expect(resolveOrigin('http://localhost:4321')).toBeNull();
     expect(resolveOrigin('http://127.0.0.1:4321')).toBeNull();
+  });
+
+  it('always allows Tauri origins in production (Breeze Viewer app)', () => {
+    const resolveOrigin = createCorsOriginResolver({
+      configuredOriginsRaw: 'https://app.example.com',
+      nodeEnv: 'production'
+    });
+
+    for (const origin of TAURI_ORIGINS) {
+      expect(resolveOrigin(origin)).toBe(origin);
+    }
   });
 
   it('includes default origins in development', () => {

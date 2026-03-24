@@ -11,7 +11,6 @@ import (
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
-	"github.com/breeze-rmm/agent/internal/tcc"
 )
 
 // spawnGuards holds a per-session mutex so that spawns into different Windows
@@ -41,26 +40,15 @@ func isWinSessionDisconnected(winSessionID string) bool {
 // On macOS, it pre-checks TCC Screen Recording permission and returns a clear error
 // if the required permissions haven't been configured yet.
 func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []desktop.ICEServerConfig, displayIndex int, payload map[string]any) tools.CommandResult {
-	// On macOS, check TCC Screen Recording permission before attempting capture.
-	// This gives the admin a clear error instead of a cryptic capture failure.
+	// Log TCC status for diagnostics but don't gate — the cached status may be
+	// stale (e.g. permission just granted). Let the capturer attempt and fail
+	// with the real error instead of blocking on a potentially outdated check.
 	if runtime.GOOS == "darwin" && h.sessionBroker != nil {
 		if tccStatus := h.sessionBroker.TCCStatus(); tccStatus != nil && !tccStatus.ScreenRecording {
-			// On macOS 12, the helper's FDA probe may return false even when
-			// FDA is granted. Use the daemon-side check as a fallback.
-			fdaGranted := tccStatus.FullDiskAccess
-			if !fdaGranted {
-				fdaGranted = tcc.CheckFDA()
-			}
-			if !fdaGranted {
-				return tools.CommandResult{
-					Status: "failed",
-					Error:  "Full Disk Access is not granted. The user must enable it in System Settings > Privacy & Security > Full Disk Access. Screen Recording and Accessibility will be configured automatically.",
-				}
-			}
-			return tools.CommandResult{
-				Status: "failed",
-				Error:  "Screen Recording is being configured automatically. If this persists, check agent logs or restart the agent.",
-			}
+			log.Warn("TCC Screen Recording not yet reported as granted — attempting capture anyway",
+				"screenRecording", tccStatus.ScreenRecording,
+				"fullDiskAccess", tccStatus.FullDiskAccess,
+			)
 		}
 	}
 

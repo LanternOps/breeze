@@ -116,11 +116,35 @@ fn unregister_session(window: tauri::WebviewWindow, state: tauri::State<'_, Sess
     map.retain(|_, label| label != window.label());
 }
 
+/// Ensure the main window exists, recreating it if it was closed (e.g. macOS
+/// window close without app quit). Returns true if the window exists or was
+/// successfully recreated.
+fn ensure_main_window(app: &tauri::AppHandle) -> bool {
+    if app.get_webview_window("main").is_some() {
+        return true;
+    }
+    eprintln!("Main window missing — recreating");
+    match WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+        .title("Breeze Remote Desktop")
+        .inner_size(1280.0, 800.0)
+        .build()
+    {
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!("Failed to recreate main window: {}", e);
+            false
+        }
+    }
+}
+
 /// Route an incoming deep link URL to the appropriate window.
 ///
 /// - If the session is already active in a window, focus that window.
 /// - If the main window is idle (no active session), route to it.
 /// - Otherwise, create a new window for the session.
+///
+/// Handles all app states: window visible, window closed (macOS), during
+/// update check, etc. Recreates the main window if it was closed.
 fn route_deep_link(app: &tauri::AppHandle, url: String) {
     // Check if this session is already being viewed.
     // Clone the label and drop the lock BEFORE calling set_focus(),
@@ -153,14 +177,19 @@ fn route_deep_link(app: &tauri::AppHandle, url: String) {
     };
 
     if !main_active {
-        // Main window is idle — route the deep link there
+        // Main window is idle — route the deep link there.
+        // Recreate the main window if it was closed (macOS).
+        if !ensure_main_window(app) {
+            // Last resort: try creating a session window instead
+            create_session_window(app, url);
+            return;
+        }
         if let Some(state) = app.try_state::<DeepLinkState>() {
             let mut links = lock_or_recover(&state.0, "deep_link_state");
             links.insert("main".to_string(), url.clone());
         }
-        if let Err(err) = app.emit_to("main", "deep-link-received", url) {
-            eprintln!("Failed to emit deep-link-received to main window: {}", err);
-        }
+        // Emit with retry — the recreated window's webview needs time to load
+        emit_with_retry(app, "main", url);
         if let Some(window) = app.get_webview_window("main") {
             if let Err(err) = window.set_focus() {
                 eprintln!("Failed to focus main window: {}", err);
@@ -170,6 +199,30 @@ fn route_deep_link(app: &tauri::AppHandle, url: String) {
         // Main is busy with another session — open a new window
         create_session_window(app, url);
     }
+}
+
+/// Emit a deep-link-received event to a window with retry delays.
+/// Spawns a background thread that emits at 500ms and 1500ms to cover
+/// slow webview startup. Stops early if the target window is destroyed.
+fn emit_with_retry(app: &tauri::AppHandle, label: &str, url: String) {
+    let handle = app.clone();
+    let label = label.to_string();
+    std::thread::spawn(move || {
+        for delay_ms in [500, 1500] {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            // Stop if the target window no longer exists
+            if handle.get_webview_window(&label).is_none() {
+                eprintln!("Window {} gone — stopping deep link emission", label);
+                return;
+            }
+            if let Err(err) = handle.emit_to(&label, "deep-link-received", url.clone()) {
+                eprintln!(
+                    "Failed to emit deep-link-received to {}: {}",
+                    label, err
+                );
+            }
+        }
+    });
 }
 
 /// Create a new WebviewWindow for an independent remote desktop session.
@@ -194,23 +247,7 @@ fn create_session_window(app: &tauri::AppHandle, url: String) {
         .build()
     {
         Ok(_) => {
-            // Emit the deep link to the new window after delays to cover slow webview startup
-            let handle = app.clone();
-            let label_clone = label;
-            let url_clone = url;
-            std::thread::spawn(move || {
-                for delay_ms in [500, 1500] {
-                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-                    if let Err(err) =
-                        handle.emit_to(&label_clone, "deep-link-received", url_clone.clone())
-                    {
-                        eprintln!(
-                            "Failed to emit deep-link-received to window {}: {}",
-                            label_clone, err
-                        );
-                    }
-                }
-            });
+            emit_with_retry(app, &label, url);
         }
         Err(e) => {
             eprintln!("Failed to create session window: {}", e);
@@ -260,8 +297,10 @@ pub fn run() {
                     route_deep_link(&handle, url);
                 });
             } else {
+                // No deep link — just activate/focus. Recreate main window if needed.
                 let handle = app.clone();
                 let _ = app.run_on_main_thread(move || {
+                    ensure_main_window(&handle);
                     if let Some(window) = handle.get_webview_window("main") {
                         if let Err(err) = window.set_focus() {
                             eprintln!(
@@ -306,16 +345,7 @@ pub fn run() {
 
             // Emit the initial URL after delays to cover slow webview startup.
             if let Some(url) = initial_url {
-                let handle = app.handle().clone();
-                std::thread::spawn(move || {
-                    for delay_ms in [500, 1500] {
-                        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-                        if let Err(err) = handle.emit_to("main", "deep-link-received", url.clone())
-                        {
-                            eprintln!("Failed to emit initial deep-link-received event: {}", err);
-                        }
-                    }
-                });
+                emit_with_retry(app.handle(), "main", url);
             }
 
             // Listen for deep link events when the app is already running.
@@ -340,18 +370,29 @@ pub fn run() {
         .expect("error while building Breeze Viewer");
 
     app.run(|app_handle, event| {
-        if let tauri::RunEvent::WindowEvent { label, event, .. } = event {
-            if let WindowEvent::Destroyed = event {
-                // Clean up session and deep link state for destroyed windows
-                if let Some(sessions) = app_handle.try_state::<SessionMap>() {
-                    let mut map = lock_or_recover(&sessions.0, "session_map");
-                    map.retain(|_, wl| wl != &label);
-                }
-                if let Some(links) = app_handle.try_state::<DeepLinkState>() {
-                    let mut map = lock_or_recover(&links.0, "deep_link_state");
-                    map.remove(&label);
+        match event {
+            tauri::RunEvent::WindowEvent { label, event, .. } => {
+                if let WindowEvent::Destroyed = event {
+                    // Clean up session and deep link state for destroyed windows
+                    if let Some(sessions) = app_handle.try_state::<SessionMap>() {
+                        let mut map = lock_or_recover(&sessions.0, "session_map");
+                        map.retain(|_, wl| wl != &label);
+                    }
+                    if let Some(links) = app_handle.try_state::<DeepLinkState>() {
+                        let mut map = lock_or_recover(&links.0, "deep_link_state");
+                        map.remove(&label);
+                    }
                 }
             }
+            // macOS: dock icon clicked with no open windows — recreate main window
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => {
+                ensure_main_window(app_handle);
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.set_focus();
+                }
+            }
+            _ => {}
         }
     });
 }

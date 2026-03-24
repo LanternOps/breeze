@@ -117,6 +117,9 @@ function createBackupWorker(): Worker<BackupJobData> {
     {
       connection: getRedisConnection(),
       concurrency: 5,
+      lockDuration: 300_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 2,
     }
   );
 }

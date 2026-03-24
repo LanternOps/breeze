@@ -77,7 +77,10 @@ function createSnmpWorker(): Worker<SnmpJobData> {
     },
     {
       connection: getRedisConnection(),
-      concurrency: 10
+      concurrency: 10,
+      lockDuration: 300_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 2,
     }
   );
 }
