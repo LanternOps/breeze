@@ -83,6 +83,9 @@ var serviceCmd = &cobra.Command{
 
 var withUserHelper bool
 
+// healLaunchdPlistsIfNeeded is a no-op on Linux.
+func healLaunchdPlistsIfNeeded() {}
+
 func init() {
 	rootCmd.AddCommand(serviceCmd)
 	serviceCmd.AddCommand(serviceInstallCmd)

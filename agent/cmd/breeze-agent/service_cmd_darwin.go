@@ -40,10 +40,7 @@ const darwinPlist = `<?xml version="1.0" encoding="UTF-8"?>
     <true/>
 
     <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
+    <true/>
 
     <key>ThrottleInterval</key>
     <integer>5</integer>
@@ -83,10 +80,7 @@ const darwinUserPlist = `<?xml version="1.0" encoding="UTF-8"?>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
+    <true/>
     <key>LimitLoadToSessionType</key>
     <string>Aqua</string>
     <key>StandardOutPath</key>
@@ -359,6 +353,40 @@ var serviceStatusCmd = &cobra.Command{
 		fmt.Printf("Logs: %s/agent.log\n", darwinLogDir)
 		return nil
 	},
+}
+
+// healLaunchdPlistsIfNeeded is the darwin implementation.
+func healLaunchdPlistsIfNeeded() { healLaunchdPlists() }
+
+// healLaunchdPlists checks the installed plists for the old SuccessfulExit
+// KeepAlive config and replaces them with KeepAlive=true. This runs on daemon
+// startup so existing installs self-heal after a binary-only auto-update.
+func healLaunchdPlists() {
+	if os.Geteuid() != 0 {
+		return // only root can write to /Library/LaunchDaemons
+	}
+	for _, entry := range []struct {
+		path    string
+		content string
+		label   string
+		domain  string // launchd domain for reload
+	}{
+		{darwinPlistDst, darwinPlist, darwinLabel, "system"},
+		{darwinUserPlistDst, darwinUserPlist, "com.breeze.agent-user", ""},
+	} {
+		data, err := os.ReadFile(entry.path)
+		if err != nil {
+			continue // plist doesn't exist, nothing to heal
+		}
+		if !strings.Contains(string(data), "SuccessfulExit") {
+			continue // already has KeepAlive=true
+		}
+		if err := os.WriteFile(entry.path, []byte(entry.content), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to heal plist %s: %v\n", entry.path, err)
+			continue
+		}
+		fmt.Printf("Healed launchd plist %s (KeepAlive=true)\n", entry.path)
+	}
 }
 
 // isLaunchdLoaded checks if the given label is loaded in launchd.
