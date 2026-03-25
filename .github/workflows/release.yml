@@ -400,6 +400,7 @@ jobs:
         run: |
           for bin in staging/breeze-agent-darwin-*; do
             codesign --force --options runtime \
+              --entitlements agent/entitlements/agent-macos.entitlements.plist \
               --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$bin"
             codesign --verify --verbose "$bin"
             echo "Signed: $bin"
