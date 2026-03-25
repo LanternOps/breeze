@@ -26,8 +26,8 @@ func (s *Session) startStreaming() {
 		}
 
 		// Best-effort: request an IDR immediately for fast viewer startup.
-		if s.encoder != nil {
-			_ = s.encoder.ForceKeyframe()
+		if enc := s.encoder.Load(); enc != nil {
+			_ = enc.ForceKeyframe()
 		}
 
 		s.wg.Add(1)
