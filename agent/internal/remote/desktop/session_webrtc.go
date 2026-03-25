@@ -111,6 +111,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		rtcpBuf := make([]byte, 1500)
 		var lastKF time.Time
 		firstKF := true
+		var lastEnc *VideoEncoder
 		for {
 			n, _, readErr := sender.Read(rtcpBuf)
 			if readErr != nil {
@@ -123,6 +124,14 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			for _, p := range pkts {
 				switch p.(type) {
 				case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
+					enc := session.encoder.Load()
+					// Reset PLI rate-limit when the encoder pointer changes
+					// (e.g. after swapToSoftwareEncoder) so the new encoder
+					// gets an immediate keyframe.
+					if enc != lastEnc {
+						firstKF = true
+						lastEnc = enc
+					}
 					// Allow the first PLI immediately for fast startup,
 					// then rate-limit subsequent ones to 500ms apart.
 					if !firstKF && time.Since(lastKF) < 500*time.Millisecond {
@@ -130,8 +139,8 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 					}
 					firstKF = false
 					lastKF = time.Now()
-					if session.encoder != nil {
-						_ = session.encoder.ForceKeyframe()
+					if enc != nil {
+						_ = enc.ForceKeyframe()
 					}
 				}
 			}
@@ -203,7 +212,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	if err != nil {
 		return "", fmt.Errorf("failed to create H264 encoder: %w", err)
 	}
-	session.encoder = enc
+	session.encoder.Store(enc)
 
 	if enc.BackendIsPlaceholder() {
 		return "", fmt.Errorf("no H264 encoder available (backend=%s)", enc.BackendName())
@@ -260,7 +269,9 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			session.mu.Lock()
 			session.fps = fps
 			session.mu.Unlock()
-			session.encoder.SetFPS(fps)
+			if enc := session.encoder.Load(); enc != nil {
+				enc.SetFPS(fps)
+			}
 		},
 	})
 	if err == nil {

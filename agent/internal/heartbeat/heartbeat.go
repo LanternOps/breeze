@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -169,6 +170,9 @@ type Heartbeat struct {
 	// Cached system info (hostname, OS version) — refreshed every 10 min
 	cachedSysInfo      *collectors.SystemInfo
 	lastSysInfoRefresh time.Time
+
+	// Tracks whether the read-only FS error has been logged (prevents log spam)
+	updateReadOnlyLogged bool
 }
 
 func New(cfg *config.Config) *Heartbeat {
@@ -2505,6 +2509,18 @@ func (h *Heartbeat) handleUpgrade(targetVersion string) {
 
 	u := updater.New(updaterCfg)
 	if err := u.UpdateTo(targetVersion); err != nil {
+		// If the filesystem is read-only, stop retrying — this is permanent
+		// until the service unit is fixed or the filesystem is remounted.
+		// Intentionally NOT persisted to disk (unlike dev_push in handlers_devupdate.go)
+		// so that fixing ReadWritePaths + restarting the service auto-recovers.
+		if errors.Is(err, updater.ErrReadOnlyFS) {
+			if !h.updateReadOnlyLogged {
+				log.Error("auto-update disabled: binary path is read-only — update the systemd unit to add the binary path to ReadWritePaths, then restart the service", "targetVersion", targetVersion, "error", err.Error())
+				h.updateReadOnlyLogged = true
+			}
+			h.config.AutoUpdate = false
+			return
+		}
 		log.Error("failed to update", "targetVersion", targetVersion, "error", err.Error())
 		return
 	}
