@@ -87,9 +87,11 @@ func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 			0,
 		)
 		if int32(ret) < 0 {
+			m.trackNilOutput(out)
 			return out, nil // Return what we drained
 		}
 		if out != nil {
+			m.trackNilOutput(out)
 			return out, nil
 		}
 	} else if int32(ret) < 0 {
@@ -408,7 +410,13 @@ func (m *mftEncoder) trackNilOutput(out []byte) {
 				"gpuFailed", m.gpuFailed,
 			)
 		}
-		if m.consecutiveNilOutputs >= mftStallThreshold && time.Since(m.lastStallFlush) >= 5*time.Second {
+		threshold := mftStallThreshold
+		// After a recent flush, use a lower threshold for faster second recovery.
+		// The 5-second floor between flushes still prevents infinite flush loops.
+		if m.lastStallFlush != (time.Time{}) && time.Since(m.lastStallFlush) < 10*time.Second {
+			threshold = mftStallThreshold / 2
+		}
+		if m.consecutiveNilOutputs >= threshold && time.Since(m.lastStallFlush) >= 5*time.Second {
 			slog.Warn("MFT encoder stalled, flushing pipeline to recover",
 				"consecutiveNil", m.consecutiveNilOutputs,
 				"frameIdx", m.frameIdx,
@@ -597,9 +605,11 @@ func (m *mftEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 			0,
 		)
 		if int32(ret) < 0 {
+			m.trackNilOutput(out)
 			return out, nil
 		}
 		if out != nil {
+			m.trackNilOutput(out)
 			return out, nil
 		}
 	} else if int32(ret) < 0 {
