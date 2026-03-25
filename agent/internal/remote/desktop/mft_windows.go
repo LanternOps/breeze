@@ -71,6 +71,11 @@ type mftEncoder struct {
 	// lastStallFlush prevents rapid flush loops when the MFT is fundamentally
 	// broken (not just warming up). Minimum 5s between stall-triggered flushes.
 	lastStallFlush time.Time
+	// stallFlushCount tracks consecutive stall-flush cycles without the encoder
+	// producing any output. After 2+ cycles, the encoder is permanently stalled.
+	stallFlushCount    int
+	outputSinceFlush   bool
+	permanentlyStalled bool
 }
 
 func init() {
@@ -822,4 +827,10 @@ func (m *mftEncoder) IsHardware() bool {
 
 func (m *mftEncoder) IsPlaceholder() bool {
 	return false
+}
+
+func (m *mftEncoder) IsPermanentlyStalled() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.permanentlyStalled
 }

@@ -690,7 +690,13 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	s.cpuEncodeErrors = 0
 
 	if h264Data == nil {
-		// MFT is buffering, no output yet
+		// MFT is buffering, no output yet. Check if the encoder is permanently
+		// stalled (multiple flush cycles with no output) and swap to software.
+		if enc.IsPermanentlyStalled() {
+			slog.Warn("Encoder permanently stalled, swapping to software",
+				"session", s.id, "backend", enc.BackendName())
+			s.swapToSoftwareEncoder()
+		}
 		return
 	}
 
@@ -780,6 +786,12 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 	}
 	s.gpuEncodeErrors = 0
 	if h264Data == nil {
+		if enc.IsPermanentlyStalled() {
+			slog.Warn("Encoder permanently stalled (GPU path), swapping to software",
+				"session", s.id, "backend", enc.BackendName())
+			s.swapToSoftwareEncoder()
+			return true, true, false // disable GPU path
+		}
 		return true, false, false
 	}
 

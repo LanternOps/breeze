@@ -417,10 +417,31 @@ func (m *mftEncoder) trackNilOutput(out []byte) {
 			threshold = mftStallThreshold / 2
 		}
 		if m.consecutiveNilOutputs >= threshold && time.Since(m.lastStallFlush) >= 5*time.Second {
+			// Track consecutive flush cycles without output. If the encoder
+			// never produces output after multiple flushes, it's permanently
+			// broken (common with Quality VBR on certain GPUs at high res).
+			if !m.outputSinceFlush && m.stallFlushCount > 0 {
+				m.stallFlushCount++
+			} else {
+				m.stallFlushCount = 1
+			}
+			m.outputSinceFlush = false
+
+			if m.stallFlushCount >= 3 {
+				slog.Error("MFT encoder permanently stalled — flush recovery not working",
+					"stallFlushCount", m.stallFlushCount,
+					"frameIdx", m.frameIdx,
+					"isHW", m.isHW,
+				)
+				m.permanentlyStalled = true
+				return
+			}
+
 			slog.Warn("MFT encoder stalled, flushing pipeline to recover",
 				"consecutiveNil", m.consecutiveNilOutputs,
 				"frameIdx", m.frameIdx,
 				"isHW", m.isHW,
+				"stallFlushCount", m.stallFlushCount,
 			)
 			m.flushLocked()
 			m.consecutiveNilOutputs = 0
@@ -432,6 +453,8 @@ func (m *mftEncoder) trackNilOutput(out []byte) {
 				"nilCount", m.consecutiveNilOutputs)
 		}
 		m.consecutiveNilOutputs = 0
+		m.outputSinceFlush = true
+		m.stallFlushCount = 0
 	}
 }
 
