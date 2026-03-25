@@ -121,6 +121,22 @@ func NewAdaptiveBitrate(cfg AdaptiveConfig) (*AdaptiveBitrate, error) {
 	}, nil
 }
 
+// SetEncoder updates the encoder pointer after a mid-session encoder swap.
+// Resets encoder throughput EWMA so stale data from the old encoder doesn't
+// incorrectly cap FPS on the new encoder.
+func (a *AdaptiveBitrate) SetEncoder(enc *VideoEncoder) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.encoder = enc
+	a.encoderSamples = 0
+	a.prevCaptured = 0
+	a.prevEncoded = 0
+	a.smoothedEncodeRatio = 0
+	a.mu.Unlock()
+}
+
 // SetMaxFPS updates the FPS ceiling for adaptive scaling.
 // Called when the viewer sends a set_fps control message.
 func (a *AdaptiveBitrate) SetMaxFPS(max int) {
@@ -217,10 +233,11 @@ func (a *AdaptiveBitrate) CapForSoftwareEncoder() {
 	a.currentFPS = newFPS
 	encoder := a.encoder
 	fpsCallback := a.onFPSChange
+	targetBitrate := a.targetBitrate
 
 	slog.Info("Adaptive: capped for software encoder (no GPU H264)",
 		"maxBitrate", a.maxBitrate,
-		"targetBitrate", a.targetBitrate,
+		"targetBitrate", targetBitrate,
 		"maxFPS", swMaxFPS,
 		"fps", newFPS,
 		"prevFPS", prevFPS,
@@ -228,8 +245,8 @@ func (a *AdaptiveBitrate) CapForSoftwareEncoder() {
 	a.mu.Unlock()
 
 	if encoder != nil {
-		if err := encoder.SetBitrate(a.targetBitrate); err != nil {
-			slog.Warn("failed to apply software encoder bitrate cap", "bitrate", a.targetBitrate, "error", err.Error())
+		if err := encoder.SetBitrate(targetBitrate); err != nil {
+			slog.Warn("failed to apply software encoder bitrate cap", "bitrate", targetBitrate, "error", err.Error())
 		}
 	}
 	if newFPS != prevFPS && fpsCallback != nil {
