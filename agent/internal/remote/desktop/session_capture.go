@@ -247,6 +247,7 @@ func (s *Session) captureLoopDXGI() captureMode {
 	// to fully initialize. Without this, a static display goes idle after 2-3
 	// frames, which may not be enough for the decoder to stabilize.
 	postSwitchRepaints := 0
+	var lastPostSwitchRepaint time.Time
 	var lastRepaintTime time.Time
 	var lastSecureKeyframe time.Time
 	var lastIdleKeyframe time.Time
@@ -432,9 +433,10 @@ func (s *Session) captureLoopDXGI() captureMode {
 					consecutiveSkips++
 					// After a monitor switch, keep nudging the display so
 					// DXGI picks up dirty rects on an otherwise static screen.
-					if postSwitchRepaints > 0 {
+					if postSwitchRepaints > 0 && time.Since(lastPostSwitchRepaint) >= 400*time.Millisecond {
 						postSwitchRepaints--
 						forceDesktopRepaint()
+						lastPostSwitchRepaint = time.Now()
 					} else if consecutiveSkips >= idleThreshold {
 						sleepDur = idleSleep // idle mode: poll less often
 					}
@@ -912,17 +914,33 @@ func applyDisplayOffset(handler InputHandler, displayIndex int, cursorOffX, curs
 	cursorOffY.Store(0)
 }
 
+// atomicEncoderSwap performs a clean encoder replacement in one atomic sequence.
+// Clears stale cached frames, swaps the pointer, updates the adaptive controller,
+// resets error counters, and closes the old encoder. Must be called from the
+// capture goroutine.
+func (s *Session) atomicEncoderSwap(newEnc *VideoEncoder) {
+	s.clearCachedEncodedFrame()
+	oldEnc := s.encoder.Swap(newEnc)
+	if s.adaptive != nil {
+		s.adaptive.SetEncoder(newEnc)
+	}
+	s.cpuEncodeErrors = 0
+	if oldEnc != nil {
+		oldEnc.Close()
+	}
+}
+
 // swapToSoftwareEncoder replaces the current hardware encoder with a software
 // encoder (OpenH264) mid-session. Called when the hardware encoder stalls
 // (e.g., VideoToolbox on older Intel Macs).
 // Must be called from the capture loop goroutine.
 func (s *Session) swapToSoftwareEncoder() {
-	oldEnc := s.encoder.Load()
-	if oldEnc == nil {
+	enc := s.encoder.Load()
+	if enc == nil {
 		return
 	}
 	slog.Warn("Hardware encoder stalling, swapping to software encoder",
-		"session", s.id, "backend", oldEnc.BackendName(),
+		"session", s.id, "backend", enc.BackendName(),
 		"consecutiveErrors", s.cpuEncodeErrors)
 
 	// Get current dimensions from capturer
@@ -973,9 +991,7 @@ func (s *Session) swapToSoftwareEncoder() {
 	// Set pixel format to match capturer
 	newEnc.SetPixelFormat(s.encoderPF)
 
-	s.encoder.Store(newEnc)
-	s.cpuEncodeErrors = 0
-	oldEnc.Close()
+	s.atomicEncoderSwap(newEnc)
 
 	// Cap ABR for software encoder
 	if s.adaptive != nil {
