@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"time"
 
@@ -457,18 +456,16 @@ func (u *Updater) downloadFromURL(rawURL string) (string, error) {
 	return tempFile.Name(), nil
 }
 
-// checkWritable verifies we can write to the target binary path by creating
-// and immediately removing a temp file in the same directory.
+// checkWritable verifies we can write to the target binary path by opening
+// the existing file for writing without truncating it. This tests file-level
+// write permission, matching what replaceBinary (os.Create) does, and works
+// correctly with systemd's ReadWritePaths which grants per-file access.
 func checkWritable(binaryPath string) error {
-	dir := filepath.Dir(binaryPath)
-	f, err := os.CreateTemp(dir, ".breeze-write-check-*")
+	f, err := os.OpenFile(binaryPath, os.O_WRONLY, 0)
 	if err != nil {
 		return err
 	}
-	name := f.Name()
-	f.Close()
-	os.Remove(name)
-	return nil
+	return f.Close()
 }
 
 // Rollback restores the backup binary
