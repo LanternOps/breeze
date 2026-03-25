@@ -254,12 +254,12 @@ func extractRemoteInboundVideoStats(report webrtc.StatsReport) (rtt time.Duratio
 // h264ContainsIDR checks if H.264 Annex B data contains an IDR NAL unit (type 5).
 // Used to prevent dropping keyframes — without IDRs the decoder accumulates corruption.
 func h264ContainsIDR(data []byte) bool {
-	for i := 0; i < len(data)-4; {
+	for i := 0; i+2 < len(data); {
 		startLen := 0
 		if data[i] == 0 && data[i+1] == 0 {
 			if data[i+2] == 1 {
 				startLen = 3
-			} else if data[i+2] == 0 && i+3 < len(data) && data[i+3] == 1 {
+			} else if i+3 < len(data) && data[i+2] == 0 && data[i+3] == 1 {
 				startLen = 4
 			}
 		}
@@ -267,7 +267,7 @@ func h264ContainsIDR(data []byte) bool {
 			i++
 			continue
 		}
-		if data[i+startLen]&0x1f == 5 {
+		if i+startLen < len(data) && data[i+startLen]&0x1f == 5 {
 			return true
 		}
 		i += startLen + 1
@@ -279,19 +279,22 @@ func h264ContainsIDR(data []byte) bool {
 // Used for diagnostics after monitor switch to verify SPS/PPS presence.
 func describeH264NALUs(data []byte) string {
 	types := make(map[string]int)
-	for i := 0; i < len(data)-4; {
+	for i := 0; i+2 < len(data); {
 		// Look for start code: 00 00 01 or 00 00 00 01
 		startLen := 0
 		if data[i] == 0 && data[i+1] == 0 {
 			if data[i+2] == 1 {
 				startLen = 3
-			} else if data[i+2] == 0 && i+3 < len(data) && data[i+3] == 1 {
+			} else if i+3 < len(data) && data[i+2] == 0 && data[i+3] == 1 {
 				startLen = 4
 			}
 		}
 		if startLen == 0 {
 			i++
 			continue
+		}
+		if i+startLen >= len(data) {
+			break
 		}
 		naluType := data[i+startLen] & 0x1f
 		name := fmt.Sprintf("type%d", naluType)
