@@ -71,6 +71,12 @@ type optionalKeyframeForcer interface {
 	ForceKeyframe() error
 }
 
+// optionalStallDetector is implemented by encoder backends that can detect
+// permanent stall conditions (e.g., MFT Quality VBR on certain GPUs).
+type optionalStallDetector interface {
+	IsPermanentlyStalled() bool
+}
+
 type encoderBackend interface {
 	Encode(frame []byte) ([]byte, error)
 	SetCodec(codec Codec) error
@@ -236,6 +242,17 @@ func (v *VideoEncoder) ForceKeyframe() error {
 		return kf.ForceKeyframe()
 	}
 	return nil
+}
+
+// IsPermanentlyStalled returns true if the encoder backend has detected an
+// unrecoverable stall (e.g., MFT flush recovery repeatedly failed).
+func (v *VideoEncoder) IsPermanentlyStalled() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if sd, ok := v.backend.(optionalStallDetector); ok {
+		return sd.IsPermanentlyStalled()
+	}
+	return false
 }
 
 func (v *VideoEncoder) BackendName() string {
