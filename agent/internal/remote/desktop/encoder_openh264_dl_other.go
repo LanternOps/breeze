@@ -88,9 +88,9 @@ func findOpenH264Library() (string, error) {
 	// user-writable temp dir (helper processes run as the logged-in user and
 	// cannot write to the root-owned agent data directory).
 	downloadDir := dataDir
-	if err := os.MkdirAll(downloadDir, 0755); err != nil {
+	if !isDirWritable(downloadDir) {
 		slog.Warn("OpenH264: agent data dir not writable, using temp dir",
-			"dataDir", dataDir, "error", err.Error())
+			"dataDir", dataDir)
 		downloadDir = filepath.Join(os.TempDir(), "breeze-openh264")
 	}
 	slog.Info("OpenH264 library not found locally, downloading",
@@ -99,6 +99,22 @@ func findOpenH264Library() (string, error) {
 		return "", fmt.Errorf("auto-download OpenH264: %w", err)
 	}
 	return filepath.Join(downloadDir, variant.libName), nil
+}
+
+// isDirWritable checks if a directory exists and is writable by creating and
+// immediately removing a temp file.
+func isDirWritable(dir string) bool {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return false
+	}
+	f, err := os.CreateTemp(dir, ".breeze-write-check-*")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	f.Close()
+	os.Remove(name)
+	return true
 }
 
 func downloadOpenH264(v struct {
