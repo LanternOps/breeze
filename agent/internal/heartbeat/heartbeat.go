@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -2505,6 +2506,13 @@ func (h *Heartbeat) handleUpgrade(targetVersion string) {
 
 	u := updater.New(updaterCfg)
 	if err := u.UpdateTo(targetVersion); err != nil {
+		// If the filesystem is read-only, stop retrying — this is permanent
+		// until the service unit is fixed or the filesystem is remounted.
+		if errors.Is(err, updater.ErrReadOnlyFS) {
+			log.Error("auto-update disabled: binary path is read-only — update the systemd unit to add the binary path to ReadWritePaths, then restart the service", "targetVersion", targetVersion, "error", err.Error())
+			h.config.AutoUpdate = false
+			return
+		}
 		log.Error("failed to update", "targetVersion", targetVersion, "error", err.Error())
 		return
 	}

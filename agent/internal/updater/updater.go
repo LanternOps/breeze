@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -42,9 +43,21 @@ func New(cfg *Config) *Updater {
 	}
 }
 
+// ErrReadOnlyFS is returned when the binary path is on a read-only filesystem.
+// Callers should treat this as a permanent failure and stop retrying.
+var ErrReadOnlyFS = fmt.Errorf("binary path is on a read-only filesystem")
+
 // UpdateTo downloads and installs a new version
 func (u *Updater) UpdateTo(version string) error {
 	log.Info("starting update", "targetVersion", version)
+
+	// Pre-flight: verify we can write to the binary's directory.
+	// ProtectSystem=strict in systemd or immutable filesystems (e.g. Ubuntu Core)
+	// make /usr/local/bin read-only, so detect this early instead of failing
+	// after download + checksum + backup.
+	if err := checkWritable(u.config.BinaryPath); err != nil {
+		return fmt.Errorf("%w: %v", ErrReadOnlyFS, err)
+	}
 
 	// 1. Download binary to temp file
 	tempPath, checksum, err := u.downloadBinary(version)
@@ -437,6 +450,20 @@ func (u *Updater) downloadFromURL(rawURL string) (string, error) {
 	}
 
 	return tempFile.Name(), nil
+}
+
+// checkWritable verifies we can write to the target binary path by creating
+// and immediately removing a temp file in the same directory.
+func checkWritable(binaryPath string) error {
+	dir := filepath.Dir(binaryPath)
+	f, err := os.CreateTemp(dir, ".breeze-write-check-*")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	f.Close()
+	os.Remove(name)
+	return nil
 }
 
 // Rollback restores the backup binary

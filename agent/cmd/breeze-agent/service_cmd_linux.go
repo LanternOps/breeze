@@ -42,7 +42,7 @@ StartLimitBurst=5
 # Security hardening
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/etc/breeze /var/lib/breeze /var/log/breeze /var/cache/apt /var/lib/apt /var/lib/dpkg /var/log/apt
+ReadWritePaths=/etc/breeze /var/lib/breeze /var/log/breeze /var/cache/apt /var/lib/apt /var/lib/dpkg /var/log/apt /usr/local/bin/breeze-agent
 PrivateTmp=true
 NoNewPrivileges=false
 CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_FOWNER
