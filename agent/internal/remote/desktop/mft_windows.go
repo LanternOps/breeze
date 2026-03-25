@@ -299,42 +299,21 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 			slog.Debug("ICodecAPI SetValue(BPictureCount=0) failed (non-fatal)", "error", err.Error())
 		}
 
-		// 2. Quality-based VBR rate control. CBR on Windows 8+ buffers frames
-		//    internally for bitrate smoothing, causing multi-second stalls where
-		//    ProcessInput succeeds but ProcessOutput returns nothing. Quality VBR
-		//    optimizes for consistent quality per frame, producing output
-		//    immediately without internal buffering. This is critical on Windows
-		//    Server where the software MFT is unsupported and stall-prone.
-		rv := comVariant{vt: vtUI4, val: uint64(eAVEncCommonRateControlMode_Quality)}
+		// 2. CBR rate control with VBV buffer for bitrate smoothing.
+		rv := comVariant{vt: vtUI4, val: uint64(eAVEncCommonRateControlMode_CBR)}
 		if _, err := comCall(codecAPI, vtblCodecAPISetValue,
 			uintptr(unsafe.Pointer(&codecAPIAVEncCommonRateControlMode)),
 			uintptr(unsafe.Pointer(&rv)),
 		); err != nil {
-			slog.Debug("ICodecAPI SetValue(RateControl=Quality) failed, trying CBR", "error", err.Error())
-			// Fall back to CBR if Quality mode isn't supported
-			rv.val = uint64(eAVEncCommonRateControlMode_CBR)
-			if _, cbrErr := comCall(codecAPI, vtblCodecAPISetValue,
-				uintptr(unsafe.Pointer(&codecAPIAVEncCommonRateControlMode)),
-				uintptr(unsafe.Pointer(&rv)),
-			); cbrErr != nil {
-				slog.Warn("CBR rate control also failed — encoder has no rate control configured", "error", cbrErr.Error())
-			}
-			// CBR needs a VBV buffer
-			vbvSize := vbvSizeForBitrate(m.cfg.Bitrate)
-			vbv := comVariant{vt: vtUI4, val: uint64(vbvSize)}
-			if _, vbvErr := comCall(codecAPI, vtblCodecAPISetValue,
-				uintptr(unsafe.Pointer(&codecAPIAVEncCommonBufferSize)),
-				uintptr(unsafe.Pointer(&vbv)),
-			); vbvErr != nil {
-				slog.Warn("VBV buffer configuration failed", "error", vbvErr.Error())
-			}
-		} else {
-			// Quality VBR: set QP target (24 = good balance for screen content)
-			qp := comVariant{vt: vtUI4, val: 24}
-			comCall(codecAPI, vtblCodecAPISetValue,
-				uintptr(unsafe.Pointer(&codecAPIAVEncVideoEncodeQP)),
-				uintptr(unsafe.Pointer(&qp)),
-			)
+			slog.Warn("CBR rate control configuration failed", "error", err.Error())
+		}
+		vbvSize := vbvSizeForBitrate(m.cfg.Bitrate)
+		vbv := comVariant{vt: vtUI4, val: uint64(vbvSize)}
+		if _, vbvErr := comCall(codecAPI, vtblCodecAPISetValue,
+			uintptr(unsafe.Pointer(&codecAPIAVEncCommonBufferSize)),
+			uintptr(unsafe.Pointer(&vbv)),
+		); vbvErr != nil {
+			slog.Warn("VBV buffer configuration failed", "error", vbvErr.Error())
 		}
 
 		// 3. CODECAPI_AVLowLatencyMode: forces single-frame encoding mode.
