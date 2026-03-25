@@ -362,7 +362,7 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 		"height", height,
 		"bitrate", m.cfg.Bitrate,
 		"fps", m.cfg.FPS,
-		"rateControl", "quality-vbr",
+		"rateControl", "cbr",
 		"providesSamples", m.providesSamples,
 		"outputBufSize", m.outputBufSize,
 		"hasCodecAPI", m.codecAPI != 0,

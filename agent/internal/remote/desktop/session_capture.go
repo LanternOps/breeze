@@ -254,6 +254,14 @@ func (s *Session) captureLoopDXGI() captureMode {
 	startupWarmupUntil := time.Now().Add(startupFrameWarmupWindow)
 	var lastStartupRepaint time.Time
 
+	// startupStallDeadline: if the encoder hasn't produced ANY output within
+	// 3 seconds of session start, bypass the MFT's internal stall detection
+	// and swap to software immediately. This prevents Intel Quick Sync and
+	// other hardware MFTs that stall on init from blocking the viewer for
+	// the full multi-flush-cycle detection window.
+	startupStallDeadline := time.Now().Add(3 * time.Second)
+	startupStallChecked := false
+
 	for {
 		loopStart := time.Now()
 		select {
@@ -370,6 +378,22 @@ func (s *Session) captureLoopDXGI() captureMode {
 				_ = enc.ForceKeyframe()
 			}
 			lastIdleKeyframe = time.Now()
+		}
+
+		// Startup stall guard: if the hardware encoder hasn't produced ANY
+		// output within 3s of session start, swap to software immediately.
+		// This catches Intel Quick Sync and other hardware MFTs that accept
+		// input but never produce output, without waiting for the MFT's
+		// internal multi-flush-cycle detection (~5s).
+		if !startupStallChecked && time.Now().After(startupStallDeadline) {
+			startupStallChecked = true
+			if s.lastVideoWriteUnixNano.Load() == 0 {
+				if enc := s.encoder.Load(); enc != nil && enc.BackendIsHardware() {
+					slog.Warn("Startup stall: no encoder output within 3s, swapping to software",
+						"session", s.id, "backend", enc.BackendName())
+					s.swapToSoftwareEncoder()
+				}
+			}
 		}
 
 		// If the capturer falls back to a non-blocking mode (e.g. DXGI→GDI),
@@ -500,6 +524,8 @@ func (s *Session) captureLoopTicker() captureMode {
 	var lastSecureKeyframe time.Time
 	startupWarmupUntil := time.Now().Add(startupFrameWarmupWindow)
 	var lastStartupRepaint time.Time
+	startupStallDeadlineTicker := time.Now().Add(3 * time.Second)
+	startupStallCheckedTicker := false
 
 	for {
 		select {
@@ -538,6 +564,19 @@ func (s *Session) captureLoopTicker() captureMode {
 			if dsn, ok2 := currentCap.(DesktopSwitchNotifier); ok2 {
 				onSecure = dsn.OnSecureDesktop()
 			}
+
+			// Startup stall guard (ticker loop variant)
+			if !startupStallCheckedTicker && time.Now().After(startupStallDeadlineTicker) {
+				startupStallCheckedTicker = true
+				if s.lastVideoWriteUnixNano.Load() == 0 {
+					if enc := s.encoder.Load(); enc != nil && enc.BackendIsHardware() {
+						slog.Warn("Startup stall (ticker): no encoder output within 3s, swapping to software",
+							"session", s.id, "backend", enc.BackendName())
+						s.swapToSoftwareEncoder()
+					}
+				}
+			}
+
 			if s.lastVideoWriteUnixNano.Load() == 0 && time.Now().Before(startupWarmupUntil) && time.Since(lastStartupRepaint) >= startupFrameRepaintEvery {
 				nudgeSecureDesktop()
 				forceDesktopRepaint()

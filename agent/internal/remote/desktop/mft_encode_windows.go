@@ -11,10 +11,10 @@ import (
 )
 
 // mftStallThreshold is the maximum consecutive nil outputs from the MFT before
-// the pipeline is flushed and restarted. Software MFTs can stall for 50+ frames
-// during warm-up, causing multi-second freezes. Flushing at 20 frames (~333ms
-// at 60fps) breaks the stall with acceptable quality loss (one IDR keyframe).
-const mftStallThreshold = 20
+// the pipeline is flushed and restarted. Hardware MFTs (Intel Quick Sync, etc.)
+// can stall permanently on certain GPUs. Flushing at 15 frames (~250ms at 60fps)
+// breaks the stall with acceptable quality loss (one IDR keyframe).
+const mftStallThreshold = 15
 
 // Encode takes RGBA or BGRA pixel data (per SetPixelFormat), converts to NV12, and encodes to H264.
 // Returns nil, nil when the MFT is buffering (no output yet).
@@ -397,8 +397,10 @@ func (m *mftEncoder) Flush() error {
 }
 
 // trackNilOutput tracks consecutive nil outputs from drainOutput and auto-flushes
-// when the MFT appears stalled (20+ consecutive nil frames). Prevents multi-second
-// freezes from software MFT warm-up stalls. Caller must hold m.mu.
+// when the MFT appears stalled. Hardware MFTs (Intel Quick Sync, etc.) can
+// permanently stall on certain GPUs — accepting input but never producing output.
+// Two flush cycles with 2s cooldowns detect this within ~5 seconds, allowing the
+// capture loop to swap to OpenH264 before the viewer gives up. Caller must hold m.mu.
 func (m *mftEncoder) trackNilOutput(out []byte) {
 	if out == nil {
 		m.consecutiveNilOutputs++
@@ -412,14 +414,13 @@ func (m *mftEncoder) trackNilOutput(out []byte) {
 		}
 		threshold := mftStallThreshold
 		// After a recent flush, use a lower threshold for faster second recovery.
-		// The 5-second floor between flushes still prevents infinite flush loops.
 		if m.lastStallFlush != (time.Time{}) && time.Since(m.lastStallFlush) < 10*time.Second {
 			threshold = mftStallThreshold / 2
 		}
-		if m.consecutiveNilOutputs >= threshold && time.Since(m.lastStallFlush) >= 5*time.Second {
+		if m.consecutiveNilOutputs >= threshold && time.Since(m.lastStallFlush) >= 2*time.Second {
 			// Track consecutive flush cycles without output. If the encoder
 			// never produces output after multiple flushes, it's permanently
-			// broken (common with Quality VBR on certain GPUs at high res).
+			// broken (common on certain Intel/AMD GPUs with hardware MFTs).
 			if !m.outputSinceFlush && m.stallFlushCount > 0 {
 				m.stallFlushCount++
 			} else {
@@ -427,7 +428,7 @@ func (m *mftEncoder) trackNilOutput(out []byte) {
 			}
 			m.outputSinceFlush = false
 
-			if m.stallFlushCount >= 3 {
+			if m.stallFlushCount >= 2 {
 				slog.Error("MFT encoder permanently stalled — flush recovery not working",
 					"stallFlushCount", m.stallFlushCount,
 					"frameIdx", m.frameIdx,
