@@ -370,6 +370,9 @@ func retryTCCGrant() {
 // - Receiving pending commands from the server via heartbeat response
 // - Executing commands and reporting results back to the server
 func runAgent() {
+	// Self-heal launchd plists on macOS (fixes KeepAlive config from older installs).
+	healLaunchdPlistsIfNeeded()
+
 	// On Windows, if launched by the SCM, run under the service framework
 	// so we report Running/Stopped status back to the SCM correctly.
 	if isWindowsService() {

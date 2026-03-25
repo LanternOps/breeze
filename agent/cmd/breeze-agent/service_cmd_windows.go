@@ -19,6 +19,9 @@ var serviceCmd = &cobra.Command{
 	Short: "Manage the Breeze Agent Windows service",
 }
 
+// healLaunchdPlistsIfNeeded is a no-op on Windows.
+func healLaunchdPlistsIfNeeded() {}
+
 func init() {
 	rootCmd.AddCommand(serviceCmd)
 	serviceCmd.AddCommand(serviceInstallCmd)
