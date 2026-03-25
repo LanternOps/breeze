@@ -671,11 +671,15 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 
 	s.metrics.RecordEncode(encodeTime, len(h264Data))
 
-	// Drop oversized frames (MFT keyframe bursts) — same guard as GPU path.
-	if s.frameIdx > 5 && len(h264Data) > maxFrameSizeBytes {
-		slog.Debug("Dropping oversized frame (CPU path)",
+	// Drop oversized P-frames (MFT keyframe bursts) — same guard as GPU path.
+	// Never drop IDR keyframes: the decoder MUST receive them or all subsequent
+	// P-frames decode against a stale reference, causing persistent corruption.
+	if s.frameIdx > 5 && len(h264Data) > maxFrameSizeBytes && !h264ContainsIDR(h264Data) {
+		slog.Debug("Dropping oversized P-frame (CPU path)",
 			"session", s.id, "bytes", len(h264Data), "maxBytes", maxFrameSizeBytes)
 		s.metrics.RecordDrop()
+		// Force a keyframe so the encoder produces a fresh IDR for decoder recovery.
+		_ = s.encoder.ForceKeyframe()
 		return
 	}
 
@@ -762,13 +766,16 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 		)
 	}
 
-	// Drop oversized frames (MFT keyframe bursts can be 2-4x the bitrate target).
+	// Drop oversized P-frames (MFT keyframe bursts can be 2-4x the bitrate target).
 	// The encoder will produce a smaller P-frame on the next capture cycle.
 	// Skip the check for the first 5 frames to allow initial keyframes through.
-	if s.frameIdx > 5 && len(h264Data) > maxFrameSizeBytes {
-		slog.Debug("Dropping oversized frame to prevent jitter burst",
+	// Never drop IDR keyframes — without them the decoder accumulates corruption.
+	if s.frameIdx > 5 && len(h264Data) > maxFrameSizeBytes && !h264ContainsIDR(h264Data) {
+		slog.Debug("Dropping oversized P-frame to prevent jitter burst",
 			"session", s.id, "bytes", len(h264Data), "maxBytes", maxFrameSizeBytes)
 		s.metrics.RecordDrop()
+		// Force a keyframe so the encoder produces a fresh IDR for decoder recovery.
+		_ = s.encoder.ForceKeyframe()
 		return true, false, false
 	}
 

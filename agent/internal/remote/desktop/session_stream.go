@@ -251,6 +251,30 @@ func extractRemoteInboundVideoStats(report webrtc.StatsReport) (rtt time.Duratio
 	return rtt, loss, ok
 }
 
+// h264ContainsIDR checks if H.264 Annex B data contains an IDR NAL unit (type 5).
+// Used to prevent dropping keyframes — without IDRs the decoder accumulates corruption.
+func h264ContainsIDR(data []byte) bool {
+	for i := 0; i < len(data)-4; {
+		startLen := 0
+		if data[i] == 0 && data[i+1] == 0 {
+			if data[i+2] == 1 {
+				startLen = 3
+			} else if data[i+2] == 0 && i+3 < len(data) && data[i+3] == 1 {
+				startLen = 4
+			}
+		}
+		if startLen == 0 {
+			i++
+			continue
+		}
+		if data[i+startLen]&0x1f == 5 {
+			return true
+		}
+		i += startLen + 1
+	}
+	return false
+}
+
 // describeH264NALUs parses Annex B start codes and returns a summary of NALU types.
 // Used for diagnostics after monitor switch to verify SPS/PPS presence.
 func describeH264NALUs(data []byte) string {
