@@ -590,6 +590,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 
 	enc := s.encoder.Load()
 	if enc == nil {
+		slog.Warn("captureAndSendFrame: encoder is nil, skipping", "session", s.id)
 		return
 	}
 
@@ -737,7 +738,8 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 
 	enc := s.encoder.Load()
 	if enc == nil {
-		return true, false, false
+		slog.Warn("captureAndSendFrameGPU: encoder is nil, skipping", "session", s.id)
+		return false, false, false // handled=false so CPU path can be tried
 	}
 
 	t0 := time.Now()

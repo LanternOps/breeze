@@ -89,8 +89,9 @@ func findOpenH264Library() (string, error) {
 	// cannot write to the root-owned agent data directory).
 	downloadDir := dataDir
 	if err := os.MkdirAll(downloadDir, 0755); err != nil {
+		slog.Warn("OpenH264: agent data dir not writable, using temp dir",
+			"dataDir", dataDir, "error", err.Error())
 		downloadDir = filepath.Join(os.TempDir(), "breeze-openh264")
-		candidate = filepath.Join(downloadDir, variant.libName)
 	}
 	slog.Info("OpenH264 library not found locally, downloading",
 		"lib", variant.libName, "dest", downloadDir)
