@@ -111,7 +111,7 @@ func (e *openH264Encoder) initEncoder() error {
 		bitrate = 2_500_000
 	}
 
-	params.IUsageType = openh264.CAMERA_VIDEO_REAL_TIME
+	params.IUsageType = openh264.SCREEN_CONTENT_REAL_TIME
 	params.IPicWidth = int32(e.width)
 	params.IPicHeight = int32(e.height)
 	params.ITargetBitrate = int32(bitrate)
@@ -128,7 +128,7 @@ func (e *openH264Encoder) initEncoder() error {
 	params.BEnableAdaptiveQuant = true
 	params.IEntropyCodingModeFlag = 0 // CAVLC (Baseline profile)
 	params.IComplexityMode = openh264.LOW_COMPLEXITY
-	params.IMinQp = 18
+	params.IMinQp = 22
 	params.IMaxQp = 42
 
 	// IDR every 10 seconds

@@ -107,7 +107,7 @@ func clampSecureDesktopFPS(fps int) int {
 }
 
 func (s *Session) shouldForceSecureKeyframe(lastSecureKeyframe time.Time) bool {
-	if s.encoder == nil || time.Since(lastSecureKeyframe) < secureDesktopKeyframeEvery {
+	if s.encoder.Load() == nil || time.Since(lastSecureKeyframe) < secureDesktopKeyframeEvery {
 		return false
 	}
 	lastWrite := s.lastVideoWriteUnixNano.Load()
@@ -247,6 +247,7 @@ func (s *Session) captureLoopDXGI() captureMode {
 	// to fully initialize. Without this, a static display goes idle after 2-3
 	// frames, which may not be enough for the decoder to stabilize.
 	postSwitchRepaints := 0
+	var lastPostSwitchRepaint time.Time
 	var lastRepaintTime time.Time
 	var lastSecureKeyframe time.Time
 	var lastIdleKeyframe time.Time
@@ -264,7 +265,9 @@ func (s *Session) captureLoopDXGI() captureMode {
 		// If a mouse click occurred, flush the encoder pipeline to drop stale
 		// buffered frames and force an IDR so the click result appears instantly.
 		if s.clickFlush.CompareAndSwap(true, false) {
-			s.encoder.Flush()
+			if enc := s.encoder.Load(); enc != nil {
+				enc.Flush()
+			}
 			consecutiveSkips = 0 // exit idle on click
 		}
 
@@ -296,16 +299,18 @@ func (s *Session) captureLoopDXGI() captureMode {
 			s.gpuEncodeErrors = 0
 			s.frameIdx = 0 // reset so first frames after switch are logged
 			// Pass new D3D11 device to encoder
-			if hasTP && s.encoder != nil {
-				s.encoder.SetD3D11Device(tp.GetD3D11Device(), tp.GetD3D11Context())
+			if enc := s.encoder.Load(); hasTP && enc != nil {
+				enc.SetD3D11Device(tp.GetD3D11Device(), tp.GetD3D11Context())
 			}
 			// Update encoder dimensions for the new monitor
-			if w, h, err := newCap.GetScreenBounds(); err == nil && s.encoder != nil {
-				if dimErr := s.encoder.SetDimensions(w, h); dimErr != nil {
-					slog.Warn("Failed to set encoder dimensions after monitor switch", "session", s.id, "error", dimErr.Error())
-				}
-				if kfErr := s.encoder.ForceKeyframe(); kfErr != nil {
-					slog.Warn("Failed to force keyframe after monitor switch", "session", s.id, "error", kfErr.Error())
+			if enc := s.encoder.Load(); enc != nil {
+				if w, h, err := newCap.GetScreenBounds(); err == nil {
+					if dimErr := enc.SetDimensions(w, h); dimErr != nil {
+						slog.Warn("Failed to set encoder dimensions after monitor switch", "session", s.id, "error", dimErr.Error())
+					}
+					if kfErr := enc.ForceKeyframe(); kfErr != nil {
+						slog.Warn("Failed to force keyframe after monitor switch", "session", s.id, "error", kfErr.Error())
+					}
 				}
 			}
 			// Second repaint nudge — the first (in handleControlMessage) may
@@ -351,7 +356,9 @@ func (s *Session) captureLoopDXGI() captureMode {
 			}
 			// Only force keyframes when output appears stalled on secure desktop.
 			if s.shouldForceSecureKeyframe(lastSecureKeyframe) {
-				_ = s.encoder.ForceKeyframe()
+				if enc := s.encoder.Load(); enc != nil {
+					_ = enc.ForceKeyframe()
+				}
 				lastSecureKeyframe = time.Now()
 			}
 		}
@@ -359,7 +366,9 @@ func (s *Session) captureLoopDXGI() captureMode {
 		// Periodic keyframe during normal desktop idle — keeps decoder
 		// synchronized when the capture loop is resending cached frames.
 		if !onSecure && consecutiveSkips >= 30 && time.Since(lastIdleKeyframe) >= staticDesktopKeyframeEvery {
-			_ = s.encoder.ForceKeyframe()
+			if enc := s.encoder.Load(); enc != nil {
+				_ = enc.ForceKeyframe()
+			}
 			lastIdleKeyframe = time.Now()
 		}
 
@@ -370,7 +379,7 @@ func (s *Session) captureLoopDXGI() captureMode {
 			return captureModeTicker
 		}
 
-		if !hwChecked && s.encoder.BackendIsHardware() && !onSecure {
+		if enc := s.encoder.Load(); !hwChecked && enc != nil && enc.BackendIsHardware() && !onSecure {
 			hwChecked = true
 			targetFPS := maxFrameRate
 			if fps < targetFPS {
@@ -378,7 +387,7 @@ func (s *Session) captureLoopDXGI() captureMode {
 				s.mu.Lock()
 				s.fps = targetFPS
 				s.mu.Unlock()
-				s.encoder.SetFPS(targetFPS)
+				enc.SetFPS(targetFPS)
 				frameDuration = time.Second / time.Duration(fps)
 				slog.Info("Uncapped FPS for hardware encoder",
 					"session", s.id, "fps", fps)
@@ -392,14 +401,17 @@ func (s *Session) captureLoopDXGI() captureMode {
 		if newFPS != fps {
 			fps = newFPS
 			frameDuration = time.Second / time.Duration(fps)
-			if err := s.encoder.SetFPS(fps); err != nil {
-				slog.Debug("Failed to apply dynamic FPS to encoder", "session", s.id, "fps", fps, "error", err.Error())
+			if enc := s.encoder.Load(); enc != nil {
+				if err := enc.SetFPS(fps); err != nil {
+					slog.Debug("Failed to apply dynamic FPS to encoder", "session", s.id, "fps", fps, "error", err.Error())
+				}
 			}
 		}
 
 		// Prefer the GPU path when it works; fall back to CPU on any GPU error.
 		frameSent := false
-		if hasTP && !gpuDisabled && s.encoder.SupportsGPUInput() {
+		encForGPU := s.encoder.Load()
+		if hasTP && !gpuDisabled && encForGPU != nil && encForGPU.SupportsGPUInput() {
 			handled, disable, sent := s.captureAndSendFrameGPU(tp, frameDuration)
 			if disable {
 				gpuDisabled = true
@@ -421,9 +433,10 @@ func (s *Session) captureLoopDXGI() captureMode {
 					consecutiveSkips++
 					// After a monitor switch, keep nudging the display so
 					// DXGI picks up dirty rects on an otherwise static screen.
-					if postSwitchRepaints > 0 {
+					if postSwitchRepaints > 0 && time.Since(lastPostSwitchRepaint) >= 400*time.Millisecond {
 						postSwitchRepaints--
 						forceDesktopRepaint()
+						lastPostSwitchRepaint = time.Now()
 					} else if consecutiveSkips >= idleThreshold {
 						sleepDur = idleSleep // idle mode: poll less often
 					}
@@ -441,7 +454,9 @@ func (s *Session) captureLoopDXGI() captureMode {
 					// Scene change: screen was idle and now has activity.
 					if wasIdle || consecutiveSkips >= 30 {
 						// Force IDR for fast decoder recovery.
-						_ = s.encoder.ForceKeyframe()
+						if enc := s.encoder.Load(); enc != nil {
+							_ = enc.ForceKeyframe()
+						}
 						// Temporarily cap bitrate to prevent overwhelming the
 						// jitter buffer with a sudden spike from idle → active.
 						// The adaptive controller will ramp back up smoothly.
@@ -460,7 +475,7 @@ func (s *Session) captureLoopDXGI() captureMode {
 			}
 		}
 		// CPU-only path: if we reach here without GPU, cap for software encoder.
-		if !swCapped && !s.encoder.BackendIsHardware() && s.adaptive != nil {
+		if enc := s.encoder.Load(); !swCapped && enc != nil && !enc.BackendIsHardware() && s.adaptive != nil {
 			swCapped = true
 			s.adaptive.CapForSoftwareEncoder()
 		}
@@ -506,7 +521,9 @@ func (s *Session) captureLoopTicker() captureMode {
 					lastTickerRepaint = time.Now()
 				}
 				if s.shouldForceSecureKeyframe(lastSecureKeyframe) {
-					_ = s.encoder.ForceKeyframe()
+					if enc := s.encoder.Load(); enc != nil {
+						_ = enc.ForceKeyframe()
+					}
 					lastSecureKeyframe = time.Now()
 				}
 			}
@@ -526,7 +543,7 @@ func (s *Session) captureLoopTicker() captureMode {
 				forceDesktopRepaint()
 				lastStartupRepaint = time.Now()
 			}
-			if !hwChecked && s.encoder.BackendIsHardware() && !onSecure {
+			if enc := s.encoder.Load(); !hwChecked && enc != nil && enc.BackendIsHardware() && !onSecure {
 				hwChecked = true
 				targetFPS := maxFrameRate
 				if fps < targetFPS {
@@ -534,7 +551,7 @@ func (s *Session) captureLoopTicker() captureMode {
 					s.mu.Lock()
 					s.fps = targetFPS
 					s.mu.Unlock()
-					s.encoder.SetFPS(targetFPS)
+					enc.SetFPS(targetFPS)
 					frameDuration = time.Second / time.Duration(fps)
 					ticker.Reset(frameDuration)
 					slog.Info("Uncapped FPS for hardware encoder",
@@ -550,8 +567,10 @@ func (s *Session) captureLoopTicker() captureMode {
 				fps = newFPS
 				frameDuration = time.Second / time.Duration(fps)
 				ticker.Reset(frameDuration)
-				if err := s.encoder.SetFPS(fps); err != nil {
-					slog.Debug("Failed to apply dynamic FPS to encoder", "session", s.id, "fps", fps, "error", err.Error())
+				if enc := s.encoder.Load(); enc != nil {
+					if err := enc.SetFPS(fps); err != nil {
+						slog.Debug("Failed to apply dynamic FPS to encoder", "session", s.id, "fps", fps, "error", err.Error())
+					}
 				}
 			}
 			s.captureAndSendFrame(frameDuration)
@@ -568,6 +587,12 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	}
 	cap := s.capturer
 	s.mu.RUnlock()
+
+	enc := s.encoder.Load()
+	if enc == nil {
+		slog.Warn("captureAndSendFrame: encoder is nil, skipping", "session", s.id)
+		return
+	}
 
 	// 1. Capture screen
 	t0 := time.Now()
@@ -612,7 +637,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 		desiredPF = PixelFormatBGRA
 	}
 	if desiredPF != s.encoderPF {
-		s.encoder.SetPixelFormat(desiredPF)
+		enc.SetPixelFormat(desiredPF)
 		s.encoderPF = desiredPF
 	}
 
@@ -649,7 +674,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 
 	// 4. Encode to H264 via MFT (RGBA→NV12→H264 internally)
 	t1 := time.Now()
-	h264Data, err := s.encoder.Encode(img.Pix)
+	h264Data, err := enc.Encode(img.Pix)
 	encodeTime := time.Since(t1)
 	captureImagePool.Put(img)
 
@@ -657,7 +682,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 		s.cpuEncodeErrors++
 		slog.Warn("H264 encode error", "session", s.id, "error", err.Error(),
 			"consecutive", s.cpuEncodeErrors)
-		if s.cpuEncodeErrors >= 5 && s.encoder.BackendName() != "openh264" {
+		if s.cpuEncodeErrors >= 5 && enc.BackendName() != "openh264" {
 			s.swapToSoftwareEncoder()
 		}
 		return
@@ -671,11 +696,15 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 
 	s.metrics.RecordEncode(encodeTime, len(h264Data))
 
-	// Drop oversized frames (MFT keyframe bursts) — same guard as GPU path.
-	if s.frameIdx > 5 && len(h264Data) > maxFrameSizeBytes {
-		slog.Debug("Dropping oversized frame (CPU path)",
+	// Drop oversized P-frames (MFT keyframe bursts) — same guard as GPU path.
+	// Never drop IDR keyframes: the decoder MUST receive them or all subsequent
+	// P-frames decode against a stale reference, causing persistent corruption.
+	if s.frameIdx > 5 && len(h264Data) > maxFrameSizeBytes && !h264ContainsIDR(h264Data) {
+		slog.Debug("Dropping oversized P-frame (CPU path)",
 			"session", s.id, "bytes", len(h264Data), "maxBytes", maxFrameSizeBytes)
 		s.metrics.RecordDrop()
+		// Force a keyframe so the encoder produces a fresh IDR for decoder recovery.
+		_ = enc.ForceKeyframe()
 		return
 	}
 
@@ -707,6 +736,12 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 	}
 	s.mu.RUnlock()
 
+	enc := s.encoder.Load()
+	if enc == nil {
+		slog.Warn("captureAndSendFrameGPU: encoder is nil, skipping", "session", s.id)
+		return false, false, false // handled=false so CPU path can be tried
+	}
+
 	t0 := time.Now()
 	texture, err := tp.CaptureTexture()
 	if err != nil {
@@ -725,7 +760,7 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 	s.metrics.RecordCapture(time.Since(t0))
 
 	t1 := time.Now()
-	h264Data, err := s.encoder.EncodeTexture(texture)
+	h264Data, err := enc.EncodeTexture(texture)
 	encodeTime := time.Since(t1)
 
 	if err != nil {
@@ -762,13 +797,16 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 		)
 	}
 
-	// Drop oversized frames (MFT keyframe bursts can be 2-4x the bitrate target).
+	// Drop oversized P-frames (MFT keyframe bursts can be 2-4x the bitrate target).
 	// The encoder will produce a smaller P-frame on the next capture cycle.
 	// Skip the check for the first 5 frames to allow initial keyframes through.
-	if s.frameIdx > 5 && len(h264Data) > maxFrameSizeBytes {
-		slog.Debug("Dropping oversized frame to prevent jitter burst",
+	// Never drop IDR keyframes — without them the decoder accumulates corruption.
+	if s.frameIdx > 5 && len(h264Data) > maxFrameSizeBytes && !h264ContainsIDR(h264Data) {
+		slog.Debug("Dropping oversized P-frame to prevent jitter burst",
 			"session", s.id, "bytes", len(h264Data), "maxBytes", maxFrameSizeBytes)
 		s.metrics.RecordDrop()
+		// Force a keyframe so the encoder produces a fresh IDR for decoder recovery.
+		_ = enc.ForceKeyframe()
 		return true, false, false
 	}
 
@@ -826,18 +864,20 @@ func (s *Session) handleDesktopSwitch() {
 		// CRITICAL: DXGI reinit creates a new D3D11 device. The encoder's MFT
 		// and GPU converter hold the OLD device/context pointers. Without this
 		// update, the GPU encode path produces no frames after ~2-3 cycles.
-		if tp, ok := cap.(TextureProvider); ok && s.encoder != nil {
-			s.encoder.SetD3D11Device(tp.GetD3D11Device(), tp.GetD3D11Context())
-			slog.Info("Updated encoder D3D11 device after desktop switch", "session", s.id)
+		if enc := s.encoder.Load(); enc != nil {
+			if tp, ok := cap.(TextureProvider); ok {
+				enc.SetD3D11Device(tp.GetD3D11Device(), tp.GetD3D11Context())
+				slog.Info("Updated encoder D3D11 device after desktop switch", "session", s.id)
+			}
 		}
 	}
 
 	// Force keyframe so the viewer shows the new desktop content immediately
-	if s.encoder != nil {
+	if enc := s.encoder.Load(); enc != nil {
 		// Drop any stale pre-switch compressed frames so the next delivered
 		// frame reflects the new desktop (Default <-> Winlogon) immediately.
-		s.encoder.Flush()
-		_ = s.encoder.ForceKeyframe()
+		enc.Flush()
+		_ = enc.ForceKeyframe()
 	}
 }
 
@@ -876,16 +916,34 @@ func applyDisplayOffset(handler InputHandler, displayIndex int, cursorOffX, curs
 	cursorOffY.Store(0)
 }
 
+// atomicEncoderSwap performs a clean encoder replacement in one atomic sequence.
+// Clears stale cached frames, swaps the pointer, updates the adaptive controller,
+// resets error counters, and closes the old encoder. Must be called from the
+// capture goroutine.
+func (s *Session) atomicEncoderSwap(newEnc *VideoEncoder) {
+	s.clearCachedEncodedFrame()
+	oldEnc := s.encoder.Swap(newEnc)
+	if s.adaptive != nil {
+		s.adaptive.SetEncoder(newEnc)
+	}
+	s.cpuEncodeErrors = 0
+	if oldEnc != nil {
+		oldEnc.Close()
+	}
+}
+
 // swapToSoftwareEncoder replaces the current hardware encoder with a software
 // encoder (OpenH264) mid-session. Called when the hardware encoder stalls
 // (e.g., VideoToolbox on older Intel Macs).
-// Must be called from the capture loop goroutine (no mutex needed for s.encoder).
+// Must be called from the capture loop goroutine.
 func (s *Session) swapToSoftwareEncoder() {
+	enc := s.encoder.Load()
+	if enc == nil {
+		return
+	}
 	slog.Warn("Hardware encoder stalling, swapping to software encoder",
-		"session", s.id, "backend", s.encoder.BackendName(),
+		"session", s.id, "backend", enc.BackendName(),
 		"consecutiveErrors", s.cpuEncodeErrors)
-
-	oldEnc := s.encoder
 
 	// Get current dimensions from capturer
 	var w, h int
@@ -935,9 +993,7 @@ func (s *Session) swapToSoftwareEncoder() {
 	// Set pixel format to match capturer
 	newEnc.SetPixelFormat(s.encoderPF)
 
-	s.encoder = newEnc
-	s.cpuEncodeErrors = 0
-	oldEnc.Close()
+	s.atomicEncoderSwap(newEnc)
 
 	// Cap ABR for software encoder
 	if s.adaptive != nil {

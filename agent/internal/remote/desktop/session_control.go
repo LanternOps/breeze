@@ -75,8 +75,10 @@ func (s *Session) handleControlMessage(data []byte) {
 			if s.adaptive != nil {
 				s.adaptive.SetMaxBitrate(msg.Value)
 			} else {
-				if err := s.encoder.SetBitrate(msg.Value); err != nil {
-					slog.Warn("Failed to set bitrate", "session", s.id, "bitrate", msg.Value, "error", err.Error())
+				if enc := s.encoder.Load(); enc != nil {
+					if err := enc.SetBitrate(msg.Value); err != nil {
+						slog.Warn("Failed to set bitrate", "session", s.id, "bitrate", msg.Value, "error", err.Error())
+					}
 				}
 			}
 		}
@@ -88,14 +90,16 @@ func (s *Session) handleControlMessage(data []byte) {
 			s.mu.Lock()
 			s.fps = msg.Value
 			s.mu.Unlock()
-			if err := s.encoder.SetFPS(msg.Value); err != nil {
-				slog.Warn("Failed to set fps", "session", s.id, "fps", msg.Value, "error", err.Error())
+			if enc := s.encoder.Load(); enc != nil {
+				if err := enc.SetFPS(msg.Value); err != nil {
+					slog.Warn("Failed to set fps", "session", s.id, "fps", msg.Value, "error", err.Error())
+				}
 			}
 		}
 	case "request_keyframe":
 		// Viewer window regained focus — force IDR so picture is immediately sharp.
-		if s.encoder != nil {
-			_ = s.encoder.ForceKeyframe()
+		if enc := s.encoder.Load(); enc != nil {
+			_ = enc.ForceKeyframe()
 		}
 	case "list_monitors":
 		monitors, err := ListMonitors()

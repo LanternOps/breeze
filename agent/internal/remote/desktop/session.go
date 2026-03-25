@@ -41,7 +41,7 @@ type Session struct {
 	dataChannel     *webrtc.DataChannel
 	inputHandler    InputHandler
 	capturer        ScreenCapturer
-	encoder         *VideoEncoder
+	encoder         atomic.Pointer[VideoEncoder]
 	encoderPF       PixelFormat // cached encoder input format for CPU Encode() path
 	clipboardSync   *clipboard.ClipboardSync
 	fileDropHandler *filedrop.FileDropHandler
@@ -355,8 +355,8 @@ func (s *Session) doCleanup() {
 			s.cursorDC.Close()
 		}
 		s.clearCachedEncodedFrame()
-		if s.encoder != nil {
-			s.encoder.Close()
+		if enc := s.encoder.Load(); enc != nil {
+			enc.Close()
 		}
 		for _, oc := range s.oldCapturers {
 			oc.Close()

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/logging"
@@ -42,9 +44,21 @@ func New(cfg *Config) *Updater {
 	}
 }
 
+// ErrReadOnlyFS is returned when the binary path is on a read-only filesystem.
+// Callers should treat this as a permanent failure and stop retrying.
+var ErrReadOnlyFS = fmt.Errorf("binary path is on a read-only filesystem")
+
 // UpdateTo downloads and installs a new version
 func (u *Updater) UpdateTo(version string) error {
 	log.Info("starting update", "targetVersion", version)
+
+	// Pre-flight: verify we can write to the binary's directory.
+	// ProtectSystem=strict in systemd or immutable filesystems (e.g. Ubuntu Core)
+	// make /usr/local/bin read-only, so detect this early instead of failing
+	// after download + checksum + backup.
+	if err := checkWritable(u.config.BinaryPath); err != nil {
+		return fmt.Errorf("%w: %v", ErrReadOnlyFS, err)
+	}
 
 	// 1. Download binary to temp file
 	tempPath, checksum, err := u.downloadBinary(version)
@@ -54,13 +68,13 @@ func (u *Updater) UpdateTo(version string) error {
 
 	// 2. Verify checksum
 	if err := u.verifyChecksum(tempPath, checksum); err != nil {
-		os.Remove(tempPath)
+		removeCleanup(tempPath)
 		return fmt.Errorf("checksum verification failed: %w", err)
 	}
 
 	// 3. Backup current binary
 	if err := u.backupCurrentBinary(); err != nil {
-		os.Remove(tempPath)
+		removeCleanup(tempPath)
 		return fmt.Errorf("failed to backup current binary: %w", err)
 	}
 
@@ -69,7 +83,7 @@ func (u *Updater) UpdateTo(version string) error {
 	//    The agent exits normally after spawning the script.
 	if runtime.GOOS == "windows" {
 		if err := RestartWithHelper(tempPath, u.config.BinaryPath); err != nil {
-			os.Remove(tempPath)
+			removeCleanup(tempPath)
 			if rbErr := u.Rollback(); rbErr != nil {
 				log.Error("rollback also failed", "originalError", err, "rollbackError", rbErr)
 			}
@@ -84,18 +98,22 @@ func (u *Updater) UpdateTo(version string) error {
 	//    pre/post-install scripts. The raw binary approach destroys the
 	//    signature, which invalidates macOS TCC permission grants.
 	if runtime.GOOS == "darwin" {
-		defer os.Remove(tempPath)
+		defer removeCleanup(tempPath)
 		pkgErr := u.installViaPkg(version)
 		if pkgErr == nil {
 			return nil // .pkg install handles binary replacement + restart
 		}
 		log.Warn("pkg install failed, falling back to binary replacement", "error", pkgErr.Error())
 	} else {
-		defer os.Remove(tempPath)
+		defer removeCleanup(tempPath)
 	}
 
 	// 6. Non-macOS or pkg fallback: replace binary inline and restart
 	if err := u.replaceBinary(tempPath); err != nil {
+		// Catch TOCTOU race: pre-flight passed but FS became read-only before write
+		if isReadOnlyErr(err) {
+			return fmt.Errorf("%w: %v", ErrReadOnlyFS, err)
+		}
 		if rbErr := u.Rollback(); rbErr != nil {
 			log.Error("rollback also failed after replace error", "replaceError", err, "rollbackError", rbErr)
 			return fmt.Errorf("failed to replace binary: %w (rollback also failed: %v)", err, rbErr)
@@ -210,7 +228,7 @@ func (u *Updater) downloadBinary(version string) (string, string, error) {
 	defer tempFile.Close()
 
 	if _, err := io.Copy(tempFile, binResp.Body); err != nil {
-		os.Remove(tempFile.Name())
+		removeCleanup(tempFile.Name())
 		return "", "", err
 	}
 
@@ -241,7 +259,7 @@ func (u *Updater) verifyChecksum(path, expectedChecksum string) error {
 // backupCurrentBinary creates a backup of the current binary
 func (u *Updater) backupCurrentBinary() error {
 	// Remove old backup if exists
-	os.Remove(u.config.BackupPath)
+	removeCleanup(u.config.BackupPath)
 
 	// Copy current binary to backup
 	src, err := os.Open(u.config.BinaryPath)
@@ -274,7 +292,7 @@ func (u *Updater) replaceBinary(newPath string) error {
 	// On Windows, we need to rename the existing file first
 	if runtime.GOOS == "windows" {
 		oldPath := u.config.BinaryPath + ".old"
-		os.Remove(oldPath)
+		removeCleanup(oldPath)
 		if err := os.Rename(u.config.BinaryPath, oldPath); err != nil {
 			return err
 		}
@@ -326,6 +344,11 @@ func (u *Updater) replaceBinary(newPath string) error {
 func (u *Updater) UpdateFromURL(url, expectedChecksum string) error {
 	log.Info("starting dev update from URL", "url", url)
 
+	// Pre-flight: verify we can write to the binary's directory.
+	if err := checkWritable(u.config.BinaryPath); err != nil {
+		return fmt.Errorf("%w: %v", ErrReadOnlyFS, err)
+	}
+
 	// 1. Download binary directly
 	tempPath, err := u.downloadFromURL(url)
 	if err != nil {
@@ -334,20 +357,20 @@ func (u *Updater) UpdateFromURL(url, expectedChecksum string) error {
 
 	// 2. Verify checksum
 	if err := u.verifyChecksum(tempPath, expectedChecksum); err != nil {
-		os.Remove(tempPath)
+		removeCleanup(tempPath)
 		return fmt.Errorf("checksum verification failed: %w", err)
 	}
 
 	// 3. Backup current binary
 	if err := u.backupCurrentBinary(); err != nil {
-		os.Remove(tempPath)
+		removeCleanup(tempPath)
 		return fmt.Errorf("failed to backup current binary: %w", err)
 	}
 
 	// 4. Windows: spawn helper script for binary swap
 	if runtime.GOOS == "windows" {
 		if err := RestartWithHelper(tempPath, u.config.BinaryPath); err != nil {
-			os.Remove(tempPath)
+			removeCleanup(tempPath)
 			if rbErr := u.Rollback(); rbErr != nil {
 				log.Error("rollback also failed", "originalError", err, "rollbackError", rbErr)
 			}
@@ -357,8 +380,11 @@ func (u *Updater) UpdateFromURL(url, expectedChecksum string) error {
 	}
 
 	// 5. Non-Windows: replace binary inline and restart
-	defer os.Remove(tempPath)
+	defer removeCleanup(tempPath)
 	if err := u.replaceBinary(tempPath); err != nil {
+		if isReadOnlyErr(err) {
+			return fmt.Errorf("%w: %v", ErrReadOnlyFS, err)
+		}
 		if rbErr := u.Rollback(); rbErr != nil {
 			log.Error("rollback also failed after replace error", "replaceError", err, "rollbackError", rbErr)
 			return fmt.Errorf("failed to replace binary: %w (rollback also failed: %v)", err, rbErr)
@@ -432,11 +458,37 @@ func (u *Updater) downloadFromURL(rawURL string) (string, error) {
 	defer tempFile.Close()
 
 	if _, err := io.Copy(tempFile, resp.Body); err != nil {
-		os.Remove(tempFile.Name())
+		removeCleanup(tempFile.Name())
 		return "", err
 	}
 
 	return tempFile.Name(), nil
+}
+
+// checkWritable verifies we can write to the target binary path by opening
+// the existing file for writing without truncating it. This tests file-level
+// write permission, matching what replaceBinary (os.Create) does, and works
+// correctly with systemd's ReadWritePaths which grants per-file access.
+func checkWritable(binaryPath string) error {
+	f, err := os.OpenFile(binaryPath, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+// isReadOnlyErr returns true if the error indicates a read-only filesystem
+// or permission denied — used to catch TOCTOU races where the pre-flight
+// check passed but the filesystem became read-only before replaceBinary.
+func isReadOnlyErr(err error) bool {
+	return errors.Is(err, syscall.EROFS) || errors.Is(err, syscall.EACCES)
+}
+
+// removeCleanup removes a file and logs a warning on failure.
+func removeCleanup(path string) {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		log.Warn("failed to clean up temp file", "path", path, "error", err.Error())
+	}
 }
 
 // Rollback restores the backup binary
@@ -472,53 +524,4 @@ func (u *Updater) Rollback() error {
 	}
 
 	return nil
-}
-
-// installViaPkg downloads the macOS .pkg installer for the given version and
-// runs it via `installer -pkg`. The .pkg preserves the Apple Developer ID
-// code signature and executes pre/post-install scripts (which handle
-// LaunchDaemon/LaunchAgent setup and service restart).
-func (u *Updater) installViaPkg(version string) error {
-	// Download .pkg directly from GitHub releases
-	pkgURL := fmt.Sprintf("https://github.com/LanternOps/breeze/releases/download/v%s/breeze-agent-darwin-%s.pkg",
-		version, runtime.GOARCH)
-	log.Info("downloading pkg for update", "url", pkgURL, "version", version)
-
-	resp, err := u.client.Get(pkgURL)
-	if err != nil {
-		return fmt.Errorf("failed to download pkg: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("pkg download failed with status %d", resp.StatusCode)
-	}
-
-	// Write .pkg to temp file
-	pkgFile, err := os.CreateTemp("", "breeze-agent-*.pkg")
-	if err != nil {
-		return fmt.Errorf("failed to create temp pkg file: %w", err)
-	}
-	pkgPath := pkgFile.Name()
-	defer os.Remove(pkgPath)
-
-	if _, err := io.Copy(pkgFile, resp.Body); err != nil {
-		pkgFile.Close()
-		return fmt.Errorf("failed to write pkg file: %w", err)
-	}
-	pkgFile.Close()
-
-	// Run the .pkg installer (requires root, which the agent service has)
-	log.Info("installing pkg", "path", pkgPath)
-	cmd := exec.Command("installer", "-pkg", pkgPath, "-target", "/")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("installer failed: %w (output: %s)", err, string(output))
-	}
-
-	log.Info("pkg install successful", "output", string(output))
-
-	// The .pkg postinstall script handles service restart via launchctl kickstart.
-	// Give it a moment, then exit — launchd will restart us with the new binary.
-	return Restart()
 }

@@ -29,26 +29,26 @@ var openH264Variants = map[string]struct {
 	"darwin/arm64": {
 		libName:     "libopenh264-2.4.1-mac-arm64.dylib",
 		sha256:      "213ff93831cfa3dd6d7ad0c3a3403a6ceedf4ac1341e1278b5b869d42fefb496",
-		downloadURL: "https://github.com/nicedoc/openh264/releases/download/v2.4.1/libopenh264-2.4.1-mac-arm64.dylib.bz2",
-		fallbackURL: "http://ciscobinary.openh264.org/libopenh264-2.4.1-mac-arm64.dylib.bz2",
+		downloadURL: "http://ciscobinary.openh264.org/libopenh264-2.4.1-mac-arm64.dylib.bz2",
+		fallbackURL: "https://github.com/nicedoc/openh264/releases/download/v2.4.1/libopenh264-2.4.1-mac-arm64.dylib.bz2",
 	},
 	"darwin/amd64": {
 		libName:     "libopenh264-2.4.1-mac-x64.dylib",
 		sha256:      "cc0ba518a63791c37571f3c851f0aa03a4fbda5410acc214ecd4f24f8d1c478e",
-		downloadURL: "https://github.com/nicedoc/openh264/releases/download/v2.4.1/libopenh264-2.4.1-mac-x64.dylib.bz2",
-		fallbackURL: "http://ciscobinary.openh264.org/libopenh264-2.4.1-mac-x64.dylib.bz2",
+		downloadURL: "http://ciscobinary.openh264.org/libopenh264-2.4.1-mac-x64.dylib.bz2",
+		fallbackURL: "https://github.com/nicedoc/openh264/releases/download/v2.4.1/libopenh264-2.4.1-mac-x64.dylib.bz2",
 	},
 	"linux/amd64": {
 		libName:     "libopenh264-2.4.1-linux64.7.so",
 		sha256:      "1392d21466bc638e68151b716d5b2086d54cd812afd43253f1adb5b6e0185f51",
-		downloadURL: "https://github.com/nicedoc/openh264/releases/download/v2.4.1/libopenh264-2.4.1-linux64.7.so.bz2",
-		fallbackURL: "http://ciscobinary.openh264.org/libopenh264-2.4.1-linux64.7.so.bz2",
+		downloadURL: "http://ciscobinary.openh264.org/libopenh264-2.4.1-linux64.7.so.bz2",
+		fallbackURL: "https://github.com/nicedoc/openh264/releases/download/v2.4.1/libopenh264-2.4.1-linux64.7.so.bz2",
 	},
 	"linux/arm64": {
 		libName:     "libopenh264-2.4.1-linux-arm64.7.so",
 		sha256:      "e8ea7e42855ceb4a90e7bd0b3abeba0c58b5f97166e8b0a30eefd58e099557a4",
-		downloadURL: "https://github.com/nicedoc/openh264/releases/download/v2.4.1/libopenh264-2.4.1-linux-arm64.7.so.bz2",
-		fallbackURL: "http://ciscobinary.openh264.org/libopenh264-2.4.1-linux-arm64.7.so.bz2",
+		downloadURL: "http://ciscobinary.openh264.org/libopenh264-2.4.1-linux-arm64.7.so.bz2",
+		fallbackURL: "https://github.com/nicedoc/openh264/releases/download/v2.4.1/libopenh264-2.4.1-linux-arm64.7.so.bz2",
 	},
 }
 
@@ -84,13 +84,21 @@ func findOpenH264Library() (string, error) {
 		}
 	}
 
-	// 4. Auto-download from Cisco
+	// 4. Auto-download from Cisco — try agent data dir first, fall back to
+	// user-writable temp dir (helper processes run as the logged-in user and
+	// cannot write to the root-owned agent data directory).
+	downloadDir := dataDir
+	if err := os.MkdirAll(downloadDir, 0755); err != nil {
+		slog.Warn("OpenH264: agent data dir not writable, using temp dir",
+			"dataDir", dataDir, "error", err.Error())
+		downloadDir = filepath.Join(os.TempDir(), "breeze-openh264")
+	}
 	slog.Info("OpenH264 library not found locally, downloading",
-		"lib", variant.libName, "dest", dataDir)
-	if err := downloadOpenH264(variant, dataDir); err != nil {
+		"lib", variant.libName, "dest", downloadDir)
+	if err := downloadOpenH264(variant, downloadDir); err != nil {
 		return "", fmt.Errorf("auto-download OpenH264: %w", err)
 	}
-	return candidate, nil
+	return filepath.Join(downloadDir, variant.libName), nil
 }
 
 func downloadOpenH264(v struct {
