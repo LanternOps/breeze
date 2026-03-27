@@ -142,6 +142,12 @@ const (
 	CmdBackupList    = "backup_list"
 	CmdBackupStop    = "backup_stop"
 	CmdBackupRestore = "backup_restore"
+	CmdBackupRun         = "backup_run"
+	CmdBackupList        = "backup_list"
+	CmdBackupStop        = "backup_stop"
+	CmdBackupVerify      = "backup_verify"
+	CmdBackupTestRestore = "backup_test_restore"
+	CmdBackupCleanup     = "backup_cleanup"
 
 	// Log shipping
 	CmdSetLogLevel = "set_log_level"
