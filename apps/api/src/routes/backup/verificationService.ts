@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, lte, type SQL } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import { backupVerifications as backupVerificationsTable, recoveryReadiness as recoveryReadinessTable } from '../../db/schema';
+import { queueCommandForExecution } from '../../services/commandQueue';
 import { publishEvent } from '../../services/eventBus';
 import {
   addBackupVerification,
@@ -578,7 +579,7 @@ export async function recomputeRecoveryReadinessForDevice(
 
 export async function runBackupVerification(input: RunBackupVerificationInput): Promise<{
   verification: BackupVerification;
-  readiness: RecoveryReadiness;
+  readiness: RecoveryReadiness | null;
 }> {
   let snapshot: BackupSnapshot | null = null;
   if (input.snapshotId) {
@@ -618,6 +619,51 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
   }
 
   const snapshotId = snapshot?.id ?? null;
+  const now = new Date().toISOString();
+
+  // --- Try to dispatch to agent ---
+  const commandType = input.verificationType === 'integrity' ? 'backup_verify' : 'backup_test_restore';
+  try {
+    const dispatchResult = await queueCommandForExecution(
+      input.deviceId,
+      commandType,
+      { snapshotId: snapshotId || undefined, verificationType: input.verificationType },
+      { userId: input.requestedBy || undefined }
+    );
+
+    if (dispatchResult.command) {
+      // Agent is online — create pending record and return
+      const verification = addBackupVerification(
+        {
+          orgId: input.orgId,
+          deviceId: input.deviceId,
+          backupJobId: backupJob.id,
+          snapshotId,
+          verificationType: input.verificationType,
+          status: 'pending',
+          startedAt: now,
+          completedAt: null,
+          filesVerified: 0,
+          filesFailed: 0,
+          details: {
+            source: input.source,
+            requestedBy: input.requestedBy,
+            simulated: false,
+            commandId: dispatchResult.command.id,
+          },
+        },
+        input.orgId
+      );
+
+      await persistVerificationToDb(verification);
+      return { verification, readiness: null };
+    }
+  } catch (dispatchErr) {
+    // Device offline or dispatch failed — fall through to simulation
+    console.log(`[backupVerification] Command dispatch failed, using simulation: ${dispatchErr}`);
+  }
+  // --- End dispatch attempt, fall through to simulation ---
+
   const seed = deterministicSeed(`${input.orgId}:${input.deviceId}:${backupJob.id}:${input.verificationType}:${snapshotId ?? 'none'}`);
   const filesVerified = snapshot?.fileCount ?? Math.max(100, Math.round((backupJob.sizeBytes ?? 0) / 32768));
   const expectedFailures = Math.max(1, Math.round(filesVerified * 0.01));
@@ -698,6 +744,138 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
   );
 
   return { verification, readiness };
+}
+
+/**
+ * Process an async backup verification result from the agent.
+ * Called from agentWs.ts when a backup_verify or backup_test_restore command completes.
+ */
+export async function processBackupVerificationResult(
+  commandId: string,
+  commandResult: { status: string; stdout?: string; error?: string }
+): Promise<void> {
+  // Find the pending verification by commandId in details
+  const pending = backupVerifications.find(
+    (v) =>
+      v.details &&
+      (v.details as Record<string, unknown>).commandId === commandId &&
+      (v.status === 'pending' || v.status === 'running')
+  );
+  if (!pending) {
+    console.warn(`[backupVerification] No pending verification found for command ${commandId}`);
+    return;
+  }
+
+  const orgId = verificationOrgById.get(pending.id);
+  if (!orgId) return;
+
+  const resultNow = new Date().toISOString();
+
+  if (commandResult.status !== 'completed' || !commandResult.stdout) {
+    pending.status = 'failed';
+    pending.completedAt = resultNow;
+    (pending.details as Record<string, unknown>).reason =
+      commandResult.error || 'Agent command failed';
+    await persistVerificationToDb(pending);
+    await safePublish(
+      'backup.verification_failed',
+      orgId,
+      {
+        verificationId: pending.id,
+        deviceId: pending.deviceId,
+        verificationType: pending.verificationType,
+        status: 'failed',
+      },
+      'agent.result'
+    );
+    return;
+  }
+
+  // Parse the agent result
+  let agentResult: Record<string, unknown>;
+  try {
+    agentResult = JSON.parse(commandResult.stdout) as Record<string, unknown>;
+  } catch {
+    pending.status = 'failed';
+    pending.completedAt = resultNow;
+    (pending.details as Record<string, unknown>).reason = 'Failed to parse agent result';
+    await persistVerificationToDb(pending);
+    return;
+  }
+
+  // Map agent fields to verification record
+  pending.status = (agentResult.status as BackupVerificationStatus) || 'failed';
+  pending.completedAt = resultNow;
+  pending.filesVerified = (agentResult.filesVerified as number) ?? 0;
+  pending.filesFailed = (agentResult.filesFailed as number) ?? 0;
+  pending.sizeBytes = (agentResult.sizeBytes as number) ?? null;
+  pending.restoreTimeSeconds = (agentResult.restoreTimeSeconds as number) ?? null;
+  const details = pending.details as Record<string, unknown>;
+  details.failedFiles = agentResult.failedFiles || [];
+  details.cleanedUp = agentResult.cleanedUp;
+  details.restorePath = agentResult.restorePath;
+
+  await persistVerificationToDb(pending);
+
+  // Publish event
+  const eventName =
+    pending.status === 'passed' ? 'backup.verification_passed' : 'backup.verification_failed';
+  await safePublish(
+    eventName,
+    orgId,
+    {
+      verificationId: pending.id,
+      deviceId: pending.deviceId,
+      backupJobId: pending.backupJobId,
+      verificationType: pending.verificationType,
+      status: pending.status,
+      filesVerified: pending.filesVerified,
+      filesFailed: pending.filesFailed,
+    },
+    'agent.result'
+  );
+
+  // Recompute readiness
+  await recomputeRecoveryReadinessForDevice(orgId, pending.deviceId);
+}
+
+const VERIFICATION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+
+/**
+ * Mark stale pending/running verifications as failed.
+ * Called by the verification-timeout-check BullMQ job.
+ */
+export async function timeoutStaleVerifications(): Promise<number> {
+  const cutoff = Date.now() - VERIFICATION_TIMEOUT_MS;
+  let timedOut = 0;
+
+  for (const v of backupVerifications) {
+    if (v.status !== 'pending' && v.status !== 'running') continue;
+    const startedMs = new Date(v.startedAt).getTime();
+    if (startedMs > cutoff) continue;
+
+    v.status = 'failed';
+    v.completedAt = new Date().toISOString();
+    (v.details as Record<string, unknown>).reason = 'Verification timed out after 30 minutes';
+    await persistVerificationToDb(v);
+
+    const orgId = verificationOrgById.get(v.id);
+    if (orgId) {
+      await safePublish(
+        'backup.verification_failed',
+        orgId,
+        {
+          verificationId: v.id,
+          deviceId: v.deviceId,
+          verificationType: v.verificationType,
+          status: 'failed',
+        },
+        'timeout-check'
+      );
+    }
+    timedOut++;
+  }
+  return timedOut;
 }
 
 export async function getBackupHealthSummary(orgId: string): Promise<{
