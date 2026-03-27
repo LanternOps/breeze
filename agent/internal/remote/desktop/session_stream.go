@@ -110,6 +110,9 @@ func (s *Session) cursorStreamLoop(prov CursorProvider) {
 		cursorIdleInterval   = 250 * time.Millisecond
 	)
 
+	// Check if the provider also supports cursor shape detection.
+	shapeProv, hasShape := prov.(CursorShapeProvider)
+
 	enabled := s.cursorStreamEnabled.Load()
 	interval := cursorIdleInterval
 	if enabled {
@@ -120,6 +123,7 @@ func (s *Session) cursorStreamLoop(prov CursorProvider) {
 
 	var lastRelX, lastRelY int32
 	var lastV bool
+	var lastShape string
 	haveLast := false
 
 	for {
@@ -147,22 +151,39 @@ func (s *Session) cursorStreamLoop(prov CursorProvider) {
 			// so viewer can map directly using videoWidth/videoHeight.
 			relX := cx - s.cursorOffsetX.Load()
 			relY := cy - s.cursorOffsetY.Load()
-			if haveLast && relX == lastRelX && relY == lastRelY && cv == lastV {
+
+			// Get cursor shape if the provider supports it.
+			// CursorShape() is cheap — it reads the value already sampled
+			// by CursorPosition() or sampleCursorForCrossThread().
+			var shape string
+			if hasShape {
+				shape = shapeProv.CursorShape()
+			}
+
+			if haveLast && relX == lastRelX && relY == lastRelY && cv == lastV && shape == lastShape {
 				continue
 			}
-			lastRelX, lastRelY, lastV = relX, relY, cv
+			shapeChanged := shape != lastShape
+			lastRelX, lastRelY, lastV, lastShape = relX, relY, cv, shape
 			haveLast = true
 			v := 0
 			if cv {
 				v = 1
 			}
-			payload := make([]byte, 0, 40)
+			payload := make([]byte, 0, 64)
 			payload = append(payload, `{"x":`...)
 			payload = strconv.AppendInt(payload, int64(relX), 10)
 			payload = append(payload, `,"y":`...)
 			payload = strconv.AppendInt(payload, int64(relY), 10)
 			payload = append(payload, `,"v":`...)
 			payload = strconv.AppendInt(payload, int64(v), 10)
+			// Only include shape when it changes or on first message to
+			// minimize per-message overhead on the high-frequency channel.
+			if shapeChanged && shape != "" {
+				payload = append(payload, `,"s":"`...)
+				payload = append(payload, shape...)
+				payload = append(payload, '"')
+			}
 			payload = append(payload, '}')
 			if err := s.cursorDC.Send(payload); err != nil {
 				slog.Debug("Failed to send cursor update", "session", s.id, "error", err.Error())

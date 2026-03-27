@@ -53,11 +53,14 @@ function buildFallbackCspDirectives(options: {
     resolveConnectSrcDirective()
   ];
 
-  // Monaco Editor and xterm.js set inline style attributes on DOM elements
-  // (cursor positioning, syntax highlighting, terminal cell colors).
-  // Astro's experimental.csp auto-generates hashes for <style> blocks, which
-  // per CSP Level 3 causes 'unsafe-inline' in style-src to be silently ignored.
-  // style-src-attr is evaluated independently, so 'unsafe-inline' works here.
+  // Monaco Editor and xterm.js inject both inline style attributes and <style>
+  // elements at runtime (cursor positioning, syntax highlighting, terminal cell
+  // colors/themes).  Astro's experimental.csp auto-generates sha256 hashes for
+  // build-time <style> blocks, which per CSP Level 3 causes 'unsafe-inline' in
+  // style-src to be silently ignored.  The granular style-src-elem and
+  // style-src-attr directives are evaluated independently and don't inherit the
+  // hashes from style-src, so 'unsafe-inline' works in both.
+  directives.push("style-src-elem 'self' 'unsafe-inline' https://cdn.jsdelivr.net");
   directives.push("style-src-attr 'unsafe-inline'");
 
   if (!options.allowInlineScript) {
@@ -110,11 +113,17 @@ function relaxExistingCsp(
     directives.push("script-src-attr 'none'");
   }
 
-  // Monaco Editor and xterm.js require inline style attributes.
-  // Always ensure style-src-attr 'unsafe-inline' is present (see buildFallbackCspDirectives).
-  const filteredStyleAttr = directives.filter((directive) => !directive.toLowerCase().startsWith('style-src-attr '));
+  // Monaco Editor and xterm.js require both inline style attributes and <style>
+  // elements.  Always ensure style-src-elem and style-src-attr are set with
+  // 'unsafe-inline' (see buildFallbackCspDirectives comment for rationale).
+  const filteredStyleGranular = directives.filter(
+    (directive) =>
+      !directive.toLowerCase().startsWith('style-src-elem ') &&
+      !directive.toLowerCase().startsWith('style-src-attr ')
+  );
   directives.length = 0;
-  directives.push(...filteredStyleAttr);
+  directives.push(...filteredStyleGranular);
+  directives.push("style-src-elem 'self' 'unsafe-inline' https://cdn.jsdelivr.net");
   directives.push("style-src-attr 'unsafe-inline'");
 
   return directives.join('; ');
@@ -195,8 +204,12 @@ export const onRequest = defineMiddleware(async (_context, next) => {
     if (!/\bscript-src-attr\b/i.test(patchedCsp)) {
       patchedCsp = `${patchedCsp}; script-src-attr 'none'`;
     }
-    // Monaco Editor and xterm.js require inline style attributes.
-    // style-src-attr is independent of style-src hashes, so 'unsafe-inline' works here.
+    // Monaco Editor and xterm.js inject <style> elements and inline style
+    // attributes at runtime.  Astro's hashes in style-src nullify 'unsafe-inline'
+    // there, but these granular directives are evaluated independently.
+    if (!/\bstyle-src-elem\b/i.test(patchedCsp)) {
+      patchedCsp = `${patchedCsp}; style-src-elem 'self' 'unsafe-inline' https://cdn.jsdelivr.net`;
+    }
     if (!/\bstyle-src-attr\b/i.test(patchedCsp)) {
       patchedCsp = `${patchedCsp}; style-src-attr 'unsafe-inline'`;
     }

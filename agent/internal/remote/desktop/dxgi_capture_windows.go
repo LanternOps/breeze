@@ -23,6 +23,7 @@ func (c *dxgiCapturer) sampleCursorForCrossThread() {
 		c.cursorX.Store(ci.PtScreenPos.X)
 		c.cursorY.Store(ci.PtScreenPos.Y)
 		c.cursorVis.Store(ci.Flags&cursorShowing != 0)
+		c.cursorShape.Store(cursorShapeFromHandle(ci.HCursor))
 	}
 }
 

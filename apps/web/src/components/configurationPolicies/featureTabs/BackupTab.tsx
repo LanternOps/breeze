@@ -238,10 +238,13 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle');
 
   // Schedule/retention inline settings
-  const [settings, setSettings] = useState<BackupScheduleSettings>(() => ({
-    ...scheduleDefaults,
-    ...(effectiveLink?.inlineSettings as Partial<BackupScheduleSettings> | undefined),
-  }));
+  const [settings, setSettings] = useState<BackupScheduleSettings>(() => {
+    const stored = effectiveLink?.inlineSettings as Partial<BackupScheduleSettings> | undefined;
+    const merged = { ...scheduleDefaults, ...stored };
+    if (!Array.isArray(merged.paths)) merged.paths = [...scheduleDefaults.paths];
+    if (!Array.isArray(merged.excludePatterns)) merged.excludePatterns = [...scheduleDefaults.excludePatterns];
+    return merged;
+  });
 
   // ── Fetch existing configs ─────────────────────────────────────────────────
 
@@ -267,7 +270,12 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
     const link = existingLink ?? parentLink;
     if (link?.featurePolicyId) setSelectedConfigId(link.featurePolicyId);
     if (link?.inlineSettings) {
-      setSettings((prev) => ({ ...prev, ...(link.inlineSettings as Partial<BackupScheduleSettings>) }));
+      setSettings((prev) => {
+        const merged = { ...prev, ...(link.inlineSettings as Partial<BackupScheduleSettings>) };
+        if (!Array.isArray(merged.paths)) merged.paths = [...scheduleDefaults.paths];
+        if (!Array.isArray(merged.excludePatterns)) merged.excludePatterns = [...scheduleDefaults.excludePatterns];
+        return merged;
+      });
     }
   }, [existingLink, parentLink]);
 

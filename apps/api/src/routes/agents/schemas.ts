@@ -143,7 +143,8 @@ export const heartbeatSchema = z.object({
     accessibility: z.boolean(),
     fullDiskAccess: z.boolean(),
     checkedAt: z.string().datetime({ offset: true }),
-  }).optional()
+  }).optional(),
+  isHeadless: z.boolean().optional()
 });
 
 // ============================================

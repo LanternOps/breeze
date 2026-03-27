@@ -33,15 +33,20 @@ const TIER2_ACTIONS: Record<string, string[]> = {
   // Fleet tools — Tier 2 actions (auto-execute + audit)
   manage_configuration_policy: ['activate', 'deactivate'],
   manage_deployments: ['pause', 'resume'],
-  manage_patches: ['approve', 'decline', 'defer', 'bulk_approve', 'setup_auto_approval'],
+  manage_patches: ['approve', 'decline', 'defer', 'bulk_approve'],
   manage_groups: ['add_devices', 'remove_devices'],
-  manage_maintenance_windows: ['create', 'update'],
+  // manage_maintenance_windows mutations disabled — managed via configuration policies
   manage_automations: ['enable', 'disable'],
-  manage_alert_rules: ['create_rule', 'update_rule'],
-  manage_service_monitors: ['add'],
+  // manage_alert_rules mutations disabled — managed via configuration policies
+  // manage_service_monitors mutations disabled — managed via configuration policies
   generate_report: ['create', 'update', 'delete', 'generate'],
+  // Policy prerequisite tools — Tier 2 create/update actions
+  manage_update_rings: ['create', 'update'],
+  manage_software_policies: ['create', 'update'],
+  manage_peripheral_policies: ['create', 'update'],
+  manage_backup_configs: ['create', 'update'],
   // Notification channel & saved filter tools — Tier 2 actions
-  manage_notification_channels: ['test'],
+  manage_notification_channels: ['test', 'create', 'update', 'delete'],
   manage_saved_filters: ['create', 'delete'],
 };
 
@@ -64,11 +69,9 @@ const TIER3_ACTIONS: Record<string, string[]> = {
   manage_deployments: ['create', 'start', 'cancel'],
   manage_patches: ['scan', 'install', 'rollback'],
   manage_groups: ['create', 'update', 'delete'],
-  manage_maintenance_windows: ['delete'],
-  manage_automations: ['create', 'update', 'delete', 'run'],
-  manage_alert_rules: ['delete_rule'],
-  manage_service_monitors: ['remove'],
+  manage_automations: ['run'],
   manage_processes: ['kill'],
+  manage_policy_feature_link: ['remove'],
   registry_operations: ['set_value', 'create_key', 'delete_key'],
   // Monitoring tools — Tier 3 actions (require user approval)
   manage_monitors: ['create', 'update', 'delete'],

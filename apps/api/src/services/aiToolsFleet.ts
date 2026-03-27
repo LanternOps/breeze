@@ -297,11 +297,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'manage_patches',
-      description: 'Manage patches: list available patches, check compliance, trigger scans, approve/decline/defer patches, bulk approve, install on targets, rollback, or setup auto-approval policies.',
+      description: 'Manage patches: list available patches, check compliance, trigger scans, approve/decline/defer patches, bulk approve, install on targets, or rollback. To configure patch schedules and auto-approval policies, use manage_policy_feature_link with featureType "patch".',
       input_schema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback', 'setup_auto_approval'], description: 'The action to perform. Use setup_auto_approval to configure automatic patch approval rules.' },
+          action: { type: 'string', enum: ['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback'], description: 'The action to perform. To configure patch policies/auto-approval, use manage_policy_feature_link with featureType "patch".' },
           patchId: { type: 'string', description: 'Patch UUID (for approve/decline/defer/rollback)' },
           patchIds: { type: 'array', items: { type: 'string' }, description: 'Patch UUIDs (for bulk_approve/install)' },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs (for scan/install)' },
@@ -325,6 +325,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     handler: safeHandler('manage_patches', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
+
+      if (action === 'setup_auto_approval') {
+        return JSON.stringify({
+          error: 'Action "setup_auto_approval" is disabled. Patch policies must be managed through configuration policies. Use manage_policy_feature_link with featureType "patch" to configure auto-approval rules on a policy.',
+        });
+      }
 
       if (action === 'list') {
         const conditions: SQL[] = [];
@@ -809,11 +815,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'manage_maintenance_windows',
-      description: 'Manage maintenance windows: list windows, get details with occurrences, check what is in maintenance right now, create/update/delete windows.',
+      description: 'Query maintenance windows (read-only): list windows, get details with occurrences, check what is in maintenance right now. To create or modify maintenance windows, use manage_policy_feature_link with featureType "maintenance".',
       input_schema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['list', 'get', 'active_now', 'create', 'update', 'delete'], description: 'The action to perform' },
+          action: { type: 'string', enum: ['list', 'get', 'active_now'], description: 'The action to perform. This tool is read-only — to create/modify maintenance windows, use manage_policy_feature_link with featureType "maintenance".' },
           windowId: { type: 'string', description: 'Maintenance window UUID (required for get/update/delete)' },
           name: { type: 'string', description: 'Window name (for create/update)' },
           description: { type: 'string', description: 'Window description' },
@@ -837,6 +843,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     handler: safeHandler('manage_maintenance_windows', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
+
+      if (action === 'create' || action === 'update' || action === 'delete') {
+        return JSON.stringify({
+          error: `Action "${action}" is disabled. Maintenance windows must be managed through configuration policies. Use manage_policy_feature_link with featureType "maintenance" to configure maintenance windows on a policy.`,
+        });
+      }
 
       if (action === 'list') {
         const conditions: SQL[] = [];
@@ -1003,11 +1015,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'manage_automations',
-      description: 'Manage automations: list, get details, view run history, create/update/delete automations, enable/disable, or manually trigger a run.',
+      description: 'Query and operate on automations: list, get details, view run history, enable/disable, or manually trigger a run. To create, update, or delete automations, use manage_policy_feature_link with featureType "automation".',
       input_schema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['list', 'get', 'history', 'create', 'update', 'delete', 'enable', 'disable', 'run'], description: 'The action to perform' },
+          action: { type: 'string', enum: ['list', 'get', 'history', 'enable', 'disable', 'run'], description: 'The action to perform. To create/update/delete automations, use manage_policy_feature_link with featureType "automation".' },
           automationId: { type: 'string', description: 'Automation UUID (required for get/history/update/delete/enable/disable/run)' },
           name: { type: 'string', description: 'Automation name (for create/update)' },
           description: { type: 'string', description: 'Automation description' },
@@ -1025,6 +1037,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     handler: safeHandler('manage_automations', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
+
+      if (action === 'create' || action === 'update' || action === 'delete') {
+        return JSON.stringify({
+          error: `Action "${action}" is disabled. Automations must be managed through configuration policies. Use manage_policy_feature_link with featureType "automation" to configure automations on a policy.`,
+        });
+      }
 
       if (action === 'list') {
         const conditions: SQL[] = [];
@@ -1190,18 +1208,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'manage_alert_rules',
-      description: 'Manage alert rules, templates, and notification channels. Use list_templates FIRST to discover available alert template UUIDs, then create_rule to bind a template to targets. Actions: list_templates, list_rules, get_rule, create_rule, update_rule, delete_rule, test_rule, list_channels, alert_summary.',
+      description: 'Query alert rules, templates, and notification channels (read-only). Alert rules are managed through configuration policies — use manage_policy_feature_link with featureType "alert_rule" to create or modify alert rules. This tool is for querying only: list_templates to discover available templates, list_rules/get_rule to inspect existing rules, test_rule to check rule state, list_channels for notification channels, alert_summary for overview. Actions: list_templates, list_rules, get_rule, test_rule, list_channels, alert_summary.',
       input_schema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['list_templates', 'list_rules', 'get_rule', 'create_rule', 'update_rule', 'delete_rule', 'test_rule', 'list_channels', 'alert_summary'], description: 'The action to perform. Start with list_templates to discover available templates.' },
-          ruleId: { type: 'string', description: 'Alert rule UUID (required for get_rule/update_rule/delete_rule/test_rule)' },
-          name: { type: 'string', description: 'Rule name (for create_rule/update_rule)' },
-          templateId: { type: 'string', description: 'Alert template UUID from list_templates (for create_rule)' },
-          targetType: { type: 'string', enum: ['device', 'group', 'site', 'org', 'all'], description: 'Target type (for create_rule). Use "org" to apply org-wide.' },
-          targetId: { type: 'string', description: 'Target UUID (for create_rule). For org/all, use the orgId.' },
-          overrideSettings: { type: 'object', description: 'Override template settings: { severity?, conditions?, cooldownMinutes?, notificationChannelIds? }' },
-          isActive: { type: 'boolean', description: 'Active state (for update_rule)' },
+          action: { type: 'string', enum: ['list_templates', 'list_rules', 'get_rule', 'test_rule', 'list_channels', 'alert_summary'], description: 'The action to perform. This tool is read-only — to create/modify alert rules, use manage_policy_feature_link with featureType "alert_rule".' },
+          ruleId: { type: 'string', description: 'Alert rule UUID (required for get_rule/test_rule)' },
           category: { type: 'string', description: 'Filter templates by category (for list_templates)' },
           severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'], description: 'Filter by severity (for list_templates/alert_summary)' },
           limit: { type: 'number', description: 'Max results (default 25)' },
@@ -1244,7 +1256,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({
           templates: rows,
           showing: rows.length,
-          hint: 'Use a template id with create_rule to create an alert rule from a template.',
+          hint: 'Alert rules are managed through configuration policies. Use manage_policy_feature_link with featureType "alert_rule" and inlineSettings to add alert rules to a policy.',
         });
       }
 
@@ -1294,62 +1306,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ rule, recentAlerts });
       }
 
-      if (action === 'create_rule') {
-        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
-        if (!input.name) return JSON.stringify({ error: 'name is required for create_rule' });
-        if (!input.templateId) return JSON.stringify({ error: 'templateId is required — use list_templates first to discover available templates' });
-        if (!input.targetType) return JSON.stringify({ error: 'targetType is required (device, group, site, org, or all)' });
-        if (!input.targetId) return JSON.stringify({ error: 'targetId is required' });
-
-        // Verify template exists and user has access (built-in or same-org)
-        const templateConditions: SQL[] = [eq(alertTemplates.id, input.templateId as string)];
-        templateConditions.push(sql`(${alertTemplates.isBuiltIn} = true OR ${alertTemplates.orgId} = ${orgId})`);
-        const [template] = await db.select({ id: alertTemplates.id }).from(alertTemplates).where(and(...templateConditions)).limit(1);
-        if (!template) return JSON.stringify({ error: 'Alert template not found or access denied — use list_templates to discover available templates' });
-
-        const [rule] = await db.insert(alertRules).values({
-          orgId,
-          name: input.name as string,
-          templateId: input.templateId as string,
-          targetType: input.targetType as string,
-          targetId: input.targetId as string,
-          overrideSettings: (input.overrideSettings as Record<string, unknown>) ?? null,
-          isActive: input.isActive !== false,
-        }).returning();
-
-        if (!rule) return JSON.stringify({ error: 'Failed to create alert rule' });
-        return JSON.stringify({ success: true, ruleId: rule.id, name: rule.name });
-      }
-
-      if (action === 'update_rule') {
-        if (!input.ruleId) return JSON.stringify({ error: 'ruleId is required' });
-        const conditions: SQL[] = [eq(alertRules.id, input.ruleId as string)];
-        const oc = orgWhere(auth, alertRules.orgId);
-        if (oc) conditions.push(oc);
-
-        const [existing] = await db.select().from(alertRules).where(and(...conditions)).limit(1);
-        if (!existing) return JSON.stringify({ error: 'Alert rule not found or access denied' });
-
-        const updates: Record<string, unknown> = {};
-        if (typeof input.name === 'string') updates.name = input.name;
-        if (input.overrideSettings) updates.overrideSettings = input.overrideSettings;
-        if (typeof input.isActive === 'boolean') updates.isActive = input.isActive;
-
-        await db.update(alertRules).set(updates).where(eq(alertRules.id, existing.id));
-        return JSON.stringify({ success: true, message: `Alert rule "${existing.name}" updated` });
-      }
-
-      if (action === 'delete_rule') {
-        if (!input.ruleId) return JSON.stringify({ error: 'ruleId is required' });
-        const conditions: SQL[] = [eq(alertRules.id, input.ruleId as string)];
-        const oc = orgWhere(auth, alertRules.orgId);
-        if (oc) conditions.push(oc);
-
-        const [existing] = await db.select().from(alertRules).where(and(...conditions)).limit(1);
-        if (!existing) return JSON.stringify({ error: 'Alert rule not found or access denied' });
-
-        await db.delete(alertRules).where(eq(alertRules.id, existing.id));
-        return JSON.stringify({ success: true, message: `Alert rule "${existing.name}" deleted` });
+      if (action === 'create_rule' || action === 'update_rule' || action === 'delete_rule') {
+        return JSON.stringify({
+          error: `Action "${action}" is disabled. Alert rules must be managed through configuration policies. Use manage_policy_feature_link with featureType "alert_rule" to add, update, or remove alert rules on a configuration policy.`,
+        });
       }
 
       if (action === 'test_rule') {
@@ -1704,11 +1664,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     tier: 1, // Base tier; add/remove escalated by guardrails
     definition: {
       name: 'manage_service_monitors',
-      description: 'Manage service and process monitoring watches via configuration policies. List existing monitors, add new service/process watches, update or remove them. Watches alert when a service stops, a process exceeds CPU/memory thresholds, or can auto-restart services.',
+      description: 'Query service and process monitoring watches (read-only). To add or remove monitoring watches, use manage_policy_feature_link with featureType "monitoring" to configure watches on a configuration policy.',
       input_schema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['list', 'add', 'remove'], description: 'The action to perform' },
+          action: { type: 'string', enum: ['list'], description: 'The action to perform. To add/remove monitors, use manage_policy_feature_link with featureType "monitoring".' },
           configPolicyId: { type: 'string', description: 'Configuration policy UUID. Required for add. For list, shows all monitors across policies if omitted.' },
           watchId: { type: 'string', description: 'Watch UUID (required for remove)' },
           watchType: { type: 'string', enum: ['service', 'process'], description: 'Type of monitor (for add)' },
@@ -1728,6 +1688,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     handler: safeHandler('manage_service_monitors', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
+
+      if (action === 'add' || action === 'remove') {
+        return JSON.stringify({
+          error: `Action "${action}" is disabled. Service/process monitors must be managed through configuration policies. Use manage_policy_feature_link with featureType "monitoring" to configure watches on a policy.`,
+        });
+      }
 
       if (action === 'list') {
         // List all monitoring watches, optionally filtered by policy

@@ -71,15 +71,21 @@ const dayOfWeekOptions = [
 
 export default function SecurityTab({ policyId, existingLink, onLinkChanged, linkedPolicyId }: FeatureTabProps) {
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
-  const [settings, setSettings] = useState<SecuritySettings>(() => ({
-    ...defaults,
-    ...(existingLink?.inlineSettings as Partial<SecuritySettings> | undefined),
-  }));
+  const [settings, setSettings] = useState<SecuritySettings>(() => {
+    const stored = existingLink?.inlineSettings as Partial<SecuritySettings> | undefined;
+    const merged = { ...defaults, ...stored };
+    if (!Array.isArray(merged.exclusions)) merged.exclusions = [...defaults.exclusions];
+    return merged;
+  });
   const [newExclusion, setNewExclusion] = useState('');
 
   useEffect(() => {
     if (existingLink?.inlineSettings) {
-      setSettings((prev) => ({ ...prev, ...(existingLink.inlineSettings as Partial<SecuritySettings>) }));
+      setSettings((prev) => {
+        const merged = { ...prev, ...(existingLink.inlineSettings as Partial<SecuritySettings>) };
+        if (!Array.isArray(merged.exclusions)) merged.exclusions = [...defaults.exclusions];
+        return merged;
+      });
     }
   }, [existingLink]);
 

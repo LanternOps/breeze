@@ -87,6 +87,7 @@ import { registerConfigPolicyTools } from './aiToolsConfigPolicy';
 import { registerEventLogTools } from './aiToolsEventLogs';
 import { registerAnalyticsTools } from './aiToolsAnalytics';
 import { registerFleetTools } from './aiToolsFleet';
+import { registerPolicyPrereqTools } from './aiToolsPolicyPrereqs';
 import { registerIntegrationTools } from './aiToolsIntegrations';
 import { registerMonitoringTools } from './aiToolsMonitoring';
 import { scheduleSoftwareComplianceCheck } from '../jobs/softwareComplianceWorker';
@@ -6228,6 +6229,7 @@ registerFleetTools(aiTools);
 registerBackupTools(aiTools);
 registerAgentLogTools(aiTools);
 registerConfigPolicyTools(aiTools);
+registerPolicyPrereqTools(aiTools);
 registerEventLogTools(aiTools);
 registerMonitoringTools(aiTools);
 registerIntegrationTools(aiTools);
@@ -7803,22 +7805,35 @@ registerTool({
   tier: 1,
   definition: {
     name: 'manage_notification_channels',
-    description: 'List notification channels or test a channel\'s connectivity.',
+    description: 'Manage notification channels for alert delivery. List channels, test connectivity, or create/update/delete channels. Channel types: email, slack, teams, webhook, pagerduty, sms.',
     input_schema: {
       type: 'object' as const,
       properties: {
         action: {
           type: 'string',
-          enum: ['list', 'test'],
+          enum: ['list', 'test', 'create', 'update', 'delete'],
           description: 'The action to perform',
         },
         channelId: {
           type: 'string',
-          description: 'Channel UUID (required for test)',
+          description: 'Channel UUID (required for test/update/delete)',
+        },
+        name: {
+          type: 'string',
+          description: 'Channel name (required for create)',
         },
         type: {
           type: 'string',
-          description: 'Filter by channel type (for list)',
+          enum: ['email', 'slack', 'teams', 'webhook', 'pagerduty', 'sms'],
+          description: 'Channel type (required for create, filter for list)',
+        },
+        config: {
+          type: 'object',
+          description: 'Channel-specific config. email: { recipients: ["a@b.com"] }. slack: { webhookUrl: "https://..." }. teams: { webhookUrl: "https://..." }. webhook: { url: "https://...", headers?: {} }. pagerduty: { routingKey: "..." }. sms: { phoneNumbers: ["+1..."] }',
+        },
+        enabled: {
+          type: 'boolean',
+          description: 'Whether channel is active (default: true)',
         },
         limit: {
           type: 'number',
@@ -7896,6 +7911,64 @@ registerTool({
           enabled: channel.enabled,
         },
       });
+    }
+
+    if (action === 'create') {
+      const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0];
+      if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+      if (!input.name) return JSON.stringify({ error: 'name is required' });
+      if (!input.type) return JSON.stringify({ error: 'type is required (email, slack, teams, webhook, pagerduty, sms)' });
+      if (!input.config) return JSON.stringify({ error: 'config is required (channel-specific settings)' });
+
+      try {
+        const [channel] = await db.insert(notificationChannels).values({
+          orgId,
+          name: input.name as string,
+          type: input.type as typeof notificationChannels.type.enumValues[number],
+          config: input.config as Record<string, unknown>,
+          enabled: input.enabled !== false,
+        }).returning();
+        if (!channel) return JSON.stringify({ error: 'Failed to create notification channel' });
+
+        return JSON.stringify({ success: true, channelId: channel.id, name: channel.name, type: channel.type });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        return JSON.stringify({ error: `Failed to create channel: ${message}` });
+      }
+    }
+
+    if (action === 'update') {
+      if (!input.channelId) return JSON.stringify({ error: 'channelId is required for update' });
+
+      const conditions: SQL[] = [eq(notificationChannels.id, input.channelId as string)];
+      const orgCond = auth.orgCondition(notificationChannels.orgId);
+      if (orgCond) conditions.push(orgCond);
+
+      const [existing] = await db.select().from(notificationChannels).where(and(...conditions)).limit(1);
+      if (!existing) return JSON.stringify({ error: 'Notification channel not found or access denied' });
+
+      const updates: Record<string, unknown> = { updatedAt: new Date() };
+      if (typeof input.name === 'string') updates.name = input.name;
+      if (typeof input.type === 'string') updates.type = input.type;
+      if (input.config) updates.config = input.config;
+      if (typeof input.enabled === 'boolean') updates.enabled = input.enabled;
+
+      await db.update(notificationChannels).set(updates).where(eq(notificationChannels.id, existing.id));
+      return JSON.stringify({ success: true, message: `Channel "${existing.name}" updated` });
+    }
+
+    if (action === 'delete') {
+      if (!input.channelId) return JSON.stringify({ error: 'channelId is required for delete' });
+
+      const conditions: SQL[] = [eq(notificationChannels.id, input.channelId as string)];
+      const orgCond = auth.orgCondition(notificationChannels.orgId);
+      if (orgCond) conditions.push(orgCond);
+
+      const [existing] = await db.select({ id: notificationChannels.id, name: notificationChannels.name }).from(notificationChannels).where(and(...conditions)).limit(1);
+      if (!existing) return JSON.stringify({ error: 'Notification channel not found or access denied' });
+
+      await db.delete(notificationChannels).where(eq(notificationChannels.id, existing.id));
+      return JSON.stringify({ success: true, message: `Channel "${existing.name}" deleted` });
     }
 
     return JSON.stringify({ error: `Unknown action: ${action}` });

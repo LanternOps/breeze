@@ -185,6 +185,13 @@ func (c *Conn) SendError(id, msgType, errMsg string) error {
 	return c.Send(env)
 }
 
+// jsonNull is the canonical JSON representation of null, used to normalise
+// nil payloads so that the HMAC is identical before and after JSON round-trip.
+// (encoding/json marshals a nil json.RawMessage as "null"; on unmarshal it
+// becomes []byte("null"), not nil — without this normalisation the sender
+// writes 0 bytes but the receiver writes 4, causing HMAC mismatch.)
+var jsonNull = json.RawMessage("null")
+
 // computeHMAC calculates HMAC-SHA256(key, id||seq||type||payload).
 func (c *Conn) computeHMAC(env *Envelope) string {
 	c.keyMu.RLock()
@@ -197,7 +204,11 @@ func (c *Conn) computeHMAC(env *Envelope) string {
 	mac.Write([]byte(env.ID))
 	mac.Write([]byte(strconv.FormatUint(env.Seq, 10)))
 	mac.Write([]byte(env.Type))
-	mac.Write(env.Payload)
+	payload := env.Payload
+	if payload == nil {
+		payload = jsonNull
+	}
+	mac.Write(payload)
 	return hex.EncodeToString(mac.Sum(nil))
 }
 

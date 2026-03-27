@@ -111,6 +111,12 @@ export const TOOL_TIERS = {
   preview_configuration_change: 1,
   apply_configuration_policy: 2,
   remove_configuration_policy_assignment: 2,
+  manage_policy_feature_link: 2,
+  // Policy prerequisite tools (standalone policies linked via featurePolicyId)
+  manage_update_rings: 1,          // Action-level escalation in guardrails
+  manage_software_policies: 1,     // Action-level escalation in guardrails
+  manage_peripheral_policies: 1,   // Action-level escalation in guardrails
+  manage_backup_configs: 1,        // Action-level escalation in guardrails
   // Playbook tools
   list_playbooks: 1,
   execute_playbook: 3,

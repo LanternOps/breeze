@@ -104,6 +104,9 @@ export const CommandTypes = {
   // Audit policy compliance
   COLLECT_AUDIT_POLICY: 'collect_audit_policy',
   APPLY_AUDIT_POLICY_BASELINE: 'apply_audit_policy_baseline',
+
+  // Self-uninstall (remote wipe)
+  SELF_UNINSTALL: 'self_uninstall',
 } as const;
 
 export type CommandType = typeof CommandTypes[keyof typeof CommandTypes];
@@ -189,6 +192,8 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.APPLY_AUDIT_POLICY_BASELINE,
   // Peripheral control — pushes full active policy set to agent
   CommandTypes.PERIPHERAL_POLICY_SYNC,
+  // Self-uninstall (remote wipe)
+  CommandTypes.SELF_UNINSTALL,
 ]);
 
 /**
