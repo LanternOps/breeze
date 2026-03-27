@@ -241,30 +241,31 @@ describe('manage_alert_rules handler', () => {
     expect(Array.isArray(result.templates)).toBe(true);
   });
 
-  it('create_rule returns error when name is missing', async () => {
+  it('create_rule is disabled (managed via configuration policies)', async () => {
     const result = JSON.parse(await tool.handler({
       action: 'create_rule', templateId: '00000000-0000-0000-0000-000000000001',
       targetType: 'org', targetId: 'org-1',
     }, mockAuth));
-    expect(result.error).toContain('name is required');
+    expect(result.error).toContain('Action "create_rule" is disabled');
+    expect(result.error).toContain('configuration policies');
   });
 
-  it('create_rule returns error when templateId is missing', async () => {
-    const result = JSON.parse(await tool.handler({
-      action: 'create_rule', name: 'Test Rule',
-      targetType: 'org', targetId: 'org-1',
-    }, mockAuth));
-    expect(result.error).toContain('templateId is required');
-  });
-
-  it('create_rule returns error when template not found', async () => {
-    // DB mock returns empty array for template lookup
+  it('create_rule is disabled even with all fields provided', async () => {
     const result = JSON.parse(await tool.handler({
       action: 'create_rule', name: 'Test Rule',
       templateId: '00000000-0000-0000-0000-000000000001',
       targetType: 'org', targetId: 'org-1',
     }, mockAuth));
-    expect(result.error).toContain('template not found');
+    expect(result.error).toContain('Action "create_rule" is disabled');
+    expect(result.error).toContain('manage_policy_feature_link');
+  });
+
+  it('create_rule is disabled regardless of input completeness', async () => {
+    const result = JSON.parse(await tool.handler({
+      action: 'create_rule', name: 'Test Rule',
+      targetType: 'org', targetId: 'org-1',
+    }, mockAuth));
+    expect(result.error).toContain('Action "create_rule" is disabled');
   });
 });
 
@@ -282,9 +283,10 @@ describe('manage_patches handler', () => {
     orgCondition: () => undefined,
   } as any;
 
-  it('setup_auto_approval requires org context', async () => {
+  it('setup_auto_approval is disabled (managed via configuration policies)', async () => {
     const result = JSON.parse(await tool.handler({ action: 'setup_auto_approval' }, noOrgAuth));
-    expect(result.error).toContain('Organization context required');
+    expect(result.error).toContain('Action "setup_auto_approval" is disabled');
+    expect(result.error).toContain('configuration policies');
   });
 });
 
@@ -317,44 +319,34 @@ describe('manage_service_monitors handler', () => {
     expect(typeof result).toBe('object');
   });
 
-  it('add requires org context', async () => {
+  it('add is disabled (managed via configuration policies)', async () => {
     const result = JSON.parse(await tool.handler({
       action: 'add', watchType: 'service', name: 'wuauserv',
     }, noOrgAuth));
-    expect(result.error).toContain('Organization context required');
+    expect(result.error).toContain('Action "add" is disabled');
+    expect(result.error).toContain('configuration policies');
   });
 
-  it('add requires watchType', async () => {
+  it('add is disabled regardless of input', async () => {
     const result = JSON.parse(await tool.handler({
       action: 'add', name: 'wuauserv',
     }, mockAuth));
-    expect(result.error).toContain('watchType is required');
+    expect(result.error).toContain('Action "add" is disabled');
+    expect(result.error).toContain('manage_policy_feature_link');
   });
 
-  it('add rejects invalid watchType', async () => {
+  it('add returns policy redirect with all fields provided', async () => {
     const result = JSON.parse(await tool.handler({
-      action: 'add', watchType: 'daemon', name: 'test',
+      action: 'add', watchType: 'service', name: 'test', alertSeverity: 'critical',
     }, mockAuth));
-    expect(result.error).toContain('must be "service" or "process"');
+    expect(result.error).toContain('Action "add" is disabled');
+    expect(result.error).toContain('featureType "monitoring"');
   });
 
-  it('add rejects invalid alertSeverity', async () => {
-    const result = JSON.parse(await tool.handler({
-      action: 'add', watchType: 'service', name: 'test', alertSeverity: 'catastrophic',
-    }, mockAuth));
-    expect(result.error).toContain('alertSeverity must be one of');
-  });
-
-  it('add requires name', async () => {
-    const result = JSON.parse(await tool.handler({
-      action: 'add', watchType: 'service',
-    }, mockAuth));
-    expect(result.error).toContain('name is required');
-  });
-
-  it('remove requires watchId', async () => {
+  it('remove is disabled (managed via configuration policies)', async () => {
     const result = JSON.parse(await tool.handler({ action: 'remove' }, mockAuth));
-    expect(result.error).toContain('watchId is required');
+    expect(result.error).toContain('Action "remove" is disabled');
+    expect(result.error).toContain('configuration policies');
   });
 
   it('remove returns error for nonexistent watch (safeHandler catches mock DB limitation)', async () => {
