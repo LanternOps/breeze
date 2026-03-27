@@ -534,18 +534,24 @@ func (c *Client) executeProcess(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 				return ipc.IPCCommandResult{CommandID: cmd.CommandID, Status: "failed", Error: fmt.Sprintf("wait: %v", err)}
 			}
 		}
-		resultJSON, _ := json.Marshal(map[string]any{
+		resultJSON, err := json.Marshal(map[string]any{
 			"exitCode": exitCode,
 			"stdout":   stdout.String(),
 			"stderr":   stderr.String(),
 		})
+		if err != nil {
+			return ipc.IPCCommandResult{CommandID: cmd.CommandID, Status: "failed", Error: fmt.Sprintf("marshal result: %v", err)}
+		}
 		status := "completed"
 		if exitCode != 0 {
 			status = "failed"
 		}
 		return ipc.IPCCommandResult{CommandID: cmd.CommandID, Status: status, Result: resultJSON}
 	case <-time.After(time.Duration(timeoutSec) * time.Second):
-		proc.Process.Kill()
+		if err := proc.Process.Kill(); err != nil {
+			log.Warn("failed to kill timed-out process", "command", name, "error", err.Error())
+		}
+		<-done // reap the process
 		return ipc.IPCCommandResult{CommandID: cmd.CommandID, Status: "failed", Error: fmt.Sprintf("timeout after %ds", timeoutSec)}
 	}
 }
