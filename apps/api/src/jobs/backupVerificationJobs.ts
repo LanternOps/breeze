@@ -4,7 +4,8 @@ import { getRedisConnection } from '../services/redis';
 import {
   ensurePostBackupIntegrityChecks,
   recalculateReadinessScores,
-  runWeeklyTestRestore
+  runWeeklyTestRestore,
+  timeoutStaleVerifications
 } from '../routes/backup/verificationService';
 
 const BACKUP_VERIFICATION_QUEUE = 'backup-verification';
@@ -15,7 +16,8 @@ const WEEKLY_RESTORE_CRON = '0 3 * * 0'; // 03:00 UTC Sundays
 type BackupVerificationJobData =
   | { type: 'post-backup-integrity-check'; queuedAt: string }
   | { type: 'readiness-score-calculator'; queuedAt: string }
-  | { type: 'weekly-test-restore'; queuedAt: string };
+  | { type: 'weekly-test-restore'; queuedAt: string }
+  | { type: 'verification-timeout-check'; queuedAt: string };
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
@@ -47,6 +49,10 @@ function createBackupVerificationWorker(): Worker<BackupVerificationJobData> {
           const queued = await runWeeklyTestRestore();
           return { queued };
         }
+        if (job.data.type === 'verification-timeout-check') {
+          const timedOut = await timeoutStaleVerifications();
+          return { timedOut };
+        }
         const computed = await recalculateReadinessScores();
         return { computed };
       });
@@ -67,6 +73,7 @@ async function scheduleRepeatableJobs(): Promise<void> {
       job.name === 'post-backup-integrity-check'
       || job.name === 'readiness-score-calculator'
       || job.name === 'weekly-test-restore'
+      || job.name === 'verification-timeout-check'
     ) {
       await queue.removeRepeatableByKey(job.key);
     }
@@ -100,6 +107,17 @@ async function scheduleRepeatableJobs(): Promise<void> {
     {
       jobId: 'backup-verification-weekly-restore',
       repeat: { pattern: WEEKLY_RESTORE_CRON },
+      removeOnComplete: { count: 20 },
+      removeOnFail: { count: 200 },
+    }
+  );
+
+  await queue.add(
+    'verification-timeout-check',
+    { type: 'verification-timeout-check', queuedAt: new Date().toISOString() },
+    {
+      jobId: 'backup-verification-timeout-check',
+      repeat: { every: 5 * 60 * 1000 }, // every 5 minutes
       removeOnComplete: { count: 20 },
       removeOnFail: { count: 200 },
     }
