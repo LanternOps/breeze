@@ -54,12 +54,13 @@
             Description="Breeze RMM endpoint agent"
             Type="ownProcess"
             Arguments="run"
-            Start="demand"
+            Start="auto"
             ErrorControl="normal"
             Vital="yes" />
           <ServiceControl
             Id="svcControlBreezeAgent"
             Name="BreezeAgent"
+            Start="install"
             Stop="both"
             Remove="uninstall"
             Wait="yes" />
