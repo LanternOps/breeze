@@ -3336,6 +3336,23 @@ registerTool({
     const deviceIds = input.deviceIds as string[];
     const results: Record<string, unknown> = {};
 
+    // Resolve script content upfront so the agent receives the full payload
+    const [script] = await db
+      .select({
+        id: scripts.id,
+        language: scripts.language,
+        content: scripts.content,
+        timeoutSeconds: scripts.timeoutSeconds,
+        runAs: scripts.runAs,
+      })
+      .from(scripts)
+      .where(eq(scripts.id, input.scriptId as string))
+      .limit(1);
+
+    if (!script || !script.content) {
+      return JSON.stringify({ error: 'Script not found or has no content' });
+    }
+
     for (const deviceId of deviceIds.slice(0, 10)) { // Limit to 10 devices
       try {
         // Verify access
@@ -3346,7 +3363,11 @@ registerTool({
         }
 
         const result = await executeCommand(deviceId, 'script', {
-          scriptId: input.scriptId,
+          scriptId: script.id,
+          language: script.language,
+          content: script.content,
+          timeoutSeconds: script.timeoutSeconds,
+          runAs: script.runAs,
           parameters: input.parameters ?? {}
         }, { userId: auth.user.id, timeoutMs: 60000 });
 

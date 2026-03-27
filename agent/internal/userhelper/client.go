@@ -1,6 +1,7 @@
 package userhelper
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -370,6 +371,8 @@ func (c *Client) handleCommand(env *ipc.Envelope) {
 	switch cmd.Type {
 	case tools.CmdTakeScreenshot, tools.CmdComputerAction:
 		result = c.executeToolCommand(cmd)
+	case "exec":
+		result = c.executeProcess(cmd)
 	default:
 		result = c.executeScript(cmd)
 	}
@@ -482,6 +485,68 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 		Status:    status,
 		Result:    resultJSON,
 		Error:     result.Error,
+	}
+}
+
+// executeProcess runs a direct command+args in user context (e.g. winget).
+// Unlike executeScript, this does not go through the script executor — it runs
+// the named binary directly and returns stdout/stderr/exitCode.
+func (c *Client) executeProcess(cmd ipc.IPCCommand) ipc.IPCCommandResult {
+	var payload map[string]any
+	if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+		return ipc.IPCCommandResult{CommandID: cmd.CommandID, Status: "failed", Error: "invalid payload"}
+	}
+
+	name := getStringOrDefault(payload, "command", "")
+	if name == "" {
+		return ipc.IPCCommandResult{CommandID: cmd.CommandID, Status: "failed", Error: "command is required"}
+	}
+
+	var args []string
+	if raw, ok := payload["args"].([]any); ok {
+		for _, a := range raw {
+			if s, ok := a.(string); ok {
+				args = append(args, s)
+			}
+		}
+	}
+
+	timeoutSec := getIntOrDefault(payload, "timeoutSeconds", 300)
+	proc := osexec.Command(name, args...)
+
+	var stdout, stderr bytes.Buffer
+	proc.Stdout = &stdout
+	proc.Stderr = &stderr
+
+	done := make(chan error, 1)
+	if err := proc.Start(); err != nil {
+		return ipc.IPCCommandResult{CommandID: cmd.CommandID, Status: "failed", Error: fmt.Sprintf("start: %v", err)}
+	}
+	go func() { done <- proc.Wait() }()
+
+	select {
+	case err := <-done:
+		exitCode := 0
+		if err != nil {
+			if exitErr, ok := err.(*osexec.ExitError); ok {
+				exitCode = exitErr.ExitCode()
+			} else {
+				return ipc.IPCCommandResult{CommandID: cmd.CommandID, Status: "failed", Error: fmt.Sprintf("wait: %v", err)}
+			}
+		}
+		resultJSON, _ := json.Marshal(map[string]any{
+			"exitCode": exitCode,
+			"stdout":   stdout.String(),
+			"stderr":   stderr.String(),
+		})
+		status := "completed"
+		if exitCode != 0 {
+			status = "failed"
+		}
+		return ipc.IPCCommandResult{CommandID: cmd.CommandID, Status: status, Result: resultJSON}
+	case <-time.After(time.Duration(timeoutSec) * time.Second):
+		proc.Process.Kill()
+		return ipc.IPCCommandResult{CommandID: cmd.CommandID, Status: "failed", Error: fmt.Sprintf("timeout after %ds", timeoutSec)}
 	}
 }
 
