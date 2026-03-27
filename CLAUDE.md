@@ -243,6 +243,11 @@ ln -sf docker-compose.override.yml.dev docker-compose.override.yml
 docker compose up --build -d
 ```
 
+### PR Merge Process
+- Branch protection requires status checks, but the repo owner uses `--admin` to bypass when CI is green
+- Use `gh pr merge --squash --admin` (merge commits are disabled on this repo)
+- This is the normal workflow — do not wait for branch protection rules to be satisfied
+
 ## Current Status
 
 See `docs/PROJECT_STATUS.md` for implementation status and next steps.
