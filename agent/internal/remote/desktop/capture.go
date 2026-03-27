@@ -93,6 +93,14 @@ type CursorProvider interface {
 	CursorPosition() (x, y int32, visible bool)
 }
 
+// CursorShapeProvider is implemented by capturers that can report the current
+// system cursor shape (arrow, text, hand, resize, etc.). The shape string maps
+// directly to CSS cursor values on the viewer side. Returns "default" when the
+// cursor shape cannot be determined.
+type CursorShapeProvider interface {
+	CursorShape() string
+}
+
 // DesktopSwitchNotifier is implemented by capturers that detect Windows desktop
 // transitions (Default ↔ Winlogon/Screen-saver). This enables the session to
 // reset cursor/input offsets and force keyframes on secure desktop transitions.

@@ -183,7 +183,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
     tier: 2,
     definition: {
       name: 'apply_configuration_policy',
-      description: 'Assign a configuration policy to a target (partner, organization, site, device group, or device). This changes which policies are applied at that hierarchy level.',
+      description: 'Assign a configuration policy to a target (partner, organization, site, device group, or device). Use roleFilter and osFilter to scope the assignment to specific device types.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -191,6 +191,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           level: { type: 'string', enum: ['partner', 'organization', 'site', 'device_group', 'device'], description: 'Assignment level' },
           targetId: { type: 'string', description: 'Target UUID at the given level' },
           priority: { type: 'number', description: 'Priority (lower = higher priority, default 0)' },
+          roleFilter: { type: 'array', items: { type: 'string' }, description: 'Only apply to devices with these roles (e.g. ["workstation","server"]). Omit for all roles.' },
+          osFilter: { type: 'array', items: { type: 'string' }, description: 'Only apply to devices with these OS types (e.g. ["windows","macos","linux"]). Omit for all OS.' },
         },
         required: ['configPolicyId', 'level', 'targetId'],
       },
@@ -209,7 +211,9 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           input.level as any,
           input.targetId as string,
           Number(input.priority) || 0,
-          auth.user.id
+          auth.user.id,
+          (input.roleFilter as string[] | undefined),
+          (input.osFilter as string[] | undefined)
         );
 
         return JSON.stringify({
@@ -331,6 +335,20 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Access denied to this organization' });
         }
         if (!input.name) return JSON.stringify({ error: 'name is required for create' });
+
+        // Check for duplicate name in same org
+        const [existing] = await db.select({ id: configurationPolicies.id, status: configurationPolicies.status })
+          .from(configurationPolicies)
+          .where(and(
+            eq(configurationPolicies.orgId, orgId),
+            eq(configurationPolicies.name, input.name as string),
+          ))
+          .limit(1);
+        if (existing) {
+          return JSON.stringify({
+            error: `A configuration policy named "${input.name}" already exists (id: ${existing.id}, status: ${existing.status}). Use get_configuration_policy to view it, or choose a different name.`,
+          });
+        }
 
         const policy = await createConfigPolicy(orgId, {
           name: input.name as string,
@@ -503,16 +521,27 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
     tier: 2,
     definition: {
       name: 'manage_policy_feature_link',
-      description: `Add, update, remove, or list feature links on a configuration policy. Feature links define the actual settings (patch schedule, alert rules, maintenance windows, etc.) bundled into a policy. Each policy can have one link per feature type.
+      description: `Add, update, remove, or list feature links on a configuration policy. Feature links define the actual settings bundled into a policy. Each policy can have one link per feature type. This is the STANDARD way to configure all device management features.
 
 Inline settings shapes by feature type:
-- patch: { sources: ["os","third_party"], autoApprove: true, autoApproveSeverities: ["critical","important"], scheduleFrequency: "weekly", scheduleTime: "02:00", scheduleDayOfWeek: "tue", rebootPolicy: "if_required" }
-- alert_rule: { items: [{ name, severity: "critical"|"high"|"medium"|"low", conditions: {...}, cooldownMinutes?, autoResolve? }] }
-- maintenance: { recurrence: "weekly", durationHours: 3, timezone: "America/New_York", suppressAlerts: true, suppressPatching: true, suppressAutomations: false, suppressScripts: false, notifyOnStart: true, notifyOnEnd: true }
-- monitoring: { checkIntervalSeconds: 60, watches: [{ watchType: "service"|"process", name: "wuauserv", displayName?: "Windows Update", alertOnStop: true, alertSeverity: "high", cpuThresholdPercent?: 90, memoryThresholdMb?: 500, autoRestart: false, maxRestartAttempts: 3 }] }
-- event_log: { items: [{ logName, levels: [...] }] }
+- patch: { sources: ["os","third_party"], autoApprove: true, autoApproveSeverities: ["critical","important"], scheduleFrequency: "daily"|"weekly"|"monthly", scheduleTime: "02:00", scheduleDayOfWeek?: "tue", scheduleDayOfMonth?: 1, rebootPolicy: "never"|"if_required"|"always"|"maintenance_window" }
+- alert_rule: { items: [{ name, severity: "critical"|"high"|"medium"|"low"|"info", conditions: [{ type: "threshold"|"offline"|"event_log", metric?: "cpuPercent"|"ramPercent"|"diskPercent", operator?: "gt"|"lt"|"gte"|"lte", value?: number, durationMinutes?: number, level?: "error"|"warning"|"critical", category?: "security"|"hardware"|"application"|"system", countThreshold?: number, windowMinutes?: number, messagePattern?: string }], cooldownMinutes?: 15, autoResolve?: false }] }
+- monitoring: { checkIntervalSeconds: 60, watches: [{ watchType: "service"|"process", name: "wuauserv", displayName?: "Windows Update", enabled: true, alertOnStop: true, alertAfterConsecutiveFailures: 2, alertSeverity: "critical"|"high"|"medium"|"low"|"info", cpuThresholdPercent?: 90, memoryThresholdMb?: 500, thresholdDurationSeconds: 300, autoRestart: false, maxRestartAttempts: 3, restartCooldownSeconds: 300 }], eventLogAlerts?: [{ name, category: "security"|"hardware"|"application"|"system", level: "warning"|"error"|"critical", sourcePattern?, messagePattern?, countThreshold: 1, windowMinutes: 15, severity: "high", enabled: true }] }
+- maintenance: { recurrence: "once"|"daily"|"weekly"|"monthly", windowStart?: "ISO-8601 (for once)", durationHours: 1-72, timezone: "America/New_York", suppressAlerts: true, suppressPatching: true, suppressAutomations: false, suppressScripts: false, notifyBeforeMinutes?: 15, notifyOnStart: true, notifyOnEnd: true }
+- automation: { items: [{ name, enabled: true, triggerType: "schedule"|"event"|"manual", cronExpression?: "0 2 * * *", timezone?: "America/New_York", eventType?: "device.offline"|"alert.triggered"|"compliance.failed"|"patch.available", actions: [{ type: "run_script"|"send_notification"|"create_alert"|"execute_command", scriptId?|channelId?|severity?|message?|command? }], onFailure: "stop"|"continue"|"notify" }] }
+- event_log: { retentionDays: 30, maxEventsPerCycle: 100, collectCategories: ["security","hardware","application","system"], minimumLevel: "info"|"warning"|"error"|"critical", collectionIntervalMinutes: 5, rateLimitPerHour: 12000, enableFullTextSearch: true, enableCorrelation: true }
+- compliance: { items: [{ name, enforcementLevel: "monitor"|"warn"|"enforce", checkIntervalMinutes: 60, rules: [{ type: "required_software"|"prohibited_software"|"disk_space_minimum"|"os_version"|"registry_check"|"config_file_check", name?|minGb?|osType?|path?|valueName?|expectedValue?|minVersion? }] }] }
+- security: { realTimeProtection: true, behavioralMonitoring: true, cloudLookup: true, scheduledScans: true, scanHour: "2", scanMinute: "0", scanDayOfWeek: "*", scanDayOfMonth: "*", autoQuarantine: true, notifyUser: true, blockUntrustedUsb: false, exclusions: [] }
+- backup: { scheduleFrequency: "daily"|"weekly"|"monthly", scheduleTime: "02:00", scheduleDayOfWeek?: "tue", retentionPreset: "standard"|"extended"|"compliance"|"custom", retentionDays?: 30, retentionVersions?: 5, compression: true, encryption: true, paths: [], excludePatterns: [], notifyOnFailure: true, notifyOnSuccess: false, notifyOnMissed: true }
+- sensitive_data: { detectionClasses: ["credential","pci","phi","pii","financial"], includePaths: [], excludePaths: [], fileTypes: [], maxFileSizeBytes: 104857600, workers: 4, timeoutSeconds: 300, scheduleType: "manual"|"interval"|"cron", intervalMinutes?: 60, cron?: "...", timezone: "UTC" }
+- warranty: { enabled: true, warnDays: 90, criticalDays: 30 }
+- helper: { enabled: true, showOpenPortal: true, showDeviceInfo: true, showRequestSupport: true, portalUrl?: "" }
 
-For linked policy types (patch, alert_rule, software_policy, backup, security, compliance), you can set featurePolicyId to reference an existing standalone policy instead of inlineSettings.`,
+For link-only types, set featurePolicyId instead of inlineSettings:
+- software_policy: featurePolicyId → existing software policy UUID
+- peripheral_control: featurePolicyId → existing peripheral policy UUID
+- backup: can also use featurePolicyId → existing backup config UUID (for provider/credentials), combined with inlineSettings for schedule/retention
+- patch: can also use featurePolicyId → existing update ring UUID (for approval deferral), combined with inlineSettings for schedule/reboot`,
       input_schema: {
         type: 'object' as const,
         properties: {

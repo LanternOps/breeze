@@ -149,6 +149,7 @@ export interface Device {
   enrolledAt: Date;
   enrolledBy: string | null;
   tags: string[];
+  isHeadless: boolean;
   createdAt: Date;
   updatedAt: Date;
 }

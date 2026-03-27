@@ -50,6 +50,7 @@ type DeviceApiResponse = {
   hostname: string;
   displayName?: string | null;
   osType?: string | null;
+  isHeadless?: boolean;
 };
 
 type ApiProcess = {
@@ -389,6 +390,7 @@ export default function RemoteToolsPage({
   const [activeTab, setActiveTab] = useState<ToolTab>(initialTab);
   const [resolvedDeviceName, setResolvedDeviceName] = useState(deviceName);
   const [resolvedDeviceOs, setResolvedDeviceOs] = useState<DeviceOs>(normalizeDeviceOs(deviceOs));
+  const [isHeadless, setIsHeadless] = useState(false);
 
   // Process state
   const [processes, setProcesses] = useState<Process[]>([]);
@@ -443,6 +445,7 @@ export default function RemoteToolsPage({
         if (!mounted) return;
         setResolvedDeviceName(data.displayName || data.hostname || deviceName);
         setResolvedDeviceOs(normalizeDeviceOs(data.osType));
+        setIsHeadless(data.isHeadless === true);
       } catch (error) {
         console.error('Failed to load device info:', error);
       }
@@ -806,7 +809,7 @@ export default function RemoteToolsPage({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <ConnectDesktopButton deviceId={deviceId} />
+          <ConnectDesktopButton deviceId={deviceId} isHeadless={isHeadless} />
           {shouldShowClose && (
             <button
               onClick={handleClose}

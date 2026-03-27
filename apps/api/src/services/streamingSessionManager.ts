@@ -637,17 +637,31 @@ export class StreamingSessionManager {
               break;
             }
 
+            // Extract usage with defensive checks — SDK types say usage is non-nullable
+            // but in practice it may be missing, leaving sessions with 0 tokens
+            const usageData = {
+              total_cost_usd: resultMsg.total_cost_usd ?? 0,
+              usage: {
+                input_tokens: resultMsg.usage?.input_tokens ?? 0,
+                output_tokens: resultMsg.usage?.output_tokens ?? 0,
+              },
+              num_turns: resultMsg.num_turns ?? 0,
+            };
+
+            if (!resultMsg.usage || (!resultMsg.usage.input_tokens && !resultMsg.usage.output_tokens)) {
+              console.warn('[StreamingSessionManager] Result message has no/empty usage:', {
+                sessionId: session.breezeSessionId,
+                subtype: resultMsg.subtype,
+                hasUsage: !!resultMsg.usage,
+                totalCostUsd: resultMsg.total_cost_usd,
+                keys: Object.keys(resultMsg),
+              });
+            }
+
             if (resultMsg.subtype === 'success') {
               try {
                 await withSystemDbAccessContext(() =>
-                  recordUsageFromSdkResult(session.breezeSessionId, orgId, {
-                    total_cost_usd: resultMsg.total_cost_usd,
-                    usage: {
-                      input_tokens: resultMsg.usage.input_tokens,
-                      output_tokens: resultMsg.usage.output_tokens,
-                    },
-                    num_turns: resultMsg.num_turns,
-                  })
+                  recordUsageFromSdkResult(session.breezeSessionId, orgId, usageData)
                 );
               } catch (err) {
                 captureException(err);
@@ -667,14 +681,7 @@ export class StreamingSessionManager {
 
               try {
                 await withSystemDbAccessContext(() =>
-                  recordUsageFromSdkResult(session.breezeSessionId, orgId, {
-                    total_cost_usd: resultMsg.total_cost_usd,
-                    usage: {
-                      input_tokens: resultMsg.usage.input_tokens,
-                      output_tokens: resultMsg.usage.output_tokens,
-                    },
-                    num_turns: resultMsg.num_turns,
-                  })
+                  recordUsageFromSdkResult(session.breezeSessionId, orgId, usageData)
                 );
               } catch (err) {
                 captureException(err);

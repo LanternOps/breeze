@@ -83,6 +83,9 @@ var allCommandTypes = []string{
 
 	// handlers_peripheral.go init()
 	tools.CmdPeripheralPolicySync,
+
+	// handlers_uninstall.go init()
+	tools.CmdSelfUninstall,
 }
 
 func TestHandlerRegistryCompleteness(t *testing.T) {

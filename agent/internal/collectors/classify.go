@@ -48,5 +48,10 @@ func ClassifyDeviceRole(sysInfo *SystemInfo, hw *HardwareInfo) string {
 		}
 	}
 
+	// 4. Linux server detection via /etc/os-release and systemd default target
+	if detectLinuxServer() {
+		return "server"
+	}
+
 	return "workstation"
 }

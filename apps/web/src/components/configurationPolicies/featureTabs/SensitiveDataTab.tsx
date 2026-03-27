@@ -43,12 +43,21 @@ const defaults: SensitiveDataSettings = {
   timezone: 'UTC',
 };
 
+const arrayKeys = ['detectionClasses', 'includePaths', 'excludePaths', 'fileTypes', 'suppressPatternIds'] as const;
+
+function normalizeSensitiveData(s: SensitiveDataSettings): SensitiveDataSettings {
+  for (const k of arrayKeys) {
+    if (!Array.isArray(s[k])) (s as any)[k] = [...defaults[k]];
+  }
+  return s;
+}
+
 export default function SensitiveDataTab({ policyId, existingLink, onLinkChanged, linkedPolicyId }: FeatureTabProps) {
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
-  const [settings, setSettings] = useState<SensitiveDataSettings>(() => ({
-    ...defaults,
-    ...(existingLink?.inlineSettings as Partial<SensitiveDataSettings> | undefined),
-  }));
+  const [settings, setSettings] = useState<SensitiveDataSettings>(() => {
+    const stored = existingLink?.inlineSettings as Partial<SensitiveDataSettings> | undefined;
+    return normalizeSensitiveData({ ...defaults, ...stored });
+  });
   const [newIncludePath, setNewIncludePath] = useState('');
   const [newExcludePath, setNewExcludePath] = useState('');
   const [newFileType, setNewFileType] = useState('');
@@ -56,7 +65,7 @@ export default function SensitiveDataTab({ policyId, existingLink, onLinkChanged
 
   useEffect(() => {
     if (existingLink?.inlineSettings) {
-      setSettings((prev) => ({ ...prev, ...(existingLink.inlineSettings as Partial<SensitiveDataSettings>) }));
+      setSettings((prev) => normalizeSensitiveData({ ...prev, ...(existingLink.inlineSettings as Partial<SensitiveDataSettings>) }));
     }
   }, [existingLink]);
 

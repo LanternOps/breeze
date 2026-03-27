@@ -91,6 +91,7 @@ function loadItems(existingLink: FeatureTabProps['existingLink']): ComplianceIte
   if (Array.isArray((raw as any).items)) {
     const items = (raw as any).items as (ComplianceItem & { remediationScriptId?: string })[];
     return items.map((item) => {
+      if (!Array.isArray(item.rules)) item = { ...item, rules: [...defaultItem.rules] };
       if (item.remediationScriptId && item.rules.length > 0) {
         const hasAnyRemediation = item.rules.some((r) => r.remediation && r.remediation.type !== 'none');
         if (!hasAnyRemediation) {
@@ -110,7 +111,9 @@ function loadItems(existingLink: FeatureTabProps['existingLink']): ComplianceIte
   if ((raw as any).rules) {
     const legacy = raw as unknown as Omit<ComplianceItem, 'name'> & { remediationScriptId?: string };
     const { remediationScriptId: _, ...rest } = legacy;
-    return [{ ...rest, name: 'Compliance Rule Set 1' }];
+    const item = { ...rest, name: 'Compliance Rule Set 1' };
+    if (!Array.isArray(item.rules)) item.rules = [...defaultItem.rules];
+    return [item];
   }
   return [];
 }

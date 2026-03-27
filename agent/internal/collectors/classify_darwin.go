@@ -8,3 +8,8 @@ package collectors
 func getChassisType() string {
 	return ""
 }
+
+// detectLinuxServer is a no-op on macOS.
+func detectLinuxServer() bool {
+	return false
+}

@@ -3,7 +3,9 @@ package heartbeat
 import (
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -163,7 +165,7 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 		}
 	}
 
-	log.Warn("helper spawned but did not connect within 10s")
+	log.Warn("helper spawned but did not connect within 10s", "targetSession", targetSession)
 	return nil
 }
 
@@ -171,6 +173,34 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 // If targetSession is empty, it auto-detects the first active non-services session.
 func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 	if runtime.GOOS != "windows" {
+		// Attempt to kickstart the LaunchAgent for logged-in GUI users.
+		if uids := findGUIUserUIDs(); len(uids) > 0 {
+			bootstrapped := false
+			for _, uid := range uids {
+				domain := "gui/" + uid
+				label := domain + "/com.breeze.agent-user"
+				// kickstart -k kills any existing instance and restarts it.
+				if err := exec.Command("launchctl", "kickstart", "-k", label).Run(); err == nil {
+					log.Info("kickstarted helper LaunchAgent", "uid", uid)
+					return nil // let the caller's poll loop wait for the connection
+				} else {
+					log.Warn("launchctl kickstart failed, trying bootstrap",
+						"uid", uid, "label", label, "error", err.Error())
+				}
+				// Fallback: try bootstrap in case the plist was never loaded.
+				if err := exec.Command("launchctl", "bootstrap", domain,
+					"/Library/LaunchAgents/com.breeze.agent-user.plist").Run(); err != nil {
+					log.Warn("launchctl bootstrap also failed",
+						"uid", uid, "domain", domain, "error", err.Error())
+				} else {
+					log.Info("bootstrapped helper LaunchAgent", "uid", uid, "domain", domain)
+					bootstrapped = true
+				}
+			}
+			if bootstrapped {
+				return nil // let the caller's poll loop wait for the connection
+			}
+		}
 		return fmt.Errorf(
 			"no user-helper connected; ensure the LaunchAgent is loaded: " +
 				"launchctl load /Library/LaunchAgents/com.breeze.agent-user.plist")
@@ -227,4 +257,32 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 	h.sessionBroker.KillStaleHelpers(targetSession)
 
 	return sessionbroker.SpawnHelperInSession(sessionNum)
+}
+
+// findGUIUserUIDs returns the UIDs of users with a loginwindow process (macOS).
+// Used to kickstart the helper LaunchAgent.
+func findGUIUserUIDs() []string {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	out, err := exec.Command("ps", "-axo", "uid=,comm=").Output()
+	if err != nil {
+		log.Warn("failed to list processes for GUI user detection", "error", err.Error())
+		return nil
+	}
+	seen := map[string]bool{}
+	var uids []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		uid, comm := fields[0], fields[len(fields)-1]
+		if strings.HasSuffix(comm, "loginwindow") && !seen[uid] {
+			seen[uid] = true
+			uids = append(uids, uid)
+		}
+	}
+	return uids
 }

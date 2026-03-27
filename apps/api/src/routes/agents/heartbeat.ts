@@ -66,6 +66,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   if (data.tccPermissions) {
     deviceUpdates.tccPermissions = data.tccPermissions;
   }
+  if (data.isHeadless !== undefined) {
+    deviceUpdates.isHeadless = data.isHeadless;
+  }
 
   await db
     .update(devices)

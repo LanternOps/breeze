@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Monitor,
   Cpu,
@@ -126,8 +126,33 @@ function formatLastSeen(dateString: string, timezone?: string): string {
   return date.toLocaleDateString([], timezone ? { timeZone: timezone } : undefined);
 }
 
+const VALID_TABS: Tab[] = [
+  'overview', 'details', 'hardware', 'software', 'patches', 'security',
+  'management', 'effective-config', 'alerts', 'scripts', 'performance',
+  'eventlog', 'activities', 'connections', 'filesystem', 'ip-history',
+  'boot-performance', 'playbooks', 'peripherals',
+];
+
+function getTabFromHash(): Tab {
+  if (typeof window === 'undefined') return 'overview';
+  const hash = window.location.hash.replace('#', '');
+  if (VALID_TABS.includes(hash as Tab)) return hash as Tab;
+  return 'overview';
+}
+
 export default function DeviceDetails({ device, timezone, onBack, onAction }: DeviceDetailsProps) {
-  const [activeTab, setActiveTab] = useState<Tab>('overview');
+  const [activeTab, setActiveTab] = useState<Tab>(getTabFromHash);
+
+  useEffect(() => {
+    const onHashChange = () => setActiveTab(getTabFromHash());
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  const switchTab = (tab: Tab) => {
+    window.location.hash = tab;
+    setActiveTab(tab);
+  };
 
   // Use provided timezone or browser default
   const effectiveTimezone = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -182,7 +207,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
 
       <MacOSPermissionsBanner deviceId={device.id} osType={device.os} />
 
-      <OverflowTabs tabs={tabs} activeTab={activeTab} onTabChange={(id) => setActiveTab(id as Tab)} />
+      <OverflowTabs tabs={tabs} activeTab={activeTab} onTabChange={(id) => switchTab(id as Tab)} />
 
       {activeTab === 'overview' && (
         <div className="grid gap-6 lg:grid-cols-3">

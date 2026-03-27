@@ -345,8 +345,13 @@ func (u *Updater) UpdateFromURL(url, expectedChecksum string) error {
 	log.Info("starting dev update from URL", "url", url)
 
 	// Pre-flight: verify we can write to the binary's directory.
-	if err := checkWritable(u.config.BinaryPath); err != nil {
-		return fmt.Errorf("%w: %v", ErrReadOnlyFS, err)
+	// Skip on Windows — the running exe is locked by the OS, but
+	// RestartWithHelper handles this by waiting for process exit
+	// before copying the new binary.
+	if runtime.GOOS != "windows" {
+		if err := checkWritable(u.config.BinaryPath); err != nil {
+			return fmt.Errorf("%w: %v", ErrReadOnlyFS, err)
+		}
 	}
 
 	// 1. Download binary directly

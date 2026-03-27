@@ -27,3 +27,8 @@ func getChassisType() string {
 	}
 	return ""
 }
+
+// detectLinuxServer is a no-op on Windows.
+func detectLinuxServer() bool {
+	return false
+}

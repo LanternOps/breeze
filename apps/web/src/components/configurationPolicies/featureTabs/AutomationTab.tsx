@@ -90,16 +90,21 @@ const eventTypes = [
   { value: 'patch.available', label: 'Patch Available' },
 ];
 
+function normalizeItem(item: AutomationItem): AutomationItem {
+  if (!Array.isArray(item.actions)) return { ...item, actions: [...defaultItem.actions] };
+  return item;
+}
+
 function loadItems(existingLink: FeatureTabProps['existingLink']): AutomationItem[] {
   const raw = existingLink?.inlineSettings as Record<string, unknown> | null | undefined;
   if (!raw) return [];
   if (Array.isArray((raw as any).items)) {
-    return (raw as any).items as AutomationItem[];
+    return ((raw as any).items as AutomationItem[]).map(normalizeItem);
   }
   // Legacy single-item format
   if ((raw as any).triggerType) {
     const legacy = raw as unknown as Omit<AutomationItem, 'name'>;
-    return [{ ...legacy, name: 'Automation 1' }];
+    return [normalizeItem({ ...legacy, name: 'Automation 1' })];
   }
   return [];
 }
