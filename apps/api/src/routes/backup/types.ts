@@ -107,7 +107,7 @@ export type RestoreJob = {
 };
 
 export type BackupVerificationType = 'integrity' | 'test_restore' | 'full_recovery';
-export type BackupVerificationStatus = 'passed' | 'failed' | 'partial';
+export type BackupVerificationStatus = 'pending' | 'running' | 'passed' | 'failed' | 'partial';
 
 export type BackupVerification = {
   id: string;

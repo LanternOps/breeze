@@ -102,7 +102,7 @@ export const verificationListSchema = z.object({
   deviceId: z.string().optional(),
   backupJobId: z.string().optional(),
   verificationType: z.enum(['integrity', 'test_restore', 'full_recovery']).optional(),
-  status: z.enum(['passed', 'failed', 'partial']).optional(),
+  status: z.enum(['pending', 'running', 'passed', 'failed', 'partial']).optional(),
   from: z.string().optional(),
   to: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(500).optional()
