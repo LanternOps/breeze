@@ -64,16 +64,23 @@ const conditionTypeOptions = [
   { value: 'custom', label: 'Custom' },
 ];
 
+function normalizeConditions(item: AlertItem): AlertItem {
+  if (!Array.isArray(item.conditions)) {
+    return { ...item, conditions: [...defaultItem.conditions] };
+  }
+  return item;
+}
+
 function loadItems(existingLink: FeatureTabProps['existingLink']): AlertItem[] {
   const raw = existingLink?.inlineSettings as Record<string, unknown> | null | undefined;
   if (!raw) return [];
   if (Array.isArray((raw as any).items)) {
-    return (raw as any).items as AlertItem[];
+    return ((raw as any).items as AlertItem[]).map(normalizeConditions);
   }
   // Legacy single-item format — wrap it
   if ((raw as any).severity) {
     const legacy = raw as unknown as Omit<AlertItem, 'name'>;
-    return [{ ...legacy, name: 'Alert Rule 1' }];
+    return [normalizeConditions({ ...legacy, name: 'Alert Rule 1' })];
   }
   return [];
 }

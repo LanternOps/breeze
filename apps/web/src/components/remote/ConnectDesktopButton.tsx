@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { Monitor, ExternalLink, Download, X } from 'lucide-react';
+import { Monitor, MonitorOff, ExternalLink, Download, X } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
 import { getViewerDownloadInfo, getAllViewerDownloads } from '@/lib/viewerDownload';
 
@@ -9,6 +9,7 @@ interface Props {
   compact?: boolean;
   iconOnly?: boolean;
   disabled?: boolean;
+  isHeadless?: boolean;
 }
 
 /**
@@ -24,7 +25,7 @@ function tryDeepLink(url: string) {
   setTimeout(() => a.remove(), 100);
 }
 
-export default function ConnectDesktopButton({ deviceId, className = '', compact = false, iconOnly = false, disabled = false }: Props) {
+export default function ConnectDesktopButton({ deviceId, className = '', compact = false, iconOnly = false, disabled = false, isHeadless = false }: Props) {
   const [status, setStatus] = useState<'idle' | 'creating' | 'launching' | 'fallback'>('idle');
   const [error, setError] = useState<string | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -225,6 +226,55 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       </div>
     </div>
   ) : null;
+
+  const headlessTitle = 'This device has no display \u2014 remote desktop is unavailable';
+
+  if (isHeadless) {
+    if (iconOnly) {
+      return (
+        <div className={`relative ${className}`}>
+          <button
+            type="button"
+            disabled
+            title={headlessTitle}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground cursor-not-allowed opacity-50"
+          >
+            <MonitorOff className="h-4 w-4" />
+          </button>
+        </div>
+      );
+    }
+
+    if (compact) {
+      return (
+        <div className="relative">
+          <button
+            type="button"
+            disabled
+            title={headlessTitle}
+            className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-muted-foreground cursor-not-allowed opacity-50"
+          >
+            <MonitorOff className="h-4 w-4" />
+            Desktop Unavailable
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <div className={`relative ${className}`}>
+        <button
+          type="button"
+          disabled
+          title={headlessTitle}
+          className="flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground cursor-not-allowed opacity-50"
+        >
+          <MonitorOff className="h-4 w-4" />
+          Desktop Unavailable
+        </button>
+      </div>
+    );
+  }
 
   if (iconOnly) {
     return (

@@ -65,6 +65,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [showRemoteCursor, setShowRemoteCursor] = useState(false);
   const cursorOverlayRef = useRef<HTMLDivElement>(null);
   const showRemoteCursorRef = useRef(false);
+  // Tracks the current remote cursor CSS shape (e.g. "default", "pointer", "text").
+  // Updated from the cursor data channel; applied to the video element style.
+  const remoteCursorShapeRef = useRef<string>('default');
 
   const setTransportState = useCallback((t: Transport | null) => {
     transportRef.current = t;
@@ -75,6 +78,16 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     showRemoteCursorRef.current = showRemoteCursor;
     if (!showRemoteCursor && cursorOverlayRef.current) {
       cursorOverlayRef.current.style.display = 'none';
+    }
+    // When switching between cursor modes, update the video element's CSS cursor.
+    // In overlay mode the local cursor is hidden; otherwise show the remote shape.
+    const videoEl = videoRef.current;
+    if (videoEl) {
+      if (showRemoteCursor) {
+        videoEl.style.cursor = 'none';
+      } else {
+        videoEl.style.cursor = remoteCursorShapeRef.current || 'default';
+      }
     }
   }, [showRemoteCursor]);
 
@@ -163,13 +176,33 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             const overlay = cursorOverlayRef.current;
             const videoEl = videoRef.current;
             if (!overlay || !videoEl) return;
-            if (!showRemoteCursorRef.current) {
-              overlay.style.display = 'none';
-              return;
-            }
 
             try {
-              const { x, y, v } = JSON.parse(msg.data);
+              const data = JSON.parse(msg.data);
+              const { x, y, v, s } = data;
+
+              // Update cursor shape when the agent sends a new shape.
+              // "s" is only included when it differs from the last sent value.
+              const VALID_CURSORS = new Set([
+                'default', 'pointer', 'text', 'crosshair', 'move', 'grab', 'grabbing',
+                'ew-resize', 'ns-resize', 'nwse-resize', 'nesw-resize', 'not-allowed',
+                'wait', 'progress', 'help', 'context-menu', 'cell', 'none',
+              ]);
+              if (s && typeof s === 'string' && VALID_CURSORS.has(s)) {
+                remoteCursorShapeRef.current = s;
+                // Apply CSS cursor to the video element immediately. When the
+                // remote cursor overlay is hidden, the user's OS cursor adopts
+                // the remote shape (text beam, pointer hand, resize arrows, etc.).
+                if (!showRemoteCursorRef.current) {
+                  videoEl.style.cursor = s;
+                }
+              }
+
+              if (!showRemoteCursorRef.current) {
+                overlay.style.display = 'none';
+                return;
+              }
+
               if (!v) {
                 overlay.style.display = 'none';
                 return;
@@ -1310,7 +1343,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           autoPlay
           playsInline
           muted
-          className={`max-w-full max-h-full object-contain outline-none ${cursorStreamActive && showRemoteCursor ? 'cursor-none' : 'cursor-default'} ${transport !== 'webrtc' ? 'hidden' : ''}`}
+          className={`max-w-full max-h-full object-contain outline-none ${transport !== 'webrtc' ? 'hidden' : ''}`}
+          style={{ cursor: cursorStreamActive && showRemoteCursor ? 'none' : 'default' }}
           {...interactionProps}
         />
 

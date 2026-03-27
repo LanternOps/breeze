@@ -19,6 +19,8 @@ import { getPagination, getDeviceWithOrgCheck } from './helpers';
 import { listDevicesSchema, updateDeviceSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
+import { sendCommandToAgent, isAgentConnected } from '../agentWs';
+import { CommandTypes } from '../../services/commandQueue';
 
 export const coreRoutes = new Hono();
 
@@ -181,6 +183,7 @@ coreRoutes.get(
         customFields: devices.customFields,
         lastUser: devices.lastUser,
         uptimeSeconds: devices.uptimeSeconds,
+        isHeadless: devices.isHeadless,
         createdAt: devices.createdAt,
         updatedAt: devices.updatedAt,
         // Hardware summary
@@ -267,6 +270,7 @@ coreRoutes.get(
         customFields: d.customFields,
         lastUser: d.lastUser,
         uptimeSeconds: d.uptimeSeconds,
+        isHeadless: d.isHeadless,
         createdAt: d.createdAt,
         updatedAt: d.updatedAt,
         cpuPercent: latestMetrics?.cpuPercent ?? 0,
@@ -617,6 +621,21 @@ coreRoutes.delete(
       return c.json({ error: 'Device must be decommissioned before permanent deletion' }, 400);
     }
 
+    // Best-effort: send self_uninstall command if the agent is online.
+    // We don't block deletion on this succeeding — fire and forget.
+    let uninstallSent = false;
+    if (device.agentId && isAgentConnected(device.agentId)) {
+      try {
+        uninstallSent = sendCommandToAgent(device.agentId, {
+          id: `uninstall-${deviceId}`,
+          type: CommandTypes.SELF_UNINSTALL,
+          payload: { removeConfig: true },
+        });
+      } catch (err) {
+        console.error(`[devices] best-effort self_uninstall failed for ${deviceId}:`, err);
+      }
+    }
+
     // Cascade: remove all FK-referencing records in a transaction.
     // Uses raw SQL to cover all child tables without importing each schema.
     try {
@@ -658,7 +677,8 @@ coreRoutes.delete(
       action: 'device.permanent_delete',
       resourceType: 'device',
       resourceId: deviceId,
-      resourceName: device.hostname ?? device.displayName ?? deviceId
+      resourceName: device.hostname ?? device.displayName ?? deviceId,
+      details: { uninstallCommandSent: uninstallSent }
     });
 
     return c.json({ success: true });

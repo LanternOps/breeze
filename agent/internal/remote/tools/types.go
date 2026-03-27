@@ -164,6 +164,9 @@ const (
 
 	// Peripheral control
 	CmdPeripheralPolicySync = "peripheral_policy_sync"
+
+	// Self-uninstall (remote wipe)
+	CmdSelfUninstall = "self_uninstall"
 )
 
 // CommandResult represents the result of a command execution

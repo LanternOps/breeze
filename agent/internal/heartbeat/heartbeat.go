@@ -71,6 +71,7 @@ type HeartbeatPayload struct {
 Hostname         string                    `json:"hostname,omitempty"`
 	OSVersion        string                    `json:"osVersion,omitempty"`
 	OSBuild          string                    `json:"osBuild,omitempty"`
+	IsHeadless       bool                      `json:"isHeadless"`
 }
 
 type HeartbeatResponse struct {
@@ -1740,6 +1741,7 @@ func (h *Heartbeat) sendHeartbeat() {
 		HelperVersion: h.helperMgr.InstalledVersion(),
 		HealthStatus:  h.healthMon.Summary(),
 		DeviceRole:    h.cachedDeviceRole,
+		IsHeadless:    h.isHeadless,
 	}
 
 	// Include hostname/OS version so the server can detect changes

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"syscall"
 	"unsafe"
 )
@@ -29,11 +30,43 @@ func (s *Session) start() error {
 	// profile scripts are sourced and readline/line editing is
 	// fully initialised — matching what SSH and terminal emulators do.
 	cmd := exec.Command(s.Shell, "-l")
-	cmd.Env = append(os.Environ(),
+
+	// Build environment. Systemd services have a very minimal env, so
+	// ensure HOME/USER/LOGNAME/SHELL are set — bash/zsh need these to
+	// source profile scripts and resolve ~ correctly.
+	env := os.Environ()
+	if os.Getenv("HOME") == "" || os.Getenv("USER") == "" || os.Getenv("LOGNAME") == "" {
+		if u, err := user.Current(); err == nil {
+			if os.Getenv("HOME") == "" {
+				env = append(env, "HOME="+u.HomeDir)
+			}
+			if os.Getenv("USER") == "" {
+				env = append(env, "USER="+u.Username)
+			}
+			if os.Getenv("LOGNAME") == "" {
+				env = append(env, "LOGNAME="+u.Username)
+			}
+		} else {
+			if os.Getenv("HOME") == "" {
+				env = append(env, "HOME=/root")
+			}
+			if os.Getenv("USER") == "" {
+				env = append(env, "USER=root")
+			}
+			if os.Getenv("LOGNAME") == "" {
+				env = append(env, "LOGNAME=root")
+			}
+		}
+	}
+	if os.Getenv("SHELL") == "" {
+		env = append(env, "SHELL="+s.Shell)
+	}
+	env = append(env,
 		"TERM=xterm-256color",
 		fmt.Sprintf("COLUMNS=%d", s.Cols),
 		fmt.Sprintf("LINES=%d", s.Rows),
 	)
+	cmd.Env = env
 
 	// Set up the command to use the TTY
 	cmd.Stdin = tty

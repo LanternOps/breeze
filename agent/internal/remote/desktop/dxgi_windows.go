@@ -194,9 +194,10 @@ type dxgiCapturer struct {
 	// Cross-thread cursor state: updated by the capture thread (which has the
 	// correct desktop via SetThreadDesktop), read by the cursor stream goroutine
 	// whose GetCursorInfo would fail on a different-desktop thread.
-	cursorX   atomic.Int32
-	cursorY   atomic.Int32
-	cursorVis atomic.Bool
+	cursorX     atomic.Int32
+	cursorY     atomic.Int32
+	cursorVis   atomic.Bool
+	cursorShape atomic.Value // string: CSS cursor name (e.g. "default", "pointer", "text")
 }
 
 // newPlatformCapturer tries DXGI Desktop Duplication first, falls back to GDI.

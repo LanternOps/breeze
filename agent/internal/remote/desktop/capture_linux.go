@@ -305,12 +305,16 @@ import (
 	"fmt"
 	"image"
 	"sync"
+	"sync/atomic"
 )
 
 // linuxCapturer implements ScreenCapturer for Linux using X11
 type linuxCapturer struct {
 	config CaptureConfig
 	mu     sync.Mutex
+
+	// Cursor state — updated by CursorPosition(), read by CursorShape().
+	cursorShape atomic.Value // string: CSS cursor name (e.g. "default", "pointer", "text")
 }
 
 // newPlatformCapturer creates a new Linux screen capturer
@@ -374,6 +378,7 @@ func (c *linuxCapturer) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	C.cleanupX11()
+	closeCursorCtx()
 	return nil
 }
 

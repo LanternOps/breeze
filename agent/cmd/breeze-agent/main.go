@@ -579,7 +579,11 @@ func checkStatus() {
 		return
 	}
 
-	fmt.Println("Status: Enrolled")
+	if isSystemServiceRunning() {
+		fmt.Println("Status: Enrolled & Active")
+	} else {
+		fmt.Println("Status: Enrolled (stopped)")
+	}
 	fmt.Printf("Version: %s\n", version)
 	fmt.Printf("Agent ID: %s\n", cfg.AgentID)
 	fmt.Printf("Server: %s\n", cfg.ServerURL)

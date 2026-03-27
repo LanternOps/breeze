@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { cn, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import BackupJobList from './BackupJobList';
 
 type StatChangeType = 'positive' | 'negative' | 'neutral';
 
@@ -313,6 +314,7 @@ export default function BackupDashboard() {
   const [usageHistory, setUsageHistory] = useState<UsageHistoryPoint[]>([]);
   const [usageHistoryError, setUsageHistoryError] = useState<string>();
   const [attentionItems, setAttentionItems] = useState<AttentionItem[]>([]);
+  const [showAllJobs, setShowAllJobs] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
 
@@ -553,10 +555,18 @@ export default function BackupDashboard() {
               <h3 className="text-base font-semibold text-foreground">Recent Jobs</h3>
               <p className="text-sm text-muted-foreground">Latest backup activity across sites.</p>
             </div>
-            <button className="text-sm font-medium text-primary hover:text-primary/80">
-              View all
+            <button
+              onClick={() => setShowAllJobs(!showAllJobs)}
+              className="text-sm font-medium text-primary hover:text-primary/80"
+            >
+              {showAllJobs ? 'Show recent' : 'View all'}
             </button>
           </div>
+          {showAllJobs ? (
+            <div className="mt-4">
+              <BackupJobList />
+            </div>
+          ) : (
           <div className="mt-4 space-y-3">
             {recentJobs.length === 0 ? (
               <div className="rounded-md border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground">
@@ -596,6 +606,7 @@ export default function BackupDashboard() {
               })
             )}
           </div>
+          )}
         </div>
 
         <div className="rounded-lg border bg-card p-5 shadow-sm">

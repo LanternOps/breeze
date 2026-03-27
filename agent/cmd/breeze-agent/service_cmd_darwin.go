@@ -190,9 +190,16 @@ var serviceInstallCmd = &cobra.Command{
 		fmt.Println()
 		fmt.Println("Breeze Agent service installed.")
 
-		// If already enrolled, skip the enrollment step in Next Steps.
+		// Show contextual next steps based on enrollment and service state.
 		existingCfg, _ := config.Load(cfgFile)
-		if existingCfg != nil && existingCfg.AgentID != "" {
+		enrolled := existingCfg != nil && existingCfg.AgentID != ""
+		running := isSystemServiceRunning()
+
+		if enrolled && running {
+			// Already enrolled and running — nothing more to do.
+			fmt.Printf("\nAgent is enrolled and the service is running.\n")
+			fmt.Printf("  Logs:    tail -f %s/agent.log\n", darwinLogDir)
+		} else if enrolled {
 			fmt.Println()
 			fmt.Println("Next steps:")
 			fmt.Printf("  1. Start:   sudo breeze-agent service start\n")

@@ -29,6 +29,7 @@ export type Device = {
   deviceRole?: DeviceRole;
   deviceRoleSource?: string;
   displayName?: string;
+  isHeadless?: boolean;
 };
 
 type DeviceListProps = {
@@ -510,6 +511,7 @@ export default function DeviceList({
                         deviceId={device.id}
                         iconOnly
                         disabled={device.status !== 'online'}
+                        isHeadless={device.isHeadless}
                       />
                       <div className="relative" ref={rowMenuOpenId === device.id ? rowMenuRef : undefined}>
                         <button

@@ -40,6 +40,7 @@ export const devices = pgTable('devices', {
   tccPermissions: jsonb('tcc_permissions').$type<TCCPermissions | null>(),
   lastUser: varchar('last_user', { length: 255 }),
   uptimeSeconds: integer('uptime_seconds'),
+  isHeadless: boolean('is_headless').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });

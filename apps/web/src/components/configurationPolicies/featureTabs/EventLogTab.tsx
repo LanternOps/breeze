@@ -65,15 +65,21 @@ export default function EventLogTab({ policyId, existingLink, onLinkChanged, lin
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;
-  const [settings, setSettings] = useState<EventLogSettings>(() => ({
-    ...defaults,
-    ...(effectiveLink?.inlineSettings as Partial<EventLogSettings> | undefined),
-  }));
+  const [settings, setSettings] = useState<EventLogSettings>(() => {
+    const stored = effectiveLink?.inlineSettings as Partial<EventLogSettings> | undefined;
+    const merged = { ...defaults, ...stored };
+    if (!Array.isArray(merged.collectCategories)) merged.collectCategories = [...defaults.collectCategories];
+    return merged;
+  });
 
   useEffect(() => {
     const link = existingLink ?? parentLink;
     if (link?.inlineSettings) {
-      setSettings((prev) => ({ ...prev, ...(link.inlineSettings as Partial<EventLogSettings>) }));
+      setSettings((prev) => {
+        const merged = { ...prev, ...(link.inlineSettings as Partial<EventLogSettings>) };
+        if (!Array.isArray(merged.collectCategories)) merged.collectCategories = [...defaults.collectCategories];
+        return merged;
+      });
     }
   }, [existingLink, parentLink]);
 

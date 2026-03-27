@@ -25,7 +25,18 @@ export default defineConfig({
         "connect-src 'self' https: ws: wss:"
       ],
       scriptDirective: {
-        resources: ["'self'", 'https://cdn.jsdelivr.net', 'https://static.cloudflareinsights.com']
+        // Astro auto-hashes its own inline scripts, but is:inline scripts in
+        // Layout.astro and certain hydration bootstrap fragments may not be
+        // covered.  Add their sha256 hashes here so they pass CSP validation.
+        // If a CSP script-src-elem violation appears in the browser console,
+        // copy the suggested sha256 hash from the error into this array.
+        resources: [
+          "'self'",
+          'https://cdn.jsdelivr.net',
+          'https://static.cloudflareinsights.com',
+          "'sha256-bacfnNOzS8xVciF1oRjNrpDu4hKrvSr0iXOXqEFy7QI='",
+          "'sha256-DKBc0lUFnELkt1qO57cJDibexAx9xbbfodYeIFq6uEQ='"
+        ]
       },
       styleDirective: {
         // 'unsafe-inline' required because xterm.js injects dynamic inline

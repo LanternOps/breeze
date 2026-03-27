@@ -31,8 +31,13 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	}
 
 	// Create WebRTC configuration
+	parsedICE := parseICEServers(iceServers)
+	for _, s := range parsedICE {
+		hasCreds := s.Username != ""
+		slog.Info("ICE server configured", "session", sessionID, "urls", s.URLs, "hasCreds", hasCreds)
+	}
 	config := webrtc.Configuration{
-		ICEServers: parseICEServers(iceServers),
+		ICEServers: parsedICE,
 	}
 
 	// Register playout-delay RTP header extension for low-latency screen sharing.
@@ -49,9 +54,21 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	); regErr != nil {
 		slog.Warn("Failed to register playout-delay extension (non-fatal)", "error", regErr.Error())
 	}
-	api := webrtc.NewAPI(webrtc.WithMediaEngine(mediaEngine))
 
-	// Create peer connection with custom API (playout-delay extension)
+	// ICE timeout tuning: keep NAT bindings alive and detect failures faster.
+	se := webrtc.SettingEngine{}
+	se.SetICETimeouts(
+		5*time.Second,  // disconnectedTimeout — detect no-media quickly
+		15*time.Second, // failedTimeout — reduced from 25s default for faster recovery
+		2*time.Second,  // keepAliveInterval — refresh STUN bindings when no media
+	)
+
+	api := webrtc.NewAPI(
+		webrtc.WithMediaEngine(mediaEngine),
+		webrtc.WithSettingEngine(se),
+	)
+
+	// Create peer connection with custom API (playout-delay + ICE tuning)
 	peerConn, err := api.NewPeerConnection(config)
 	if err != nil {
 		return "", fmt.Errorf("failed to create peer connection: %w", err)
@@ -353,13 +370,40 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		}
 	})
 
-	// Handle connection state changes
+	// Handle connection state changes.
+	// On "disconnected", wait a grace period for ICE to recover (NAT rebinding,
+	// TURN fallback) before tearing down. This prevents premature session kills
+	// on transient network blips.
+	var disconnectTimer *time.Timer
 	peerConn.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		slog.Info("Desktop WebRTC connection state", "session", sessionID, "state", state.String())
-		if state == webrtc.PeerConnectionStateConnected {
-			session.startStreaming()
+
+		// Cancel any pending disconnect timer when state changes
+		if disconnectTimer != nil {
+			disconnectTimer.Stop()
+			disconnectTimer = nil
 		}
-		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
+
+		switch state {
+		case webrtc.PeerConnectionStateConnected:
+			session.startStreaming()
+
+		case webrtc.PeerConnectionStateDisconnected:
+			// Grace period: ICE may recover via keepalive or TURN fallback.
+			// If still disconnected after 8s, stop the session.
+			disconnectTimer = time.AfterFunc(8*time.Second, func() {
+				currentState := peerConn.ConnectionState()
+				if currentState != webrtc.PeerConnectionStateConnected {
+					slog.Warn("Desktop WebRTC did not recover from disconnected state, stopping",
+						"session", sessionID, "finalState", currentState.String())
+					m.StopSession(sessionID)
+					if m.OnSessionStopped != nil {
+						go m.OnSessionStopped(sessionID)
+					}
+				}
+			})
+
+		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
 			m.StopSession(sessionID)
 			if m.OnSessionStopped != nil {
 				go m.OnSessionStopped(sessionID)
@@ -398,6 +442,14 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	firstCandidate := make(chan struct{}, 1)
 	peerConn.OnICECandidate(func(c *webrtc.ICECandidate) {
 		if c != nil {
+			slog.Info("ICE candidate gathered",
+				"session", sessionID,
+				"type", c.Typ.String(),
+				"protocol", c.Protocol.String(),
+				"address", c.Address,
+				"port", c.Port,
+				"relatedAddr", c.RelatedAddress,
+			)
 			select {
 			case firstCandidate <- struct{}{}:
 			default:
