@@ -86,11 +86,23 @@ export async function processBackupVerificationResult(
   let agentResult: Record<string, unknown>;
   try {
     agentResult = JSON.parse(commandResult.stdout) as Record<string, unknown>;
-  } catch {
+  } catch (parseErr) {
+    console.error(`[backupVerification] Failed to parse agent result for command ${commandId}:`, parseErr);
     pending.status = 'failed';
     pending.completedAt = resultNow;
     (pending.details as Record<string, unknown>).reason = 'Failed to parse agent result';
     await persistVerificationToDb(pending);
+    await safePublish(
+      'backup.verification_failed',
+      orgId,
+      {
+        verificationId: pending.id,
+        deviceId: pending.deviceId,
+        verificationType: pending.verificationType,
+        status: 'failed',
+      },
+      'agent.result'
+    );
     return;
   }
 

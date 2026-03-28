@@ -83,15 +83,26 @@ backupVerificationRoutes.post('/verify', zValidator('json', verificationRunSchem
       }
     });
 
+    const simulated = !!(verification.details as Record<string, unknown>)?.simulated;
     return c.json({
       data: {
         verification,
-        readiness
+        readiness,
+        simulated,
       }
     }, 201);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Verification failed to start';
-    return c.json({ error: message }, 400);
+    const isValidation = error instanceof Error && (
+      message.includes('not found') ||
+      message.includes('does not belong') ||
+      message.includes('required') ||
+      message.includes('highImpactApproved')
+    );
+    if (!isValidation) {
+      console.error('[backupVerification] Unexpected error in POST /verify:', error);
+    }
+    return c.json({ error: isValidation ? message : 'Internal server error' }, isValidation ? 400 : 500);
   }
 });
 

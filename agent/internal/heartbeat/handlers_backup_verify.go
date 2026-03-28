@@ -24,7 +24,10 @@ func handleBackupVerify(h *Heartbeat, cmd Command) tools.CommandResult {
 	if snapshotID == "" {
 		// Default to latest snapshot
 		snapshots, err := backup.ListSnapshots(h.backupMgr.GetProvider())
-		if err != nil || len(snapshots) == 0 {
+		if err != nil {
+			return tools.NewErrorResult(fmt.Errorf("failed to list snapshots: %w", err), time.Since(start).Milliseconds())
+		}
+		if len(snapshots) == 0 {
 			return tools.NewErrorResult(fmt.Errorf("no snapshots available"), time.Since(start).Milliseconds())
 		}
 		snapshotID = snapshots[len(snapshots)-1].ID
@@ -46,7 +49,10 @@ func handleBackupTestRestore(h *Heartbeat, cmd Command) tools.CommandResult {
 	snapshotID := tools.GetPayloadString(cmd.Payload, "snapshotId", "")
 	if snapshotID == "" {
 		snapshots, err := backup.ListSnapshots(h.backupMgr.GetProvider())
-		if err != nil || len(snapshots) == 0 {
+		if err != nil {
+			return tools.NewErrorResult(fmt.Errorf("failed to list snapshots: %w", err), time.Since(start).Milliseconds())
+		}
+		if len(snapshots) == 0 {
 			return tools.NewErrorResult(fmt.Errorf("no snapshots available"), time.Since(start).Milliseconds())
 		}
 		snapshotID = snapshots[len(snapshots)-1].ID

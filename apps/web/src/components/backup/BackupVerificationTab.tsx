@@ -106,7 +106,13 @@ export default function BackupVerificationTab({ deviceId }: { deviceId: string }
         setReadiness(match ?? null);
       }
 
-      setError(undefined);
+      // Surface error if either failed
+      if (!vRes.ok || !rRes.ok) {
+        const failedStatus = !vRes.ok ? vRes.status : rRes.status;
+        setError(`Failed to load data (${failedStatus})`);
+      } else {
+        setError(undefined);
+      }
     } catch (err) {
       setError(friendlyFetchError(err));
     } finally {
@@ -318,6 +324,11 @@ export default function BackupVerificationTab({ deviceId }: { deviceId: string }
                           />
                           {cfg.label}
                         </span>
+                        {v.details && (v.details as Record<string, unknown>).simulated && (
+                          <span className="ml-1 inline-flex items-center rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600 border border-gray-300">
+                            simulated
+                          </span>
+                        )}
                       </td>
                       <td className="py-2 pr-4 text-muted-foreground">
                         {new Date(v.startedAt).toLocaleString()}
