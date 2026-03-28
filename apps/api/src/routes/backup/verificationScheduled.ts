@@ -106,8 +106,12 @@ export async function processBackupVerificationResult(
     return;
   }
 
-  // Map agent fields to verification record
-  pending.status = (agentResult.status as BackupVerificationStatus) || 'failed';
+  // Map agent fields to verification record — validate status against allowed values
+  const VALID_STATUSES = new Set<BackupVerificationStatus>(['passed', 'failed', 'partial']);
+  const agentStatus = typeof agentResult.status === 'string' && VALID_STATUSES.has(agentResult.status as BackupVerificationStatus)
+    ? (agentResult.status as BackupVerificationStatus)
+    : 'failed';
+  pending.status = agentStatus;
   pending.completedAt = resultNow;
   pending.filesVerified = (agentResult.filesVerified as number) ?? 0;
   pending.filesFailed = (agentResult.filesFailed as number) ?? 0;
