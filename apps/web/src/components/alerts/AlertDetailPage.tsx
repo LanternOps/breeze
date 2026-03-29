@@ -38,7 +38,7 @@ type AlertDetailPageProps = {
 const statusIcons: Record<AlertStatus, typeof Bell> = {
   active: Bell,
   acknowledged: CheckCircle,
-  resolved: XCircle,
+  resolved: CheckCircle,
   suppressed: Bell,
 };
 
@@ -233,7 +233,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                 disabled={actionInProgress}
                 className="h-10 rounded-md bg-green-600 px-4 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
               >
-                <XCircle className="mr-2 inline-block h-4 w-4" />
+                <CheckCircle className="mr-2 inline-block h-4 w-4" />
                 Resolve
               </button>
             )}

@@ -55,21 +55,24 @@ export default function AlertsSummary({
   const totalTrend = getTrendInfo(totalActive, totalPrevious);
 
   return (
-    <div className={cn('rounded-lg border bg-card p-6 shadow-sm', className)}>
+    <div className={cn(
+      'rounded-lg border bg-gradient-to-b from-card to-secondary/30 p-5',
+      className
+    )}>
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
-          <AlertTriangle className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-lg font-semibold">Active Alerts</h2>
+          <AlertTriangle className="h-4 w-4 text-muted-foreground" />
+          <span className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Active Alerts</span>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-2xl font-bold">{totalActive}</span>
+          <span className="text-3xl font-bold tracking-tight">{totalActive}</span>
           {totalTrend.direction !== 'stable' && (
             <div
               className={cn(
                 'flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs font-medium',
                 totalTrend.direction === 'up'
-                  ? 'bg-red-500/20 text-red-700'
-                  : 'bg-green-500/20 text-green-700'
+                  ? 'bg-red-500/15 text-red-700 dark:text-red-400'
+                  : 'bg-green-500/15 text-green-700 dark:text-green-400'
               )}
             >
               {totalTrend.direction === 'up' ? (
@@ -83,10 +86,12 @@ export default function AlertsSummary({
         </div>
       </div>
 
-      <div className="grid grid-cols-5 gap-2">
+      <div className="flex items-stretch gap-1.5">
         {sortedAlerts.map(alert => {
           const config = severityConfig[alert.severity];
           const trend = getTrendInfo(alert.count, alert.previousCount);
+          const hasAlerts = alert.count > 0;
+          const isUrgent = hasAlerts && (alert.severity === 'critical' || alert.severity === 'high');
 
           return (
             <button
@@ -94,20 +99,35 @@ export default function AlertsSummary({
               type="button"
               onClick={() => onFilterBySeverity?.(alert.severity)}
               className={cn(
-                'flex flex-col items-center rounded-lg border p-3 transition hover:opacity-80',
-                config.bg,
-                config.border,
+                'flex flex-1 flex-col items-center justify-center rounded-lg border py-3 transition-all',
+                hasAlerts
+                  ? cn(config.bg, config.border, 'hover:shadow-sm')
+                  : 'border-transparent bg-muted/30 hover:bg-muted/50',
+                isUrgent && 'ring-1 ring-inset',
+                alert.severity === 'critical' && hasAlerts && 'ring-red-500/40',
+                alert.severity === 'high' && hasAlerts && 'ring-orange-500/30',
                 'cursor-pointer'
               )}
               title={`View ${config.label.toLowerCase()} alerts`}
             >
-              <span className={cn('text-2xl font-bold', config.color)}>{alert.count}</span>
-              <span className="text-xs text-muted-foreground mt-1">{config.label}</span>
+              <span className={cn(
+                'font-bold tabular-nums',
+                hasAlerts ? config.color : 'text-muted-foreground/50',
+                isUrgent ? 'text-2xl' : 'text-xl'
+              )}>
+                {alert.count}
+              </span>
+              <span className={cn(
+                'text-[11px] mt-0.5',
+                hasAlerts ? 'text-muted-foreground font-medium' : 'text-muted-foreground/50'
+              )}>
+                {config.label}
+              </span>
               {trend.direction !== 'stable' && (
                 <div
                   className={cn(
                     'flex items-center gap-0.5 mt-1 text-[10px] font-medium',
-                    trend.direction === 'up' ? 'text-red-600' : 'text-green-600'
+                    trend.direction === 'up' ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'
                   )}
                 >
                   {trend.direction === 'up' ? (
@@ -119,7 +139,7 @@ export default function AlertsSummary({
                 </div>
               )}
               {trend.direction === 'stable' && alert.previousCount !== undefined && (
-                <div className="flex items-center gap-0.5 mt-1 text-[10px] font-medium text-muted-foreground">
+                <div className="flex items-center gap-0.5 mt-1 text-[10px] font-medium text-muted-foreground/50">
                   <Minus className="h-2.5 w-2.5" />
                   0
                 </div>
@@ -130,8 +150,8 @@ export default function AlertsSummary({
       </div>
 
       {totalPrevious !== undefined && (
-        <p className="text-xs text-muted-foreground text-center mt-4">
-          Compared to yesterday: {totalPrevious} total alerts
+        <p className="text-[11px] text-muted-foreground/70 text-center mt-3">
+          vs. yesterday: {totalPrevious} total
         </p>
       )}
     </div>
@@ -161,7 +181,7 @@ export function AlertsSummaryCompact({
   }, [sortedAlerts]);
 
   return (
-    <div className={cn('rounded-lg border bg-card p-4 shadow-sm', className)}>
+    <div className={cn('rounded-lg border bg-card p-4', className)}>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <AlertTriangle className="h-4 w-4 text-muted-foreground" />

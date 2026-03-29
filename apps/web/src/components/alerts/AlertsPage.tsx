@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { CheckCircle } from 'lucide-react';
+import { CheckCircle, Settings2 } from 'lucide-react';
 import AlertList, { type Alert } from './AlertList';
 import AlertDetails, { type StatusChange, type NotificationHistory } from './AlertDetails';
 import AlertsSummary from './AlertsSummary';
@@ -26,6 +26,7 @@ export default function AlertsPage() {
   const [severityFilter, setSeverityFilter] = useState<AlertSeverity | null>(null);
   const [deviceFilter, setDeviceFilter] = useState<FilterConditionGroup | null>(null);
   const [deviceFilterIds, setDeviceFilterIds] = useState<Set<string> | null>(null);
+  const [pendingBulk, setPendingBulk] = useState<{ action: string; alerts: Alert[] } | null>(null);
 
   const fetchAlerts = useCallback(async () => {
     try {
@@ -141,7 +142,6 @@ export default function AlertsPage() {
         throw new Error('Failed to acknowledge alert');
       }
 
-      // Optimistic update
       setAlerts(prev => prev.map(a =>
         a.id === alert.id ? { ...a, status: 'acknowledged' as const, acknowledgedAt: new Date().toISOString() } : a
       ));
@@ -154,7 +154,6 @@ export default function AlertsPage() {
       }
 
       showToast({ message: 'Alert acknowledged', type: 'success' });
-      // Background refresh
       fetchAlerts();
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to acknowledge alert';
@@ -178,7 +177,6 @@ export default function AlertsPage() {
         throw new Error('Failed to resolve alert');
       }
 
-      // Optimistic update
       setAlerts(prev => prev.map(a =>
         a.id === alert.id ? { ...a, status: 'resolved' as const, resolvedAt: new Date().toISOString() } : a
       ));
@@ -196,37 +194,47 @@ export default function AlertsPage() {
   };
 
   const handleSuppress = async (alert: Alert) => {
-    setSubmitting(true);
-    setSubmittingId(alert.id);
+    // Optimistic update with undo
+    const previousStatus = alert.status;
+    setAlerts(prev => prev.map(a =>
+      a.id === alert.id ? { ...a, status: 'suppressed' as const } : a
+    ));
+    if (detailOpen && selectedAlert?.id === alert.id) {
+      handleCloseDetail();
+    }
+
+    showToast({
+      message: `"${alert.title}" suppressed`,
+      type: 'undo',
+      onUndo: () => {
+        // Revert optimistic update
+        setAlerts(prev => prev.map(a =>
+          a.id === alert.id ? { ...a, status: previousStatus } : a
+        ));
+      },
+      duration: 5000,
+    });
+
+    // Fire the actual request
     try {
       const response = await fetchWithAuth(`/alerts/${alert.id}/suppress`, {
         method: 'POST'
       });
-
       if (!response.ok) {
         throw new Error('Failed to suppress alert');
       }
-
-      // Optimistic update
-      setAlerts(prev => prev.map(a =>
-        a.id === alert.id ? { ...a, status: 'suppressed' as const } : a
-      ));
-
-      showToast({ message: 'Alert suppressed', type: 'success' });
-      if (detailOpen && selectedAlert?.id === alert.id) {
-        handleCloseDetail();
-      }
       fetchAlerts();
     } catch (err) {
+      // Revert on failure
+      setAlerts(prev => prev.map(a =>
+        a.id === alert.id ? { ...a, status: previousStatus } : a
+      ));
       const msg = err instanceof Error ? err.message : 'Failed to suppress alert';
       showToast({ message: msg, type: 'error' });
-    } finally {
-      setSubmitting(false);
-      setSubmittingId(null);
     }
   };
 
-  const handleBulkAction = async (action: string, selectedAlerts: Alert[]) => {
+  const executeBulkAction = async (action: string, selectedAlerts: Alert[]) => {
     setSubmitting(true);
     try {
       const response = await fetchWithAuth('/alerts/bulk', {
@@ -241,13 +249,23 @@ export default function AlertsPage() {
         throw new Error(`Failed to ${action} alerts`);
       }
 
-      showToast({ message: `${selectedAlerts.length} alerts ${action}d`, type: 'success' });
+      showToast({ message: `${selectedAlerts.length} alert${selectedAlerts.length > 1 ? 's' : ''} ${action}d`, type: 'success' });
       await fetchAlerts();
     } catch (err) {
       const msg = err instanceof Error ? err.message : `Failed to ${action} alerts`;
       showToast({ message: msg, type: 'error' });
     } finally {
       setSubmitting(false);
+      setPendingBulk(null);
+    }
+  };
+
+  const handleBulkAction = async (action: string, selectedAlerts: Alert[]) => {
+    // Show inline confirmation for destructive bulk actions
+    if (action === 'suppress' || selectedAlerts.length >= 3) {
+      setPendingBulk({ action, alerts: selectedAlerts });
+    } else {
+      await executeBulkAction(action, selectedAlerts);
     }
   };
 
@@ -256,7 +274,6 @@ export default function AlertsPage() {
     void navigateTo(`/alerts?severity=${severity}`);
   };
 
-  // Calculate summary counts
   const alertCounts = alerts
     .filter(a => a.status === 'active' || a.status === 'acknowledged')
     .reduce(
@@ -299,14 +316,15 @@ export default function AlertsPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Alerts</h1>
-          <p className="text-muted-foreground">
-            Monitor alerts across your devices. Rule configuration is managed in Configuration Policies.
-          </p>
-        </div>
+    <div className="space-y-5">
+      <div>
+        <h1 className="text-xl font-bold tracking-tight">Alerts</h1>
+        <p className="text-sm text-muted-foreground mt-1">
+          Monitor alerts across your devices. Rules are managed in{' '}
+          <a href="/configuration-policies" className="text-primary hover:underline">
+            Configuration Policies
+          </a>.
+        </p>
       </div>
 
       {error && (
@@ -324,15 +342,49 @@ export default function AlertsPage() {
         defaultExpanded={false}
       />
 
+      {/* Bulk action confirmation bar */}
+      {pendingBulk && (
+        <div className="flex items-center gap-3 rounded-md border border-warning/40 bg-warning/10 px-4 py-3">
+          <span className="text-sm font-medium">
+            {pendingBulk.action === 'suppress' ? 'Suppress' : pendingBulk.action === 'resolve' ? 'Resolve' : 'Update'}{' '}
+            {pendingBulk.alerts.length} alert{pendingBulk.alerts.length > 1 ? 's' : ''}?
+          </span>
+          <div className="flex items-center gap-2 ml-auto">
+            <button
+              type="button"
+              onClick={() => setPendingBulk(null)}
+              className="h-8 rounded-md border px-3 text-sm font-medium hover:bg-muted"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => executeBulkAction(pendingBulk.action, pendingBulk.alerts)}
+              disabled={submitting}
+              className="h-8 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+            >
+              {submitting ? 'Processing...' : 'Confirm'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {alerts.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <div className="rounded-full bg-success/10 p-4 mb-4">
             <CheckCircle className="h-8 w-8 text-success" />
           </div>
           <h2 className="text-lg font-semibold text-foreground mb-1">All clear</h2>
-          <p className="text-sm text-muted-foreground max-w-md">
+          <p className="text-sm text-muted-foreground max-w-sm mb-4">
             No active alerts. Your fleet is healthy.
           </p>
+          <a
+            href="/configuration-policies"
+            className="inline-flex items-center gap-1.5 rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition"
+          >
+            <Settings2 className="h-4 w-4" />
+            Set up alert rules
+          </a>
         </div>
       ) : (
         <AlertList
@@ -350,7 +402,6 @@ export default function AlertsPage() {
         />
       )}
 
-      {/* Alert Details Drawer */}
       {detailOpen && selectedAlert && (
         <AlertDetails
           alert={selectedAlert}

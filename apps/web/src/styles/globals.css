@@ -118,6 +118,11 @@ select {
     animation: fade-up 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
   }
 
+  /* Slide-in drawer from right edge */
+  .slide-in-right {
+    animation: slide-in-from-right 0.25s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
   /* Stagger delays for sequential reveals */
   .stagger-1 { animation-delay: 50ms; }
   .stagger-2 { animation-delay: 100ms; }
@@ -154,6 +159,17 @@ select {
   }
 }
 
+@keyframes slide-in-from-right {
+  from {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
 @keyframes dialog-backdrop-in {
   from { opacity: 0; }
 }
@@ -168,6 +184,7 @@ select {
 /* Respect reduced motion preference */
 @media (prefers-reduced-motion: reduce) {
   .animate-in,
+  .slide-in-right,
   .stagger-1, .stagger-2, .stagger-3, .stagger-4,
   .dialog-backdrop,
   .dialog-panel {

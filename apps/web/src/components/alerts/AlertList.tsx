@@ -193,6 +193,7 @@ export default function AlertList({
         <button
           type="button"
           onClick={() => setFiltersExpanded(!filtersExpanded)}
+          aria-expanded={filtersExpanded}
           className={cn(
             'flex h-9 items-center gap-1.5 rounded-md border px-3 text-sm font-medium transition',
             filtersExpanded || hasActiveFilters
@@ -469,6 +470,8 @@ export default function AlertList({
                                   e.stopPropagation();
                                   onAcknowledge?.(alert);
                                 }}
+                                title="Mark as seen — stops escalation but keeps alert active"
+                                aria-label={`Acknowledge: ${alert.title}`}
                                 className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
                               >
                                 <CheckCircle className="h-3.5 w-3.5" />
@@ -482,6 +485,8 @@ export default function AlertList({
                                   e.stopPropagation();
                                   onResolve?.(alert);
                                 }}
+                                title="Close this alert — marks the issue as fixed"
+                                aria-label={`Resolve: ${alert.title}`}
                                 className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-success hover:bg-success/10"
                               >
                                 <CheckCircle className="h-3.5 w-3.5" />
@@ -495,8 +500,9 @@ export default function AlertList({
                                   e.stopPropagation();
                                   onSuppress?.(alert);
                                 }}
+                                title="Silence this alert — stops notifications without resolving"
+                                aria-label={`Suppress: ${alert.title}`}
                                 className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
-                                title="Suppress"
                               >
                                 <BellOff className="h-3.5 w-3.5" />
                                 Mute

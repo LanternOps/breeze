@@ -112,7 +112,7 @@ export default function AlertDetails({
       <div
         ref={panelRef}
         tabIndex={-1}
-        className="relative z-10 flex h-full w-full max-w-2xl flex-col border-l bg-card shadow-xl animate-in slide-in-from-right duration-200"
+        className="relative z-10 flex h-full w-full max-w-2xl flex-col border-l bg-card shadow-xl slide-in-right"
       >
         {/* Header */}
         <div className="flex items-start justify-between border-b px-6 py-4">
@@ -373,6 +373,7 @@ export default function AlertDetails({
               type="button"
               onClick={() => onSuppress?.(alert)}
               disabled={submitting}
+              title="Silence this alert — stops notifications without resolving"
               className="h-9 rounded-md border px-4 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
             >
               Suppress
@@ -383,6 +384,7 @@ export default function AlertDetails({
               type="button"
               onClick={() => onAcknowledge?.(alert)}
               disabled={submitting}
+              title="Mark as seen — stops escalation but keeps alert active"
               className={cn(
                 'h-9 rounded-md border px-4 text-sm font-medium disabled:opacity-50',
                 'border-warning/40 bg-warning/10 text-warning hover:bg-warning/20'
@@ -403,6 +405,7 @@ export default function AlertDetails({
               type="button"
               onClick={() => setShowResolveForm(true)}
               disabled={submitting}
+              title="Close this alert — marks the issue as fixed"
               className="h-9 rounded-md bg-success px-4 text-sm font-medium text-success-foreground hover:bg-success/90 disabled:opacity-50"
             >
               <CheckCircle className="mr-1.5 inline-block h-4 w-4" />
