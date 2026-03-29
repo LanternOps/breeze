@@ -1396,7 +1396,7 @@ Default rate limits protect the API from abuse:
 
 Breeze includes incident lifecycle workflows under `/api/v1/incidents` for structured triage, containment, evidence collection, and closure.
 
-### 8.1 Incident Lifecycle
+### 10.1 Incident Lifecycle
 
 Incident status transitions follow:
 
@@ -1409,7 +1409,7 @@ Operational notes:
 - Use **evidence** (`POST /api/v1/incidents/{id}/evidence`) for forensic artifacts and chain-of-custody metadata.
 - Use **close** (`POST /api/v1/incidents/{id}/close`) only after remediation and validation are complete.
 
-### 8.2 Required Data for Strong Auditability
+### 10.2 Required Data for Strong Auditability
 
 When handling incidents, record:
 
@@ -1418,7 +1418,7 @@ When handling incidents, record:
 - Evidence metadata (`evidenceType`, collection actor/time, storage path, optional integrity hash)
 - Approval references for high-risk containment (`approvalRef`)
 
-### 8.3 High-Risk Containment Governance
+### 10.3 High-Risk Containment Governance
 
 The following containment actions require an approval reference:
 
@@ -1428,7 +1428,7 @@ The following containment actions require an approval reference:
 
 If these actions are submitted without `approvalRef`, the API rejects the request.
 
-### 8.4 Incident Reporting
+### 10.4 Incident Reporting
 
 Use `GET /api/v1/incidents/{id}/report` to generate a stakeholder-ready summary including:
 
@@ -1437,7 +1437,7 @@ Use `GET /api/v1/incidents/{id}/report` to generate a stakeholder-ready summary 
 - Action success/failure counts
 - Captured lessons learned (from close step)
 
-### 8.5 Event Hooks
+### 10.5 Event Hooks
 
 Incident workflows emit:
 

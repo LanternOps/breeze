@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { eq } from 'drizzle-orm';
+import { and, eq, type SQL } from 'drizzle-orm';
 import type { StatusCode } from 'hono/utils/http-status';
 import { db } from '../db';
 import {
@@ -40,35 +40,46 @@ incidentActionRoutes.post(
     const auth = c.get('auth');
     const { id } = c.req.valid('param');
     const data = c.req.valid('json');
-    const incident = await getIncidentWithOrgCheck(id, auth);
-
-    if (!incident) {
-      return c.json({ error: 'Incident not found' }, 404);
-    }
 
     if (HIGH_RISK_CONTAINMENT_ACTIONS.has(data.actionType) && !data.approvalRef) {
       return c.json({ error: 'High-risk containment actions require an approvalRef' }, 400);
     }
 
-    const actionStatus = data.status ?? 'completed';
-    if (isContainmentSuccess(actionStatus) && !canTransitionStatus(incident.status, 'contained')) {
-      return c.json({ error: `Cannot transition incident from ${incident.status} to contained` }, 400);
-    }
-
-    const executedAt = data.executedAt ? new Date(data.executedAt) : new Date();
-    const timeline = appendTimeline(incident.timeline, {
-      at: new Date().toISOString(),
-      type: isContainmentSuccess(actionStatus) ? 'containment_executed' : 'containment_attempted',
-      actor: data.executedBy ?? 'user',
-      summary: data.description,
-      metadata: {
-        actionType: data.actionType,
-        actionStatus,
-        approvalRef: data.approvalRef,
-      },
-    });
-
     const transactionResult = await db.transaction(async (tx) => {
+      const conditions: SQL[] = [eq(incidents.id, id)];
+      const orgCondition = auth.orgCondition(incidents.orgId);
+      if (orgCondition) {
+        conditions.push(orgCondition);
+      }
+
+      const [incident] = await tx
+        .select()
+        .from(incidents)
+        .where(and(...conditions))
+        .limit(1);
+
+      if (!incident) {
+        return { error: 'Incident not found', status: 404 as const };
+      }
+
+      const actionStatus = data.status ?? 'completed';
+      if (isContainmentSuccess(actionStatus) && !canTransitionStatus(incident.status, 'contained')) {
+        return { error: `Cannot transition incident from ${incident.status} to contained`, status: 400 as const };
+      }
+
+      const executedAt = data.executedAt ? new Date(data.executedAt) : new Date();
+      const timeline = appendTimeline(incident.timeline, {
+        at: new Date().toISOString(),
+        type: isContainmentSuccess(actionStatus) ? 'containment_executed' : 'containment_attempted',
+        actor: data.executedBy ?? 'user',
+        summary: data.description,
+        metadata: {
+          actionType: data.actionType,
+          actionStatus,
+          approvalRef: data.approvalRef,
+        },
+      });
+
       const [action] = await tx
         .insert(incidentActions)
         .values({
@@ -108,16 +119,16 @@ incidentActionRoutes.post(
         throw new Error('Failed to update incident after containment');
       }
 
-      return { action, updatedIncident };
+      return { incident, action, updatedIncident };
     });
 
-    const { action, updatedIncident } = transactionResult;
-
-    if (!action || !updatedIncident) {
-      return c.json({ error: 'Failed to apply containment' }, 500);
+    if ('error' in transactionResult) {
+      return c.json({ error: transactionResult.error }, transactionResult.status);
     }
 
-    if (isContainmentSuccess(actionStatus)) {
+    const { incident, action, updatedIncident } = transactionResult;
+
+    if (isContainmentSuccess(action.status)) {
       try {
         await publishEvent(
           'incident.contained',

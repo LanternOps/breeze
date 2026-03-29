@@ -19,6 +19,7 @@ import { resolveWritableToolOrgId } from './aiTools';
 import { queueCommandForExecution } from './commandQueue';
 import { publishEvent } from './eventBus';
 import type { IncidentTimelineEntry } from '../db/schema/incidentResponse';
+import { HIGH_RISK_CONTAINMENT_ACTIONS } from '../routes/incidents.validation';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -208,8 +209,7 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
       if (!input.deviceId) return JSON.stringify({ error: 'deviceId is required' });
       if (!input.actionType) return JSON.stringify({ error: 'actionType is required' });
 
-      const HIGH_RISK_ACTIONS = new Set(['network_isolation', 'account_disable', 'usb_block']);
-      if (HIGH_RISK_ACTIONS.has(input.actionType as string) && !input.approvalRef) {
+      if (HIGH_RISK_CONTAINMENT_ACTIONS.has(input.actionType as string) && !input.approvalRef) {
         return JSON.stringify({ error: 'High-risk containment actions require an approvalRef' });
       }
 

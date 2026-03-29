@@ -213,12 +213,12 @@ incidentRoutes.get(
       db
         .select()
         .from(incidentEvidence)
-        .where(eq(incidentEvidence.incidentId, id))
+        .where(and(eq(incidentEvidence.incidentId, id), eq(incidentEvidence.orgId, incident.orgId)))
         .orderBy(desc(incidentEvidence.collectedAt), desc(incidentEvidence.createdAt)),
       db
         .select()
         .from(incidentActions)
-        .where(eq(incidentActions.incidentId, id))
+        .where(and(eq(incidentActions.incidentId, id), eq(incidentActions.orgId, incident.orgId)))
         .orderBy(desc(incidentActions.executedAt), desc(incidentActions.createdAt)),
     ]);
 
@@ -240,45 +240,66 @@ incidentRoutes.post(
     const auth = c.get('auth');
     const { id } = c.req.valid('param');
     const data = c.req.valid('json');
-    const incident = await getIncidentWithOrgCheck(id, auth);
 
-    if (!incident) {
-      return c.json({ error: 'Incident not found' }, 404);
-    }
+    const result = await db.transaction(async (tx) => {
+      const conditions: SQL[] = [eq(incidents.id, id)];
+      const orgCondition = auth.orgCondition(incidents.orgId);
+      if (orgCondition) {
+        conditions.push(orgCondition);
+      }
 
-    if (!canTransitionStatus(incident.status, 'closed')) {
-      return c.json({ error: `Cannot transition incident from ${incident.status} to closed` }, 400);
-    }
+      const [incident] = await tx
+        .select()
+        .from(incidents)
+        .where(and(...conditions))
+        .limit(1);
 
-    const resolvedAt = data.resolvedAt ? new Date(data.resolvedAt) : new Date();
-    const closedAt = new Date();
+      if (!incident) {
+        return { error: 'Incident not found', status: 404 as const };
+      }
 
-    const timeline = appendTimeline(incident.timeline, {
-      at: closedAt.toISOString(),
-      type: 'incident_closed',
-      actor: 'user',
-      summary: data.summary,
-      metadata: {
-        lessonsLearned: data.lessonsLearned,
-      },
+      if (!canTransitionStatus(incident.status, 'closed')) {
+        return { error: `Cannot transition incident from ${incident.status} to closed`, status: 400 as const };
+      }
+
+      const resolvedAt = data.resolvedAt ? new Date(data.resolvedAt) : new Date();
+      const closedAt = new Date();
+
+      const timeline = appendTimeline(incident.timeline, {
+        at: closedAt.toISOString(),
+        type: 'incident_closed',
+        actor: 'user',
+        summary: data.summary,
+        metadata: {
+          lessonsLearned: data.lessonsLearned,
+        },
+      });
+
+      const [updated] = await tx
+        .update(incidents)
+        .set({
+          status: 'closed',
+          summary: data.summary,
+          resolvedAt,
+          closedAt,
+          timeline,
+          updatedAt: new Date(),
+        })
+        .where(eq(incidents.id, incident.id))
+        .returning();
+
+      if (!updated) {
+        return { error: 'Failed to close incident', status: 500 as const };
+      }
+
+      return { incident, updated };
     });
 
-    const [updated] = await db
-      .update(incidents)
-      .set({
-        status: 'closed',
-        summary: data.summary,
-        resolvedAt,
-        closedAt,
-        timeline,
-        updatedAt: new Date(),
-      })
-      .where(eq(incidents.id, incident.id))
-      .returning();
-
-    if (!updated) {
-      return c.json({ error: 'Failed to close incident' }, 500);
+    if ('error' in result) {
+      return c.json({ error: result.error }, result.status);
     }
+
+    const { incident, updated } = result;
 
     try {
       await publishEvent(
@@ -329,12 +350,12 @@ incidentRoutes.get(
       db
         .select()
         .from(incidentEvidence)
-        .where(eq(incidentEvidence.incidentId, incident.id))
+        .where(and(eq(incidentEvidence.incidentId, incident.id), eq(incidentEvidence.orgId, incident.orgId)))
         .orderBy(desc(incidentEvidence.collectedAt)),
       db
         .select()
         .from(incidentActions)
-        .where(eq(incidentActions.incidentId, incident.id))
+        .where(and(eq(incidentActions.incidentId, incident.id), eq(incidentActions.orgId, incident.orgId)))
         .orderBy(desc(incidentActions.executedAt)),
     ]);
 
