@@ -282,11 +282,14 @@ export default function DevicesPage() {
 
       switch (action) {
         case 'reboot':
+        case 'reboot_safe_mode':
         case 'shutdown':
-        case 'lock':
+        case 'lock': {
           await sendDeviceCommand(device.id, action);
-          showToast({ type: 'success', message: `${action.charAt(0).toUpperCase() + action.slice(1)} command sent to ${device.hostname}` });
+          const label = action === 'reboot_safe_mode' ? 'Reboot to Safe Mode' : action.charAt(0).toUpperCase() + action.slice(1);
+          showToast({ type: 'success', message: `${label} command sent to ${device.hostname}` });
           break;
+        }
 
         case 'maintenance':
           const isCurrentlyMaintenance = device.status === 'maintenance';
@@ -402,16 +405,18 @@ export default function DevicesPage() {
 
       switch (action) {
         case 'reboot':
+        case 'reboot_safe_mode':
         case 'shutdown':
         case 'lock': {
           const result = await sendBulkCommand(deviceIds, action);
           const successCount = result.commands?.length ?? 0;
           const failedCount = result.failed?.length ?? 0;
+          const bulkLabel = action === 'reboot_safe_mode' ? 'Reboot to Safe Mode' : action.charAt(0).toUpperCase() + action.slice(1);
 
           if (failedCount === 0) {
-            showToast({ type: 'success', message: `${action.charAt(0).toUpperCase() + action.slice(1)} command sent to ${successCount} devices` });
+            showToast({ type: 'success', message: `${bulkLabel} command sent to ${successCount} devices` });
           } else {
-            showToast({ type: 'error', message: `${action} sent to ${successCount} devices, ${failedCount} failed` });
+            showToast({ type: 'error', message: `${bulkLabel} sent to ${successCount} devices, ${failedCount} failed` });
           }
           break;
         }
