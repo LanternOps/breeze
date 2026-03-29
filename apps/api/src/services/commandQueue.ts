@@ -113,6 +113,9 @@ export const CommandTypes = {
   BACKUP_VERIFY: 'backup_verify',
   BACKUP_TEST_RESTORE: 'backup_test_restore',
   BACKUP_CLEANUP: 'backup_cleanup',
+  // Incident response
+  COLLECT_EVIDENCE: 'collect_evidence',
+  EXECUTE_CONTAINMENT: 'execute_containment',
 } as const;
 
 export type CommandType = typeof CommandTypes[keyof typeof CommandTypes];
@@ -204,6 +207,8 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.SELF_UNINSTALL,
   CommandTypes.BACKUP_VERIFY,
   CommandTypes.BACKUP_TEST_RESTORE,
+  // Incident response
+  CommandTypes.EXECUTE_CONTAINMENT,
 ]);
 
 /**
