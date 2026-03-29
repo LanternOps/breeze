@@ -158,87 +158,95 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
 
   // 2. For each org, resolve all backup-assigned devices via config policy hierarchy
   for (const { orgId } of orgRows) {
-    const entries = await resolveAllBackupAssignedDevices(orgId);
+    try {
+      const entries = await resolveAllBackupAssignedDevices(orgId);
 
-    for (const entry of entries) {
-      // configId (featurePolicyId → backupConfigs.id) is required for dispatch
-      if (!entry.configId) continue;
+      for (const entry of entries) {
+        // configId (featurePolicyId → backupConfigs.id) is required for dispatch
+        if (!entry.configId) {
+          console.warn(`[BackupWorker] Skipping device ${entry.deviceId}: feature link ${entry.featureLinkId} has no configId`);
+          continue;
+        }
 
-      const schedule = entry.settings.schedule as PolicySchedule | null;
-      if (!schedule?.frequency || !schedule.time) continue;
+        const schedule = entry.settings.schedule as PolicySchedule | null;
+        if (!schedule?.frequency || !schedule.time) continue;
 
-      // Check if due now (simple: compare hour:minute in UTC)
-      const [schedHour, schedMin] = (schedule.time ?? '02:00')
-        .split(':')
-        .map(Number);
-      const currentHour = now.getUTCHours();
-      const currentMin = now.getUTCMinutes();
+        // Check if due now (simple: compare hour:minute in UTC)
+        const [schedHour, schedMin] = (schedule.time ?? '02:00')
+          .split(':')
+          .map(Number);
+        const currentHour = now.getUTCHours();
+        const currentMin = now.getUTCMinutes();
 
-      if (currentHour !== schedHour || currentMin !== schedMin) continue;
+        if (currentHour !== schedHour || currentMin !== schedMin) continue;
 
-      // Check day-of-week for weekly
-      if (
-        schedule.frequency === 'weekly' &&
-        typeof schedule.dayOfWeek === 'number' &&
-        now.getUTCDay() !== schedule.dayOfWeek
-      ) {
-        continue;
-      }
+        // Check day-of-week for weekly
+        if (
+          schedule.frequency === 'weekly' &&
+          typeof schedule.dayOfWeek === 'number' &&
+          now.getUTCDay() !== schedule.dayOfWeek
+        ) {
+          continue;
+        }
 
-      // Check day-of-month for monthly
-      if (
-        schedule.frequency === 'monthly' &&
-        typeof schedule.dayOfMonth === 'number' &&
-        now.getUTCDate() !== schedule.dayOfMonth
-      ) {
-        continue;
-      }
+        // Check day-of-month for monthly
+        if (
+          schedule.frequency === 'monthly' &&
+          typeof schedule.dayOfMonth === 'number' &&
+          now.getUTCDate() !== schedule.dayOfMonth
+        ) {
+          continue;
+        }
 
-      // 4. Deduplicate: check for existing jobs this minute using featureLinkId + deviceId
-      const minuteStart = new Date(now);
-      minuteStart.setSeconds(0, 0);
-      const minuteEnd = new Date(minuteStart.getTime() + 60_000);
+        // 4. Deduplicate: check for existing jobs this minute using featureLinkId + deviceId
+        const minuteStart = new Date(now);
+        minuteStart.setSeconds(0, 0);
+        const minuteEnd = new Date(minuteStart.getTime() + 60_000);
 
-      const [existing] = await db
-        .select({ id: backupJobs.id })
-        .from(backupJobs)
-        .where(
-          and(
-            eq(backupJobs.featureLinkId, entry.featureLinkId),
-            eq(backupJobs.deviceId, entry.deviceId),
-            sql`${backupJobs.createdAt} >= ${minuteStart.toISOString()}::timestamptz`,
-            sql`${backupJobs.createdAt} < ${minuteEnd.toISOString()}::timestamptz`
+        const [existing] = await db
+          .select({ id: backupJobs.id })
+          .from(backupJobs)
+          .where(
+            and(
+              eq(backupJobs.featureLinkId, entry.featureLinkId),
+              eq(backupJobs.deviceId, entry.deviceId),
+              sql`${backupJobs.createdAt} >= ${minuteStart.toISOString()}::timestamptz`,
+              sql`${backupJobs.createdAt} < ${minuteEnd.toISOString()}::timestamptz`
+            )
           )
-        )
-        .limit(1);
+          .limit(1);
 
-      if (existing) continue;
+        if (existing) continue;
 
-      // 5. Create job with featureLinkId and configId from resolver
-      const [job] = await db
-        .insert(backupJobs)
-        .values({
-          orgId,
-          configId: entry.configId,
-          featureLinkId: entry.featureLinkId,
-          deviceId: entry.deviceId,
-          status: 'pending',
-          type: 'scheduled',
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning();
+        // 5. Create job with featureLinkId and configId from resolver
+        const [job] = await db
+          .insert(backupJobs)
+          .values({
+            orgId,
+            configId: entry.configId,
+            featureLinkId: entry.featureLinkId,
+            deviceId: entry.deviceId,
+            status: 'pending',
+            type: 'scheduled',
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning();
 
-      if (job) {
-        // 6. Enqueue dispatch
-        await enqueueBackupDispatch(
-          job.id,
-          job.configId,
-          orgId,
-          entry.deviceId
-        );
-        enqueued++;
+        if (job) {
+          // 6. Enqueue dispatch
+          await enqueueBackupDispatch(
+            job.id,
+            job.configId,
+            orgId,
+            entry.deviceId
+          );
+          enqueued++;
+        }
       }
+    } catch (err) {
+      console.error(`[BackupWorker] Failed to process scheduled backups for org ${orgId}:`, err instanceof Error ? err.message : err);
+      continue;
     }
   }
 

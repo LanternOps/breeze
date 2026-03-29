@@ -161,7 +161,10 @@ dashboardRoutes.get('/dashboard', async (c) => {
         .from(backupSnapshots)
         .where(eq(backupSnapshots.orgId, orgId))
         .then((r) => r[0] ?? { totalBytes: 0, count: 0 }),
-      resolveAllBackupAssignedDevices(orgId),
+      resolveAllBackupAssignedDevices(orgId).catch((err) => {
+        console.error(`[BackupDashboard] Failed to resolve assigned devices:`, err instanceof Error ? err.message : err);
+        return [];
+      }),
       db
         .select({
           job: backupJobs,
@@ -263,9 +266,11 @@ dashboardRoutes.get('/status/:deviceId', async (c) => {
         : null,
       lastSuccessAt: lastSuccess?.completedAt?.toISOString() ?? null,
       lastFailureAt: lastFailure?.completedAt?.toISOString() ?? null,
-      nextScheduledAt: resolved?.settings.schedule
-        ? getNextRun(resolved.settings.schedule as any)
-        : null,
+      nextScheduledAt: (() => {
+        const schedule = resolved?.settings?.schedule as Record<string, unknown> | null;
+        const hasSchedule = schedule && typeof schedule.frequency === 'string' && typeof schedule.time === 'string';
+        return hasSchedule ? getNextRun(schedule as any) : null;
+      })(),
     },
   });
 });

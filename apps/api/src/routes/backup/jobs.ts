@@ -118,7 +118,11 @@ jobsRoutes.post('/jobs/run/:deviceId', async (c) => {
   let configId = resolved?.configId ?? null;
   let featureLinkId = resolved?.featureLinkId ?? null;
 
-  // Fallback to first backupConfigs row if no policy assignment
+  if (resolved && !configId) {
+    return c.json({ error: 'Backup policy assigned but no backup config linked. Update the configuration policy.' }, 400);
+  }
+
+  // Only fallback if NO policy assignment at all
   if (!configId) {
     const [fallbackConfig] = await db
       .select({ id: backupConfigs.id })

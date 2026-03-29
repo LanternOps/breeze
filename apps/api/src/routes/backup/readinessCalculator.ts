@@ -400,7 +400,10 @@ export async function getBackupHealthSummary(orgId: string): Promise<{
   const [rows, readiness, assigned] = await Promise.all([
     listBackupVerifications(orgId),
     listRecoveryReadiness(orgId),
-    resolveAllBackupAssignedDevices(orgId)
+    resolveAllBackupAssignedDevices(orgId).catch((err) => {
+      console.error(`[BackupReadiness] Failed to resolve assigned devices:`, err instanceof Error ? err.message : err);
+      return [];
+    })
   ]);
   const now = Date.now();
   const dayAgo = now - DAY_MS;
