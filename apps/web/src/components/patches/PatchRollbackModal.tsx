@@ -491,7 +491,7 @@ export default function PatchRollbackModal({
             disabled={!canSubmit || isSubmitting}
             className={cn(
               'inline-flex h-10 items-center gap-2 rounded-md px-4 text-sm font-medium transition disabled:opacity-50',
-              'bg-amber-600 text-white hover:bg-amber-700'
+              'bg-warning text-white hover:opacity-90'
             )}
           >
             {isSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}

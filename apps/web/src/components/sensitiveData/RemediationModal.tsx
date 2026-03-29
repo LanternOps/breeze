@@ -201,13 +201,13 @@ export default function RemediationModal({ findingIds, onClose, onComplete }: Re
         {/* Step 4: Result */}
         {step === 'result' && result && (
           <div className="mt-4 space-y-4">
-            <div className="rounded-md border border-green-500/40 bg-green-500/10 p-4">
-              <p className="text-sm font-medium text-green-700">Remediation initiated successfully.</p>
+            <div className="rounded-md border border-success/30 bg-success/10 p-4">
+              <p className="text-sm font-medium text-success">Remediation initiated successfully.</p>
               {typeof result.updated === 'number' && (
-                <p className="mt-1 text-sm text-green-600">{result.updated} finding(s) updated</p>
+                <p className="mt-1 text-sm text-success">{result.updated} finding(s) updated</p>
               )}
               {Array.isArray(result.queued) && result.queued.length > 0 && (
-                <p className="mt-1 text-sm text-green-600">{result.queued.length} command(s) queued</p>
+                <p className="mt-1 text-sm text-success">{result.queued.length} command(s) queued</p>
               )}
               {Array.isArray(result.failed) && result.failed.length > 0 && (
                 <p className="mt-1 text-sm text-destructive">{result.failed.length} failed</p>

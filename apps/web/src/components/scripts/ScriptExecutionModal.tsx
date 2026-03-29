@@ -460,11 +460,11 @@ export default function ScriptExecutionModal({
 
           {/* Confirmation */}
           {showConfirm && executionState === 'idle' && (
-            <div className="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-4 py-3">
-              <p className="text-sm font-medium text-yellow-700">
+            <div className="rounded-md border border-warning/30 bg-warning/10 px-4 py-3">
+              <p className="text-sm font-medium text-warning">
                 Confirm Execution
               </p>
-              <p className="text-sm text-yellow-600 mt-1">
+              <p className="text-sm text-warning mt-1">
                 You are about to execute "{script.name}" on {selectedDeviceIds.size} device(s).
                 Run as: {runAs === 'system' ? 'System' : 'Logged-in user'}.
                 This action cannot be undone.
@@ -494,9 +494,9 @@ export default function ScriptExecutionModal({
               className={cn(
                 'inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60',
                 executionState === 'success'
-                  ? 'bg-green-600 text-white'
+                  ? 'bg-success text-white'
                   : showConfirm
-                    ? 'bg-yellow-600 text-white hover:bg-yellow-700'
+                    ? 'bg-warning text-white hover:opacity-90'
                     : 'bg-primary text-primary-foreground hover:opacity-90'
               )}
             >

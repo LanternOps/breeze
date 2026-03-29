@@ -166,7 +166,7 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
                   <button
                     type="button"
                     onClick={() => handleRemoveTag(tag)}
-                    className="ml-0.5 rounded-full hover:bg-primary/20 p-0.5"
+                    className="-mr-1 ml-0.5 flex h-5 w-5 items-center justify-center rounded-full hover:bg-primary/20"
                   >
                     <X className="h-3 w-3" />
                   </button>
