@@ -151,6 +151,13 @@ const (
 	CmdVSSStatus     = "vss_status"
 	CmdVSSWriterList = "vss_writer_list"
 
+	// System state & bare metal recovery
+	CmdSystemStateCollect  = "system_state_collect"
+	CmdHardwareProfile     = "hardware_profile"
+	CmdVMRestoreFromBackup = "vm_restore_from_backup"
+	CmdVMRestoreEstimate   = "vm_restore_estimate"
+	CmdBMRRecover          = "bmr_recover"
+
 	// Log shipping
 	CmdSetLogLevel = "set_log_level"
 

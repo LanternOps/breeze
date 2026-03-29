@@ -8,6 +8,7 @@ import { dashboardRoutes } from './dashboard';
 import { backupVerificationRoutes } from './verification';
 import { vssRoutes } from './vss';
 import { encryptionRoutes } from './encryption';
+import { bmrRoutes } from './bmr';
 
 export const backupRoutes = new Hono();
 
@@ -19,5 +20,6 @@ backupRoutes.route('/', snapshotsRoutes);
 backupRoutes.route('/', restoreRoutes);
 backupRoutes.route('/', dashboardRoutes);
 backupRoutes.route('/', backupVerificationRoutes);
+backupRoutes.route('/', bmrRoutes);
 backupRoutes.route('/vss', vssRoutes);
 backupRoutes.route('/encryption', encryptionRoutes);

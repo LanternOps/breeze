@@ -160,3 +160,49 @@ export const extendedPolicyUpdateSchema = policyUpdateSchema.extend({
   backupWindowEnd: z.string().regex(/^\d{2}:\d{2}$/).optional(),
   priority: z.number().int().min(1).max(100).optional(),
 });
+
+// ── BMR / Recovery Token schemas ────────────────────────────────────
+
+export const bmrCreateTokenSchema = z.object({
+  snapshotId: z.string().uuid(),
+  restoreType: z.enum(['full', 'selective', 'bare_metal']),
+  targetConfig: z
+    .record(z.any())
+    .refine((val) => JSON.stringify(val).length <= 65536, {
+      message: 'targetConfig too large (max 64KB)',
+    })
+    .optional(),
+  expiresInHours: z.number().int().min(1).max(168).default(24),
+});
+
+export const bmrAuthenticateSchema = z.object({
+  token: z.string().min(1),
+});
+
+export const bmrCompleteSchema = z.object({
+  token: z.string().min(1),
+  result: z.object({
+    status: z.enum(['completed', 'failed', 'partial']),
+    filesRestored: z.number().int().optional(),
+    bytesRestored: z.number().int().optional(),
+    stateApplied: z.boolean().optional(),
+    driversInjected: z.number().int().optional(),
+    validated: z.boolean().optional(),
+    warnings: z.array(z.string()).optional(),
+    error: z.string().optional(),
+  }),
+});
+
+export const bmrVmRestoreSchema = z.object({
+  snapshotId: z.string().uuid(),
+  targetDeviceId: z.string().uuid(),
+  hypervisor: z.enum(['hyperv', 'vmware']),
+  vmName: z.string().min(1).max(200),
+  vmSpecs: z
+    .object({
+      memoryMb: z.number().int().min(512).optional(),
+      cpuCount: z.number().int().min(1).optional(),
+      diskSizeGb: z.number().int().min(1).optional(),
+    })
+    .optional(),
+});

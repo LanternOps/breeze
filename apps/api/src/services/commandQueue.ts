@@ -117,6 +117,13 @@ export const CommandTypes = {
   // VSS backup management
   VSS_STATUS: 'vss_status',
   VSS_WRITER_LIST: 'vss_writer_list',
+
+  // Bare metal recovery / system state
+  SYSTEM_STATE_COLLECT: 'system_state_collect',
+  HARDWARE_PROFILE: 'hardware_profile',
+  VM_RESTORE_FROM_BACKUP: 'vm_restore_from_backup',
+  VM_RESTORE_ESTIMATE: 'vm_restore_estimate',
+  BMR_RECOVER: 'bmr_recover',
 } as const;
 
 export type CommandType = typeof CommandTypes[keyof typeof CommandTypes];
@@ -209,6 +216,9 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.BACKUP_VERIFY,
   CommandTypes.BACKUP_TEST_RESTORE,
   CommandTypes.VSS_WRITER_LIST,
+  CommandTypes.SYSTEM_STATE_COLLECT,
+  CommandTypes.VM_RESTORE_FROM_BACKUP,
+  CommandTypes.BMR_RECOVER,
 ]);
 
 /**

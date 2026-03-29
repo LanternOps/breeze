@@ -38,7 +38,8 @@ type Config struct {
 	BackupS3Region           string   `mapstructure:"backup_s3_region"`
 	BackupS3AccessKey        string   `mapstructure:"backup_s3_access_key"`
 	BackupS3SecretKey        string   `mapstructure:"backup_s3_secret_key"`
-	BackupVSSEnabled         bool     `mapstructure:"backup_vss_enabled"` // Windows: VSS shadow copy before backup
+	BackupVSSEnabled         bool     `mapstructure:"backup_vss_enabled"`          // Windows: VSS shadow copy before backup
+	BackupSystemStateEnabled bool     `mapstructure:"backup_system_state_enabled"` // Collect system state alongside file backup
 
 	// Logging configuration
 	LogLevel         string `mapstructure:"log_level"`

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
+	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 	"github.com/breeze-rmm/agent/internal/backup/vss"
 )
 
@@ -27,24 +28,26 @@ const (
 
 // BackupConfig defines backup configuration settings.
 type BackupConfig struct {
-	Provider   providers.BackupProvider
-	Paths      []string
-	Schedule   time.Duration
-	Retention  int
-	VSSEnabled bool // Windows only: create VSS shadow copy before backup
+	Provider           providers.BackupProvider
+	Paths              []string
+	Schedule           time.Duration
+	Retention          int
+	VSSEnabled         bool // Windows only: create VSS shadow copy before backup
+	SystemStateEnabled bool // Collect system state alongside file backup
 }
 
 // BackupJob tracks the state of a backup run.
 type BackupJob struct {
-	ID            string
-	StartedAt     time.Time
-	CompletedAt   time.Time
-	Snapshot      *Snapshot
-	FilesBackedUp int
-	BytesBackedUp int64
-	Status        string
-	Error         error
-	VSSMetadata   *vss.VSSMetadata // nil when VSS was not used
+	ID                   string
+	StartedAt            time.Time
+	CompletedAt          time.Time
+	Snapshot             *Snapshot
+	FilesBackedUp        int
+	BytesBackedUp        int64
+	Status               string
+	Error                error
+	VSSMetadata          *vss.VSSMetadata                  // nil when VSS was not used
+	SystemStateManifest  *systemstate.SystemStateManifest  // nil when system state was not collected
 }
 
 // BackupManager orchestrates scheduled and on-demand backups.
@@ -166,6 +169,23 @@ func (m *BackupManager) RunBackup() (*BackupJob, error) {
 			defer func() {
 				if releaseErr := provider.ReleaseShadowCopy(session); releaseErr != nil {
 					log.Printf("[backup] failed to release VSS shadow copy: %v", releaseErr)
+				}
+			}()
+		}
+	}
+
+	// System state collection: gather OS config, hardware profile, etc.
+	if m.config.SystemStateEnabled {
+		manifest, stagingDir, ssErr := systemstate.CollectSystemState()
+		if ssErr != nil {
+			log.Printf("[backup] system state collection failed, proceeding without: %v", ssErr)
+		} else {
+			job.SystemStateManifest = manifest
+			// Append staging dir to backup paths so artifacts are included in snapshot
+			m.config.Paths = append(m.config.Paths, stagingDir)
+			defer func() {
+				if removeErr := os.RemoveAll(stagingDir); removeErr != nil {
+					log.Printf("[backup] failed to clean up system state staging dir: %v", removeErr)
 				}
 			}()
 		}

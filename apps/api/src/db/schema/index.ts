@@ -22,6 +22,7 @@ export * from './software';
 export * from './softwarePolicies';
 export * from './deployments';
 export * from './backup';
+export * from './recoveryTokens';
 export * from './storageEncryption';
 export * from './backupVerification';
 export * from './snmp';
