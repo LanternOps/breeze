@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
@@ -56,6 +57,7 @@ type Broker struct {
 	sessions     map[string]*Session   // sessionID -> Session
 	byIdentity   map[string][]*Session // identity key -> Sessions (UID string on Unix, SID on Windows)
 	staleHelpers map[string][]int      // winSessionID -> PIDs of disconnected helpers
+	backup       *backupHelper         // backup helper process and session
 	closed       bool
 
 	onMessage MessageHandler
@@ -554,6 +556,8 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	switch helperRole {
 	case ipc.HelperRoleUser:
 		scopes = userHelperScopes
+	case backupipc.HelperRoleBackup:
+		scopes = backupHelperScopes
 	default:
 		helperRole = ipc.HelperRoleSystem
 		scopes = systemHelperScopes
@@ -601,6 +605,13 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	b.mu.Lock()
 	b.sessions[authReq.SessionID] = session
 	b.byIdentity[identityKey] = append(b.byIdentity[identityKey], session)
+	// Track backup helper session for direct access
+	if helperRole == backupipc.HelperRoleBackup {
+		if b.backup == nil {
+			b.backup = &backupHelper{}
+		}
+		b.backup.session = session
+	}
 	b.mu.Unlock()
 
 	log.Info("user helper connected",
@@ -651,6 +662,10 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		case ipc.TypeDisconnect:
 			log.Info("user helper disconnecting", "uid", s.UID, "sessionId", s.SessionID)
 			s.Close()
+		case backupipc.TypeBackupResult, backupipc.TypeBackupProgress, backupipc.TypeBackupReady:
+			if b.onMessage != nil {
+				b.onMessage(s, env)
+			}
 		case ipc.TypeTrayAction, ipc.TypeNotifyResult, ipc.TypeClipboardData, ipc.TypeCommandResult, ipc.TypeSASRequest, ipc.TypeDesktopPeerDisconnected:
 			if b.onMessage != nil {
 				b.onMessage(s, env)
@@ -663,6 +678,9 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 
 	// Clean up after disconnect
 	b.removeSession(session)
+	if session.HelperRole == backupipc.HelperRoleBackup {
+		b.ClearBackupSession()
+	}
 	log.Info("user helper disconnected", "uid", session.UID, "sessionId", session.SessionID)
 }
 

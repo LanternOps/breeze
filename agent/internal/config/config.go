@@ -40,6 +40,7 @@ type Config struct {
 	BackupS3SecretKey        string   `mapstructure:"backup_s3_secret_key"`
 	BackupVSSEnabled         bool     `mapstructure:"backup_vss_enabled"`          // Windows: VSS shadow copy before backup
 	BackupSystemStateEnabled bool     `mapstructure:"backup_system_state_enabled"` // Collect system state alongside file backup
+	BackupBinaryPath         string   `mapstructure:"backup_binary_path"`          // Path to breeze-backup helper binary
 
 	// Logging configuration
 	LogLevel         string `mapstructure:"log_level"`

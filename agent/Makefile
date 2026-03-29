@@ -1,14 +1,28 @@
-.PHONY: build build-all build-winres build-windows-msi clean test install install-service uninstall-service dev-push
+.PHONY: build build-agent build-backup build-all build-all-agent build-all-backup build-winres build-windows-msi clean test install install-service uninstall-service dev-push
 
 VERSION ?= 0.5.0
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
 
-# Default build for current platform
-build:
+# Default build for current platform (agent + backup)
+build: build-agent build-backup
+
+build-agent:
 	go build $(LDFLAGS) -o bin/breeze-agent ./cmd/breeze-agent
 
+build-backup:
+	go build $(LDFLAGS) -o bin/breeze-backup ./cmd/breeze-backup
+
 # Build for all platforms
-build-all: build-linux build-darwin build-windows
+build-all: build-all-agent build-all-backup
+
+build-all-agent: build-linux build-darwin build-windows
+
+build-all-backup:
+	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-backup-linux-amd64 ./cmd/breeze-backup
+	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o bin/breeze-backup-linux-arm64 ./cmd/breeze-backup
+	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-backup-darwin-amd64 ./cmd/breeze-backup
+	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o bin/breeze-backup-darwin-arm64 ./cmd/breeze-backup
+	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-backup-windows-amd64.exe ./cmd/breeze-backup
 
 build-linux:
 	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-agent-linux-amd64 ./cmd/breeze-agent

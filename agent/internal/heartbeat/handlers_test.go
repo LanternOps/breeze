@@ -60,9 +60,27 @@ var allCommandTypes = []string{
 	tools.CmdSensitiveDataScan, tools.CmdQuarantineFile,
 	tools.CmdEncryptFile, tools.CmdSecureDeleteFile,
 
-	// handlers_patch.go init() — backup
+	// handlers_backup_forward.go init() — backup commands forwarded to breeze-backup via IPC
 	tools.CmdBackupRun, tools.CmdBackupList, tools.CmdBackupStop, tools.CmdBackupRestore,
+
+	// handlers_backup_verify_forward.go init()
 	tools.CmdBackupVerify, tools.CmdBackupTestRestore, tools.CmdBackupCleanup,
+
+	// handlers_vss_forward.go init()
+	tools.CmdVSSStatus, tools.CmdVSSWriterList,
+
+	// handlers_mssql_forward.go init()
+	tools.CmdMSSQLDiscover, tools.CmdMSSQLBackup, tools.CmdMSSQLRestore, tools.CmdMSSQLVerify,
+
+	// handlers_hyperv_forward.go init()
+	tools.CmdHypervDiscover, tools.CmdHypervBackup, tools.CmdHypervRestore,
+	tools.CmdHypervCheckpoint, tools.CmdHypervVMState,
+
+	// handlers_systemstate_forward.go init()
+	tools.CmdSystemStateCollect, tools.CmdHardwareProfile,
+
+	// handlers_bmr_forward.go init()
+	tools.CmdVMRestoreEstimate, tools.CmdVMRestoreFromBackup, tools.CmdBMRRecover,
 
 	// handlers_user.go init()
 	CmdNotifyUser, CmdTrayUpdate,

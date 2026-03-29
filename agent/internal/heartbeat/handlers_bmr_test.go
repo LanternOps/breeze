@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -19,8 +20,8 @@ func TestBMRHandlersRegistered(t *testing.T) {
 	}
 }
 
-func TestHandleVMRestoreFromBackup_NilManager(t *testing.T) {
-	h := &Heartbeat{backupMgr: nil}
+func TestHandleVMRestoreFromBackup_NilBroker(t *testing.T) {
+	h := &Heartbeat{}
 	cmd := Command{
 		ID:      "test-vm-1",
 		Type:    tools.CmdVMRestoreFromBackup,
@@ -30,13 +31,13 @@ func TestHandleVMRestoreFromBackup_NilManager(t *testing.T) {
 	if result.Status != "failed" {
 		t.Errorf("expected failed, got %s", result.Status)
 	}
-	if result.Error == "" {
-		t.Error("expected error message")
+	if !strings.Contains(result.Error, "session broker") {
+		t.Errorf("expected session broker error, got %q", result.Error)
 	}
 }
 
-func TestHandleBMRRecover_NilManager(t *testing.T) {
-	h := &Heartbeat{backupMgr: nil}
+func TestHandleBMRRecover_NilBroker(t *testing.T) {
+	h := &Heartbeat{}
 	cmd := Command{
 		ID:      "test-bmr-1",
 		Type:    tools.CmdBMRRecover,
@@ -46,7 +47,7 @@ func TestHandleBMRRecover_NilManager(t *testing.T) {
 	if result.Status != "failed" {
 		t.Errorf("expected failed, got %s", result.Status)
 	}
-	if result.Error == "" {
-		t.Error("expected error message")
+	if !strings.Contains(result.Error, "session broker") {
+		t.Errorf("expected session broker error, got %q", result.Error)
 	}
 }

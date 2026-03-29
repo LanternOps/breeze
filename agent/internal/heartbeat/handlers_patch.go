@@ -3,12 +3,8 @@ package heartbeat
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
-	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
@@ -21,10 +17,6 @@ func init() {
 	handlerRegistry[tools.CmdScheduleReboot] = handleScheduleReboot
 	handlerRegistry[tools.CmdCancelReboot] = handleCancelReboot
 	handlerRegistry[tools.CmdGetRebootStatus] = handleGetRebootStatus
-	handlerRegistry[tools.CmdBackupRun] = handleBackupRun
-	handlerRegistry[tools.CmdBackupList] = handleBackupList
-	handlerRegistry[tools.CmdBackupStop] = handleBackupStop
-	handlerRegistry[tools.CmdBackupRestore] = handleBackupRestore
 }
 
 func handlePatchScan(h *Heartbeat, cmd Command) tools.CommandResult {
@@ -224,129 +216,3 @@ func rebootStateToMap(state patching.RebootState) map[string]any {
 	return stateMap
 }
 
-func handleBackupRun(h *Heartbeat, _ Command) tools.CommandResult {
-	start := time.Now()
-	if h.backupMgr == nil {
-		return tools.NewErrorResult(fmt.Errorf("backup not configured"), time.Since(start).Milliseconds())
-	}
-	job, err := h.backupMgr.RunBackup()
-	if err != nil && job == nil {
-		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
-	}
-	jobResult := map[string]any{
-		"jobId":  job.ID,
-		"status": job.Status,
-	}
-	if job.Snapshot != nil {
-		jobResult["snapshotId"] = job.Snapshot.ID
-		jobResult["filesBackedUp"] = job.FilesBackedUp
-		jobResult["bytesBackedUp"] = job.BytesBackedUp
-	}
-	if job.Error != nil {
-		jobResult["warning"] = job.Error.Error()
-	}
-	return tools.NewSuccessResult(jobResult, time.Since(start).Milliseconds())
-}
-
-func handleBackupList(h *Heartbeat, _ Command) tools.CommandResult {
-	start := time.Now()
-	if h.backupMgr == nil {
-		return tools.NewErrorResult(fmt.Errorf("backup not configured"), time.Since(start).Milliseconds())
-	}
-	snapshots, err := backup.ListSnapshots(h.backupMgr.GetProvider())
-	if err != nil && len(snapshots) == 0 {
-		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
-	}
-	return tools.NewSuccessResult(map[string]any{
-		"snapshots": snapshots,
-		"count":     len(snapshots),
-	}, time.Since(start).Milliseconds())
-}
-
-func handleBackupStop(h *Heartbeat, _ Command) tools.CommandResult {
-	start := time.Now()
-	if h.backupMgr == nil {
-		return tools.NewErrorResult(fmt.Errorf("backup not configured"), time.Since(start).Milliseconds())
-	}
-	h.backupMgr.Stop()
-	return tools.NewSuccessResult(map[string]any{"stopped": true}, time.Since(start).Milliseconds())
-}
-
-func handleBackupRestore(h *Heartbeat, cmd Command) tools.CommandResult {
-	start := time.Now()
-	if h.backupMgr == nil {
-		return tools.NewErrorResult(fmt.Errorf("backup not configured"), time.Since(start).Milliseconds())
-	}
-
-	snapshotId := tools.GetPayloadString(cmd.Payload, "snapshotId", "")
-	if snapshotId == "" {
-		return tools.NewErrorResult(fmt.Errorf("snapshotId is required"), time.Since(start).Milliseconds())
-	}
-	targetPath := tools.GetPayloadString(cmd.Payload, "targetPath", "")
-	if targetPath == "" {
-		return tools.NewErrorResult(fmt.Errorf("targetPath is required"), time.Since(start).Milliseconds())
-	}
-	selectedPaths := tools.GetPayloadStringSlice(cmd.Payload, "selectedPaths")
-
-	// List files from the snapshot prefix
-	provider := h.backupMgr.GetProvider()
-	prefix := "snapshots/" + snapshotId + "/"
-	files, err := provider.List(prefix)
-	if err != nil {
-		return tools.NewErrorResult(fmt.Errorf("failed to list snapshot files: %w", err), time.Since(start).Milliseconds())
-	}
-	if len(files) == 0 {
-		return tools.NewErrorResult(fmt.Errorf("no files found in snapshot %s", snapshotId), time.Since(start).Milliseconds())
-	}
-
-	// Filter by selectedPaths if specified
-	if len(selectedPaths) > 0 {
-		selectedSet := make(map[string]bool, len(selectedPaths))
-		for _, sp := range selectedPaths {
-			selectedSet[sp] = true
-		}
-		var filtered []string
-		for _, f := range files {
-			// Strip the prefix to get relative path
-			rel := strings.TrimPrefix(f, prefix)
-			if selectedSet[rel] {
-				filtered = append(filtered, f)
-			}
-		}
-		files = filtered
-	}
-
-	// Download each file
-	var filesRestored int
-	var bytesRestored int64
-	var errors []string
-	for _, remotePath := range files {
-		rel := strings.TrimPrefix(remotePath, prefix)
-		localPath := filepath.Join(targetPath, rel)
-		if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
-			errors = append(errors, fmt.Sprintf("mkdir %s: %v", filepath.Dir(localPath), err))
-			continue
-		}
-		if err := provider.Download(remotePath, localPath); err != nil {
-			errors = append(errors, fmt.Sprintf("download %s: %v", remotePath, err))
-			continue
-		}
-		info, _ := os.Stat(localPath)
-		if info != nil {
-			bytesRestored += info.Size()
-		}
-		filesRestored++
-	}
-
-	result := map[string]any{
-		"snapshotId":    snapshotId,
-		"targetPath":    targetPath,
-		"filesRestored": filesRestored,
-		"bytesRestored": bytesRestored,
-		"totalFiles":    len(files),
-	}
-	if len(errors) > 0 {
-		result["errors"] = errors
-	}
-	return tools.NewSuccessResult(result, time.Since(start).Milliseconds())
-}
