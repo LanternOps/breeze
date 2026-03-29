@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   Clock,
   Database,
+  Loader2,
   RefreshCw,
   ShieldCheck,
   XCircle,
@@ -96,6 +97,7 @@ export default function DeviceBackupTab({ deviceId }: DeviceBackupTabProps) {
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [refreshing, setRefreshing] = useState(false);
 
   const fetchData = useCallback(async () => {
     setError(undefined);
@@ -126,11 +128,18 @@ export default function DeviceBackupTab({ deviceId }: DeviceBackupTabProps) {
         setError(`Failed to load some data (${firstFail.status})`);
       }
     } catch (err) {
+      console.error('[DeviceBackupTab] fetchData:', err);
       setError(friendlyFetchError(err));
     } finally {
       setLoading(false);
     }
   }, [deviceId]);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await fetchData();
+    setRefreshing(false);
+  }, [fetchData]);
 
   useEffect(() => {
     fetchData();
@@ -148,7 +157,7 @@ export default function DeviceBackupTab({ deviceId }: DeviceBackupTabProps) {
   }
 
   // Empty state
-  if (!status?.protected && !status?.lastJob && jobs.length === 0) {
+  if (!error && !status?.protected && !status?.lastJob && jobs.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-center">
         <Database className="h-12 w-12 text-muted-foreground/40" />
@@ -214,10 +223,11 @@ export default function DeviceBackupTab({ deviceId }: DeviceBackupTabProps) {
           </div>
           <button
             type="button"
-            onClick={fetchData}
-            className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-60"
           >
-            <RefreshCw className="h-3.5 w-3.5" />
+            {refreshing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
             Refresh
           </button>
         </div>

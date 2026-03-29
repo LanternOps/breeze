@@ -78,9 +78,9 @@ export default function BackupVerificationOverview() {
         fetchWithAuth('/backup/verifications?limit=50')
       ]);
 
-      if (!healthRes.ok) throw new Error(`Health: ${healthRes.status}`);
-      if (!readinessRes.ok) throw new Error(`Readiness: ${readinessRes.status}`);
-      if (!verificationsRes.ok) throw new Error(`Verifications: ${verificationsRes.status}`);
+      if (!healthRes.ok) throw new Error('Failed to load fleet health data');
+      if (!readinessRes.ok) throw new Error('Failed to load readiness data');
+      if (!verificationsRes.ok) throw new Error('Failed to load verification history');
 
       const healthPayload = await healthRes.json();
       const readinessPayload = await readinessRes.json();
@@ -103,6 +103,7 @@ export default function BackupVerificationOverview() {
           : [];
       setFailures(rawVerifications.filter((v) => v.status === 'failed'));
     } catch (err) {
+      console.error('[BackupVerificationOverview] fetchData:', err);
       setError(friendlyFetchError(err));
     } finally {
       setLoading(false);

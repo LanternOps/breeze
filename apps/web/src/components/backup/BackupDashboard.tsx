@@ -121,6 +121,7 @@ export default function BackupDashboard() {
         );
       }
     } catch (err) {
+      console.error('[BackupDashboard] fetchOverview:', err);
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
       setLoading(false);
@@ -151,6 +152,7 @@ export default function BackupDashboard() {
       setRunAllPreview(preview);
       runAllDialogRef.current?.showModal();
     } catch (err) {
+      console.error('[BackupDashboard] handleRunAllClick:', err);
       setError(err instanceof Error ? err.message : 'Failed to check backup readiness');
     } finally {
       setRunAllLoading(false);
@@ -174,6 +176,7 @@ export default function BackupDashboard() {
       setRunAllResult(parts.join('. ') || 'No backup jobs to run.');
       fetchOverview();
     } catch (err) {
+      console.error('[BackupDashboard] handleRunAllConfirm:', err);
       setError(err instanceof Error ? err.message : 'Failed to start backups');
     } finally {
       setRunAllLoading(false);

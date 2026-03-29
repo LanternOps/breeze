@@ -114,6 +114,7 @@ export default function BackupVerificationTab({ deviceId }: { deviceId: string }
         setError(undefined);
       }
     } catch (err) {
+      console.error('[BackupVerificationTab] fetchData:', err);
       setError(friendlyFetchError(err));
     } finally {
       setLoading(false);
@@ -160,6 +161,7 @@ export default function BackupVerificationTab({ deviceId }: { deviceId: string }
 
       await fetchData();
     } catch (err) {
+      console.error('[BackupVerificationTab] triggerVerification:', err);
       setError(friendlyFetchError(err));
     } finally {
       setTriggering(null);
@@ -180,8 +182,11 @@ export default function BackupVerificationTab({ deviceId }: { deviceId: string }
   return (
     <div className="space-y-6">
       {error && (
-        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-          {error}
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive flex items-center justify-between">
+          <span>{error}</span>
+          <button type="button" onClick={fetchData} className="text-xs font-medium underline hover:no-underline">
+            Try again
+          </button>
         </div>
       )}
 
