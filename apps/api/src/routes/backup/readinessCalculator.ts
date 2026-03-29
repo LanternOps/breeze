@@ -4,13 +4,12 @@ import { recoveryReadiness as recoveryReadinessTable } from '../../db/schema';
 import { publishEvent } from '../../services/eventBus';
 import {
   backupJobs,
-  backupPolicies,
   jobOrgById,
-  policyOrgById,
   recoveryReadinessOrgById,
   recoveryReadinessRecords,
   upsertRecoveryReadiness
 } from './store';
+import { resolveAllBackupAssignedDevices } from '../../services/featureConfigResolver';
 import type { RecoveryReadiness, RecoveryRiskFactor } from './types';
 // NOTE: Circular import with verificationService is intentional and safe.
 // listBackupVerifications is only called at function invocation time, not at module evaluation.
@@ -65,14 +64,9 @@ function average(values: number[]): number | null {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
-function isCriticalDevice(orgId: string, deviceId: string): boolean {
-  return backupPolicies
-    .filter((policy) => policyOrgById.get(policy.id) === orgId)
-    .filter((policy) => policy.targets.deviceIds.includes(deviceId))
-    .some((policy) => {
-      const includesServerGroup = policy.targets.groupIds.some((groupId) => /server|critical/i.test(groupId));
-      return includesServerGroup || /server|critical/i.test(policy.name);
-    });
+function isCriticalDevice(_deviceId: string, _orgId: string): boolean {
+  // TODO: Determine criticality from config policy assignment level or device tags
+  return false;
 }
 
 // ---- Low readiness state tracking ----
@@ -403,20 +397,17 @@ export async function getBackupHealthSummary(orgId: string): Promise<{
     criticalVerificationFailures: number;
   };
 }> {
-  const [rows, readiness] = await Promise.all([
+  const [rows, readiness, assigned] = await Promise.all([
     listBackupVerifications(orgId),
-    listRecoveryReadiness(orgId)
+    listRecoveryReadiness(orgId),
+    resolveAllBackupAssignedDevices(orgId)
   ]);
   const now = Date.now();
   const dayAgo = now - DAY_MS;
 
   const last24h = rows.filter((row) => toEpoch(row.completedAt ?? row.startedAt) >= dayAgo);
-  const protectedDevices = new Set(
-    backupPolicies
-      .filter((policy) => policyOrgById.get(policy.id) === orgId)
-      .filter((policy) => policy.targets.deviceIds.length > 0)
-      .flatMap((policy) => policy.targets.deviceIds)
-  );
+  const protectedDeviceIds = assigned.map((a) => a.deviceId);
+  const protectedDevices = new Set(protectedDeviceIds);
   const coveredRecently = new Set(
     rows
       .filter((row) => (now - toEpoch(row.completedAt ?? row.startedAt)) <= (BACKUP_RECENT_COVERAGE_DAYS * DAY_MS))
