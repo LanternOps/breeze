@@ -101,11 +101,14 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
 
       switch (action) {
         case 'reboot':
+        case 'reboot_safe_mode':
         case 'shutdown':
-        case 'lock':
+        case 'lock': {
           await sendDeviceCommand(device.id, action);
-          showToast({ type: 'success', message: `${action.charAt(0).toUpperCase() + action.slice(1)} command sent to ${device.hostname}` });
+          const label = action === 'reboot_safe_mode' ? 'Reboot to Safe Mode' : action.charAt(0).toUpperCase() + action.slice(1);
+          showToast({ type: 'success', message: `${label} command sent to ${device.hostname}` });
           break;
+        }
 
         case 'maintenance': {
           const isCurrentlyMaintenance = device.status === 'maintenance';

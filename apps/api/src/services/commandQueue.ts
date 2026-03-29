@@ -105,6 +105,8 @@ export const CommandTypes = {
   COLLECT_AUDIT_POLICY: 'collect_audit_policy',
   APPLY_AUDIT_POLICY_BASELINE: 'apply_audit_policy_baseline',
 
+  // Safe mode reboot (Windows only)
+  REBOOT_SAFE_MODE: 'reboot_safe_mode',
   // Self-uninstall (remote wipe)
   SELF_UNINSTALL: 'self_uninstall',
   // Backup verification
@@ -196,6 +198,8 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.APPLY_AUDIT_POLICY_BASELINE,
   // Peripheral control — pushes full active policy set to agent
   CommandTypes.PERIPHERAL_POLICY_SYNC,
+  // Safe mode reboot
+  CommandTypes.REBOOT_SAFE_MODE,
   // Self-uninstall (remote wipe)
   CommandTypes.SELF_UNINSTALL,
   CommandTypes.BACKUP_VERIFY,
