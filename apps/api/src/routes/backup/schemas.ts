@@ -116,3 +116,47 @@ export const recoveryReadinessQuerySchema = z.object({
   refresh: queryBoolean.optional(),
   deviceId: z.string().optional()
 });
+
+// ── Encryption key schemas ───────────────────────────────────────────────────
+
+export const createEncryptionKeySchema = z.object({
+  name: z.string().min(1).max(200),
+  keyType: z.enum(['aes_256', 'rsa_2048']).default('aes_256'),
+  publicKeyPem: z.string().optional(),
+  keyHash: z.string().min(16).max(128),
+});
+
+export const rotateEncryptionKeySchema = z.object({
+  newKeyHash: z.string().min(16).max(128),
+  newPublicKeyPem: z.string().optional(),
+});
+
+// ── Extended policy schemas (GFS, legal hold, bandwidth) ─────────────────────
+
+export const gfsConfigSchema = z.object({
+  daily: z.number().int().min(1).max(365).optional(),
+  weekly: z.number().int().min(1).max(52).optional(),
+  monthly: z.number().int().min(1).max(120).optional(),
+  yearly: z.number().int().min(1).max(10).optional(),
+  weeklyDay: z.number().int().min(0).max(6).optional(),
+});
+
+export const extendedPolicySchema = policySchema.extend({
+  gfsConfig: gfsConfigSchema.optional(),
+  legalHold: z.boolean().optional(),
+  legalHoldReason: z.string().max(500).optional(),
+  bandwidthLimitMbps: z.number().int().min(1).max(10000).optional(),
+  backupWindowStart: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  backupWindowEnd: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  priority: z.number().int().min(1).max(100).optional(),
+});
+
+export const extendedPolicyUpdateSchema = policyUpdateSchema.extend({
+  gfsConfig: gfsConfigSchema.optional(),
+  legalHold: z.boolean().optional(),
+  legalHoldReason: z.string().max(500).optional(),
+  bandwidthLimitMbps: z.number().int().min(1).max(10000).optional(),
+  backupWindowStart: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  backupWindowEnd: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  priority: z.number().int().min(1).max(100).optional(),
+});

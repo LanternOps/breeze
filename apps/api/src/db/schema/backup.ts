@@ -16,6 +16,7 @@ import { organizations } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
 import { configPolicyFeatureLinks } from './configurationPolicies';
+import { storageEncryptionKeys } from './storageEncryption';
 
 export const backupProviderEnum = pgEnum('backup_provider', [
   'local',
@@ -96,6 +97,13 @@ export const backupPolicies = pgTable(
     schedule: jsonb('schedule').notNull(),
     retention: jsonb('retention').notNull(),
     targets: jsonb('targets').notNull(),
+    gfsConfig: jsonb('gfs_config'),
+    legalHold: boolean('legal_hold').default(false),
+    legalHoldReason: text('legal_hold_reason'),
+    bandwidthLimitMbps: integer('bandwidth_limit_mbps'),
+    backupWindowStart: varchar('backup_window_start', { length: 5 }),
+    backupWindowEnd: varchar('backup_window_end', { length: 5 }),
+    priority: integer('priority').default(50),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
@@ -172,6 +180,13 @@ export const backupSnapshots = pgTable(
     ),
     expiresAt: timestamp('expires_at'),
     metadata: jsonb('metadata'),
+    storageTier: varchar('storage_tier', { length: 30 }),
+    isImmutable: boolean('is_immutable').default(false),
+    immutableUntil: timestamp('immutable_until'),
+    legalHold: boolean('legal_hold').default(false),
+    encryptionKeyId: uuid('encryption_key_id').references(() => storageEncryptionKeys.id),
+    checksumSha256: varchar('checksum_sha256', { length: 64 }),
+    gfsTags: jsonb('gfs_tags'),
   },
   (table) => ({
     orgIdIdx: index('backup_snapshots_org_id_idx').on(table.orgId),
