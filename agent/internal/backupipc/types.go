@@ -21,6 +21,7 @@ type BackupCapabilities struct {
 	SupportsMSSQL       bool     `json:"supportsMssql"`
 	SupportsHyperV      bool     `json:"supportsHyperv"`
 	SupportsSystemState bool     `json:"supportsSystemState"`
+	SupportsVault       bool     `json:"supportsVault"`
 	Providers           []string `json:"providers"` // s3, local, azure, gcs, b2
 }
 

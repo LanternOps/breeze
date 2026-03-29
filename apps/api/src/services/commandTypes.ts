@@ -120,6 +120,7 @@ export const CommandTypes = {
   HARDWARE_PROFILE: 'hardware_profile',
   VM_RESTORE_FROM_BACKUP: 'vm_restore_from_backup',
   VM_RESTORE_ESTIMATE: 'vm_restore_estimate',
+  VM_INSTANT_BOOT: 'vm_instant_boot',
   BMR_RECOVER: 'bmr_recover',
 
   // MSSQL backup management
@@ -134,6 +135,11 @@ export const CommandTypes = {
   HYPERV_RESTORE: 'hyperv_restore',
   HYPERV_CHECKPOINT: 'hyperv_checkpoint',
   HYPERV_VM_STATE: 'hyperv_vm_state',
+
+  // Local vault (SMB share / USB drive)
+  VAULT_SYNC: 'vault_sync',
+  VAULT_STATUS: 'vault_status',
+  VAULT_CONFIGURE: 'vault_configure',
 } as const;
 
 export type CommandType = typeof CommandTypes[keyof typeof CommandTypes];
@@ -189,6 +195,7 @@ export const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.VSS_WRITER_LIST,
   CommandTypes.SYSTEM_STATE_COLLECT,
   CommandTypes.VM_RESTORE_FROM_BACKUP,
+  CommandTypes.VM_INSTANT_BOOT,
   CommandTypes.BMR_RECOVER,
   CommandTypes.MSSQL_BACKUP,
   CommandTypes.MSSQL_RESTORE,
@@ -197,4 +204,6 @@ export const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.HYPERV_RESTORE,
   CommandTypes.HYPERV_CHECKPOINT,
   CommandTypes.HYPERV_VM_STATE,
+  CommandTypes.VAULT_SYNC,
+  CommandTypes.VAULT_CONFIGURE,
 ]);

@@ -66,7 +66,8 @@ restoreRoutes.post(
         snapshot.snapshotId,
         row.deviceId,
         orgId,
-        row.targetPath ?? undefined
+        row.targetPath ?? undefined,
+        payload.selectedPaths
       );
     } catch (err) {
       console.error('[BackupRestore] Failed to enqueue dispatch:', err);

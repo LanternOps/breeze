@@ -87,7 +87,8 @@ export const usageHistoryQuerySchema = z.object({
 export const restoreSchema = z.object({
   snapshotId: z.string().min(1),
   deviceId: z.string().min(1).optional(),
-  targetPath: z.string().optional()
+  targetPath: z.string().optional(),
+  selectedPaths: z.array(z.string()).optional(),
 });
 
 export const verificationRunSchema = z.object({
@@ -207,6 +208,19 @@ export const bmrVmRestoreSchema = z.object({
     .optional(),
 });
 
+export const instantBootSchema = z.object({
+  snapshotId: z.string().uuid(),
+  targetDeviceId: z.string().uuid(),
+  vmName: z.string().min(1).max(200),
+  vmSpecs: z
+    .object({
+      memoryMb: z.number().int().min(512).optional(),
+      cpuCount: z.number().int().min(1).optional(),
+      diskSizeGb: z.number().int().min(10).optional(),
+    })
+    .optional(),
+});
+
 // ── Hyper-V VM backup schemas ─────────────────────────────────────────
 
 export const hypervBackupSchema = z.object({
@@ -311,4 +325,28 @@ export const drExecutionsQuerySchema = z.object({
   planId: z.string().uuid().optional(),
   status: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
+});
+
+// ── Local vault schemas ─────────────────────────────────────────────────────
+
+export const vaultCreateSchema = z.object({
+  deviceId: z.string().uuid(),
+  vaultPath: z.string().min(1).max(1024),
+  vaultType: z.enum(['local', 'smb', 'usb']).default('local'),
+  retentionCount: z.number().int().min(1).max(100).default(3),
+});
+
+export const vaultUpdateSchema = z.object({
+  vaultPath: z.string().min(1).max(1024).optional(),
+  vaultType: z.enum(['local', 'smb', 'usb']).optional(),
+  retentionCount: z.number().int().min(1).max(100).optional(),
+  isActive: z.boolean().optional(),
+});
+
+export const vaultListSchema = z.object({
+  deviceId: z.string().uuid().optional(),
+});
+
+export const vaultSyncSchema = z.object({
+  snapshotId: z.string().min(1).max(200).optional(),
 });

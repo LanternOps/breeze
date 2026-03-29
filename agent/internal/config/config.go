@@ -42,6 +42,11 @@ type Config struct {
 	BackupSystemStateEnabled bool     `mapstructure:"backup_system_state_enabled"` // Collect system state alongside file backup
 	BackupBinaryPath         string   `mapstructure:"backup_binary_path"`          // Path to breeze-backup helper binary
 
+	// Local vault (SMB share / USB drive) configuration
+	VaultEnabled        bool   `mapstructure:"vault_enabled"`
+	VaultPath           string `mapstructure:"vault_path"`
+	VaultRetentionCount int    `mapstructure:"vault_retention_count"`
+
 	// Logging configuration
 	LogLevel         string `mapstructure:"log_level"`
 	LogFormat        string `mapstructure:"log_format"`

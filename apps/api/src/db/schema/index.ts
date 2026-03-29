@@ -58,3 +58,4 @@ export * from './hypervVms';
 export * from './c2c';
 export * from './sla';
 export * from './drPlans';
+export * from './localVault';
