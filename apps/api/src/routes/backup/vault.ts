@@ -5,6 +5,7 @@ import { eq, and } from 'drizzle-orm';
 import { db } from '../../db';
 import { localVaults } from '../../db/schema';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { queueCommandForExecution, CommandTypes } from '../../services/commandQueue';
 import { resolveScopedOrgId } from './helpers';
 import {
   vaultCreateSchema,
@@ -195,6 +196,23 @@ vaultRoutes.post(
       })
       .where(eq(localVaults.id, id));
 
+    // Dispatch vault_sync command to the device
+    try {
+      await queueCommandForExecution(
+        vault.deviceId,
+        CommandTypes.VAULT_SYNC,
+        { vaultId: vault.id, snapshotId: payload.snapshotId },
+        { userId: auth.user?.id }
+      );
+    } catch (err) {
+      console.error('[Vault] Failed to dispatch sync command:', err);
+      await db.update(localVaults).set({
+        lastSyncStatus: 'failed',
+        updatedAt: new Date(),
+      }).where(eq(localVaults.id, id));
+      return c.json({ error: 'Failed to dispatch sync command to agent' }, 502);
+    }
+
     writeRouteAudit(c, {
       orgId,
       action: 'backup.vault.sync',
@@ -203,9 +221,6 @@ vaultRoutes.post(
       details: { deviceId: vault.deviceId, snapshotId: payload.snapshotId },
     });
 
-    // The actual sync command will be dispatched to the agent via the
-    // command queue (vault_sync command type). The caller should dispatch
-    // this separately or the job processor handles it.
     return c.json({
       id: vault.id,
       status: 'pending',

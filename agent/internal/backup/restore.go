@@ -232,16 +232,18 @@ func filterFiles(files []SnapshotFile, selectedPaths []string) []SnapshotFile {
 	return matched
 }
 
-// resolveTargetPath determines where to restore a file. If targetPath is set,
-// the file's base name is placed under targetPath preserving the directory
-// structure relative to the common prefix. Otherwise the original source path
-// is used.
+// resolveTargetPath determines where to restore a file. If targetBase is set,
+// the full relative source path is preserved under targetBase to maintain
+// directory structure and prevent name collisions. Otherwise the original
+// source path is used.
 func resolveTargetPath(targetBase, sourcePath string) string {
 	if targetBase == "" {
 		return sourcePath
 	}
-	// Preserve the file name under the target directory
-	return filepath.Join(targetBase, filepath.Base(sourcePath))
+	// Preserve full path structure under the target base
+	// e.g., targetBase="/restore", sourcePath="path_0/reports/config.json"
+	// → "/restore/path_0/reports/config.json"
+	return filepath.Join(targetBase, sourcePath)
 }
 
 // moveFile attempts os.Rename first (fast, same filesystem), then falls back

@@ -142,6 +142,10 @@ func RestoreAsVM(
 
 	// 3. Mount VHDX, initialize disk, partition, and format.
 	progress("mounting_vhdx", 3, 7)
+	if ctx.Err() != nil {
+		result.Error = fmt.Sprintf("operation cancelled: %v", ctx.Err())
+		return result, ctx.Err()
+	}
 	slog.Info("vmrestore: mounting and partitioning VHDX")
 
 	driveLetter, err := mountAndPartitionVHDX(vhdxPath)
@@ -150,12 +154,24 @@ func RestoreAsVM(
 		dismountVHDX(vhdxPath)
 		return result, fmt.Errorf("vmrestore: mount/partition: %w", err)
 	}
+	// Ensure dismount on any failure after this point.
+	dismounted := false
+	defer func() {
+		if !dismounted {
+			slog.Warn("vmrestore: cleaning up mounted VHDX due to failure")
+			dismountVHDX(vhdxPath)
+		}
+	}()
 
 	targetRoot := driveLetter + `:\`
 	slog.Info("vmrestore: VHDX mounted", "drive", targetRoot)
 
 	// 4. Restore snapshot files to the mounted volume.
 	progress("restoring_files", 4, 7)
+	if ctx.Err() != nil {
+		result.Error = fmt.Sprintf("operation cancelled: %v", ctx.Err())
+		return result, ctx.Err()
+	}
 	slog.Info("vmrestore: restoring files to volume", "target", targetRoot, "files", len(manifest.Files))
 
 	restoreWarnings := restoreFilesToVolume(manifest, provider, targetRoot)
@@ -163,6 +179,10 @@ func RestoreAsVM(
 
 	// 5. Inject Hyper-V enlightenment drivers.
 	progress("injecting_drivers", 5, 7)
+	if ctx.Err() != nil {
+		result.Error = fmt.Sprintf("operation cancelled: %v", ctx.Err())
+		return result, ctx.Err()
+	}
 	slog.Info("vmrestore: injecting Hyper-V drivers")
 
 	if driverErr := injectHyperVDrivers(targetRoot); driverErr != nil {
@@ -179,9 +199,14 @@ func RestoreAsVM(
 		result.Error = err.Error()
 		return result, fmt.Errorf("vmrestore: dismount VHDX: %w", err)
 	}
+	dismounted = true
 
 	// 7. Create and configure the VM.
 	progress("creating_vm", 7, 7)
+	if ctx.Err() != nil {
+		result.Error = fmt.Sprintf("operation cancelled: %v", ctx.Err())
+		return result, ctx.Err()
+	}
 	slog.Info("vmrestore: creating VM", "name", cfg.VMName, "memoryMB", memoryMB, "cpus", cpuCount)
 
 	if err := createAndConfigureVM(cfg.VMName, vhdxPath, memoryMB, cpuCount, cfg.SwitchName); err != nil {

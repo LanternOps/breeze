@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup"
@@ -186,46 +187,46 @@ func execVMRestoreEstimate(payload json.RawMessage, mgr *backup.BackupManager) b
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid VM estimate payload: " + err.Error())
 	}
-
-	// Try to read hardware profile from snapshot manifest if provider is available.
-	if mgr != nil && p.SnapshotID != "" {
-		provider := mgr.GetProvider()
-		items, listErr := provider.List(fmt.Sprintf("snapshots/%s/", p.SnapshotID))
-		if listErr == nil && len(items) > 0 {
-			// Compute estimate from snapshot size.
-			var totalSize int64
-			for _, item := range items {
-				tmpFile, err := os.CreateTemp("", "vmestimate-*.tmp")
-				if err != nil {
-					continue
-				}
-				tmpPath := tmpFile.Name()
-				_ = tmpFile.Close()
-				if dlErr := provider.Download(item, tmpPath); dlErr == nil {
-					if info, statErr := os.Stat(tmpPath); statErr == nil {
-						totalSize += info.Size()
-					}
-				}
-				os.Remove(tmpPath)
-			}
-
-			sizeGB := totalSize / (1024 * 1024 * 1024)
-			if sizeGB < 20 {
-				sizeGB = 20
-			}
-
-			return marshalResult(bmr.VMEstimate{
-				RecommendedMemoryMB: 4096,
-				RecommendedCPU:      2,
-				RequiredDiskGB:      sizeGB * 2, // 2x snapshot size for headroom
-			}, nil)
-		}
+	if mgr == nil {
+		return fail("backup not configured")
 	}
 
-	// Fallback estimates.
-	return marshalResult(bmr.VMEstimate{
+	// Download just the manifest (lightweight) instead of all snapshot files.
+	provider := mgr.GetProvider()
+	manifestPath := fmt.Sprintf("snapshots/%s/manifest.json", p.SnapshotID)
+	tmpFile, err := os.CreateTemp("", "manifest-*.json")
+	if err != nil {
+		return fail("failed to create temp file: " + err.Error())
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Close()
+
+	if err := provider.Download(manifestPath, tmpFile.Name()); err != nil {
+		return fail("failed to download manifest: " + err.Error())
+	}
+
+	data, err := os.ReadFile(tmpFile.Name())
+	if err != nil {
+		return fail("failed to read manifest: " + err.Error())
+	}
+
+	var snapshot backup.Snapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return fail("failed to parse manifest: " + err.Error())
+	}
+
+	totalBytes := snapshot.Size
+	diskGB := (totalBytes / (1024 * 1024 * 1024)) * 2 // 2x snapshot size for headroom
+	if diskGB < 50 {
+		diskGB = 50
+	}
+
+	estimate := bmr.VMEstimate{
 		RecommendedMemoryMB: 4096,
 		RecommendedCPU:      2,
-		RequiredDiskGB:      50,
-	}, nil)
+		RequiredDiskGB:      diskGB,
+		Platform:            runtime.GOOS,
+	}
+
+	return marshalResult(estimate, nil)
 }

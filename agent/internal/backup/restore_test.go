@@ -121,13 +121,22 @@ func TestRestoreFromSnapshot_HappyPath(t *testing.T) {
 		t.Errorf("expected at least 2 progress calls, got %d", progressCalls)
 	}
 
-	// Verify files exist in target
-	entries, err := os.ReadDir(targetDir)
-	if err != nil {
-		t.Fatalf("read target dir: %v", err)
+	// Verify files exist in target (directory structure is preserved)
+	var fileCount int
+	walkErr := filepath.Walk(targetDir, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			fileCount++
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("walk target dir: %v", walkErr)
 	}
-	if len(entries) != 2 {
-		t.Errorf("expected 2 files in target, got %d", len(entries))
+	if fileCount != 2 {
+		t.Errorf("expected 2 files in target, got %d", fileCount)
 	}
 }
 

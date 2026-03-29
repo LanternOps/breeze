@@ -150,6 +150,10 @@ func InstantBoot(
 
 	// 5. Mount base VHDX and partition.
 	progress("mounting_vhdx", 3, 8)
+	if ctx.Err() != nil {
+		result.Error = fmt.Sprintf("operation cancelled: %v", ctx.Err())
+		return result, ctx.Err()
+	}
 	slog.Info("instantboot: mounting and partitioning base VHDX")
 
 	driveLetter, err := mountAndPartitionVHDX(baseVHDX)
@@ -162,22 +166,41 @@ func InstantBoot(
 
 	// 6. Download ONLY boot-critical files.
 	progress("restoring_boot_files", 4, 8)
+	if ctx.Err() != nil {
+		result.Error = fmt.Sprintf("operation cancelled: %v", ctx.Err())
+		dismountVHDX(baseVHDX)
+		return result, ctx.Err()
+	}
 	slog.Info("instantboot: restoring boot-critical files", "count", len(bootFiles))
 
+	var criticalFailures []string
 	for _, file := range bootFiles {
 		targetPath := filepath.Join(targetRoot, filepath.FromSlash(file.SourcePath))
 		dir := filepath.Dir(targetPath)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			slog.Warn("instantboot: mkdir failed", "dir", dir, "error", err.Error())
+			criticalFailures = append(criticalFailures, file.SourcePath)
 			continue
 		}
 		if err := provider.Download(file.BackupPath, targetPath); err != nil {
 			slog.Warn("instantboot: download failed", "file", file.SourcePath, "error", err.Error())
+			criticalFailures = append(criticalFailures, file.SourcePath)
 		}
+	}
+	if len(criticalFailures) > 0 {
+		dismountVHDX(baseVHDX)
+		result.Status = "degraded"
+		result.Error = fmt.Sprintf("failed to download %d boot-critical files: %v", len(criticalFailures), criticalFailures)
+		return result, nil
 	}
 
 	// 7. Create boot configuration.
 	progress("configuring_boot", 5, 8)
+	if ctx.Err() != nil {
+		result.Error = fmt.Sprintf("operation cancelled: %v", ctx.Err())
+		dismountVHDX(baseVHDX)
+		return result, ctx.Err()
+	}
 	slog.Info("instantboot: configuring boot loader")
 
 	if bootErr := configureBootLoader(driveLetter); bootErr != nil {
@@ -194,6 +217,10 @@ func InstantBoot(
 
 	// 9. Create differencing VHDX.
 	progress("creating_diff_vhdx", 7, 8)
+	if ctx.Err() != nil {
+		result.Error = fmt.Sprintf("operation cancelled: %v", ctx.Err())
+		return result, ctx.Err()
+	}
 	diffVHDX := filepath.Join(workDir, cfg.VMName+"-diff.vhdx")
 	slog.Info("instantboot: creating differencing VHDX", "diff", diffVHDX, "parent", baseVHDX)
 
@@ -208,6 +235,10 @@ func InstantBoot(
 
 	// 10. Create and start VM with the differencing disk.
 	progress("creating_vm", 8, 8)
+	if ctx.Err() != nil {
+		result.Error = fmt.Sprintf("operation cancelled: %v", ctx.Err())
+		return result, ctx.Err()
+	}
 	slog.Info("instantboot: creating and starting VM")
 
 	if err := createAndConfigureVM(cfg.VMName, diffVHDX, memoryMB, cpuCount, ""); err != nil {
@@ -230,7 +261,14 @@ func InstantBoot(
 	// 11. Launch background goroutine for remaining files.
 	if len(remainingFiles) > 0 {
 		result.BackgroundSyncActive = true
-		go backgroundSync(cfg.VMName, baseVHDX, diffVHDX, remainingFiles, provider)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("instantboot: background sync panicked", "error", fmt.Sprintf("%v", r))
+				}
+			}()
+			backgroundSync(cfg.VMName, baseVHDX, diffVHDX, remainingFiles, provider)
+		}()
 	}
 
 	slog.Info("instantboot: VM booted",

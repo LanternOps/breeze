@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backupipc"
@@ -51,19 +53,23 @@ func execVaultConfigure(payload json.RawMessage, vaultMgr *backup.VaultManager) 
 		return fail("invalid vault configure payload: " + err.Error())
 	}
 
-	// Persist vault settings
+	// Persist vault settings — collect errors and fail if any persist operation fails.
+	var errs []string
 	if p.VaultPath != "" {
 		if err := config.SetAndPersist("vault_path", p.VaultPath); err != nil {
-			slog.Warn("failed to persist vault_path", "error", err.Error())
+			errs = append(errs, fmt.Sprintf("vault_path: %v", err))
 		}
 	}
 	if p.RetentionCount > 0 {
 		if err := config.SetAndPersist("vault_retention_count", p.RetentionCount); err != nil {
-			slog.Warn("failed to persist vault_retention_count", "error", err.Error())
+			errs = append(errs, fmt.Sprintf("vault_retention_count: %v", err))
 		}
 	}
 	if err := config.SetAndPersist("vault_enabled", p.Enabled); err != nil {
-		slog.Warn("failed to persist vault_enabled", "error", err.Error())
+		errs = append(errs, fmt.Sprintf("vault_enabled: %v", err))
+	}
+	if len(errs) > 0 {
+		return fail(fmt.Sprintf("failed to persist vault config: %s", strings.Join(errs, "; ")))
 	}
 
 	return ok(`{"configured":true}`)

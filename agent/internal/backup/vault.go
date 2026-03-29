@@ -89,7 +89,11 @@ func (v *VaultManager) SyncSnapshot(snapshotID string) error {
 	}
 
 	// 3. Build set of files already in vault
-	vaultFiles, _ := v.vault.List(prefix)
+	vaultFiles, vaultListErr := v.vault.List(prefix)
+	if vaultListErr != nil {
+		slog.Warn("vault: failed to list existing vault files, will re-download all",
+			"prefix", prefix, "error", vaultListErr.Error())
+	}
 	vaultSet := make(map[string]struct{}, len(vaultFiles))
 	for _, f := range vaultFiles {
 		vaultSet[f] = struct{}{}
@@ -128,8 +132,14 @@ func (v *VaultManager) SyncSnapshot(snapshotID string) error {
 	}
 
 	// 5. Ensure manifest is in vault
-	if err := v.vault.Upload(manifestTmpPath, manifestKey); err != nil {
-		errs = append(errs, fmt.Errorf("upload manifest to vault: %w", err))
+	if manifestErr := v.vault.Upload(manifestTmpPath, manifestKey); manifestErr != nil {
+		slog.Warn("vault: manifest upload failed, cleaning up partial snapshot",
+			"snapshotId", snapshotID)
+		// Best-effort cleanup of already-uploaded files
+		for _, f := range primaryFiles {
+			_ = v.vault.Delete(f)
+		}
+		return fmt.Errorf("vault sync failed at manifest upload: %w", manifestErr)
 	}
 
 	if len(errs) > 0 {
