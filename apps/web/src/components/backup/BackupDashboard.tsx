@@ -104,23 +104,23 @@ const statIconMap: Record<string, typeof Database> = {
 };
 
 const providerColorMap: Record<string, string> = {
-  'aws s3': 'bg-emerald-500',
-  's3': 'bg-emerald-500',
-  'azure blob': 'bg-sky-500',
-  'azure': 'bg-sky-500',
-  'local vault': 'bg-amber-500',
-  'local': 'bg-amber-500',
-  wasabi: 'bg-violet-500'
+  'aws s3': 'bg-success',
+  's3': 'bg-success',
+  'azure blob': 'bg-primary',
+  'azure': 'bg-primary',
+  'local vault': 'bg-warning',
+  'local': 'bg-warning',
+  wasabi: 'bg-[hsl(var(--chart-4,262_80%_50%))]'
 };
 
 const providerStrokeMap: Record<string, string> = {
-  'aws s3': '#10b981',
-  's3': '#10b981',
-  'azure blob': '#0ea5e9',
-  'azure': '#0ea5e9',
-  'local vault': '#f59e0b',
-  'local': '#f59e0b',
-  wasabi: '#8b5cf6'
+  'aws s3': 'hsl(var(--success))',
+  's3': 'hsl(var(--success))',
+  'azure blob': 'hsl(var(--primary))',
+  'azure': 'hsl(var(--primary))',
+  'local vault': 'hsl(var(--warning))',
+  'local': 'hsl(var(--warning))',
+  wasabi: 'hsl(var(--chart-4,262 80% 50%))'
 };
 
 const attentionIconMap: Record<string, typeof AlertTriangle> = {
@@ -130,9 +130,14 @@ const attentionIconMap: Record<string, typeof AlertTriangle> = {
   success: CheckCircle2
 };
 
-function resolveProviderColor(name: string) {
+function resolveProviderColor(name: string): string {
   const key = name.toLowerCase();
   return providerColorMap[key] ?? 'bg-primary';
+}
+
+function resolveProviderStroke(name: string): string {
+  const key = name.toLowerCase();
+  return providerStrokeMap[key] ?? 'hsl(var(--primary))';
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -260,11 +265,13 @@ function UsageHistoryChart({ points }: { points: UsageHistoryPoint[] }) {
           viewBox="0 0 100 100"
           preserveAspectRatio="none"
           className="h-full w-full"
-          aria-label="Provider usage history chart"
+          role="img"
+          aria-label="Storage usage trend by provider over time"
         >
+          <title>Provider usage history chart</title>
           <polyline
             fill="none"
-            stroke="#475569"
+            stroke="hsl(var(--muted-foreground))"
             strokeWidth="2"
             strokeDasharray="4 3"
             points={buildLinePath(normalized.map((point) => point.totalBytes), maxValue)}
@@ -273,7 +280,7 @@ function UsageHistoryChart({ points }: { points: UsageHistoryPoint[] }) {
             <polyline
               key={provider}
               fill="none"
-              stroke={providerStrokeMap[provider.toLowerCase()] ?? '#2563eb'}
+              stroke={resolveProviderStroke(provider)}
               strokeWidth="3"
               points={buildLinePath(normalized.map((point) => point.byProvider.get(provider) ?? 0), maxValue)}
             />
@@ -292,7 +299,7 @@ function UsageHistoryChart({ points }: { points: UsageHistoryPoint[] }) {
             </span>
           ))}
           <span className="inline-flex items-center gap-1 rounded-full border bg-background px-2 py-0.5 text-muted-foreground">
-            <span className="h-2 w-2 rounded-full bg-slate-600" />
+            <span className="h-2 w-2 rounded-full bg-muted-foreground" />
             Total
           </span>
         </div>
@@ -511,8 +518,8 @@ export default function BackupDashboard() {
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {stats.length === 0 ? (
-          <div className="rounded-lg border border-dashed bg-muted/30 p-6 text-sm text-muted-foreground lg:col-span-4">
-            No backup summary metrics available yet.
+          <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground lg:col-span-4">
+            No backup metrics yet. Configure a backup policy to start tracking protection coverage.
           </div>
         ) : (
           stats.map((stat, index) => {
@@ -521,10 +528,16 @@ export default function BackupDashboard() {
             return (
               <div
                 key={`${stat.id ?? stat.name ?? 'stat'}-${index}`}
-                className="rounded-lg border bg-card p-5 shadow-sm"
+                className="rounded-lg border bg-card px-5 py-4"
               >
-                <div className="flex items-center justify-between">
-                  <StatIcon className="h-5 w-5 text-muted-foreground" />
+                <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                  <StatIcon className="h-4 w-4" />
+                  {stat.name ?? 'Metric'}
+                </div>
+                <div className="mt-2 flex items-baseline gap-2">
+                  <span className="text-2xl font-semibold text-foreground">
+                    {stat.value ?? '--'}
+                  </span>
                   <span
                     className={cn(
                       'text-xs font-medium',
@@ -533,14 +546,8 @@ export default function BackupDashboard() {
                       changeType === 'neutral' && 'text-muted-foreground'
                     )}
                   >
-                    {stat.change ?? '--'}
+                    {stat.change ?? ''}
                   </span>
-                </div>
-                <div className="mt-4">
-                  <div className="text-2xl font-semibold text-foreground">
-                    {stat.value ?? '--'}
-                  </div>
-                  <div className="text-sm text-muted-foreground">{stat.name ?? 'Metric'}</div>
                 </div>
               </div>
             );
@@ -569,8 +576,8 @@ export default function BackupDashboard() {
           ) : (
           <div className="mt-4 space-y-3">
             {recentJobs.length === 0 ? (
-              <div className="rounded-md border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground">
-                No recent backup jobs available.
+              <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+                No recent activity. Jobs will appear here once a backup configuration runs.
               </div>
             ) : (
               recentJobs.map((job) => {
@@ -580,7 +587,7 @@ export default function BackupDashboard() {
                 return (
                   <div
                     key={job.id}
-                    className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-dashed bg-muted/30 px-4 py-3"
+                    className="flex flex-wrap items-center justify-between gap-3 rounded-md border px-4 py-3"
                   >
                     <div className="flex items-center gap-3">
                       <span
@@ -619,8 +626,8 @@ export default function BackupDashboard() {
           </div>
           <div className="mt-4 space-y-4">
             {storageProviders.length === 0 ? (
-              <div className="rounded-md border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground">
-                No storage usage data available.
+              <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+                No storage providers configured yet. Add a backup config to track usage.
               </div>
             ) : (
               storageProviders.map((provider) => {
@@ -646,8 +653,8 @@ export default function BackupDashboard() {
                 {usageHistoryError}
               </div>
             ) : usageHistory.length === 0 ? (
-              <div className="rounded-md border border-dashed bg-muted/40 p-3 text-xs text-muted-foreground">
-                No usage history data available yet.
+              <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+                Usage history will appear after the first few backup runs.
               </div>
             ) : (
               <UsageHistoryChart points={usageHistory} />
@@ -667,14 +674,14 @@ export default function BackupDashboard() {
           </div>
           <div className="mt-4 space-y-3">
             {overdueDevices.length === 0 ? (
-              <div className="rounded-md border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground">
-                No overdue devices found.
+              <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+                All devices are on schedule. Nothing overdue.
               </div>
             ) : (
               overdueDevices.map((device) => (
                 <div
                   key={device.id ?? device.name}
-                  className="flex items-center justify-between gap-3 rounded-md border border-dashed bg-muted/30 px-4 py-3"
+                  className="flex items-center justify-between gap-3 rounded-md bg-muted/20 px-4 py-3"
                 >
                   <div>
                     <p className="text-sm font-semibold text-foreground">{device.name}</p>
@@ -712,22 +719,30 @@ export default function BackupDashboard() {
           </div>
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             {attentionItems.length === 0 ? (
-              <div className="rounded-md border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground md:col-span-2">
-                No active alerts right now.
+              <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground md:col-span-2">
+                No active alerts. Backup health looks good.
               </div>
             ) : (
               attentionItems.map((item) => {
                 const severity = item.severity ?? 'warning';
                 const Icon = attentionIconMap[severity] ?? AlertTriangle;
                 return (
-                  <div key={item.id ?? item.title} className="rounded-md border border-dashed bg-muted/30 p-4">
+                  <div
+                    key={item.id ?? item.title}
+                    className={cn(
+                      'rounded-md border p-4',
+                      severity === 'critical' && 'border-destructive/30 bg-destructive/5',
+                      severity === 'warning' && 'border-warning/30 bg-warning/5',
+                      (severity === 'info' || severity === 'success') && 'bg-muted/20'
+                    )}
+                  >
                     <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                       <Icon
                         className={cn(
                           'h-4 w-4',
                           severity === 'critical' && 'text-destructive',
                           severity === 'warning' && 'text-warning',
-                          severity === 'info' && 'text-amber-500',
+                          severity === 'info' && 'text-muted-foreground',
                           severity === 'success' && 'text-success'
                         )}
                       />

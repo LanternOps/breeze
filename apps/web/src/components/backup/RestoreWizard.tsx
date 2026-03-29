@@ -173,7 +173,7 @@ export default function RestoreWizard() {
         </div>
       )}
       {restoreSuccess && (
-        <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
+        <div className="rounded-md border border-success/40 bg-success/10 px-3 py-2 text-sm text-success">
           {restoreSuccess}
         </div>
       )}
@@ -182,17 +182,19 @@ export default function RestoreWizard() {
         <div className="flex flex-wrap gap-2">
           {['Select snapshot', 'Restore type', 'Select files', 'Destination', 'Review'].map(
             (label, index) => (
-              <div
+              <button
+                type="button"
                 key={label}
+                onClick={() => setStep(index)}
                 className={cn(
-                  'rounded-full border px-4 py-1.5 text-xs font-semibold uppercase tracking-wide',
+                  'rounded-full border px-4 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors',
                   index === step
                     ? 'border-primary bg-primary text-primary-foreground'
-                    : 'border-muted bg-muted/30 text-muted-foreground'
+                    : 'border-muted bg-muted/30 text-muted-foreground hover:text-foreground'
                 )}
               >
                 {index + 1}. {label}
-              </div>
+              </button>
             )
           )}
         </div>
@@ -368,8 +370,9 @@ export default function RestoreWizard() {
               </div>
               {destination === 'alternate' && (
                 <div className="space-y-2">
-                  <label className="text-xs font-medium text-muted-foreground">Alternate path</label>
+                  <label htmlFor="restore-alt-path" className="text-xs font-medium text-muted-foreground">Alternate path</label>
                   <input
+                    id="restore-alt-path"
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                     value={alternatePath}
                     onChange={(event) => setAlternatePath(event.target.value)}
