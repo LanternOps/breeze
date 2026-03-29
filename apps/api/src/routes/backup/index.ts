@@ -9,6 +9,8 @@ import { backupVerificationRoutes } from './verification';
 import { vssRoutes } from './vss';
 import { encryptionRoutes } from './encryption';
 import { bmrRoutes } from './bmr';
+import { mssqlRoutes } from './mssql';
+import { hypervRoutes } from './hyperv';
 
 export const backupRoutes = new Hono();
 
@@ -21,5 +23,7 @@ backupRoutes.route('/', restoreRoutes);
 backupRoutes.route('/', dashboardRoutes);
 backupRoutes.route('/', backupVerificationRoutes);
 backupRoutes.route('/', bmrRoutes);
+backupRoutes.route('/', mssqlRoutes);
+backupRoutes.route('/hyperv', hypervRoutes);
 backupRoutes.route('/vss', vssRoutes);
 backupRoutes.route('/encryption', encryptionRoutes);

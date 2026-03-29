@@ -53,3 +53,5 @@ export * from './peripheralControl';
 export * from './browserSecurity';
 export * from './serviceProcessMonitoring';
 export * from './warranty';
+export * from './applicationBackup';
+export * from './hypervVms';

@@ -206,3 +206,33 @@ export const bmrVmRestoreSchema = z.object({
     })
     .optional(),
 });
+
+// ── Hyper-V VM backup schemas ─────────────────────────────────────────
+
+export const hypervBackupSchema = z.object({
+  deviceId: z.string().uuid(),
+  vmName: z.string().min(1).max(256),
+  exportPath: z.string().min(1).max(1024),
+  consistencyType: z.enum(['application', 'crash']).default('application'),
+});
+
+export const hypervRestoreSchema = z.object({
+  deviceId: z.string().uuid(),
+  exportPath: z.string().min(1).max(1024),
+  vmName: z.string().min(1).max(256).optional(),
+  generateNewId: z.boolean().default(true),
+});
+
+export const hypervCheckpointSchema = z.object({
+  action: z.enum(['create', 'delete', 'apply']),
+  checkpointName: z.string().max(256).optional(),
+});
+
+export const hypervVmStateSchema = z.object({
+  state: z.enum(['start', 'stop', 'force_stop', 'pause', 'resume', 'save']),
+});
+
+export const hypervVmListSchema = z.object({
+  deviceId: z.string().uuid().optional(),
+  state: z.string().optional(),
+});

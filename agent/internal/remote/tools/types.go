@@ -151,6 +151,12 @@ const (
 	CmdVSSStatus     = "vss_status"
 	CmdVSSWriterList = "vss_writer_list"
 
+	// MSSQL backup management
+	CmdMSSQLDiscover = "mssql_discover"
+	CmdMSSQLBackup   = "mssql_backup"
+	CmdMSSQLRestore  = "mssql_restore"
+	CmdMSSQLVerify   = "mssql_verify"
+
 	// System state & bare metal recovery
 	CmdSystemStateCollect  = "system_state_collect"
 	CmdHardwareProfile     = "hardware_profile"
@@ -182,6 +188,13 @@ const (
 
 	// Self-uninstall (remote wipe)
 	CmdSelfUninstall = "self_uninstall"
+
+	// Hyper-V VM backup management
+	CmdHypervDiscover   = "hyperv_discover"
+	CmdHypervBackup     = "hyperv_backup"
+	CmdHypervRestore    = "hyperv_restore"
+	CmdHypervCheckpoint = "hyperv_checkpoint"
+	CmdHypervVMState    = "hyperv_vm_state"
 )
 
 // CommandResult represents the result of a command execution
