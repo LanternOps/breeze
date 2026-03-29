@@ -39,7 +39,7 @@ import { webhookRoutes } from './routes/webhooks';
 import { policyRoutes } from './routes/policyManagement';
 import { configPolicyRoutes } from './routes/configurationPolicies';
 import { psaRoutes } from './routes/psa';
-import { patchRoutes } from './routes/patches';
+import { patchRoutes } from './routes/patches/index';
 import { patchPolicyRoutes } from './routes/patchPolicies';
 import { updateRingRoutes } from './routes/updateRings';
 import { mobileRoutes } from './routes/mobile';

@@ -29,7 +29,7 @@ export const useHelpStore = create<HelpState>((set) => ({
     // Lazy import to avoid circular dependency with aiStore
     import('./aiStore')
       .then(({ useAiStore }) => useAiStore.getState().close())
-      .catch(() => {});
+      .catch((err) => console.warn('[HelpStore] Failed to close AI panel:', err));
 
     if (url) {
       set({ isOpen: true, docsUrl: url, label: 'Documentation' });

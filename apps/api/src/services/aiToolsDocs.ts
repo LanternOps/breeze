@@ -27,6 +27,10 @@ interface DocsIndexEntry {
 
 const typedDocsIndex = docsIndex as DocsIndexEntry[];
 
+if (!Array.isArray(typedDocsIndex) || typedDocsIndex.length === 0) {
+  console.error('[AI Docs] docsIndex.json is empty or invalid — search_documentation will not return results');
+}
+
 export function registerDocsTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
     aiTools.set(tool.definition.name, tool);
@@ -88,7 +92,9 @@ export function registerDocsTools(aiTools: Map<string, AiTool>): void {
         .slice(0, 5);
 
       if (results.length === 0) {
-        return 'No documentation found matching your query. Try different search terms.';
+        return typedDocsIndex.length === 0
+          ? 'Documentation index is not available. The docs search index may need to be rebuilt.'
+          : 'No documentation found matching your query. Try different search terms.';
       }
 
       return results.map(({ entry }) => [

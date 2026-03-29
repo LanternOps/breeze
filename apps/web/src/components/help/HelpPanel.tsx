@@ -28,7 +28,10 @@ export default function HelpPanel() {
   useEffect(() => {
     if (!isOpen || iframeLoaded || iframeError) return;
     const timer = setTimeout(() => {
-      if (!iframeLoaded) setIframeError(true);
+      if (!iframeLoaded) {
+        console.warn('[HelpPanel] Iframe load timed out after 15s:', docsUrl);
+        setIframeError(true);
+      }
     }, 15000);
     return () => clearTimeout(timer);
   }, [isOpen, docsUrl, iframeLoaded, iframeError]);
@@ -97,7 +100,10 @@ export default function HelpPanel() {
             src={docsUrl}
             title={label}
             onLoad={() => setIframeLoaded(true)}
-            onError={() => setIframeError(true)}
+            onError={(e) => {
+              console.error('[HelpPanel] Iframe failed to load:', docsUrl, e);
+              setIframeError(true);
+            }}
             className="h-full w-full flex-1 border-0 bg-background"
           />
         </div>

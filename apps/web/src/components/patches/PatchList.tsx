@@ -14,6 +14,7 @@ import {
   Minus
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { usePatchSelection } from './usePatchSelection';
 
 export type PatchSeverity = 'critical' | 'important' | 'moderate' | 'low';
 export type PatchApprovalStatus = 'pending' | 'approved' | 'declined' | 'deferred';
@@ -81,7 +82,6 @@ export default function PatchList({
   const [sourceFilter, setSourceFilter] = useState<string>('all');
   const [showMoreFilters, setShowMoreFilters] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
 
   const availableSources = useMemo(() => {
@@ -116,32 +116,8 @@ export default function PatchList({
   const startIndex = (currentPage - 1) * pageSize;
   const paginatedPatches = filteredPatches.slice(startIndex, startIndex + pageSize);
 
-  const pageIds = useMemo(() => new Set(paginatedPatches.map(p => p.id)), [paginatedPatches]);
-  const allPageSelected = paginatedPatches.length > 0 && paginatedPatches.every(p => selectedIds.has(p.id));
-  const somePageSelected = paginatedPatches.some(p => selectedIds.has(p.id));
-
-  const toggleSelect = useCallback((id: string) => {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
-
-  const toggleSelectAll = useCallback(() => {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      if (allPageSelected) {
-        for (const id of pageIds) next.delete(id);
-      } else {
-        for (const id of pageIds) next.add(id);
-      }
-      return next;
-    });
-  }, [allPageSelected, pageIds]);
-
-  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+  const paginatedIds = useMemo(() => paginatedPatches.map(p => p.id), [paginatedPatches]);
+  const { selectedIds, allPageSelected, somePageSelected, toggleSelect, toggleSelectAll, clearSelection } = usePatchSelection(paginatedIds);
 
   const selectedPatches = useMemo(
     () => patches.filter(p => selectedIds.has(p.id)),

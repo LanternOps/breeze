@@ -5,7 +5,6 @@ import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import PatchList, {
   type Patch,
   type PatchApprovalStatus,
-  type PatchSeverity
 } from './PatchList';
 import PatchApprovalModal, { type PatchApprovalAction } from './PatchApprovalModal';
 import PatchComplianceView from './PatchComplianceView';
@@ -14,96 +13,7 @@ import UpdateRingForm, { type UpdateRingFormValues } from './UpdateRingForm';
 import RingSelector, { type UpdateRing } from './RingSelector';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
-
-const severityMap: Record<string, PatchSeverity> = {
-  critical: 'critical',
-  high: 'important',
-  important: 'important',
-  medium: 'moderate',
-  moderate: 'moderate',
-  low: 'low',
-  info: 'low'
-};
-
-const approvalMap: Record<string, PatchApprovalStatus> = {
-  approved: 'approved',
-  approve: 'approved',
-  declined: 'declined',
-  decline: 'declined',
-  rejected: 'declined',
-  reject: 'declined',
-  deferred: 'deferred',
-  defer: 'deferred',
-  pending: 'pending'
-};
-
-const osLabels: Record<string, string> = {
-  windows: 'Windows',
-  macos: 'macOS',
-  linux: 'Linux'
-};
-
-function formatSourceLabel(value: unknown): string {
-  if (typeof value !== 'string') {
-    return value ? String(value) : 'Unknown';
-  }
-  if (!value.trim()) return 'Unknown';
-  return value
-    .replace(/_/g, ' ')
-    .split(' ')
-    .map(part => (part ? part[0].toUpperCase() + part.slice(1) : part))
-    .join(' ');
-}
-
-function normalizeSeverity(value?: string): PatchSeverity {
-  if (!value) return 'low';
-  return severityMap[value.toLowerCase()] ?? 'low';
-}
-
-function normalizeApprovalStatus(value?: string): PatchApprovalStatus {
-  if (!value) return 'pending';
-  return approvalMap[value.toLowerCase()] ?? 'pending';
-}
-
-function normalizeOs(value?: string): string {
-  if (!value) return 'Unknown';
-  return osLabels[value.toLowerCase()] ?? value;
-}
-
-function normalizePatch(raw: Record<string, unknown>, index: number): Patch {
-  const id = raw.id ?? raw.patchId ?? raw.patch_id ?? `patch-${index}`;
-  const title = raw.title ?? raw.name ?? raw.patchTitle ?? 'Untitled patch';
-  const source = raw.sourceName ?? raw.source_label ?? raw.source;
-  const os = raw.os ?? raw.osType ?? raw.os_type ?? raw.platform;
-  const releaseDate = raw.releaseDate ?? raw.releasedAt ?? raw.release_date ?? raw.createdAt ?? '';
-  const approvalStatus = raw.approvalStatus ?? raw.approval_status ?? raw.status;
-
-  return {
-    id: String(id),
-    title: String(title),
-    severity: normalizeSeverity(raw.severity ? String(raw.severity) : undefined),
-    source: formatSourceLabel(source),
-    os: normalizeOs(os ? String(os) : undefined),
-    releaseDate: String(releaseDate),
-    approvalStatus: normalizeApprovalStatus(approvalStatus ? String(approvalStatus) : undefined),
-    description: raw.description ? String(raw.description) : undefined
-  };
-}
-
-function normalizeRing(raw: Record<string, unknown>): UpdateRingItem {
-  return {
-    id: String(raw.id ?? ''),
-    name: String(raw.name ?? 'Untitled'),
-    description: raw.description ? String(raw.description) : null,
-    enabled: raw.enabled !== false,
-    ringOrder: Number(raw.ringOrder ?? 0),
-    deferralDays: Number(raw.deferralDays ?? 0),
-    deadlineDays: raw.deadlineDays != null ? Number(raw.deadlineDays) : null,
-    gracePeriodHours: Number(raw.gracePeriodHours ?? 4),
-    categoryRules: Array.isArray(raw.categoryRules) ? raw.categoryRules as UpdateRingItem['categoryRules'] : [],
-    updatedAt: raw.updatedAt ? String(raw.updatedAt) : undefined,
-  };
-}
+import { normalizePatch, normalizeRing } from './patchHelpers';
 
 type TabKey = 'rings' | 'patches' | 'compliance';
 const validTabs: TabKey[] = ['rings', 'patches', 'compliance'];

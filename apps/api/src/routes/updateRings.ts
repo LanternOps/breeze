@@ -10,7 +10,11 @@ import {
   patchComplianceSnapshots,
   patches,
   devicePatches,
-  devices
+  devices,
+  configPolicyFeatureLinks,
+  configPolicyAssignments,
+  configurationPolicies,
+  deviceGroupMemberships
 } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -197,7 +201,89 @@ updateRingRoutes.get(
       .where(and(eq(patchPolicies.orgId, orgId), eq(patchPolicies.enabled, true)))
       .orderBy(asc(patchPolicies.ringOrder), asc(patchPolicies.createdAt));
 
-    return c.json({ data: rings });
+    // Resolve device counts per ring via config policy assignments
+    const ringIds = rings.map(r => r.id);
+    const deviceCountMap = new Map<string, number>();
+
+    if (ringIds.length > 0) {
+      // Find config policies linked to each ring via feature links
+      const linkedAssignments = await db
+        .select({
+          ringId: configPolicyFeatureLinks.featurePolicyId,
+          level: configPolicyAssignments.level,
+          targetId: configPolicyAssignments.targetId,
+        })
+        .from(configPolicyFeatureLinks)
+        .innerJoin(configurationPolicies, and(
+          eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+          eq(configurationPolicies.status, 'active')
+        ))
+        .innerJoin(configPolicyAssignments, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+        .where(and(
+          eq(configPolicyFeatureLinks.featureType, 'patch'),
+          inArray(configPolicyFeatureLinks.featurePolicyId, ringIds)
+        ));
+
+      // Group assignments by ring
+      const ringAssignments = new Map<string, { level: string; targetId: string }[]>();
+      for (const row of linkedAssignments) {
+        if (!row.ringId) continue;
+        const list = ringAssignments.get(row.ringId) ?? [];
+        list.push({ level: row.level, targetId: row.targetId });
+        ringAssignments.set(row.ringId, list);
+      }
+
+      // Resolve each ring's device count
+      for (const [ringId, assignments] of ringAssignments) {
+        const deviceIds = new Set<string>();
+        const directDeviceIds: string[] = [];
+        const groupIds: string[] = [];
+        const siteIds: string[] = [];
+        const orgIds: string[] = [];
+
+        for (const a of assignments) {
+          if (a.level === 'device') directDeviceIds.push(a.targetId);
+          else if (a.level === 'device_group') groupIds.push(a.targetId);
+          else if (a.level === 'site') siteIds.push(a.targetId);
+          else if (a.level === 'organization' || a.level === 'partner') orgIds.push(a.targetId);
+        }
+
+        for (const id of directDeviceIds) deviceIds.add(id);
+
+        if (groupIds.length > 0) {
+          const groupDevices = await db
+            .select({ deviceId: deviceGroupMemberships.deviceId })
+            .from(deviceGroupMemberships)
+            .where(inArray(deviceGroupMemberships.groupId, groupIds));
+          for (const row of groupDevices) deviceIds.add(row.deviceId);
+        }
+
+        if (siteIds.length > 0) {
+          const siteDevices = await db
+            .select({ id: devices.id })
+            .from(devices)
+            .where(inArray(devices.siteId, siteIds));
+          for (const row of siteDevices) deviceIds.add(row.id);
+        }
+
+        if (orgIds.length > 0) {
+          const orgDevices = await db
+            .select({ id: devices.id })
+            .from(devices)
+            .where(inArray(devices.orgId, orgIds));
+          for (const row of orgDevices) deviceIds.add(row.id);
+        }
+
+        deviceCountMap.set(ringId, deviceIds.size);
+      }
+    }
+
+    const ringsWithCounts = rings.map(r => ({
+      ...r,
+      deviceCount: deviceCountMap.get(r.id) ?? 0,
+    }));
+
+    return c.json({ data: ringsWithCounts });
   }
 );
 

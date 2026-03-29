@@ -17,21 +17,9 @@ import {
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
-
-type DeviceRow = {
-  id: string;
-  hostname: string;
-  osType: string;
-  lastSeenAt?: string;
-  pendingPatches: number;
-  criticalMissing: number;
-  importantMissing: number;
-  osMissing: number;
-  thirdPartyMissing: number;
-  lastInstalledAt?: string;
-  lastScannedAt?: string;
-  pendingReboot: boolean;
-};
+import { formatRelativeTime, lastActivity, toNumber, type DevicePatchRow } from './patchHelpers';
+import { usePatchSelection } from './usePatchSelection';
+import { useBulkActions } from './useBulkActions';
 
 type ComplianceSummary = {
   totalDevices: number;
@@ -41,53 +29,17 @@ type ComplianceSummary = {
   rebootPending: number;
 };
 
-function formatRelativeTime(isoString: string): string {
-  const date = new Date(isoString);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  if (diffMins < 1) return 'just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  const diffHours = Math.floor(diffMins / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
-  const diffDays = Math.floor(diffHours / 24);
-  if (diffDays < 30) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
-}
-
-function lastActivity(installed?: string, scanned?: string): { label: string; tooltip: string } {
-  const inst = installed ? new Date(installed).getTime() : 0;
-  const scan = scanned ? new Date(scanned).getTime() : 0;
-  if (!inst && !scan) return { label: '—', tooltip: 'No activity recorded' };
-  if (inst >= scan) {
-    const label = formatRelativeTime(installed!);
-    return { label: `Installed ${label}`, tooltip: scanned ? `Last scanned ${formatRelativeTime(scanned)}` : 'No scan recorded' };
-  }
-  const label = formatRelativeTime(scanned!);
-  return { label: `Scanned ${label}`, tooltip: installed ? `Last installed ${formatRelativeTime(installed)}` : 'No install recorded' };
-}
-
-function toNumber(value: unknown): number {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
 type PatchComplianceViewProps = {
   ringId?: string | null;
 };
 
 export default function PatchComplianceView({ ringId }: PatchComplianceViewProps) {
-  const [devices, setDevices] = useState<DeviceRow[]>([]);
+  const [devices, setDevices] = useState<DevicePatchRow[]>([]);
   const [summary, setSummary] = useState<ComplianceSummary>({ totalDevices: 0, compliantDevices: 0, criticalPatches: 0, pendingPatches: 0, rebootPending: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [bulkAction, setBulkAction] = useState<string | null>(null);
-  const [bulkError, setBulkError] = useState<string>();
-  const [bulkSuccess, setBulkSuccess] = useState<string>();
   const [exporting, setExporting] = useState(false);
   const [confirmInstall, setConfirmInstall] = useState(false);
 
@@ -124,7 +76,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
         }
       }
 
-      const merged: DeviceRow[] = [];
+      const merged: DevicePatchRow[] = [];
       if (Array.isArray(allDevices)) {
         for (const raw of allDevices) {
           const id = String(raw.id ?? '');
@@ -203,33 +155,9 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
 
   const hasActiveFilters = searchQuery !== '' || statusFilter !== 'all';
 
-  // Selection
-  const pageIds = useMemo(() => new Set(filteredDevices.map(d => d.id)), [filteredDevices]);
-  const allSelected = filteredDevices.length > 0 && filteredDevices.every(d => selectedIds.has(d.id));
-  const someSelected = filteredDevices.some(d => selectedIds.has(d.id));
-
-  const toggleSelect = useCallback((id: string) => {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }, []);
-
-  const toggleSelectAll = useCallback(() => {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      if (allSelected) { for (const id of pageIds) next.delete(id); }
-      else { for (const id of pageIds) next.add(id); }
-      return next;
-    });
-  }, [allSelected, pageIds]);
-
-  const clearSelection = useCallback(() => {
-    setSelectedIds(new Set());
-    setBulkError(undefined);
-    setBulkSuccess(undefined);
-  }, []);
+  const filteredIds = useMemo(() => filteredDevices.map(d => d.id), [filteredDevices]);
+  const { selectedIds, allPageSelected: allSelected, somePageSelected: someSelected, toggleSelect, toggleSelectAll, clearSelection } = usePatchSelection(filteredIds);
+  const { bulkAction, bulkError, setBulkError, bulkSuccess, setBulkSuccess, handleBulkScan, handleBulkInstall } = useBulkActions(selectedIds, clearSelection, fetchData);
 
   const selectedWithPatches = useMemo(() => {
     return Array.from(selectedIds).filter(id => {
@@ -249,69 +177,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
     if (!bulkSuccess) return;
     const timer = setTimeout(() => setBulkSuccess(undefined), 5000);
     return () => clearTimeout(timer);
-  }, [bulkSuccess]);
-
-  // Bulk actions
-  const handleBulkScan = useCallback(async () => {
-    const ids = Array.from(selectedIds);
-    if (ids.length === 0) return;
-    setBulkAction('scan');
-    setBulkError(undefined);
-    setBulkSuccess(undefined);
-    try {
-      const response = await fetchWithAuth('/patches/scan', {
-        method: 'POST',
-        body: JSON.stringify({ deviceIds: ids })
-      });
-      if (!response.ok) {
-        if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-        throw new Error('Failed to start patch scan');
-      }
-      setBulkSuccess(`Patch scan queued for ${ids.length} ${ids.length === 1 ? 'device' : 'devices'}`);
-      clearSelection();
-      setTimeout(() => { void fetchData(); }, 3000);
-    } catch (err) {
-      setBulkError(err instanceof Error ? err.message : 'Scan failed');
-    } finally {
-      setBulkAction(null);
-    }
-  }, [selectedIds, clearSelection, fetchData]);
-
-  const handleBulkInstall = useCallback(async () => {
-    const ids = Array.from(selectedIds).filter(id => {
-      const d = devices.find(dev => dev.id === id);
-      return d && d.pendingPatches > 0;
-    });
-    if (ids.length === 0) return;
-    setBulkAction('install');
-    setBulkError(undefined);
-    setBulkSuccess(undefined);
-    setConfirmInstall(false);
-    const failed: string[] = [];
-    try {
-      for (const deviceId of ids) {
-        const response = await fetchWithAuth(`/devices/${deviceId}/patches/install`, {
-          method: 'POST',
-          body: JSON.stringify({})
-        });
-        if (!response.ok) {
-          if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-          failed.push(deviceId);
-        }
-      }
-      if (failed.length > 0) {
-        setBulkError(`Install failed on ${failed.length} of ${ids.length} devices`);
-      } else {
-        setBulkSuccess(`Patch install queued on ${ids.length} ${ids.length === 1 ? 'device' : 'devices'}`);
-      }
-      clearSelection();
-      setTimeout(() => { void fetchData(); }, 3000);
-    } catch (err) {
-      setBulkError(err instanceof Error ? err.message : 'Install failed');
-    } finally {
-      setBulkAction(null);
-    }
-  }, [selectedIds, devices, clearSelection, fetchData]);
+  }, [bulkSuccess, setBulkSuccess]);
 
   if (loading) {
     return (

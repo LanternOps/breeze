@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { AlertTriangle, TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { AlertSeverity } from './AlertList';
+import { severityConfig, severityOrder, type AlertSeverity } from './alertConfig';
 
 type AlertCount = {
   severity: AlertSeverity;
@@ -14,44 +14,6 @@ type AlertsSummaryProps = {
   onFilterBySeverity?: (severity: AlertSeverity) => void;
   className?: string;
 };
-
-const severityConfig: Record<
-  AlertSeverity,
-  { label: string; color: string; bgColor: string; borderColor: string }
-> = {
-  critical: {
-    label: 'Critical',
-    color: 'text-red-700 dark:text-red-400',
-    bgColor: 'bg-red-500/10',
-    borderColor: 'border-red-500/30'
-  },
-  high: {
-    label: 'High',
-    color: 'text-orange-700 dark:text-orange-400',
-    bgColor: 'bg-orange-500/10',
-    borderColor: 'border-orange-500/30'
-  },
-  medium: {
-    label: 'Medium',
-    color: 'text-yellow-700 dark:text-yellow-400',
-    bgColor: 'bg-yellow-500/10',
-    borderColor: 'border-yellow-500/30'
-  },
-  low: {
-    label: 'Low',
-    color: 'text-blue-700 dark:text-blue-400',
-    bgColor: 'bg-blue-500/10',
-    borderColor: 'border-blue-500/30'
-  },
-  info: {
-    label: 'Info',
-    color: 'text-gray-700 dark:text-gray-400',
-    bgColor: 'bg-gray-500/10',
-    borderColor: 'border-gray-500/30'
-  }
-};
-
-const severityOrder: AlertSeverity[] = ['critical', 'high', 'medium', 'low', 'info'];
 
 function getTrendInfo(count: number, previousCount?: number) {
   if (previousCount === undefined || previousCount === count) {
@@ -133,8 +95,8 @@ export default function AlertsSummary({
               onClick={() => onFilterBySeverity?.(alert.severity)}
               className={cn(
                 'flex flex-col items-center rounded-lg border p-3 transition hover:opacity-80',
-                config.bgColor,
-                config.borderColor,
+                config.bg,
+                config.border,
                 'cursor-pointer'
               )}
               title={`View ${config.label.toLowerCase()} alerts`}
@@ -220,8 +182,8 @@ export function AlertsSummaryCompact({
               onClick={() => onFilterBySeverity?.(alert.severity)}
               className={cn(
                 'flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium transition hover:opacity-80',
-                config.bgColor,
-                config.borderColor,
+                config.bg,
+                config.border,
                 config.color,
                 'cursor-pointer'
               )}

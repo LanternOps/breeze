@@ -267,9 +267,14 @@ dashboardRoutes.get('/status/:deviceId', async (c) => {
       lastSuccessAt: lastSuccess?.completedAt?.toISOString() ?? null,
       lastFailureAt: lastFailure?.completedAt?.toISOString() ?? null,
       nextScheduledAt: (() => {
-        const schedule = resolved?.settings?.schedule as Record<string, unknown> | null;
-        const hasSchedule = schedule && typeof schedule.frequency === 'string' && typeof schedule.time === 'string';
-        return hasSchedule ? getNextRun(schedule as any) : null;
+        // Prefer normalized settings; fall back to inline_settings on the feature link
+        const schedule = (resolved?.settings?.schedule ?? resolved?.inlineSettings) as Record<string, unknown> | null;
+        if (!schedule) return null;
+        // Normalized settings use { frequency, time }; inline uses { scheduleFrequency, scheduleTime }
+        const frequency = (schedule.frequency ?? schedule.scheduleFrequency) as string | undefined;
+        const time = (schedule.time ?? schedule.scheduleTime) as string | undefined;
+        if (typeof frequency !== 'string' || typeof time !== 'string') return null;
+        return getNextRun({ ...schedule, frequency, time } as any);
       })(),
     },
   });

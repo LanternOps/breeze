@@ -3,13 +3,12 @@ import { CheckCircle } from 'lucide-react';
 import AlertList, { type Alert } from './AlertList';
 import AlertDetails, { type StatusChange, type NotificationHistory } from './AlertDetails';
 import AlertsSummary from './AlertsSummary';
-import type { AlertSeverity } from './AlertList';
+import type { AlertSeverity } from './alertConfig';
 import { fetchWithAuth } from '../../stores/auth';
 import type { FilterConditionGroup } from '@breeze/shared';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { navigateTo } from '@/lib/navigation';
-
-type ModalMode = 'closed' | 'details' | 'acknowledge' | 'resolve' | 'suppress';
+import { showToast } from '../shared/Toast';
 
 type Device = { id: string; name: string };
 
@@ -18,11 +17,12 @@ export default function AlertsPage() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-  const [modalMode, setModalMode] = useState<ModalMode>('closed');
+  const [detailOpen, setDetailOpen] = useState(false);
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
   const [selectedAlertHistory, setSelectedAlertHistory] = useState<StatusChange[]>([]);
   const [selectedAlertNotifications, setSelectedAlertNotifications] = useState<NotificationHistory[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [submittingId, setSubmittingId] = useState<string | null>(null);
   const [severityFilter, setSeverityFilter] = useState<AlertSeverity | null>(null);
   const [deviceFilter, setDeviceFilter] = useState<FilterConditionGroup | null>(null);
   const [deviceFilterIds, setDeviceFilterIds] = useState<Set<string> | null>(null);
@@ -61,8 +61,8 @@ export default function AlertsPage() {
           }))
         );
       }
-    } catch {
-      // Silently fail
+    } catch (err) {
+      console.error('Failed to fetch devices:', err);
     }
   }, []);
 
@@ -74,8 +74,8 @@ export default function AlertsPage() {
         setSelectedAlertHistory(data.statusHistory ?? []);
         setSelectedAlertNotifications(data.notificationHistory ?? []);
       }
-    } catch {
-      // Silently fail
+    } catch (err) {
+      console.error('Failed to fetch alert details:', err);
     }
   }, []);
 
@@ -119,11 +119,11 @@ export default function AlertsPage() {
   const handleSelect = async (alert: Alert) => {
     setSelectedAlert(alert);
     await fetchAlertDetails(alert.id);
-    setModalMode('details');
+    setDetailOpen(true);
   };
 
-  const handleCloseModal = () => {
-    setModalMode('closed');
+  const handleCloseDetail = () => {
+    setDetailOpen(false);
     setSelectedAlert(null);
     setSelectedAlertHistory([]);
     setSelectedAlertNotifications([]);
@@ -131,6 +131,7 @@ export default function AlertsPage() {
 
   const handleAcknowledge = async (alert: Alert) => {
     setSubmitting(true);
+    setSubmittingId(alert.id);
     try {
       const response = await fetchWithAuth(`/alerts/${alert.id}/acknowledge`, {
         method: 'POST'
@@ -140,22 +141,33 @@ export default function AlertsPage() {
         throw new Error('Failed to acknowledge alert');
       }
 
-      await fetchAlerts();
-      if (modalMode === 'details' && selectedAlert?.id === alert.id) {
+      // Optimistic update
+      setAlerts(prev => prev.map(a =>
+        a.id === alert.id ? { ...a, status: 'acknowledged' as const, acknowledgedAt: new Date().toISOString() } : a
+      ));
+
+      if (detailOpen && selectedAlert?.id === alert.id) {
         await fetchAlertDetails(alert.id);
         setSelectedAlert(prev =>
           prev ? { ...prev, status: 'acknowledged', acknowledgedAt: new Date().toISOString() } : null
         );
       }
+
+      showToast({ message: 'Alert acknowledged', type: 'success' });
+      // Background refresh
+      fetchAlerts();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      const msg = err instanceof Error ? err.message : 'Failed to acknowledge alert';
+      showToast({ message: msg, type: 'error' });
     } finally {
       setSubmitting(false);
+      setSubmittingId(null);
     }
   };
 
   const handleResolve = async (alert: Alert, note: string) => {
     setSubmitting(true);
+    setSubmittingId(alert.id);
     try {
       const response = await fetchWithAuth(`/alerts/${alert.id}/resolve`, {
         method: 'POST',
@@ -166,17 +178,26 @@ export default function AlertsPage() {
         throw new Error('Failed to resolve alert');
       }
 
-      await fetchAlerts();
-      handleCloseModal();
+      // Optimistic update
+      setAlerts(prev => prev.map(a =>
+        a.id === alert.id ? { ...a, status: 'resolved' as const, resolvedAt: new Date().toISOString() } : a
+      ));
+
+      showToast({ message: 'Alert resolved', type: 'success' });
+      handleCloseDetail();
+      fetchAlerts();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      const msg = err instanceof Error ? err.message : 'Failed to resolve alert';
+      showToast({ message: msg, type: 'error' });
     } finally {
       setSubmitting(false);
+      setSubmittingId(null);
     }
   };
 
   const handleSuppress = async (alert: Alert) => {
     setSubmitting(true);
+    setSubmittingId(alert.id);
     try {
       const response = await fetchWithAuth(`/alerts/${alert.id}/suppress`, {
         method: 'POST'
@@ -186,14 +207,22 @@ export default function AlertsPage() {
         throw new Error('Failed to suppress alert');
       }
 
-      await fetchAlerts();
-      if (modalMode === 'details' && selectedAlert?.id === alert.id) {
-        handleCloseModal();
+      // Optimistic update
+      setAlerts(prev => prev.map(a =>
+        a.id === alert.id ? { ...a, status: 'suppressed' as const } : a
+      ));
+
+      showToast({ message: 'Alert suppressed', type: 'success' });
+      if (detailOpen && selectedAlert?.id === alert.id) {
+        handleCloseDetail();
       }
+      fetchAlerts();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      const msg = err instanceof Error ? err.message : 'Failed to suppress alert';
+      showToast({ message: msg, type: 'error' });
     } finally {
       setSubmitting(false);
+      setSubmittingId(null);
     }
   };
 
@@ -212,9 +241,11 @@ export default function AlertsPage() {
         throw new Error(`Failed to ${action} alerts`);
       }
 
+      showToast({ message: `${selectedAlerts.length} alerts ${action}d`, type: 'success' });
       await fetchAlerts();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      const msg = err instanceof Error ? err.message : `Failed to ${action} alerts`;
+      showToast({ message: msg, type: 'error' });
     } finally {
       setSubmitting(false);
     }
@@ -222,7 +253,6 @@ export default function AlertsPage() {
 
   const handleFilterBySeverity = (severity: AlertSeverity) => {
     setSeverityFilter(severity);
-    // Could also navigate to filtered view
     void navigateTo(`/alerts?severity=${severity}`);
   };
 
@@ -312,24 +342,26 @@ export default function AlertsPage() {
           onAcknowledge={handleAcknowledge}
           onResolve={alert => {
             setSelectedAlert(alert);
-            setModalMode('details');
+            setDetailOpen(true);
           }}
           onSuppress={handleSuppress}
           onBulkAction={handleBulkAction}
+          submittingId={submittingId}
         />
       )}
 
-      {/* Alert Details Modal */}
-      {modalMode === 'details' && selectedAlert && (
+      {/* Alert Details Drawer */}
+      {detailOpen && selectedAlert && (
         <AlertDetails
           alert={selectedAlert}
           statusHistory={selectedAlertHistory}
           notificationHistory={selectedAlertNotifications}
           isOpen={true}
-          onClose={handleCloseModal}
+          onClose={handleCloseDetail}
           onAcknowledge={handleAcknowledge}
           onResolve={handleResolve}
           onSuppress={handleSuppress}
+          submitting={submitting}
         />
       )}
     </div>

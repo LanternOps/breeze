@@ -272,6 +272,8 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
     create_key: { resource: 'devices', action: 'execute' },
     delete_key: { resource: 'devices', action: 'execute' },
   },
+  // Documentation tools
+  search_documentation: { resource: 'general', action: 'read' },
   // Script library tools
   search_script_library: { resource: 'scripts', action: 'read' },
   get_script_details: { resource: 'scripts', action: 'read' },

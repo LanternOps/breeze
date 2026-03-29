@@ -3,6 +3,7 @@ import { AlertTriangle, AlertCircle, Info, XCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { fetchWithAuth } from '../../stores/auth';
+import { formatTimeAgo } from '@/lib/formatTime';
 
 interface Alert {
   id: string;
@@ -45,20 +46,6 @@ const severityConfig = {
   }
 };
 
-function formatTimeAgo(dateString: string): string {
-  const date = new Date(dateString);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMs / 3600000);
-  const diffDays = Math.floor(diffMs / 86400000);
-
-  if (diffMins < 1) return 'Just now';
-  if (diffMins < 60) return `${diffMins} minute${diffMins === 1 ? '' : 's'} ago`;
-  if (diffHours < 24) return `${diffHours} hour${diffHours === 1 ? '' : 's'} ago`;
-  return `${diffDays} day${diffDays === 1 ? '' : 's'} ago`;
-}
-
 export default function RecentAlerts() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -90,14 +77,20 @@ export default function RecentAlerts() {
     fetchAlerts();
   }, [retryCount]);
 
+  // Auto-refresh every 60 seconds
+  useEffect(() => {
+    const interval = setInterval(() => setRetryCount(c => c + 1), 60_000);
+    return () => clearInterval(interval);
+  }, []);
+
   const retry = () => {
     setRetryCount(c => c + 1);
     setError(null);
   };
 
-  if (isLoading) {
+  if (isLoading && alerts.length === 0) {
     return (
-      <div className="rounded-lg border border-l-4 border-l-warning bg-card p-6 shadow-sm transition-colors duration-200 hover:border-primary/20">
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-sm font-semibold">Recent Alerts</h3>
           <a href="/alerts" className="text-xs font-medium text-primary hover:text-primary/80 transition-colors">
@@ -119,9 +112,9 @@ export default function RecentAlerts() {
     );
   }
 
-  if (error) {
+  if (error && alerts.length === 0) {
     return (
-      <div className="rounded-lg border border-l-4 border-l-warning bg-card p-6 shadow-sm transition-colors duration-200 hover:border-primary/20">
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-sm font-semibold">Recent Alerts</h3>
           <a href="/alerts" className="text-xs font-medium text-primary hover:text-primary/80 transition-colors">
@@ -143,7 +136,7 @@ export default function RecentAlerts() {
   }
 
   return (
-    <div className="rounded-lg border border-l-4 border-l-warning bg-card p-6 shadow-sm transition-colors duration-200 hover:border-primary/20">
+    <div className="rounded-lg border bg-card p-6 shadow-sm">
       <div className="mb-4 flex items-center justify-between">
         <h3 className="text-sm font-semibold">Recent Alerts</h3>
         <a href="/alerts" className="text-sm text-primary hover:underline">

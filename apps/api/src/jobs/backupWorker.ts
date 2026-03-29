@@ -136,7 +136,7 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
           continue;
         }
 
-        const schedule = entry.settings.schedule as PolicySchedule | null;
+        const schedule = entry.settings?.schedule as PolicySchedule | null;
         if (!schedule?.frequency || !schedule.time) continue;
 
         // Check if due now (simple: compare hour:minute in UTC)

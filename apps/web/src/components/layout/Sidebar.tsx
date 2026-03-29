@@ -229,11 +229,15 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const [apiVersion, setApiVersion] = useState<string | null>(null);
   useEffect(() => {
     fetchWithAuth('/system/version')
-      .then((r) => r.ok ? r.json() : null)
-      .then((data: { version: string } | null) => {
-        if (data) setApiVersion(data.version);
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
       })
-      .catch(() => {});
+      .then((data: { version: string }) => setApiVersion(data.version))
+      .catch((err) => {
+        console.warn('[Sidebar] Failed to fetch API version:', err);
+        setApiVersion('unavailable');
+      });
   }, []);
 
   useEffect(() => {

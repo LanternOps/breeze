@@ -150,7 +150,12 @@ async function main(): Promise<void> {
     const { routePath, section } = buildDocPath(filePath);
 
     if (!section) {
+      console.warn(`[build-docs-index] Skipping ${filePath}: section not in allowedSections`);
       continue;
+    }
+
+    if (!metadata.title) {
+      console.warn(`[build-docs-index] Warning: ${filePath} has no title in frontmatter`);
     }
 
     docsEntries.push({
@@ -167,7 +172,11 @@ async function main(): Promise<void> {
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
   await fs.writeFile(outputPath, `${JSON.stringify(docsEntries, null, 2)}\n`, 'utf8');
 
-  console.log(`Indexed ${docsEntries.length} docs into ${outputPath}`);
+  const totalMdx = mdxFiles.filter((f) => !['index.mdx', '404.mdx'].includes(path.basename(f))).length;
+  console.log(`Indexed ${docsEntries.length} of ${totalMdx} docs into ${outputPath}`);
+  if (docsEntries.length === 0) {
+    console.error('[build-docs-index] WARNING: Zero docs indexed — search_documentation will not return results');
+  }
 }
 
 main().catch((error) => {
