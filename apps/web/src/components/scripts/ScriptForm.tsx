@@ -419,94 +419,107 @@ export default function ScriptForm({
           <ChevronDown className={cn('h-4 w-4 text-muted-foreground transition-transform', paramsOpen && 'rotate-180')} />
         </button>
 
-        {paramsOpen && (
-          <div className="border-t px-4 pb-4 pt-3 space-y-3">
-            {fields.map((field, index) => (
-              <div
-                key={field.id}
-                className="rounded-md border bg-muted/20 p-4"
-              >
-                <div className="flex items-start gap-3">
-                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-medium text-muted-foreground mt-2">{index + 1}</span>
-                  <div className="flex-1 grid gap-4 sm:grid-cols-2 md:grid-cols-4">
-                    <div className="space-y-1">
-                      <label className="text-xs font-medium text-muted-foreground">Name</label>
-                      <input
-                        placeholder="paramName"
-                        className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                        {...register(`parameters.${index}.name`)}
-                      />
-                      {errors.parameters?.[index]?.name && (
-                        <p className="text-xs text-destructive">{errors.parameters[index]?.name?.message}</p>
+        <div
+          className="grid transition-[grid-template-rows] duration-200 ease-out"
+          style={{ gridTemplateRows: paramsOpen ? '1fr' : '0fr' }}
+          aria-hidden={!paramsOpen}
+        >
+          <div className="min-h-0 overflow-hidden">
+            <div className="border-t px-4 pb-4 pt-3 space-y-3">
+              {fields.length === 0 && (
+                <p className="text-sm text-muted-foreground">
+                  No parameters yet. Parameters let users supply values at runtime &mdash; reference them
+                  in your script as <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono">$paramName</code> (PowerShell/Bash)
+                  or <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono">sys.argv</code> (Python).
+                </p>
+              )}
+              {fields.map((field, index) => (
+                <div
+                  key={field.id}
+                  className="rounded-md border bg-muted/20 p-4"
+                >
+                  <div className="flex items-start gap-3">
+                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-medium text-muted-foreground mt-2">{index + 1}</span>
+                    <div className="flex-1 grid gap-4 sm:grid-cols-2 md:grid-cols-4">
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-muted-foreground">Name</label>
+                        <input
+                          placeholder="paramName"
+                          className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                          {...register(`parameters.${index}.name`)}
+                        />
+                        {errors.parameters?.[index]?.name && (
+                          <p className="text-xs text-destructive">{errors.parameters[index]?.name?.message}</p>
+                        )}
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-muted-foreground">Type</label>
+                        <select
+                          className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                          {...register(`parameters.${index}.type`)}
+                        >
+                          {parameterTypeOptions.map(opt => (
+                            <option key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-muted-foreground">Default Value</label>
+                        <input
+                          placeholder="Default"
+                          className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                          {...register(`parameters.${index}.defaultValue`)}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-muted-foreground">Required</label>
+                        <div className="flex items-center h-9">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 rounded border-border"
+                            {...register(`parameters.${index}.required`)}
+                          />
+                          <span className="ml-2 text-sm">Yes</span>
+                        </div>
+                      </div>
+                      {watchParameters?.[index]?.type === 'select' && (
+                        <div className="space-y-1 sm:col-span-2 md:col-span-4">
+                          <label className="text-xs font-medium text-muted-foreground">
+                            Options (comma-separated)
+                          </label>
+                          <input
+                            placeholder="option1, option2, option3"
+                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            {...register(`parameters.${index}.options`)}
+                          />
+                        </div>
                       )}
                     </div>
-                    <div className="space-y-1">
-                      <label className="text-xs font-medium text-muted-foreground">Type</label>
-                      <select
-                        className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                        {...register(`parameters.${index}.type`)}
-                      >
-                        {parameterTypeOptions.map(opt => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-xs font-medium text-muted-foreground">Default Value</label>
-                      <input
-                        placeholder="Default"
-                        className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                        {...register(`parameters.${index}.defaultValue`)}
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-xs font-medium text-muted-foreground">Required</label>
-                      <div className="flex items-center h-9">
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4 rounded border-border"
-                          {...register(`parameters.${index}.required`)}
-                        />
-                        <span className="ml-2 text-sm">Yes</span>
-                      </div>
-                    </div>
-                    {watchParameters?.[index]?.type === 'select' && (
-                      <div className="space-y-1 sm:col-span-2 md:col-span-4">
-                        <label className="text-xs font-medium text-muted-foreground">
-                          Options (comma-separated)
-                        </label>
-                        <input
-                          placeholder="option1, option2, option3"
-                          className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                          {...register(`parameters.${index}.options`)}
-                        />
-                      </div>
-                    )}
+                    <button
+                      type="button"
+                      onClick={() => remove(index)}
+                      className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-muted text-destructive"
+                      title="Remove parameter"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => remove(index)}
-                    className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-muted text-destructive"
-                    title="Remove parameter"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
                 </div>
-              </div>
-            ))}
+              ))}
 
-            <button
-              type="button"
-              onClick={() => { addParameter(); }}
-              className="inline-flex items-center gap-1.5 rounded-md border border-dashed px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition"
-            >
-              <Plus className="h-4 w-4" />
-              Add parameter
-            </button>
+              <button
+                type="button"
+                onClick={() => { addParameter(); }}
+                className="inline-flex items-center gap-1.5 rounded-md border border-dashed px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition"
+              >
+                <Plus className="h-4 w-4" />
+                Add parameter
+              </button>
+            </div>
           </div>
-        )}
+        </div>
       </div>
 
       {/* Execution Settings — collapsible */}
@@ -527,50 +540,57 @@ export default function ScriptForm({
           <ChevronDown className={cn('h-4 w-4 text-muted-foreground transition-transform', settingsOpen && 'rotate-180')} />
         </button>
 
-        {settingsOpen && (
-          <div className="border-t px-4 pb-4 pt-3">
-            <div className="grid gap-6 md:grid-cols-2">
-              <div className="space-y-2">
-                <label htmlFor="timeout-seconds" className="text-sm font-medium">
-                  Timeout (seconds)
-                </label>
-                <input
-                  id="timeout-seconds"
-                  type="number"
-                  min={1}
-                  max={86400}
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                  {...register('timeoutSeconds')}
-                />
-                {errors.timeoutSeconds && (
-                  <p className="text-sm text-destructive">{errors.timeoutSeconds.message}</p>
-                )}
-                <p className="text-xs text-muted-foreground">Maximum execution time (1 &ndash; 86,400 seconds)</p>
-              </div>
+        <div
+          className="grid transition-[grid-template-rows] duration-200 ease-out"
+          style={{ gridTemplateRows: settingsOpen ? '1fr' : '0fr' }}
+          aria-hidden={!settingsOpen}
+        >
+          <div className="min-h-0 overflow-hidden">
+            <div className="border-t px-4 pb-4 pt-3">
+              <div className="grid gap-6 md:grid-cols-2">
+                <div className="space-y-2">
+                  <label htmlFor="timeout-seconds" className="text-sm font-medium">
+                    Timeout (seconds)
+                  </label>
+                  <input
+                    id="timeout-seconds"
+                    type="number"
+                    min={1}
+                    max={86400}
+                    className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    {...register('timeoutSeconds')}
+                  />
+                  {errors.timeoutSeconds && (
+                    <p className="text-sm text-destructive">{errors.timeoutSeconds.message}</p>
+                  )}
+                  <p className="text-xs text-muted-foreground">Script is killed after this duration. Default 300s (5 min) is suitable for most tasks.</p>
+                </div>
 
-              <div className="space-y-2">
-                <label htmlFor="run-as" className="text-sm font-medium">
-                  Run As
-                </label>
-                <select
-                  id="run-as"
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                  {...register('runAs')}
-                >
-                  {runAsOptions.map(opt => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-                {errors.runAs && <p className="text-sm text-destructive">{errors.runAs.message}</p>}
-                <p className="text-xs text-muted-foreground">
-                  {runAsOptions.find(o => o.value === watch('runAs'))?.description}
-                </p>
+                <div className="space-y-2">
+                  <label htmlFor="run-as" className="text-sm font-medium">
+                    Run As
+                  </label>
+                  <select
+                    id="run-as"
+                    className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    {...register('runAs')}
+                  >
+                    {runAsOptions.map(opt => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                  {errors.runAs && <p className="text-sm text-destructive">{errors.runAs.message}</p>}
+                  <p className="text-xs text-muted-foreground">
+                    {runAsOptions.find(o => o.value === watch('runAs'))?.description}.
+                    {watch('runAs') === 'elevated' && ' Uses sudo on macOS/Linux, runas on Windows.'}
+                  </p>
+                </div>
               </div>
             </div>
           </div>
-        )}
+        </div>
       </div>
 
       {/* Form Actions */}
