@@ -8,6 +8,9 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 
+// Reference counter for stacked dialogs — only restore scroll when all dialogs close
+let scrollLockCount = 0;
+
 type DialogMaxWidth = 'md' | 'lg' | 'xl' | '2xl' | '3xl' | '4xl' | '5xl';
 
 const maxWidthClass: Record<DialogMaxWidth, string> = {
@@ -66,10 +69,15 @@ export function Dialog({
 
   useEffect(() => {
     if (!open) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    scrollLockCount++;
+    if (scrollLockCount === 1) {
+      document.body.style.overflow = 'hidden';
+    }
     return () => {
-      document.body.style.overflow = prev;
+      scrollLockCount--;
+      if (scrollLockCount === 0) {
+        document.body.style.overflow = '';
+      }
     };
   }, [open]);
 
@@ -108,9 +116,10 @@ export function Dialog({
 
   return createPortal(
     <div
-      className={`fixed inset-0 z-50 flex ${
+      className={`dialog-backdrop fixed inset-0 z-50 flex ${
         alignTop ? 'items-start overflow-y-auto' : 'items-center'
       } justify-center bg-background/80 px-4 py-8`}
+      style={{ animation: 'dialog-backdrop-in 150ms ease-out' }}
       onClick={handleBackdropClick}
       onKeyDown={handleKeyDown}
     >
@@ -120,7 +129,8 @@ export function Dialog({
         aria-modal="true"
         aria-label={title}
         tabIndex={-1}
-        className={`w-full ${maxWidthClass[maxWidth]} rounded-lg border bg-card shadow-lg focus:outline-none ${className}`}
+        className={`dialog-panel w-full ${maxWidthClass[maxWidth]} rounded-lg border bg-card shadow-lg focus:outline-none ${className}`}
+        style={{ animation: 'dialog-panel-in 200ms cubic-bezier(0.25, 1, 0.5, 1)' }}
       >
         {children}
       </div>

@@ -437,9 +437,9 @@ export default function ScriptExecutionModal({
                         <span className="text-xs text-muted-foreground capitalize">{device.os}</span>
                         <span className={cn(
                           'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium',
-                          device.status === 'online' && 'bg-green-500/20 text-green-700',
-                          device.status === 'offline' && 'bg-red-500/20 text-red-700',
-                          device.status === 'maintenance' && 'bg-yellow-500/20 text-yellow-700'
+                          device.status === 'online' && 'bg-success/15 text-success',
+                          device.status === 'offline' && 'bg-destructive/15 text-destructive',
+                          device.status === 'maintenance' && 'bg-warning/15 text-warning'
                         )}>
                           {device.status}
                         </span>

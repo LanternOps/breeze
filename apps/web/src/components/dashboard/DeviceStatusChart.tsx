@@ -41,16 +41,17 @@ export default function DeviceStatusChart() {
         const offlineCount = devices.filter((d: { status: string }) => d.status === 'offline').length;
         const warningCount = devices.filter((d: { status: string }) => d.status === 'warning').length;
 
-        // Read semantic colors from CSS custom properties
+        // Read semantic colors from CSS custom properties with fallbacks
         const root = getComputedStyle(document.documentElement);
-        const successColor = `hsl(${root.getPropertyValue('--success').trim()})`;
-        const mutedFgColor = `hsl(${root.getPropertyValue('--muted-foreground').trim()})`;
-        const warningColor = `hsl(${root.getPropertyValue('--warning').trim()})`;
+        const cssColor = (prop: string, fallback: string): string => {
+          const v = root.getPropertyValue(prop).trim();
+          return v ? `hsl(${v})` : fallback;
+        };
 
         setData([
-          { name: 'Online', value: onlineCount, color: successColor },
-          { name: 'Offline', value: offlineCount, color: mutedFgColor },
-          { name: 'Warning', value: warningCount, color: warningColor }
+          { name: 'Online', value: onlineCount, color: cssColor('--success', 'hsl(152, 56%, 37%)') },
+          { name: 'Offline', value: offlineCount, color: cssColor('--muted-foreground', 'hsl(220, 10%, 46%)') },
+          { name: 'Warning', value: warningCount, color: cssColor('--warning', 'hsl(36, 88%, 50%)') }
         ].filter(item => item.value > 0));
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load device status');

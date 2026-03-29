@@ -21,19 +21,19 @@ const actionConfig: Record<PatchApprovalAction, { label: string; description: st
   approve: {
     label: 'Approve',
     description: 'Allow this patch to be deployed automatically or in the next maintenance window.',
-    color: 'border-green-500/40 bg-green-500/10 text-green-700',
+    color: 'border-success/30 bg-success/10 text-success',
     icon: CheckCircle
   },
   decline: {
     label: 'Decline',
     description: 'Block this patch from deploying until it is reviewed again.',
-    color: 'border-red-500/40 bg-red-500/10 text-red-700',
+    color: 'border-destructive/30 bg-destructive/10 text-destructive',
     icon: XCircle
   },
   defer: {
     label: 'Defer',
     description: 'Postpone the decision and revisit later.',
-    color: 'border-yellow-500/40 bg-yellow-500/10 text-yellow-700',
+    color: 'border-warning/30 bg-warning/10 text-warning',
     icon: Clock
   }
 };

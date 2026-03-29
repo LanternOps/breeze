@@ -145,11 +145,27 @@ select {
   }
 }
 
+@keyframes dialog-backdrop-in {
+  from { opacity: 0; }
+}
+
+@keyframes dialog-panel-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+}
+
 /* Respect reduced motion preference */
 @media (prefers-reduced-motion: reduce) {
-  .animate-in {
+  .animate-in,
+  .dialog-backdrop,
+  .dialog-panel {
     animation: none;
     opacity: 1;
+  }
+  .dialog-panel {
+    transform: none;
   }
   .hover-lift {
     transition: none;

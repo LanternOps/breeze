@@ -79,7 +79,7 @@ export function OverflowTabs({ tabs, activeTab, onTabChange }: {
   useEffect(() => {
     if (!measured) return;
     const container = containerRef.current;
-    if (!container) return;
+    if (!container || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(() => computeVisible());
     ro.observe(container);
     return () => ro.disconnect();

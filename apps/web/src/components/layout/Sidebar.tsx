@@ -1,4 +1,4 @@
-import { useState, useEffect, useSyncExternalStore } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import {
   LayoutDashboard,
   Monitor,
@@ -118,24 +118,25 @@ const adminNav = [
   { name: 'Roles', href: '/settings/roles', icon: KeyRound },
 ];
 
+function readSavedMode(): SidebarMode {
+  if (typeof window === 'undefined') return 'open';
+  try {
+    const saved = localStorage.getItem('sidebar-mode') as SidebarMode;
+    if (saved && ['open', 'hover', 'collapsed'].includes(saved)) return saved;
+  } catch { /* Storage unavailable (private browsing, sandboxed iframe) */ }
+  return 'open';
+}
+
 export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps) {
-  const [mode, setMode] = useState<SidebarMode>('open');
+  const [mode, setMode] = useState<SidebarMode>(readSavedMode);
   const [hovered, setHovered] = useState(false);
   const livePath = useSyncExternalStore(subscribeToPath, getPathSnapshot, getServerSnapshot);
   const currentPath = livePath || initialPath;
 
-  // Persist mode in localStorage
-  useEffect(() => {
-    const saved = localStorage.getItem('sidebar-mode') as SidebarMode;
-    if (saved && ['open', 'hover', 'collapsed'].includes(saved)) {
-      setMode(saved);
-    }
-  }, []);
-
   const cycleMode = () => {
     const next: SidebarMode = mode === 'open' ? 'hover' : mode === 'hover' ? 'collapsed' : 'open';
     setMode(next);
-    localStorage.setItem('sidebar-mode', next);
+    try { localStorage.setItem('sidebar-mode', next); } catch { /* Storage unavailable */ }
   };
 
   // Derived state

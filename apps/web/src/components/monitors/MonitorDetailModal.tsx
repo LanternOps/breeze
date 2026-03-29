@@ -48,9 +48,9 @@ type MonitorDetail = {
 };
 
 const statusConfig: Record<string, { icon: typeof CheckCircle; color: string; label: string }> = {
-  online: { icon: CheckCircle, color: 'text-green-600 bg-green-500/20 border-green-500/40', label: 'Online' },
-  offline: { icon: XCircle, color: 'text-red-600 bg-red-500/20 border-red-500/40', label: 'Offline' },
-  degraded: { icon: AlertTriangle, color: 'text-yellow-600 bg-yellow-500/20 border-yellow-500/40', label: 'Degraded' },
+  online: { icon: CheckCircle, color: 'text-success bg-success/15 border-success/30', label: 'Online' },
+  offline: { icon: XCircle, color: 'text-destructive bg-destructive/15 border-destructive/30', label: 'Offline' },
+  degraded: { icon: AlertTriangle, color: 'text-warning bg-warning/15 border-warning/30', label: 'Degraded' },
   unknown: { icon: HelpCircle, color: 'text-muted-foreground bg-muted border-muted', label: 'Unknown' }
 };
 
@@ -356,10 +356,10 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
                     <span className="font-medium">{rule.condition}</span>
                     {rule.threshold && <span className="text-muted-foreground ml-1">({rule.threshold})</span>}
                     <span className={`ml-2 inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
-                      rule.severity === 'critical' ? 'bg-red-500/20 text-red-700' :
-                      rule.severity === 'high' ? 'bg-orange-500/20 text-orange-700' :
-                      rule.severity === 'medium' ? 'bg-yellow-500/20 text-yellow-700' :
-                      'bg-blue-500/20 text-blue-700'
+                      rule.severity === 'critical' ? 'bg-destructive/15 text-destructive' :
+                      rule.severity === 'high' ? 'bg-warning/15 text-warning' :
+                      rule.severity === 'medium' ? 'bg-primary/15 text-primary' :
+                      'bg-muted text-muted-foreground'
                     }`}>
                       {rule.severity}
                     </span>
