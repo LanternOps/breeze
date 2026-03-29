@@ -113,6 +113,10 @@ export const CommandTypes = {
   BACKUP_VERIFY: 'backup_verify',
   BACKUP_TEST_RESTORE: 'backup_test_restore',
   BACKUP_CLEANUP: 'backup_cleanup',
+
+  // VSS backup management
+  VSS_STATUS: 'vss_status',
+  VSS_WRITER_LIST: 'vss_writer_list',
 } as const;
 
 export type CommandType = typeof CommandTypes[keyof typeof CommandTypes];
@@ -204,6 +208,7 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.SELF_UNINSTALL,
   CommandTypes.BACKUP_VERIFY,
   CommandTypes.BACKUP_TEST_RESTORE,
+  CommandTypes.VSS_WRITER_LIST,
 ]);
 
 /**

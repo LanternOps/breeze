@@ -405,10 +405,11 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			retention = 7
 		}
 		h.backupMgr = backup.NewBackupManager(backup.BackupConfig{
-			Provider:  backupProvider,
-			Paths:     cfg.BackupPaths,
-			Schedule:  schedule,
-			Retention: retention,
+			Provider:   backupProvider,
+			Paths:      cfg.BackupPaths,
+			Schedule:   schedule,
+			Retention:  retention,
+			VSSEnabled: cfg.BackupVSSEnabled,
 		})
 	}
 

@@ -131,6 +131,7 @@ export const backupJobs = pgTable(
     errorCount: integer('error_count'),
     errorLog: text('error_log'),
     snapshotId: varchar('snapshot_id', { length: 200 }),
+    vssMetadata: jsonb('vss_metadata'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },

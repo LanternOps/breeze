@@ -147,6 +147,10 @@ const (
 	CmdBackupTestRestore = "backup_test_restore"
 	CmdBackupCleanup     = "backup_cleanup"
 
+	// VSS backup management
+	CmdVSSStatus     = "vss_status"
+	CmdVSSWriterList = "vss_writer_list"
+
 	// Log shipping
 	CmdSetLogLevel = "set_log_level"
 
