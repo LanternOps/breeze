@@ -45,17 +45,17 @@ type Readiness = {
 };
 
 const statusConfig: Record<VerificationStatus, { icon: typeof CheckCircle2; color: string; label: string }> = {
-  pending: { icon: Clock, color: 'text-yellow-500', label: 'Pending' },
-  running: { icon: Loader2, color: 'text-blue-500', label: 'Running' },
-  passed: { icon: CheckCircle2, color: 'text-green-500', label: 'Passed' },
-  failed: { icon: XCircle, color: 'text-red-500', label: 'Failed' },
-  partial: { icon: AlertTriangle, color: 'text-yellow-500', label: 'Partial' },
+  pending: { icon: Clock, color: 'text-warning', label: 'Pending' },
+  running: { icon: Loader2, color: 'text-primary', label: 'Running' },
+  passed: { icon: CheckCircle2, color: 'text-success', label: 'Passed' },
+  failed: { icon: XCircle, color: 'text-destructive', label: 'Failed' },
+  partial: { icon: AlertTriangle, color: 'text-warning', label: 'Partial' },
 };
 
 const severityColors: Record<string, string> = {
-  low: 'bg-yellow-100 text-yellow-800 border-yellow-300',
-  medium: 'bg-orange-100 text-orange-800 border-orange-300',
-  high: 'bg-red-100 text-red-800 border-red-300',
+  low: 'bg-warning/10 text-warning border-warning/30',
+  medium: 'bg-warning/20 text-warning border-warning/40',
+  high: 'bg-destructive/10 text-destructive border-destructive/30',
 };
 
 function formatDuration(seconds: number | null | undefined): string {
@@ -72,9 +72,9 @@ function formatBytes(bytes: number | null | undefined): string {
 }
 
 function readinessColor(score: number): string {
-  if (score >= 85) return 'text-green-500';
-  if (score >= 70) return 'text-yellow-500';
-  return 'text-red-500';
+  if (score >= 85) return 'text-success';
+  if (score >= 70) return 'text-warning';
+  return 'text-destructive';
 }
 
 export default function BackupVerificationTab({ deviceId }: { deviceId: string }) {
@@ -221,7 +221,7 @@ export default function BackupVerificationTab({ deviceId }: { deviceId: string }
                   ))}
                 </div>
               ) : (
-                <span className="text-xs text-green-600">No risk factors</span>
+                <span className="text-xs text-success">No risk factors</span>
               )}
             </div>
           </div>
@@ -325,7 +325,7 @@ export default function BackupVerificationTab({ deviceId }: { deviceId: string }
                           {cfg.label}
                         </span>
                         {v.details && Boolean((v.details as Record<string, unknown>).simulated) && (
-                          <span className="ml-1 inline-flex items-center rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600 border border-gray-300">
+                          <span className="ml-1 inline-flex items-center rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground border border-border">
                             simulated
                           </span>
                         )}
@@ -336,8 +336,8 @@ export default function BackupVerificationTab({ deviceId }: { deviceId: string }
                       <td className="py-2 pr-4">
                         {formatDuration(v.restoreTimeSeconds ?? duration)}
                       </td>
-                      <td className="py-2 pr-4 text-green-600">{v.filesVerified}</td>
-                      <td className="py-2 pr-4 text-red-600">{v.filesFailed}</td>
+                      <td className="py-2 pr-4 text-success">{v.filesVerified}</td>
+                      <td className="py-2 pr-4 text-destructive">{v.filesFailed}</td>
                       <td className="py-2">{formatBytes(v.sizeBytes)}</td>
                     </tr>
                   );
