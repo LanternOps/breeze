@@ -23,7 +23,7 @@ function toEpoch(value?: string | Date | null): number {
   return Number.isNaN(epoch) ? 0 : epoch;
 }
 
-function isCriticalDevice(_deviceId: string, _orgId: string): boolean {
+function isCriticalDevice(_orgId: string, _deviceId: string): boolean {
   // TODO: Determine criticality from config policy assignment level or device tags
   return false;
 }

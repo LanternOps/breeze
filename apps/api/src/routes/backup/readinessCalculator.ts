@@ -64,7 +64,7 @@ function average(values: number[]): number | null {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
-function isCriticalDevice(_deviceId: string, _orgId: string): boolean {
+function isCriticalDevice(_orgId: string, _deviceId: string): boolean {
   // TODO: Determine criticality from config policy assignment level or device tags
   return false;
 }

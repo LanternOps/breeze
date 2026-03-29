@@ -89,7 +89,7 @@ function supportsDbOrg(orgId: string): boolean {
   return isUuid(orgId);
 }
 
-function isCriticalDevice(_deviceId: string, _orgId: string): boolean {
+function isCriticalDevice(_orgId: string, _deviceId: string): boolean {
   // TODO: Determine criticality from config policy assignment level or device tags
   return false;
 }
