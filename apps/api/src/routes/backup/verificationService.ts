@@ -6,11 +6,9 @@ import { publishEvent } from '../../services/eventBus';
 import {
   addBackupVerification,
   backupJobs,
-  backupPolicies,
   backupSnapshots,
   backupVerifications,
   jobOrgById,
-  policyOrgById,
   snapshotOrgById,
   verificationOrgById
 } from './store';
@@ -91,14 +89,9 @@ function supportsDbOrg(orgId: string): boolean {
   return isUuid(orgId);
 }
 
-function isCriticalDevice(orgId: string, deviceId: string): boolean {
-  return backupPolicies
-    .filter((policy) => policyOrgById.get(policy.id) === orgId)
-    .filter((policy) => policy.targets.deviceIds.includes(deviceId))
-    .some((policy) => {
-      const includesServerGroup = policy.targets.groupIds.some((groupId) => /server|critical/i.test(groupId));
-      return includesServerGroup || /server|critical/i.test(policy.name);
-    });
+function isCriticalDevice(_orgId: string, _deviceId: string): boolean {
+  // TODO: Determine criticality from config policy assignment level or device tags
+  return false;
 }
 
 export async function safePublish(

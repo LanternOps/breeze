@@ -25,7 +25,7 @@ vi.mock('../jobs/backupWorker', () => ({
 function chainMock(resolvedValue: unknown = []) {
   const terminal = vi.fn(() => Promise.resolve(resolvedValue));
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'leftJoin', 'orderBy', 'groupBy', 'limit', 'returning', 'values', 'set']) {
+  for (const method of ['from', 'where', 'leftJoin', 'innerJoin', 'orderBy', 'groupBy', 'limit', 'returning', 'values', 'set']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   // Make the chain itself thenable
@@ -53,22 +53,26 @@ vi.mock('../db/schema', () => ({
     id: 'backup_configs.id',
     orgId: 'backup_configs.org_id',
     provider: 'backup_configs.provider',
-  },
-  backupPolicies: {
-    id: 'backup_policies.id',
-    orgId: 'backup_policies.org_id',
+    name: 'backup_configs.name',
   },
   backupJobs: {
     id: 'backup_jobs.id',
     orgId: 'backup_jobs.org_id',
     deviceId: 'backup_jobs.device_id',
+    configId: 'backup_jobs.config_id',
     status: 'backup_jobs.status',
+    type: 'backup_jobs.type',
     createdAt: 'backup_jobs.created_at',
+    startedAt: 'backup_jobs.started_at',
+    completedAt: 'backup_jobs.completed_at',
+    totalSize: 'backup_jobs.total_size',
+    errorCount: 'backup_jobs.error_count',
   },
   backupSnapshots: {
     id: 'backup_snapshots.id',
     orgId: 'backup_snapshots.org_id',
     configId: 'backup_snapshots.config_id',
+    deviceId: 'backup_snapshots.device_id',
     timestamp: 'backup_snapshots.timestamp',
     size: 'backup_snapshots.size',
   },
@@ -87,6 +91,48 @@ vi.mock('../db/schema', () => ({
     id: 'recovery_readiness.id',
     orgId: 'recovery_readiness.org_id',
     deviceId: 'recovery_readiness.device_id',
+  },
+  // Config policy tables (used by resolveBackupConfigForDevice / resolveAllBackupAssignedDevices)
+  configPolicyBackupSettings: {
+    featureLinkId: 'config_policy_backup_settings.feature_link_id',
+    schedule: 'config_policy_backup_settings.schedule',
+  },
+  configPolicyFeatureLinks: {
+    id: 'config_policy_feature_links.id',
+    configPolicyId: 'config_policy_feature_links.config_policy_id',
+    featureType: 'config_policy_feature_links.feature_type',
+    featurePolicyId: 'config_policy_feature_links.feature_policy_id',
+  },
+  configurationPolicies: {
+    id: 'configuration_policies.id',
+    orgId: 'configuration_policies.org_id',
+    status: 'configuration_policies.status',
+  },
+  configPolicyAssignments: {
+    id: 'config_policy_assignments.id',
+    configPolicyId: 'config_policy_assignments.config_policy_id',
+    level: 'config_policy_assignments.level',
+    targetId: 'config_policy_assignments.target_id',
+    priority: 'config_policy_assignments.priority',
+    createdAt: 'config_policy_assignments.created_at',
+  },
+  configPolicyScopes: {
+    id: 'config_policy_scopes.id',
+  },
+  deviceGroupMemberships: {
+    deviceId: 'device_group_memberships.device_id',
+    groupId: 'device_group_memberships.group_id',
+  },
+  devices: {
+    id: 'devices.id',
+    orgId: 'devices.org_id',
+    siteId: 'devices.site_id',
+    displayName: 'devices.display_name',
+    hostname: 'devices.hostname',
+  },
+  organizations: {
+    id: 'organizations.id',
+    partnerId: 'organizations.partner_id',
   },
 }));
 
@@ -183,73 +229,21 @@ describe('backup routes', () => {
     expect(tested.checkedAt).toBeDefined();
   });
 
-  it('should create a policy and report scheduling status', async () => {
-    const now = new Date();
-
-    // First select: verify config exists (for policy create)
-    selectMock.mockReturnValueOnce(chainMock([{ id: CONFIG_ID }]));
-
-    const policyRecord = {
-      id: POLICY_ID,
-      orgId: ORG_ID,
-      configId: CONFIG_ID,
-      name: 'Weekly Servers',
-      enabled: true,
-      targets: { deviceIds: [DEVICE_ID], siteIds: [], groupIds: [] },
-      schedule: { frequency: 'weekly', time: '04:15', timezone: 'UTC', dayOfWeek: 2 },
-      retention: { keepDaily: 5, keepWeekly: 6, keepMonthly: 2 },
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    insertMock.mockReturnValueOnce(chainMock([policyRecord]));
-
-    const policyRes = await app.request('/backup/policies', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-      body: JSON.stringify({
-        name: 'Weekly Servers',
-        configId: CONFIG_ID,
-        enabled: true,
-        targets: {
-          deviceIds: [DEVICE_ID],
-          siteIds: [],
-          groupIds: []
-        },
-        schedule: {
-          frequency: 'weekly',
-          time: '04:15',
-          timezone: 'UTC',
-          dayOfWeek: 2
-        },
-        retention: {
-          keepDaily: 5,
-          keepWeekly: 6,
-          keepMonthly: 2
-        }
-      })
-    });
-
-    expect(policyRes.status).toBe(201);
-    const policy = await policyRes.json();
-    expect(policy.id).toBeDefined();
-    expect(policy.schedule.frequency).toBe('weekly');
-
-    // Mock for status endpoint: select policies, then select jobs
-    selectMock
-      .mockReturnValueOnce(chainMock([policyRecord])) // policies query
-      .mockReturnValueOnce(chainMock([])); // jobs query
-
-    const statusRes = await app.request(`/backup/status/${DEVICE_ID}`, {
+  it('should report device backup status via config policy resolver', async () => {
+    // GET /backup/status/:deviceId now uses the config policy system.
+    // With no backup config policy assigned (empty db mocks), device is unprotected.
+    const statusUnprotectedRes = await app.request(`/backup/status/${DEVICE_ID}`, {
       method: 'GET',
       headers: { Authorization: 'Bearer token' }
     });
 
-    expect(statusRes.status).toBe(200);
-    const status = await statusRes.json();
-    expect(status.data.protected).toBe(true);
-    expect(status.data.policyId).toBe(policy.id);
-    expect(status.data.nextScheduledAt).toBeDefined();
+    expect(statusUnprotectedRes.status).toBe(200);
+    const unprotected = await statusUnprotectedRes.json();
+    expect(unprotected.data.deviceId).toBe(DEVICE_ID);
+    expect(unprotected.data.protected).toBe(false);
+    expect(unprotected.data.featureLinkId).toBeNull();
+    expect(unprotected.data.configId).toBeNull();
+    expect(unprotected.data.lastJob).toBeNull();
   });
 
   it('should queue and fetch a restore job', async () => {

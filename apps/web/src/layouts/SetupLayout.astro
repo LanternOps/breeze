@@ -1,5 +1,6 @@
 ---
 import '../styles/globals.css';
+import { ClientRouter } from 'astro:transitions';
 
 interface Props {
   title: string;
@@ -19,28 +20,21 @@ const { title } = Astro.props;
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <title>{title} | Breeze RMM</title>
+    <ClientRouter />
   </head>
   <body class="min-h-screen bg-background antialiased">
     <div class="flex min-h-screen items-center justify-center px-4 py-12">
       <div class="w-full max-w-3xl space-y-8">
         <div class="text-center">
-          <div class="mx-auto h-12 w-12 rounded-lg bg-primary/10 p-2">
-            <svg
-              class="h-full w-full text-primary"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"
-              />
+          <div class="mx-auto h-10 w-10 rounded-lg bg-primary p-1.5">
+            <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" class="h-full w-full">
+              <rect x="8" y="10" width="16" height="6" rx="2" fill="white" />
+              <rect x="10" y="18" width="12" height="2" rx="1" fill="white" fill-opacity="0.8" />
+              <rect x="10" y="22" width="8" height="2" rx="1" fill="white" fill-opacity="0.6" />
             </svg>
           </div>
-          <h1 class="mt-4 text-xl font-bold tracking-tight">Breeze RMM</h1>
-          <p class="mt-1.5 text-sm text-muted-foreground">Initial Setup</p>
+          <h1 class="mt-3 text-xl font-bold tracking-tight">Breeze</h1>
+          <p class="mt-1 text-sm text-muted-foreground">Initial Setup</p>
         </div>
 
         <slot />

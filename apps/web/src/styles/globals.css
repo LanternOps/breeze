@@ -8734,8 +8734,9 @@ select {
   .tour-highlight {
     position: relative;
     z-index: 61;
-    box-shadow: 0 0 0 4px hsl(var(--primary) / 0.3);
+    box-shadow: 0 0 0 4px hsl(var(--primary) / 0.4), 0 0 16px 2px hsl(var(--primary) / 0.15);
     border-radius: 8px;
+    transition: box-shadow 0.3s ease;
   }
 
   /* xterm.js: fill terminal container and enforce dark background */

@@ -7,7 +7,7 @@ import EnrollDeviceStep from './EnrollDeviceStep';
 
 const STEPS = [
   { label: 'Organization' },
-  { label: 'Enroll Device' },
+  { label: 'Install Agent' },
 ];
 
 const STORAGE_KEY = 'breeze-setup-step';
@@ -28,6 +28,10 @@ export default function SetupWizard() {
   const [siteId, setSiteId] = useState<string | null>(() => {
     try { return localStorage.getItem(SETUP_SITE_KEY); } catch { return null; }
   });
+
+  // Names for completion screen
+  const [orgName, setOrgName] = useState('');
+  const [siteName, setSiteName] = useState('');
 
   // Wait for zustand to rehydrate from localStorage before checking auth
   useEffect(() => {
@@ -90,12 +94,22 @@ export default function SetupWizard() {
     checkSetup();
   }, [isHydrated, isLoading, isAuthenticated]);
 
-  const handleOrgStepComplete = (createdOrgId: string, createdSiteId: string) => {
+  const handleOrgStepComplete = (createdOrgId: string, createdSiteId: string, createdOrgName: string, createdSiteName: string) => {
     setOrgId(createdOrgId);
     setSiteId(createdSiteId);
+    setOrgName(createdOrgName);
+    setSiteName(createdSiteName);
     try { localStorage.setItem(SETUP_ORG_KEY, createdOrgId); } catch { /* ignore */ }
     try { localStorage.setItem(SETUP_SITE_KEY, createdSiteId); } catch { /* ignore */ }
     setCurrentStep(1);
+  };
+
+  const handleStepClick = (step: number) => {
+    setCurrentStep(step);
+  };
+
+  const handleBackToOrg = () => {
+    setCurrentStep(0);
   };
 
   const handleSkipAll = async () => {
@@ -120,15 +134,16 @@ export default function SetupWizard() {
 
   if (checkingAuth) {
     return (
-      <div className="flex items-center justify-center py-12">
+      <div className="flex flex-col items-center justify-center gap-3 py-12">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        <p className="text-sm text-muted-foreground">Checking your account...</p>
       </div>
     );
   }
 
   return (
     <div className="space-y-8">
-      <SetupStepper steps={STEPS} currentStep={currentStep} />
+      <SetupStepper steps={STEPS} currentStep={currentStep} onStepClick={handleStepClick} />
 
       <div className="rounded-lg border bg-card p-6 shadow-sm">
         {currentStep === 0 && (
@@ -138,6 +153,7 @@ export default function SetupWizard() {
           <EnrollDeviceStep
             orgId={orgId}
             siteId={siteId}
+            onBack={handleBackToOrg}
             onFinish={handleEnrollFinish}
           />
         )}
@@ -149,7 +165,7 @@ export default function SetupWizard() {
             onClick={handleSkipAll}
             className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
           >
-            Skip Setup
+            Skip setup — I'll configure this later
           </button>
         </div>
       )}

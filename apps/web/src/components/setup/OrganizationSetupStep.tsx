@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Building2, Loader2 } from 'lucide-react';
+import { Building2, MapPin, Loader2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 
 interface OrgData {
@@ -9,7 +9,7 @@ interface OrgData {
 }
 
 interface OrganizationSetupStepProps {
-  onNext: (orgId: string, siteId: string) => void;
+  onNext: (orgId: string, siteId: string, orgName: string, siteName: string) => void;
 }
 
 function slugify(name: string): string {
@@ -77,7 +77,13 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
       }
 
       setOrgData({ partner, organizations, sites });
-      if (organizations?.[0]) setOrgName(organizations[0].name);
+
+      // Auto-populate: use existing data or default from partner name
+      if (organizations?.[0]) {
+        setOrgName(organizations[0].name);
+      } else if (partner?.name) {
+        setOrgName(partner.name);
+      }
       if (sites?.[0]) setSiteName(sites[0].name);
     } catch {
       setError('Failed to load organization data');
@@ -165,8 +171,10 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
         finalSiteId = site.id;
       }
 
+      const finalOrgName = orgName.trim() || 'My Organization';
+      const finalSiteName = siteName.trim() || 'Main Office';
       setSuccess('Organization details saved');
-      setTimeout(() => onNext(finalOrgId, finalSiteId), 600);
+      setTimeout(() => onNext(finalOrgId, finalSiteId, finalOrgName, finalSiteName), 600);
     } catch {
       setError('An unexpected error occurred');
     } finally {
@@ -176,8 +184,9 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-12">
+      <div className="flex flex-col items-center justify-center gap-3 py-12">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        <p className="text-sm text-muted-foreground">Loading your account...</p>
       </div>
     );
   }
@@ -185,41 +194,47 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-semibold">Create Your Organization</h2>
+        <h2 className="text-lg font-semibold">Create your first organization</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Name your organization and primary site. You can add more sites later.
+          Organizations represent your clients. You can add more later from Settings.
         </p>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
+        <div className="space-y-1.5">
           <label htmlFor="setup-org" className="flex items-center gap-2 text-sm font-medium">
             <Building2 className="h-4 w-4 text-muted-foreground" />
-            Organization Name
+            Organization name
           </label>
           <input
             id="setup-org"
             type="text"
             value={orgName}
             onChange={(e) => setOrgName(e.target.value)}
-            placeholder="Your Company Name"
+            placeholder="e.g. Downtown Dental, Smith Law Office"
             className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
           />
+          <p className="text-xs text-muted-foreground">
+            Typically your client's company name. Your own company ({orgData.partner?.name || 'your MSP'}) is already set up as the partner account.
+          </p>
         </div>
 
-        <div>
+        <div className="space-y-1.5">
           <label htmlFor="setup-site" className="flex items-center gap-2 text-sm font-medium">
-            <Building2 className="h-4 w-4 text-muted-foreground" />
-            Site Name
+            <MapPin className="h-4 w-4 text-muted-foreground" />
+            Site name
           </label>
           <input
             id="setup-site"
             type="text"
             value={siteName}
             onChange={(e) => setSiteName(e.target.value)}
-            placeholder="Main Office"
+            placeholder="e.g. Main Office, HQ, Building A"
             className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
           />
+          <p className="text-xs text-muted-foreground">
+            A physical location where devices are managed. You can add more sites later.
+          </p>
         </div>
 
         {error && (
@@ -229,7 +244,7 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
         )}
 
         {success && (
-          <div className="rounded-md border border-green-500/50 bg-green-500/10 px-3 py-2 text-sm text-green-700 dark:text-green-400">
+          <div className="rounded-md border border-emerald-500/50 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-400">
             {success}
           </div>
         )}

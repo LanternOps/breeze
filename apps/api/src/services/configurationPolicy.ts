@@ -12,6 +12,7 @@ import {
   configPolicySensitiveDataSettings,
   configPolicyMonitoringSettings,
   configPolicyMonitoringWatches,
+  configPolicyBackupSettings,
   devices,
   organizations,
   deviceGroupMemberships,
@@ -430,13 +431,32 @@ async function decomposeInlineSettings(
       break;
     }
 
+    case 'backup': {
+      // Look up orgId via feature link → policy join
+      const [policyRow] = await tx
+        .select({ orgId: configurationPolicies.orgId })
+        .from(configPolicyFeatureLinks)
+        .innerJoin(configurationPolicies, eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id))
+        .where(eq(configPolicyFeatureLinks.id, linkId))
+        .limit(1);
+      if (!policyRow) throw new Error(`Cannot resolve orgId for feature link ${linkId}`);
+      await tx.insert(configPolicyBackupSettings).values({
+        featureLinkId: linkId,
+        orgId: policyRow.orgId,
+        schedule: (s.schedule ?? {}) as Record<string, unknown>,
+        retention: (s.retention ?? {}) as Record<string, unknown>,
+        paths: (Array.isArray(s.paths) ? s.paths : []) as unknown[],
+      });
+      break;
+    }
+
     case 'warranty':
     case 'helper':
       // Pure JSONB — no normalized table needed
       break;
 
     default:
-      // backup, security — no normalized tables yet
+      // security — no normalized tables yet
       break;
   }
 }
@@ -479,6 +499,9 @@ async function deleteNormalizedRows(
       await tx.delete(configPolicyAlertRules).where(eq(configPolicyAlertRules.featureLinkId, linkId));
       break;
     }
+    case 'backup':
+      await tx.delete(configPolicyBackupSettings).where(eq(configPolicyBackupSettings.featureLinkId, linkId));
+      break;
     case 'warranty':
     case 'helper':
       // Pure JSONB — no normalized table to delete
