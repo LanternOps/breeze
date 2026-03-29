@@ -1,0 +1,25 @@
+---
+title: Page Not Found
+description: The page you're looking for doesn't exist or has moved.
+template: splash
+hero:
+  tagline: The page you're looking for doesn't exist or has been moved. Try searching or start from one of the links below.
+  actions:
+    - text: Back to Docs Home
+      link: /
+      icon: right-arrow
+      variant: primary
+    - text: Quickstart Guide
+      link: /getting-started/quickstart/
+---
+
+import { LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+## Popular Pages
+
+<CardGrid>
+  <LinkCard title="Quickstart" description="Get Breeze running in minutes." href="/getting-started/quickstart/" />
+  <LinkCard title="API Reference" description="REST API endpoints and authentication." href="/reference/api/" />
+  <LinkCard title="Agent Installation" description="Install and enroll the Breeze agent." href="/agents/installation/" />
+  <LinkCard title="Security Architecture" description="Authentication, encryption, and access controls." href="/security/overview/" />
+</CardGrid>

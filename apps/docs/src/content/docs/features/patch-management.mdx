@@ -1,12 +1,13 @@
 ---
 title: Patch Management
 description: Discover, approve, deploy, and roll back patches across your fleet with full audit trails and compliance reporting.
-sidebar:
-  order: 3
-  label: Patch Management
 ---
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Image } from 'astro:assets';
+import patchesScreenshot from '../../../assets/screenshots/patches.png';
+
+<Image src={patchesScreenshot} alt="Breeze Patch Management showing update rings, compliance, and deployment controls" />
 
 Patch Management gives you full control over the complete update lifecycle for every device in your fleet: discover available patches, review and approve them, deploy to targets, and roll back if something goes wrong. The system is designed to make large-scale patching auditable and safe — every action is recorded, partial failures are surfaced immediately, and no patch reaches a device without an explicit approval step.
 

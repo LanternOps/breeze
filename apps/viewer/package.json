@@ -15,7 +15,7 @@
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
     "@tauri-apps/plugin-deep-link": "^2.0.0",
     "@tauri-apps/plugin-shell": "^2.0.0",
-    "lucide-react": "^0.563.0",
+    "lucide-react": "^1.6.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "zustand": "^4.5.2"

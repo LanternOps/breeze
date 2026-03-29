@@ -145,12 +145,12 @@ vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'organization',
-      orgId: ORG_ID,
+      orgId: '11111111-1111-1111-1111-111111111111',
       partnerId: null,
-      user: { id: USER_ID, email: 'test@example.com' },
-      accessibleOrgIds: [ORG_ID],
-      canAccessOrg: (orgId: string) => orgId === ORG_ID,
-      orgCondition: vi.fn((column: unknown) => ({ column, orgId: ORG_ID }))
+      user: { id: '11111111-1111-1111-1111-111111111112', email: 'test@example.com' },
+      accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
+      canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111',
+      orgCondition: vi.fn((column: unknown) => ({ column, orgId: '11111111-1111-1111-1111-111111111111' }))
     });
 
     return next();

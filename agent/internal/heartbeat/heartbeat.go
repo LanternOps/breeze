@@ -341,7 +341,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		h.sessionBroker = sessionbroker.New(socketPath, h.handleUserHelperMessage)
 		reason := "config"
 		if cfg.IsService {
-			reason = "windows-service"
+			reason = "system-service"
 		} else if cfg.IsHeadless {
 			reason = "headless-daemon"
 		}

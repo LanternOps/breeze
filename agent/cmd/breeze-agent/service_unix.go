@@ -5,11 +5,20 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"syscall"
 )
 
-// isWindowsService always returns false on non-Windows platforms.
-func isWindowsService() bool { return false }
+// isWindowsService reports whether the process is running as a system service.
+// On macOS, returns true when running as a LaunchDaemon (root + no console),
+// which means the process cannot access the user's Quartz session directly
+// and must route desktop capture/input through the user helper via IPC.
+func isWindowsService() bool {
+	if runtime.GOOS == "darwin" {
+		return os.Geteuid() == 0 && !hasConsole()
+	}
+	return false
+}
 
 // hasConsole reports whether stdout is connected to a terminal.
 // Returns false when running as a launchd daemon or systemd service.

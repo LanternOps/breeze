@@ -195,6 +195,10 @@ const (
 	CmdHypervRestore    = "hyperv_restore"
 	CmdHypervCheckpoint = "hyperv_checkpoint"
 	CmdHypervVMState    = "hyperv_vm_state"
+
+	// Incident response
+	CmdCollectEvidence    = "collect_evidence"
+	CmdExecuteContainment = "execute_containment"
 )
 
 // CommandResult represents the result of a command execution
