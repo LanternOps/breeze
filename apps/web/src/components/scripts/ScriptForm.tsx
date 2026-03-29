@@ -425,7 +425,7 @@ export default function ScriptForm({
                       <div className="flex items-center h-9">
                         <input
                           type="checkbox"
-                          className="h-4 w-4 rounded border-gray-300"
+                          className="h-4 w-4 rounded border-border"
                           {...register(`parameters.${index}.required`)}
                         />
                         <span className="ml-2 text-sm">Yes</span>

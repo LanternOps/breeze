@@ -442,7 +442,7 @@ export default function RemoteTerminal({
         <div className="flex items-center gap-3">
           <TerminalIcon className="h-5 w-5 text-muted-foreground" />
           <div>
-            <h3 className="font-semibold">{deviceHostname}</h3>
+            <h3 className="text-sm font-semibold">{deviceHostname}</h3>
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <StatusIcon
                 className={cn(

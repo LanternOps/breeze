@@ -111,7 +111,7 @@ export default function DeploymentList({ timezone }: DeploymentListProps) {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Deployments</h1>
+        <h1 className="text-xl font-semibold tracking-tight">Deployments</h1>
         <p className="text-sm text-muted-foreground">Monitor progress and manage deployment workflows.</p>
       </div>
 

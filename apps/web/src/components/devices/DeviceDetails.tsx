@@ -76,11 +76,11 @@ type DeviceDetailsProps = {
 };
 
 const statusColors: Record<DeviceStatus, string> = {
-  online: 'bg-green-500/20 text-green-700 border-green-500/40',
-  offline: 'bg-red-500/20 text-red-700 border-red-500/40',
-  maintenance: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40',
-  decommissioned: 'bg-slate-500/20 text-slate-700 border-slate-500/40',
-  quarantined: 'bg-orange-500/20 text-orange-700 border-orange-500/40'
+  online: 'bg-success/15 text-success border-success/30',
+  offline: 'bg-destructive/15 text-destructive border-destructive/30',
+  maintenance: 'bg-warning/15 text-warning border-warning/30',
+  decommissioned: 'bg-muted text-muted-foreground border-border',
+  quarantined: 'bg-warning/15 text-warning border-warning/30'
 };
 
 const statusLabels: Record<DeviceStatus, string> = {
@@ -157,26 +157,31 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
   // Use provided timezone or browser default
   const effectiveTimezone = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-  const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
+  const tabs: { id: Tab; label: string; icon: React.ReactNode; separator?: boolean; title?: string }[] = [
+    // --- Summary ---
     { id: 'overview', label: 'Overview', icon: <Monitor className="h-4 w-4" /> },
-    { id: 'details', label: 'Device Details', icon: <Info className="h-4 w-4" /> },
-    { id: 'hardware', label: 'Hardware Inventory', icon: <Cpu className="h-4 w-4" /> },
-    { id: 'software', label: 'Software Inventory', icon: <Package className="h-4 w-4" /> },
-    { id: 'patches', label: 'Patch Status', icon: <CheckCircle className="h-4 w-4" /> },
-    { id: 'filesystem', label: 'Disk Cleanup', icon: <HardDrive className="h-4 w-4" /> },
+    { id: 'details', label: 'Details', icon: <Info className="h-4 w-4" />, title: 'OS, network, and system details' },
+    // --- Monitoring ---
+    { id: 'performance', label: 'Performance', icon: <Activity className="h-4 w-4" />, separator: true, title: 'CPU, RAM, and disk usage over time' },
+    { id: 'alerts', label: 'Alerts', icon: <AlertTriangle className="h-4 w-4" />, title: 'Alert history for this device' },
+    { id: 'eventlog', label: 'Event Log', icon: <FileText className="h-4 w-4" />, title: 'Windows/macOS system event logs' },
+    // --- Inventory ---
+    { id: 'hardware', label: 'Hardware', icon: <Cpu className="h-4 w-4" />, separator: true },
+    { id: 'software', label: 'Software', icon: <Package className="h-4 w-4" /> },
+    { id: 'patches', label: 'Patches', icon: <CheckCircle className="h-4 w-4" />, title: 'OS update and patch status' },
+    { id: 'peripherals', label: 'Peripherals', icon: <Usb className="h-4 w-4" />, title: 'USB, Bluetooth, and connected devices' },
+    // --- Management ---
+    { id: 'scripts', label: 'Scripts', icon: <Terminal className="h-4 w-4" />, separator: true, title: 'Script execution history' },
+    { id: 'management', label: 'Management', icon: <Server className="h-4 w-4" />, title: 'Agent settings and device management' },
+    { id: 'effective-config', label: 'Config', icon: <Layers className="h-4 w-4" />, title: 'Resolved configuration from all assigned policies' },
     { id: 'security', label: 'Security', icon: <Shield className="h-4 w-4" /> },
-    { id: 'peripherals', label: 'Peripherals', icon: <Usb className="h-4 w-4" /> },
-    { id: 'management', label: 'Management', icon: <Server className="h-4 w-4" /> },
-    { id: 'effective-config', label: 'Effective Config', icon: <Layers className="h-4 w-4" /> },
-    { id: 'alerts', label: 'Alert History', icon: <AlertTriangle className="h-4 w-4" /> },
-    { id: 'scripts', label: 'Script History', icon: <Terminal className="h-4 w-4" /> },
-    { id: 'performance', label: 'Performance', icon: <Activity className="h-4 w-4" /> },
-    { id: 'boot-performance', label: 'Boot Performance', icon: <Timer className="h-4 w-4" /> },
-    { id: 'eventlog', label: 'Event Log', icon: <FileText className="h-4 w-4" /> },
-    { id: 'activities', label: 'Activities', icon: <ScrollText className="h-4 w-4" /> },
-    { id: 'connections', label: 'Network Connections', icon: <Network className="h-4 w-4" /> },
-    { id: 'ip-history', label: 'IP History', icon: <Network className="h-4 w-4" /> },
-    { id: 'playbooks', label: 'Playbooks', icon: <Activity className="h-4 w-4" /> }
+    { id: 'playbooks', label: 'Playbooks', icon: <Activity className="h-4 w-4" />, title: 'Automated remediation playbook runs' },
+    // --- History & Network ---
+    { id: 'activities', label: 'Activities', icon: <ScrollText className="h-4 w-4" />, separator: true, title: 'Audit log for this device' },
+    { id: 'connections', label: 'Connections', icon: <Network className="h-4 w-4" />, title: 'Active network connections' },
+    { id: 'ip-history', label: 'IP History', icon: <Network className="h-4 w-4" />, title: 'Historical public and private IP addresses' },
+    { id: 'filesystem', label: 'Disk Cleanup', icon: <HardDrive className="h-4 w-4" />, title: 'Disk usage analysis and cleanup' },
+    { id: 'boot-performance', label: 'Boot Perf', icon: <Timer className="h-4 w-4" />, title: 'Startup time and boot process analysis' },
   ];
 
   return (
@@ -189,7 +194,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
             </div>
             <div>
               <div className="flex items-center gap-3">
-                <h1 className="text-2xl font-bold whitespace-nowrap">{device.displayName || device.hostname}</h1>
+                <h1 className="text-xl font-semibold tracking-tight whitespace-nowrap">{device.displayName || device.hostname}</h1>
                 <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}>
                   {statusLabels[device.status]}
                 </span>
@@ -212,41 +217,41 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
       {activeTab === 'overview' && (
         <div className="grid gap-6 lg:grid-cols-3">
           <div className="lg:col-span-2 space-y-6">
-            <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-5">
-              <div className="rounded-lg border bg-card p-4 shadow-sm">
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Cpu className="h-4 w-4" />
+            <div className="flex flex-wrap gap-x-8 gap-y-3 rounded-lg border bg-card px-5 py-4">
+              <div>
+                <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  <Cpu className="h-3.5 w-3.5" />
                   CPU
                 </div>
-                <p className="mt-2 text-2xl font-bold">{device.cpuPercent.toFixed(1)}%</p>
+                <p className="mt-1 text-lg font-semibold tabular-nums">{device.cpuPercent.toFixed(1)}%</p>
               </div>
-              <div className="rounded-lg border bg-card p-4 shadow-sm">
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <MemoryStick className="h-4 w-4" />
+              <div>
+                <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  <MemoryStick className="h-3.5 w-3.5" />
                   RAM
                 </div>
-                <p className="mt-2 text-2xl font-bold">{device.ramPercent.toFixed(1)}%</p>
+                <p className="mt-1 text-lg font-semibold tabular-nums">{device.ramPercent.toFixed(1)}%</p>
               </div>
-              <div className="rounded-lg border bg-card p-4 shadow-sm">
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Clock className="h-4 w-4" />
+              <div>
+                <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  <Clock className="h-3.5 w-3.5" />
                   Last Seen
                 </div>
-                <p className="mt-2 text-2xl font-bold">{formatLastSeen(device.lastSeen, effectiveTimezone)}</p>
+                <p className="mt-1 text-lg font-semibold">{formatLastSeen(device.lastSeen, effectiveTimezone)}</p>
               </div>
-              <div className="rounded-lg border bg-card p-4 shadow-sm">
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Clock className="h-4 w-4" />
+              <div>
+                <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  <Clock className="h-3.5 w-3.5" />
                   Uptime
                 </div>
-                <p className="mt-2 text-2xl font-bold">{formatUptime(device.uptimeSeconds)}</p>
+                <p className="mt-1 text-lg font-semibold">{formatUptime(device.uptimeSeconds)}</p>
               </div>
-              <div className="rounded-lg border bg-card p-4 shadow-sm">
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <User className="h-4 w-4" />
+              <div>
+                <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  <User className="h-3.5 w-3.5" />
                   Logged-in User
                 </div>
-                <p className="mt-2 text-lg font-bold truncate" title={device.lastUser || undefined}>{device.lastUser || '—'}</p>
+                <p className="mt-1 text-lg font-semibold truncate" title={device.lastUser || undefined}>{device.lastUser || '—'}</p>
               </div>
             </div>
 

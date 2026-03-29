@@ -30,10 +30,10 @@ type DeviceWarrantyCardProps = {
 };
 
 const statusConfig: Record<string, { label: string; color: string }> = {
-  active: { label: 'Active', color: 'bg-green-500/20 text-green-700 border-green-500/40' },
-  expiring: { label: 'Expiring', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40' },
-  expired: { label: 'Expired', color: 'bg-red-500/20 text-red-700 border-red-500/40' },
-  unknown: { label: 'Unknown', color: 'bg-gray-500/20 text-gray-700 border-gray-500/40' },
+  active: { label: 'Active', color: 'bg-success/15 text-success border-success/30' },
+  expiring: { label: 'Expiring', color: 'bg-warning/15 text-warning border-warning/30' },
+  expired: { label: 'Expired', color: 'bg-destructive/15 text-destructive border-destructive/30' },
+  unknown: { label: 'Unknown', color: 'bg-muted text-muted-foreground border-border' },
 };
 
 function formatDate(dateStr: string | null): string {
@@ -200,12 +200,12 @@ export default function DeviceWarrantyCard({ deviceId, compact = false }: Device
       {warranty.entitlements && warranty.entitlements.length > 0 && (
         <div className="rounded-lg border">
           <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b bg-muted/50">
-                <th className="px-4 py-2 text-left font-medium">Service Level</th>
-                <th className="px-4 py-2 text-left font-medium">Type</th>
-                <th className="px-4 py-2 text-left font-medium">Start Date</th>
-                <th className="px-4 py-2 text-left font-medium">End Date</th>
+            <thead className="bg-muted/40">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="px-4 py-2">Service Level</th>
+                <th className="px-4 py-2">Type</th>
+                <th className="px-4 py-2">Start Date</th>
+                <th className="px-4 py-2">End Date</th>
               </tr>
             </thead>
             <tbody>

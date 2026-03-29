@@ -372,9 +372,9 @@ export function PermissionMatrix({ permissions, inheritedPermissions = [], onCha
   return (
     <div className="overflow-x-auto">
       <table className="min-w-full border-collapse text-sm">
-        <thead>
-          <tr className="border-b bg-muted/40">
-            <th className="px-3 py-2 text-left font-medium">Resource</th>
+        <thead className="bg-muted/40">
+          <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            <th className="px-3 py-2">Resource</th>
             {ACTIONS.map((action) => (
               <th key={action} className="px-3 py-2 text-center">
                 <button
@@ -423,7 +423,7 @@ export function PermissionMatrix({ permissions, inheritedPermissions = [], onCha
                         disabled={disabled || isInherited}
                         title={isInherited ? 'Inherited from parent role' : undefined}
                         className={cn(
-                          'h-4 w-4 rounded border-gray-300 focus:ring-primary',
+                          'h-4 w-4 rounded border-border focus:ring-primary',
                           isInherited
                             ? 'text-amber-500 cursor-not-allowed'
                             : 'text-primary',

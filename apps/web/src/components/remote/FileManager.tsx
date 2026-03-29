@@ -942,7 +942,7 @@ export default function FileManager({
         <div className="flex items-center gap-3">
           <Folder className="h-5 w-5 text-muted-foreground" />
           <div>
-            <h3 className="font-semibold">{deviceHostname}</h3>
+            <h3 className="text-sm font-semibold">{deviceHostname}</h3>
             <p className="text-xs text-muted-foreground">File Manager</p>
           </div>
         </div>

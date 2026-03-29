@@ -322,7 +322,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
           <ArrowLeft className="h-5 w-5" />
         </a>
         <div>
-          <h1 className="text-2xl font-bold">
+          <h1 className="text-xl font-semibold tracking-tight">
             {isNew ? 'Create Automation' : 'Edit Automation'}
           </h1>
           <p className="text-muted-foreground">

@@ -251,7 +251,7 @@ export default function PsaConnectionsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">PSA Integrations</h1>
+          <h1 className="text-xl font-semibold tracking-tight">PSA Integrations</h1>
           <p className="text-muted-foreground">
             Connect your PSA to sync tickets and link alerts.
           </p>

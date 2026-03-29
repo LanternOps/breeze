@@ -176,7 +176,7 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
             <ArrowLeft className="h-5 w-5" />
           </a>
           <div>
-            <h1 className="text-2xl font-bold">Execution History</h1>
+            <h1 className="text-xl font-semibold tracking-tight">Execution History</h1>
             <p className="text-muted-foreground">
               {script?.name || 'Loading...'}
             </p>

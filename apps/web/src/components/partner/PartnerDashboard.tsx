@@ -548,10 +548,10 @@ export default function PartnerDashboard() {
 
             <div className="mt-4 overflow-hidden rounded-lg border">
               <table className="w-full border-collapse text-left text-sm">
-                <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
-                  <tr>
-                    <th className="px-3 py-2 font-medium">Customer</th>
-                    <th className="px-3 py-2 text-right font-medium">MRR</th>
+                <thead className="bg-muted/40">
+                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <th className="px-3 py-2">Customer</th>
+                    <th className="px-3 py-2 text-right">MRR</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -658,14 +658,14 @@ export default function PartnerDashboard() {
 
         <div className="mt-4 overflow-hidden rounded-lg border">
           <table className="w-full border-collapse text-left text-sm">
-            <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
-              <tr>
-                <th className="px-4 py-3 font-medium">Device</th>
-                <th className="px-4 py-3 font-medium">Customer</th>
-                <th className="px-4 py-3 font-medium">Status</th>
-                <th className="px-4 py-3 text-right font-medium">Alerts</th>
-                <th className="px-4 py-3 text-right font-medium">Compliance</th>
-                <th className="px-4 py-3 text-right font-medium">Last seen</th>
+            <thead className="bg-muted/40">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="px-4 py-3">Device</th>
+                <th className="px-4 py-3">Customer</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3 text-right">Alerts</th>
+                <th className="px-4 py-3 text-right">Compliance</th>
+                <th className="px-4 py-3 text-right">Last seen</th>
               </tr>
             </thead>
             <tbody>

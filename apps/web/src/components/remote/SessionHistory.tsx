@@ -72,11 +72,11 @@ const sessionTypeConfig: Record<SessionType, { label: string; icon: typeof Termi
 };
 
 const sessionStatusConfig: Record<SessionStatus, { label: string; color: string }> = {
-  pending: { label: 'Pending', color: 'bg-gray-500/20 text-gray-700 border-gray-500/40' },
-  connecting: { label: 'Connecting', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40' },
-  active: { label: 'Active', color: 'bg-green-500/20 text-green-700 border-green-500/40' },
-  disconnected: { label: 'Disconnected', color: 'bg-gray-500/20 text-gray-700 border-gray-500/40' },
-  failed: { label: 'Failed', color: 'bg-red-500/20 text-red-700 border-red-500/40' }
+  pending: { label: 'Pending', color: 'bg-muted text-muted-foreground border-border' },
+  connecting: { label: 'Connecting', color: 'bg-warning/15 text-warning border-warning/30' },
+  active: { label: 'Active', color: 'bg-success/15 text-success border-success/30' },
+  disconnected: { label: 'Disconnected', color: 'bg-muted text-muted-foreground border-border' },
+  failed: { label: 'Failed', color: 'bg-destructive/15 text-destructive border-destructive/30' }
 };
 
 // Format duration

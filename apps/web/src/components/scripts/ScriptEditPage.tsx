@@ -129,7 +129,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
             <ArrowLeft className="h-5 w-5" />
           </a>
           <div>
-            <h1 className="text-2xl font-bold">
+            <h1 className="text-xl font-semibold tracking-tight">
               {isNew ? 'New Script' : 'Edit Script'}
             </h1>
             <p className="text-muted-foreground">

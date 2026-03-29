@@ -203,14 +203,14 @@ export default function SNMPTemplateList({
 
       <div className="mt-6 overflow-hidden rounded-lg border">
         <table className="w-full text-sm">
-          <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
-            <tr>
-              <th className="px-4 py-3 text-left font-medium">Name</th>
-              <th className="px-4 py-3 text-left font-medium">Vendor</th>
-              <th className="px-4 py-3 text-left font-medium">Device type</th>
-              <th className="px-4 py-3 text-left font-medium">OID count</th>
-              <th className="px-4 py-3 text-left font-medium">Usage</th>
-              <th className="px-4 py-3 text-right font-medium">Actions</th>
+          <thead className="bg-muted/40">
+            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              <th className="px-4 py-3">Name</th>
+              <th className="px-4 py-3">Vendor</th>
+              <th className="px-4 py-3">Device type</th>
+              <th className="px-4 py-3">OID count</th>
+              <th className="px-4 py-3">Usage</th>
+              <th className="px-4 py-3 text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y">

@@ -281,8 +281,8 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
       {/* Trash table */}
       <div className="flex-1 overflow-auto">
         <table className="min-w-full divide-y divide-gray-700">
-          <thead className="sticky top-0 bg-gray-900">
-            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-gray-400">
+          <thead className="bg-muted/40 sticky top-0">
+            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               <th className="w-10 px-4 py-3">
                 <input
                   type="checkbox"

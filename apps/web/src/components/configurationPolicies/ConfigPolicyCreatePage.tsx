@@ -62,7 +62,7 @@ export default function ConfigPolicyCreatePage() {
     return (
       <div className="space-y-6">
         <div>
-          <h1 className="text-2xl font-bold">New Configuration Policy</h1>
+          <h1 className="text-xl font-semibold tracking-tight">New Configuration Policy</h1>
           <p className="text-muted-foreground">
             How would you like to configure this policy?
           </p>
@@ -113,7 +113,7 @@ export default function ConfigPolicyCreatePage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">New Configuration Policy</h1>
+        <h1 className="text-xl font-semibold tracking-tight">New Configuration Policy</h1>
         <p className="text-muted-foreground">
           {mode === 'linked'
             ? 'Create a policy linked to an existing master.'

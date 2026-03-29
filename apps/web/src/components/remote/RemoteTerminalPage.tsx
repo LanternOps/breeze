@@ -117,7 +117,7 @@ export default function RemoteTerminalPage({ deviceId }: RemoteTerminalPageProps
           <ArrowLeft className="h-5 w-5" />
         </button>
         <div>
-          <h1 className="text-2xl font-bold">Remote Terminal</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Remote Terminal</h1>
           <p className="text-muted-foreground">
             {device.displayName || device.hostname} - {device.osType} {device.osVersion}
           </p>

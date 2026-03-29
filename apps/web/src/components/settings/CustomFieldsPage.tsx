@@ -296,7 +296,7 @@ export default function CustomFieldsPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Custom Fields</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Custom Fields</h1>
           <p className="text-muted-foreground">
             Define custom attributes to track additional information on devices.
           </p>
@@ -365,14 +365,14 @@ export default function CustomFieldsPage() {
       ) : (
         <div className="rounded-lg border bg-card">
           <table className="w-full">
-            <thead className="border-b bg-muted/40">
-              <tr>
-                <th className="px-4 py-3 text-left text-sm font-medium">Name</th>
-                <th className="px-4 py-3 text-left text-sm font-medium">Key</th>
-                <th className="px-4 py-3 text-left text-sm font-medium">Type</th>
-                <th className="px-4 py-3 text-left text-sm font-medium">Required</th>
-                <th className="px-4 py-3 text-left text-sm font-medium">Device Types</th>
-                <th className="px-4 py-3 text-right text-sm font-medium">Actions</th>
+            <thead className="bg-muted/40">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="px-4 py-3">Name</th>
+                <th className="px-4 py-3">Key</th>
+                <th className="px-4 py-3">Type</th>
+                <th className="px-4 py-3">Required</th>
+                <th className="px-4 py-3">Device Types</th>
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y">

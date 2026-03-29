@@ -391,7 +391,7 @@ export default function PatchRollbackModal({
                             if (el) el.indeterminate = someFilteredSelected && !allFilteredSelected;
                           }}
                           onChange={e => handleSelectAllFiltered(e.target.checked)}
-                          className="h-4 w-4 rounded border-gray-300"
+                          className="h-4 w-4 rounded border-border"
                         />
                         <span className="text-xs font-medium text-muted-foreground">
                           Select all ({filteredDevices.length})
@@ -412,15 +412,15 @@ export default function PatchRollbackModal({
                             type="checkbox"
                             checked={selectedDeviceIds.has(device.id)}
                             onChange={e => handleDeviceToggle(device.id, e.target.checked)}
-                            className="h-4 w-4 rounded border-gray-300"
+                            className="h-4 w-4 rounded border-border"
                           />
                           <span className="flex-1 text-sm">{device.hostname}</span>
                           <span
                             className={cn(
                               'inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium',
                               device.status === 'online'
-                                ? 'border-green-500/40 bg-green-500/20 text-green-700'
-                                : 'border-red-500/40 bg-red-500/20 text-red-700'
+                                ? 'border-success/30 bg-success/15 text-success'
+                                : 'border-destructive/30 bg-destructive/15 text-destructive'
                             )}
                           >
                             {device.status === 'online' ? 'Online' : 'Offline'}
@@ -467,7 +467,7 @@ export default function PatchRollbackModal({
                   type="checkbox"
                   checked={confirmed}
                   onChange={e => setConfirmed(e.target.checked)}
-                  className="mt-0.5 h-4 w-4 rounded border-gray-300"
+                  className="mt-0.5 h-4 w-4 rounded border-border"
                 />
                 <span className="text-sm">
                   I understand this will uninstall the patch and may require a restart on affected devices

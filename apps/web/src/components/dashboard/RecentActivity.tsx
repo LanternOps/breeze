@@ -81,13 +81,20 @@ export default function RecentActivity() {
     return (
       <div className="rounded-lg border bg-card p-6 shadow-sm">
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="font-semibold">Recent Activity</h3>
+          <h3 className="text-sm font-semibold">Recent Activity</h3>
           <a href="/audit" className="text-sm text-primary hover:underline">
             View audit log
           </a>
         </div>
-        <div className="flex h-48 items-center justify-center">
-          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        <div className="space-y-0">
+          {[...Array(5)].map((_, i) => (
+            <div key={i} className="flex items-center gap-4 border-b py-3 last:border-0">
+              <div className="skeleton h-3.5 w-20" />
+              <div className="skeleton h-3.5 w-24" />
+              <div className="skeleton h-3.5 w-32" />
+              <div className="skeleton h-3.5 w-16" />
+            </div>
+          ))}
         </div>
       </div>
     );
@@ -97,7 +104,7 @@ export default function RecentActivity() {
     return (
       <div className="rounded-lg border bg-card p-6 shadow-sm">
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="font-semibold">Recent Activity</h3>
+          <h3 className="text-sm font-semibold">Recent Activity</h3>
           <a href="/audit" className="text-sm text-primary hover:underline">
             View audit log
           </a>
@@ -113,26 +120,27 @@ export default function RecentActivity() {
   }
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="hover-lift rounded-lg border bg-card p-6 shadow-sm">
       <div className="mb-4 flex items-center justify-between">
-        <h3 className="font-semibold">Recent Activity</h3>
+        <h3 className="text-sm font-semibold">Recent Activity</h3>
         <a href="/audit" className="text-sm text-primary hover:underline">
           View audit log
         </a>
       </div>
       <div className="overflow-x-auto">
         {activities.length === 0 ? (
-          <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
-            No recent activity
+          <div className="flex h-32 flex-col items-center justify-center gap-1 text-center">
+            <p className="text-sm font-medium text-foreground/70">No activity yet</p>
+            <p className="text-xs text-muted-foreground">Actions from your team will appear here</p>
           </div>
         ) : (
           <table className="w-full">
             <thead>
-              <tr className="border-b text-left text-sm text-muted-foreground">
-                <th className="pb-3 font-medium">User</th>
-                <th className="pb-3 font-medium">Action</th>
-                <th className="pb-3 font-medium">Target</th>
-                <th className="pb-3 font-medium">Time</th>
+              <tr className="border-b text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="pb-3">User</th>
+                <th className="pb-3">Action</th>
+                <th className="pb-3">Target</th>
+                <th className="pb-3">Time</th>
               </tr>
             </thead>
             <tbody>

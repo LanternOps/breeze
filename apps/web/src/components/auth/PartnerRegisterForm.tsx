@@ -202,7 +202,7 @@ export default function PartnerRegisterForm({
         <input
           id="acceptTerms"
           type="checkbox"
-          className="mt-1 h-4 w-4 rounded border-gray-300"
+          className="mt-1 h-4 w-4 rounded border-border"
           {...register('acceptTerms')}
         />
         <label htmlFor="acceptTerms" className="text-sm text-muted-foreground">

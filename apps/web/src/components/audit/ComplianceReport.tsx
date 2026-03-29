@@ -139,10 +139,10 @@ export default function ComplianceReport() {
             <table className="min-w-full divide-y text-sm">
               <thead className="bg-muted/40">
                 <tr>
-                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase">User</th>
-                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase">Data</th>
-                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase">Purpose</th>
-                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase">Time</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">User</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">Data</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">Purpose</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">Time</th>
                 </tr>
               </thead>
               <tbody className="divide-y">

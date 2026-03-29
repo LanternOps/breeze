@@ -48,9 +48,9 @@ const monitorTypeLabels: Record<string, string> = {
 };
 
 const monitorStatusStyles: Record<string, string> = {
-  online: 'bg-green-500/20 text-green-700 border-green-500/40',
-  offline: 'bg-red-500/20 text-red-700 border-red-500/40',
-  degraded: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40',
+  online: 'bg-success/15 text-success border-success/30',
+  offline: 'bg-destructive/15 text-destructive border-destructive/30',
+  degraded: 'bg-warning/15 text-warning border-warning/30',
   unknown: 'bg-muted text-muted-foreground border-muted'
 };
 
@@ -390,9 +390,9 @@ export default function AssetDetailModal({
                   <div className="flex items-center gap-2">
                     <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${
                       hasActiveMonitoring
-                        ? 'bg-green-500/20 text-green-700 border-green-500/40'
+                        ? 'bg-success/15 text-success border-success/30'
                         : hasConfiguredMonitoring
-                          ? 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40'
+                          ? 'bg-warning/15 text-warning border-warning/30'
                           : 'bg-muted text-muted-foreground border-muted'
                     }`}>
                       {hasActiveMonitoring ? 'Active' : hasConfiguredMonitoring ? 'Configured (Paused)' : 'Not Configured'}

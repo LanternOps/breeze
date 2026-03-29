@@ -280,7 +280,7 @@ export default function ScriptExecutionModal({
                           type="checkbox"
                           checked={Boolean(parameters[param.name])}
                           onChange={e => handleParameterChange(param.name, e.target.checked)}
-                          className="h-4 w-4 rounded border-gray-300"
+                          className="h-4 w-4 rounded border-border"
                         />
                         <span className="ml-2 text-sm">Enabled</span>
                       </div>
@@ -429,7 +429,7 @@ export default function ScriptExecutionModal({
                         checked={selectedDeviceIds.has(device.id)}
                         onChange={() => handleDeviceToggle(device.id)}
                         disabled={device.status !== 'online'}
-                        className="h-4 w-4 rounded border-gray-300"
+                        className="h-4 w-4 rounded border-border"
                       />
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium truncate">{device.hostname}</p>

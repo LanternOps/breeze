@@ -74,14 +74,8 @@ export default function DashboardStats() {
 
   if (isLoading) {
     return (
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {[...Array(4)].map((_, i) => (
-          <div key={i} className="rounded-lg border bg-card p-6 shadow-sm">
-            <div className="flex items-center justify-center h-20">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-            </div>
-          </div>
-        ))}
+      <div className="flex items-center justify-center rounded-lg border bg-card px-6 py-8">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
       </div>
     );
   }
@@ -129,37 +123,35 @@ export default function DashboardStats() {
   ];
 
   return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <div className="hover-lift flex flex-wrap gap-x-8 gap-y-4 rounded-lg border bg-card px-6 py-5">
       {statItems.map((stat) => (
-        <div
-          key={stat.name}
-          className="rounded-lg border bg-card p-6 shadow-sm"
-        >
-          <div className="flex items-center justify-between">
-            <stat.icon
-              className={cn(
-                'h-5 w-5',
-                stat.name === 'Online' && 'text-success',
-                stat.name === 'Warnings' && 'text-warning',
-                stat.name === 'Critical' && 'text-destructive'
-              )}
-            />
-            {stat.change && (
-              <span
-                className={cn(
-                  'text-xs font-medium',
-                  stat.changeType === 'positive' && 'text-success',
-                  stat.changeType === 'negative' && 'text-destructive',
-                  stat.changeType === 'neutral' && 'text-muted-foreground'
-                )}
-              >
-                {stat.change}
-              </span>
+        <div key={stat.name} className="flex items-center gap-3">
+          <stat.icon
+            className={cn(
+              'h-5 w-5',
+              stat.name === 'Online' && 'text-success',
+              stat.name === 'Warnings' && 'text-warning',
+              stat.name === 'Critical' && 'text-destructive',
+              !['Online', 'Warnings', 'Critical'].includes(stat.name) && 'text-muted-foreground'
             )}
-          </div>
-          <div className="mt-4">
-            <div className="text-2xl font-bold">{stat.value}</div>
-            <div className="text-sm text-muted-foreground">{stat.name}</div>
+          />
+          <div>
+            <div className="text-xs font-medium text-muted-foreground">{stat.name}</div>
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-xl font-semibold tracking-tight tabular-nums">{stat.value}</span>
+              {stat.change && (
+                <span
+                  className={cn(
+                    'text-xs font-medium',
+                    stat.changeType === 'positive' && 'text-success',
+                    stat.changeType === 'negative' && 'text-destructive',
+                    stat.changeType === 'neutral' && 'text-muted-foreground'
+                  )}
+                >
+                  {stat.change}
+                </span>
+              )}
+            </div>
           </div>
         </div>
       ))}

@@ -35,10 +35,10 @@ const POLL_INTERVAL_MS = 15000;
 
 const statusConfig: Record<PatchJobStatus, { label: string; color: string; icon: typeof PlayCircle }> = {
   queued: { label: 'Queued', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40', icon: PlayCircle },
-  running: { label: 'Running', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40', icon: PlayCircle },
-  completed: { label: 'Completed', color: 'bg-green-500/20 text-green-700 border-green-500/40', icon: CheckCircle },
-  failed: { label: 'Failed', color: 'bg-red-500/20 text-red-700 border-red-500/40', icon: AlertTriangle },
-  paused: { label: 'Paused', color: 'bg-gray-500/20 text-gray-700 border-gray-500/40', icon: PauseCircle }
+  running: { label: 'Running', color: 'bg-warning/15 text-warning border-warning/30', icon: PlayCircle },
+  completed: { label: 'Completed', color: 'bg-success/15 text-success border-success/30', icon: CheckCircle },
+  failed: { label: 'Failed', color: 'bg-destructive/15 text-destructive border-destructive/30', icon: AlertTriangle },
+  paused: { label: 'Paused', color: 'bg-muted text-muted-foreground border-border', icon: PauseCircle }
 };
 
 const statusMap: Record<string, PatchJobStatus> = {

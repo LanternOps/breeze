@@ -21,10 +21,10 @@ const deviceClassBadge: Record<string, string> = {
 };
 
 const actionBadge: Record<string, string> = {
-  allow: 'bg-green-500/20 text-green-700 border-green-500/40',
-  block: 'bg-red-500/20 text-red-700 border-red-500/40',
-  read_only: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40',
-  alert: 'bg-orange-500/20 text-orange-700 border-orange-500/40',
+  allow: 'bg-success/15 text-success border-success/30',
+  block: 'bg-destructive/15 text-destructive border-destructive/30',
+  read_only: 'bg-warning/15 text-warning border-warning/30',
+  alert: 'bg-warning/15 text-warning border-warning/30',
 };
 
 export default function PeripheralPoliciesList() {
@@ -175,7 +175,7 @@ export default function PeripheralPoliciesList() {
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${policy.isActive ? 'bg-green-500/20 text-green-700 border-green-500/40' : 'bg-gray-500/20 text-gray-700 border-gray-500/40'}`}>
+                      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${policy.isActive ? 'bg-success/15 text-success border-success/30' : 'bg-muted text-muted-foreground border-border'}`}>
                         {policy.isActive ? 'Yes' : 'No'}
                       </span>
                     </td>

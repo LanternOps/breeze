@@ -311,7 +311,7 @@ export default function AlertRuleForm({
                         type="checkbox"
                         checked={watch('targetIds')?.includes(target.id) || false}
                         onChange={() => handleTargetToggle(target.id)}
-                        className="h-4 w-4 rounded border-gray-300"
+                        className="h-4 w-4 rounded border-border"
                       />
                       <span className="text-sm">{target.name}</span>
                     </label>
@@ -517,7 +517,7 @@ export default function AlertRuleForm({
                   type="checkbox"
                   checked={watchChannelIds?.includes(channel.id) || false}
                   onChange={() => handleChannelToggle(channel.id)}
-                  className="h-4 w-4 rounded border-gray-300"
+                  className="h-4 w-4 rounded border-border"
                 />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium truncate">{channel.name}</p>
@@ -576,7 +576,7 @@ export default function AlertRuleForm({
                     type="checkbox"
                     checked={field.value}
                     onChange={e => field.onChange(e.target.checked)}
-                    className="h-4 w-4 rounded border-gray-300"
+                    className="h-4 w-4 rounded border-border"
                   />
                   <span className="text-sm">
                     Automatically resolve when condition is no longer met

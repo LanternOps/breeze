@@ -45,11 +45,11 @@ type DeviceListProps = {
 };
 
 const statusColors: Record<DeviceStatus, string> = {
-  online: 'bg-green-500/20 text-green-700 border-green-500/40',
-  offline: 'bg-red-500/20 text-red-700 border-red-500/40',
-  maintenance: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40',
-  decommissioned: 'bg-slate-500/20 text-slate-700 border-slate-500/40',
-  quarantined: 'bg-orange-500/20 text-orange-700 border-orange-500/40'
+  online: 'bg-success/15 text-success border-success/30',
+  offline: 'bg-destructive/15 text-destructive border-destructive/30',
+  maintenance: 'bg-warning/15 text-warning border-warning/30',
+  decommissioned: 'bg-muted text-muted-foreground border-border',
+  quarantined: 'bg-warning/15 text-warning border-warning/30'
 };
 
 const statusLabels: Record<DeviceStatus, string> = {
@@ -330,6 +330,23 @@ export default function DeviceList({
               ))}
             </select>
           )}
+          {(query || statusFilter !== 'all' || osFilter !== 'all' || roleFilter !== 'all' || orgFilter !== 'all' || siteFilter !== 'all') && (
+            <button
+              type="button"
+              onClick={() => {
+                setQuery('');
+                setStatusFilter('all');
+                setOsFilter('all');
+                setRoleFilter('all');
+                setOrgFilter('all');
+                setSiteFilter('all');
+                setCurrentPage(1);
+              }}
+              className="h-10 whitespace-nowrap rounded-md px-3 text-sm font-medium text-muted-foreground hover:text-foreground"
+            >
+              Clear filters
+            </button>
+          )}
         </div>
       </div>
 
@@ -415,17 +432,17 @@ export default function DeviceList({
                     if (el) el.indeterminate = someSelected && !allSelected;
                   }}
                   onChange={e => handleSelectAll(e.target.checked)}
-                  className="h-4 w-4 rounded border-gray-300"
+                  className="h-4 w-4 rounded border-border"
                 />
               </th>
               <th className="px-4 py-3">Hostname</th>
-              <th className="px-4 py-3">Organization</th>
-              <th className="px-4 py-3">Site</th>
+              <th className="hidden px-4 py-3 xl:table-cell">Organization</th>
+              <th className="hidden px-4 py-3 xl:table-cell">Site</th>
               <th className="px-4 py-3">OS</th>
-              <th className="px-4 py-3">Role</th>
+              <th className="hidden px-4 py-3 lg:table-cell">Role</th>
               <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">CPU %</th>
-              <th className="px-4 py-3">RAM %</th>
+              <th className="hidden px-4 py-3 md:table-cell">CPU %</th>
+              <th className="hidden px-4 py-3 md:table-cell">RAM %</th>
               <th className="px-4 py-3">Last Seen</th>
               <th className="px-4 py-3 text-right">Actions</th>
             </tr>
@@ -450,14 +467,14 @@ export default function DeviceList({
                       checked={selectedIds.has(device.id)}
                       onClick={e => e.stopPropagation()}
                       onChange={e => handleSelectOne(device.id, e.target.checked)}
-                      className="h-4 w-4 rounded border-gray-300"
+                      className="h-4 w-4 rounded border-border"
                     />
                   </td>
                   <td className="px-4 py-3 text-sm font-medium">{device.displayName || device.hostname}</td>
-                  <td className="px-4 py-3 text-sm text-muted-foreground">{device.orgName}</td>
-                  <td className="px-4 py-3 text-sm text-muted-foreground">{device.siteName}</td>
+                  <td className="hidden px-4 py-3 text-sm text-muted-foreground xl:table-cell">{device.orgName}</td>
+                  <td className="hidden px-4 py-3 text-sm text-muted-foreground xl:table-cell">{device.siteName}</td>
                   <td className="px-4 py-3 text-sm">{osLabels[device.os]}</td>
-                  <td className="px-4 py-3 text-sm">
+                  <td className="hidden px-4 py-3 text-sm lg:table-cell">
                     {(() => {
                       const role = device.deviceRole ?? 'unknown';
                       const RoleIcon = getDeviceRoleIcon(role);
@@ -474,29 +491,29 @@ export default function DeviceList({
                       {statusLabels[device.status]}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-sm">
+                  <td className="hidden px-4 py-3 text-sm md:table-cell">
                     {device.status === 'online' ? (
                       <div className="flex items-center gap-2">
                         <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
                           <div
-                            className={`h-full rounded-full ${device.cpuPercent > 80 ? 'bg-red-500' : device.cpuPercent > 60 ? 'bg-yellow-500' : 'bg-green-500'} ${widthPercentClass(device.cpuPercent)}`}
+                            className={`h-full rounded-full ${device.cpuPercent > 80 ? 'bg-destructive' : device.cpuPercent > 60 ? 'bg-warning' : 'bg-success'} ${widthPercentClass(device.cpuPercent)}`}
                           />
                         </div>
-                        <span className="w-10 text-right">{device.cpuPercent}%</span>
+                        <span className="w-10 text-right tabular-nums">{device.cpuPercent}%</span>
                       </div>
                     ) : (
                       <span className="text-muted-foreground">&mdash;</span>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-sm">
+                  <td className="hidden px-4 py-3 text-sm md:table-cell">
                     {device.status === 'online' ? (
                       <div className="flex items-center gap-2">
                         <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
                           <div
-                            className={`h-full rounded-full ${device.ramPercent > 80 ? 'bg-red-500' : device.ramPercent > 60 ? 'bg-yellow-500' : 'bg-green-500'} ${widthPercentClass(device.ramPercent)}`}
+                            className={`h-full rounded-full ${device.ramPercent > 80 ? 'bg-destructive' : device.ramPercent > 60 ? 'bg-warning' : 'bg-success'} ${widthPercentClass(device.ramPercent)}`}
                           />
                         </div>
-                        <span className="w-10 text-right">{device.ramPercent}%</span>
+                        <span className="w-10 text-right tabular-nums">{device.ramPercent}%</span>
                       </div>
                     ) : (
                       <span className="text-muted-foreground">&mdash;</span>

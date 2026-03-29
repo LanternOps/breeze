@@ -65,7 +65,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
           >
             <ArrowLeft className="h-4 w-4" />
           </a>
-          <h1 className="text-2xl font-bold">Edit Report</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Edit Report</h1>
         </div>
 
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
@@ -104,7 +104,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
           <ArrowLeft className="h-4 w-4" />
         </a>
         <div>
-          <h1 className="text-2xl font-bold">Edit Report</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Edit Report</h1>
           <p className="text-muted-foreground">
             Update the configuration for "{report.name}".
           </p>

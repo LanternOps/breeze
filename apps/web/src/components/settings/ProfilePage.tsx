@@ -279,7 +279,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   return (
     <div className="mx-auto max-w-2xl space-y-8">
       <div>
-        <h1 className="text-2xl font-bold">Profile settings</h1>
+        <h1 className="text-xl font-semibold tracking-tight">Profile settings</h1>
         <p className="text-sm text-muted-foreground">
           Manage your account settings and security preferences.
         </p>

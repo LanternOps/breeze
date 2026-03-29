@@ -92,13 +92,21 @@ export default function RecentAlerts() {
     return (
       <div className="rounded-lg border bg-card p-6 shadow-sm">
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="font-semibold">Recent Alerts</h3>
+          <h3 className="text-sm font-semibold">Recent Alerts</h3>
           <a href="/alerts" className="text-sm text-primary hover:underline">
             View all
           </a>
         </div>
-        <div className="flex h-48 items-center justify-center">
-          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        <div className="space-y-3">
+          {[...Array(4)].map((_, i) => (
+            <div key={i} className="flex items-start gap-3 rounded-md border-l-4 border-l-muted p-3">
+              <div className="skeleton mt-0.5 h-5 w-5 rounded" />
+              <div className="flex-1 space-y-2">
+                <div className="skeleton h-4 w-3/4" />
+                <div className="skeleton h-3 w-1/2" />
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     );
@@ -108,7 +116,7 @@ export default function RecentAlerts() {
     return (
       <div className="rounded-lg border bg-card p-6 shadow-sm">
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="font-semibold">Recent Alerts</h3>
+          <h3 className="text-sm font-semibold">Recent Alerts</h3>
           <a href="/alerts" className="text-sm text-primary hover:underline">
             View all
           </a>
@@ -124,17 +132,18 @@ export default function RecentAlerts() {
   }
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="hover-lift rounded-lg border bg-card p-6 shadow-sm">
       <div className="mb-4 flex items-center justify-between">
-        <h3 className="font-semibold">Recent Alerts</h3>
+        <h3 className="text-sm font-semibold">Recent Alerts</h3>
         <a href="/alerts" className="text-sm text-primary hover:underline">
           View all
         </a>
       </div>
       <div className="space-y-3">
         {alerts.length === 0 ? (
-          <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
-            No recent alerts
+          <div className="flex h-32 flex-col items-center justify-center gap-1 text-center">
+            <p className="text-sm font-medium text-foreground/70">All clear</p>
+            <p className="text-xs text-muted-foreground">No active alerts across your fleet</p>
           </div>
         ) : (
           alerts.map((alert) => {

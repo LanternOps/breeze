@@ -39,10 +39,10 @@ const severityConfig: Record<AlertSeverity, { label: string; color: string; bgCo
 };
 
 const statusConfig: Record<AlertStatus, { label: string; color: string; icon: typeof Bell }> = {
-  active: { label: 'Active', color: 'bg-red-500/20 text-red-700 border-red-500/40', icon: Bell },
-  acknowledged: { label: 'Acknowledged', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40', icon: CheckCircle },
-  resolved: { label: 'Resolved', color: 'bg-green-500/20 text-green-700 border-green-500/40', icon: XCircle },
-  suppressed: { label: 'Suppressed', color: 'bg-gray-500/20 text-gray-700 border-gray-500/40', icon: Bell }
+  active: { label: 'Active', color: 'bg-destructive/15 text-destructive border-destructive/30', icon: Bell },
+  acknowledged: { label: 'Acknowledged', color: 'bg-warning/15 text-warning border-warning/30', icon: CheckCircle },
+  resolved: { label: 'Resolved', color: 'bg-success/15 text-success border-success/30', icon: XCircle },
+  suppressed: { label: 'Suppressed', color: 'bg-muted text-muted-foreground border-border', icon: Bell }
 };
 
 function formatDateTime(dateString: string): string {
@@ -202,7 +202,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
               <AlertTriangle className={cn('h-6 w-6', severityConfig[alert.severity].color)} />
             </div>
             <div>
-              <h1 className="text-2xl font-bold">{alert.title}</h1>
+              <h1 className="text-xl font-semibold tracking-tight">{alert.title}</h1>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <span
                   className={cn(

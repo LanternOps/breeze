@@ -233,7 +233,7 @@ export default function EnrollmentKeyManager() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold">Enrollment Keys</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Enrollment Keys</h1>
           <p className="text-muted-foreground">
             Create and manage keys for agent enrollment. Use these keys with{' '}
             <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono">breeze-agent enroll &lt;key&gt;</code>
@@ -288,15 +288,15 @@ export default function EnrollmentKeyManager() {
       <div className="rounded-lg border bg-card">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-xs uppercase text-muted-foreground">
-                <th className="px-4 py-3 font-medium">Name</th>
-                <th className="px-4 py-3 font-medium">Key</th>
-                <th className="px-4 py-3 font-medium">Status</th>
-                <th className="px-4 py-3 font-medium">Usage</th>
-                <th className="px-4 py-3 font-medium">Expires</th>
-                <th className="px-4 py-3 font-medium">Created</th>
-                <th className="px-4 py-3 font-medium text-right">Actions</th>
+            <thead className="bg-muted/40">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="px-4 py-3">Name</th>
+                <th className="px-4 py-3">Key</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Usage</th>
+                <th className="px-4 py-3">Expires</th>
+                <th className="px-4 py-3">Created</th>
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>

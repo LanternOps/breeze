@@ -479,7 +479,7 @@ export default function DevicesPage() {
 
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Devices</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Devices</h1>
           <p className="text-muted-foreground">
             Manage and monitor your fleet.
           </p>

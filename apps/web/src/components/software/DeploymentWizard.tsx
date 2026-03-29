@@ -699,7 +699,7 @@ export default function DeploymentWizard() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Deployment Wizard</h1>
+        <h1 className="text-xl font-semibold tracking-tight">Deployment Wizard</h1>
         <p className="text-sm text-muted-foreground">Guide a deployment through selection, targeting, and review.</p>
       </div>
 

@@ -168,7 +168,7 @@ export default function AlertRulesPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Alert Rules</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Alert Rules</h1>
           <p className="text-muted-foreground">Configure when and how alerts are triggered.</p>
         </div>
         <div className="flex items-center gap-3">

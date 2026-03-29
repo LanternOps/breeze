@@ -39,7 +39,7 @@ export default function AuditBaselinesPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Audit Baselines</h1>
+        <h1 className="text-xl font-semibold tracking-tight">Audit Baselines</h1>
         <p className="text-muted-foreground">
           Define compliance baselines, evaluate device drift, and remediate with approval-gated workflows.
         </p>

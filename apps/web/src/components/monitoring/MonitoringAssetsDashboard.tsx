@@ -78,9 +78,9 @@ type AssetMonitoringDetail = {
 };
 
 const statusColors: Record<string, string> = {
-  online: 'bg-green-500/20 text-green-700 border-green-500/40',
-  warning: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40',
-  offline: 'bg-red-500/20 text-red-700 border-red-500/40',
+  online: 'bg-success/15 text-success border-success/30',
+  warning: 'bg-warning/15 text-warning border-warning/30',
+  offline: 'bg-destructive/15 text-destructive border-destructive/30',
   maintenance: 'bg-blue-500/20 text-blue-700 border-blue-500/40',
   unknown: 'bg-muted text-muted-foreground border-muted'
 };
@@ -422,9 +422,9 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
                       <td className="px-4 py-3">
                         <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${
                           overall === 'active'
-                            ? 'bg-green-500/20 text-green-700 border-green-500/40'
+                            ? 'bg-success/15 text-success border-success/30'
                             : overall === 'paused'
-                              ? 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40'
+                              ? 'bg-warning/15 text-warning border-warning/30'
                               : 'bg-muted text-muted-foreground border-muted'
                         }`}>
                           {overall === 'active' ? 'Active' : overall === 'paused' ? 'Configured (Paused)' : 'Not configured'}
@@ -834,11 +834,11 @@ function EditMonitoringModal({
                 <div className="max-h-40 overflow-y-auto rounded-md border">
                   <table className="min-w-full divide-y text-xs">
                     <thead className="bg-muted/40 sticky top-0">
-                      <tr>
-                        <th className="px-3 py-2 text-left font-medium text-muted-foreground">Name</th>
-                        <th className="px-3 py-2 text-left font-medium text-muted-foreground">OID</th>
-                        <th className="px-3 py-2 text-right font-medium text-muted-foreground">Value</th>
-                        <th className="px-3 py-2 text-right font-medium text-muted-foreground">Time</th>
+                      <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        <th className="px-3 py-2">Name</th>
+                        <th className="px-3 py-2">OID</th>
+                        <th className="px-3 py-2 text-right">Value</th>
+                        <th className="px-3 py-2 text-right">Time</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y">

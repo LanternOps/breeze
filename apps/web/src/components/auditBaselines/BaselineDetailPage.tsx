@@ -98,7 +98,7 @@ export default function BaselineDetailPage({ baselineId }: Props) {
 
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">{baseline.name}</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{baseline.name}</h1>
           <div className="mt-1 flex items-center gap-3">
             <span
               className={cn(

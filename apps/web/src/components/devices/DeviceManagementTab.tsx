@@ -236,7 +236,7 @@ export default function DeviceManagementTab({ deviceId }: DeviceManagementTabPro
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 mb-4">
             <Building2 className="h-4 w-4 text-muted-foreground" />
-            <h3 className="font-semibold">Identity &amp; Directory Status</h3>
+            <h3 className="text-sm font-semibold">Identity &amp; Directory Status</h3>
           </div>
           <button
             type="button"
@@ -294,7 +294,7 @@ export default function DeviceManagementTab({ deviceId }: DeviceManagementTabPro
       <div className="rounded-lg border bg-card p-6 shadow-sm">
         <div className="flex items-center gap-2 mb-1">
           <ShieldCheck className="h-4 w-4 text-muted-foreground" />
-          <h3 className="font-semibold">Detected Management Tools</h3>
+          <h3 className="text-sm font-semibold">Detected Management Tools</h3>
         </div>
         <p className="mb-4 text-sm text-muted-foreground">
           {totalDetections} tool{totalDetections !== 1 ? 's' : ''} detected across{' '}

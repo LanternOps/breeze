@@ -154,7 +154,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     >
       <div className="flex h-16 items-center justify-between border-b px-4">
         {!collapsed && (
-          <span className="text-xl font-bold text-primary">Breeze</span>
+          <span className="text-lg font-bold tracking-tight text-foreground">Breeze</span>
         )}
         <button
           onClick={() => setCollapsed(!collapsed)}
@@ -175,6 +175,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
             <a
               key={item.name}
               href={item.href}
+              title={collapsed ? item.name : undefined}
               className={cn(
                 'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
                 isActive
@@ -191,7 +192,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         <div className="my-4 border-t" />
 
         {!collapsed && (
-          <span className="px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          <span className="px-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70">
             Security & Monitoring
           </span>
         )}
@@ -201,6 +202,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
             <a
               key={item.name}
               href={item.href}
+              title={collapsed ? item.name : undefined}
               className={cn(
                 'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
                 isActive
@@ -217,7 +219,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         <div className="my-4 border-t" />
 
         {!collapsed && (
-          <span className="px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          <span className="px-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70">
             Operations
           </span>
         )}
@@ -227,6 +229,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
             <a
               key={item.name}
               href={item.href}
+              title={collapsed ? item.name : undefined}
               className={cn(
                 'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
                 isActive
@@ -243,7 +246,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         <div className="my-4 border-t" />
 
         {!collapsed && (
-          <span className="px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          <span className="px-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70">
             Reporting
           </span>
         )}
@@ -253,6 +256,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
             <a
               key={item.name}
               href={item.href}
+              title={collapsed ? item.name : undefined}
               className={cn(
                 'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
                 isActive
@@ -269,7 +273,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         <div className="my-4 border-t" />
 
         {!collapsed && (
-          <span className="px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          <span className="px-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70">
             Settings
           </span>
         )}
@@ -279,6 +283,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
             <a
               key={item.name}
               href={item.href}
+              title={collapsed ? item.name : undefined}
               className={cn(
                 'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
                 isActive
@@ -295,7 +300,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         <div className="my-4 border-t" />
 
         {!collapsed && (
-          <span className="px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          <span className="px-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70">
             Admin
           </span>
         )}
@@ -305,6 +310,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
             <a
               key={item.name}
               href={item.href}
+              title={collapsed ? item.name : undefined}
               className={cn(
                 'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
                 isActive

@@ -26,14 +26,14 @@ type DeviceScriptHistoryProps = {
 };
 
 const statusStyles: Record<string, string> = {
-  success: 'bg-green-500/20 text-green-700 border-green-500/40',
-  completed: 'bg-green-500/20 text-green-700 border-green-500/40',
-  failed: 'bg-red-500/20 text-red-700 border-red-500/40',
-  running: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40',
+  success: 'bg-success/15 text-success border-success/30',
+  completed: 'bg-success/15 text-success border-success/30',
+  failed: 'bg-destructive/15 text-destructive border-destructive/30',
+  running: 'bg-warning/15 text-warning border-warning/30',
   queued: 'bg-blue-500/20 text-blue-700 border-blue-500/40',
-  pending: 'bg-gray-500/20 text-gray-700 border-gray-500/40',
-  timeout: 'bg-orange-500/20 text-orange-700 border-orange-500/40',
-  cancelled: 'bg-gray-500/20 text-gray-700 border-gray-500/40'
+  pending: 'bg-muted text-muted-foreground border-border',
+  timeout: 'bg-warning/15 text-warning border-warning/30',
+  cancelled: 'bg-muted text-muted-foreground border-border'
 };
 
 const statusConfig: Record<string, { label: string; color: string; bgColor: string; icon: typeof CheckCircle }> = {
@@ -422,8 +422,8 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
                       <span className={cn(
                         'inline-flex items-center rounded px-2 py-0.5 font-mono',
                         selectedExecution.exitCode === 0
-                          ? 'bg-green-500/20 text-green-700'
-                          : 'bg-red-500/20 text-red-700'
+                          ? 'bg-success/15 text-success'
+                          : 'bg-destructive/15 text-destructive'
                       )}>
                         {selectedExecution.exitCode}
                       </span>

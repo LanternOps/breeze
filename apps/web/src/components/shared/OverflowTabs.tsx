@@ -6,6 +6,10 @@ export type OverflowTab = {
   label: string;
   icon: React.ReactNode;
   dot?: boolean;
+  /** Render a vertical separator before this tab */
+  separator?: boolean;
+  /** Tooltip text for non-obvious labels */
+  title?: string;
 };
 
 export function OverflowTabs({ tabs, activeTab, onTabChange }: {
@@ -102,16 +106,19 @@ export function OverflowTabs({ tabs, activeTab, onTabChange }: {
         className={`-mb-px flex items-center gap-4 ${measured ? '' : 'invisible'}`}
       >
         {visibleTabs.map(tab => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => onTabChange(tab.id)}
-            className={tabClass(activeTab === tab.id)}
-          >
-            {tab.icon}
-            {tab.label}
-            {tab.dot && <span className="h-2 w-2 rounded-full bg-green-500" />}
-          </button>
+          <span key={tab.id} className="contents">
+            {tab.separator && <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />}
+            <button
+              type="button"
+              title={tab.title}
+              onClick={() => onTabChange(tab.id)}
+              className={tabClass(activeTab === tab.id)}
+            >
+              {tab.icon}
+              {tab.label}
+              {tab.dot && <span className="h-2 w-2 rounded-full bg-green-500" />}
+            </button>
+          </span>
         ))}
         {overflowTabs.length > 0 && (
           <div ref={moreRef} className="relative">

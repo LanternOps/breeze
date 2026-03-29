@@ -136,7 +136,7 @@ export default function QuarantinedDevices() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Quarantined Devices</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Quarantined Devices</h1>
           <p className="text-muted-foreground">
             Devices quarantined due to expired or invalid mTLS certificates. Approve to re-issue
             certificates or deny to decommission.
@@ -172,13 +172,13 @@ export default function QuarantinedDevices() {
         <div className="rounded-lg border bg-card shadow-sm">
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-left text-sm">
-              <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
-                <tr>
-                  <th className="px-4 py-3 font-medium">Hostname</th>
-                  <th className="px-4 py-3 font-medium">OS</th>
-                  <th className="px-4 py-3 font-medium">Quarantined At</th>
-                  <th className="px-4 py-3 font-medium">Reason</th>
-                  <th className="px-4 py-3 font-medium text-right">Actions</th>
+              <thead className="bg-muted/40">
+                <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  <th className="px-4 py-3">Hostname</th>
+                  <th className="px-4 py-3">OS</th>
+                  <th className="px-4 py-3">Quarantined At</th>
+                  <th className="px-4 py-3">Reason</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>

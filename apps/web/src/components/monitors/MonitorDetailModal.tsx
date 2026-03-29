@@ -322,11 +322,11 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
             <div className="max-h-60 overflow-y-auto rounded-md border">
               <table className="min-w-full divide-y text-xs">
                 <thead className="bg-muted/40 sticky top-0">
-                  <tr>
-                    <th className="px-3 py-2 text-left font-medium text-muted-foreground">Time</th>
-                    <th className="px-3 py-2 text-left font-medium text-muted-foreground">Status</th>
-                    <th className="px-3 py-2 text-right font-medium text-muted-foreground">Response</th>
-                    <th className="px-3 py-2 text-left font-medium text-muted-foreground">Error</th>
+                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <th className="px-3 py-2">Time</th>
+                    <th className="px-3 py-2">Status</th>
+                    <th className="px-3 py-2 text-right">Response</th>
+                    <th className="px-3 py-2">Error</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">

@@ -117,7 +117,7 @@ export default function RemoteFilesPage({ deviceId }: RemoteFilesPageProps) {
             <ArrowLeft className="h-5 w-5" />
           </button>
           <div>
-            <h1 className="text-2xl font-bold">Remote File Manager</h1>
+            <h1 className="text-xl font-semibold tracking-tight">Remote File Manager</h1>
             <p className="text-muted-foreground">{device.displayName || device.hostname}</p>
           </div>
         </div>
@@ -151,7 +151,7 @@ export default function RemoteFilesPage({ deviceId }: RemoteFilesPageProps) {
           <ArrowLeft className="h-5 w-5" />
         </button>
         <div>
-          <h1 className="text-2xl font-bold">Remote File Manager</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Remote File Manager</h1>
           <p className="text-muted-foreground">
             {device.displayName || device.hostname} - {device.osType} {device.osVersion}
           </p>

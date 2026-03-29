@@ -41,10 +41,16 @@ export default function DeviceStatusChart() {
         const offlineCount = devices.filter((d: { status: string }) => d.status === 'offline').length;
         const warningCount = devices.filter((d: { status: string }) => d.status === 'warning').length;
 
+        // Read semantic colors from CSS custom properties
+        const root = getComputedStyle(document.documentElement);
+        const successColor = `hsl(${root.getPropertyValue('--success').trim()})`;
+        const mutedFgColor = `hsl(${root.getPropertyValue('--muted-foreground').trim()})`;
+        const warningColor = `hsl(${root.getPropertyValue('--warning').trim()})`;
+
         setData([
-          { name: 'Online', value: onlineCount, color: 'hsl(142.1, 76.2%, 36.3%)' },
-          { name: 'Offline', value: offlineCount, color: 'hsl(215.4, 16.3%, 46.9%)' },
-          { name: 'Warning', value: warningCount, color: 'hsl(38, 92%, 50%)' }
+          { name: 'Online', value: onlineCount, color: successColor },
+          { name: 'Offline', value: offlineCount, color: mutedFgColor },
+          { name: 'Warning', value: warningCount, color: warningColor }
         ].filter(item => item.value > 0));
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load device status');
@@ -59,9 +65,9 @@ export default function DeviceStatusChart() {
   if (isLoading) {
     return (
       <div className="rounded-lg border bg-card p-6 shadow-sm">
-        <h3 className="mb-4 font-semibold">Device Status</h3>
+        <h3 className="mb-4 text-sm font-semibold">Device Status</h3>
         <div className="flex h-64 items-center justify-center">
-          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+          <div className="skeleton h-40 w-40 rounded-full" />
         </div>
       </div>
     );
@@ -70,7 +76,7 @@ export default function DeviceStatusChart() {
   if (error) {
     return (
       <div className="rounded-lg border bg-card p-6 shadow-sm">
-        <h3 className="mb-4 font-semibold">Device Status</h3>
+        <h3 className="mb-4 text-sm font-semibold">Device Status</h3>
         <div className="flex h-64 items-center justify-center">
           <div className="flex items-center gap-2 text-destructive">
             <XCircle className="h-5 w-5" />
@@ -84,7 +90,7 @@ export default function DeviceStatusChart() {
   if (data.length === 0) {
     return (
       <div className="rounded-lg border bg-card p-6 shadow-sm">
-        <h3 className="mb-4 font-semibold">Device Status</h3>
+        <h3 className="mb-4 text-sm font-semibold">Device Status</h3>
         <div className="flex h-64 items-center justify-center">
           <span className="text-sm text-muted-foreground">No devices found</span>
         </div>
@@ -93,8 +99,8 @@ export default function DeviceStatusChart() {
   }
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
-      <h3 className="mb-4 font-semibold">Device Status</h3>
+    <div className="hover-lift rounded-lg border bg-card p-6 shadow-sm">
+      <h3 className="mb-4 text-sm font-semibold">Device Status</h3>
       <div className="h-64">
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>

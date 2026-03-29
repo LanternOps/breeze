@@ -115,7 +115,7 @@ function Section({ title, icon, children }: { title: string; icon: React.ReactNo
     <div className="rounded-lg border bg-card p-6 shadow-sm">
       <div className="flex items-center gap-2 mb-4">
         {icon}
-        <h3 className="font-semibold">{title}</h3>
+        <h3 className="text-sm font-semibold">{title}</h3>
       </div>
       <dl className="divide-y">{children}</dl>
     </div>
@@ -123,9 +123,9 @@ function Section({ title, icon, children }: { title: string; icon: React.ReactNo
 }
 
 const statusColors: Record<string, string> = {
-  online: 'bg-green-500/20 text-green-700 border-green-500/40',
-  offline: 'bg-red-500/20 text-red-700 border-red-500/40',
-  maintenance: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40',
+  online: 'bg-success/15 text-success border-success/30',
+  offline: 'bg-destructive/15 text-destructive border-destructive/30',
+  maintenance: 'bg-warning/15 text-warning border-warning/30',
 };
 
 export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
@@ -372,7 +372,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
             const RoleIcon = getDeviceRoleIcon(role);
             return <RoleIcon className="h-4 w-4 text-muted-foreground" />;
           })()}
-          <h3 className="font-semibold">Device Role</h3>
+          <h3 className="text-sm font-semibold">Device Role</h3>
         </div>
         <dl className="divide-y">
           <div className="flex items-center justify-between py-2">
@@ -493,7 +493,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
           <div className="rounded-lg border bg-card p-6 shadow-sm">
             <div className="flex items-center gap-2 mb-4">
               <Tag className="h-4 w-4 text-muted-foreground" />
-              <h3 className="font-semibold">Tags</h3>
+              <h3 className="text-sm font-semibold">Tags</h3>
             </div>
             <div className="flex flex-wrap gap-2">
               {tags.map(tag => (
@@ -512,7 +512,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         <div className="rounded-lg border bg-card p-6 shadow-sm lg:col-span-2">
           <div className="flex items-center gap-2 mb-4">
             <ListChecks className="h-4 w-4 text-muted-foreground" />
-            <h3 className="font-semibold">Custom Fields</h3>
+            <h3 className="text-sm font-semibold">Custom Fields</h3>
           </div>
           {saveError && (
             <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">

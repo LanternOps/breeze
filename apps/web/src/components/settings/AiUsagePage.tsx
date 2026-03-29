@@ -170,7 +170,7 @@ export default function AiUsagePage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">AI Usage & Budget</h1>
+        <h1 className="text-xl font-semibold tracking-tight">AI Usage & Budget</h1>
         <p className="text-muted-foreground">Monitor AI assistant usage and configure budget limits</p>
       </div>
 
@@ -360,22 +360,22 @@ export default function AiUsagePage() {
               type="checkbox"
               checked={showFlaggedOnly}
               onChange={(e) => setShowFlaggedOnly(e.target.checked)}
-              className="rounded border-gray-300"
+              className="rounded border-border"
             />
             Show flagged only
           </label>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead className="border-b bg-muted/30">
-              <tr>
-                <th className="px-4 py-2 text-left font-medium text-muted-foreground">Title</th>
-                <th className="px-4 py-2 text-left font-medium text-muted-foreground">Model</th>
-                <th className="px-4 py-2 text-right font-medium text-muted-foreground">Turns</th>
-                <th className="px-4 py-2 text-right font-medium text-muted-foreground">Cost</th>
-                <th className="px-4 py-2 text-left font-medium text-muted-foreground">Status</th>
-                <th className="px-4 py-2 text-left font-medium text-muted-foreground">Flagged</th>
-                <th className="px-4 py-2 text-left font-medium text-muted-foreground">Created</th>
+            <thead className="bg-muted/40">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="px-4 py-2">Title</th>
+                <th className="px-4 py-2">Model</th>
+                <th className="px-4 py-2 text-right">Turns</th>
+                <th className="px-4 py-2 text-right">Cost</th>
+                <th className="px-4 py-2">Status</th>
+                <th className="px-4 py-2">Flagged</th>
+                <th className="px-4 py-2">Created</th>
               </tr>
             </thead>
             <tbody>

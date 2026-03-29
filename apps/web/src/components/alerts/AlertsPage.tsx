@@ -271,7 +271,7 @@ export default function AlertsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Alerts</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Alerts</h1>
           <p className="text-muted-foreground">
             Monitor alerts across your devices. Rule configuration is managed in Configuration Policies.
           </p>

@@ -275,7 +275,7 @@ export default function ThreatList({ timezone }: ThreatListProps) {
                     if (element) element.indeterminate = someSelected && !allSelected;
                   }}
                   onChange={(event) => handleSelectAll(event.target.checked)}
-                  className="h-4 w-4 rounded border-gray-300"
+                  className="h-4 w-4 rounded border-border"
                 />
               </th>
               <th className="px-4 py-3">Device</th>
@@ -308,7 +308,7 @@ export default function ThreatList({ timezone }: ThreatListProps) {
                       type="checkbox"
                       checked={selectedIds.has(threat.id)}
                       onChange={(event) => handleSelectOne(threat.id, event.target.checked)}
-                      className="h-4 w-4 rounded border-gray-300"
+                      className="h-4 w-4 rounded border-border"
                     />
                   </td>
                   <td className="px-4 py-3 font-medium">{threat.deviceName}</td>

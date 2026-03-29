@@ -346,7 +346,7 @@ export default function WebhooksPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold">Webhooks</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Webhooks</h1>
           <p className="text-muted-foreground">Deliver events to external systems.</p>
         </div>
         <button
