@@ -192,10 +192,10 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
             <div className="flex h-14 w-14 items-center justify-center rounded-lg bg-muted">
               <Monitor className="h-7 w-7 text-muted-foreground" />
             </div>
-            <div>
-              <div className="flex items-center gap-3">
-                <h1 className="text-xl font-semibold tracking-tight whitespace-nowrap">{device.displayName || device.hostname}</h1>
-                <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-3 min-w-0">
+                <h1 className="truncate text-xl font-semibold tracking-tight" title={device.displayName || device.hostname}>{device.displayName || device.hostname}</h1>
+                <span className={`inline-flex shrink-0 items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}>
                   {statusLabels[device.status]}
                 </span>
               </div>

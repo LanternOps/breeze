@@ -165,6 +165,18 @@ export default function OrgSwitcher() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Keyboard shortcut: Cmd+O to toggle org switcher
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'o') {
+        e.preventDefault();
+        setIsOpen((prev) => !prev);
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, []);
+
   // Get current selections
   const currentOrg = organizations.find((org) => org.id === currentOrgId);
   const currentSite = sites.find((site) => site.id === currentSiteId);
@@ -182,6 +194,7 @@ export default function OrgSwitcher() {
         onClick={() => setIsOpen(!isOpen)}
         className="flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
         disabled={isLoading}
+        title="Select Organization (Cmd+O)"
       >
         {isLoading ? (
           <Loader2 className="h-4 w-4 animate-spin" />

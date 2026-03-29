@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -6,6 +6,7 @@ import {
   Clock,
   Database,
   HardDrive,
+  Loader2,
   PlayCircle,
   ShieldAlert,
   TrendingUp,
@@ -27,9 +28,18 @@ type BackupStat = {
 
 type BackupJob = {
   id: string;
-  device: string;
-  config: string;
+  deviceId?: string;
+  deviceName?: string | null;
+  configId?: string;
+  configName?: string | null;
   status: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  totalSize?: number | null;
+  errorCount?: number | null;
+  // Legacy fields for compatibility
+  device?: string;
+  config?: string;
   started?: string;
   duration?: string;
   size?: string;
@@ -209,6 +219,48 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(precision)} ${units[unitIndex]}`;
 }
 
+function formatTime(iso?: string | null): string {
+  if (!iso) return '--';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '--';
+  return date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function formatDuration(startedAt?: string | null, completedAt?: string | null): string {
+  if (!startedAt) return '--';
+  const start = new Date(startedAt).getTime();
+  if (Number.isNaN(start)) return '--';
+  const end = completedAt ? new Date(completedAt).getTime() : Date.now();
+  if (Number.isNaN(end)) return '--';
+  const seconds = Math.max(0, Math.floor((end - start) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+function resolveJobDevice(job: BackupJob): string {
+  return job.deviceName ?? job.device ?? job.deviceId?.slice(0, 8) ?? '--';
+}
+
+function resolveJobConfig(job: BackupJob): string {
+  return job.configName ?? job.config ?? '--';
+}
+
+function resolveJobStarted(job: BackupJob): string {
+  return formatTime(job.startedAt) || job.started || '--';
+}
+
+function resolveJobDuration(job: BackupJob): string {
+  if (job.startedAt) return formatDuration(job.startedAt, job.completedAt);
+  return job.duration ?? '--';
+}
+
+function resolveJobSize(job: BackupJob): string {
+  if (typeof job.totalSize === 'number' && job.totalSize > 0) return formatBytes(job.totalSize);
+  return job.size ?? '--';
+}
+
 function buildLinePath(values: number[], maxValue: number): string {
   if (values.length === 0) return '';
 
@@ -324,6 +376,10 @@ export default function BackupDashboard() {
   const [showAllJobs, setShowAllJobs] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [runAllPreview, setRunAllPreview] = useState<{ deviceCount: number; alreadyRunning: number } | null>(null);
+  const [runAllLoading, setRunAllLoading] = useState(false);
+  const [runAllResult, setRunAllResult] = useState<string>();
+  const runAllDialogRef = useRef<HTMLDialogElement>(null);
 
   const fetchOverview = useCallback(async () => {
     try {
@@ -337,7 +393,31 @@ export default function BackupDashboard() {
       const payload = await response.json();
       const overview = payload?.data ?? payload ?? {};
 
-      setStats(Array.isArray(overview.stats) ? overview.stats : []);
+      // Build stats from structured API response or accept pre-built stats array
+      if (Array.isArray(overview.stats)) {
+        setStats(overview.stats);
+      } else if (overview.jobsLast24h || overview.totals) {
+        const builtStats: BackupStat[] = [];
+        if (overview.totals) {
+          builtStats.push({ id: 'total_backups', name: 'Total Jobs', value: overview.totals.jobs ?? 0 });
+          builtStats.push({ id: 'snapshots', name: 'Snapshots', value: overview.totals.snapshots ?? 0 });
+        }
+        if (overview.jobsLast24h) {
+          const j = overview.jobsLast24h;
+          const total24h = (j.completed ?? 0) + (j.failed ?? 0);
+          const rate = total24h > 0 ? Math.round(((j.completed ?? 0) / total24h) * 100) : 0;
+          builtStats.push({ id: 'success_rate', name: 'Success Rate (24h)', value: `${rate}%`, changeType: rate >= 90 ? 'positive' : rate >= 70 ? 'neutral' : 'negative' });
+        }
+        if (overview.coverage) {
+          builtStats.push({ id: 'devices_covered', name: 'Devices Protected', value: overview.coverage.protectedDevices ?? 0 });
+        }
+        if (overview.storage) {
+          builtStats.push({ id: 'storage_used', name: 'Storage Used', value: formatBytes(overview.storage.totalBytes ?? 0) });
+        }
+        setStats(builtStats);
+      } else {
+        setStats([]);
+      }
       setRecentJobs(
         Array.isArray(overview.recentJobs)
           ? overview.recentJobs
@@ -391,6 +471,52 @@ export default function BackupDashboard() {
   useEffect(() => {
     fetchOverview();
   }, [fetchOverview]);
+
+  const handleRunAllClick = useCallback(async () => {
+    try {
+      setRunAllLoading(true);
+      setRunAllResult(undefined);
+      const response = await fetchWithAuth('/backup/jobs/run-all/preview');
+      if (!response.ok) throw new Error('Failed to check backup readiness');
+      const payload = await response.json();
+      const preview = payload?.data ?? payload;
+      setRunAllPreview(preview);
+      runAllDialogRef.current?.showModal();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to check backup readiness');
+    } finally {
+      setRunAllLoading(false);
+    }
+  }, []);
+
+  const handleRunAllConfirm = useCallback(async () => {
+    try {
+      setRunAllLoading(true);
+      runAllDialogRef.current?.close();
+      const response = await fetchWithAuth('/backup/jobs/run-all', { method: 'POST' });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error ?? 'Failed to start backups');
+      }
+      const payload = await response.json();
+      const result = payload?.data ?? payload;
+      const parts: string[] = [];
+      if (result.created > 0) parts.push(`Started ${result.created} backup job${result.created !== 1 ? 's' : ''}`);
+      if (result.skipped > 0) parts.push(`${result.skipped} skipped (already running)`);
+      setRunAllResult(parts.join('. ') || 'No backup jobs to run.');
+      fetchOverview();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start backups');
+    } finally {
+      setRunAllLoading(false);
+      setRunAllPreview(null);
+    }
+  }, [fetchOverview]);
+
+  const handleRunAllCancel = useCallback(() => {
+    runAllDialogRef.current?.close();
+    setRunAllPreview(null);
+  }, []);
 
   const hasData = useMemo(
     () =>
@@ -499,16 +625,23 @@ export default function BackupDashboard() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button className="inline-flex items-center gap-2 rounded-md border bg-card px-4 py-2 text-sm font-medium shadow-sm hover:bg-accent">
-            <PlayCircle className="h-4 w-4" />
+          <button
+            type="button"
+            onClick={handleRunAllClick}
+            disabled={runAllLoading}
+            className="inline-flex items-center gap-2 rounded-md border bg-card px-4 py-2 text-sm font-medium shadow-sm hover:bg-accent disabled:opacity-50"
+          >
+            {runAllLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
             Run all backups
-          </button>
-          <button className="inline-flex items-center gap-2 rounded-md bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground shadow-sm hover:bg-destructive/90">
-            <AlertTriangle className="h-4 w-4" />
-            View failed
           </button>
         </div>
       </div>
+
+      {runAllResult && (
+        <div className="rounded-md border border-success/40 bg-success/10 px-3 py-2 text-sm text-success">
+          {runAllResult}
+        </div>
+      )}
 
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -596,16 +729,16 @@ export default function BackupDashboard() {
                         <StatusIcon className="h-4 w-4" />
                       </span>
                       <div>
-                        <p className="text-sm font-semibold text-foreground">{job.device}</p>
-                        <p className="text-xs text-muted-foreground">{job.config}</p>
+                        <p className="text-sm font-semibold text-foreground">{resolveJobDevice(job)}</p>
+                        <p className="text-xs text-muted-foreground">{resolveJobConfig(job)}</p>
                       </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
                       <span className="inline-flex items-center gap-1">
-                        <Clock className="h-3.5 w-3.5" /> {job.started ?? '--'}
+                        <Clock className="h-3.5 w-3.5" /> {resolveJobStarted(job)}
                       </span>
-                      <span>Duration: {job.duration ?? '--'}</span>
-                      <span>Size: {job.size ?? '--'}</span>
+                      <span>Duration: {resolveJobDuration(job)}</span>
+                      <span>Size: {resolveJobSize(job)}</span>
                       <span className="text-foreground">{status.label}</span>
                     </div>
                   </div>
@@ -758,6 +891,59 @@ export default function BackupDashboard() {
           </div>
         </div>
       </div>
+
+      <dialog
+        ref={runAllDialogRef}
+        className="rounded-lg border bg-card p-6 shadow-lg backdrop:bg-black/40"
+        onClose={handleRunAllCancel}
+      >
+        <h3 className="text-base font-semibold text-foreground">Run all backups</h3>
+        {runAllPreview && runAllPreview.deviceCount === 0 ? (
+          <>
+            <p className="mt-2 text-sm text-muted-foreground">
+              No devices have backup policies configured.
+              {runAllPreview.alreadyRunning > 0 && ` (${runAllPreview.alreadyRunning} already running)`}
+            </p>
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={handleRunAllCancel}
+                className="rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-accent"
+              >
+                Close
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="mt-2 text-sm text-muted-foreground">
+              This will start manual backup jobs for{' '}
+              <span className="font-medium text-foreground">{runAllPreview?.deviceCount ?? 0} device{(runAllPreview?.deviceCount ?? 0) !== 1 ? 's' : ''}</span>.
+              {(runAllPreview?.alreadyRunning ?? 0) > 0 && (
+                <span> ({runAllPreview?.alreadyRunning} already running will be skipped.)</span>
+              )}
+            </p>
+            <div className="mt-4 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={handleRunAllCancel}
+                className="rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-accent"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleRunAllConfirm}
+                disabled={runAllLoading}
+                className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              >
+                {runAllLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
+                Run backups
+              </button>
+            </div>
+          </>
+        )}
+      </dialog>
     </div>
   );
 }

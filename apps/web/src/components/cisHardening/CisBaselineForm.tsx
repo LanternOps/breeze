@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Loader2, X } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
 import type { Baseline } from './types';
+import HelpTooltip from '../shared/HelpTooltip';
 
 interface CisBaselineFormProps {
   baseline: Baseline | null;
@@ -114,7 +115,10 @@ export default function CisBaselineForm({ baseline, onClose, onSaved }: CisBasel
           </div>
 
           <div>
-            <label htmlFor="bl-level" className="block text-sm font-medium mb-1.5">Level</label>
+            <label htmlFor="bl-level" className="block text-sm font-medium mb-1.5">
+              Level
+              <HelpTooltip text="L1 checks are practical for most environments. L2 adds security depth but may impact functionality." />
+            </label>
             <select
               id="bl-level"
               value={level}

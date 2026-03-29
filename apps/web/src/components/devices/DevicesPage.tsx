@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { List, Grid, Plus, CheckCircle, XCircle, Copy, Loader2, X, AlertCircle, Monitor, ArrowRight } from 'lucide-react';
+import { List, Grid, Plus, Copy, Loader2, X, AlertCircle, Monitor, ArrowRight } from 'lucide-react';
+import { showToast } from '../shared/Toast';
 import type { FilterConditionGroup } from '@breeze/shared';
 import DeviceList, { type Device, type DeviceStatus, type OSType } from './DeviceList';
 import type { DeviceRole } from '@/lib/deviceRoles';
@@ -11,6 +12,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
+import ProgressBar from '../shared/ProgressBar';
 
 type ViewMode = 'list' | 'grid';
 
@@ -22,12 +24,6 @@ type Org = {
 type Site = {
   id: string;
   name: string;
-};
-
-type Toast = {
-  id: string;
-  type: 'success' | 'error';
-  message: string;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -52,8 +48,8 @@ export default function DevicesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('list');
-  const [toasts, setToasts] = useState<Toast[]>([]);
   const [actionInProgress, setActionInProgress] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number; label: string } | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingToken, setOnboardingToken] = useState<string>('');
   const [enrollmentSecret, setEnrollmentSecret] = useState<string>('');
@@ -76,14 +72,6 @@ export default function DevicesPage() {
     const unique = [...new Set(scriptTargetDevices.map(d => d.os))];
     return unique.length > 0 ? unique : undefined;
   }, [scriptTargetDevices]);
-
-  const showToast = useCallback((type: 'success' | 'error', message: string) => {
-    const id = Date.now().toString();
-    setToasts(prev => [...prev, { id, type, message }]);
-    setTimeout(() => {
-      setToasts(prev => prev.filter(t => t.id !== id));
-    }, 5000);
-  }, []);
 
   const fetchDevices = useCallback(async () => {
     try {
@@ -233,16 +221,16 @@ export default function DevicesPage() {
       setTokenCopied(true);
       setTimeout(() => setTokenCopied(false), 2000);
     } catch {
-      showToast('error', 'Failed to copy token');
+      showToast({ type: 'error', message: 'Failed to copy token' });
     }
   };
 
   const handleCopyCommand = async (command: string) => {
     try {
       await navigator.clipboard.writeText(command);
-      showToast('success', 'Command copied to clipboard');
+      showToast({ type: 'success', message: 'Command copied to clipboard' });
     } catch {
-      showToast('error', 'Failed to copy command');
+      showToast({ type: 'error', message: 'Failed to copy command' });
     }
   };
 
@@ -252,7 +240,7 @@ export default function DevicesPage() {
 
   const openScriptPicker = (targetDevices: Device[]) => {
     if (targetDevices.length === 0) {
-      showToast('error', 'Select at least one device to run a script');
+      showToast({ type: 'error', message: 'Select at least one device to run a script' });
       return;
     }
     setScriptTargetDevices(targetDevices);
@@ -273,14 +261,14 @@ export default function DevicesPage() {
       const result = await executeScript(script.id, deviceIds, undefined, runAs);
 
       if (scriptTargetDevices.length === 1) {
-        showToast('success', `Script "${script.name}" queued for ${scriptTargetDevices[0].hostname}`);
+        showToast({ type: 'success', message: `Script "${script.name}" queued for ${scriptTargetDevices[0].hostname}` });
       } else {
-        showToast('success', `Script "${script.name}" queued for ${result.devicesTargeted} devices`);
+        showToast({ type: 'success', message: `Script "${script.name}" queued for ${result.devicesTargeted} devices` });
       }
 
       closeScriptPicker();
     } catch (err) {
-      showToast('error', err instanceof Error ? err.message : 'Failed to queue script');
+      showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to queue script' });
     } finally {
       setActionInProgress(false);
     }
@@ -297,13 +285,13 @@ export default function DevicesPage() {
         case 'shutdown':
         case 'lock':
           await sendDeviceCommand(device.id, action);
-          showToast('success', `${action.charAt(0).toUpperCase() + action.slice(1)} command sent to ${device.hostname}`);
+          showToast({ type: 'success', message: `${action.charAt(0).toUpperCase() + action.slice(1)} command sent to ${device.hostname}` });
           break;
 
         case 'maintenance':
           const isCurrentlyMaintenance = device.status === 'maintenance';
           await toggleMaintenanceMode(device.id, !isCurrentlyMaintenance);
-          showToast('success', `${device.hostname} ${isCurrentlyMaintenance ? 'taken out of' : 'put into'} maintenance mode`);
+          showToast({ type: 'success', message: `${device.hostname} ${isCurrentlyMaintenance ? 'taken out of' : 'put into'} maintenance mode` });
           await fetchDevices();
           break;
 
@@ -327,29 +315,67 @@ export default function DevicesPage() {
           setSettingsDevice(device);
           break;
 
-        case 'decommission':
-          await decommissionDevice(device.id);
-          showToast('success', `${device.hostname} has been decommissioned`);
-          await fetchDevices();
+        case 'decommission': {
+          // Deferred execution with undo — gives the user 5 seconds to cancel
+          let cancelled = false;
+          showToast({
+            type: 'undo',
+            message: `Decommissioning "${device.hostname}"...`,
+            duration: 5000,
+            onUndo: () => {
+              cancelled = true;
+              showToast({ type: 'success', message: 'Decommission cancelled', duration: 2000 });
+            }
+          });
+          setTimeout(async () => {
+            if (cancelled) return;
+            try {
+              await decommissionDevice(device.id);
+              showToast({ type: 'success', message: `${device.hostname} has been decommissioned` });
+              await fetchDevices();
+            } catch (err) {
+              showToast({ type: 'error', message: err instanceof Error ? err.message : `Failed to decommission ${device.hostname}` });
+            }
+          }, 5000);
           break;
+        }
 
         case 'restore':
           await restoreDevice(device.id);
-          showToast('success', `${device.hostname} has been restored`);
+          showToast({ type: 'success', message: `${device.hostname} has been restored` });
           await fetchDevices();
           break;
 
-        case 'permanent-delete':
-          await permanentDeleteDevice(device.id);
-          showToast('success', `${device.hostname} has been permanently deleted`);
-          await fetchDevices();
+        case 'permanent-delete': {
+          // Deferred execution with undo — gives the user 5 seconds to cancel
+          let pdCancelled = false;
+          showToast({
+            type: 'undo',
+            message: `Permanently deleting "${device.hostname}"...`,
+            duration: 5000,
+            onUndo: () => {
+              pdCancelled = true;
+              showToast({ type: 'success', message: 'Permanent delete cancelled', duration: 2000 });
+            }
+          });
+          setTimeout(async () => {
+            if (pdCancelled) return;
+            try {
+              await permanentDeleteDevice(device.id);
+              showToast({ type: 'success', message: `${device.hostname} has been permanently deleted` });
+              await fetchDevices();
+            } catch (err) {
+              showToast({ type: 'error', message: err instanceof Error ? err.message : `Failed to delete ${device.hostname}` });
+            }
+          }, 5000);
           break;
+        }
 
         default:
-          showToast('error', `Unknown action: ${action}`);
+          showToast({ type: 'error', message: `Unknown action: ${action}` });
       }
     } catch (err) {
-      showToast('error', err instanceof Error ? err.message : `Failed to ${action} ${device.hostname}`);
+      showToast({ type: 'error', message: err instanceof Error ? err.message : `Failed to ${action} ${device.hostname}` });
     } finally {
       setActionInProgress(false);
     }
@@ -383,45 +409,59 @@ export default function DevicesPage() {
           const failedCount = result.failed?.length ?? 0;
 
           if (failedCount === 0) {
-            showToast('success', `${action.charAt(0).toUpperCase() + action.slice(1)} command sent to ${successCount} devices`);
+            showToast({ type: 'success', message: `${action.charAt(0).toUpperCase() + action.slice(1)} command sent to ${successCount} devices` });
           } else {
-            showToast('error', `${action} sent to ${successCount} devices, ${failedCount} failed`);
+            showToast({ type: 'error', message: `${action} sent to ${successCount} devices, ${failedCount} failed` });
           }
           break;
         }
 
-        case 'maintenance-on':
+        case 'maintenance-on': {
+          const mOnLabel = 'Enabling maintenance mode';
+          setBulkProgress({ current: 0, total: deviceCount, label: mOnLabel });
+          let mOnDone = 0;
           for (const device of selectedDevices) {
             await toggleMaintenanceMode(device.id, true);
+            mOnDone++;
+            setBulkProgress({ current: mOnDone, total: deviceCount, label: mOnLabel });
           }
-          showToast('success', `${deviceCount} devices put into maintenance mode`);
+          setBulkProgress(null);
+          showToast({ type: 'success', message: `${deviceCount} devices put into maintenance mode` });
           await fetchDevices();
           break;
+        }
 
-        case 'maintenance-off':
+        case 'maintenance-off': {
+          const mOffLabel = 'Disabling maintenance mode';
+          setBulkProgress({ current: 0, total: deviceCount, label: mOffLabel });
+          let mOffDone = 0;
           for (const device of selectedDevices) {
             await toggleMaintenanceMode(device.id, false);
+            mOffDone++;
+            setBulkProgress({ current: mOffDone, total: deviceCount, label: mOffLabel });
           }
-          showToast('success', `${deviceCount} devices taken out of maintenance mode`);
+          setBulkProgress(null);
+          showToast({ type: 'success', message: `${deviceCount} devices taken out of maintenance mode` });
           await fetchDevices();
           break;
+        }
 
         case 'decommission': {
           const result = await bulkDecommissionDevices(deviceIds);
           if (result.failed === 0) {
-            showToast('success', `${result.succeeded} devices decommissioned`);
+            showToast({ type: 'success', message: `${result.succeeded} devices decommissioned` });
           } else {
-            showToast('error', `${result.succeeded} decommissioned, ${result.failed} failed`);
+            showToast({ type: 'error', message: `${result.succeeded} decommissioned, ${result.failed} failed` });
           }
           await fetchDevices();
           break;
         }
 
         default:
-          showToast('error', `Unknown bulk action: ${action}`);
+          showToast({ type: 'error', message: `Unknown bulk action: ${action}` });
       }
     } catch (err) {
-      showToast('error', err instanceof Error ? err.message : `Failed bulk ${action}`);
+      showToast({ type: 'error', message: err instanceof Error ? err.message : `Failed bulk ${action}` });
     } finally {
       setActionInProgress(false);
     }
@@ -486,29 +526,6 @@ export default function DevicesPage() {
 
   return (
     <div className="space-y-6">
-      {/* Toast notifications */}
-      {toasts.length > 0 && (
-        <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
-          {toasts.map(toast => (
-            <div
-              key={toast.id}
-              className={`flex items-center gap-2 rounded-lg px-4 py-3 shadow-lg ${
-                toast.type === 'success'
-                  ? 'bg-green-600 text-white'
-                  : 'bg-destructive text-destructive-foreground'
-              }`}
-            >
-              {toast.type === 'success' ? (
-                <CheckCircle className="h-5 w-5" />
-              ) : (
-                <XCircle className="h-5 w-5" />
-              )}
-              <span className="text-sm font-medium">{toast.message}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Devices</h1>
@@ -556,6 +573,16 @@ export default function DevicesPage() {
         showSavedFilters={true}
         collapsible={true}
       />
+
+      {bulkProgress && (
+        <div className="rounded-md border bg-muted/20 px-4 py-3">
+          <ProgressBar
+            current={bulkProgress.current}
+            total={bulkProgress.total}
+            label={bulkProgress.label}
+          />
+        </div>
+      )}
 
       {devices.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">

@@ -98,10 +98,14 @@ export default function Header() {
         </button>
 
         {/* Organization Switcher */}
-        <OrgSwitcher />
+        <div data-tour="org-switcher">
+          <OrgSwitcher />
+        </div>
 
         {/* Global Search */}
-        <CommandPalette />
+        <div data-tour="search">
+          <CommandPalette />
+        </div>
       </div>
 
       <div className={`flex items-center gap-2 transition-opacity duration-150 ${mounted ? 'opacity-100' : 'opacity-0'}`}>
@@ -109,6 +113,7 @@ export default function Header() {
         {mounted && isAuthenticated && (
           <button
             type="button"
+            data-tour="ai-assistant"
             onClick={toggleAi}
             className="relative rounded-md p-2 hover:bg-muted transition-colors"
             title="AI Assistant (Cmd+Shift+A)"

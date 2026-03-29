@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react
 import { ArrowRight, Pencil, Play, RefreshCw, Trash2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatDateTime, mapNetworkBaseline, type NetworkBaseline } from './networkTypes';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 
 type SiteOption = {
   id: string;
@@ -83,6 +84,8 @@ export default function NetworkBaselinesPanel({
   const [saving, setSaving] = useState(false);
   const [canManage, setCanManage] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<NetworkBaseline | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [form, setForm] = useState<BaselineFormState>(() => createDefaultForm(currentSiteId, siteOptions));
 
   const siteNameById = useMemo(
@@ -261,15 +264,19 @@ export default function NetworkBaselinesPanel({
     }
   };
 
-  const handleDelete = async (baseline: NetworkBaseline) => {
-    const confirmed = window.confirm(`Delete baseline ${baseline.subnet}? Associated change events will also be deleted.`);
-    if (!confirmed) return;
+  const handleDelete = (baseline: NetworkBaseline) => {
+    setDeleteTarget(baseline);
+  };
 
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+
+    setDeleting(true);
     setError(null);
     setInfo(null);
 
     try {
-      const response = await fetchWithAuth(`/network/baselines/${baseline.id}?deleteChanges=true`, {
+      const response = await fetchWithAuth(`/network/baselines/${deleteTarget.id}?deleteChanges=true`, {
         method: 'DELETE'
       });
 
@@ -280,13 +287,16 @@ export default function NetworkBaselinesPanel({
         throw new Error(await extractError(response, 'Failed to delete baseline'));
       }
 
-      setInfo(`Deleted baseline ${baseline.subnet}.`);
+      setInfo(`Deleted baseline ${deleteTarget.subnet}.`);
       await fetchBaselines();
-      if (editingId === baseline.id) {
+      if (editingId === deleteTarget.id) {
         resetForm();
       }
+      setDeleteTarget(null);
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : 'Failed to delete baseline');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -302,6 +312,7 @@ export default function NetworkBaselinesPanel({
   }
 
   return (
+    <>
     <div className="grid gap-6 xl:grid-cols-[2fr,1fr]">
       <div className="rounded-lg border bg-card p-6 shadow-sm">
         <div className="flex items-center justify-between">
@@ -565,5 +576,16 @@ export default function NetworkBaselinesPanel({
         </button>
       </form>
     </div>
+    <ConfirmDialog
+      open={deleteTarget !== null}
+      onClose={() => setDeleteTarget(null)}
+      onConfirm={handleConfirmDelete}
+      title="Delete Network Baseline"
+      message={`Are you sure you want to delete baseline ${deleteTarget?.subnet}? Associated change events will also be deleted. This action cannot be undone.`}
+      confirmLabel="Delete Baseline"
+      variant="destructive"
+      isLoading={deleting}
+    />
+    </>
   );
 }

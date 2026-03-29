@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { X, Search, Play, Loader2, CheckCircle, AlertCircle, Filter } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Dialog } from '../shared/Dialog';
+import ProgressBar, { ProgressItemList, type ProgressItem } from '../shared/ProgressBar';
 import type { Script, ScriptLanguage } from './ScriptList';
 import type { ScriptParameter } from './ScriptForm';
 import type { FilterConditionGroup } from '@breeze/shared';
@@ -450,6 +451,32 @@ export default function ScriptExecutionModal({
               )}
             </div>
           </div>
+
+          {/* Execution Progress */}
+          {(executionState === 'executing' || executionState === 'success') && selectedDeviceIds.size > 1 && (
+            <div className="rounded-md border bg-muted/20 p-4 space-y-3">
+              <ProgressBar
+                current={executionState === 'success' ? selectedDeviceIds.size : 0}
+                total={selectedDeviceIds.size}
+                label={executionState === 'executing'
+                  ? `Submitting to ${selectedDeviceIds.size} devices...`
+                  : `Submitted to ${selectedDeviceIds.size} devices`}
+                variant={executionState === 'success' ? 'success' : 'default'}
+              />
+              <ProgressItemList
+                items={Array.from(selectedDeviceIds).map((id): ProgressItem => {
+                  const device = devices.find(d => d.id === id);
+                  return {
+                    id,
+                    label: device?.hostname ?? id,
+                    status: executionState === 'success' ? 'success' : 'running',
+                    detail: device?.siteName,
+                  };
+                })}
+                maxVisible={8}
+              />
+            </div>
+          )}
 
           {/* Error Message */}
           {errorMessage && (

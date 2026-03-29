@@ -470,9 +470,15 @@ export default function DeviceList({
                       className="h-4 w-4 rounded border-border"
                     />
                   </td>
-                  <td className="px-4 py-3 text-sm font-medium">{device.displayName || device.hostname}</td>
-                  <td className="hidden px-4 py-3 text-sm text-muted-foreground xl:table-cell">{device.orgName}</td>
-                  <td className="hidden px-4 py-3 text-sm text-muted-foreground xl:table-cell">{device.siteName}</td>
+                  <td className="max-w-[200px] px-4 py-3 text-sm font-medium">
+                    <span className="block truncate" title={device.displayName || device.hostname}>{device.displayName || device.hostname}</span>
+                  </td>
+                  <td className="hidden max-w-[160px] px-4 py-3 text-sm text-muted-foreground xl:table-cell">
+                    <span className="block truncate" title={device.orgName}>{device.orgName}</span>
+                  </td>
+                  <td className="hidden max-w-[160px] px-4 py-3 text-sm text-muted-foreground xl:table-cell">
+                    <span className="block truncate" title={device.siteName}>{device.siteName}</span>
+                  </td>
                   <td className="px-4 py-3 text-sm">{osLabels[device.os]}</td>
                   <td className="hidden px-4 py-3 text-sm lg:table-cell">
                     {(() => {

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   Building2,
   Calendar,
-  CheckCircle2,
   Clock,
   Globe,
   Loader2,
@@ -21,6 +20,7 @@ import PartnerEventLogsTab from './PartnerEventLogsTab';
 import PartnerDefaultsTab from './PartnerDefaultsTab';
 import PartnerBrandingTab from './PartnerBrandingTab';
 import PartnerAiBudgetsTab from './PartnerAiBudgetsTab';
+import { showToast } from '../shared/Toast';
 import type {
   PartnerSettings,
   BusinessHoursPreset,
@@ -95,7 +95,6 @@ export default function PartnerSettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
-  const [successMessage, setSuccessMessage] = useState<string>();
   const [activeTab, setActiveTab] = useState<TabKey>('regional');
 
   // Regional form state
@@ -166,7 +165,6 @@ export default function PartnerSettingsPage() {
     try {
       setSaving(true);
       setError(undefined);
-      setSuccessMessage(undefined);
 
       const settings: Record<string, unknown> = {
         timezone, dateFormat, timeFormat, language: 'en',
@@ -199,8 +197,7 @@ export default function PartnerSettingsPage() {
 
       const updated = await response.json();
       setPartner(updated);
-      setSuccessMessage('Settings saved successfully');
-      setTimeout(() => setSuccessMessage(undefined), 3000);
+      showToast({ message: 'Partner settings saved', type: 'success' });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save settings');
     } finally {
@@ -262,13 +259,6 @@ export default function PartnerSettingsPage() {
           {saving ? 'Saving...' : 'Save Settings'}
         </button>
       </header>
-
-      {successMessage && (
-        <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-100">
-          <CheckCircle2 className="h-5 w-5" />
-          <p className="text-sm font-medium">{successMessage}</p>
-        </div>
-      )}
 
       {error && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-destructive">

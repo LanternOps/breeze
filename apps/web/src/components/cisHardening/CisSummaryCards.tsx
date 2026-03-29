@@ -1,6 +1,7 @@
 import { Activity, AlertTriangle, ClipboardCheck, Layers } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { CisSummary } from './types';
+import HelpTooltip from '../shared/HelpTooltip';
 
 interface CisSummaryCardsProps {
   summary: CisSummary | null;
@@ -22,7 +23,10 @@ export default function CisSummaryCards({ summary, baselinesCount, pendingRemedi
             <Activity className="h-4 w-4 text-muted-foreground" />
           </div>
           <div className="min-w-0">
-            <p className="text-xs text-muted-foreground">Average Score</p>
+            <p className="text-xs text-muted-foreground">
+              Average Score
+              <HelpTooltip text="Percentage of passing checks across all devices and baselines. Higher is better." />
+            </p>
             <p className={cn('text-xl font-semibold', scoreColor)}>{Math.round(score)}%</p>
           </div>
         </div>
@@ -63,7 +67,10 @@ export default function CisSummaryCards({ summary, baselinesCount, pendingRemedi
             <ClipboardCheck className="h-4 w-4 text-muted-foreground" />
           </div>
           <div className="min-w-0">
-            <p className="text-xs text-muted-foreground">Pending Remediations</p>
+            <p className="text-xs text-muted-foreground">
+              Pending Remediations
+              <HelpTooltip text="Automated fixes awaiting approval. Review before applying -- some changes may affect system behavior." />
+            </p>
             <p className={cn('text-xl font-semibold', pendingRemediations > 0 ? 'text-amber-600' : 'text-foreground')}>
               {pendingRemediations}
             </p>

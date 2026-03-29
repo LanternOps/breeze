@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { showToast } from '../shared/Toast';
 
 interface EnrollmentKey {
   id: string;
@@ -36,6 +38,7 @@ export default function EnrollmentKeyManager() {
   const [newlyCreatedKey, setNewlyCreatedKey] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
+  const [rotateTarget, setRotateTarget] = useState<EnrollmentKey | null>(null);
 
   // Create form state
   const [formName, setFormName] = useState('');
@@ -152,8 +155,10 @@ export default function EnrollmentKeyManager() {
         throw new Error('Failed to delete enrollment key');
       }
 
+      const deletedName = selectedKey.name;
       await fetchKeys(currentPage);
       handleCloseModal();
+      showToast({ message: `Enrollment key "${deletedName}" deleted`, type: 'success' });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -161,15 +166,17 @@ export default function EnrollmentKeyManager() {
     }
   };
 
-  const handleRotateKey = async (key: EnrollmentKey) => {
-    const proceed = window.confirm(
-      `Rotate "${key.name}" now? Existing enrollments will continue to work, but new enrollments must use the new key.`
-    );
-    if (!proceed) return;
+  const handleRotateKey = (key: EnrollmentKey) => {
+    setRotateTarget(key);
+  };
 
+  const handleConfirmRotate = async () => {
+    if (!rotateTarget) return;
+
+    setRotateTarget(null);
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/enrollment-keys/${key.id}/rotate`, {
+      const response = await fetchWithAuth(`/enrollment-keys/${rotateTarget.id}/rotate`, {
         method: 'POST',
         body: JSON.stringify({})
       });
@@ -506,6 +513,16 @@ export default function EnrollmentKeyManager() {
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={rotateTarget !== null}
+        onClose={() => setRotateTarget(null)}
+        onConfirm={handleConfirmRotate}
+        title="Rotate Enrollment Key"
+        message={`Rotate "${rotateTarget?.name}" now? Existing enrollments will continue to work, but new enrollments must use the new key.`}
+        confirmLabel="Rotate Key"
+        variant="warning"
+        isLoading={submitting}
+      />
     </div>
   );
 }

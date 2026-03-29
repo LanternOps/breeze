@@ -355,7 +355,7 @@ export default function AlertList({
         </div>
       )}
 
-      <div className="mt-6 overflow-hidden rounded-md border">
+      <div className="mt-6 overflow-x-auto rounded-md border">
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -401,19 +401,20 @@ export default function AlertList({
                       className="h-4 w-4 rounded border-border"
                     />
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="max-w-[160px] px-4 py-3">
                     <a
                       href={`/devices/${alert.deviceId}`}
                       onClick={e => e.stopPropagation()}
-                      className="flex items-center gap-1 text-sm font-medium hover:underline"
+                      className="flex items-center gap-1 text-sm font-medium hover:underline min-w-0"
+                      title={alert.deviceName}
                     >
-                      {alert.deviceName}
-                      <ExternalLink className="h-3 w-3" />
+                      <span className="truncate">{alert.deviceName}</span>
+                      <ExternalLink className="h-3 w-3 shrink-0" />
                     </a>
                   </td>
-                  <td className="px-4 py-3">
-                    <div>
-                      <p className="text-sm font-medium">{alert.title}</p>
+                  <td className="max-w-[280px] px-4 py-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium" title={alert.title}>{alert.title}</p>
                       <p className="text-xs text-muted-foreground truncate max-w-xs">
                         {alert.message}
                       </p>

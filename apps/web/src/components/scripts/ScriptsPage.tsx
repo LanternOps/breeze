@@ -6,6 +6,7 @@ import ExecutionDetails from './ExecutionDetails';
 import type { ScriptExecution } from './ExecutionHistory';
 import type { ScriptParameter } from './ScriptForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 import { cn } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
 
@@ -194,23 +195,38 @@ export default function ScriptsPage() {
   const handleConfirmDelete = async () => {
     if (!selectedScript) return;
 
-    setSubmitting(true);
-    try {
-      const response = await fetchWithAuth(`/scripts/${selectedScript.id}`, {
-        method: 'DELETE'
-      });
+    const scriptToDelete = selectedScript;
+    handleCloseModal();
 
-      if (!response.ok) {
-        throw new Error('Failed to delete script');
+    // Deferred execution with undo — gives the user 5 seconds to cancel
+    let cancelled = false;
+    showToast({
+      type: 'undo',
+      message: `Deleting "${scriptToDelete.name}"...`,
+      duration: 5000,
+      onUndo: () => {
+        cancelled = true;
+        showToast({ type: 'success', message: 'Script deletion cancelled', duration: 2000 });
       }
+    });
 
-      await fetchScripts();
-      handleCloseModal();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
-    } finally {
-      setSubmitting(false);
-    }
+    setTimeout(async () => {
+      if (cancelled) return;
+      try {
+        const response = await fetchWithAuth(`/scripts/${scriptToDelete.id}`, {
+          method: 'DELETE'
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to delete script');
+        }
+
+        showToast({ type: 'success', message: `"${scriptToDelete.name}" deleted` });
+        await fetchScripts();
+      } catch (err) {
+        showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to delete script. Please try again.' });
+      }
+    }, 5000);
   };
 
   const handleOpenLibrary = async () => {

@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { eq, and, desc, gte, lte, sql } from 'drizzle-orm';
 import { db } from '../../db';
-import { backupJobs, backupConfigs, backupPolicies } from '../../db/schema';
+import { backupJobs, backupConfigs, backupPolicies, devices } from '../../db/schema';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { resolveScopedOrgId } from './helpers';
 import { jobListSchema } from './schemas';
@@ -52,12 +52,25 @@ jobsRoutes.get('/jobs', zValidator('query', jobListSchema), async (c) => {
   }
 
   const rows = await db
-    .select()
+    .select({
+      job: backupJobs,
+      deviceName: devices.displayName,
+      deviceHostname: devices.hostname,
+      configName: backupConfigs.name,
+    })
     .from(backupJobs)
+    .leftJoin(devices, eq(backupJobs.deviceId, devices.id))
+    .leftJoin(backupConfigs, eq(backupJobs.configId, backupConfigs.id))
     .where(and(...conditions))
     .orderBy(desc(backupJobs.createdAt));
 
-  return c.json({ data: rows.map(toJobResponse) });
+  return c.json({
+    data: rows.map((r) => ({
+      ...toJobResponse(r.job),
+      deviceName: r.deviceName ?? r.deviceHostname ?? null,
+      configName: r.configName ?? null,
+    })),
+  });
 });
 
 jobsRoutes.get('/jobs/:id', async (c) => {
@@ -69,15 +82,26 @@ jobsRoutes.get('/jobs/:id', async (c) => {
 
   const jobId = c.req.param('id');
   const [row] = await db
-    .select()
+    .select({
+      job: backupJobs,
+      deviceName: devices.displayName,
+      deviceHostname: devices.hostname,
+      configName: backupConfigs.name,
+    })
     .from(backupJobs)
+    .leftJoin(devices, eq(backupJobs.deviceId, devices.id))
+    .leftJoin(backupConfigs, eq(backupJobs.configId, backupConfigs.id))
     .where(and(eq(backupJobs.id, jobId), eq(backupJobs.orgId, orgId)))
     .limit(1);
 
   if (!row) {
     return c.json({ error: 'Job not found' }, 404);
   }
-  return c.json(toJobResponse(row));
+  return c.json({
+    ...toJobResponse(row.job),
+    deviceName: row.deviceName ?? row.deviceHostname ?? null,
+    configName: row.configName ?? null,
+  });
 });
 
 jobsRoutes.post('/jobs/run/:deviceId', async (c) => {
@@ -152,6 +176,143 @@ jobsRoutes.post('/jobs/run/:deviceId', async (c) => {
   });
 
   return c.json(toJobResponse(row), 201);
+});
+
+jobsRoutes.get('/jobs/run-all/preview', async (c) => {
+  const auth = c.get('auth');
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
+  const policies = await db
+    .select()
+    .from(backupPolicies)
+    .where(eq(backupPolicies.orgId, orgId));
+
+  const deviceIds = new Set(
+    policies.flatMap((p) => {
+      const targets = p.targets as BackupPolicyTargets;
+      return targets?.deviceIds ?? [];
+    })
+  );
+
+  if (deviceIds.size === 0) {
+    return c.json({ data: { deviceCount: 0, deviceIds: [], alreadyRunning: 0 } });
+  }
+
+  // Check which devices already have a running/pending job
+  const activeJobs = await db
+    .select({ deviceId: backupJobs.deviceId })
+    .from(backupJobs)
+    .where(
+      and(
+        eq(backupJobs.orgId, orgId),
+        sql`${backupJobs.status} IN ('running', 'pending')`
+      )
+    );
+  const activeDeviceIds = new Set(activeJobs.map((j) => j.deviceId));
+
+  const eligibleIds = Array.from(deviceIds).filter((id) => !activeDeviceIds.has(id));
+
+  return c.json({
+    data: {
+      deviceCount: eligibleIds.length,
+      deviceIds: eligibleIds,
+      alreadyRunning: deviceIds.size - eligibleIds.length,
+    },
+  });
+});
+
+jobsRoutes.post('/jobs/run-all', async (c) => {
+  const auth = c.get('auth');
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
+  const policies = await db
+    .select()
+    .from(backupPolicies)
+    .where(eq(backupPolicies.orgId, orgId));
+
+  // Build device → policy+config mapping
+  const devicePolicyMap = new Map<string, { policyId: string; configId: string }>();
+  for (const p of policies) {
+    const targets = p.targets as BackupPolicyTargets;
+    for (const deviceId of targets?.deviceIds ?? []) {
+      if (!devicePolicyMap.has(deviceId)) {
+        devicePolicyMap.set(deviceId, { policyId: p.id, configId: p.configId });
+      }
+    }
+  }
+
+  if (devicePolicyMap.size === 0) {
+    return c.json({ error: 'No devices have backup policies configured' }, 400);
+  }
+
+  // Skip devices that already have a running/pending job
+  const activeJobs = await db
+    .select({ deviceId: backupJobs.deviceId })
+    .from(backupJobs)
+    .where(
+      and(
+        eq(backupJobs.orgId, orgId),
+        sql`${backupJobs.status} IN ('running', 'pending')`
+      )
+    );
+  const activeDeviceIds = new Set(activeJobs.map((j) => j.deviceId));
+
+  const now = new Date();
+  const created: string[] = [];
+  const skipped: string[] = [];
+
+  for (const [deviceId, { policyId, configId }] of devicePolicyMap) {
+    if (activeDeviceIds.has(deviceId)) {
+      skipped.push(deviceId);
+      continue;
+    }
+
+    const [row] = await db
+      .insert(backupJobs)
+      .values({
+        orgId,
+        configId,
+        policyId,
+        deviceId,
+        status: 'pending',
+        type: 'manual',
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning();
+
+    if (row) {
+      created.push(row.id);
+      try {
+        const { enqueueBackupDispatch } = await import('../../jobs/backupWorker');
+        await enqueueBackupDispatch(row.id, configId, orgId, deviceId);
+      } catch (err) {
+        console.error('[BackupJobs] Failed to enqueue dispatch:', err);
+      }
+    }
+  }
+
+  writeRouteAudit(c, {
+    orgId,
+    action: 'backup.job.run_all',
+    resourceType: 'backup_job',
+    resourceId: null,
+    details: { created: created.length, skipped: skipped.length },
+  });
+
+  return c.json({
+    data: {
+      created: created.length,
+      skipped: skipped.length,
+      jobIds: created,
+    },
+  }, 201);
 });
 
 jobsRoutes.post('/jobs/:id/cancel', async (c) => {

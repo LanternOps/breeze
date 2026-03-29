@@ -361,6 +361,8 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
               'nav-section-content',
               expanded && 'nav-section-expanded'
             )}
+            aria-hidden={!expanded}
+            inert={!expanded || undefined}
           >
             <div>
               {section.items.map((item) => renderNavItem(item, forMobileOverlay))}
@@ -425,7 +427,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         )}
       </div>
 
-      <nav className="sidebar-nav flex-1 min-h-0 space-y-1 overflow-y-auto p-2" style={{ scrollbarGutter: 'stable' }}>
+      <nav data-tour="sidebar-nav" className="sidebar-nav flex-1 min-h-0 space-y-1 overflow-y-auto p-2" style={{ scrollbarGutter: 'stable' }}>
         {topLevelNav.map((item) => renderNavItem(item))}
         {navSections.map((section) => renderCollapsibleSection(section))}
       </nav>

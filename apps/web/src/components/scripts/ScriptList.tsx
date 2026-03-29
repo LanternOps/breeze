@@ -204,11 +204,11 @@ export default function ScriptList({
                   key={script.id}
                   className="transition hover:bg-muted/40"
                 >
-                  <td className="px-4 py-3">
-                    <div>
-                      <p className="text-sm font-medium">{script.name}</p>
+                  <td className="max-w-[280px] px-4 py-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium" title={script.name}>{script.name}</p>
                       {script.description && (
-                        <p className="text-xs text-muted-foreground truncate max-w-xs">
+                        <p className="text-xs text-muted-foreground truncate max-w-xs" title={script.description}>
                           {script.description}
                         </p>
                       )}

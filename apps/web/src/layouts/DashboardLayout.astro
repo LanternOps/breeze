@@ -6,6 +6,8 @@ import AuthOverlay from '../components/auth/AuthOverlay';
 import AdminSessionManager from '../components/auth/AdminSessionManager';
 import AccountInactiveGuard from '../components/auth/AccountInactiveGuard';
 import AiChatSidebar from '../components/ai/AiChatSidebar';
+import OnboardingTour from '../components/onboarding/OnboardingTour';
+import ToastContainer from '../components/shared/Toast';
 
 interface Props {
   title: string;
@@ -13,6 +15,20 @@ interface Props {
 
 const { title } = Astro.props;
 const currentPath = Astro.url.pathname;
+
+// Domain-specific accent color for wayfinding — thin 2px bar at top of content area
+const getAccentClass = (path: string): string => {
+  if (path.startsWith('/devices') || path.startsWith('/fleet') || path.startsWith('/remote')) return 'bg-primary';
+  if (path.startsWith('/security') || path.startsWith('/cis-hardening') || path.startsWith('/audit-baselines') || path.startsWith('/sensitive-data') || path.startsWith('/ai-risk')) return 'bg-warning';
+  if (path.startsWith('/alerts')) return 'bg-destructive';
+  if (path.startsWith('/scripts') || path.startsWith('/patches') || path.startsWith('/discovery') || path.startsWith('/software') || path.startsWith('/configuration-policies') || path.startsWith('/backup') || path.startsWith('/integrations')) return 'bg-success';
+  if (path.startsWith('/settings') || path.startsWith('/admin')) return 'bg-muted-foreground/30';
+  if (path.startsWith('/reports') || path.startsWith('/analytics') || path.startsWith('/audit') || path.startsWith('/logs')) return 'bg-primary/50';
+  if (path.startsWith('/monitoring') || path.startsWith('/snmp') || path.startsWith('/peripherals')) return 'bg-warning/70';
+  if (path.startsWith('/workspace')) return 'bg-primary/70';
+  return '';
+};
+const accentClass = getAccentClass(currentPath);
 ---
 
 <Layout title={title}>
@@ -24,9 +40,12 @@ const currentPath = Astro.url.pathname;
     <div class="flex flex-1 flex-col overflow-hidden">
       <Header client:load transition:persist />
       <main class="flex-1 overflow-y-auto p-4 md:p-6">
+        {accentClass && <div class={`h-0.5 -mt-4 md:-mt-6 -mx-4 md:-mx-6 mb-4 md:mb-6 ${accentClass}`} aria-hidden="true" />}
         <slot />
       </main>
     </div>
   </div>
   <AiChatSidebar client:load transition:persist />
+  <ToastContainer client:load transition:persist />
+  <OnboardingTour client:idle />
 </Layout>
