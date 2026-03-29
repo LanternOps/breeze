@@ -77,6 +77,18 @@ vi.mock('../db/schema', () => ({
     id: 'restore_jobs.id',
     orgId: 'restore_jobs.org_id',
   },
+  backupVerifications: {
+    id: 'backup_verifications.id',
+    orgId: 'backup_verifications.org_id',
+    deviceId: 'backup_verifications.device_id',
+    status: 'backup_verifications.status',
+    createdAt: 'backup_verifications.created_at',
+  },
+  recoveryReadiness: {
+    id: 'recovery_readiness.id',
+    orgId: 'recovery_readiness.org_id',
+    deviceId: 'recovery_readiness.device_id',
+  },
 }));
 
 vi.mock('../middleware/auth', () => ({

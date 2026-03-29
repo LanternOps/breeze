@@ -82,7 +82,7 @@ describe('BackupDashboard usage history chart', () => {
     render(<BackupDashboard />);
 
     await screen.findByText('Storage by Provider');
-    expect(await screen.findByLabelText('Provider usage history chart')).not.toBeNull();
+    expect(await screen.findByLabelText('Storage usage trend by provider over time')).not.toBeNull();
     expect(screen.queryByText('Chart placeholder: integrate provider usage history.')).toBeNull();
   });
 });
