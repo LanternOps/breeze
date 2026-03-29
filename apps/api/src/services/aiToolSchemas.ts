@@ -505,6 +505,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     orgId: uuid.optional(),
     moduleId: z.string().min(1).max(120).optional(),
     reason: z.string().min(1).max(500).optional(),
+  }),
+
   get_backup_health: z.object({
     orgId: uuid.optional(),
     deviceId: backupEntityId.optional(),

@@ -247,7 +247,7 @@ function resolveBackupJob(
 ): BackupJob {
   if (backupJobId) {
     const row = backupJobs.find((job) => job.id === backupJobId && jobOrgById.get(job.id) === orgId);
-    if (!row || row.type !== 'backup') {
+    if (!row) {
       throw new Error('Backup job not found for organization');
     }
     if (row.deviceId !== deviceId) {
@@ -258,7 +258,7 @@ function resolveBackupJob(
 
   const latest = backupJobs
     .filter((job) => jobOrgById.get(job.id) === orgId)
-    .filter((job) => job.type === 'backup' && job.deviceId === deviceId)
+    .filter((job) => job.deviceId === deviceId)
     .sort((a, b) => toEpoch(b.completedAt ?? b.startedAt ?? b.updatedAt) - toEpoch(a.completedAt ?? a.startedAt ?? a.updatedAt));
 
   const row = latest[0];
@@ -367,7 +367,7 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
   // --- End dispatch attempt, fall through to simulation ---
 
   const seed = deterministicSeed(`${input.orgId}:${input.deviceId}:${backupJob.id}:${input.verificationType}:${snapshotId ?? 'none'}`);
-  const filesVerified = snapshot?.fileCount ?? Math.max(100, Math.round((backupJob.sizeBytes ?? 0) / 32768));
+  const filesVerified = snapshot?.fileCount ?? Math.max(100, Math.round((backupJob.totalSize ?? 0) / 32768));
   const expectedFailures = Math.max(1, Math.round(filesVerified * 0.01));
   const restoreTimeSeconds = input.verificationType === 'integrity'
     ? 20 + (seed % 120)
@@ -408,7 +408,7 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
     restoreTimeSeconds,
     filesVerified,
     filesFailed,
-    sizeBytes: snapshot?.sizeBytes ?? backupJob.sizeBytes ?? null,
+    sizeBytes: snapshot?.sizeBytes ?? backupJob.totalSize ?? null,
     details: {
       source: input.source,
       requestedBy: input.requestedBy ?? null,

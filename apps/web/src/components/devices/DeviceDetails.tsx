@@ -68,7 +68,7 @@ type Tab =
   | 'ip-history'
   | 'boot-performance'
   | 'playbooks'
-  | 'peripherals';
+  | 'peripherals'
   | 'backup-verification';
 
 type DeviceDetailsProps = {
@@ -133,7 +133,7 @@ const VALID_TABS: Tab[] = [
   'overview', 'details', 'hardware', 'software', 'patches', 'security',
   'management', 'effective-config', 'alerts', 'scripts', 'performance',
   'eventlog', 'activities', 'connections', 'filesystem', 'ip-history',
-  'boot-performance', 'playbooks', 'peripherals',
+  'boot-performance', 'playbooks', 'peripherals', 'backup-verification',
 ];
 
 function getTabFromHash(): Tab {
@@ -185,18 +185,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
     { id: 'ip-history', label: 'IP History', icon: <Network className="h-4 w-4" />, title: 'Historical public and private IP addresses' },
     { id: 'filesystem', label: 'Disk Cleanup', icon: <HardDrive className="h-4 w-4" />, title: 'Disk usage analysis and cleanup' },
     { id: 'boot-performance', label: 'Boot Perf', icon: <Timer className="h-4 w-4" />, title: 'Startup time and boot process analysis' },
-    { id: 'management', label: 'Management', icon: <Server className="h-4 w-4" /> },
-    { id: 'effective-config', label: 'Effective Config', icon: <Layers className="h-4 w-4" /> },
-    { id: 'alerts', label: 'Alert History', icon: <AlertTriangle className="h-4 w-4" /> },
-    { id: 'scripts', label: 'Script History', icon: <Terminal className="h-4 w-4" /> },
-    { id: 'performance', label: 'Performance', icon: <Activity className="h-4 w-4" /> },
-    { id: 'boot-performance', label: 'Boot Performance', icon: <Timer className="h-4 w-4" /> },
-    { id: 'eventlog', label: 'Event Log', icon: <FileText className="h-4 w-4" /> },
-    { id: 'activities', label: 'Activities', icon: <ScrollText className="h-4 w-4" /> },
-    { id: 'connections', label: 'Network Connections', icon: <Network className="h-4 w-4" /> },
-    { id: 'ip-history', label: 'IP History', icon: <Network className="h-4 w-4" /> },
-    { id: 'playbooks', label: 'Playbooks', icon: <Activity className="h-4 w-4" /> },
-    { id: 'backup-verification', label: 'Backup Verification', icon: <ShieldCheck className="h-4 w-4" /> }
+    { id: 'backup-verification', label: 'Backup Verification', icon: <ShieldCheck className="h-4 w-4" />, title: 'Backup integrity and recovery readiness' }
   ];
 
   return (

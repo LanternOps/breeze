@@ -190,7 +190,7 @@ export async function timeoutStaleVerifications(): Promise<number> {
 export async function ensurePostBackupIntegrityChecks(orgId?: string): Promise<number> {
   const candidates = backupJobs
     .filter((job) => (!orgId || jobOrgById.get(job.id) === orgId))
-    .filter((job) => job.type === 'backup' && job.status === 'completed');
+    .filter((job) => job.status === 'completed');
 
   let created = 0;
   for (const job of candidates) {
@@ -222,7 +222,7 @@ export async function runWeeklyTestRestore(orgId?: string): Promise<number> {
   const latestByDevice = new Map<string, BackupJob>();
 
   for (const job of backupJobs) {
-    if (job.type !== 'backup' || job.status !== 'completed' || !job.snapshotId) continue;
+    if (job.status !== 'completed' || !job.snapshotId) continue;
     if (orgId && jobOrgById.get(job.id) !== orgId) continue;
     const current = latestByDevice.get(job.deviceId);
     const jobTime = toEpoch(job.completedAt ?? job.startedAt ?? job.updatedAt);
@@ -275,7 +275,7 @@ export async function recalculateReadinessScores(orgId?: string): Promise<number
   const devicesToOrg = new Map<string, string>();
 
   for (const job of backupJobs) {
-    if (job.type !== 'backup') continue;
+    
     const targetOrg = jobOrgById.get(job.id);
     if (!targetOrg) continue;
     if (orgId && targetOrg !== orgId) continue;

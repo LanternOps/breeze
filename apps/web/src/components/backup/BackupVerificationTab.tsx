@@ -324,7 +324,7 @@ export default function BackupVerificationTab({ deviceId }: { deviceId: string }
                           />
                           {cfg.label}
                         </span>
-                        {v.details && (v.details as Record<string, unknown>).simulated && (
+                        {v.details && Boolean((v.details as Record<string, unknown>).simulated) && (
                           <span className="ml-1 inline-flex items-center rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600 border border-gray-300">
                             simulated
                           </span>

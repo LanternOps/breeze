@@ -8,7 +8,9 @@ import type {
   BackupVerification,
   RecoveryReadiness
 } from './types';
-import { minutesAgo } from './helpers';
+function minutesAgo(minutes: number): string {
+  return new Date(Date.now() - minutes * 60 * 1000).toISOString();
+}
 
 const DEFAULT_BACKUP_ORG_ID = 'org-123';
 
@@ -142,8 +144,8 @@ export const restoreJobs: RestoreJob[] = [
     startedAt: minutesAgo(790),
     completedAt: minutesAgo(760),
     updatedAt: minutesAgo(760),
-    progress: 100,
-    bytesRestored: 258734112
+    restoredSize: 258734112,
+    restoredFiles: 39210
   },
   {
     id: 'restore-002',
@@ -154,15 +156,13 @@ export const restoreJobs: RestoreJob[] = [
     createdAt: minutesAgo(40),
     startedAt: minutesAgo(35),
     updatedAt: minutesAgo(5),
-    progress: 45
   }
 ];
 
 export const backupJobs: BackupJob[] = [
   {
     id: 'job-001',
-    type: 'backup',
-    trigger: 'scheduled',
+    type: 'scheduled',
     deviceId: 'dev-001',
     configId: 'cfg-s3-primary',
     policyId: 'pol-daily-endpoints',
@@ -172,12 +172,11 @@ export const backupJobs: BackupJob[] = [
     completedAt: minutesAgo(170),
     createdAt: minutesAgo(181),
     updatedAt: minutesAgo(170),
-    sizeBytes: 321987654
+    totalSize: 321987654
   },
   {
     id: 'job-002',
-    type: 'backup',
-    trigger: 'scheduled',
+    type: 'scheduled',
     deviceId: 'dev-002',
     configId: 'cfg-s3-primary',
     policyId: 'pol-daily-endpoints',
@@ -187,12 +186,11 @@ export const backupJobs: BackupJob[] = [
     completedAt: minutesAgo(300),
     createdAt: minutesAgo(321),
     updatedAt: minutesAgo(300),
-    sizeBytes: 258734112
+    totalSize: 258734112
   },
   {
     id: 'job-003',
-    type: 'backup',
-    trigger: 'scheduled',
+    type: 'scheduled',
     deviceId: 'dev-003',
     configId: 'cfg-s3-primary',
     policyId: 'pol-daily-endpoints',
@@ -203,8 +201,7 @@ export const backupJobs: BackupJob[] = [
   },
   {
     id: 'job-004',
-    type: 'backup',
-    trigger: 'scheduled',
+    type: 'scheduled',
     deviceId: 'dev-004',
     configId: 'cfg-local-nas',
     policyId: 'pol-weekly-servers',
@@ -214,12 +211,11 @@ export const backupJobs: BackupJob[] = [
     completedAt: minutesAgo(1480),
     createdAt: minutesAgo(1501),
     updatedAt: minutesAgo(1480),
-    sizeBytes: 987654321
+    totalSize: 987654321
   },
   {
     id: 'job-005',
-    type: 'backup',
-    trigger: 'manual',
+    type: 'manual',
     deviceId: 'dev-005',
     configId: 'cfg-s3-primary',
     status: 'failed',
@@ -227,12 +223,11 @@ export const backupJobs: BackupJob[] = [
     completedAt: minutesAgo(590),
     createdAt: minutesAgo(601),
     updatedAt: minutesAgo(590),
-    error: 'Network timeout'
+    errorLog: 'Network timeout'
   },
   {
     id: 'restore-001',
-    type: 'restore',
-    trigger: 'restore',
+    type: 'manual',
     deviceId: 'dev-002',
     configId: 'cfg-s3-primary',
     snapshotId: 'snap-002',
@@ -244,8 +239,7 @@ export const backupJobs: BackupJob[] = [
   },
   {
     id: 'restore-002',
-    type: 'restore',
-    trigger: 'restore',
+    type: 'manual',
     deviceId: 'dev-004',
     configId: 'cfg-local-nas',
     snapshotId: 'snap-003',

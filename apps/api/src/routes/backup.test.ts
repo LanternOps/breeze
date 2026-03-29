@@ -46,29 +46,7 @@ vi.mock('../db', () => ({
     delete: (...args: unknown[]) => deleteMock(...(args as [])),
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
-    select: vi.fn(() => ({
-      from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          limit: vi.fn(() => Promise.resolve([]))
-        }))
-      }))
-    })),
-    insert: vi.fn(() => ({
-      values: vi.fn(() => ({
-        returning: vi.fn(() => Promise.resolve([]))
-      }))
-    })),
-    update: vi.fn(() => ({
-      set: vi.fn(() => ({
-        where: vi.fn(() => Promise.resolve())
-      }))
-    })),
-    delete: vi.fn(() => ({
-      where: vi.fn(() => Promise.resolve())
-    }))
-  },
-  runOutsideDbContext: vi.fn((fn: () => unknown) => fn())
+  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
 }));
 
 vi.mock('../db/schema', () => ({

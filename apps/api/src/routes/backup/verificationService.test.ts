@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-const publishEventMock = vi.fn(async () => 'event-id');
+const publishEventMock = vi.fn(async (..._args: any[]) => 'event-id');
 
 vi.mock('../../services/eventBus', () => ({
-  publishEvent: (...args: unknown[]) => publishEventMock(...args),
+  publishEvent: (...args: any[]) => publishEventMock(...args),
 }));
 
 vi.mock('../../services/commandQueue', () => ({
@@ -95,7 +95,7 @@ describe('processBackupVerificationResult', () => {
 
     const passedEvents = publishEventMock.mock.calls.filter((call) => call[0] === 'backup.verification_passed');
     expect(passedEvents.length).toBe(1);
-    expect(passedEvents[0][1]).toBe(TEST_ORG_ID);
+    expect(passedEvents[0]![1]).toBe(TEST_ORG_ID);
   });
 
   it('marks verification as failed on failed agent command', async () => {

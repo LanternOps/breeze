@@ -348,7 +348,7 @@ export async function recomputeRecoveryReadinessForDevice(
 
   const latestBackup = backupJobs
     .filter((job) => jobOrgById.get(job.id) === orgId)
-    .filter((job) => job.type === 'backup' && job.deviceId === deviceId && Boolean(job.completedAt))
+    .filter((job) => job.deviceId === deviceId && Boolean(job.completedAt))
     .sort((a, b) => toEpoch(b.completedAt) - toEpoch(a.completedAt))[0];
 
   const estimatedRpoMinutes = latestBackup?.completedAt
