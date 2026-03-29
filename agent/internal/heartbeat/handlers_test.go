@@ -87,6 +87,9 @@ var allCommandTypes = []string{
 
 	// handlers_uninstall.go init()
 	tools.CmdSelfUninstall,
+
+	// handlers_incident_response.go init()
+	tools.CmdCollectEvidence, tools.CmdExecuteContainment,
 }
 
 func TestHandlerRegistryCompleteness(t *testing.T) {

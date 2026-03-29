@@ -40,6 +40,17 @@ The following are in scope:
 - Authentication and authorization flows
 - Multi-tenant data isolation
 - Agent-to-server communication
+- Incident response workflows (`/api/v1/incidents/*`)
+
+## Incident Response Workflow Security
+
+Incident response automation is treated as a high-sensitivity workflow:
+
+- High-risk containment actions require explicit approval references.
+- Incident, evidence, and containment state changes are audit logged.
+- Incident events (`incident.created`, `incident.contained`, `incident.escalated`, `incident.closed`) are emitted for downstream governance and monitoring.
+- Evidence records include chain-of-custody metadata and integrity hash support.
+- Incident data is tenant isolated with row-level security policies.
 
 ## Out of Scope
 

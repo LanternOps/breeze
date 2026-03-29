@@ -18,6 +18,7 @@ This document describes the security controls, practices, and design decisions i
 - [Input Validation](#input-validation)
 - [HTTP Security Headers](#http-security-headers)
 - [Audit Logging](#audit-logging)
+- [Incident Response Automation](#incident-response-automation)
 - [AI Risk Classification](#ai-risk-classification)
 - [Infrastructure Security](#infrastructure-security)
 - [Supply Chain Security](#supply-chain-security)
@@ -368,6 +369,21 @@ Breeze enforces event-log audit-policy baselines with continuous drift detection
   - `compliance.audit_remediated`
 
 Baseline remediation commands (`apply_audit_policy_baseline`) are treated as privileged operations and must pass RBAC checks (`devices:write`) before execution.
+
+---
+
+## Incident Response Automation
+
+Breeze now includes a structured incident lifecycle API with auditable transitions:
+
+- **Lifecycle states**: `detected` -> `analyzing` -> `contained` -> `recovering` -> `closed`
+- **Evidence chain**: evidence entries record who collected it, when, where it is stored, and optional integrity hash
+- **Containment governance**: high-risk actions (`network_isolation`, `account_disable`, `usb_block`) require an `approvalRef`
+- **Timeline integrity**: incident timeline entries are appended for creation, containment, evidence collection, closure, and SLA escalation
+- **Eventing**: `incident.created`, `incident.contained`, `incident.escalated`, and `incident.closed` are emitted for downstream automations and integrations
+- **Auditability**: all mutating incident endpoints emit structured route audit events with actor identity and action metadata
+
+Core endpoints are exposed under `/api/v1/incidents/*` for creation, triage, containment, evidence handling, closure, and report generation.
 
 ---
 
