@@ -11,7 +11,9 @@ import {
   backupConfigs,
   backupJobs,
   backupSnapshots,
-  backupPolicies,
+  configPolicyFeatureLinks,
+  configurationPolicies,
+  configPolicyBackupSettings,
   restoreJobs,
   devices,
 } from '../db/schema';
@@ -141,27 +143,38 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'list_policies') {
-        const conditions: SQL[] = [];
-        const oc = orgWhere(auth, backupPolicies.orgId);
-        if (oc) conditions.push(oc);
+        const orgId = getOrgId(auth);
+        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
 
-        const rows = await db.select({
-          id: backupPolicies.id,
-          configId: backupPolicies.configId,
-          configName: backupConfigs.name,
-          name: backupPolicies.name,
-          enabled: backupPolicies.enabled,
-          schedule: backupPolicies.schedule,
-          retention: backupPolicies.retention,
-          targets: backupPolicies.targets,
-          createdAt: backupPolicies.createdAt,
-        }).from(backupPolicies)
-          .leftJoin(backupConfigs, eq(backupPolicies.configId, backupConfigs.id))
-          .where(conditions.length > 0 ? and(...conditions) : undefined)
-          .orderBy(desc(backupPolicies.createdAt))
+        const links = await db
+          .select({
+            featureLinkId: configPolicyFeatureLinks.id,
+            configId: configPolicyFeatureLinks.featurePolicyId,
+            policyName: configurationPolicies.name,
+            schedule: configPolicyBackupSettings.schedule,
+            retention: configPolicyBackupSettings.retention,
+          })
+          .from(configPolicyFeatureLinks)
+          .innerJoin(configurationPolicies, eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id))
+          .leftJoin(configPolicyBackupSettings, eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id))
+          .where(
+            and(
+              eq(configPolicyFeatureLinks.featureType, 'backup'),
+              eq(configurationPolicies.orgId, orgId),
+              eq(configurationPolicies.status, 'active')
+            )
+          )
           .limit(limit);
 
-        return JSON.stringify({ policies: rows, showing: rows.length });
+        const policies = links.map((link) => ({
+          featureLinkId: link.featureLinkId,
+          configId: link.configId,
+          name: link.policyName,
+          schedule: link.schedule,
+          retention: link.retention,
+        }));
+
+        return JSON.stringify({ policies, showing: policies.length });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });

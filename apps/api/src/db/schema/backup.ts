@@ -15,6 +15,7 @@ import {
 import { organizations } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
+import { configPolicyFeatureLinks } from './configurationPolicies';
 
 export const backupProviderEnum = pgEnum('backup_provider', [
   'local',
@@ -116,6 +117,7 @@ export const backupJobs = pgTable(
       .notNull()
       .references(() => backupConfigs.id),
     policyId: uuid('policy_id').references(() => backupPolicies.id),
+    featureLinkId: uuid('feature_link_id').references(() => configPolicyFeatureLinks.id),
     deviceId: uuid('device_id')
       .notNull()
       .references(() => devices.id),

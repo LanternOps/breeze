@@ -1,9 +1,7 @@
 import {
   backupJobs,
-  backupPolicies,
   backupVerifications,
   jobOrgById,
-  policyOrgById,
   verificationOrgById
 } from './store';
 import type { BackupJob, BackupVerificationStatus } from './types';
@@ -25,14 +23,9 @@ function toEpoch(value?: string | Date | null): number {
   return Number.isNaN(epoch) ? 0 : epoch;
 }
 
-function isCriticalDevice(orgId: string, deviceId: string): boolean {
-  return backupPolicies
-    .filter((policy) => policyOrgById.get(policy.id) === orgId)
-    .filter((policy) => policy.targets.deviceIds.includes(deviceId))
-    .some((policy) => {
-      const includesServerGroup = policy.targets.groupIds.some((groupId) => /server|critical/i.test(groupId));
-      return includesServerGroup || /server|critical/i.test(policy.name);
-    });
+function isCriticalDevice(_orgId: string, _deviceId: string): boolean {
+  // TODO: Determine criticality from config policy assignment level or device tags
+  return false;
 }
 
 // ---- Async result processing ----

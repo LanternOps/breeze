@@ -1,6 +1,5 @@
 import type {
   BackupConfig,
-  BackupPolicy,
   BackupSnapshot,
   RestoreJob,
   BackupJob,
@@ -44,56 +43,6 @@ export const backupConfigs: BackupConfig[] = [
     createdAt: minutesAgo(51840),
     updatedAt: minutesAgo(720),
     lastTestedAt: minutesAgo(360)
-  }
-];
-
-export const backupPolicies: BackupPolicy[] = [
-  {
-    id: 'pol-daily-endpoints',
-    name: 'Daily Endpoints',
-    configId: 'cfg-s3-primary',
-    enabled: true,
-    targets: {
-      deviceIds: ['dev-001', 'dev-002', 'dev-003'],
-      siteIds: ['site-nyc'],
-      groupIds: []
-    },
-    schedule: {
-      frequency: 'daily',
-      time: '02:00',
-      timezone: 'UTC'
-    },
-    retention: {
-      keepDaily: 7,
-      keepWeekly: 4,
-      keepMonthly: 3
-    },
-    createdAt: minutesAgo(40320),
-    updatedAt: minutesAgo(1440)
-  },
-  {
-    id: 'pol-weekly-servers',
-    name: 'Weekly Servers',
-    configId: 'cfg-local-nas',
-    enabled: true,
-    targets: {
-      deviceIds: ['dev-004'],
-      siteIds: ['site-dc'],
-      groupIds: ['grp-servers']
-    },
-    schedule: {
-      frequency: 'weekly',
-      time: '03:30',
-      timezone: 'UTC',
-      dayOfWeek: 0
-    },
-    retention: {
-      keepDaily: 4,
-      keepWeekly: 8,
-      keepMonthly: 6
-    },
-    createdAt: minutesAgo(38880),
-    updatedAt: minutesAgo(2880)
   }
 ];
 

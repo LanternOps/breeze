@@ -4,14 +4,13 @@ import { eq, and, sql, gte, desc } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   backupConfigs,
-  backupPolicies,
   backupJobs,
   backupSnapshots,
   devices,
 } from '../../db/schema';
+import { resolveBackupConfigForDevice, resolveAllBackupAssignedDevices } from '../../services/featureConfigResolver';
 import { getNextRun, resolveScopedOrgId } from './helpers';
 import { usageHistoryQuerySchema } from './schemas';
-import type { BackupPolicySchedule, BackupPolicyTargets } from './types';
 
 export const dashboardRoutes = new Hono();
 
@@ -122,17 +121,12 @@ dashboardRoutes.get('/dashboard', async (c) => {
   const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
   // Run aggregation queries in parallel
-  const [configCount, policyCount, jobCount, snapshotCount, last24hStats, storageStats, policies, recentJobs] =
+  const [configCount, jobCount, snapshotCount, last24hStats, storageStats, assignedDevices, recentJobs] =
     await Promise.all([
       db
         .select({ count: sql<number>`count(*)::int` })
         .from(backupConfigs)
         .where(eq(backupConfigs.orgId, orgId))
-        .then((r) => r[0]?.count ?? 0),
-      db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(backupPolicies)
-        .where(eq(backupPolicies.orgId, orgId))
         .then((r) => r[0]?.count ?? 0),
       db
         .select({ count: sql<number>`count(*)::int` })
@@ -167,10 +161,10 @@ dashboardRoutes.get('/dashboard', async (c) => {
         .from(backupSnapshots)
         .where(eq(backupSnapshots.orgId, orgId))
         .then((r) => r[0] ?? { totalBytes: 0, count: 0 }),
-      db
-        .select()
-        .from(backupPolicies)
-        .where(eq(backupPolicies.orgId, orgId)),
+      resolveAllBackupAssignedDevices(orgId).catch((err) => {
+        console.error(`[BackupDashboard] Failed to resolve assigned devices:`, err instanceof Error ? err.message : err);
+        return [];
+      }),
       db
         .select({
           job: backupJobs,
@@ -186,12 +180,7 @@ dashboardRoutes.get('/dashboard', async (c) => {
         .limit(5),
     ]);
 
-  const protectedDevices = new Set(
-    policies.flatMap((p) => {
-      const targets = p.targets as BackupPolicyTargets;
-      return targets?.deviceIds ?? [];
-    })
-  );
+  const protectedDevices = new Set(assignedDevices.map((a) => a.deviceId));
 
   const latestJobs = recentJobs.map((r) => ({
     id: r.job.id,
@@ -212,7 +201,7 @@ dashboardRoutes.get('/dashboard', async (c) => {
     data: {
       totals: {
         configs: configCount,
-        policies: policyCount,
+        policies: assignedDevices.length,
         jobs: jobCount,
         snapshots: snapshotCount,
       },
@@ -243,16 +232,8 @@ dashboardRoutes.get('/status/:deviceId', async (c) => {
 
   const deviceId = c.req.param('deviceId');
 
-  // Find policy targeting this device
-  const policies = await db
-    .select()
-    .from(backupPolicies)
-    .where(eq(backupPolicies.orgId, orgId));
-
-  const policy = policies.find((p) => {
-    const targets = p.targets as BackupPolicyTargets;
-    return targets?.deviceIds?.includes(deviceId);
-  });
+  // Resolve backup config via configuration policy system
+  const resolved = await resolveBackupConfigForDevice(deviceId);
 
   // Get recent jobs for this device
   const jobs = await db
@@ -269,13 +250,12 @@ dashboardRoutes.get('/status/:deviceId', async (c) => {
   const lastFailure =
     jobs.find((j) => j.status === 'failed') ?? null;
 
-  const policySchedule = policy?.schedule as BackupPolicySchedule | null;
-
   return c.json({
     data: {
       deviceId,
-      protected: Boolean(policy),
-      policyId: policy?.id ?? null,
+      protected: Boolean(resolved),
+      featureLinkId: resolved?.featureLinkId ?? null,
+      configId: resolved?.configId ?? null,
       lastJob: lastJob
         ? {
             id: lastJob.id,
@@ -286,9 +266,11 @@ dashboardRoutes.get('/status/:deviceId', async (c) => {
         : null,
       lastSuccessAt: lastSuccess?.completedAt?.toISOString() ?? null,
       lastFailureAt: lastFailure?.completedAt?.toISOString() ?? null,
-      nextScheduledAt: policySchedule
-        ? getNextRun(policySchedule)
-        : null,
+      nextScheduledAt: (() => {
+        const schedule = resolved?.settings?.schedule as Record<string, unknown> | null;
+        const hasSchedule = schedule && typeof schedule.frequency === 'string' && typeof schedule.time === 'string';
+        return hasSchedule ? getNextRun(schedule as any) : null;
+      })(),
     },
   });
 });
