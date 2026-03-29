@@ -8,18 +8,28 @@ export interface Step {
 interface SetupStepperProps {
   steps: Step[];
   currentStep: number;
+  onStepClick?: (step: number) => void;
 }
 
-export default function SetupStepper({ steps, currentStep }: SetupStepperProps) {
+export default function SetupStepper({ steps, currentStep, onStepClick }: SetupStepperProps) {
   return (
     <nav aria-label="Setup progress" className="flex items-center justify-center gap-2">
       {steps.map((step, index) => {
         const isCompleted = index < currentStep;
         const isCurrent = index === currentStep;
+        const isClickable = isCompleted && onStepClick;
 
         return (
           <div key={step.label} className="flex items-center gap-2">
-            <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={!isClickable}
+              onClick={() => isClickable && onStepClick(index)}
+              className={cn(
+                'flex items-center gap-2',
+                isClickable && 'cursor-pointer'
+              )}
+            >
               <div
                 className={cn(
                   'flex h-8 w-8 items-center justify-center rounded-full text-sm font-medium transition-colors',
@@ -35,12 +45,13 @@ export default function SetupStepper({ steps, currentStep }: SetupStepperProps) 
                   'hidden text-sm font-medium sm:inline',
                   isCurrent && 'text-foreground',
                   isCompleted && 'text-foreground',
-                  !isCompleted && !isCurrent && 'text-muted-foreground'
+                  !isCompleted && !isCurrent && 'text-muted-foreground',
+                  isClickable && 'hover:underline'
                 )}
               >
                 {step.label}
               </span>
-            </div>
+            </button>
             {index < steps.length - 1 && (
               <ChevronRight className="h-4 w-4 text-muted-foreground" />
             )}
