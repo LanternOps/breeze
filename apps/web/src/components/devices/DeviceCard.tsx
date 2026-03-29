@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { Monitor, MoreVertical, Terminal, RotateCcw, FileCode, Settings, Trash2 } from 'lucide-react';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
 import { fetchWithAuth } from '../../stores/auth';
+import { formatLastSeen } from '@/lib/formatTime';
+import { asRecord, toPercentNullable } from '@/lib/deviceUtils';
 
 type DeviceCardProps = {
   device: Device;
@@ -16,11 +18,11 @@ type MetricHistoryPoint = {
 };
 
 const statusColors: Record<DeviceStatus, string> = {
-  online: 'bg-green-500',
-  offline: 'bg-red-500',
-  maintenance: 'bg-yellow-500',
-  decommissioned: 'bg-slate-500',
-  quarantined: 'bg-orange-500'
+  online: 'bg-success',
+  offline: 'bg-destructive',
+  maintenance: 'bg-warning',
+  decommissioned: 'bg-muted-foreground',
+  quarantined: 'bg-warning'
 };
 
 const osIcons: Record<OSType, React.ReactNode> = {
@@ -41,38 +43,6 @@ const osIcons: Record<OSType, React.ReactNode> = {
   )
 };
 
-function formatLastSeen(dateString: string, timezone?: string): string {
-  const date = new Date(dateString);
-  if (Number.isNaN(date.getTime())) return dateString;
-
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / (1000 * 60));
-  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-  if (diffMins < 1) return 'Just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString([], timezone ? { timeZone: timezone } : undefined);
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === 'object' && value !== null ? value as Record<string, unknown> : null;
-}
-
-function toPercent(value: unknown): number | null {
-  const parsed = typeof value === 'number'
-    ? value
-    : typeof value === 'string'
-      ? Number(value)
-      : NaN;
-
-  if (!Number.isFinite(parsed)) return null;
-  return Math.min(100, Math.max(0, Number(parsed.toFixed(2))));
-}
-
 function parseMetricHistory(payload: unknown): MetricHistoryPoint[] {
   const rawPayload = asRecord(payload);
   const directData = rawPayload ? rawPayload.data : null;
@@ -91,8 +61,8 @@ function parseMetricHistory(payload: unknown): MetricHistoryPoint[] {
     const point = asRecord(rawPoint);
     if (!point) continue;
 
-    const cpu = toPercent(point.cpu);
-    const ram = toPercent(point.ram);
+    const cpu = toPercentNullable(point.cpu);
+    const ram = toPercentNullable(point.ram);
     if (cpu === null && ram === null) continue;
 
     parsed.push({
@@ -104,7 +74,7 @@ function parseMetricHistory(payload: unknown): MetricHistoryPoint[] {
   return parsed;
 }
 
-function MiniSparkline({ data, color, testId }: { data: number[]; color: string; testId: string }) {
+function MiniSparkline({ data, testId }: { data: number[]; testId: string }) {
   const max = Math.max(...data, 100);
   const min = Math.min(...data, 0);
   const range = max - min || 1;
@@ -121,7 +91,7 @@ function MiniSparkline({ data, color, testId }: { data: number[]; color: string;
     <svg data-testid={testId} className="h-8 w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
       <polyline
         fill="none"
-        stroke={color}
+        stroke="currentColor"
         strokeWidth="3"
         points={points}
       />
@@ -194,7 +164,8 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
           <div>
             <div className="flex items-center gap-2">
               <h3 className="font-medium">{device.hostname}</h3>
-              <span className={`h-2 w-2 rounded-full ${statusColors[device.status]}`} />
+              <span className={`h-2 w-2 rounded-full ${statusColors[device.status]}`} aria-hidden="true" />
+              <span className="sr-only">{device.status.charAt(0).toUpperCase() + device.status.slice(1)}</span>
             </div>
             <p className="text-xs text-muted-foreground">{device.osVersion}</p>
           </div>
@@ -206,7 +177,8 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
               e.stopPropagation();
               setMenuOpen(!menuOpen);
             }}
-            className="flex h-8 w-8 items-center justify-center rounded-md opacity-0 transition hover:bg-muted group-hover:opacity-100"
+            aria-label={`Actions for ${device.hostname}`}
+            className="flex h-8 w-8 items-center justify-center rounded-md opacity-40 transition hover:bg-muted hover:opacity-100 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <MoreVertical className="h-4 w-4" />
           </button>
@@ -261,18 +233,33 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
                 Settings
               </button>
               <hr className="my-1" />
-              <button
-                type="button"
-                onClick={e => {
-                  e.stopPropagation();
-                  onAction?.('decommission', device);
-                  setMenuOpen(false);
-                }}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
-              >
-                <Trash2 className="h-4 w-4" />
-                Decommission
-              </button>
+              {device.status === 'decommissioned' ? (
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation();
+                    onAction?.('restore', device);
+                    setMenuOpen(false);
+                  }}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-success hover:bg-success/10"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  Restore
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation();
+                    onAction?.('decommission', device);
+                    setMenuOpen(false);
+                  }}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Decommission
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -285,11 +272,12 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
             <span className="font-medium">{device.cpuPercent}%</span>
           </div>
           {historyState === 'ready' ? (
-            <MiniSparkline
-              testId={`cpu-sparkline-${device.id}`}
-              data={cpuHistory}
-              color={device.cpuPercent > 80 ? '#ef4444' : device.cpuPercent > 60 ? '#eab308' : '#22c55e'}
-            />
+            <div className={device.cpuPercent > 80 ? 'text-destructive' : device.cpuPercent > 60 ? 'text-warning' : 'text-success'}>
+              <MiniSparkline
+                testId={`cpu-sparkline-${device.id}`}
+                data={cpuHistory}
+              />
+            </div>
           ) : (
             <div className="flex h-8 items-center text-[11px] text-muted-foreground">
               {historyState === 'loading' ? 'Loading trend...' : historyState === 'error' ? 'Trend unavailable' : 'No trend data'}
@@ -302,11 +290,12 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
             <span className="font-medium">{device.ramPercent}%</span>
           </div>
           {historyState === 'ready' ? (
-            <MiniSparkline
-              testId={`ram-sparkline-${device.id}`}
-              data={ramHistory}
-              color={device.ramPercent > 80 ? '#ef4444' : device.ramPercent > 60 ? '#eab308' : '#22c55e'}
-            />
+            <div className={device.ramPercent > 80 ? 'text-destructive' : device.ramPercent > 60 ? 'text-warning' : 'text-success'}>
+              <MiniSparkline
+                testId={`ram-sparkline-${device.id}`}
+                data={ramHistory}
+              />
+            </div>
           ) : (
             <div className="flex h-8 items-center text-[11px] text-muted-foreground">
               {historyState === 'loading' ? 'Loading trend...' : historyState === 'error' ? 'Trend unavailable' : 'No trend data'}

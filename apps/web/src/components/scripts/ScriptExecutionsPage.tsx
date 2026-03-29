@@ -157,7 +157,7 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
               fetchScript();
               fetchExecutions();
             }}
-            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
             Try again
           </button>
@@ -192,7 +192,7 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
           <button
             type="button"
             onClick={() => setShowExecuteModal(true)}
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:bg-primary/90"
           >
             <Play className="h-4 w-4" />
             Run Script

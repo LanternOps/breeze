@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect, useRef, type ComponentType } from 'react'
 import { useForm, useFieldArray, Controller } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Plus, Trash2, GripVertical, Sparkles } from 'lucide-react';
+import { Plus, Trash2, Sparkles, ChevronDown } from 'lucide-react';
 import type { EditorProps } from '@monaco-editor/react';
 
 import ScriptAiPanel from './ScriptAiPanel';
@@ -87,6 +87,8 @@ export default function ScriptForm({
 }: ScriptFormProps) {
   const [editorMounted, setEditorMounted] = useState(false);
   const editorInstanceRef = useRef<Parameters<NonNullable<EditorProps['onMount']>>[0] | null>(null);
+  const [paramsOpen, setParamsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Dynamic import for Monaco Editor — avoids React.lazy/Suspense which
   // can cause hydration issues during Astro View Transition DOM swaps.
@@ -115,9 +117,10 @@ export default function ScriptForm({
     watch,
     getValues,
     setValue,
-    formState: { errors, isSubmitting }
+    formState: { errors, isSubmitting, isDirty }
   } = useForm<ScriptFormValues>({
     resolver: zodResolver(scriptSchema) as never,
+    mode: 'onTouched',
     defaultValues: {
       name: '',
       description: '',
@@ -136,6 +139,13 @@ export default function ScriptForm({
     control,
     name: 'parameters'
   });
+
+  // Auto-expand sections when editing a script that has existing data
+  useEffect(() => {
+    if (defaultValues?.parameters && defaultValues.parameters.length > 0) setParamsOpen(true);
+    if (defaultValues?.timeoutSeconds !== undefined && defaultValues.timeoutSeconds !== 300) setSettingsOpen(true);
+    if (defaultValues?.runAs !== undefined && defaultValues.runAs !== 'system') setSettingsOpen(true);
+  }, [defaultValues]);
 
   const { panelOpen, togglePanel } = useScriptAiStore();
 
@@ -160,12 +170,41 @@ export default function ScriptForm({
     },
   }), [getValues, setValue]);
 
-  // Keyboard shortcut: Cmd+Shift+I to toggle AI panel
+  // Warn before leaving with unsaved changes (browser close/refresh + Astro SPA nav)
+  const isDirtyRef = useRef(false);
+  const skipGuardRef = useRef(false);
+  isDirtyRef.current = isDirty;
+
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isDirtyRef.current) e.preventDefault();
+    };
+    const onAstroNav = (e: Event) => {
+      if (skipGuardRef.current) { skipGuardRef.current = false; return; }
+      if (isDirtyRef.current && !window.confirm('You have unsaved changes. Leave this page?')) {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    document.addEventListener('astro:before-preparation', onAstroNav);
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      document.removeEventListener('astro:before-preparation', onAstroNav);
+    };
+  }, []);
+
+  const formRef = useRef<HTMLFormElement>(null);
+
+  // Keyboard shortcuts: Cmd+S to save, Cmd+Shift+I to toggle AI panel
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'i') {
         e.preventDefault();
         togglePanel();
+      }
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === 's') {
+        e.preventDefault();
+        formRef.current?.requestSubmit();
       }
     };
     window.addEventListener('keydown', handler);
@@ -205,10 +244,13 @@ export default function ScriptForm({
 
   return (
     <form
+      ref={formRef}
       onSubmit={handleSubmit(async values => {
         await onSubmit?.(values);
+        // Save succeeded — allow the post-save navigation without guard
+        skipGuardRef.current = true;
       })}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="space-y-8 rounded-lg border bg-card p-6 shadow-sm"
     >
       {/* Basic Information */}
       <div className="grid gap-6 md:grid-cols-2">
@@ -298,9 +340,9 @@ export default function ScriptForm({
       </div>
 
       {/* Script Content + AI Panel */}
-      <div className="space-y-2">
+      <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <label className="text-sm font-medium">Script Content</label>
+          <h3 className="text-base font-bold tracking-tight">Script Content</h3>
           <button
             type="button"
             onClick={togglePanel}
@@ -361,32 +403,31 @@ export default function ScriptForm({
         {errors.content && <p className="text-sm text-destructive">{errors.content.message}</p>}
       </div>
 
-      {/* Parameters */}
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-semibold">Parameters</h3>
-            <p className="text-xs text-muted-foreground">Define input parameters for this script</p>
+      {/* Parameters — collapsible */}
+      <div className="rounded-md border">
+        <button
+          type="button"
+          onClick={() => setParamsOpen(prev => !prev)}
+          className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-muted/50 transition"
+        >
+          <div className="flex items-center gap-2">
+            <h3 className="text-base font-bold tracking-tight">Parameters</h3>
+            {fields.length > 0 && (
+              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">{fields.length}</span>
+            )}
           </div>
-          <button
-            type="button"
-            onClick={addParameter}
-            className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
-          >
-            <Plus className="h-4 w-4" />
-            Add Parameter
-          </button>
-        </div>
+          <ChevronDown className={cn('h-4 w-4 text-muted-foreground transition-transform', paramsOpen && 'rotate-180')} />
+        </button>
 
-        {fields.length > 0 && (
-          <div className="space-y-3">
+        {paramsOpen && (
+          <div className="border-t px-4 pb-4 pt-3 space-y-3">
             {fields.map((field, index) => (
               <div
                 key={field.id}
                 className="rounded-md border bg-muted/20 p-4"
               >
                 <div className="flex items-start gap-3">
-                  <GripVertical className="h-5 w-5 text-muted-foreground mt-2.5 cursor-move" />
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-medium text-muted-foreground mt-2">{index + 1}</span>
                   <div className="flex-1 grid gap-4 sm:grid-cols-2 md:grid-cols-4">
                     <div className="space-y-1">
                       <label className="text-xs font-medium text-muted-foreground">Name</label>
@@ -455,79 +496,104 @@ export default function ScriptForm({
                 </div>
               </div>
             ))}
-          </div>
-        )}
 
-        {fields.length === 0 && (
-          <div className="rounded-md border border-dashed p-6 text-center">
-            <p className="text-sm text-muted-foreground">
-              No parameters defined. Click "Add Parameter" to create one.
-            </p>
+            <button
+              type="button"
+              onClick={() => { addParameter(); }}
+              className="inline-flex items-center gap-1.5 rounded-md border border-dashed px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition"
+            >
+              <Plus className="h-4 w-4" />
+              Add parameter
+            </button>
           </div>
         )}
       </div>
 
-      {/* Execution Settings */}
-      <div className="rounded-md border bg-muted/20 p-4">
-        <h3 className="text-sm font-semibold mb-4">Execution Settings</h3>
-        <div className="grid gap-6 md:grid-cols-2">
-          <div className="space-y-2">
-            <label htmlFor="timeout-seconds" className="text-sm font-medium">
-              Timeout (seconds)
-            </label>
-            <input
-              id="timeout-seconds"
-              type="number"
-              min={1}
-              max={86400}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              {...register('timeoutSeconds')}
-            />
-            {errors.timeoutSeconds && (
-              <p className="text-sm text-destructive">{errors.timeoutSeconds.message}</p>
+      {/* Execution Settings — collapsible */}
+      <div className="rounded-md border">
+        <button
+          type="button"
+          onClick={() => setSettingsOpen(prev => !prev)}
+          className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-muted/50 transition"
+        >
+          <div className="flex items-center gap-2">
+            <h3 className="text-base font-bold tracking-tight">Execution Settings</h3>
+            {!settingsOpen && (
+              <span className="text-xs text-muted-foreground">
+                {watch('timeoutSeconds')}s &middot; {runAsOptions.find(o => o.value === watch('runAs'))?.label}
+              </span>
             )}
-            <p className="text-xs text-muted-foreground">Maximum execution time (1-86400 seconds)</p>
           </div>
+          <ChevronDown className={cn('h-4 w-4 text-muted-foreground transition-transform', settingsOpen && 'rotate-180')} />
+        </button>
 
-          <div className="space-y-2">
-            <label htmlFor="run-as" className="text-sm font-medium">
-              Run As
-            </label>
-            <select
-              id="run-as"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              {...register('runAs')}
-            >
-              {runAsOptions.map(opt => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-            {errors.runAs && <p className="text-sm text-destructive">{errors.runAs.message}</p>}
-            <p className="text-xs text-muted-foreground">
-              {runAsOptions.find(o => o.value === watch('runAs'))?.description}
-            </p>
+        {settingsOpen && (
+          <div className="border-t px-4 pb-4 pt-3">
+            <div className="grid gap-6 md:grid-cols-2">
+              <div className="space-y-2">
+                <label htmlFor="timeout-seconds" className="text-sm font-medium">
+                  Timeout (seconds)
+                </label>
+                <input
+                  id="timeout-seconds"
+                  type="number"
+                  min={1}
+                  max={86400}
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  {...register('timeoutSeconds')}
+                />
+                {errors.timeoutSeconds && (
+                  <p className="text-sm text-destructive">{errors.timeoutSeconds.message}</p>
+                )}
+                <p className="text-xs text-muted-foreground">Maximum execution time (1 &ndash; 86,400 seconds)</p>
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="run-as" className="text-sm font-medium">
+                  Run As
+                </label>
+                <select
+                  id="run-as"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  {...register('runAs')}
+                >
+                  {runAsOptions.map(opt => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+                {errors.runAs && <p className="text-sm text-destructive">{errors.runAs.message}</p>}
+                <p className="text-xs text-muted-foreground">
+                  {runAsOptions.find(o => o.value === watch('runAs'))?.description}
+                </p>
+              </div>
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* Form Actions */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
-        <button
-          type="button"
-          onClick={onCancel}
-          className="h-11 w-full rounded-md border bg-background text-sm font-medium text-foreground transition hover:bg-muted sm:w-auto sm:px-6"
-        >
-          Cancel
-        </button>
-        <button
-          type="submit"
-          disabled={isLoading}
-          className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto sm:px-6"
-        >
-          {isLoading ? 'Saving...' : submitLabel}
-        </button>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <p className="hidden text-xs text-muted-foreground sm:block">
+          {typeof navigator !== 'undefined' && navigator.platform?.includes('Mac') ? '⌘S' : 'Ctrl+S'} to save
+        </p>
+        <div className="flex flex-col gap-3 sm:flex-row">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="h-11 w-full rounded-md border bg-background text-sm font-medium text-foreground transition hover:bg-muted sm:w-auto sm:px-6"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={isLoading}
+            className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto sm:px-6"
+          >
+            {isLoading ? 'Saving...' : submitLabel}
+          </button>
+        </div>
       </div>
     </form>
   );

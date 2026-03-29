@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { ArrowLeft, History } from 'lucide-react';
 import ScriptForm, { type ScriptFormValues } from './ScriptForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
 
@@ -73,6 +74,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
         throw new Error(data.error || 'Failed to save script');
       }
 
+      showToast({ type: 'success', message: isNew ? 'Script created' : 'Script saved' });
       void navigateTo('/scripts');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
@@ -110,7 +112,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
           <button
             type="button"
             onClick={fetchScript}
-            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
             Try again
           </button>
@@ -133,16 +135,9 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
           >
             <ArrowLeft className="h-5 w-5" />
           </a>
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight">
-              {isNew ? 'New Script' : 'Edit Script'}
-            </h1>
-            <p className="text-muted-foreground">
-              {isNew
-                ? 'Create a new script for your devices.'
-                : 'Update the script configuration.'}
-            </p>
-          </div>
+          <h1 className="text-xl font-semibold tracking-tight">
+            {isNew ? 'New Script' : (script?.name || 'Edit Script')}
+          </h1>
         </div>
         {!isNew && (
           <a

@@ -120,6 +120,27 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
     fetchData();
   }, [fetchData]);
 
+  // Filters
+  const filteredDevices = useMemo(() => {
+    let list = devices;
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter(d => d.hostname.toLowerCase().includes(q));
+    }
+    if (statusFilter === 'needs-patches') list = list.filter(d => d.pendingPatches > 0);
+    else if (statusFilter === 'critical') list = list.filter(d => d.criticalMissing > 0);
+    else if (statusFilter === 'reboot') list = list.filter(d => d.pendingReboot);
+    else if (statusFilter === '3rd-party') list = list.filter(d => d.thirdPartyMissing > 0);
+    else if (statusFilter === 'compliant') list = list.filter(d => d.pendingPatches === 0);
+    return list;
+  }, [devices, searchQuery, statusFilter]);
+
+  const hasActiveFilters = searchQuery !== '' || statusFilter !== 'all';
+
+  const filteredIds = useMemo(() => filteredDevices.map(d => d.id), [filteredDevices]);
+  const { selectedIds, allPageSelected: allSelected, somePageSelected: someSelected, toggleSelect, toggleSelectAll, clearSelection } = usePatchSelection(filteredIds);
+  const { bulkAction, bulkError, setBulkError, bulkSuccess, setBulkSuccess, handleBulkScan, handleBulkInstall } = useBulkActions(selectedIds, clearSelection, fetchData);
+
   const handleExport = useCallback(async () => {
     try {
       setExporting(true);
@@ -144,27 +165,6 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
       setExporting(false);
     }
   }, [ringId, setBulkError]);
-
-  // Filters
-  const filteredDevices = useMemo(() => {
-    let list = devices;
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      list = list.filter(d => d.hostname.toLowerCase().includes(q));
-    }
-    if (statusFilter === 'needs-patches') list = list.filter(d => d.pendingPatches > 0);
-    else if (statusFilter === 'critical') list = list.filter(d => d.criticalMissing > 0);
-    else if (statusFilter === 'reboot') list = list.filter(d => d.pendingReboot);
-    else if (statusFilter === '3rd-party') list = list.filter(d => d.thirdPartyMissing > 0);
-    else if (statusFilter === 'compliant') list = list.filter(d => d.pendingPatches === 0);
-    return list;
-  }, [devices, searchQuery, statusFilter]);
-
-  const hasActiveFilters = searchQuery !== '' || statusFilter !== 'all';
-
-  const filteredIds = useMemo(() => filteredDevices.map(d => d.id), [filteredDevices]);
-  const { selectedIds, allPageSelected: allSelected, somePageSelected: someSelected, toggleSelect, toggleSelectAll, clearSelection } = usePatchSelection(filteredIds);
-  const { bulkAction, bulkError, setBulkError, bulkSuccess, setBulkSuccess, handleBulkScan, handleBulkInstall } = useBulkActions(selectedIds, clearSelection, fetchData);
 
   const selectedPatchDeviceIds = useMemo(() => {
     return Array.from(selectedIds).filter(id => {

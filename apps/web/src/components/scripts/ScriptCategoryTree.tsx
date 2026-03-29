@@ -448,7 +448,7 @@ export default function ScriptCategoryTree({
         <button
           type="button"
           onClick={fetchData}
-          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
         >
           Try again
         </button>
