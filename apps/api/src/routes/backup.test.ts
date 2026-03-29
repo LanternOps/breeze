@@ -142,7 +142,7 @@ vi.mock('../middleware/auth', () => ({
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
       partnerId: null,
-      orgId: ORG_ID,
+      orgId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       token: { sub: 'user-123' }
     });
     return next();
