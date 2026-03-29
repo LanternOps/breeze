@@ -41,13 +41,13 @@ export const softwareQuerySchema = z.object({
 });
 
 export const createCommandSchema = z.object({
-  type: z.enum(['script', 'reboot', 'shutdown', 'update']),
+  type: z.enum(['script', 'reboot', 'reboot_safe_mode', 'shutdown', 'update']),
   payload: z.any().optional()
 });
 
 export const bulkCommandSchema = z.object({
   deviceIds: z.array(z.string().uuid()).min(1),
-  type: z.enum(['script', 'reboot', 'shutdown', 'update']),
+  type: z.enum(['script', 'reboot', 'reboot_safe_mode', 'shutdown', 'update']),
   payload: z.any().optional()
 });
 

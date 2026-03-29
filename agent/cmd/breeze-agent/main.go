@@ -20,6 +20,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/mtls"
+	"github.com/breeze-rmm/agent/internal/safemode"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/tcc"
 	"github.com/breeze-rmm/agent/internal/userhelper"
@@ -187,6 +188,20 @@ func startAgent() (*agentComponents, error) {
 	config.FixConfigPermissions()
 
 	initLogging(cfg)
+
+	// Auto-clear Safe Mode BCD flag on startup to prevent reboot loops.
+	// If the agent triggered a safe mode reboot, the safeboot BCD entry
+	// persists until explicitly removed. Clear it so the next reboot is normal.
+	// NOTE: Requires BreezeAgent to be registered under SafeBoot\Network in the
+	// registry (see breeze.wxs) — otherwise the service won't start in safe mode.
+	if safemode.IsSafeMode() {
+		log.Warn("system is in Safe Mode — clearing safeboot BCD flag for normal reboot")
+		if err := safemode.ClearSafeBootFlag(); err != nil {
+			log.Error("failed to clear safeboot BCD flag, machine may be stuck in safe mode", "error", err.Error())
+		} else {
+			log.Info("safeboot BCD flag cleared, next reboot will be normal mode")
+		}
+	}
 
 	// Wrap auth token in SecureString for defense-in-depth
 	secureToken := secmem.NewSecureString(cfg.AuthToken)

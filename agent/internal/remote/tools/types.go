@@ -43,9 +43,10 @@ const (
 	CmdRegistryKeyDelete = "registry_key_delete"
 
 	// System
-	CmdReboot   = "reboot"
-	CmdShutdown = "shutdown"
-	CmdLock     = "lock"
+	CmdReboot         = "reboot"
+	CmdShutdown       = "shutdown"
+	CmdLock           = "lock"
+	CmdRebootSafeMode = "reboot_safe_mode"
 
 	// Software inventory
 	CmdCollectSoftware   = "collect_software"

@@ -50,9 +50,10 @@ var handlerRegistry = map[string]CommandHandler{
 	tools.CmdRegistryKeyDelete: handleRegistryKeyDelete,
 
 	// System
-	tools.CmdReboot:   handleReboot,
-	tools.CmdShutdown: handleShutdown,
-	tools.CmdLock:     handleLock,
+	tools.CmdReboot:         handleReboot,
+	tools.CmdShutdown:       handleShutdown,
+	tools.CmdLock:           handleLock,
+	tools.CmdRebootSafeMode: handleRebootSafeMode,
 
 	// Software inventory
 	tools.CmdCollectSoftware:   handleCollectSoftware,
@@ -219,6 +220,20 @@ func handleShutdown(_ *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleLock(_ *Heartbeat, cmd Command) tools.CommandResult {
 	return tools.Lock(cmd.Payload)
+}
+
+func handleRebootSafeMode(h *Heartbeat, cmd Command) tools.CommandResult {
+	if h.sessionBroker != nil {
+		delay := tools.GetPayloadInt(cmd.Payload, "delay", 0)
+		var msg string
+		if delay > 0 {
+			msg = fmt.Sprintf("System will reboot into Safe Mode with Networking in %d minutes. Please save all work.", delay)
+		} else {
+			msg = "System is rebooting into Safe Mode with Networking. Please save all work."
+		}
+		h.sessionBroker.BroadcastNotification("Safe Mode Reboot", msg, "critical")
+	}
+	return tools.RebootToSafeMode(cmd.Payload)
 }
 
 func handleCollectSoftware(_ *Heartbeat, cmd Command) tools.CommandResult {

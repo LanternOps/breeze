@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import {
   Monitor,
   Cpu,
+  Database,
   MemoryStick,
   HardDrive,
   Clock,
@@ -16,7 +17,6 @@ import {
   Info,
   Server,
   Shield,
-  ShieldCheck,
   User,
   Layers,
   Timer,
@@ -47,7 +47,7 @@ import DeviceWarrantyCard from './DeviceWarrantyCard';
 import MacOSPermissionsBanner from './MacOSPermissionsBanner';
 import { navigateTo } from '@/lib/navigation';
 import { OverflowTabs } from '../shared/OverflowTabs';
-import BackupVerificationTab from '../backup/BackupVerificationTab';
+import DeviceBackupTab from '../backup/DeviceBackupTab';
 
 type Tab =
   | 'overview'
@@ -69,7 +69,7 @@ type Tab =
   | 'boot-performance'
   | 'playbooks'
   | 'peripherals'
-  | 'backup-verification';
+  | 'backup';
 
 type DeviceDetailsProps = {
   device: Device;
@@ -133,7 +133,7 @@ const VALID_TABS: Tab[] = [
   'overview', 'details', 'hardware', 'software', 'patches', 'security',
   'management', 'effective-config', 'alerts', 'scripts', 'performance',
   'eventlog', 'activities', 'connections', 'filesystem', 'ip-history',
-  'boot-performance', 'playbooks', 'peripherals', 'backup-verification',
+  'boot-performance', 'playbooks', 'peripherals', 'backup',
 ];
 
 function getTabFromHash(): Tab {
@@ -185,7 +185,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
     { id: 'ip-history', label: 'IP History', icon: <Network className="h-4 w-4" />, title: 'Historical public and private IP addresses' },
     { id: 'filesystem', label: 'Disk Cleanup', icon: <HardDrive className="h-4 w-4" />, title: 'Disk usage analysis and cleanup' },
     { id: 'boot-performance', label: 'Boot Perf', icon: <Timer className="h-4 w-4" />, title: 'Startup time and boot process analysis' },
-    { id: 'backup-verification', label: 'Backup Verification', icon: <ShieldCheck className="h-4 w-4" />, title: 'Backup integrity and recovery readiness' }
+    { id: 'backup', label: 'Backup', icon: <Database className="h-4 w-4" />, title: 'Backup status, jobs, snapshots, and verification' }
   ];
 
   return (
@@ -350,8 +350,8 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
         <DevicePlaybookHistory deviceId={device.id} timezone={effectiveTimezone} />
       )}
 
-      {activeTab === 'backup-verification' && (
-        <BackupVerificationTab deviceId={device.id} />
+      {activeTab === 'backup' && (
+        <DeviceBackupTab deviceId={device.id} timezone={effectiveTimezone} />
       )}
     </div>
   );

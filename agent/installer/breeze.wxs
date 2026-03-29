@@ -66,6 +66,15 @@
             Wait="yes" />
         </Component>
 
+        <!-- Register BreezeAgent to run in Safe Mode with Networking. Without this,
+             the SCM won't start the service in safe mode, preventing the agent from
+             auto-clearing the BCD safeboot flag and reconnecting to the server. -->
+        <Component Id="cmpSafeBootNetworkReg" Guid="*">
+          <RegistryKey Root="HKLM" Key="SYSTEM\CurrentControlSet\Control\SafeBoot\Network\BreezeAgent">
+            <RegistryValue Type="string" Value="Service" />
+          </RegistryKey>
+        </Component>
+
         <Directory Id="INSTALL_SERVICE_DIR" Name="service">
           <Directory Id="INSTALL_SERVICE_WINDOWS_DIR" Name="windows">
             <Component Id="cmpUserTaskXml" Guid="*">
@@ -157,6 +166,7 @@
 
     <Feature Id="MainFeature" Title="Breeze Agent" Level="1">
       <ComponentRef Id="cmpBreezeAgentExe" />
+      <ComponentRef Id="cmpSafeBootNetworkReg" />
       <ComponentRef Id="cmpUserTaskXml" />
       <ComponentRef Id="cmpInstallWindowsPs1" />
       <ComponentRef Id="cmpRemoveWindowsTaskPs1" />
