@@ -8,7 +8,7 @@
  * - dispatch-restore: Sends backup_restore command to agent
  */
 
-import { Queue, Worker, Job } from 'bullmq';
+import { Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import {
   backupJobs,
@@ -27,71 +27,39 @@ import {
   isAgentConnected,
   type AgentCommand,
 } from '../routes/agentWs';
+import {
+  applyGfsTagsToSnapshot,
+  computeExpiresAt,
+  resolveGfsConfigForJob,
+} from './backupRetention';
+import * as backupEnqueue from './backupEnqueue';
+
+// Re-export enqueue functions for backward compatibility
+export const getBackupQueue = backupEnqueue.getBackupQueue;
+export const enqueueBackupDispatch = backupEnqueue.enqueueBackupDispatch;
+export const enqueueBackupResults = backupEnqueue.enqueueBackupResults;
+export const enqueueRestoreDispatch = backupEnqueue.enqueueRestoreDispatch;
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
-
 const BACKUP_QUEUE = 'backup';
-
-let backupQueue: Queue | null = null;
-
-export function getBackupQueue(): Queue {
-  if (!backupQueue) {
-    backupQueue = new Queue(BACKUP_QUEUE, {
-      connection: getRedisConnection(),
-    });
-  }
-  return backupQueue;
-}
 
 // ── Job data types ────────────────────────────────────────────────────────────
 
-interface CheckSchedulesJobData {
-  type: 'check-schedules';
-}
-
-interface DispatchBackupJobData {
-  type: 'dispatch-backup';
-  jobId: string;
-  configId: string;
-  orgId: string;
-  deviceId: string;
-}
-
+interface CheckSchedulesJobData { type: 'check-schedules' }
+interface DispatchBackupJobData { type: 'dispatch-backup'; jobId: string; configId: string; orgId: string; deviceId: string }
 interface ProcessResultsJobData {
-  type: 'process-results';
-  jobId: string;
-  orgId: string;
-  deviceId: string;
-  result: {
-    status: string;
-    jobId?: string;
-    snapshotId?: string;
-    filesBackedUp?: number;
-    bytesBackedUp?: number;
-    warning?: string;
-    error?: string;
-  };
+  type: 'process-results'; jobId: string; orgId: string; deviceId: string;
+  result: { status: string; jobId?: string; snapshotId?: string; filesBackedUp?: number; bytesBackedUp?: number; warning?: string; error?: string };
 }
-
 interface DispatchRestoreJobData {
-  type: 'dispatch-restore';
-  restoreJobId: string;
-  snapshotId: string;
-  deviceId: string;
-  orgId: string;
-  targetPath?: string;
-  selectedPaths?: string[];
+  type: 'dispatch-restore'; restoreJobId: string; snapshotId: string;
+  deviceId: string; orgId: string; targetPath?: string; selectedPaths?: string[];
 }
-
-type BackupJobData =
-  | CheckSchedulesJobData
-  | DispatchBackupJobData
-  | ProcessResultsJobData
-  | DispatchRestoreJobData;
+type BackupJobData = CheckSchedulesJobData | DispatchBackupJobData | ProcessResultsJobData | DispatchRestoreJobData;
 
 // ── Worker ────────────────────────────────────────────────────────────────────
 
@@ -245,7 +213,11 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
         }
       }
     } catch (err) {
-      console.error(`[BackupWorker] Failed to process scheduled backups for org ${orgId}:`, err instanceof Error ? err.message : err);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[BackupWorker] Failed to process scheduled backups for org ${orgId}: ${errMsg}`);
+      if (err instanceof Error && err.stack) {
+        console.error(err.stack);
+      }
       continue;
     }
   }
@@ -357,7 +329,7 @@ async function processResults(
     .set(updateData)
     .where(eq(backupJobs.id, data.jobId));
 
-  // Create snapshot row if successful
+  // Create snapshot row if successful, then apply GFS tags
   if (result.status === 'completed' && result.snapshotId) {
     // Look up configId from the job
     const [job] = await db
@@ -366,17 +338,48 @@ async function processResults(
       .where(eq(backupJobs.id, data.jobId))
       .limit(1);
 
-    await db.insert(backupSnapshots).values({
-      orgId: data.orgId,
-      jobId: data.jobId,
-      deviceId: data.deviceId,
-      configId: job?.configId ?? null,
-      snapshotId: result.snapshotId,
-      label: `Backup ${new Date().toISOString().slice(0, 10)}`,
-      size: result.bytesBackedUp ?? null,
-      fileCount: result.filesBackedUp ?? null,
-      timestamp: new Date(),
-    });
+    const completedAt = new Date();
+
+    const [snapshot] = await db
+      .insert(backupSnapshots)
+      .values({
+        orgId: data.orgId,
+        jobId: data.jobId,
+        deviceId: data.deviceId,
+        configId: job?.configId ?? null,
+        snapshotId: result.snapshotId,
+        label: `Backup ${completedAt.toISOString().slice(0, 10)}`,
+        size: result.bytesBackedUp ?? null,
+        fileCount: result.filesBackedUp ?? null,
+        timestamp: completedAt,
+      })
+      .returning();
+
+    // Apply GFS retention tags
+    if (snapshot) {
+      try {
+        const tags = await applyGfsTagsToSnapshot(
+          snapshot.id,
+          completedAt,
+          data.jobId
+        );
+
+        // Set expiration based on GFS config + tags
+        const gfsConfig = await resolveGfsConfigForJob(data.jobId);
+        const expiresAt = computeExpiresAt(completedAt, tags, gfsConfig);
+        if (expiresAt) {
+          await db
+            .update(backupSnapshots)
+            .set({ expiresAt })
+            .where(eq(backupSnapshots.id, snapshot.id));
+        }
+      } catch (err) {
+        console.error(
+          `[BackupWorker] Failed to apply GFS tags to snapshot ${snapshot.id}:`,
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
   }
 
   console.log(
@@ -390,7 +393,6 @@ async function processResults(
 async function processDispatchRestore(
   data: DispatchRestoreJobData
 ): Promise<{ dispatched: boolean }> {
-  // Find the agent for this device
   const [device] = await db
     .select({ agentId: devices.agentId })
     .from(devices)
@@ -399,14 +401,7 @@ async function processDispatchRestore(
 
   const agentId = device?.agentId;
   if (!agentId || !isAgentConnected(agentId)) {
-    await db
-      .update(restoreJobs)
-      .set({
-        status: 'failed',
-        completedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(restoreJobs.id, data.restoreJobId));
+    await markRestoreFailed(data.restoreJobId);
     return { dispatched: false };
   }
 
@@ -421,31 +416,17 @@ async function processDispatchRestore(
     },
   };
 
-  const sent = sendCommandToAgent(agentId, command);
-  if (!sent) {
-    await db
-      .update(restoreJobs)
-      .set({
-        status: 'failed',
-        completedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(restoreJobs.id, data.restoreJobId));
+  if (!sendCommandToAgent(agentId, command)) {
+    await markRestoreFailed(data.restoreJobId);
     return { dispatched: false };
   }
 
   await db
     .update(restoreJobs)
-    .set({
-      status: 'running',
-      startedAt: new Date(),
-      updatedAt: new Date(),
-    })
+    .set({ status: 'running', startedAt: new Date(), updatedAt: new Date() })
     .where(eq(restoreJobs.id, data.restoreJobId));
 
-  console.log(
-    `[BackupWorker] Restore dispatched to agent ${agentId} for job ${data.restoreJobId}`
-  );
+  console.log(`[BackupWorker] Restore dispatched to agent ${agentId} for job ${data.restoreJobId}`);
   return { dispatched: true };
 }
 
@@ -454,91 +435,15 @@ async function processDispatchRestore(
 async function markJobFailed(jobId: string, error: string): Promise<void> {
   await db
     .update(backupJobs)
-    .set({
-      status: 'failed',
-      completedAt: new Date(),
-      errorLog: error,
-      updatedAt: new Date(),
-    })
+    .set({ status: 'failed', completedAt: new Date(), errorLog: error, updatedAt: new Date() })
     .where(eq(backupJobs.id, jobId));
 }
 
-// ── Public enqueue functions ──────────────────────────────────────────────────
-
-export async function enqueueBackupDispatch(
-  jobId: string,
-  configId: string,
-  orgId: string,
-  deviceId: string
-): Promise<string> {
-  const queue = getBackupQueue();
-  const job = await queue.add(
-    'dispatch-backup',
-    {
-      type: 'dispatch-backup' as const,
-      jobId,
-      configId,
-      orgId,
-      deviceId,
-    },
-    {
-      removeOnComplete: { count: 50 },
-      removeOnFail: { count: 100 },
-    }
-  );
-  return job.id!;
-}
-
-export async function enqueueBackupResults(
-  jobId: string,
-  orgId: string,
-  deviceId: string,
-  result: ProcessResultsJobData['result']
-): Promise<string> {
-  const queue = getBackupQueue();
-  const job = await queue.add(
-    'process-results',
-    {
-      type: 'process-results' as const,
-      jobId,
-      orgId,
-      deviceId,
-      result,
-    },
-    {
-      removeOnComplete: { count: 50 },
-      removeOnFail: { count: 100 },
-    }
-  );
-  return job.id!;
-}
-
-export async function enqueueRestoreDispatch(
-  restoreJobId: string,
-  snapshotId: string,
-  deviceId: string,
-  orgId: string,
-  targetPath?: string,
-  selectedPaths?: string[]
-): Promise<string> {
-  const queue = getBackupQueue();
-  const job = await queue.add(
-    'dispatch-restore',
-    {
-      type: 'dispatch-restore' as const,
-      restoreJobId,
-      snapshotId,
-      deviceId,
-      orgId,
-      targetPath,
-      selectedPaths,
-    },
-    {
-      removeOnComplete: { count: 50 },
-      removeOnFail: { count: 100 },
-    }
-  );
-  return job.id!;
+async function markRestoreFailed(restoreJobId: string): Promise<void> {
+  await db
+    .update(restoreJobs)
+    .set({ status: 'failed', completedAt: new Date(), updatedAt: new Date() })
+    .where(eq(restoreJobs.id, restoreJobId));
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
@@ -593,10 +498,7 @@ export async function shutdownBackupWorker(): Promise<void> {
     backupWorkerInstance = null;
   }
 
-  if (backupQueue) {
-    await backupQueue.close();
-    backupQueue = null;
-  }
+  await backupEnqueue.closeBackupQueue();
 
   console.log('[BackupWorker] Backup worker shut down');
 }

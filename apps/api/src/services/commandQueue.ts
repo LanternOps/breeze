@@ -113,6 +113,31 @@ export const CommandTypes = {
   BACKUP_VERIFY: 'backup_verify',
   BACKUP_TEST_RESTORE: 'backup_test_restore',
   BACKUP_CLEANUP: 'backup_cleanup',
+  // VSS
+  VSS_STATUS: 'vss_status',
+  VSS_WRITER_LIST: 'vss_writer_list',
+  // MSSQL
+  MSSQL_DISCOVER: 'mssql_discover',
+  MSSQL_BACKUP: 'mssql_backup',
+  MSSQL_RESTORE: 'mssql_restore',
+  MSSQL_VERIFY: 'mssql_verify',
+  // Hyper-V
+  HYPERV_DISCOVER: 'hyperv_discover',
+  HYPERV_BACKUP: 'hyperv_backup',
+  HYPERV_RESTORE: 'hyperv_restore',
+  HYPERV_CHECKPOINT: 'hyperv_checkpoint',
+  HYPERV_VM_STATE: 'hyperv_vm_state',
+  // System state & BMR
+  SYSTEM_STATE_COLLECT: 'system_state_collect',
+  HARDWARE_PROFILE: 'hardware_profile',
+  VM_RESTORE_FROM_BACKUP: 'vm_restore_from_backup',
+  VM_RESTORE_ESTIMATE: 'vm_restore_estimate',
+  VM_INSTANT_BOOT: 'vm_instant_boot',
+  BMR_RECOVER: 'bmr_recover',
+  // Vault
+  VAULT_SYNC: 'vault_sync',
+  VAULT_STATUS: 'vault_status',
+  VAULT_CONFIGURE: 'vault_configure',
   // Incident response
   COLLECT_EVIDENCE: 'collect_evidence',
   EXECUTE_CONTAINMENT: 'execute_containment',
@@ -207,6 +232,24 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.SELF_UNINSTALL,
   CommandTypes.BACKUP_VERIFY,
   CommandTypes.BACKUP_TEST_RESTORE,
+  // VSS
+  CommandTypes.VSS_WRITER_LIST,
+  // MSSQL
+  CommandTypes.MSSQL_BACKUP,
+  CommandTypes.MSSQL_RESTORE,
+  CommandTypes.MSSQL_VERIFY,
+  // Hyper-V
+  CommandTypes.HYPERV_BACKUP,
+  CommandTypes.HYPERV_RESTORE,
+  CommandTypes.HYPERV_CHECKPOINT,
+  CommandTypes.HYPERV_VM_STATE,
+  // BMR
+  CommandTypes.VM_RESTORE_FROM_BACKUP,
+  CommandTypes.VM_INSTANT_BOOT,
+  CommandTypes.BMR_RECOVER,
+  // Vault
+  CommandTypes.VAULT_SYNC,
+  CommandTypes.VAULT_CONFIGURE,
   // Incident response
   CommandTypes.COLLECT_EVIDENCE,
   CommandTypes.EXECUTE_CONTAINMENT,

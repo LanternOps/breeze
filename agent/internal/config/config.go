@@ -38,6 +38,14 @@ type Config struct {
 	BackupS3Region           string   `mapstructure:"backup_s3_region"`
 	BackupS3AccessKey        string   `mapstructure:"backup_s3_access_key"`
 	BackupS3SecretKey        string   `mapstructure:"backup_s3_secret_key"`
+	BackupVSSEnabled         bool     `mapstructure:"backup_vss_enabled"`          // Windows: VSS shadow copy before backup
+	BackupSystemStateEnabled bool     `mapstructure:"backup_system_state_enabled"` // Collect system state alongside file backup
+	BackupBinaryPath         string   `mapstructure:"backup_binary_path"`          // Path to breeze-backup helper binary
+
+	// Local vault (SMB share / USB drive) configuration
+	VaultEnabled        bool   `mapstructure:"vault_enabled"`
+	VaultPath           string `mapstructure:"vault_path"`
+	VaultRetentionCount int    `mapstructure:"vault_retention_count"`
 
 	// Logging configuration
 	LogLevel         string `mapstructure:"log_level"`

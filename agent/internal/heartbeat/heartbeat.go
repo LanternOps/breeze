@@ -22,9 +22,7 @@ import (
 	"github.com/shirou/gopsutil/v3/host"
 
 	"github.com/breeze-rmm/agent/internal/audit"
-	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/helper"
-	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/executor"
@@ -122,7 +120,7 @@ type Heartbeat struct {
 	wsDesktopMgr          *desktop.WsSessionManager
 	terminalMgr           *terminal.Manager
 	executor              *executor.Executor
-	backupMgr             *backup.BackupManager
+	backupBinaryPath      string
 	rebootMgr             *patching.RebootManager
 	securityScanner       *security.SecurityScanner
 	wsClient              *websocket.Client
@@ -373,44 +371,8 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		}
 	}, cfg.PatchRebootMaxPerDay)
 
-	// Initialize backup manager if enabled
-	if cfg.BackupEnabled && len(cfg.BackupPaths) > 0 {
-		var backupProvider providers.BackupProvider
-		switch cfg.BackupProvider {
-		case "s3":
-			backupProvider = providers.NewS3Provider(
-				cfg.BackupS3Bucket,
-				cfg.BackupS3Region,
-				cfg.BackupS3AccessKey,
-				cfg.BackupS3SecretKey,
-				"",
-			)
-		default:
-			localPath := cfg.BackupLocalPath
-			if localPath == "" {
-				localPath = config.GetDataDir() + "/backups"
-			}
-			backupProvider = providers.NewLocalProvider(localPath)
-		}
-		schedule, parseErr := time.ParseDuration(cfg.BackupSchedule)
-		if parseErr != nil && cfg.BackupSchedule != "" {
-			log.Warn("invalid backup schedule, using default 24h",
-				"schedule", cfg.BackupSchedule, "error", parseErr)
-		}
-		if schedule <= 0 {
-			schedule = 24 * time.Hour
-		}
-		retention := cfg.BackupRetention
-		if retention <= 0 {
-			retention = 7
-		}
-		h.backupMgr = backup.NewBackupManager(backup.BackupConfig{
-			Provider:  backupProvider,
-			Paths:     cfg.BackupPaths,
-			Schedule:  schedule,
-			Retention: retention,
-		})
-	}
+	// Set backup binary path for IPC forwarding to breeze-backup helper
+	h.backupBinaryPath = cfg.BackupBinaryPath
 
 	// For direct mode (non-service), notify API when WebRTC peer drops.
 	// In service/headless mode this is handled via IPC from the user helper.
@@ -532,13 +494,6 @@ func (h *Heartbeat) Start() {
 		go func() { <-h.stopChan; cancel() }()
 		lm := sessionbroker.NewHelperLifecycleManager(h.sessionBroker, h.scmSessionCh)
 		go lm.Start(ctx)
-	}
-
-	// Start backup scheduler if configured
-	if h.backupMgr != nil {
-		if err := h.backupMgr.Start(); err != nil {
-			log.Error("failed to start backup manager", "error", err.Error())
-		}
 	}
 
 	// Jitter: random delay before first heartbeat to avoid thundering herd
@@ -686,8 +641,9 @@ func (h *Heartbeat) Stop() {
 		if h.rebootMgr != nil {
 			h.rebootMgr.Stop()
 		}
-		if h.backupMgr != nil {
-			h.backupMgr.Stop()
+		// Stop backup helper if running
+		if h.sessionBroker != nil {
+			h.sessionBroker.StopBackupHelper()
 		}
 		if h.monitor != nil {
 			h.monitor.Stop()
