@@ -26,6 +26,7 @@ import { roleRoutes } from './routes/roles';
 import { auditLogRoutes } from './routes/auditLogs';
 import { backupRoutes } from './routes/backup';
 import { reportRoutes } from './routes/reports';
+import { incidentRoutes } from './routes/incidents';
 import { searchRoutes } from './routes/search';
 import { logsRoutes } from './routes/logs';
 import { remoteRoutes } from './routes/remote';
@@ -135,6 +136,14 @@ import { initializeSensitiveDataWorkers, shutdownSensitiveDataWorkers } from './
 import { initializePeripheralJobs, shutdownPeripheralJobs } from './jobs/peripheralJobs';
 import { initializeBrowserSecurityJobs, shutdownBrowserSecurityJobs } from './jobs/browserSecurityJobs';
 import { initializeWarrantyWorker, shutdownWarrantyWorker } from './services/warrantyWorker';
+import {
+  initializeIncidentCorrelationWorker,
+  shutdownIncidentCorrelationWorker,
+  initializeIncidentTimelineEnricher,
+  shutdownIncidentTimelineEnricher,
+  initializeIncidentSlaMonitor,
+  shutdownIncidentSlaMonitor,
+} from './jobs/incidentJobs';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -623,6 +632,7 @@ api.route('/roles', roleRoutes);
 api.route('/audit-logs', auditLogRoutes);
 api.route('/backup', backupRoutes);
 api.route('/reports', reportRoutes);
+api.route('/incidents', incidentRoutes);
 api.route('/search', searchRoutes);
 api.route('/logs', logsRoutes);
 api.route('/remote/sessions', createTerminalWsRoutes(upgradeWebSocket)); // WebSocket routes first (no auth middleware)
@@ -906,6 +916,9 @@ async function initializeWorkers(): Promise<void> {
     ['peripheralJobs', initializePeripheralJobs],
     ['browserSecurityWorker', initializeBrowserSecurityJobs],
     ['warrantyWorker', initializeWarrantyWorker],
+    ['incidentCorrelationWorker', initializeIncidentCorrelationWorker],
+    ['incidentTimelineEnricher', initializeIncidentTimelineEnricher],
+    ['incidentSlaMonitor', initializeIncidentSlaMonitor],
   ];
 
   await Promise.allSettled(
@@ -997,6 +1010,9 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownPeripheralJobs,
     shutdownWarrantyWorker,
     shutdownBrowserSecurityJobs,
+    shutdownIncidentSlaMonitor,
+    shutdownIncidentTimelineEnricher,
+    shutdownIncidentCorrelationWorker,
     shutdownPatchComplianceReportWorker,
     shutdownDnsSyncJob,
     shutdownS1SyncJob,

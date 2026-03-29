@@ -171,6 +171,10 @@ const (
 
 	// Self-uninstall (remote wipe)
 	CmdSelfUninstall = "self_uninstall"
+
+	// Incident response
+	CmdCollectEvidence    = "collect_evidence"
+	CmdExecuteContainment = "execute_containment"
 )
 
 // CommandResult represents the result of a command execution

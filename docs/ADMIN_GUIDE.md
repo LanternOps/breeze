@@ -15,6 +15,7 @@ This comprehensive guide covers all administrative functions in the Breeze RMM p
 7. [System Settings](#7-system-settings)
 8. [Troubleshooting](#8-troubleshooting)
 9. [User Risk Scoring](#9-user-risk-scoring)
+10. [Incident Response Operations](#10-incident-response-operations)
 
 ---
 
@@ -1391,9 +1392,67 @@ Default rate limits protect the API from abuse:
 
 ---
 
-## 8. Troubleshooting
+## 10. Incident Response Operations
 
-### 8.1 Common Issues
+Breeze includes incident lifecycle workflows under `/api/v1/incidents` for structured triage, containment, evidence collection, and closure.
+
+### 8.1 Incident Lifecycle
+
+Incident status transitions follow:
+
+`detected` -> `analyzing` -> `contained` -> `recovering` -> `closed`
+
+Operational notes:
+
+- Use **create** (`POST /api/v1/incidents`) when correlated alerts indicate a broader incident.
+- Use **contain** (`POST /api/v1/incidents/{id}/contain`) when executing control actions.
+- Use **evidence** (`POST /api/v1/incidents/{id}/evidence`) for forensic artifacts and chain-of-custody metadata.
+- Use **close** (`POST /api/v1/incidents/{id}/close`) only after remediation and validation are complete.
+
+### 8.2 Required Data for Strong Auditability
+
+When handling incidents, record:
+
+- Business impact summary (`summary` at closure)
+- Action metadata (`actionType`, result payloads, execution timestamps)
+- Evidence metadata (`evidenceType`, collection actor/time, storage path, optional integrity hash)
+- Approval references for high-risk containment (`approvalRef`)
+
+### 8.3 High-Risk Containment Governance
+
+The following containment actions require an approval reference:
+
+- `network_isolation`
+- `account_disable`
+- `usb_block`
+
+If these actions are submitted without `approvalRef`, the API rejects the request.
+
+### 8.4 Incident Reporting
+
+Use `GET /api/v1/incidents/{id}/report` to generate a stakeholder-ready summary including:
+
+- Timeline of incident events
+- Evidence totals and breakdown by type
+- Action success/failure counts
+- Captured lessons learned (from close step)
+
+### 8.5 Event Hooks
+
+Incident workflows emit:
+
+- `incident.created`
+- `incident.contained`
+- `incident.escalated`
+- `incident.closed`
+
+These events can be forwarded to SIEM/SOAR tooling using existing webhook integrations.
+
+---
+
+## 9. Troubleshooting
+
+### 9.1 Common Issues
 
 #### Login Problems
 
@@ -1456,7 +1515,7 @@ Default rate limits protect the API from abuse:
 4. Check rate limit hasn't been exceeded
 5. Verify required scopes are assigned
 
-### 8.2 Log Locations
+### 9.2 Log Locations
 
 #### API Server Logs
 
@@ -1481,7 +1540,7 @@ macOS: /Library/Application Support/Breeze/logs/agent.log
 Linux: /var/log/breeze/agent.log
 ```
 
-### 8.3 Diagnostic Commands
+### 9.3 Diagnostic Commands
 
 **Check API health:**
 ```bash
@@ -1503,7 +1562,7 @@ redis-cli ping
 curl https://api.breeze.local/api/v1/agents/health
 ```
 
-### 8.4 Getting Support
+### 9.4 Getting Support
 
 #### Self-Service Resources
 
