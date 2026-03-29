@@ -36,8 +36,8 @@ export function useBulkActions(
     }
   }, [selectedIds, clearSelection, onRefresh]);
 
-  const handleBulkInstall = useCallback(async () => {
-    const ids = Array.from(selectedIds);
+  const handleBulkInstall = useCallback(async (filterIds?: string[]) => {
+    const ids = filterIds ?? Array.from(selectedIds);
     if (ids.length === 0) return;
     setBulkAction('install');
     setBulkError(undefined);

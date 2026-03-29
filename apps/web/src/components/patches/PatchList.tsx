@@ -134,12 +134,17 @@ export default function PatchList({
     [selectedPatches]
   );
 
+  const [bulkError, setBulkError] = useState<string>();
+
   const handleBulkApprove = useCallback(async () => {
     if (!onBulkApprove || selectedPendingIds.length === 0) return;
     setBulkLoading(true);
+    setBulkError(undefined);
     try {
       await onBulkApprove(selectedPendingIds);
       clearSelection();
+    } catch (err) {
+      setBulkError(err instanceof Error ? err.message : 'Failed to approve patches');
     } finally {
       setBulkLoading(false);
     }
@@ -148,9 +153,12 @@ export default function PatchList({
   const handleBulkDecline = useCallback(async () => {
     if (!onBulkDecline || selectedPendingIds.length === 0) return;
     setBulkLoading(true);
+    setBulkError(undefined);
     try {
       await onBulkDecline(selectedPendingIds);
       clearSelection();
+    } catch (err) {
+      setBulkError(err instanceof Error ? err.message : 'Failed to decline patches');
     } finally {
       setBulkLoading(false);
     }
@@ -312,6 +320,12 @@ export default function PatchList({
           >
             Clear selection
           </button>
+        </div>
+      )}
+
+      {bulkError && (
+        <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-2 text-sm text-destructive">
+          {bulkError}
         </div>
       )}
 

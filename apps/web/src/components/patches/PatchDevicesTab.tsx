@@ -124,12 +124,13 @@ export default function PatchDevicesTab() {
   const { selectedIds, allPageSelected: allSelected, somePageSelected: someSelected, toggleSelect, toggleSelectAll, clearSelection } = usePatchSelection(filteredIds);
   const { bulkAction, bulkError, bulkSuccess, handleBulkScan, handleBulkInstall } = useBulkActions(selectedIds, clearSelection, fetchDevices);
 
-  const selectedWithPatches = useMemo(() => {
+  const selectedPatchDeviceIds = useMemo(() => {
     return Array.from(selectedIds).filter(id => {
       const d = devices.find(dev => dev.id === id);
       return d && d.pendingPatches > 0;
-    }).length;
+    });
   }, [selectedIds, devices]);
+  const selectedWithPatches = selectedPatchDeviceIds.length;
 
   if (loading) {
     return (
@@ -242,7 +243,7 @@ export default function PatchDevicesTab() {
           {selectedWithPatches > 0 && (
             <button
               type="button"
-              onClick={handleBulkInstall}
+              onClick={() => void handleBulkInstall(selectedPatchDeviceIds)}
               disabled={bulkAction !== null}
               className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
             >

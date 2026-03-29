@@ -127,16 +127,23 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
       if (ringId) params.set('ringId', ringId);
       params.set('format', 'csv');
       const response = await fetchWithAuth(`/patches/compliance/report?${params}`);
-      if (!response.ok) throw new Error('Failed to generate report');
+      if (!response.ok) {
+        if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
+        throw new Error('Failed to generate report');
+      }
       const result = await response.json();
-      const reportId = result.data?.id;
-      if (reportId) void navigateTo(`/patches/compliance/report/${reportId}`);
-    } catch {
-      setBulkError('Failed to generate report');
+      const reportId = result.reportId ?? result.data?.id ?? result.id;
+      if (reportId) {
+        void navigateTo(`/patches/compliance/report/${reportId}`);
+      } else {
+        setBulkError('Report was queued but no report ID was returned');
+      }
+    } catch (err) {
+      setBulkError(err instanceof Error ? err.message : 'Failed to generate report');
     } finally {
       setExporting(false);
     }
-  }, [ringId]);
+  }, [ringId, setBulkError]);
 
   // Filters
   const filteredDevices = useMemo(() => {
@@ -159,12 +166,13 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
   const { selectedIds, allPageSelected: allSelected, somePageSelected: someSelected, toggleSelect, toggleSelectAll, clearSelection } = usePatchSelection(filteredIds);
   const { bulkAction, bulkError, setBulkError, bulkSuccess, setBulkSuccess, handleBulkScan, handleBulkInstall } = useBulkActions(selectedIds, clearSelection, fetchData);
 
-  const selectedWithPatches = useMemo(() => {
+  const selectedPatchDeviceIds = useMemo(() => {
     return Array.from(selectedIds).filter(id => {
       const d = devices.find(dev => dev.id === id);
       return d && d.pendingPatches > 0;
-    }).length;
+    });
   }, [selectedIds, devices]);
+  const selectedWithPatches = selectedPatchDeviceIds.length;
 
   // Precomputed filter counts
   const filterCounts = useMemo(() => ({
@@ -325,7 +333,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
               <span className="text-xs text-orange-700">Install patches on {selectedWithPatches} devices?</span>
               <button
                 type="button"
-                onClick={handleBulkInstall}
+                onClick={() => { setConfirmInstall(false); void handleBulkInstall(selectedPatchDeviceIds); }}
                 disabled={bulkAction !== null}
                 className="inline-flex h-6 items-center rounded bg-primary px-2 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
               >
