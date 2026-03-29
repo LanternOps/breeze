@@ -7,6 +7,7 @@ import type { Script } from './ScriptList';
 import type { ScriptParameter } from './ScriptForm';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import Breadcrumbs from '../layout/Breadcrumbs';
 
 type ScriptExecutionsPageProps = {
   scriptId: string;
@@ -167,6 +168,11 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
 
   return (
     <div className="space-y-6">
+      <Breadcrumbs items={[
+        { label: 'Scripts', href: '/scripts' },
+        { label: script?.name || 'Script', href: `/scripts/${scriptId}` },
+        { label: 'Executions' }
+      ]} />
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
           <a

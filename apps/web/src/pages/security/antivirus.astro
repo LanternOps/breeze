@@ -1,8 +1,13 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
 import AntivirusPage from '../../components/security/AntivirusPage';
+import Breadcrumbs from '../../components/layout/Breadcrumbs';
 ---
 
 <DashboardLayout title="Antivirus Coverage">
+  <Breadcrumbs client:load items={[
+    { label: 'Security', href: '/security' },
+    { label: 'Antivirus' }
+  ]} />
   <AntivirusPage client:load />
 </DashboardLayout>

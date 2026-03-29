@@ -23,7 +23,7 @@ const currentPath = Astro.url.pathname;
     <Sidebar currentPath={currentPath} client:load transition:persist />
     <div class="flex flex-1 flex-col overflow-hidden">
       <Header client:load transition:persist />
-      <main class="flex-1 overflow-y-auto p-6">
+      <main class="flex-1 overflow-y-auto p-4 md:p-6">
         <slot />
       </main>
     </div>

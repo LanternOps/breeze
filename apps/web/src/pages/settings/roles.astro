@@ -1,8 +1,13 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
 import RolesPage from '../../components/settings/RolesPage';
+import Breadcrumbs from '../../components/layout/Breadcrumbs';
 ---
 
 <DashboardLayout title="Roles">
+  <Breadcrumbs client:load items={[
+    { label: 'Settings', href: '/settings' },
+    { label: 'Roles' }
+  ]} />
   <RolesPage client:load />
 </DashboardLayout>

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Plus, Download, Search, X, Loader2, Check } from 'lucide-react';
+import { Plus, Download, Search, X, Loader2, Check, FileCode, ArrowRight } from 'lucide-react';
 import ScriptList, { type Script, type ScriptLanguage, type OSType } from './ScriptList';
 import ScriptExecutionModal, { type Device, type Site } from './ScriptExecutionModal';
 import ExecutionDetails from './ExecutionDetails';
@@ -336,12 +336,28 @@ export default function ScriptsPage() {
         </div>
       )}
 
-      <ScriptList
-        scripts={scripts}
-        onRun={handleRun}
-        onEdit={handleEdit}
-        onDelete={handleDelete}
-      />
+      {scripts.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16 text-center">
+          <div className="rounded-full bg-primary/10 p-4 mb-4">
+            <FileCode className="h-8 w-8 text-primary" />
+          </div>
+          <h2 className="text-lg font-semibold text-foreground mb-1">No scripts yet</h2>
+          <p className="text-sm text-muted-foreground max-w-md mb-6">
+            Create your first script to automate tasks across your fleet.
+          </p>
+          <a href="/scripts/new" className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
+            Create script
+            <ArrowRight className="h-4 w-4" />
+          </a>
+        </div>
+      ) : (
+        <ScriptList
+          scripts={scripts}
+          onRun={handleRun}
+          onEdit={handleEdit}
+          onDelete={handleDelete}
+        />
+      )}
 
       {/* Execute Modal */}
       {modalMode === 'execute' && selectedScript && (

@@ -3,6 +3,7 @@ import { ArrowLeft, History } from 'lucide-react';
 import ScriptForm, { type ScriptFormValues } from './ScriptForm';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import Breadcrumbs from '../layout/Breadcrumbs';
 
 type ScriptEditPageProps = {
   scriptId?: string;
@@ -120,6 +121,10 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
 
   return (
     <div className="space-y-6">
+      <Breadcrumbs items={[
+        { label: 'Scripts', href: '/scripts' },
+        { label: isNew ? 'New Script' : (script?.name || 'Edit Script') }
+      ]} />
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
           <a

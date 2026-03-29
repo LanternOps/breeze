@@ -7,7 +7,7 @@ import RecentActivity from '../components/dashboard/RecentActivity';
 ---
 
 <DashboardLayout title="Dashboard">
-  <div class="space-y-8">
+  <div class="space-y-6">
     <!-- Title + stats grouped tight -->
     <div class="animate-in space-y-3">
       <h1 class="text-xl font-semibold tracking-tight">Dashboard</h1>
@@ -15,14 +15,15 @@ import RecentActivity from '../components/dashboard/RecentActivity';
     </div>
 
     <!-- Alerts get 2/3 width — that's what techs triage first -->
-    <div class="animate-in stagger-2 grid gap-6 lg:grid-cols-3">
+    <div class="animate-in stagger-1 grid gap-6 lg:grid-cols-3">
       <div class="lg:col-span-2">
         <RecentAlerts client:load />
       </div>
       <DeviceStatusChart client:load />
     </div>
 
-    <div class="animate-in stagger-3">
+    <!-- Activity — lightweight secondary section -->
+    <div class="animate-in stagger-2">
       <RecentActivity client:load />
     </div>
   </div>

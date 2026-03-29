@@ -4,6 +4,7 @@ import ReportBuilder, { type ReportBuilderFormValues } from './ReportBuilder';
 import type { Report, ReportType } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import Breadcrumbs from '../layout/Breadcrumbs';
 
 type ReportEditPageProps = {
   reportId: string;
@@ -96,6 +97,10 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
+      <Breadcrumbs items={[
+        { label: 'Reports', href: '/reports' },
+        { label: report.name || 'Edit Report' }
+      ]} />
       <div className="flex items-center gap-4">
         <a
           href="/reports"

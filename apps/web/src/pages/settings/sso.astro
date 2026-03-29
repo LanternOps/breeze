@@ -1,8 +1,13 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
 import SsoProvidersPage from '../../components/settings/SsoProvidersPage';
+import Breadcrumbs from '../../components/layout/Breadcrumbs';
 ---
 
 <DashboardLayout title="Single Sign-On">
+  <Breadcrumbs client:load items={[
+    { label: 'Settings', href: '/settings' },
+    { label: 'Single Sign-On' }
+  ]} />
   <SsoProvidersPage client:load />
 </DashboardLayout>

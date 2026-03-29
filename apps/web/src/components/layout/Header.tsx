@@ -8,13 +8,17 @@ import {
   Settings,
   Key,
   Shield,
-  Activity
+  Activity,
+  Sparkles,
+  Menu
 } from 'lucide-react';
 import OrgSwitcher from './OrgSwitcher';
 import NotificationCenter from './NotificationCenter';
 import CommandPalette from './CommandPalette';
 import HelpMenu from './HelpMenu';
 import { useAuthStore, apiLogout, fetchWithAuth } from '../../stores/auth';
+import { useAiStore } from '../../stores/aiStore';
+import { useUiStore } from '../../stores/uiStore';
 import { navigateTo } from '../../lib/navigation';
 
 export default function Header() {
@@ -25,6 +29,8 @@ export default function Header() {
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const { user, isAuthenticated } = useAuthStore();
+  const { isOpen: isAiOpen, toggle: toggleAi } = useAiStore();
+  const { toggleMobileMenu } = useUiStore();
 
   // Mark as mounted after hydration to avoid SSR/client mismatch
   useEffect(() => {
@@ -80,8 +86,17 @@ export default function Header() {
   };
 
   return (
-    <header className="flex h-16 items-center justify-between border-b bg-card px-6">
+    <header className="flex h-16 items-center justify-between border-b bg-card px-4 md:px-6">
       <div className={`flex items-center gap-4 transition-opacity duration-150 ${mounted ? 'opacity-100' : 'opacity-0'}`}>
+        {/* Hamburger menu — visible only on mobile (< 768px) */}
+        <button
+          className="rounded-md p-2 hover:bg-muted transition-colors md:hidden"
+          onClick={toggleMobileMenu}
+          title="Menu"
+        >
+          <Menu className="h-5 w-5 text-muted-foreground" />
+        </button>
+
         {/* Organization Switcher */}
         <OrgSwitcher />
 
@@ -90,6 +105,21 @@ export default function Header() {
       </div>
 
       <div className={`flex items-center gap-2 transition-opacity duration-150 ${mounted ? 'opacity-100' : 'opacity-0'}`}>
+        {/* AI Assistant */}
+        {mounted && isAuthenticated && (
+          <button
+            type="button"
+            onClick={toggleAi}
+            className="relative rounded-md p-2 hover:bg-muted transition-colors"
+            title="AI Assistant (Cmd+Shift+A)"
+          >
+            <Sparkles className="h-5 w-5" />
+            {isAiOpen && (
+              <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-primary" />
+            )}
+          </button>
+        )}
+
         {/* Notifications */}
         {mounted && isAuthenticated && <NotificationCenter />}
 
@@ -112,6 +142,7 @@ export default function Header() {
             type="button"
             onClick={() => setShowUserMenu(!showUserMenu)}
             className="flex items-center gap-2 rounded-md p-2 hover:bg-muted"
+            title="Account menu"
             aria-expanded={showUserMenu}
             aria-haspopup="true"
           >

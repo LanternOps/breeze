@@ -3,6 +3,7 @@ import { Plus, Save, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { AlertSeverity } from './AlertList';
 import { fetchWithAuth } from '../../stores/auth';
+import Breadcrumbs from '../layout/Breadcrumbs';
 
 type AlertTemplateEditorProps = {
   templateId?: string;
@@ -746,6 +747,10 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
 
   return (
     <div className="space-y-6">
+      <Breadcrumbs items={[
+        { label: 'Settings', href: '/settings' },
+        { label: name || 'Alert Template' }
+      ]} />
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Alert Template Editor</h1>

@@ -51,26 +51,26 @@ export default function AiPlanReviewCard({ steps, onApprove, onReject }: AiPlanR
   const progressPct = (remainingMs / AUTO_REJECT_MS) * 100;
 
   return (
-    <div className="my-2 rounded-lg border border-purple-600/50 bg-purple-100/30 p-3 dark:bg-purple-950/20">
+    <div className="my-2 rounded-lg border border-primary/30 bg-primary/5 p-3">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <ListChecks className="h-4 w-4 text-purple-400" />
-          <span className="text-sm font-medium text-purple-700 dark:text-purple-300">Action Plan</span>
-          <span className="rounded-full bg-purple-200/50 px-2 py-0.5 text-xs text-purple-700 dark:bg-purple-900/50 dark:text-purple-300">
+          <ListChecks className="h-4 w-4 text-primary" />
+          <span className="text-sm font-medium text-primary">Action Plan</span>
+          <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">
             {steps.length} step{steps.length !== 1 ? 's' : ''}
           </span>
         </div>
-        <div className="flex items-center gap-1.5 text-xs text-gray-500">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Clock className="h-3 w-3" />
           <span>{countdown}</span>
         </div>
       </div>
 
       {/* Countdown progress bar */}
-      <div className="mt-2 h-0.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800">
+      <div className="mt-2 h-0.5 w-full overflow-hidden rounded-full bg-muted">
         <div
           className={cn(
-            'h-full rounded-full bg-purple-500/60 transition-all duration-1000 ease-linear',
+            'h-full rounded-full bg-primary/60 transition-all duration-1000 ease-linear',
             widthPercentClass(progressPct)
           )}
         />

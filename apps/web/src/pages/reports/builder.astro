@@ -1,9 +1,14 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
 import ReportBuilder from '../../components/reports/ReportBuilder';
+import Breadcrumbs from '../../components/layout/Breadcrumbs';
 ---
 
 <DashboardLayout title="Report Builder">
+  <Breadcrumbs client:load items={[
+    { label: 'Reports', href: '/reports' },
+    { label: 'Builder' }
+  ]} />
   <div class="space-y-6">
     <div>
       <h1 class="text-xl font-semibold tracking-tight">Report Builder</h1>

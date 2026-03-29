@@ -18,6 +18,7 @@ import {
   Activity,
   LifeBuoy,
 } from 'lucide-react';
+import Breadcrumbs from '../layout/Breadcrumbs';
 import { cn } from '@/lib/utils';
 import { OverflowTabs } from '../shared/OverflowTabs';
 import { fetchWithAuth } from '../../stores/auth';
@@ -292,6 +293,10 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
 
   return (
     <div className="space-y-6">
+      <Breadcrumbs items={[
+        { label: 'Configuration Policies', href: '/configuration-policies' },
+        { label: policy.name || 'Policy' }
+      ]} />
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">

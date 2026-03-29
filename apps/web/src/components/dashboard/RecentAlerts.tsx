@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle, AlertCircle, Info, XCircle, Loader2 } from 'lucide-react';
+import { AlertTriangle, AlertCircle, Info, XCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { fetchWithAuth } from '../../stores/auth';
 
 interface Alert {
@@ -61,7 +62,8 @@ function formatTimeAgo(dateString: string): string {
 export default function RecentAlerts() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
     const fetchAlerts = async () => {
@@ -72,33 +74,38 @@ export default function RecentAlerts() {
         const response = await fetchWithAuth('/alerts?limit=5&sort=-createdAt');
 
         if (!response.ok) {
-          throw new Error('Failed to fetch alerts');
+          throw response;
         }
 
         const data = await response.json();
         const alertsArray = data.alerts ?? data.data ?? (Array.isArray(data) ? data : []);
         setAlerts(alertsArray);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load alerts');
+        setError(err);
       } finally {
         setIsLoading(false);
       }
     };
 
     fetchAlerts();
-  }, []);
+  }, [retryCount]);
+
+  const retry = () => {
+    setRetryCount(c => c + 1);
+    setError(null);
+  };
 
   if (isLoading) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border border-l-4 border-l-warning bg-card p-6 shadow-sm transition-colors duration-200 hover:border-primary/20">
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-sm font-semibold">Recent Alerts</h3>
-          <a href="/alerts" className="text-sm text-primary hover:underline">
+          <a href="/alerts" className="text-xs font-medium text-primary hover:text-primary/80 transition-colors">
             View all
           </a>
         </div>
         <div className="space-y-3">
-          {[...Array(4)].map((_, i) => (
+          {[1, 2, 3, 4].map(i => (
             <div key={i} className="flex items-start gap-3 rounded-md border-l-4 border-l-muted p-3">
               <div className="skeleton mt-0.5 h-5 w-5 rounded" />
               <div className="flex-1 space-y-2">
@@ -114,25 +121,29 @@ export default function RecentAlerts() {
 
   if (error) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border border-l-4 border-l-warning bg-card p-6 shadow-sm transition-colors duration-200 hover:border-primary/20">
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-sm font-semibold">Recent Alerts</h3>
-          <a href="/alerts" className="text-sm text-primary hover:underline">
+          <a href="/alerts" className="text-xs font-medium text-primary hover:text-primary/80 transition-colors">
             View all
           </a>
         </div>
-        <div className="flex h-48 items-center justify-center">
-          <div className="flex items-center gap-2 text-destructive">
-            <XCircle className="h-5 w-5" />
-            <span className="text-sm">{error}</span>
+        <div className="flex flex-col items-center justify-center py-8 text-center">
+          <div className="rounded-full bg-destructive/10 p-3 mb-3">
+            <AlertCircle className="h-5 w-5 text-destructive" />
           </div>
+          <p className="text-sm font-medium text-foreground mb-1">{getErrorTitle(error)}</p>
+          <p className="text-xs text-muted-foreground mb-3">{getErrorMessage(error)}</p>
+          <button onClick={retry} className="text-xs font-medium text-primary hover:underline">
+            Try again
+          </button>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="hover-lift rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border border-l-4 border-l-warning bg-card p-6 shadow-sm transition-colors duration-200 hover:border-primary/20">
       <div className="mb-4 flex items-center justify-between">
         <h3 className="text-sm font-semibold">Recent Alerts</h3>
         <a href="/alerts" className="text-sm text-primary hover:underline">

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { List, Grid, Plus, CheckCircle, XCircle, Copy, Loader2, X } from 'lucide-react';
+import { List, Grid, Plus, CheckCircle, XCircle, Copy, Loader2, X, AlertCircle, Monitor, ArrowRight } from 'lucide-react';
 import type { FilterConditionGroup } from '@breeze/shared';
 import DeviceList, { type Device, type DeviceStatus, type OSType } from './DeviceList';
 import type { DeviceRole } from '@/lib/deviceRoles';
@@ -10,6 +10,7 @@ import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { fetchWithAuth } from '../../stores/auth';
 import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
+import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 
 type ViewMode = 'list' | 'grid';
 
@@ -49,7 +50,7 @@ export default function DevicesPage() {
   const [orgs, setOrgs] = useState<Org[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<unknown>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [actionInProgress, setActionInProgress] = useState(false);
@@ -87,7 +88,7 @@ export default function DevicesPage() {
   const fetchDevices = useCallback(async () => {
     try {
       setLoading(true);
-      setError(undefined);
+      setError(null);
 
       // Fetch devices, orgs, and sites in parallel
       const [devicesResponse, orgsResponse, sitesResponse] = await Promise.all([
@@ -97,7 +98,7 @@ export default function DevicesPage() {
       ]);
 
       if (!devicesResponse.ok) {
-        throw new Error('Failed to fetch devices');
+        throw devicesResponse;
       }
 
       const devicesData = await devicesResponse.json();
@@ -161,7 +162,7 @@ export default function DevicesPage() {
       setOrgs(orgsList);
       setSites(sitesList);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch devices');
+      setError(err);
     } finally {
       setLoading(false);
     }
@@ -428,10 +429,35 @@ export default function DevicesPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-12">
-        <div className="text-center">
-          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading devices...</p>
+      <div className="space-y-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <div className="h-6 w-32 rounded bg-muted animate-pulse mb-2" />
+            <div className="h-4 w-48 rounded bg-muted animate-pulse" />
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="h-10 w-20 rounded-md bg-muted animate-pulse" />
+            <div className="h-10 w-28 rounded-md bg-muted animate-pulse" />
+          </div>
+        </div>
+        <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="flex items-center justify-between mb-6">
+            <div className="h-5 w-20 rounded bg-muted animate-pulse" />
+            <div className="h-10 w-56 rounded-md bg-muted animate-pulse" />
+          </div>
+          <div className="space-y-0 divide-y">
+            {[1, 2, 3, 4, 5].map(i => (
+              <div key={i} className="flex items-center gap-4 py-3">
+                <div className="h-4 w-4 rounded bg-muted animate-pulse" />
+                <div className="h-4 w-40 rounded bg-muted animate-pulse" />
+                <div className="h-4 w-20 rounded bg-muted animate-pulse" />
+                <div className="h-4 w-16 rounded bg-muted animate-pulse" />
+                <div className="hidden md:block h-4 w-16 rounded bg-muted animate-pulse" />
+                <div className="hidden md:block h-4 w-16 rounded bg-muted animate-pulse" />
+                <div className="h-4 w-20 rounded bg-muted animate-pulse" />
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     );
@@ -439,15 +465,21 @@ export default function DevicesPage() {
 
   if (error) {
     return (
-      <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
-        <p className="text-sm text-destructive">{error}</p>
-        <button
-          type="button"
-          onClick={fetchDevices}
-          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
-        >
-          Try again
-        </button>
+      <div className="rounded-lg border bg-card p-6">
+        <div className="flex flex-col items-center justify-center py-12 text-center">
+          <div className="rounded-full bg-destructive/10 p-3 mb-3">
+            <AlertCircle className="h-5 w-5 text-destructive" />
+          </div>
+          <p className="text-sm font-medium text-foreground mb-1">{getErrorTitle(error)}</p>
+          <p className="text-xs text-muted-foreground mb-3">{getErrorMessage(error)}</p>
+          <button
+            type="button"
+            onClick={fetchDevices}
+            className="text-xs font-medium text-primary hover:underline"
+          >
+            Try again
+          </button>
+        </div>
       </div>
     );
   }
@@ -525,7 +557,26 @@ export default function DevicesPage() {
         collapsible={true}
       />
 
-      {viewMode === 'list' ? (
+      {devices.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16 text-center">
+          <div className="rounded-full bg-primary/10 p-4 mb-4">
+            <Monitor className="h-8 w-8 text-primary" />
+          </div>
+          <h2 className="text-lg font-semibold text-foreground mb-1">No devices yet</h2>
+          <p className="text-sm text-muted-foreground max-w-md mb-6">
+            Enroll your first device to start monitoring. You'll need an enrollment key and the Breeze agent installer.
+          </p>
+          <div className="flex gap-3">
+            <a href="/settings/enrollment-keys" className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
+              Get enrollment key
+              <ArrowRight className="h-4 w-4" />
+            </a>
+            <a href="https://docs.breezermm.com/getting-started" target="_blank" rel="noopener" className="inline-flex items-center gap-1.5 rounded-md border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors">
+              View setup guide
+            </a>
+          </div>
+        </div>
+      ) : viewMode === 'list' ? (
         <DeviceList
           devices={devices}
           orgs={orgs}

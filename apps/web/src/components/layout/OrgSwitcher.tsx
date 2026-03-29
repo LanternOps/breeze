@@ -192,7 +192,7 @@ export default function OrgSwitcher() {
         {currentOrg && <StatusBadge status={currentOrg.status} />}
         <ChevronDown
           className={cn(
-            'h-4 w-4 transition-transform',
+            'h-4 w-4 text-muted-foreground transition-transform',
             isOpen && 'rotate-180'
           )}
         />

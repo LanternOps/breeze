@@ -8,6 +8,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { sendDeviceCommand, executeScript, toggleMaintenanceMode, decommissionDevice, clearDeviceSessions, restoreDevice, permanentDeleteDevice } from '../../services/deviceActions';
 import { useAiStore } from '@/stores/aiStore';
 import { navigateTo } from '@/lib/navigation';
+import Breadcrumbs from '../layout/Breadcrumbs';
 
 type DeviceDetailPageProps = {
   deviceId: string;
@@ -255,14 +256,10 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           ))}
         </div>
       )}
-      <button
-        type="button"
-        onClick={handleBack}
-        className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
-      >
-        <ArrowLeft className="h-4 w-4" />
-        Back to devices
-      </button>
+      <Breadcrumbs items={[
+        { label: 'Devices', href: '/devices' },
+        { label: device.hostname || 'Device' }
+      ]} />
       <DeviceDetails device={device} onBack={handleBack} onAction={handleAction} />
       <DeviceSettingsModal
         device={device}

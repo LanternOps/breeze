@@ -1,8 +1,13 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
 import ApiKeysPage from '../../components/settings/ApiKeysPage';
+import Breadcrumbs from '../../components/layout/Breadcrumbs';
 ---
 
 <DashboardLayout title="API Keys">
+  <Breadcrumbs client:load items={[
+    { label: 'Settings', href: '/settings' },
+    { label: 'API Keys' }
+  ]} />
   <ApiKeysPage client:load />
 </DashboardLayout>

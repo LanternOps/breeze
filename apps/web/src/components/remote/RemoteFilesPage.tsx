@@ -3,6 +3,7 @@ import { ArrowLeft, Monitor, Loader2, AlertCircle } from 'lucide-react';
 import FileManager from './FileManager';
 import { getInitialFilePath, type DeviceOs } from './filePathUtils';
 import { fetchWithAuth } from '@/stores/auth';
+import Breadcrumbs from '../layout/Breadcrumbs';
 
 type Device = {
   id: string;
@@ -142,6 +143,11 @@ export default function RemoteFilesPage({ deviceId }: RemoteFilesPageProps) {
 
   return (
     <div className="space-y-6">
+      <Breadcrumbs items={[
+        { label: 'Devices', href: '/devices' },
+        { label: device.displayName || device.hostname, href: `/devices/${deviceId}` },
+        { label: 'File Manager' }
+      ]} />
       <div className="flex items-center gap-4">
         <button
           type="button"

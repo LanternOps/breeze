@@ -7,7 +7,8 @@ import {
   Legend,
   Tooltip
 } from 'recharts';
-import { Loader2, XCircle } from 'lucide-react';
+import { AlertCircle } from 'lucide-react';
+import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { fetchWithAuth } from '../../stores/auth';
 
 interface DeviceStatusData {
@@ -19,7 +20,8 @@ interface DeviceStatusData {
 export default function DeviceStatusChart() {
   const [data, setData] = useState<DeviceStatusData[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
     const fetchDeviceStatus = async () => {
@@ -30,7 +32,7 @@ export default function DeviceStatusChart() {
         const response = await fetchWithAuth('/devices');
 
         if (!response.ok) {
-          throw new Error('Failed to fetch devices');
+          throw response;
         }
 
         const devicesData = await response.json();
@@ -54,21 +56,26 @@ export default function DeviceStatusChart() {
           { name: 'Warning', value: warningCount, color: cssColor('--warning', 'hsl(36, 88%, 50%)') }
         ].filter(item => item.value > 0));
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load device status');
+        setError(err);
       } finally {
         setIsLoading(false);
       }
     };
 
     fetchDeviceStatus();
-  }, []);
+  }, [retryCount]);
+
+  const retry = () => {
+    setRetryCount(c => c + 1);
+    setError(null);
+  };
 
   if (isLoading) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
-        <h3 className="mb-4 text-sm font-semibold">Device Status</h3>
+      <div className="rounded-lg border bg-card p-6 shadow-sm transition-colors duration-200 hover:border-primary/20">
+        <div className="h-4 w-24 rounded bg-muted animate-pulse mb-4" />
         <div className="flex h-64 items-center justify-center">
-          <div className="skeleton h-40 w-40 rounded-full" />
+          <div className="h-40 w-40 rounded-full bg-muted animate-pulse" />
         </div>
       </div>
     );
@@ -76,13 +83,17 @@ export default function DeviceStatusChart() {
 
   if (error) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
-        <h3 className="mb-4 text-sm font-semibold">Device Status</h3>
-        <div className="flex h-64 items-center justify-center">
-          <div className="flex items-center gap-2 text-destructive">
-            <XCircle className="h-5 w-5" />
-            <span className="text-sm">{error}</span>
+      <div className="rounded-lg border bg-card p-6 shadow-sm transition-colors duration-200 hover:border-primary/20">
+        <a href="/devices" className="mb-4 inline-block text-sm font-semibold hover:text-primary transition-colors">Device Status</a>
+        <div className="flex flex-col items-center justify-center py-8 text-center">
+          <div className="rounded-full bg-destructive/10 p-3 mb-3">
+            <AlertCircle className="h-5 w-5 text-destructive" />
           </div>
+          <p className="text-sm font-medium text-foreground mb-1">{getErrorTitle(error)}</p>
+          <p className="text-xs text-muted-foreground mb-3">{getErrorMessage(error)}</p>
+          <button onClick={retry} className="text-xs font-medium text-primary hover:underline">
+            Try again
+          </button>
         </div>
       </div>
     );
@@ -90,8 +101,8 @@ export default function DeviceStatusChart() {
 
   if (data.length === 0) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
-        <h3 className="mb-4 text-sm font-semibold">Device Status</h3>
+      <div className="rounded-lg border bg-card p-6 shadow-sm transition-colors duration-200 hover:border-primary/20">
+        <a href="/devices" className="mb-4 inline-block text-sm font-semibold hover:text-primary transition-colors">Device Status</a>
         <div className="flex h-64 items-center justify-center">
           <span className="text-sm text-muted-foreground">No devices found</span>
         </div>
@@ -100,8 +111,8 @@ export default function DeviceStatusChart() {
   }
 
   return (
-    <div className="hover-lift rounded-lg border bg-card p-6 shadow-sm">
-      <h3 className="mb-4 text-sm font-semibold">Device Status</h3>
+    <div className="rounded-lg border bg-card p-6 shadow-sm transition-colors duration-200 hover:border-primary/20">
+      <a href="/devices" className="mb-4 inline-block text-sm font-semibold hover:text-primary transition-colors">Device Status</a>
       <div className="h-64">
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
