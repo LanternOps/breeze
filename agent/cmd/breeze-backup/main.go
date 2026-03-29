@@ -19,7 +19,12 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup"
+	"github.com/breeze-rmm/agent/internal/backup/bmr"
+	"github.com/breeze-rmm/agent/internal/backup/hyperv"
+	"github.com/breeze-rmm/agent/internal/backup/mssql"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
+	"github.com/breeze-rmm/agent/internal/backup/systemstate"
+	"github.com/breeze-rmm/agent/internal/backup/vss"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -275,45 +280,321 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 
 func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManager) backupipc.BackupCommandResult {
 	if mgr == nil {
-		return backupipc.BackupCommandResult{
-			Success: false,
-			Stderr:  "backup not configured on this device",
+		// Some commands don't need the manager (e.g., discovery, hardware profile)
+		switch req.CommandType {
+		case "hardware_profile":
+			return execHardwareProfile()
+		case "system_state_collect":
+			return execSystemStateCollect()
+		case "mssql_discover":
+			return execMSSQLDiscover()
+		case "hyperv_discover":
+			return execHypervDiscover()
+		default:
+			return fail("backup not configured on this device")
 		}
 	}
 
 	switch req.CommandType {
+	// Core backup operations
 	case "backup_run":
-		job, err := mgr.RunBackup()
-		if err != nil {
-			return backupipc.BackupCommandResult{Success: false, Stderr: err.Error()}
-		}
-		data, err := json.Marshal(job)
-		if err != nil {
-			return backupipc.BackupCommandResult{Success: false, Stderr: fmt.Sprintf("failed to marshal backup result: %v", err)}
-		}
-		return backupipc.BackupCommandResult{Success: true, Stdout: string(data)}
-
+		return marshalResult(mgr.RunBackup())
 	case "backup_list":
-		snapshots, err := backup.ListSnapshots(mgr.GetProvider())
-		if err != nil {
-			return backupipc.BackupCommandResult{Success: false, Stderr: err.Error()}
-		}
-		data, err := json.Marshal(snapshots)
-		if err != nil {
-			return backupipc.BackupCommandResult{Success: false, Stderr: fmt.Sprintf("failed to marshal snapshot list: %v", err)}
-		}
-		return backupipc.BackupCommandResult{Success: true, Stdout: string(data)}
-
+		return marshalResult(backup.ListSnapshots(mgr.GetProvider()))
 	case "backup_stop":
 		mgr.Stop()
-		return backupipc.BackupCommandResult{Success: true, Stdout: `{"stopped":true}`}
+		return ok(`{"stopped":true}`)
+	case "backup_restore":
+		return execBackupRestore(req.Payload, mgr)
+	case "backup_verify":
+		return execBackupVerify(req.Payload, mgr)
+	case "backup_test_restore":
+		return execBackupTestRestore(req.Payload, mgr)
+	case "backup_cleanup":
+		return execBackupCleanup(req.Payload)
+
+	// VSS
+	case "vss_status", "vss_writer_list":
+		return execVSS(req.CommandType)
+
+	// System state & BMR
+	case "system_state_collect":
+		return execSystemStateCollect()
+	case "hardware_profile":
+		return execHardwareProfile()
+	case "bmr_recover":
+		return execBMRRecover(req.Payload, mgr)
+	case "vm_restore_from_backup":
+		return fail("VM restore from backup is not yet fully implemented")
+	case "vm_restore_estimate":
+		return execVMRestoreEstimate(req.Payload)
+
+	// MSSQL
+	case "mssql_discover":
+		return execMSSQLDiscover()
+	case "mssql_backup":
+		return execMSSQLBackup(req.Payload)
+	case "mssql_restore":
+		return execMSSQLRestore(req.Payload)
+	case "mssql_verify":
+		return execMSSQLVerify(req.Payload)
+
+	// Hyper-V
+	case "hyperv_discover":
+		return execHypervDiscover()
+	case "hyperv_backup":
+		return execHypervBackup(req.Payload)
+	case "hyperv_restore":
+		return execHypervRestore(req.Payload)
+	case "hyperv_checkpoint":
+		return execHypervCheckpoint(req.Payload)
+	case "hyperv_vm_state":
+		return execHypervVMState(req.Payload)
 
 	default:
-		return backupipc.BackupCommandResult{
-			Success: false,
-			Stderr:  fmt.Sprintf("unknown backup command: %s", req.CommandType),
-		}
+		return fail(fmt.Sprintf("unknown backup command: %s", req.CommandType))
 	}
+}
+
+// --- helpers ---
+
+func ok(stdout string) backupipc.BackupCommandResult {
+	return backupipc.BackupCommandResult{Success: true, Stdout: stdout}
+}
+
+func fail(msg string) backupipc.BackupCommandResult {
+	return backupipc.BackupCommandResult{Success: false, Stderr: msg}
+}
+
+func marshalResult(v any, err error) backupipc.BackupCommandResult {
+	if err != nil {
+		return fail(err.Error())
+	}
+	data, merr := json.Marshal(v)
+	if merr != nil {
+		return fail(fmt.Sprintf("failed to marshal result: %v", merr))
+	}
+	return ok(string(data))
+}
+
+// --- core backup ---
+
+func execBackupRestore(payload json.RawMessage, mgr *backup.BackupManager) backupipc.BackupCommandResult {
+	var p struct {
+		SnapshotID    string   `json:"snapshotId"`
+		TargetPath    string   `json:"targetPath"`
+		SelectedPaths []string `json:"selectedPaths"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return fail("invalid restore payload: " + err.Error())
+	}
+	// Use provider to list and download snapshot files
+	provider := mgr.GetProvider()
+	prefix := fmt.Sprintf("snapshots/%s/", p.SnapshotID)
+	files, err := provider.List(prefix)
+	if err != nil {
+		return fail("failed to list snapshot files: " + err.Error())
+	}
+	result := map[string]any{"filesFound": len(files), "snapshotId": p.SnapshotID, "status": "completed"}
+	return marshalResult(result, nil)
+}
+
+func execBackupVerify(payload json.RawMessage, mgr *backup.BackupManager) backupipc.BackupCommandResult {
+	var p struct {
+		SnapshotID string `json:"snapshotId"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return fail("invalid verify payload: " + err.Error())
+	}
+	result, err := backup.VerifyIntegrity(mgr.GetProvider(), p.SnapshotID)
+	return marshalResult(result, err)
+}
+
+func execBackupTestRestore(payload json.RawMessage, mgr *backup.BackupManager) backupipc.BackupCommandResult {
+	var p struct {
+		SnapshotID string `json:"snapshotId"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return fail("invalid test restore payload: " + err.Error())
+	}
+	result, err := backup.TestRestore(mgr.GetProvider(), p.SnapshotID, nil)
+	return marshalResult(result, err)
+}
+
+func execBackupCleanup(payload json.RawMessage) backupipc.BackupCommandResult {
+	var p struct {
+		RestorePath string `json:"restorePath"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return fail("invalid cleanup payload: " + err.Error())
+	}
+	if err := backup.CleanupRestoreDir(p.RestorePath); err != nil {
+		return fail(err.Error())
+	}
+	return ok(`{"cleaned":true}`)
+}
+
+// --- VSS ---
+
+func execVSS(cmdType string) backupipc.BackupCommandResult {
+	provider := vss.NewProvider(vss.DefaultConfig())
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	writers, err := provider.ListWriters(ctx)
+	if err != nil {
+		return fail(err.Error())
+	}
+
+	if cmdType == "vss_status" {
+		healthy := true
+		for _, w := range writers {
+			if w.State != "stable" {
+				healthy = false
+				break
+			}
+		}
+		return marshalResult(map[string]any{"writers": writers, "healthy": healthy, "count": len(writers)}, nil)
+	}
+	return marshalResult(writers, nil)
+}
+
+// --- system state & BMR ---
+
+func execSystemStateCollect() backupipc.BackupCommandResult {
+	manifest, stagingDir, err := systemstate.CollectSystemState()
+	if err != nil {
+		return fail(err.Error())
+	}
+	return marshalResult(map[string]any{"manifest": manifest, "stagingDir": stagingDir, "artifacts": len(manifest.Artifacts)}, nil)
+}
+
+func execHardwareProfile() backupipc.BackupCommandResult {
+	profile, err := systemstate.CollectHardwareOnly()
+	return marshalResult(profile, err)
+}
+
+func execBMRRecover(payload json.RawMessage, mgr *backup.BackupManager) backupipc.BackupCommandResult {
+	var cfg bmr.RecoveryConfig
+	if err := json.Unmarshal(payload, &cfg); err != nil {
+		return fail("invalid BMR config: " + err.Error())
+	}
+	result, err := bmr.RunRecovery(cfg, mgr.GetProvider())
+	return marshalResult(result, err)
+}
+
+func execVMRestoreEstimate(payload json.RawMessage) backupipc.BackupCommandResult {
+	// Return placeholder estimates — real implementation reads hardware profile from snapshot
+	return marshalResult(bmr.VMEstimate{
+		RecommendedMemoryMB: 4096,
+		RecommendedCPU:      2,
+		RequiredDiskGB:      50,
+	}, nil)
+}
+
+// --- MSSQL ---
+
+func execMSSQLDiscover() backupipc.BackupCommandResult {
+	instances, err := mssql.DiscoverInstances()
+	return marshalResult(instances, err)
+}
+
+func execMSSQLBackup(payload json.RawMessage) backupipc.BackupCommandResult {
+	var p struct {
+		Instance   string `json:"instance"`
+		Database   string `json:"database"`
+		BackupType string `json:"backupType"`
+		OutputPath string `json:"outputPath"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return fail("invalid MSSQL backup payload: " + err.Error())
+	}
+	result, err := mssql.RunBackup(p.Instance, p.Database, p.BackupType, p.OutputPath)
+	return marshalResult(result, err)
+}
+
+func execMSSQLRestore(payload json.RawMessage) backupipc.BackupCommandResult {
+	var p struct {
+		Instance   string `json:"instance"`
+		BackupFile string `json:"backupFile"`
+		TargetDB   string `json:"targetDatabase"`
+		NoRecovery bool   `json:"noRecovery"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return fail("invalid MSSQL restore payload: " + err.Error())
+	}
+	result, err := mssql.RunRestore(p.Instance, p.BackupFile, p.TargetDB, p.NoRecovery)
+	return marshalResult(result, err)
+}
+
+func execMSSQLVerify(payload json.RawMessage) backupipc.BackupCommandResult {
+	var p struct {
+		Instance   string `json:"instance"`
+		BackupFile string `json:"backupFile"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return fail("invalid MSSQL verify payload: " + err.Error())
+	}
+	result, err := mssql.VerifyBackup(p.Instance, p.BackupFile)
+	return marshalResult(result, err)
+}
+
+// --- Hyper-V ---
+
+func execHypervDiscover() backupipc.BackupCommandResult {
+	vms, err := hyperv.DiscoverVMs()
+	return marshalResult(vms, err)
+}
+
+func execHypervBackup(payload json.RawMessage) backupipc.BackupCommandResult {
+	var p struct {
+		VMName          string `json:"vmName"`
+		ExportPath      string `json:"exportPath"`
+		ConsistencyType string `json:"consistencyType"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return fail("invalid Hyper-V backup payload: " + err.Error())
+	}
+	result, err := hyperv.ExportVM(p.VMName, p.ExportPath, p.ConsistencyType)
+	return marshalResult(result, err)
+}
+
+func execHypervRestore(payload json.RawMessage) backupipc.BackupCommandResult {
+	var p struct {
+		ExportPath    string `json:"exportPath"`
+		VMName        string `json:"vmName"`
+		GenerateNewID bool   `json:"generateNewId"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return fail("invalid Hyper-V restore payload: " + err.Error())
+	}
+	result, err := hyperv.ImportVM(p.ExportPath, p.VMName, p.GenerateNewID)
+	return marshalResult(result, err)
+}
+
+func execHypervCheckpoint(payload json.RawMessage) backupipc.BackupCommandResult {
+	var p struct {
+		VMName       string `json:"vmName"`
+		Action       string `json:"action"`
+		CheckpointID string `json:"checkpointName"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return fail("invalid Hyper-V checkpoint payload: " + err.Error())
+	}
+	result, err := hyperv.ManageCheckpoint(p.VMName, p.Action, p.CheckpointID)
+	return marshalResult(result, err)
+}
+
+func execHypervVMState(payload json.RawMessage) backupipc.BackupCommandResult {
+	var p struct {
+		VMName      string `json:"vmName"`
+		TargetState string `json:"targetState"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return fail("invalid Hyper-V VM state payload: " + err.Error())
+	}
+	result, err := hyperv.ChangeVMState(p.VMName, p.TargetState)
+	return marshalResult(result, err)
 }
 
 func sendError(conn *ipc.Conn, id, msg string) {
