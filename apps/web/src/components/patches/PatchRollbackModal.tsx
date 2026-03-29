@@ -8,6 +8,7 @@ import {
   X
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 
@@ -178,14 +179,11 @@ export default function PatchRollbackModal({
     }
   };
 
-  if (!isOpen) return null;
-
   const allFilteredSelected = filteredDevices.length > 0 && filteredDevices.every(d => selectedDeviceIds.has(d.id));
   const someFilteredSelected = filteredDevices.some(d => selectedDeviceIds.has(d.id));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-lg border bg-card shadow-lg">
+    <Dialog open={isOpen} onClose={onClose} title="Rollback Patch" maxWidth="2xl" className="flex max-h-[90vh] flex-col">
         {/* Header */}
         <div className="flex items-start justify-between gap-4 border-b px-6 py-4">
           <div className="flex items-start gap-3">
@@ -500,7 +498,6 @@ export default function PatchRollbackModal({
             {scheduleType === 'now' ? 'Start Rollback' : 'Schedule Rollback'}
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

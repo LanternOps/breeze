@@ -1,4 +1,5 @@
 import { Trash2, AlertTriangle, File, Folder, X } from 'lucide-react';
+import { Dialog } from '../shared/Dialog';
 
 type DeleteConfirmDialogProps = {
   open: boolean;
@@ -23,7 +24,7 @@ export default function DeleteConfirmDialog({
   onConfirm,
   onClose,
 }: DeleteConfirmDialogProps) {
-  if (!open || items.length === 0) return null;
+  if (items.length === 0) return null;
 
   const totalSize = items.reduce((sum, item) => sum + (item.size ?? 0), 0);
   const hasSizeInfo = items.some((item) => item.size !== undefined && item.size !== null);
@@ -34,13 +35,7 @@ export default function DeleteConfirmDialog({
       : `Delete ${items.length} items?`;
 
   return (
-    <div
-      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4 shadow-xl">
+    <Dialog open={open} onClose={onClose} title={heading} maxWidth="md" className="p-6">
         {/* Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -125,7 +120,6 @@ export default function DeleteConfirmDialog({
             Cancel
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

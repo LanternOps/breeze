@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { X, Loader2, Plus, Tag, Trash2 } from 'lucide-react';
 import type { Device } from './DeviceList';
+import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 
 type Site = {
@@ -40,8 +41,6 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
       .then(data => setSites(data.data ?? data.sites ?? data ?? []))
       .catch(() => setSites([]));
   }, [isOpen, device]);
-
-  if (!isOpen) return null;
 
   const handleAddTag = () => {
     const trimmed = newTag.trim().toLowerCase();
@@ -101,8 +100,7 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-sm">
+    <Dialog open={isOpen} onClose={onClose} title="Device Settings" className="p-6">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-lg font-semibold">Device Settings</h2>
           <button
@@ -283,7 +281,6 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
             )}
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

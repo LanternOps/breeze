@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { X, Search, Play, Loader2, CheckCircle, AlertCircle, Filter } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Dialog } from '../shared/Dialog';
 import type { Script, ScriptLanguage } from './ScriptList';
 import type { ScriptParameter } from './ScriptForm';
 import type { FilterConditionGroup } from '@breeze/shared';
@@ -201,11 +202,8 @@ export default function ScriptExecutionModal({
     setErrorMessage(undefined);
   };
 
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-3xl max-h-[90vh] overflow-hidden rounded-lg border bg-card shadow-lg flex flex-col">
+    <Dialog open={isOpen} onClose={handleClose} title="Execute Script" maxWidth="3xl" className="max-h-[90vh] overflow-hidden flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between border-b px-6 py-4">
           <div>
@@ -524,7 +522,6 @@ export default function ScriptExecutionModal({
             </button>
           </div>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

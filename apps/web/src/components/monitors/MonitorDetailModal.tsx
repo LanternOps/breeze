@@ -9,6 +9,7 @@ import {
   Play,
   Trash2
 } from 'lucide-react';
+import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 
 type MonitorDetail = {
@@ -168,36 +169,25 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
     }
   };
 
-  if (loading) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80">
-        <div className="rounded-lg border bg-card p-8 shadow-sm">
-          <Loader2 className="h-6 w-6 animate-spin mx-auto text-primary" />
+  const sc = monitor ? (statusConfig[monitor.lastStatus] ?? statusConfig.unknown) : statusConfig.unknown;
+  const StatusIcon = sc.icon;
+
+  return (
+    <Dialog open={true} onClose={onClose} title={monitor?.name ?? 'Monitor'} maxWidth="3xl" className="max-h-[90vh] overflow-y-auto p-6">
+      {loading ? (
+        <div className="flex flex-col items-center py-8">
+          <Loader2 className="h-6 w-6 animate-spin text-primary" />
           <p className="mt-2 text-sm text-muted-foreground">Loading...</p>
         </div>
-      </div>
-    );
-  }
-
-  if (!monitor) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80">
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+      ) : !monitor ? (
+        <div>
           <p className="text-sm text-destructive">{error ?? 'Monitor not found'}</p>
           <button type="button" onClick={onClose} className="mt-4 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground">
             Close
           </button>
         </div>
-      </div>
-    );
-  }
-
-  const sc = statusConfig[monitor.lastStatus] ?? statusConfig.unknown;
-  const StatusIcon = sc.icon;
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-sm">
+      ) : (
+        <>
         {/* Header */}
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -428,7 +418,8 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
             Close
           </button>
         </div>
-      </div>
-    </div>
+        </>
+      )}
+    </Dialog>
   );
 }

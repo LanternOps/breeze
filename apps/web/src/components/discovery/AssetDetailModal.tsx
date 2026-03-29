@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { DiscoveredAsset, OpenPortEntry } from './DiscoveredAssetList';
 import { typeConfig, approvalStatusConfig } from './DiscoveredAssetList';
 import EnableMonitoringForm from './EnableMonitoringForm';
+import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 
 export type AssetDetail = DiscoveredAsset & {
@@ -174,7 +175,7 @@ export default function AssetDetailModal({
     }
   };
 
-  if (!open || !asset) return null;
+  if (!asset) return null;
 
   const handleLink = async () => {
     if (!selectedDevice) {
@@ -267,8 +268,7 @@ export default function AssetDetailModal({
   const activeMonitorCount = monitoring?.networkMonitors?.activeCount ?? activeNetworkMonitors.length;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-background/80 px-4 py-8">
-      <div className="w-full max-w-5xl rounded-lg border bg-card shadow-sm flex flex-col max-h-[calc(100vh-4rem)]">
+    <Dialog open={open} onClose={onClose} title={asset.label || asset.hostname || asset.ip} maxWidth="5xl" alignTop className="flex flex-col max-h-[calc(100vh-4rem)]">
         <div className="flex items-start justify-between gap-4 border-b px-6 py-4">
           <div>
             <div className="flex items-center gap-2">
@@ -576,7 +576,6 @@ export default function AssetDetailModal({
           </div>
         </div>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

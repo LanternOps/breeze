@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle, XCircle, Clock, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Patch } from './PatchList';
+import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 
@@ -61,7 +62,7 @@ export default function PatchApprovalModal({
 
   const isSubmitting = useMemo(() => loading ?? submitting, [loading, submitting]);
 
-  if (!open || !patch) return null;
+  if (!patch) return null;
 
   const handleSubmit = async () => {
     if (isSubmitting) return;
@@ -96,8 +97,7 @@ export default function PatchApprovalModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-sm">
+    <Dialog open={open} onClose={onClose} title="Review Patch" className="p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 className="text-lg font-semibold">Review Patch</h2>
@@ -177,7 +177,6 @@ export default function PatchApprovalModal({
             </span>
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

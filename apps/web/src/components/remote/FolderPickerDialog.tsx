@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import { Folder, ChevronRight, ArrowUp, X, Loader2, AlertCircle } from 'lucide-react';
+import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '@/stores/auth';
 import { buildBreadcrumbs, getParentPath, isPathRoot } from './filePathUtils';
 
@@ -90,34 +91,12 @@ export default function FolderPickerDialog({
     onSelect(currentPath);
   }, [currentPath, onSelect]);
 
-  // Close on Escape key
-  useEffect(() => {
-    if (!open) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [open, onClose]);
-
   if (!open) return null;
 
   const breadcrumbs = buildBreadcrumbs(currentPath);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black/60"
-        onClick={onClose}
-      />
-
-      {/* Dialog */}
-      <div className="relative z-10 flex max-h-[80vh] w-full max-w-xl flex-col rounded-lg border border-gray-700 bg-gray-900 shadow-2xl">
+    <Dialog open={true} onClose={onClose} title={title} maxWidth="xl" className="flex max-h-[80vh] flex-col">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-gray-700 px-4 py-3">
           <h2 className="text-lg font-semibold text-white">{title}</h2>
@@ -229,7 +208,6 @@ export default function FolderPickerDialog({
             Select this folder
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

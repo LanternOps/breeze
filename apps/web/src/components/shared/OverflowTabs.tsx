@@ -28,8 +28,17 @@ export function OverflowTabs({ tabs, activeTab, onTabChange }: {
   useLayoutEffect(() => {
     const nav = navRef.current;
     if (!nav || measured) return;
-    const buttons = nav.querySelectorAll<HTMLButtonElement>(':scope > button');
-    tabWidths.current = Array.from(buttons).map(b => b.offsetWidth);
+    const buttons = nav.querySelectorAll<HTMLButtonElement>(':scope > span > button, :scope > button');
+    // Measure each tab's total width including any preceding separator
+    tabWidths.current = Array.from(buttons).map(b => {
+      const wrapper = b.parentElement;
+      if (wrapper && wrapper.tagName === 'SPAN') {
+        // Wrapper with display:contents — measure the separator too if present
+        const sep = wrapper.querySelector(':scope > span[aria-hidden]');
+        return b.offsetWidth + (sep ? (sep as HTMLElement).offsetWidth + 8 : 0);
+      }
+      return b.offsetWidth;
+    });
     setMeasured(true);
   }, [measured]);
 

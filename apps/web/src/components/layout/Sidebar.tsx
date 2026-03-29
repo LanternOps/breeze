@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore } from 'react';
+import { useState, useEffect, useSyncExternalStore } from 'react';
 import {
   LayoutDashboard,
   Monitor,
@@ -13,6 +13,7 @@ import {
   Users,
   ChevronLeft,
   ChevronRight,
+  ChevronsLeft,
   ShieldCheck,
   KeyRound,
   Package,
@@ -35,6 +36,8 @@ import { cn } from '@/lib/utils';
 interface SidebarProps {
   currentPath?: string;
 }
+
+type SidebarMode = 'open' | 'hover' | 'collapsed';
 
 // Track the current pathname reactively so persisted sidebar updates on View Transitions
 let pathListeners = new Set<() => void>();
@@ -116,9 +119,28 @@ const adminNav = [
 ];
 
 export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [mode, setMode] = useState<SidebarMode>('open');
+  const [hovered, setHovered] = useState(false);
   const livePath = useSyncExternalStore(subscribeToPath, getPathSnapshot, getServerSnapshot);
   const currentPath = livePath || initialPath;
+
+  // Persist mode in localStorage
+  useEffect(() => {
+    const saved = localStorage.getItem('sidebar-mode') as SidebarMode;
+    if (saved && ['open', 'hover', 'collapsed'].includes(saved)) {
+      setMode(saved);
+    }
+  }, []);
+
+  const cycleMode = () => {
+    const next: SidebarMode = mode === 'open' ? 'hover' : mode === 'hover' ? 'collapsed' : 'open';
+    setMode(next);
+    localStorage.setItem('sidebar-mode', next);
+  };
+
+  // Derived state
+  const showLabels = mode === 'open' || (mode === 'hover' && hovered);
+  const isNarrow = mode !== 'open';
 
   // Find the single most-specific matching href across all sections
   // so only one nav item highlights at a time
@@ -145,185 +167,85 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     return best;
   })();
 
-  return (
+  const renderNavItem = (item: typeof coreNav[number]) => {
+    const isActive = item.href === activeHref;
+    return (
+      <a
+        key={item.name}
+        href={item.href}
+        title={isNarrow && !hovered ? item.name : undefined}
+        className={cn(
+          'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+          isActive
+            ? 'bg-primary text-primary-foreground'
+            : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+        )}
+      >
+        <item.icon className="h-5 w-5 flex-shrink-0" />
+        {showLabels && <span className="truncate">{item.name}</span>}
+      </a>
+    );
+  };
+
+  const renderSection = (label: string, items: typeof coreNav) => (
+    <>
+      <div className="my-4 border-t" />
+      {showLabels && (
+        <span className="px-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70">
+          {label}
+        </span>
+      )}
+      {items.map(renderNavItem)}
+    </>
+  );
+
+  // Toggle button icon based on mode
+  const ToggleIcon = mode === 'open' ? ChevronLeft : mode === 'hover' ? ChevronsLeft : ChevronRight;
+  const toggleTitle = mode === 'open' ? 'Auto-hide sidebar' : mode === 'hover' ? 'Collapse sidebar' : 'Expand sidebar';
+
+  const sidebarContent = (
     <aside
       className={cn(
-        'flex h-full flex-col border-r bg-card transition-all duration-300',
-        collapsed ? 'w-16' : 'w-64'
+        'flex h-full flex-col border-r bg-card transition-all duration-200',
+        mode === 'hover' && 'absolute inset-y-0 left-0 z-20',
+        mode === 'hover' && hovered && 'shadow-xl',
+        showLabels ? 'w-64' : 'w-16'
       )}
+      onMouseEnter={mode === 'hover' ? () => setHovered(true) : undefined}
+      onMouseLeave={mode === 'hover' ? () => setHovered(false) : undefined}
     >
       <div className="flex h-16 items-center justify-between border-b px-4">
-        {!collapsed && (
+        {showLabels && (
           <span className="text-lg font-bold tracking-tight text-foreground">Breeze</span>
         )}
         <button
-          onClick={() => setCollapsed(!collapsed)}
+          onClick={cycleMode}
+          title={toggleTitle}
           className="rounded-md p-1.5 hover:bg-muted"
         >
-          {collapsed ? (
-            <ChevronRight className="h-5 w-5" />
-          ) : (
-            <ChevronLeft className="h-5 w-5" />
-          )}
+          <ToggleIcon className="h-5 w-5" />
         </button>
       </div>
 
       <nav className="flex-1 min-h-0 space-y-1 overflow-y-auto p-2">
-        {coreNav.map((item) => {
-          const isActive = item.href === activeHref;
-          return (
-            <a
-              key={item.name}
-              href={item.href}
-              title={collapsed ? item.name : undefined}
-              className={cn(
-                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-                isActive
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-              )}
-            >
-              <item.icon className="h-5 w-5 flex-shrink-0" />
-              {!collapsed && <span>{item.name}</span>}
-            </a>
-          );
-        })}
-
-        <div className="my-4 border-t" />
-
-        {!collapsed && (
-          <span className="px-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70">
-            Security & Monitoring
-          </span>
-        )}
-        {securityNav.map((item) => {
-          const isActive = item.href === activeHref;
-          return (
-            <a
-              key={item.name}
-              href={item.href}
-              title={collapsed ? item.name : undefined}
-              className={cn(
-                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-                isActive
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-              )}
-            >
-              <item.icon className="h-5 w-5 flex-shrink-0" />
-              {!collapsed && <span>{item.name}</span>}
-            </a>
-          );
-        })}
-
-        <div className="my-4 border-t" />
-
-        {!collapsed && (
-          <span className="px-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70">
-            Operations
-          </span>
-        )}
-        {operationsNav.map((item) => {
-          const isActive = item.href === activeHref;
-          return (
-            <a
-              key={item.name}
-              href={item.href}
-              title={collapsed ? item.name : undefined}
-              className={cn(
-                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-                isActive
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-              )}
-            >
-              <item.icon className="h-5 w-5 flex-shrink-0" />
-              {!collapsed && <span>{item.name}</span>}
-            </a>
-          );
-        })}
-
-        <div className="my-4 border-t" />
-
-        {!collapsed && (
-          <span className="px-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70">
-            Reporting
-          </span>
-        )}
-        {reportingNav.map((item) => {
-          const isActive = item.href === activeHref;
-          return (
-            <a
-              key={item.name}
-              href={item.href}
-              title={collapsed ? item.name : undefined}
-              className={cn(
-                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-                isActive
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-              )}
-            >
-              <item.icon className="h-5 w-5 flex-shrink-0" />
-              {!collapsed && <span>{item.name}</span>}
-            </a>
-          );
-        })}
-
-        <div className="my-4 border-t" />
-
-        {!collapsed && (
-          <span className="px-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70">
-            Settings
-          </span>
-        )}
-        {settingsNav.map((item) => {
-          const isActive = item.href === activeHref;
-          return (
-            <a
-              key={item.name}
-              href={item.href}
-              title={collapsed ? item.name : undefined}
-              className={cn(
-                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-                isActive
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-              )}
-            >
-              <item.icon className="h-5 w-5 flex-shrink-0" />
-              {!collapsed && <span>{item.name}</span>}
-            </a>
-          );
-        })}
-
-        <div className="my-4 border-t" />
-
-        {!collapsed && (
-          <span className="px-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70">
-            Admin
-          </span>
-        )}
-        {adminNav.map((item) => {
-          const isActive = item.href === activeHref;
-          return (
-            <a
-              key={item.name}
-              href={item.href}
-              title={collapsed ? item.name : undefined}
-              className={cn(
-                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-                isActive
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-              )}
-            >
-              <item.icon className="h-5 w-5 flex-shrink-0" />
-              {!collapsed && <span>{item.name}</span>}
-            </a>
-          );
-        })}
+        {coreNav.map(renderNavItem)}
+        {renderSection('Security & Monitoring', securityNav)}
+        {renderSection('Operations', operationsNav)}
+        {renderSection('Reporting', reportingNav)}
+        {renderSection('Settings', settingsNav)}
+        {renderSection('Admin', adminNav)}
       </nav>
     </aside>
   );
+
+  // In hover mode, wrap with a fixed-width spacer so content doesn't shift
+  if (mode === 'hover') {
+    return (
+      <div className="relative w-16 flex-shrink-0">
+        {sidebarContent}
+      </div>
+    );
+  }
+
+  return sidebarContent;
 }

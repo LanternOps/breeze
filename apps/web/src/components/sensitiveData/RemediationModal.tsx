@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { X, AlertTriangle, ShieldAlert } from 'lucide-react';
+import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { REMEDIATION_ACTIONS } from './constants';
 
@@ -76,8 +77,7 @@ export default function RemediationModal({ findingIds, onClose, onComplete }: Re
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
+    <Dialog open={true} onClose={onClose} title="Remediate Findings" maxWidth="md" className="p-6">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">Remediate Findings</h2>
           <button type="button" onClick={onClose} className="rounded-md p-1 hover:bg-muted">
@@ -224,7 +224,6 @@ export default function RemediationModal({ findingIds, onClose, onComplete }: Re
             </div>
           </div>
         )}
-      </div>
-    </div>
+    </Dialog>
   );
 }

@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { X, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 
@@ -46,14 +47,6 @@ export default function BaselineFormModal({ baseline, onClose, onSaved }: Props)
   );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
-
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [onClose]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -107,8 +100,7 @@ export default function BaselineFormModal({ baseline, onClose, onSaved }: Props)
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-sm">
+    <Dialog open={true} onClose={onClose} title={baseline ? 'Edit Baseline' : 'New Baseline'} className="max-h-[90vh] overflow-y-auto p-6">
         <div className="flex items-start justify-between gap-4">
           <h2 className="text-lg font-semibold">
             {baseline ? 'Edit Baseline' : 'New Baseline'}
@@ -241,7 +233,6 @@ export default function BaselineFormModal({ baseline, onClose, onSaved }: Props)
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </Dialog>
   );
 }
