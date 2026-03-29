@@ -208,6 +208,7 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.BACKUP_VERIFY,
   CommandTypes.BACKUP_TEST_RESTORE,
   // Incident response
+  CommandTypes.COLLECT_EVIDENCE,
   CommandTypes.EXECUTE_CONTAINMENT,
 ]);
 

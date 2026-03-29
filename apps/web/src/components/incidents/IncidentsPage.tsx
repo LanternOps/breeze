@@ -35,13 +35,6 @@ const statusColors: Record<IncidentStatus, string> = {
   closed: 'bg-gray-100 text-gray-800 dark:bg-gray-700/30 dark:text-gray-300',
 };
 
-const severityLabels: Record<IncidentSeverity, string> = {
-  p1: 'P1 - Critical',
-  p2: 'P2 - High',
-  p3: 'P3 - Medium',
-  p4: 'P4 - Low',
-};
-
 export default function IncidentsPage() {
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 25, total: 0 });

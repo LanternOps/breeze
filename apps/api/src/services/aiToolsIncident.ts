@@ -104,7 +104,7 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
       const initialTimeline: IncidentTimelineEntry[] = [
         {
           at: now.toISOString(),
-          type: 'created',
+          type: 'incident_created',
           actor: 'brain',
           summary: `Incident created: ${input.title as string}`,
         },
@@ -207,6 +207,11 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
       if (!input.incidentId) return JSON.stringify({ error: 'incidentId is required' });
       if (!input.deviceId) return JSON.stringify({ error: 'deviceId is required' });
       if (!input.actionType) return JSON.stringify({ error: 'actionType is required' });
+
+      const HIGH_RISK_ACTIONS = new Set(['network_isolation', 'account_disable', 'usb_block']);
+      if (HIGH_RISK_ACTIONS.has(input.actionType as string) && !input.approvalRef) {
+        return JSON.stringify({ error: 'High-risk containment actions require an approvalRef' });
+      }
 
       const incident = await findIncidentWithAccess(input.incidentId as string, auth);
       if (!incident) return JSON.stringify({ error: 'Incident not found or access denied' });
