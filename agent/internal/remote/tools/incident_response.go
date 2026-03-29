@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"os"
 	"runtime"
 	"time"
 
@@ -69,6 +70,12 @@ func CollectEvidence(payload map[string]any) CommandResult {
 			evidence["logs"] = map[string]any{
 				"message":  "full log collection requires platform-specific implementation",
 				"platform": runtime.GOOS,
+			}
+
+		case "screenshot":
+			evidence[et] = map[string]any{
+				"note":      "Screenshot evidence collection requires platform-specific implementation",
+				"collected": false,
 			}
 
 		default:
@@ -217,6 +224,16 @@ func executeProcessKill(payload map[string]any, startTime time.Time) CommandResu
 			fmt.Errorf("pid is required in parameters"),
 			time.Since(startTime).Milliseconds(),
 		)
+	}
+
+	// Guard against killing critical system processes
+	if pid <= 1 {
+		return NewErrorResult(fmt.Errorf("cannot kill PID %d: system-critical process", pid), time.Since(startTime).Milliseconds())
+	}
+
+	// Guard against killing the agent itself
+	if pid == os.Getpid() {
+		return NewErrorResult(fmt.Errorf("cannot kill PID %d: this is the agent process", pid), time.Since(startTime).Milliseconds())
 	}
 
 	p, err := process.NewProcess(int32(pid))

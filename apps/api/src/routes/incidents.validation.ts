@@ -77,6 +77,7 @@ export const HIGH_RISK_CONTAINMENT_ACTIONS = new Set([
   'network_isolation',
   'account_disable',
   'usb_block',
+  'process_kill',
 ]);
 
 export const ALLOWED_EVIDENCE_STORAGE_SCHEMES = new Set(
