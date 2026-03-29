@@ -247,14 +247,25 @@ describe('CIS hardening routes', () => {
         return next();
       });
 
-      // Baseline lookup returns empty because it filters by the user's orgId
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            orderBy: vi.fn().mockResolvedValue([]),
+      // Count query returns 0
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 0 }]),
           }),
-        }),
-      } as any);
+        } as any)
+        // Baseline lookup returns empty because it filters by the user's orgId
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockResolvedValue([]),
+                }),
+              }),
+            }),
+          }),
+        } as any);
 
       const res = await app.request('/cis/baselines', {
         method: 'GET',

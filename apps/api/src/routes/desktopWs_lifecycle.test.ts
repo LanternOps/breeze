@@ -127,7 +127,7 @@ function setupSuccessfulValidation() {
 
   const ticketRecord = {
     sessionId: SESSION_ID,
-    sessionType: 'desktop',
+    sessionType: 'desktop' as const,
     userId,
     expiresAt: Date.now() + 60_000
   };
@@ -309,7 +309,7 @@ describe('desktopWs', () => {
       const app = createDesktopWsRoutes(upgradeWebSocket);
 
       expect(upgradeWebSocket).toHaveBeenCalledTimes(1);
-      expect(typeof upgradeWebSocket.mock.calls[0][0]).toBe('function');
+      expect(typeof (upgradeWebSocket.mock.calls[0] as unknown[])[0]).toBe('function');
       expect(app).toBeDefined();
     });
 

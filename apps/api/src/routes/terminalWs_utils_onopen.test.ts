@@ -125,7 +125,7 @@ function setupSuccessfulValidation(overrides?: { osType?: string }) {
 
   const ticketRecord = {
     sessionId: SESSION_ID,
-    sessionType: 'terminal',
+    sessionType: 'terminal' as const,
     userId,
     expiresAt: Date.now() + 60_000
   };

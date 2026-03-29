@@ -363,10 +363,9 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
     const ORG_ID_2 = '99999999-9999-9999-9999-999999999999';
 
     it('returns 404 when interrupting session from a different org', async () => {
-      vi.mocked(getScriptBuilderSession).mockResolvedValue({
-        id: SESSION_ID,
-        orgId: ORG_ID_2,
-      } as any);
+      // getScriptBuilderSession applies org-scoping at the DB level,
+      // so a cross-org session lookup returns null
+      vi.mocked(getScriptBuilderSession).mockResolvedValue(null);
 
       const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}/interrupt`, {
         method: 'POST',

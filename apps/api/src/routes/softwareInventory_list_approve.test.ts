@@ -430,14 +430,14 @@ describe('software inventory routes', () => {
           scope: 'partner',
           partnerId: 'partner-2',
           orgId: null,
-          accessibleOrgIds: [ORG_ID_OTHER],
+          accessibleOrgIds: [ORG_ID_OTHER, 'org-another'],
           orgCondition: () => undefined,
           canAccessOrg: (id: string) => id === ORG_ID_OTHER,
         });
         return next();
       });
 
-      // Partner user with no org context (multiple orgs) cannot approve
+      // Partner user with multiple orgs and no specific org context cannot approve
       const res = await app.request('/software-inventory/approve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },

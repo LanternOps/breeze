@@ -127,7 +127,7 @@ function setupSuccessfulValidation() {
 
   const ticketRecord = {
     sessionId: SESSION_ID,
-    sessionType: 'desktop',
+    sessionType: 'desktop' as const,
     userId,
     expiresAt: Date.now() + 60_000
   };

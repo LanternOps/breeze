@@ -112,6 +112,10 @@ vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
 }));
 
+vi.mock('../services/effectiveSettings', () => ({
+  assertNotLocked: vi.fn(),
+}));
+
 import { aiRoutes } from './ai';
 import { db } from '../db';
 import {
