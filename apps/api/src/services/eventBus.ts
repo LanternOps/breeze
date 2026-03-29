@@ -42,6 +42,9 @@ export type EventType =
   | 'backup.verification_failed'
   | 'backup.verification_passed'
   | 'backup.recovery_readiness_low'
+  // Backup SLA events
+  | 'backup.sla_breach'
+  | 'backup.sla_resolved'
   // Security events
   | 'security.score_changed'
   // CIS compliance events

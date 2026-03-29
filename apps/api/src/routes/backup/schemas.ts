@@ -236,3 +236,79 @@ export const hypervVmListSchema = z.object({
   deviceId: z.string().uuid().optional(),
   state: z.string().optional(),
 });
+
+// ── SLA config schemas ─────────────────────────────────────────────────────
+
+export const slaConfigCreateSchema = z.object({
+  name: z.string().min(1).max(200),
+  rpoTargetMinutes: z.number().int().min(1),
+  rtoTargetMinutes: z.number().int().min(1),
+  targetDevices: z.array(z.string().uuid()).optional(),
+  targetGroups: z.array(z.string().uuid()).optional(),
+  alertOnBreach: z.boolean().optional(),
+  isActive: z.boolean().optional(),
+});
+
+export const slaConfigUpdateSchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  rpoTargetMinutes: z.number().int().min(1).optional(),
+  rtoTargetMinutes: z.number().int().min(1).optional(),
+  targetDevices: z.array(z.string().uuid()).optional(),
+  targetGroups: z.array(z.string().uuid()).optional(),
+  alertOnBreach: z.boolean().optional(),
+  isActive: z.boolean().optional(),
+});
+
+export const slaEventsQuerySchema = z.object({
+  configId: z.string().uuid().optional(),
+  deviceId: z.string().uuid().optional(),
+  eventType: z.string().optional(),
+  from: z.string().optional(),
+  to: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+});
+
+// ── DR plan schemas ────────────────────────────────────────────────────────
+
+export const drPlanCreateSchema = z.object({
+  name: z.string().min(1).max(200),
+  description: z.string().max(2000).optional(),
+  rpoTargetMinutes: z.number().int().min(1).optional(),
+  rtoTargetMinutes: z.number().int().min(1).optional(),
+});
+
+export const drPlanUpdateSchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  description: z.string().max(2000).optional(),
+  status: z.enum(['draft', 'active', 'archived']).optional(),
+  rpoTargetMinutes: z.number().int().min(1).optional(),
+  rtoTargetMinutes: z.number().int().min(1).optional(),
+});
+
+export const drGroupCreateSchema = z.object({
+  name: z.string().min(1).max(200),
+  sequence: z.number().int().min(0).optional(),
+  dependsOnGroupId: z.string().uuid().optional(),
+  devices: z.array(z.string().uuid()).optional(),
+  restoreConfig: z.record(z.any()).optional(),
+  estimatedDurationMinutes: z.number().int().min(0).optional(),
+});
+
+export const drGroupUpdateSchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  sequence: z.number().int().min(0).optional(),
+  dependsOnGroupId: z.string().uuid().nullable().optional(),
+  devices: z.array(z.string().uuid()).optional(),
+  restoreConfig: z.record(z.any()).optional(),
+  estimatedDurationMinutes: z.number().int().min(0).nullable().optional(),
+});
+
+export const drExecutionTriggerSchema = z.object({
+  executionType: z.enum(['rehearsal', 'failover', 'failback']),
+});
+
+export const drExecutionsQuerySchema = z.object({
+  planId: z.string().uuid().optional(),
+  status: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+});

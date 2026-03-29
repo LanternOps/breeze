@@ -11,6 +11,7 @@ import { encryptionRoutes } from './encryption';
 import { bmrRoutes } from './bmr';
 import { mssqlRoutes } from './mssql';
 import { hypervRoutes } from './hyperv';
+import { slaRoutes } from './sla';
 
 export const backupRoutes = new Hono();
 
@@ -27,3 +28,4 @@ backupRoutes.route('/', mssqlRoutes);
 backupRoutes.route('/hyperv', hypervRoutes);
 backupRoutes.route('/vss', vssRoutes);
 backupRoutes.route('/encryption', encryptionRoutes);
+backupRoutes.route('/sla', slaRoutes);
