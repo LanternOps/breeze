@@ -4,6 +4,7 @@ package sessionbroker
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"strings"
 	"time"
@@ -21,15 +22,26 @@ func (d *darwinDetectorNoCgo) ListSessions() ([]DetectedSession, error) {
 	// Use "stat -f %Su /dev/console" to get the console user without CGO
 	out, err := exec.Command("stat", "-f", "%Su", "/dev/console").Output()
 	if err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("failed to detect console user via stat: %w", err)
 	}
 	username := strings.TrimSpace(string(out))
 	if username == "" || username == "root" || username == "loginwindow" {
 		return nil, nil
 	}
 
+	// Resolve UID for the console user (needed for launchctl domain targeting)
+	uidOut, err := exec.Command("id", "-u", username).Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve UID for user %q: %w", username, err)
+	}
+	var uid uint32
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(uidOut)), "%d", &uid); err != nil {
+		return nil, fmt.Errorf("failed to parse UID for user %q: %w", username, err)
+	}
+
 	return []DetectedSession{
 		{
+			UID:      uid,
 			Username: username,
 			Session:  "console",
 			Display:  "quartz",
