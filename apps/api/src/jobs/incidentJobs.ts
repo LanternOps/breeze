@@ -76,7 +76,7 @@ async function runIncidentTimelineEnrichmentPass(): Promise<void> {
       .where(
         and(
           ne(incidents.status, 'closed'),
-          sql`jsonb_array_length(${incidents.timeline}) = 0`
+          sql`NOT (${incidents.timeline}::jsonb @> '[{"type":"timeline_enriched"}]'::jsonb)`
         )
       )
       .limit(100);

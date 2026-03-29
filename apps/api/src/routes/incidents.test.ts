@@ -83,9 +83,16 @@ function mockOrderedSelect(rows: unknown[]) {
   } as any;
 }
 
-function mockContainmentTransaction(action: unknown, updatedIncident: unknown) {
+function mockContainmentTransaction(incident: unknown, action: unknown, updatedIncident: unknown) {
   vi.mocked(db.transaction).mockImplementationOnce(async (callback: any) => {
     const tx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(incident ? [incident] : []),
+          }),
+        }),
+      }),
       insert: vi.fn().mockReturnValue({
         values: vi.fn().mockReturnValue({
           returning: vi.fn().mockResolvedValue([action]),
@@ -95,6 +102,28 @@ function mockContainmentTransaction(action: unknown, updatedIncident: unknown) {
         set: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             returning: vi.fn().mockResolvedValue([updatedIncident]),
+          }),
+        }),
+      }),
+    };
+    return callback(tx);
+  });
+}
+
+function mockCloseTransaction(incident: unknown, updated: unknown) {
+  vi.mocked(db.transaction).mockImplementationOnce(async (callback: any) => {
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(incident ? [incident] : []),
+          }),
+        }),
+      }),
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue(updated ? [updated] : []),
           }),
         }),
       }),
@@ -174,14 +203,6 @@ describe('incidentRoutes', () => {
   });
 
   it('rejects high-risk containment without approvalRef', async () => {
-    vi.mocked(db.select).mockReturnValueOnce(mockSelectSingle({
-      id: '33333333-3333-4333-8333-333333333333',
-      orgId: '22222222-2222-4222-8222-222222222222',
-      title: 'Credential compromise',
-      status: 'analyzing',
-      timeline: [],
-    }));
-
     const res = await app.request('/incidents/33333333-3333-4333-8333-333333333333/contain', {
       method: 'POST',
       headers: {
@@ -200,14 +221,14 @@ describe('incidentRoutes', () => {
   });
 
   it('does not mark incident contained for failed containment actions', async () => {
-    vi.mocked(db.select).mockReturnValueOnce(mockSelectSingle({
-      id: '33333333-3333-4333-8333-333333333333',
-      orgId: '22222222-2222-4222-8222-222222222222',
-      title: 'Credential compromise',
-      status: 'analyzing',
-      timeline: [],
-    }));
     mockContainmentTransaction(
+      {
+        id: '33333333-3333-4333-8333-333333333333',
+        orgId: '22222222-2222-4222-8222-222222222222',
+        title: 'Credential compromise',
+        status: 'analyzing',
+        timeline: [],
+      },
       {
         id: 'action-1',
         actionType: 'process_kill',
@@ -230,6 +251,7 @@ describe('incidentRoutes', () => {
         actionType: 'process_kill',
         description: 'Kill suspicious process',
         status: 'failed',
+        approvalRef: 'APPROVE-001',
       }),
     });
 
@@ -344,13 +366,16 @@ describe('incidentRoutes', () => {
   });
 
   it('rejects close transition from analyzing', async () => {
-    vi.mocked(db.select).mockReturnValueOnce(mockSelectSingle({
-      id: '33333333-3333-4333-8333-333333333333',
-      orgId: '22222222-2222-4222-8222-222222222222',
-      title: 'Credential compromise',
-      status: 'analyzing',
-      timeline: [],
-    }));
+    mockCloseTransaction(
+      {
+        id: '33333333-3333-4333-8333-333333333333',
+        orgId: '22222222-2222-4222-8222-222222222222',
+        title: 'Credential compromise',
+        status: 'analyzing',
+        timeline: [],
+      },
+      null
+    );
 
     const res = await app.request('/incidents/33333333-3333-4333-8333-333333333333/close', {
       method: 'POST',
@@ -369,30 +394,23 @@ describe('incidentRoutes', () => {
   });
 
   it('closes an incident from POST /incidents/:id/close', async () => {
-    vi.mocked(db.select).mockReturnValueOnce(mockSelectSingle({
-      id: '33333333-3333-4333-8333-333333333333',
-      orgId: '22222222-2222-4222-8222-222222222222',
-      title: 'Credential compromise',
-      status: 'contained',
-      timeline: [],
-    }));
-
-    vi.mocked(db.update).mockReturnValueOnce({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([
-            {
-              id: '33333333-3333-4333-8333-333333333333',
-              orgId: '22222222-2222-4222-8222-222222222222',
-              title: 'Credential compromise',
-              status: 'closed',
-              resolvedAt: new Date('2026-02-26T10:00:00.000Z'),
-              closedAt: new Date('2026-02-26T10:00:00.000Z'),
-            },
-          ]),
-        }),
-      }),
-    } as any);
+    mockCloseTransaction(
+      {
+        id: '33333333-3333-4333-8333-333333333333',
+        orgId: '22222222-2222-4222-8222-222222222222',
+        title: 'Credential compromise',
+        status: 'contained',
+        timeline: [],
+      },
+      {
+        id: '33333333-3333-4333-8333-333333333333',
+        orgId: '22222222-2222-4222-8222-222222222222',
+        title: 'Credential compromise',
+        status: 'closed',
+        resolvedAt: new Date('2026-02-26T10:00:00.000Z'),
+        closedAt: new Date('2026-02-26T10:00:00.000Z'),
+      }
+    );
 
     const res = await app.request('/incidents/33333333-3333-4333-8333-333333333333/close', {
       method: 'POST',
