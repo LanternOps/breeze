@@ -106,7 +106,7 @@ export default function CompliancePage({ policyId }: CompliancePageProps) {
           <ArrowLeft className="h-5 w-5" />
         </a>
         <div>
-          <h1 className="text-2xl font-bold">
+          <h1 className="text-xl font-semibold tracking-tight">
             {policyId ? `Compliance: ${policyName ?? 'Policy'}` : 'Compliance Dashboard'}
           </h1>
           <p className="text-muted-foreground">

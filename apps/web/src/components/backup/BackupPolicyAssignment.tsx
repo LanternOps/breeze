@@ -122,7 +122,7 @@ export default function BackupPolicyAssignment() {
             <Icon className="h-4 w-4 text-muted-foreground" />
             <span className="font-medium text-foreground">{node.name}</span>
           </div>
-          <input type="checkbox" defaultChecked={node.selected} className="h-4 w-4" />
+          <input type="checkbox" defaultChecked={node.selected} aria-label={`Select ${node.name}`} className="h-4 w-4" />
         </div>
         {hasChildren && isExpanded && (
           <div className="space-y-2">
@@ -145,9 +145,10 @@ export default function BackupPolicyAssignment() {
       <div className="rounded-lg border bg-card p-5 shadow-sm space-y-5">
         <div className="grid gap-4 lg:grid-cols-[1.2fr_1fr]">
           <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground">Backup configuration</label>
+            <label htmlFor="assign-config" className="text-xs font-medium text-muted-foreground">Backup configuration</label>
             <select
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+              id="assign-config"
+              className="w-full appearance-none rounded-md border bg-background px-3 py-2 text-sm"
               value={selectedConfig}
               onChange={(event) => setSelectedConfig(event.target.value)}
             >
@@ -185,16 +186,18 @@ export default function BackupPolicyAssignment() {
 
         <div className="grid gap-4 md:grid-cols-2">
           <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground">Include paths</label>
+            <label htmlFor="assign-include" className="text-xs font-medium text-muted-foreground">Include paths</label>
             <input
+              id="assign-include"
               className="w-full rounded-md border bg-background px-3 py-2 text-sm"
               defaultValue="/data, /projects, /home/finance"
             />
             <p className="text-xs text-muted-foreground">Comma-separated patterns.</p>
           </div>
           <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground">Exclude paths</label>
+            <label htmlFor="assign-exclude" className="text-xs font-medium text-muted-foreground">Exclude paths</label>
             <input
+              id="assign-exclude"
               className="w-full rounded-md border bg-background px-3 py-2 text-sm"
               defaultValue="/tmp, /cache, *.iso"
             />

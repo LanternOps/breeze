@@ -316,7 +316,7 @@ export default function OrganizationsPage() {
       {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Organizations & Sites</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Organizations & Sites</h1>
           <p className="text-muted-foreground">Manage organizations and their sites.</p>
         </div>
         <button

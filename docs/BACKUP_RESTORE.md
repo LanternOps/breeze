@@ -162,6 +162,33 @@ For use in automated recovery scripts:
 RESTORE_SKIP_CONFIRM=yes ./scripts/restore.sh --db /var/backups/breeze/db_20260211_020000.dump
 ```
 
+## Backup Verification API
+
+Use backup verification endpoints to prove recoverability and track RTO/RPO readiness:
+
+- `GET /api/v1/backup/health` — fleet verification and readiness summary
+- `POST /api/v1/backup/verify` — trigger integrity/test-restore/full-recovery verification
+- `GET /api/v1/backup/verifications` — verification history with filters
+- `GET /api/v1/backup/recovery-readiness` — per-device readiness scores and risk factors
+- Add `?refresh=true` to `health` or `recovery-readiness` when you want a forced readiness recalculation.
+
+Example verification trigger:
+
+```bash
+curl -X POST http://localhost:3001/api/v1/backup/verify \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "deviceId": "dev-001",
+    "verificationType": "test_restore"
+  }'
+```
+
+High-impact mode safeguard:
+
+- `verificationType: "full_recovery"` requires `highImpactApproved: true`
+- full-recovery checks should restore into isolated temp paths and clean up afterward
+
 ## Automated Backups (Cron)
 
 ### Setup

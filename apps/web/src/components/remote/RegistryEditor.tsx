@@ -318,7 +318,7 @@ function ValueEditorModal({ isOpen, isNew, value, onClose, onSave }: ValueEditor
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div className="bg-background border rounded-lg shadow-lg w-full max-w-lg mx-4">
         <div className="flex items-center justify-between px-4 py-3 border-b">
-          <h3 className="font-semibold">
+          <h3 className="text-sm font-semibold">
             {isNew ? 'New Value' : 'Edit Value'}
           </h3>
           <button
@@ -495,7 +495,7 @@ function CreateKeyModal({ isOpen, parentPath, onClose, onCreate }: CreateKeyModa
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div className="bg-background border rounded-lg shadow-lg w-full max-w-md mx-4">
         <div className="flex items-center justify-between px-4 py-3 border-b">
-          <h3 className="font-semibold">New Key</h3>
+          <h3 className="text-sm font-semibold">New Key</h3>
           <button
             type="button"
             onClick={onClose}

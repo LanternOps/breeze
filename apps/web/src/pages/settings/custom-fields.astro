@@ -1,8 +1,13 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
 import CustomFieldsPage from '../../components/settings/CustomFieldsPage';
+import Breadcrumbs from '../../components/layout/Breadcrumbs';
 ---
 
 <DashboardLayout title="Custom Fields">
+  <Breadcrumbs client:load items={[
+    { label: 'Settings', href: '/settings' },
+    { label: 'Custom Fields' }
+  ]} />
   <CustomFieldsPage client:load />
 </DashboardLayout>

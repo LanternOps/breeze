@@ -277,7 +277,7 @@ export default function ApiKeyForm({
                   type="checkbox"
                   checked={neverExpires}
                   onChange={e => setNeverExpires(e.target.checked)}
-                  className="h-4 w-4 rounded border-gray-300"
+                  className="h-4 w-4 rounded border-border"
                 />
                 Never expires
               </label>
@@ -360,7 +360,7 @@ export default function ApiKeyForm({
                       checked={scopes.includes(scope.id)}
                       onChange={() => handleScopeToggle(scope.id)}
                       disabled={isDisabled}
-                      className="mt-0.5 h-4 w-4 rounded border-gray-300"
+                      className="mt-0.5 h-4 w-4 rounded border-border"
                     />
                     <div>
                       <div className="flex items-center gap-2">

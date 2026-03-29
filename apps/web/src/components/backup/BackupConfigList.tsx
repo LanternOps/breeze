@@ -129,8 +129,8 @@ export default function BackupConfigList() {
         </div>
       )}
 
-      <div className="overflow-hidden rounded-lg border bg-card shadow-sm">
-        <table className="w-full">
+      <div className="overflow-x-auto rounded-lg border bg-card shadow-sm">
+        <table className="w-full min-w-[750px]">
           <thead className="bg-muted/40 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             <tr>
               <th className="px-4 py-3">Name</th>
@@ -170,9 +170,9 @@ export default function BackupConfigList() {
                           <ProviderIcon
                             className={cn(
                               'h-4 w-4',
-                              config.provider === 's3' && 'text-emerald-600',
-                              config.provider === 'azure' && 'text-sky-600',
-                              config.provider === 'local' && 'text-amber-600'
+                              config.provider === 's3' && 'text-success',
+                              config.provider === 'azure' && 'text-primary',
+                              config.provider === 'local' && 'text-warning'
                             )}
                           />
                         </span>
@@ -199,13 +199,13 @@ export default function BackupConfigList() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-2">
-                        <button className="rounded-md border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground">
+                        <button aria-label={`Edit ${config.name}`} className="rounded-md border p-2 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground">
                           <Pencil className="h-3.5 w-3.5" />
                         </button>
-                        <button className="rounded-md border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground">
+                        <button aria-label={`Refresh ${config.name}`} className="rounded-md border p-2 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground">
                           <RefreshCw className="h-3.5 w-3.5" />
                         </button>
-                        <button className="rounded-md border px-2.5 py-1 text-xs font-medium text-destructive hover:bg-destructive/10">
+                        <button aria-label={`Delete ${config.name}`} className="rounded-md border p-2 text-xs font-medium text-destructive hover:bg-destructive/10">
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
                       </div>

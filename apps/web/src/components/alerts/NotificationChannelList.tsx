@@ -246,8 +246,8 @@ export default function NotificationChannelList({
                     className={cn(
                       'inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium',
                       channel.enabled
-                        ? 'bg-green-500/20 text-green-700 border-green-500/40'
-                        : 'bg-gray-500/20 text-gray-700 border-gray-500/40'
+                        ? 'bg-success/15 text-success border-success/30'
+                        : 'bg-muted text-muted-foreground border-border'
                     )}
                   >
                     {channel.enabled ? 'Active' : 'Disabled'}

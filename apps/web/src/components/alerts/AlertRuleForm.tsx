@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus, Trash2, GripVertical, Filter } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import HelpTooltip from '../shared/HelpTooltip';
 import type { AlertSeverity } from './AlertList';
 import type { DeploymentTargetConfig } from '@breeze/shared';
 import { DeviceTargetSelector } from '../filters/DeviceTargetSelector';
@@ -209,6 +210,7 @@ export default function AlertRuleForm({
         <div className="space-y-2">
           <label htmlFor="rule-severity" className="text-sm font-medium">
             Severity
+            <HelpTooltip text="Determines notification routing and dashboard priority. Critical alerts page on-call immediately." />
           </label>
           <Controller
             name="severity"
@@ -311,7 +313,7 @@ export default function AlertRuleForm({
                         type="checkbox"
                         checked={watch('targetIds')?.includes(target.id) || false}
                         onChange={() => handleTargetToggle(target.id)}
-                        className="h-4 w-4 rounded border-gray-300"
+                        className="h-4 w-4 rounded border-border"
                       />
                       <span className="text-sm">{target.name}</span>
                     </label>
@@ -356,7 +358,10 @@ export default function AlertRuleForm({
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-semibold">Conditions</h3>
+            <h3 className="text-sm font-semibold">
+              Conditions
+              <HelpTooltip text="All conditions must be met simultaneously for the alert to fire. Add multiple for compound rules." />
+            </h3>
             <p className="text-xs text-muted-foreground">Define when this alert should trigger</p>
           </div>
           <button
@@ -500,7 +505,10 @@ export default function AlertRuleForm({
 
       {/* Notification Channels */}
       <div className="rounded-md border bg-muted/20 p-4">
-        <h3 className="text-sm font-semibold mb-4">Notification Channels</h3>
+        <h3 className="text-sm font-semibold mb-4">
+          Notification Channels
+          <HelpTooltip text="Where to send alerts. Configure channels in Settings > Notification Channels." />
+        </h3>
         {notificationChannels.length > 0 ? (
           <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-3">
             {notificationChannels.map(channel => (
@@ -517,7 +525,7 @@ export default function AlertRuleForm({
                   type="checkbox"
                   checked={watchChannelIds?.includes(channel.id) || false}
                   onChange={() => handleChannelToggle(channel.id)}
-                  className="h-4 w-4 rounded border-gray-300"
+                  className="h-4 w-4 rounded border-border"
                 />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium truncate">{channel.name}</p>
@@ -548,6 +556,7 @@ export default function AlertRuleForm({
           <div className="space-y-2">
             <label htmlFor="cooldown-minutes" className="text-sm font-medium">
               Cooldown Period (minutes)
+              <HelpTooltip text="After firing, the rule waits this long before it can fire again for the same device." />
             </label>
             <input
               id="cooldown-minutes"
@@ -576,7 +585,7 @@ export default function AlertRuleForm({
                     type="checkbox"
                     checked={field.value}
                     onChange={e => field.onChange(e.target.checked)}
-                    className="h-4 w-4 rounded border-gray-300"
+                    className="h-4 w-4 rounded border-border"
                   />
                   <span className="text-sm">
                     Automatically resolve when condition is no longer met

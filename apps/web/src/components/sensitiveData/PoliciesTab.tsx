@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { DETECTION_CLASSES, DATA_TYPE_COLORS } from './constants';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { showToast } from '../shared/Toast';
 
 type Policy = {
   id: string;
@@ -43,6 +45,8 @@ export default function PoliciesTab() {
   const [form, setForm] = useState<FormState>(defaultForm);
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Policy | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const fetchPolicies = useCallback(async () => {
     try {
@@ -121,6 +125,7 @@ export default function PoliciesTab() {
 
       setShowForm(false);
       await fetchPolicies();
+      showToast({ message: editingId ? 'Policy updated' : 'Policy created', type: 'success' });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Save failed');
     } finally {
@@ -128,14 +133,24 @@ export default function PoliciesTab() {
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Delete this policy? This cannot be undone.')) return;
+  const handleDelete = (policy: Policy) => {
+    setDeleteTarget(policy);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
     try {
-      const res = await fetchWithAuth(`/sensitive-data/policies/${id}`, { method: 'DELETE' });
+      const res = await fetchWithAuth(`/sensitive-data/policies/${deleteTarget.id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Failed to delete policy');
+      const deletedName = deleteTarget.name;
+      setDeleteTarget(null);
       await fetchPolicies();
+      showToast({ message: `Policy "${deletedName}" deleted`, type: 'success' });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Delete failed');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -153,6 +168,7 @@ export default function PoliciesTab() {
   };
 
   return (
+    <>
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
@@ -335,7 +351,7 @@ export default function PoliciesTab() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => handleDelete(policy.id)}
+                        onClick={() => handleDelete(policy)}
                         className="inline-flex h-8 w-8 items-center justify-center rounded-md border text-destructive hover:bg-destructive/10"
                       >
                         <Trash2 className="h-4 w-4" />
@@ -349,5 +365,16 @@ export default function PoliciesTab() {
         </table>
       </div>
     </div>
+    <ConfirmDialog
+      open={deleteTarget !== null}
+      onClose={() => setDeleteTarget(null)}
+      onConfirm={handleConfirmDelete}
+      title="Delete Scan Policy"
+      message={`Are you sure you want to delete "${deleteTarget?.name}"? This action cannot be undone and any scheduled scans under this policy will stop.`}
+      confirmLabel="Delete Policy"
+      variant="destructive"
+      isLoading={deleting}
+    />
+    </>
   );
 }

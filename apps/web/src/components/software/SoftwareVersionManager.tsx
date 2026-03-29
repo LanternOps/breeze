@@ -268,7 +268,7 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Software Version Manager</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Software Version Manager</h1>
           <p className="text-sm text-muted-foreground">Manage version history, latest builds, and release notes.</p>
         </div>
         <button

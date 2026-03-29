@@ -4,6 +4,7 @@ import ReportBuilder, { type ReportBuilderFormValues } from './ReportBuilder';
 import type { Report, ReportType } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import Breadcrumbs from '../layout/Breadcrumbs';
 
 type ReportEditPageProps = {
   reportId: string;
@@ -65,7 +66,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
           >
             <ArrowLeft className="h-4 w-4" />
           </a>
-          <h1 className="text-2xl font-bold">Edit Report</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Edit Report</h1>
         </div>
 
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
@@ -96,6 +97,10 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
+      <Breadcrumbs items={[
+        { label: 'Reports', href: '/reports' },
+        { label: report.name || 'Edit Report' }
+      ]} />
       <div className="flex items-center gap-4">
         <a
           href="/reports"
@@ -104,7 +109,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
           <ArrowLeft className="h-4 w-4" />
         </a>
         <div>
-          <h1 className="text-2xl font-bold">Edit Report</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Edit Report</h1>
           <p className="text-muted-foreground">
             Update the configuration for "{report.name}".
           </p>

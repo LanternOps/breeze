@@ -254,7 +254,7 @@ export default function FleetOrchestrationPage() {
     return (
       <div className="space-y-6 p-6">
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold">Fleet Orchestration</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Fleet Orchestration</h1>
         </div>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {[...Array(8)].map((_, i) => (
@@ -272,7 +272,7 @@ export default function FleetOrchestrationPage() {
   if (error) {
     return (
       <div className="space-y-6 p-6">
-        <h1 className="text-2xl font-bold">Fleet Orchestration</h1>
+        <h1 className="text-xl font-semibold tracking-tight">Fleet Orchestration</h1>
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6">
           <div className="flex items-center gap-2 text-destructive">
             <XCircle className="h-5 w-5" />
@@ -290,7 +290,7 @@ export default function FleetOrchestrationPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Fleet Orchestration</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Fleet Orchestration</h1>
           <p className="text-sm text-muted-foreground mt-1">
             Manage policies, deployments, patches, and automations across your fleet
           </p>

@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  CheckCircle,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -10,9 +9,9 @@ import {
   Search,
   ShieldCheck,
   ShieldX,
-  XCircle,
 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 import DeviceDrawer from './DeviceDrawer';
 import { navigateTo } from '@/lib/navigation';
 
@@ -26,12 +25,6 @@ type SoftwareRow = {
   firstSeen: string | null;
   lastSeen: string | null;
   policyStatus: 'allowed' | 'blocked' | 'audit' | 'no_policy';
-};
-
-type Toast = {
-  id: string;
-  type: 'success' | 'error';
-  message: string;
 };
 
 type DrawerState = {
@@ -71,15 +64,6 @@ export default function SoftwareInventory({ onSwitchToPolicies }: SoftwareInvent
 
   const [drawer, setDrawer] = useState<DrawerState>(null);
   const [actionMenu, setActionMenu] = useState<ActionMenu>(null);
-  const [toasts, setToasts] = useState<Toast[]>([]);
-
-  const showToast = useCallback((type: 'success' | 'error', message: string) => {
-    const id = Date.now().toString();
-    setToasts((prev) => [...prev, { id, type, message }]);
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 4000);
-  }, []);
 
   // Debounce search
   useEffect(() => {
@@ -143,10 +127,10 @@ export default function SoftwareInventory({ onSwitchToPolicies }: SoftwareInvent
         body: JSON.stringify({ softwareName: name, vendor: vendor || undefined }),
       });
       if (!res.ok) throw new Error('Failed to approve');
-      showToast('success', `"${name}" added to allowlist`);
+      showToast({ type: 'success', message: `"${name}" added to allowlist` });
       await fetchData();
     } catch (err) {
-      showToast('error', err instanceof Error ? err.message : 'Failed to approve');
+      showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to approve' });
     }
   };
 
@@ -157,10 +141,10 @@ export default function SoftwareInventory({ onSwitchToPolicies }: SoftwareInvent
         body: JSON.stringify({ softwareName: name, vendor: vendor || undefined }),
       });
       if (!res.ok) throw new Error('Failed to deny');
-      showToast('success', `"${name}" added to blocklist`);
+      showToast({ type: 'success', message: `"${name}" added to blocklist` });
       await fetchData();
     } catch (err) {
-      showToast('error', err instanceof Error ? err.message : 'Failed to deny');
+      showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to deny' });
     }
   };
 
@@ -171,10 +155,10 @@ export default function SoftwareInventory({ onSwitchToPolicies }: SoftwareInvent
         body: JSON.stringify({ softwareName: name, vendor: vendor || undefined }),
       });
       if (!res.ok) throw new Error('Failed to clear status');
-      showToast('success', `"${name}" policy status cleared`);
+      showToast({ type: 'success', message: `"${name}" policy status cleared` });
       await fetchData();
     } catch (err) {
-      showToast('error', err instanceof Error ? err.message : 'Failed to clear status');
+      showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to clear status' });
     }
   };
 
@@ -199,29 +183,6 @@ export default function SoftwareInventory({ onSwitchToPolicies }: SoftwareInvent
 
   return (
     <div className="space-y-6">
-      {/* Toast notifications */}
-      {toasts.length > 0 && (
-        <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
-          {toasts.map((toast) => (
-            <div
-              key={toast.id}
-              className={`flex items-center gap-2 rounded-lg px-4 py-3 shadow-lg ${
-                toast.type === 'success'
-                  ? 'bg-green-600 text-white'
-                  : 'bg-destructive text-destructive-foreground'
-              }`}
-            >
-              {toast.type === 'success' ? (
-                <CheckCircle className="h-5 w-5" />
-              ) : (
-                <XCircle className="h-5 w-5" />
-              )}
-              <span className="text-sm font-medium">{toast.message}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
       {/* Search */}
       <div className="flex items-center gap-4">
         <div className="relative flex-1 max-w-md">

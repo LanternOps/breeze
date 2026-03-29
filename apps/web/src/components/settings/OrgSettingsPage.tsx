@@ -391,7 +391,7 @@ export default function OrgSettingsPage() {
     <div className="mx-auto flex max-w-6xl flex-col gap-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold">Organization settings</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Organization settings</h1>
           <p className="text-sm text-muted-foreground">
             Configure preferences for {displayOrg.name}.
           </p>

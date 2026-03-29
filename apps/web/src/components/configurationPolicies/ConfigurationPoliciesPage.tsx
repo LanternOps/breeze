@@ -113,7 +113,7 @@ export default function ConfigurationPoliciesPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Configuration Policies</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Configuration Policies</h1>
           <p className="text-muted-foreground">
             Bundle feature settings into reusable policies and assign them across your hierarchy.
           </p>

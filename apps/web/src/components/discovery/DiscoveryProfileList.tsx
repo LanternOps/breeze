@@ -25,10 +25,10 @@ type DiscoveryProfileListProps = {
 };
 
 const statusConfig: Record<DiscoveryProfileStatus, { label: string; color: string }> = {
-  active: { label: 'Active', color: 'bg-green-500/20 text-green-700 border-green-500/40' },
-  paused: { label: 'Paused', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40' },
+  active: { label: 'Active', color: 'bg-success/15 text-success border-success/30' },
+  paused: { label: 'Paused', color: 'bg-warning/15 text-warning border-warning/30' },
   draft: { label: 'Draft', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40' },
-  error: { label: 'Error', color: 'bg-red-500/20 text-red-700 border-red-500/40' }
+  error: { label: 'Error', color: 'bg-destructive/15 text-destructive border-destructive/30' }
 };
 
 export default function DiscoveryProfileList({

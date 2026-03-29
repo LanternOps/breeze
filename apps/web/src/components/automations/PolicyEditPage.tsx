@@ -3,6 +3,7 @@ import { ArrowLeft } from 'lucide-react';
 import PolicyForm, { type PolicyFormValues } from './PolicyForm';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import Breadcrumbs from '../layout/Breadcrumbs';
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
@@ -224,6 +225,10 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
 
   return (
     <div className="space-y-6">
+      <Breadcrumbs items={[
+        { label: 'Policies', href: '/policies' },
+        { label: isNew ? 'New Policy' : (defaultValues?.name || 'Edit Policy') }
+      ]} />
       <div className="flex items-center gap-4">
         <a
           href="/policies"
@@ -232,7 +237,7 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
           <ArrowLeft className="h-5 w-5" />
         </a>
         <div>
-          <h1 className="text-2xl font-bold">
+          <h1 className="text-xl font-semibold tracking-tight">
             {isNew ? 'Create Policy' : 'Edit Policy'}
           </h1>
           <p className="text-muted-foreground">

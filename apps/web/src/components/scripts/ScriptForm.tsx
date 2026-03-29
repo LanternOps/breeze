@@ -1,11 +1,10 @@
-import { useMemo, useState, useEffect, lazy, Suspense } from 'react';
+import { useMemo, useState, useEffect, useRef, type ComponentType } from 'react';
 import { useForm, useFieldArray, Controller } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus, Trash2, GripVertical, Sparkles } from 'lucide-react';
+import type { EditorProps } from '@monaco-editor/react';
 
-// Dynamic import for Monaco Editor to avoid SSR issues
-const Editor = lazy(() => import('@monaco-editor/react'));
 import ScriptAiPanel from './ScriptAiPanel';
 import { cn } from '@/lib/utils';
 import { useScriptAiStore } from '@/stores/scriptAiStore';
@@ -87,13 +86,26 @@ export default function ScriptForm({
   loading
 }: ScriptFormProps) {
   const [editorMounted, setEditorMounted] = useState(false);
-  const [editorReady, setEditorReady] = useState(false);
+  const editorInstanceRef = useRef<Parameters<NonNullable<EditorProps['onMount']>>[0] | null>(null);
 
-  // Delay editor init by one frame so the container is fully laid out
-  // after Astro View Transitions swap the DOM.
+  // Dynamic import for Monaco Editor — avoids React.lazy/Suspense which
+  // can cause hydration issues during Astro View Transition DOM swaps.
+  const [MonacoEditor, setMonacoEditor] = useState<ComponentType<EditorProps> | null>(null);
   useEffect(() => {
-    const id = requestAnimationFrame(() => setEditorReady(true));
-    return () => cancelAnimationFrame(id);
+    let cancelled = false;
+    import('@monaco-editor/react').then((mod) => {
+      if (!cancelled) setMonacoEditor(() => mod.default);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Force editor relayout after View Transition navigation completes
+  useEffect(() => {
+    const forceLayout = () => {
+      requestAnimationFrame(() => editorInstanceRef.current?.layout());
+    };
+    document.addEventListener('astro:page-load', forceLayout);
+    return () => document.removeEventListener('astro:page-load', forceLayout);
   }, []);
 
   const {
@@ -309,43 +321,39 @@ export default function ScriptForm({
             <Controller
               name="content"
               control={control}
-              render={({ field }) => (
-                <Suspense fallback={
+              render={({ field }) =>
+                MonacoEditor ? (
+                  <MonacoEditor
+                    height="600px"
+                    language={monacoLanguage}
+                    value={field.value}
+                    onChange={(value) => field.onChange(value || '')}
+                    onMount={(editor) => {
+                      editorInstanceRef.current = editor;
+                      setEditorMounted(true);
+                      requestAnimationFrame(() => editor.layout());
+                    }}
+                    theme="vs-dark"
+                    options={{
+                      minimap: { enabled: false },
+                      fontSize: 14,
+                      lineNumbers: 'on',
+                      scrollBeyondLastLine: false,
+                      wordWrap: 'on',
+                      automaticLayout: true,
+                      tabSize: 2,
+                      padding: { top: 12, bottom: 12 }
+                    }}
+                  />
+                ) : (
                   <div className="flex items-center justify-center h-[600px] bg-[#1e1e1e]">
                     <div className="text-center text-white/60">
                       <div className="h-6 w-6 animate-spin rounded-full border-2 border-white/40 border-t-white mx-auto" />
                       <p className="mt-2 text-sm">Loading editor...</p>
                     </div>
                   </div>
-                }>
-                  {editorReady ? (
-                    <Editor
-                      height="600px"
-                      language={monacoLanguage}
-                      value={field.value}
-                      onChange={(value) => field.onChange(value || '')}
-                      onMount={(editor) => {
-                        setEditorMounted(true);
-                        // Force relayout after View Transition
-                        requestAnimationFrame(() => editor.layout());
-                      }}
-                      theme="vs-dark"
-                      options={{
-                        minimap: { enabled: false },
-                        fontSize: 14,
-                        lineNumbers: 'on',
-                        scrollBeyondLastLine: false,
-                        wordWrap: 'on',
-                        automaticLayout: true,
-                        tabSize: 2,
-                        padding: { top: 12, bottom: 12 }
-                      }}
-                    />
-                  ) : (
-                    <div className="h-[600px] bg-[#1e1e1e]" />
-                  )}
-                </Suspense>
-              )}
+                )
+              }
             />
           </div>
           {panelOpen && <ScriptAiPanel bridge={bridge} />}
@@ -417,7 +425,7 @@ export default function ScriptForm({
                       <div className="flex items-center h-9">
                         <input
                           type="checkbox"
-                          className="h-4 w-4 rounded border-gray-300"
+                          className="h-4 w-4 rounded border-border"
                           {...register(`parameters.${index}.required`)}
                         />
                         <span className="ml-2 text-sm">Yes</span>

@@ -45,18 +45,18 @@ type SortField = 'name' | 'displayName' | 'status' | 'startupType' | 'account';
 type SortDirection = 'asc' | 'desc';
 
 const statusColors: Record<ServiceStatus, string> = {
-  Running: 'bg-green-500/20 text-green-700 border-green-500/40',
-  Stopped: 'bg-red-500/20 text-red-700 border-red-500/40',
-  Paused: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40',
+  Running: 'bg-success/15 text-success border-success/30',
+  Stopped: 'bg-destructive/15 text-destructive border-destructive/30',
+  Paused: 'bg-warning/15 text-warning border-warning/30',
   Starting: 'bg-blue-500/20 text-blue-700 border-blue-500/40',
   Stopping: 'bg-blue-500/20 text-blue-700 border-blue-500/40'
 };
 
 const startupTypeColors: Record<StartupType, string> = {
-  Automatic: 'bg-green-500/20 text-green-700 border-green-500/40',
-  'Automatic (Delayed)': 'bg-green-500/20 text-green-700 border-green-500/40',
-  Manual: 'bg-gray-500/20 text-gray-700 border-gray-500/40',
-  Disabled: 'bg-red-500/20 text-red-700 border-red-500/40'
+  Automatic: 'bg-success/15 text-success border-success/30',
+  'Automatic (Delayed)': 'bg-success/15 text-success border-success/30',
+  Manual: 'bg-muted text-muted-foreground border-border',
+  Disabled: 'bg-destructive/15 text-destructive border-destructive/30'
 };
 
 const startupTypeOptions: StartupType[] = ['Automatic', 'Automatic (Delayed)', 'Manual', 'Disabled'];

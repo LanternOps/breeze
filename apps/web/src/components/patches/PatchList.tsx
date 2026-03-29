@@ -45,9 +45,9 @@ const severityConfig: Record<PatchSeverity, { label: string; color: string }> = 
 };
 
 const approvalConfig: Record<PatchApprovalStatus, { label: string; color: string; icon: typeof CheckCircle }> = {
-  pending: { label: 'Pending', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40', icon: Clock },
-  approved: { label: 'Approved', color: 'bg-green-500/20 text-green-700 border-green-500/40', icon: CheckCircle },
-  declined: { label: 'Declined', color: 'bg-red-500/20 text-red-700 border-red-500/40', icon: XCircle },
+  pending: { label: 'Pending', color: 'bg-warning/15 text-warning border-warning/30', icon: Clock },
+  approved: { label: 'Approved', color: 'bg-success/15 text-success border-success/30', icon: CheckCircle },
+  declined: { label: 'Declined', color: 'bg-destructive/15 text-destructive border-destructive/30', icon: XCircle },
   deferred: { label: 'Deferred', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40', icon: Clock }
 };
 

@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import { Folder, ChevronRight, ArrowUp, X, Loader2, AlertCircle } from 'lucide-react';
+import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '@/stores/auth';
 import { buildBreadcrumbs, getParentPath, isPathRoot } from './filePathUtils';
 
@@ -90,41 +91,19 @@ export default function FolderPickerDialog({
     onSelect(currentPath);
   }, [currentPath, onSelect]);
 
-  // Close on Escape key
-  useEffect(() => {
-    if (!open) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [open, onClose]);
-
   if (!open) return null;
 
   const breadcrumbs = buildBreadcrumbs(currentPath);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black/60"
-        onClick={onClose}
-      />
-
-      {/* Dialog */}
-      <div className="relative z-10 flex max-h-[80vh] w-full max-w-xl flex-col rounded-lg border border-gray-700 bg-gray-900 shadow-2xl">
+    <Dialog open={true} onClose={onClose} title={title} maxWidth="xl" className="flex max-h-[80vh] flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-gray-700 px-4 py-3">
-          <h2 className="text-lg font-semibold text-white">{title}</h2>
+        <div className="flex items-center justify-between border-b px-4 py-3">
+          <h2 className="text-lg font-semibold">{title}</h2>
           <button
             type="button"
             onClick={onClose}
-            className="flex h-8 w-8 items-center justify-center rounded-md text-gray-400 hover:bg-gray-800 hover:text-white"
+            className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
             title="Close"
           >
             <X className="h-5 w-5" />
@@ -132,12 +111,12 @@ export default function FolderPickerDialog({
         </div>
 
         {/* Breadcrumb navigation */}
-        <div className="flex items-center gap-2 border-b border-gray-700 px-4 py-2">
+        <div className="flex items-center gap-2 border-b px-4 py-2">
           <button
             type="button"
             onClick={goUp}
             disabled={isPathRoot(currentPath)}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-gray-400 hover:bg-gray-800 hover:text-white disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-gray-400"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 disabled:hover:bg-transparent"
             title="Go up"
           >
             <ArrowUp className="h-4 w-4" />
@@ -147,17 +126,17 @@ export default function FolderPickerDialog({
             <button
               type="button"
               onClick={() => navigateTo(breadcrumbs.rootPath)}
-              className="shrink-0 text-gray-300 hover:text-blue-400"
+              className="shrink-0 text-foreground hover:text-primary"
             >
               {breadcrumbs.rootLabel}
             </button>
             {breadcrumbs.segments.map((segment) => (
               <span key={segment.path} className="flex items-center gap-1">
-                <ChevronRight className="h-4 w-4 shrink-0 text-gray-600" />
+                <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/50" />
                 <button
                   type="button"
                   onClick={() => navigateTo(segment.path)}
-                  className="truncate text-gray-300 hover:text-blue-400"
+                  className="truncate text-foreground hover:text-primary"
                 >
                   {segment.label}
                 </button>
@@ -167,45 +146,45 @@ export default function FolderPickerDialog({
         </div>
 
         {/* Current path display */}
-        <div className="border-b border-gray-700 bg-gray-800/50 px-4 py-2">
-          <p className="text-xs text-gray-400">Selected folder</p>
-          <p className="truncate text-sm font-medium text-white">{currentPath}</p>
+        <div className="border-b bg-muted/30 px-4 py-2">
+          <p className="text-xs text-muted-foreground">Selected folder</p>
+          <p className="truncate text-sm font-medium">{currentPath}</p>
         </div>
 
         {/* Directory listing */}
         <div className="min-h-[200px] flex-1 overflow-auto">
           {loading ? (
             <div className="flex items-center justify-center py-12">
-              <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
             </div>
           ) : error ? (
             <div className="flex flex-col items-center gap-2 py-12">
-              <AlertCircle className="h-6 w-6 text-red-500" />
-              <p className="text-sm text-red-400">{error}</p>
+              <AlertCircle className="h-6 w-6 text-destructive" />
+              <p className="text-sm text-destructive">{error}</p>
               <button
                 type="button"
                 onClick={() => fetchDirectory(currentPath)}
-                className="text-xs text-blue-400 hover:underline"
+                className="text-xs text-primary hover:underline"
               >
                 Retry
               </button>
             </div>
           ) : directories.length === 0 ? (
-            <div className="py-12 text-center text-sm text-gray-500">
+            <div className="py-12 text-center text-sm text-muted-foreground">
               No subdirectories
             </div>
           ) : (
-            <div className="divide-y divide-gray-800">
+            <div className="divide-y">
               {directories.map((entry) => (
                 <button
                   key={entry.path}
                   type="button"
-                  className="flex w-full items-center gap-3 px-4 py-2 text-left transition hover:bg-gray-800"
+                  className="flex w-full items-center gap-3 px-4 py-2 text-left transition hover:bg-muted/50"
                   onDoubleClick={() => handleDoubleClick(entry)}
                   onClick={() => navigateTo(entry.path)}
                 >
-                  <Folder className="h-5 w-5 shrink-0 text-blue-500" />
-                  <span className="truncate text-sm text-gray-200">{entry.name}</span>
+                  <Folder className="h-5 w-5 shrink-0 text-primary" />
+                  <span className="truncate text-sm">{entry.name}</span>
                 </button>
               ))}
             </div>
@@ -213,23 +192,22 @@ export default function FolderPickerDialog({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end gap-3 border-t border-gray-700 px-4 py-3">
+        <div className="flex items-center justify-end gap-3 border-t px-4 py-3">
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-gray-600 px-4 py-2 text-sm font-medium text-gray-300 hover:bg-gray-800"
+            className="rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
           >
             Cancel
           </button>
           <button
             type="button"
             onClick={handleSelect}
-            className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
             Select this folder
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

@@ -185,7 +185,7 @@ export default function ReportBuilderPage({ timezone }: ReportBuilderPageProps =
           <ArrowLeft className="h-4 w-4" />
         </a>
         <div>
-          <h1 className="text-2xl font-bold">Ad-hoc Report Builder</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Ad-hoc Report Builder</h1>
           <p className="text-muted-foreground">
             Generate a one-time report without saving it.
           </p>

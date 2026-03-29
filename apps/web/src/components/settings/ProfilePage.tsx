@@ -38,6 +38,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const [isLoadingUser, setIsLoadingUser] = useState(!initialUser);
   const [profileError, setProfileError] = useState<string | undefined>();
   const [profileSuccess, setProfileSuccess] = useState<string | undefined>();
+  const [tourResetMsg, setTourResetMsg] = useState<string | undefined>();
   const [passwordError, setPasswordError] = useState<string | undefined>();
   const [passwordSuccess, setPasswordSuccess] = useState<string | undefined>();
   const [mfaError, setMfaError] = useState<string | undefined>();
@@ -279,7 +280,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   return (
     <div className="mx-auto max-w-2xl space-y-8">
       <div>
-        <h1 className="text-2xl font-bold">Profile settings</h1>
+        <h1 className="text-xl font-semibold tracking-tight">Profile settings</h1>
         <p className="text-sm text-muted-foreground">
           Manage your account settings and security preferences.
         </p>
@@ -403,6 +404,32 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         successMessage={mfaSuccess}
         loading={mfaLoading}
       />
+
+      {/* Onboarding */}
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <h2 className="text-lg font-semibold">Onboarding</h2>
+        <p className="text-sm text-muted-foreground mt-1 mb-4">
+          Reset the product tour to see the welcome walkthrough again.
+        </p>
+        {tourResetMsg && (
+          <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-600 mb-3">
+            {tourResetMsg}
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            try {
+              localStorage.removeItem('breeze-onboarding-complete');
+              setTourResetMsg('Tour reset. It will appear on your next page load.');
+              setTimeout(() => setTourResetMsg(undefined), 4000);
+            } catch { /* ignore */ }
+          }}
+          className="rounded-md border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted transition-colors"
+        >
+          Restart tour
+        </button>
+      </div>
     </div>
   );
 }

@@ -72,7 +72,7 @@ export default function TableWidget<T extends Record<string, unknown>>({
             <thead className="sticky top-0 bg-background">
               <tr className="border-b">
                 {columns.map(column => (
-                  <th key={column.key} className={cn('px-2 py-2 font-medium text-muted-foreground', column.className)}>
+                  <th key={column.key} className={cn('px-2 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground', column.className)}>
                     <button
                       type="button"
                       onClick={() => column.sortable && handleSort(column.key)}

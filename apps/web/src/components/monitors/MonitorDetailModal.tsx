@@ -9,6 +9,7 @@ import {
   Play,
   Trash2
 } from 'lucide-react';
+import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 
 type MonitorDetail = {
@@ -47,9 +48,9 @@ type MonitorDetail = {
 };
 
 const statusConfig: Record<string, { icon: typeof CheckCircle; color: string; label: string }> = {
-  online: { icon: CheckCircle, color: 'text-green-600 bg-green-500/20 border-green-500/40', label: 'Online' },
-  offline: { icon: XCircle, color: 'text-red-600 bg-red-500/20 border-red-500/40', label: 'Offline' },
-  degraded: { icon: AlertTriangle, color: 'text-yellow-600 bg-yellow-500/20 border-yellow-500/40', label: 'Degraded' },
+  online: { icon: CheckCircle, color: 'text-success bg-success/15 border-success/30', label: 'Online' },
+  offline: { icon: XCircle, color: 'text-destructive bg-destructive/15 border-destructive/30', label: 'Offline' },
+  degraded: { icon: AlertTriangle, color: 'text-warning bg-warning/15 border-warning/30', label: 'Degraded' },
   unknown: { icon: HelpCircle, color: 'text-muted-foreground bg-muted border-muted', label: 'Unknown' }
 };
 
@@ -168,36 +169,25 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
     }
   };
 
-  if (loading) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80">
-        <div className="rounded-lg border bg-card p-8 shadow-sm">
-          <Loader2 className="h-6 w-6 animate-spin mx-auto text-primary" />
+  const sc = monitor ? (statusConfig[monitor.lastStatus] ?? statusConfig.unknown) : statusConfig.unknown;
+  const StatusIcon = sc.icon;
+
+  return (
+    <Dialog open={true} onClose={onClose} title={monitor?.name ?? 'Monitor'} maxWidth="3xl" className="max-h-[90vh] overflow-y-auto p-6">
+      {loading ? (
+        <div className="flex flex-col items-center py-8">
+          <Loader2 className="h-6 w-6 animate-spin text-primary" />
           <p className="mt-2 text-sm text-muted-foreground">Loading...</p>
         </div>
-      </div>
-    );
-  }
-
-  if (!monitor) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80">
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+      ) : !monitor ? (
+        <div>
           <p className="text-sm text-destructive">{error ?? 'Monitor not found'}</p>
           <button type="button" onClick={onClose} className="mt-4 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground">
             Close
           </button>
         </div>
-      </div>
-    );
-  }
-
-  const sc = statusConfig[monitor.lastStatus] ?? statusConfig.unknown;
-  const StatusIcon = sc.icon;
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-sm">
+      ) : (
+        <>
         {/* Header */}
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -322,11 +312,11 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
             <div className="max-h-60 overflow-y-auto rounded-md border">
               <table className="min-w-full divide-y text-xs">
                 <thead className="bg-muted/40 sticky top-0">
-                  <tr>
-                    <th className="px-3 py-2 text-left font-medium text-muted-foreground">Time</th>
-                    <th className="px-3 py-2 text-left font-medium text-muted-foreground">Status</th>
-                    <th className="px-3 py-2 text-right font-medium text-muted-foreground">Response</th>
-                    <th className="px-3 py-2 text-left font-medium text-muted-foreground">Error</th>
+                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <th className="px-3 py-2">Time</th>
+                    <th className="px-3 py-2">Status</th>
+                    <th className="px-3 py-2 text-right">Response</th>
+                    <th className="px-3 py-2">Error</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
@@ -366,10 +356,10 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
                     <span className="font-medium">{rule.condition}</span>
                     {rule.threshold && <span className="text-muted-foreground ml-1">({rule.threshold})</span>}
                     <span className={`ml-2 inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
-                      rule.severity === 'critical' ? 'bg-red-500/20 text-red-700' :
-                      rule.severity === 'high' ? 'bg-orange-500/20 text-orange-700' :
-                      rule.severity === 'medium' ? 'bg-yellow-500/20 text-yellow-700' :
-                      'bg-blue-500/20 text-blue-700'
+                      rule.severity === 'critical' ? 'bg-destructive/15 text-destructive' :
+                      rule.severity === 'high' ? 'bg-warning/15 text-warning' :
+                      rule.severity === 'medium' ? 'bg-primary/15 text-primary' :
+                      'bg-muted text-muted-foreground'
                     }`}>
                       {rule.severity}
                     </span>
@@ -428,7 +418,8 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
             Close
           </button>
         </div>
-      </div>
-    </div>
+        </>
+      )}
+    </Dialog>
   );
 }

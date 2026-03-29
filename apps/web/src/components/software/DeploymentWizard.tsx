@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle, ChevronRight, Loader2, Search, Server, CalendarClock, ClipboardList } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import ProgressBar from '../shared/ProgressBar';
 import type { DeploymentTargetConfig } from '@breeze/shared';
 import { DeviceTargetSelector } from '../filters/DeviceTargetSelector';
 
@@ -677,21 +678,31 @@ export default function DeploymentWizard() {
           </div>
         )}
 
-        <button
-          type="button"
-          onClick={handleDeploy}
-          disabled={deploying}
-          className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-primary px-6 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-        >
-          {deploying ? (
-            <>
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Creating Deployment...
-            </>
-          ) : (
-            'Create Deployment'
+        <div className="space-y-4">
+          {deploying && (
+            <ProgressBar
+              current={0}
+              total={selectedDeviceCount}
+              label={`Creating deployment for ${selectedDeviceCount} device${selectedDeviceCount === 1 ? '' : 's'}...`}
+              showCount={false}
+            />
           )}
-        </button>
+          <button
+            type="button"
+            onClick={handleDeploy}
+            disabled={deploying}
+            className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-primary px-6 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {deploying ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Creating Deployment...
+              </>
+            ) : (
+              'Create Deployment'
+            )}
+          </button>
+        </div>
       </div>
     );
   };
@@ -699,7 +710,7 @@ export default function DeploymentWizard() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Deployment Wizard</h1>
+        <h1 className="text-xl font-semibold tracking-tight">Deployment Wizard</h1>
         <p className="text-sm text-muted-foreground">Guide a deployment through selection, targeting, and review.</p>
       </div>
 

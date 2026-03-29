@@ -1267,7 +1267,7 @@ export default function ReportBuilder({
           <thead className="bg-muted/40">
             <tr>
               {previewColumns.map(column => (
-                <th key={column} className="px-3 py-2 font-medium text-muted-foreground">
+                <th key={column} className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   {column === groupedMetricKey ? groupedMetricLabel : getFieldLabel(column)}
                 </th>
               ))}

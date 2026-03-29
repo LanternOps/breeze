@@ -24,10 +24,10 @@ const deviceClassBadge: Record<string, string> = {
 };
 
 const actionBadge: Record<string, string> = {
-  allow: 'bg-green-500/20 text-green-700 border-green-500/40',
-  block: 'bg-red-500/20 text-red-700 border-red-500/40',
-  read_only: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40',
-  alert: 'bg-orange-500/20 text-orange-700 border-orange-500/40',
+  allow: 'bg-success/15 text-success border-success/30',
+  block: 'bg-destructive/15 text-destructive border-destructive/30',
+  read_only: 'bg-warning/15 text-warning border-warning/30',
+  alert: 'bg-warning/15 text-warning border-warning/30',
 };
 
 export default function PeripheralControlTab({ policyId, existingLink, onLinkChanged, linkedPolicyId, parentLink }: FeatureTabProps) {
@@ -147,7 +147,7 @@ export default function PeripheralControlTab({ policyId, existingLink, onLinkCha
           <div className="rounded-md border bg-muted/20 p-4">
             <div className="flex items-center justify-between">
               <h4 className="text-sm font-medium">{linkedPolicySummary.name}</h4>
-              <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${linkedPolicySummary.isActive ? 'bg-green-500/20 text-green-700 border-green-500/40' : 'bg-gray-500/20 text-gray-700 border-gray-500/40'}`}>
+              <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${linkedPolicySummary.isActive ? 'bg-success/15 text-success border-success/30' : 'bg-muted text-muted-foreground border-border'}`}>
                 {linkedPolicySummary.isActive ? 'Active' : 'Inactive'}
               </span>
             </div>

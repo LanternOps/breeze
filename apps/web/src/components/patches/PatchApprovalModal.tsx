@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle, XCircle, Clock, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Patch } from './PatchList';
+import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 
@@ -20,19 +21,19 @@ const actionConfig: Record<PatchApprovalAction, { label: string; description: st
   approve: {
     label: 'Approve',
     description: 'Allow this patch to be deployed automatically or in the next maintenance window.',
-    color: 'border-green-500/40 bg-green-500/10 text-green-700',
+    color: 'border-success/30 bg-success/10 text-success',
     icon: CheckCircle
   },
   decline: {
     label: 'Decline',
     description: 'Block this patch from deploying until it is reviewed again.',
-    color: 'border-red-500/40 bg-red-500/10 text-red-700',
+    color: 'border-destructive/30 bg-destructive/10 text-destructive',
     icon: XCircle
   },
   defer: {
     label: 'Defer',
     description: 'Postpone the decision and revisit later.',
-    color: 'border-yellow-500/40 bg-yellow-500/10 text-yellow-700',
+    color: 'border-warning/30 bg-warning/10 text-warning',
     icon: Clock
   }
 };
@@ -61,7 +62,7 @@ export default function PatchApprovalModal({
 
   const isSubmitting = useMemo(() => loading ?? submitting, [loading, submitting]);
 
-  if (!open || !patch) return null;
+  if (!patch) return null;
 
   const handleSubmit = async () => {
     if (isSubmitting) return;
@@ -96,8 +97,7 @@ export default function PatchApprovalModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-sm">
+    <Dialog open={open} onClose={onClose} title="Review Patch" className="p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 className="text-lg font-semibold">Review Patch</h2>
@@ -177,7 +177,6 @@ export default function PatchApprovalModal({
             </span>
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

@@ -4,6 +4,7 @@ import AutomationForm, { type ActionFormValues, type AutomationFormValues } from
 import { fetchWithAuth } from '../../stores/auth';
 import type { DeploymentTargetConfig } from '@breeze/shared';
 import { navigateTo } from '@/lib/navigation';
+import Breadcrumbs from '../layout/Breadcrumbs';
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
@@ -314,6 +315,10 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
 
   return (
     <div className="space-y-6">
+      <Breadcrumbs items={[
+        { label: 'Automations', href: '/automations' },
+        { label: isNew ? 'New Automation' : (defaultValues?.name || 'Edit Automation') }
+      ]} />
       <div className="flex items-center gap-4">
         <a
           href="/automations"
@@ -322,7 +327,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
           <ArrowLeft className="h-5 w-5" />
         </a>
         <div>
-          <h1 className="text-2xl font-bold">
+          <h1 className="text-xl font-semibold tracking-tight">
             {isNew ? 'Create Automation' : 'Edit Automation'}
           </h1>
           <p className="text-muted-foreground">

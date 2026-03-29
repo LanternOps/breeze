@@ -793,7 +793,7 @@ export default function EventViewer({
                   );
                 })()}
                 <div>
-                  <h3 className="font-semibold">Event Details</h3>
+                  <h3 className="text-sm font-semibold">Event Details</h3>
                   <p className="text-sm text-muted-foreground">Record ID: {selectedEvent.recordId}</p>
                 </div>
               </div>

@@ -886,7 +886,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         <div className="rounded-lg border bg-card p-6 shadow-sm">
           <div className="flex items-center gap-2">
             <NativeIcon className="h-4 w-4 text-gray-600" />
-            <h3 className="font-semibold">{displayCopy.pendingNativeTitle}</h3>
+            <h3 className="text-sm font-semibold">{displayCopy.pendingNativeTitle}</h3>
             {pendingNative.length > 0 && (
               <span className="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-700">
                 {pendingNative.length}
@@ -1021,7 +1021,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         <div className="rounded-lg border bg-card p-6 shadow-sm">
           <div className="flex items-center gap-2">
             <AlertTriangle className="h-4 w-4 text-yellow-500" />
-            <h3 className="font-semibold">{displayCopy.pendingThirdPartyTitle}</h3>
+            <h3 className="text-sm font-semibold">{displayCopy.pendingThirdPartyTitle}</h3>
             {pendingOther.length > 0 && (
               <span className="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-700">
                 {pendingOther.length}
@@ -1169,7 +1169,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
           <div className="flex items-center gap-2">
             <CheckCircle className="h-4 w-4 text-green-500" />
             <NativeIcon className="h-4 w-4 text-gray-600" />
-            <h3 className="font-semibold">{displayCopy.installedNativeTitle}</h3>
+            <h3 className="text-sm font-semibold">{displayCopy.installedNativeTitle}</h3>
             <span className="text-xs text-muted-foreground">({installedNative.length})</span>
           </div>
           <div className="mt-4 overflow-hidden rounded-md border">
@@ -1239,7 +1239,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
           <div className="flex items-center gap-2">
             <CheckCircle className="h-4 w-4 text-green-500" />
             <Package className="h-4 w-4 text-blue-500" />
-            <h3 className="font-semibold">{displayCopy.installedThirdPartyTitle}</h3>
+            <h3 className="text-sm font-semibold">{displayCopy.installedThirdPartyTitle}</h3>
             <span className="text-xs text-muted-foreground">({installedThirdParty.length})</span>
           </div>
           <div className="mt-4 overflow-hidden rounded-md border">

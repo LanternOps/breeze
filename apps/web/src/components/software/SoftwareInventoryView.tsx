@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Download, Loader2, Search, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 
 type InventoryItem = {
   id: string;
@@ -42,6 +43,8 @@ export default function SoftwareInventoryView({ timezone }: SoftwareInventoryVie
   const [query, setQuery] = useState('');
   const [deviceFilter, setDeviceFilter] = useState<string>('all');
   const [managedFilter, setManagedFilter] = useState<string>('all');
+  const [uninstallTarget, setUninstallTarget] = useState<InventoryItem | null>(null);
+  const [uninstalling, setUninstalling] = useState(false);
 
   const fetchInventory = useCallback(async () => {
     try {
@@ -112,13 +115,18 @@ export default function SoftwareInventoryView({ timezone }: SoftwareInventoryVie
     });
   }, [inventory, query, deviceFilter, managedFilter]);
 
-  const handleUninstall = async (item: InventoryItem) => {
-    if (!window.confirm(`Uninstall ${item.software} from ${item.device}?`)) return;
+  const handleUninstall = (item: InventoryItem) => {
+    setUninstallTarget(item);
+  };
 
+  const handleConfirmUninstall = async () => {
+    if (!uninstallTarget) return;
+
+    setUninstalling(true);
     try {
       // Find the device ID from the inventory
-      const deviceId = item.id.split('-')[0] ?? item.id;
-      const softwareId = item.id;
+      const deviceId = uninstallTarget.id.split('-')[0] ?? uninstallTarget.id;
+      const softwareId = uninstallTarget.id;
 
       const response = await fetchWithAuth(`/software/inventory/${deviceId}/${softwareId}/uninstall`, {
         method: 'POST',
@@ -133,10 +141,13 @@ export default function SoftwareInventoryView({ timezone }: SoftwareInventoryVie
       }
 
       // Remove from local state
-      setInventory(prev => prev.filter(entry => entry.id !== item.id));
+      setInventory(prev => prev.filter(entry => entry.id !== uninstallTarget.id));
+      setUninstallTarget(null);
     } catch (err) {
       console.error('Uninstall failed:', err);
-      alert('Failed to uninstall software. Please try again.');
+      setError('Failed to uninstall software. Please try again.');
+    } finally {
+      setUninstalling(false);
     }
   };
 
@@ -190,7 +201,7 @@ export default function SoftwareInventoryView({ timezone }: SoftwareInventoryVie
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Software Inventory</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Software Inventory</h1>
           <p className="text-sm text-muted-foreground">Track installed software across managed devices.</p>
         </div>
         <button
@@ -308,6 +319,16 @@ export default function SoftwareInventoryView({ timezone }: SoftwareInventoryVie
           </table>
         </div>
       </div>
+      <ConfirmDialog
+        open={uninstallTarget !== null}
+        onClose={() => setUninstallTarget(null)}
+        onConfirm={handleConfirmUninstall}
+        title="Uninstall Software"
+        message={`Are you sure you want to uninstall ${uninstallTarget?.software} from ${uninstallTarget?.device}? This will queue a remote uninstall command on the device.`}
+        confirmLabel="Uninstall"
+        variant="warning"
+        isLoading={uninstalling}
+      />
     </div>
   );
 }

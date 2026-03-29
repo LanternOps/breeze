@@ -53,10 +53,10 @@ function ComplianceBadge({ percent }: { percent?: number }) {
 
   const color =
     percent >= 90
-      ? 'bg-green-500/20 text-green-700 border-green-500/40'
+      ? 'bg-success/15 text-success border-success/30'
       : percent >= 70
-        ? 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40'
-        : 'bg-red-500/20 text-red-700 border-red-500/40';
+        ? 'bg-warning/15 text-warning border-warning/30'
+        : 'bg-destructive/15 text-destructive border-destructive/30';
 
   return (
     <span

@@ -27,8 +27,8 @@ const severityColors: Record<PatchSeverity, string> = {
 
 const statusConfig: Record<DevicePatch['status'], { label: string; color: string; icon: typeof CheckCircle }> = {
   available: { label: 'Available', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40', icon: PackageSearch },
-  installed: { label: 'Installed', color: 'bg-green-500/20 text-green-700 border-green-500/40', icon: CheckCircle },
-  failed: { label: 'Failed', color: 'bg-red-500/20 text-red-700 border-red-500/40', icon: XCircle }
+  installed: { label: 'Installed', color: 'bg-success/15 text-success border-success/30', icon: CheckCircle },
+  failed: { label: 'Failed', color: 'bg-destructive/15 text-destructive border-destructive/30', icon: XCircle }
 };
 
 export default function DevicePatchStatus({

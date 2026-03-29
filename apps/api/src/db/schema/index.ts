@@ -22,6 +22,7 @@ export * from './software';
 export * from './softwarePolicies';
 export * from './deployments';
 export * from './backup';
+export * from './backupVerification';
 export * from './snmp';
 export * from './notifications';
 export * from './configurationPolicies';

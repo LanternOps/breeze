@@ -11,8 +11,7 @@ import {
   Plug,
   RefreshCw,
   Server,
-  ShieldCheck,
-  Timer
+  ShieldCheck
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -245,7 +244,7 @@ export default function BackupConfigEditor() {
         </div>
       )}
       {saveSuccess && (
-        <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
+        <div className="rounded-md border border-success/40 bg-success/10 px-3 py-2 text-sm text-success">
           {saveSuccess}
         </div>
       )}
@@ -268,9 +267,8 @@ export default function BackupConfigEditor() {
               </button>
             ))}
           </div>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Timer className="h-4 w-4" />
-            Estimated setup: 4-6 minutes
+          <div className="text-xs text-muted-foreground">
+            Step {activeStep + 1} of {steps.length}
           </div>
         </div>
 
@@ -325,16 +323,18 @@ export default function BackupConfigEditor() {
               </div>
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
-                  <label className="text-xs font-medium text-muted-foreground">Display name</label>
+                  <label htmlFor="config-name" className="text-xs font-medium text-muted-foreground">Display name</label>
                   <input
+                    id="config-name"
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                     value={configValues.name}
                     onChange={(event) => updateValue('name', event.target.value)}
                   />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-xs font-medium text-muted-foreground">Region / Endpoint</label>
+                  <label htmlFor="config-region" className="text-xs font-medium text-muted-foreground">Region / Endpoint</label>
                   <input
+                    id="config-region"
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                     value={configValues.region}
                     onChange={(event) => updateValue('region', event.target.value)}
@@ -345,16 +345,18 @@ export default function BackupConfigEditor() {
               {(provider === 's3' || provider === 'gcs') && (
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
-                    <label className="text-xs font-medium text-muted-foreground">Bucket name</label>
+                    <label htmlFor="config-bucket" className="text-xs font-medium text-muted-foreground">Bucket name</label>
                     <input
+                      id="config-bucket"
                       className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                       value={configValues.bucketName}
                       onChange={(event) => updateValue('bucketName', event.target.value)}
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-xs font-medium text-muted-foreground">Base path</label>
+                    <label htmlFor="config-basepath" className="text-xs font-medium text-muted-foreground">Base path</label>
                     <input
+                      id="config-basepath"
                       className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                       value={configValues.basePath}
                       onChange={(event) => updateValue('basePath', event.target.value)}
@@ -366,16 +368,18 @@ export default function BackupConfigEditor() {
               {provider === 'azure' && (
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
-                    <label className="text-xs font-medium text-muted-foreground">Storage account</label>
+                    <label htmlFor="config-storage-acct" className="text-xs font-medium text-muted-foreground">Storage account</label>
                     <input
+                      id="config-storage-acct"
                       className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                       value={configValues.storageAccount}
                       onChange={(event) => updateValue('storageAccount', event.target.value)}
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-xs font-medium text-muted-foreground">Container</label>
+                    <label htmlFor="config-container" className="text-xs font-medium text-muted-foreground">Container</label>
                     <input
+                      id="config-container"
                       className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                       value={configValues.container}
                       onChange={(event) => updateValue('container', event.target.value)}
@@ -387,17 +391,19 @@ export default function BackupConfigEditor() {
               {provider === 'local' && (
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
-                    <label className="text-xs font-medium text-muted-foreground">Local path</label>
+                    <label htmlFor="config-local-path" className="text-xs font-medium text-muted-foreground">Local path</label>
                     <input
+                      id="config-local-path"
                       className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                       value={configValues.localPath}
                       onChange={(event) => updateValue('localPath', event.target.value)}
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-xs font-medium text-muted-foreground">Retention tier</label>
+                    <label htmlFor="config-retention-tier" className="text-xs font-medium text-muted-foreground">Retention tier</label>
                     <select
-                      className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                      id="config-retention-tier"
+                      className="w-full appearance-none rounded-md border bg-background px-3 py-2 text-sm"
                       value={configValues.retentionTier}
                       onChange={(event) => updateValue('retentionTier', event.target.value)}
                     >
@@ -411,16 +417,18 @@ export default function BackupConfigEditor() {
 
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
-                  <label className="text-xs font-medium text-muted-foreground">Access key</label>
+                  <label htmlFor="config-access-key" className="text-xs font-medium text-muted-foreground">Access key</label>
                   <input
+                    id="config-access-key"
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                     value={configValues.accessKey}
                     onChange={(event) => updateValue('accessKey', event.target.value)}
                   />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-xs font-medium text-muted-foreground">Secret key</label>
+                  <label htmlFor="config-secret-key" className="text-xs font-medium text-muted-foreground">Secret key</label>
                   <input
+                    id="config-secret-key"
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                     type="password"
                     value={configValues.secretKey}
@@ -482,8 +490,9 @@ export default function BackupConfigEditor() {
               {scheduleType === 'daily' && (
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
-                    <label className="text-xs font-medium text-muted-foreground">Start time</label>
+                    <label htmlFor="config-daily-start" className="text-xs font-medium text-muted-foreground">Start time</label>
                     <input
+                      id="config-daily-start"
                       type="time"
                       className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                       value={configValues.scheduleStartTime}
@@ -491,9 +500,10 @@ export default function BackupConfigEditor() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-xs font-medium text-muted-foreground">Window length</label>
+                    <label htmlFor="config-daily-window" className="text-xs font-medium text-muted-foreground">Window length</label>
                     <select
-                      className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                      id="config-daily-window"
+                      className="w-full appearance-none rounded-md border bg-background px-3 py-2 text-sm"
                       value={configValues.scheduleWindow}
                       onChange={(event) => updateValue('scheduleWindow', event.target.value)}
                     >
@@ -525,8 +535,9 @@ export default function BackupConfigEditor() {
                   </div>
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="space-y-2">
-                      <label className="text-xs font-medium text-muted-foreground">Start time</label>
+                      <label htmlFor="config-weekly-start" className="text-xs font-medium text-muted-foreground">Start time</label>
                       <input
+                        id="config-weekly-start"
                         type="time"
                         className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                         value={configValues.weeklyStartTime}
@@ -534,9 +545,10 @@ export default function BackupConfigEditor() {
                       />
                     </div>
                     <div className="space-y-2">
-                      <label className="text-xs font-medium text-muted-foreground">Timezone</label>
+                      <label htmlFor="config-weekly-tz" className="text-xs font-medium text-muted-foreground">Timezone</label>
                       <select
-                        className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                        id="config-weekly-tz"
+                        className="w-full appearance-none rounded-md border bg-background px-3 py-2 text-sm"
                         value={configValues.weeklyTimezone}
                         onChange={(event) => updateValue('weeklyTimezone', event.target.value)}
                       >
@@ -552,8 +564,9 @@ export default function BackupConfigEditor() {
               {scheduleType === 'cron' && (
                 <div className="space-y-4">
                   <div className="space-y-2">
-                    <label className="text-xs font-medium text-muted-foreground">Cron expression</label>
+                    <label htmlFor="config-cron" className="text-xs font-medium text-muted-foreground">Cron expression</label>
                     <input
+                      id="config-cron"
                       className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                       value={configValues.cronExpression}
                       onChange={(event) => updateValue('cronExpression', event.target.value)}
@@ -567,7 +580,7 @@ export default function BackupConfigEditor() {
 
               <div className="rounded-md border border-dashed bg-muted/30 p-4">
                 <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                  <ShieldCheck className="h-4 w-4 text-emerald-600" />
+                  <ShieldCheck className="h-4 w-4 text-success" />
                   Backup window protection
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -606,8 +619,9 @@ export default function BackupConfigEditor() {
 
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
-                  <label className="text-xs font-medium text-muted-foreground">Keep backups (days)</label>
+                  <label htmlFor="config-ret-days" className="text-xs font-medium text-muted-foreground">Keep backups (days)</label>
                   <input
+                    id="config-ret-days"
                     type="number"
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                     value={configValues.retentionDays}
@@ -615,8 +629,9 @@ export default function BackupConfigEditor() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-xs font-medium text-muted-foreground">Max versions</label>
+                  <label htmlFor="config-ret-versions" className="text-xs font-medium text-muted-foreground">Max versions</label>
                   <input
+                    id="config-ret-versions"
                     type="number"
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                     value={configValues.retentionVersions}
@@ -632,31 +647,39 @@ export default function BackupConfigEditor() {
                     Encryption at rest
                   </div>
                   <button
+                    type="button"
+                    role="switch"
+                    aria-checked={encryptionEnabled}
+                    aria-label="Encryption at rest"
                     onClick={() => setEncryptionEnabled((prev) => !prev)}
-                    aria-pressed={encryptionEnabled}
                     className={cn(
-                      'rounded-full border px-3 py-1 text-xs font-semibold',
-                      encryptionEnabled
-                        ? 'border-primary bg-primary text-primary-foreground'
-                        : 'border-muted bg-muted/30 text-muted-foreground'
+                      'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+                      encryptionEnabled ? 'bg-primary' : 'bg-muted'
                     )}
                   >
-                    {encryptionEnabled ? 'Enabled' : 'Disabled'}
+                    <span
+                      className={cn(
+                        'pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-sm transition-transform',
+                        encryptionEnabled ? 'translate-x-5' : 'translate-x-0'
+                      )}
+                    />
                   </button>
                 </div>
                 <div className="mt-3 grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
-                    <label className="text-xs font-medium text-muted-foreground">Encryption key</label>
+                    <label htmlFor="config-enc-key" className="text-xs font-medium text-muted-foreground">Encryption key</label>
                     <input
+                      id="config-enc-key"
                       className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                       value={configValues.encryptionKey}
                       onChange={(event) => updateValue('encryptionKey', event.target.value)}
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-xs font-medium text-muted-foreground">Key rotation</label>
+                    <label htmlFor="config-key-rotation" className="text-xs font-medium text-muted-foreground">Key rotation</label>
                     <select
-                      className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                      id="config-key-rotation"
+                      className="w-full appearance-none rounded-md border bg-background px-3 py-2 text-sm"
                       value={configValues.keyRotation}
                       onChange={(event) => updateValue('keyRotation', event.target.value)}
                     >

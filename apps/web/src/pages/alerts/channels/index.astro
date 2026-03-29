@@ -1,8 +1,13 @@
 ---
 import DashboardLayout from '../../../layouts/DashboardLayout.astro';
 import NotificationChannelsPage from '../../../components/alerts/NotificationChannelsPage';
+import Breadcrumbs from '../../../components/layout/Breadcrumbs';
 ---
 
 <DashboardLayout title="Notification Channels">
+  <Breadcrumbs client:load items={[
+    { label: 'Alerts', href: '/alerts' },
+    { label: 'Notification Channels' }
+  ]} />
   <NotificationChannelsPage client:load />
 </DashboardLayout>

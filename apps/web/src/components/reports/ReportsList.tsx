@@ -224,7 +224,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Reports</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Reports</h1>
           <p className="text-muted-foreground">Generate and schedule reports for your infrastructure.</p>
         </div>
         <div className="flex items-center gap-2">
@@ -301,24 +301,24 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
           ) : (
             <div className="rounded-lg border bg-card shadow-sm overflow-hidden">
               <table className="w-full">
-                <thead className="border-b bg-muted/50">
-                  <tr>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                <thead className="bg-muted/40">
+                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <th className="px-4 py-3">
                       Name
                     </th>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                    <th className="px-4 py-3">
                       Type
                     </th>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                    <th className="px-4 py-3">
                       Schedule
                     </th>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                    <th className="px-4 py-3">
                       Format
                     </th>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                    <th className="px-4 py-3">
                       Last Generated
                     </th>
-                    <th className="px-4 py-3 text-right text-sm font-medium text-muted-foreground">
+                    <th className="px-4 py-3 text-right">
                       Actions
                     </th>
                   </tr>
@@ -414,21 +414,21 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
           ) : (
             <div className="rounded-lg border bg-card shadow-sm overflow-hidden">
               <table className="w-full">
-                <thead className="border-b bg-muted/50">
-                  <tr>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                <thead className="bg-muted/40">
+                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <th className="px-4 py-3">
                       Report
                     </th>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                    <th className="px-4 py-3">
                       Status
                     </th>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                    <th className="px-4 py-3">
                       Started
                     </th>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                    <th className="px-4 py-3">
                       Completed
                     </th>
-                    <th className="px-4 py-3 text-right text-sm font-medium text-muted-foreground">
+                    <th className="px-4 py-3 text-right">
                       Actions
                     </th>
                   </tr>

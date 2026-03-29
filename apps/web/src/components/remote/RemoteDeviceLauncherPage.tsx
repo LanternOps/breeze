@@ -155,7 +155,7 @@ export default function RemoteDeviceLauncherPage({ mode }: RemoteDeviceLauncherP
           <ArrowLeft className="h-5 w-5" />
         </a>
         <div>
-          <h1 className="text-2xl font-bold">{config.title}</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{config.title}</h1>
           <p className="text-muted-foreground">{config.description}</p>
         </div>
       </div>
