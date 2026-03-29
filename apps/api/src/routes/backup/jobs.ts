@@ -2,11 +2,11 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { eq, and, desc, gte, lte, sql } from 'drizzle-orm';
 import { db } from '../../db';
-import { backupJobs, backupConfigs, backupPolicies, devices } from '../../db/schema';
+import { backupJobs, backupConfigs, devices } from '../../db/schema';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { resolveBackupConfigForDevice, resolveAllBackupAssignedDevices } from '../../services/featureConfigResolver';
 import { resolveScopedOrgId } from './helpers';
 import { jobListSchema } from './schemas';
-import type { BackupPolicyTargets } from './types';
 
 export const jobsRoutes = new Hono();
 
@@ -113,25 +113,19 @@ jobsRoutes.post('/jobs/run/:deviceId', async (c) => {
 
   const deviceId = c.req.param('deviceId');
 
-  // Find a policy targeting this device, or a default config
-  const policies = await db
-    .select()
-    .from(backupPolicies)
-    .where(eq(backupPolicies.orgId, orgId));
+  // Resolve backup config via configuration policy system
+  const resolved = await resolveBackupConfigForDevice(deviceId);
+  let configId = resolved?.configId ?? null;
+  let featureLinkId = resolved?.featureLinkId ?? null;
 
-  const policy = policies.find((p) => {
-    const targets = p.targets as BackupPolicyTargets;
-    return targets?.deviceIds?.includes(deviceId);
-  });
-
-  let configId = policy?.configId;
+  // Fallback to first backupConfigs row if no policy assignment
   if (!configId) {
     const [fallbackConfig] = await db
       .select({ id: backupConfigs.id })
       .from(backupConfigs)
       .where(eq(backupConfigs.orgId, orgId))
       .limit(1);
-    configId = fallbackConfig?.id;
+    configId = fallbackConfig?.id ?? null;
   }
 
   if (!configId) {
@@ -144,7 +138,7 @@ jobsRoutes.post('/jobs/run/:deviceId', async (c) => {
     .values({
       orgId,
       configId,
-      policyId: policy?.id ?? null,
+      featureLinkId,
       deviceId,
       status: 'pending',
       type: 'manual',
@@ -172,7 +166,7 @@ jobsRoutes.post('/jobs/run/:deviceId', async (c) => {
     action: 'backup.job.run',
     resourceType: 'backup_job',
     resourceId: row.id,
-    details: { deviceId, configId, policyId: policy?.id ?? null },
+    details: { deviceId, configId, featureLinkId },
   });
 
   return c.json(toJobResponse(row), 201);
@@ -185,17 +179,8 @@ jobsRoutes.get('/jobs/run-all/preview', async (c) => {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
 
-  const policies = await db
-    .select()
-    .from(backupPolicies)
-    .where(eq(backupPolicies.orgId, orgId));
-
-  const deviceIds = new Set(
-    policies.flatMap((p) => {
-      const targets = p.targets as BackupPolicyTargets;
-      return targets?.deviceIds ?? [];
-    })
-  );
+  const assigned = await resolveAllBackupAssignedDevices(orgId);
+  const deviceIds = new Set(assigned.filter((a) => a.configId).map((a) => a.deviceId));
 
   if (deviceIds.size === 0) {
     return c.json({ data: { deviceCount: 0, deviceIds: [], alreadyRunning: 0 } });
@@ -231,23 +216,12 @@ jobsRoutes.post('/jobs/run-all', async (c) => {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
 
-  const policies = await db
-    .select()
-    .from(backupPolicies)
-    .where(eq(backupPolicies.orgId, orgId));
+  const assigned = await resolveAllBackupAssignedDevices(orgId);
+  const deviceConfigMap = new Map(
+    assigned.filter((a) => a.configId).map((a) => [a.deviceId, { configId: a.configId!, featureLinkId: a.featureLinkId }])
+  );
 
-  // Build device → policy+config mapping
-  const devicePolicyMap = new Map<string, { policyId: string; configId: string }>();
-  for (const p of policies) {
-    const targets = p.targets as BackupPolicyTargets;
-    for (const deviceId of targets?.deviceIds ?? []) {
-      if (!devicePolicyMap.has(deviceId)) {
-        devicePolicyMap.set(deviceId, { policyId: p.id, configId: p.configId });
-      }
-    }
-  }
-
-  if (devicePolicyMap.size === 0) {
+  if (deviceConfigMap.size === 0) {
     return c.json({ error: 'No devices have backup policies configured' }, 400);
   }
 
@@ -267,7 +241,7 @@ jobsRoutes.post('/jobs/run-all', async (c) => {
   const created: string[] = [];
   const skipped: string[] = [];
 
-  for (const [deviceId, { policyId, configId }] of devicePolicyMap) {
+  for (const [deviceId, { configId, featureLinkId }] of deviceConfigMap) {
     if (activeDeviceIds.has(deviceId)) {
       skipped.push(deviceId);
       continue;
@@ -278,7 +252,7 @@ jobsRoutes.post('/jobs/run-all', async (c) => {
       .values({
         orgId,
         configId,
-        policyId,
+        featureLinkId,
         deviceId,
         status: 'pending',
         type: 'manual',
@@ -371,6 +345,7 @@ function toJobResponse(row: typeof backupJobs.$inferSelect) {
     deviceId: row.deviceId,
     configId: row.configId,
     policyId: row.policyId ?? null,
+    featureLinkId: row.featureLinkId ?? null,
     snapshotId: row.snapshotId ?? null,
     status: row.status,
     startedAt: row.startedAt?.toISOString() ?? null,
