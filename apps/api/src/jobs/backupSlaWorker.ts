@@ -228,8 +228,11 @@ async function createBreachEvent(
         'backup-sla-worker',
         { priority: 'high' }
       );
-    } catch {
-      // eventBus may not be initialized in test environments
+    } catch (err) {
+      console.error(
+        `[SlaWorker] Failed to publish SLA breach event for device ${deviceId}:`,
+        err instanceof Error ? err.message : err
+      );
     }
   }
 }

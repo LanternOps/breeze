@@ -16,6 +16,10 @@ export const mssqlRoutes = new Hono();
 
 // ── Validation schemas ────────────────────────────────────────────
 
+// Database and instance names: alphanumeric, underscore, hyphen, dot, space only.
+// Prevents T-SQL injection via crafted identifiers.
+const sqlIdentifierRegex = /^[a-zA-Z0-9_\-. ]+$/;
+
 const deviceIdParamSchema = z.object({
   deviceId: z.string().uuid(),
 });
@@ -26,8 +30,8 @@ const snapshotIdParamSchema = z.object({
 
 const mssqlBackupSchema = z.object({
   deviceId: z.string().uuid(),
-  instance: z.string().min(1),
-  database: z.string().min(1),
+  instance: z.string().min(1).regex(sqlIdentifierRegex, 'Invalid instance name characters'),
+  database: z.string().min(1).regex(sqlIdentifierRegex, 'Invalid database name characters'),
   backupType: z.enum(['full', 'differential', 'log']).default('full'),
   outputPath: z.string().min(1),
   configId: z.string().uuid().optional(),
@@ -35,9 +39,9 @@ const mssqlBackupSchema = z.object({
 
 const mssqlRestoreSchema = z.object({
   deviceId: z.string().uuid(),
-  instance: z.string().min(1),
+  instance: z.string().min(1).regex(sqlIdentifierRegex, 'Invalid instance name characters'),
   backupFile: z.string().min(1),
-  targetDatabase: z.string().min(1),
+  targetDatabase: z.string().min(1).regex(sqlIdentifierRegex, 'Invalid database name characters'),
   noRecovery: z.boolean().default(false),
 });
 

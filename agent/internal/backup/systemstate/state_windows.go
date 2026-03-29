@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -56,6 +57,10 @@ func (c *WindowsCollector) CollectState(stagingDir string) (*SystemStateManifest
 			continue
 		}
 		manifest.Artifacts = append(manifest.Artifacts, arts...)
+	}
+
+	if len(manifest.Artifacts) == 0 {
+		return manifest, fmt.Errorf("system state collection produced no artifacts — all %d steps failed", len(steps))
 	}
 
 	// Attach hardware profile (best-effort).

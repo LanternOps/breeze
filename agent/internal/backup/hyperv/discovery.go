@@ -105,6 +105,7 @@ func discoverVHDs(vmName string) ([]VHDInfo, bool) {
 
 	var rawVHDs json.RawMessage
 	if err := json.Unmarshal([]byte(out), &rawVHDs); err != nil {
+		slog.Warn("hyperv: failed to parse VHD JSON", "vm", vmName, "error", err.Error())
 		return nil, false
 	}
 
@@ -112,6 +113,7 @@ func discoverVHDs(vmName string) ([]VHDInfo, bool) {
 	if err := json.Unmarshal(rawVHDs, &vhdPayloads); err != nil {
 		var single psVHDPayload
 		if err2 := json.Unmarshal(rawVHDs, &single); err2 != nil {
+			slog.Warn("hyperv: failed to parse VHD info", "vm", vmName, "error", err2.Error())
 			return nil, false
 		}
 		vhdPayloads = []psVHDPayload{single}
@@ -149,6 +151,7 @@ func discoverCheckpoints(vmName string) []Checkpoint {
 
 	var rawCPs json.RawMessage
 	if err := json.Unmarshal([]byte(out), &rawCPs); err != nil {
+		slog.Warn("hyperv: failed to parse checkpoint JSON", "vm", vmName, "error", err.Error())
 		return nil
 	}
 
@@ -156,6 +159,7 @@ func discoverCheckpoints(vmName string) []Checkpoint {
 	if err := json.Unmarshal(rawCPs, &cpPayloads); err != nil {
 		var single psCheckpointPayload
 		if err2 := json.Unmarshal(rawCPs, &single); err2 != nil {
+			slog.Warn("hyperv: failed to parse checkpoint info", "vm", vmName, "error", err2.Error())
 			return nil
 		}
 		cpPayloads = []psCheckpointPayload{single}

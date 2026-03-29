@@ -164,7 +164,11 @@ func (m *BackupManager) RunBackup() (*BackupJob, error) {
 				CreationTime: session.CreatedAt,
 				Writers:      session.Writers,
 				ExposedPaths: session.ShadowPaths,
+				Warnings:     session.Warnings,
 				DurationMs:   time.Since(vssStart).Milliseconds(),
+			}
+			if len(session.Warnings) > 0 {
+				log.Printf("[backup] VSS completed with %d warning(s): %v", len(session.Warnings), session.Warnings)
 			}
 			defer func() {
 				if releaseErr := provider.ReleaseShadowCopy(session); releaseErr != nil {

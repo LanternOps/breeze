@@ -48,15 +48,16 @@ type Checkpoint struct {
 
 // BackupResult holds the outcome of a Hyper-V VM export.
 type BackupResult struct {
-	VMName          string `json:"vmName"`
-	VMID            string `json:"vmId"`
-	BackupType      string `json:"backupType"`      // full, incremental
-	ConsistencyType string `json:"consistencyType"` // application, crash
-	ExportPath      string `json:"exportPath"`
-	SizeBytes       int64  `json:"sizeBytes"`
-	VHDCount        int    `json:"vhdCount"`
-	DurationMs      int64  `json:"durationMs"`
-	RCTReference    string `json:"rctReference,omitempty"`
+	VMName          string   `json:"vmName"`
+	VMID            string   `json:"vmId"`
+	BackupType      string   `json:"backupType"`      // full, incremental
+	ConsistencyType string   `json:"consistencyType"` // application, crash
+	ExportPath      string   `json:"exportPath"`
+	SizeBytes       int64    `json:"sizeBytes"`
+	VHDCount        int      `json:"vhdCount"`
+	DurationMs      int64    `json:"durationMs"`
+	RCTReference    string   `json:"rctReference,omitempty"`
+	Warnings        []string `json:"warnings,omitempty"`
 }
 
 // RestoreResult holds the outcome of a Hyper-V VM import.

@@ -21,6 +21,9 @@ import {
 
 export const bmrRoutes = new Hono();
 
+// Public routes that bypass JWT auth — recovery agents authenticate via token.
+export const bmrPublicRoutes = new Hono();
+
 // ── Helpers ─────────────────────────────────────────────────────────
 
 function hashToken(token: string): string {
@@ -185,8 +188,9 @@ bmrRoutes.delete('/bmr/token/:id', async (c) => {
 });
 
 // ── POST /bmr/recover/authenticate — Recovery agent auth ────────────
+// Mounted on bmrPublicRoutes (no JWT auth — token-based auth instead).
 
-bmrRoutes.post(
+bmrPublicRoutes.post(
   '/bmr/recover/authenticate',
   zValidator('json', bmrAuthenticateSchema),
   async (c) => {
@@ -266,8 +270,9 @@ bmrRoutes.post(
 );
 
 // ── POST /bmr/recover/complete — Agent reports recovery done ────────
+// Mounted on bmrPublicRoutes (no JWT auth — token-based auth instead).
 
-bmrRoutes.post(
+bmrPublicRoutes.post(
   '/bmr/recover/complete',
   zValidator('json', bmrCompleteSchema),
   async (c) => {
@@ -402,6 +407,12 @@ bmrRoutes.post(
       );
     } catch (err) {
       console.error('[BMR] Failed to dispatch VM restore command:', err);
+      await db.update(restoreJobs).set({
+        status: 'failed',
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(eq(restoreJobs.id, restoreJob.id));
+      return c.json({ error: 'Failed to dispatch restore command to agent' }, 502);
     }
 
     writeRouteAudit(c, {

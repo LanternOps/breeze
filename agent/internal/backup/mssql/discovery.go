@@ -3,6 +3,7 @@
 package mssql
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -23,11 +24,13 @@ import (
 // Results from all methods are merged and deduplicated by instance name.
 func DiscoverInstances() ([]SQLInstance, error) {
 	seen := map[string]*SQLInstance{}
+	var errs []error
 
 	// 1. Registry-based discovery
 	regInstances, err := discoverFromRegistry()
 	if err != nil {
 		slog.Warn("mssql registry discovery failed", "error", err.Error())
+		errs = append(errs, fmt.Errorf("registry: %w", err))
 	}
 	for i := range regInstances {
 		inst := &regInstances[i]
@@ -38,6 +41,7 @@ func DiscoverInstances() ([]SQLInstance, error) {
 	svcInstances, err := discoverFromServices()
 	if err != nil {
 		slog.Warn("mssql service discovery failed", "error", err.Error())
+		errs = append(errs, fmt.Errorf("services: %w", err))
 	}
 	for i := range svcInstances {
 		inst := &svcInstances[i]
@@ -53,6 +57,7 @@ func DiscoverInstances() ([]SQLInstance, error) {
 	browserInstances, err := discoverFromBrowser()
 	if err != nil {
 		slog.Warn("mssql browser discovery failed", "error", err.Error())
+		errs = append(errs, fmt.Errorf("browser: %w", err))
 	}
 	for i := range browserInstances {
 		inst := &browserInstances[i]
@@ -68,6 +73,10 @@ func DiscoverInstances() ([]SQLInstance, error) {
 				existing.Version = inst.Version
 			}
 		}
+	}
+
+	if len(seen) == 0 && len(errs) > 0 {
+		return nil, fmt.Errorf("all discovery methods failed: %w", errors.Join(errs...))
 	}
 
 	// Enrich instances with database info via sqlcmd

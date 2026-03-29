@@ -213,7 +213,11 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
         }
       }
     } catch (err) {
-      console.error(`[BackupWorker] Failed to process scheduled backups for org ${orgId}:`, err instanceof Error ? err.message : err);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[BackupWorker] Failed to process scheduled backups for org ${orgId}: ${errMsg}`);
+      if (err instanceof Error && err.stack) {
+        console.error(err.stack);
+      }
       continue;
     }
   }

@@ -26,6 +26,10 @@ export const c2cConnections = pgTable(
     displayName: varchar('display_name', { length: 200 }).notNull(),
     tenantId: varchar('tenant_id', { length: 100 }),
     clientId: varchar('client_id', { length: 200 }),
+    // SECURITY TODO: These three fields store OAuth secrets as plaintext.
+    // They MUST be encrypted at rest (e.g. via pgcrypto or application-level
+    // envelope encryption with the org's storage_encryption_key) before C2C
+    // goes to production. See Phase 6 security hardening tracker.
     clientSecret: text('client_secret'),
     refreshToken: text('refresh_token'),
     accessToken: text('access_token'),

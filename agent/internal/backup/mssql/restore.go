@@ -22,6 +22,12 @@ func RunRestore(instance, backupFile, targetDB string, noRecovery bool) (*Restor
 	if targetDB == "" {
 		return nil, fmt.Errorf("%w: target database name is required", ErrRestoreFailed)
 	}
+	if err := validateSQLIdentifier(instance); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrRestoreFailed, err)
+	}
+	if err := validateSQLIdentifier(targetDB); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrRestoreFailed, err)
+	}
 
 	start := time.Now()
 	serverName := buildServerName(instance)

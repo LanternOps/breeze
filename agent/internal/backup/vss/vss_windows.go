@@ -207,11 +207,14 @@ func (p *WindowsProvider) CreateShadowCopy(ctx context.Context, volumes []string
 	// GetSnapshotProperties for each volume.
 	shadowPaths := make(map[string]string, len(entries))
 	var sessionID string
+	var warnings []string
 
 	for _, entry := range entries {
 		deviceName, err := p.getSnapshotDeviceName(backupComponents, entry.snapID)
 		if err != nil {
-			slog.Warn("vss: GetSnapshotProperties failed", "volume", entry.volume, "error", err.Error())
+			warnMsg := fmt.Sprintf("GetSnapshotProperties failed for volume %s: %s", entry.volume, err.Error())
+			slog.Warn("vss: "+warnMsg)
+			warnings = append(warnings, warnMsg)
 			continue
 		}
 		shadowPaths[entry.volume] = deviceName
@@ -225,6 +228,7 @@ func (p *WindowsProvider) CreateShadowCopy(ctx context.Context, volumes []string
 		Volumes:     volumes,
 		ShadowPaths: shadowPaths,
 		Writers:     writers,
+		Warnings:    warnings,
 		CreatedAt:   time.Now().UTC(),
 	}
 

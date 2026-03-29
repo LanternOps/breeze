@@ -8,12 +8,16 @@ import { dashboardRoutes } from './dashboard';
 import { backupVerificationRoutes } from './verification';
 import { vssRoutes } from './vss';
 import { encryptionRoutes } from './encryption';
-import { bmrRoutes } from './bmr';
+import { bmrRoutes, bmrPublicRoutes } from './bmr';
 import { mssqlRoutes } from './mssql';
 import { hypervRoutes } from './hyperv';
 import { slaRoutes } from './sla';
 
 export const backupRoutes = new Hono();
+
+// Public recovery endpoints (token-based auth, no JWT required).
+// Must be mounted BEFORE the authMiddleware wildcard.
+backupRoutes.route('/', bmrPublicRoutes);
 
 backupRoutes.use('*', authMiddleware);
 

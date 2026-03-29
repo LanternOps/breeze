@@ -31,6 +31,7 @@ type VSSSession struct {
 	Volumes     []string          `json:"volumes"`
 	ShadowPaths map[string]string `json:"shadowPaths"` // volume -> shadow device path
 	Writers     []WriterStatus    `json:"writers"`
+	Warnings    []string          `json:"warnings,omitempty"`
 	CreatedAt   time.Time         `json:"createdAt"`
 }
 
@@ -40,6 +41,7 @@ type VSSMetadata struct {
 	CreationTime time.Time         `json:"creationTime"`
 	Writers      []WriterStatus    `json:"writers"`
 	ExposedPaths map[string]string `json:"exposedPaths"`
+	Warnings     []string          `json:"warnings,omitempty"`
 	DurationMs   int64             `json:"durationMs"`
 }
 

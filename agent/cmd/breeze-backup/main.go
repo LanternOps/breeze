@@ -248,7 +248,10 @@ func commandLoop(ctx context.Context, conn *ipc.Conn, mgr *backup.BackupManager,
 			slog.Info("received shutdown command")
 			return
 		case ipc.TypePing:
-			_ = conn.SendTyped(env.ID, ipc.TypePong, nil)
+			if err := conn.SendTyped(env.ID, ipc.TypePong, nil); err != nil {
+				slog.Error("IPC pong send failed, connection likely dead", "error", err.Error())
+				return
+			}
 		}
 	}
 }
@@ -284,7 +287,10 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 		if err != nil {
 			return backupipc.BackupCommandResult{Success: false, Stderr: err.Error()}
 		}
-		data, _ := json.Marshal(job)
+		data, err := json.Marshal(job)
+		if err != nil {
+			return backupipc.BackupCommandResult{Success: false, Stderr: fmt.Sprintf("failed to marshal backup result: %v", err)}
+		}
 		return backupipc.BackupCommandResult{Success: true, Stdout: string(data)}
 
 	case "backup_list":
@@ -292,7 +298,10 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 		if err != nil {
 			return backupipc.BackupCommandResult{Success: false, Stderr: err.Error()}
 		}
-		data, _ := json.Marshal(snapshots)
+		data, err := json.Marshal(snapshots)
+		if err != nil {
+			return backupipc.BackupCommandResult{Success: false, Stderr: fmt.Sprintf("failed to marshal snapshot list: %v", err)}
+		}
 		return backupipc.BackupCommandResult{Success: true, Stdout: string(data)}
 
 	case "backup_stop":

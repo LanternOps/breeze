@@ -12,6 +12,30 @@ import (
 	"time"
 )
 
+// validateSQLIdentifier ensures a SQL identifier (database or instance name) contains
+// only safe characters: alphanumeric, underscore, hyphen, dot, space.
+// This prevents T-SQL injection via crafted identifiers.
+func validateSQLIdentifier(name string) error {
+	for _, r := range name {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' || r == ' ') {
+			return fmt.Errorf("invalid character %q in SQL identifier %q", r, name)
+		}
+	}
+	return nil
+}
+
+// validateBackupPath ensures a path is absolute and does not contain traversal sequences.
+func validateBackupPath(path string) error {
+	cleaned := filepath.Clean(path)
+	if strings.Contains(cleaned, "..") {
+		return fmt.Errorf("path traversal not allowed: %s", path)
+	}
+	if !filepath.IsAbs(cleaned) {
+		return fmt.Errorf("backup path must be absolute: %s", path)
+	}
+	return nil
+}
+
 // RunBackup executes a SQL Server backup via sqlcmd.
 //
 // Supported backupType values: "full", "differential", "log".
@@ -26,6 +50,15 @@ func RunBackup(instance, database, backupType, outputPath string) (*BackupResult
 	}
 	if outputPath == "" {
 		return nil, fmt.Errorf("%w: output path is required", ErrBackupFailed)
+	}
+	if err := validateSQLIdentifier(instance); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrBackupFailed, err)
+	}
+	if err := validateSQLIdentifier(database); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrBackupFailed, err)
+	}
+	if err := validateBackupPath(outputPath); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrBackupFailed, err)
 	}
 
 	start := time.Now()
@@ -95,7 +128,9 @@ func RunBackup(instance, database, backupType, outputPath string) (*BackupResult
 		strings.ReplaceAll(backupFile, "'", "''"),
 	)
 	lsnOut, lsnErr := runSqlcmd(serverName, lsnQuery)
-	if lsnErr == nil {
+	if lsnErr != nil {
+		slog.Warn("mssql: failed to retrieve LSN info", "error", lsnErr.Error())
+	} else {
 		parseLSNInfo(lsnOut, result)
 	}
 
@@ -239,9 +274,18 @@ func ListBackups(instance, database string, limit int) ([]BackupResult, error) {
 			continue
 		}
 
-		sizeBytes, _ := strconv.ParseInt(strings.TrimSpace(parts[3]), 10, 64)
-		compressedSize, _ := strconv.ParseInt(strings.TrimSpace(parts[4]), 10, 64)
-		durationMs, _ := strconv.ParseInt(strings.TrimSpace(parts[8]), 10, 64)
+		sizeBytes, parseErr := strconv.ParseInt(strings.TrimSpace(parts[3]), 10, 64)
+		if parseErr != nil {
+			slog.Warn("mssql: failed to parse backup size", "value", strings.TrimSpace(parts[3]), "error", parseErr.Error())
+		}
+		compressedSize, parseErr := strconv.ParseInt(strings.TrimSpace(parts[4]), 10, 64)
+		if parseErr != nil {
+			slog.Warn("mssql: failed to parse compressed size", "value", strings.TrimSpace(parts[4]), "error", parseErr.Error())
+		}
+		durationMs, parseErr := strconv.ParseInt(strings.TrimSpace(parts[8]), 10, 64)
+		if parseErr != nil {
+			slog.Warn("mssql: failed to parse duration", "value", strings.TrimSpace(parts[8]), "error", parseErr.Error())
+		}
 
 		results = append(results, BackupResult{
 			InstanceName: instance,

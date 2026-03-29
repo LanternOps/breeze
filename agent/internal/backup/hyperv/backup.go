@@ -11,6 +11,18 @@ import (
 	"time"
 )
 
+// validateBackupPath ensures a path is absolute and does not contain traversal sequences.
+func validateBackupPath(path string) error {
+	cleaned := filepath.Clean(path)
+	if strings.Contains(cleaned, "..") {
+		return fmt.Errorf("path traversal not allowed: %s", path)
+	}
+	if !filepath.IsAbs(cleaned) {
+		return fmt.Errorf("backup path must be absolute: %s", path)
+	}
+	return nil
+}
+
 // ExportVM performs a full export of a Hyper-V VM.
 //
 // consistencyType controls how the export handles a running VM:
@@ -25,6 +37,9 @@ func ExportVM(vmName, exportPath, consistencyType string) (*BackupResult, error)
 	}
 	if exportPath == "" {
 		return nil, fmt.Errorf("%w: exportPath is required", ErrExportFailed)
+	}
+	if err := validateBackupPath(exportPath); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrExportFailed, err)
 	}
 
 	// Ensure export directory exists.
@@ -51,11 +66,14 @@ func ExportVM(vmName, exportPath, consistencyType string) (*BackupResult, error)
 	}
 
 	// If we saved state for crash consistency, start the VM again.
+	var warnings []string
 	if consistencyType == "crash" {
 		slog.Info("hyperv: restarting VM after crash-consistent export", "vm", vmName)
 		startCmd := fmt.Sprintf(`Start-VM -Name '%s'`, vmNameEsc)
 		if _, err := runPS(startCmd); err != nil {
-			slog.Warn("hyperv: failed to restart VM after export", "vm", vmName, "error", err.Error())
+			warnMsg := fmt.Sprintf("failed to restart VM %q after export: %s", vmName, err.Error())
+			slog.Warn("hyperv: "+warnMsg)
+			warnings = append(warnings, warnMsg)
 		}
 	}
 
@@ -78,6 +96,7 @@ func ExportVM(vmName, exportPath, consistencyType string) (*BackupResult, error)
 		SizeBytes:       sizeBytes,
 		VHDCount:        vhdCount,
 		DurationMs:      duration,
+		Warnings:        warnings,
 	}, nil
 }
 

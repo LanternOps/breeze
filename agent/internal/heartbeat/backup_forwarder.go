@@ -24,7 +24,10 @@ func forwardToBackupHelper(h *Heartbeat, cmd Command, timeout time.Duration) too
 		return tools.NewErrorResult(fmt.Errorf("backup helper unavailable: %w", err), time.Since(start).Milliseconds())
 	}
 
-	payload, _ := json.Marshal(cmd.Payload)
+	payload, err := json.Marshal(cmd.Payload)
+	if err != nil {
+		return tools.NewErrorResult(fmt.Errorf("failed to marshal command payload: %w", err), time.Since(start).Milliseconds())
+	}
 	env, err := h.sessionBroker.ForwardBackupCommand(cmd.ID, cmd.Type, payload, timeout)
 	if err != nil {
 		return tools.NewErrorResult(fmt.Errorf("backup command failed: %w", err), time.Since(start).Milliseconds())

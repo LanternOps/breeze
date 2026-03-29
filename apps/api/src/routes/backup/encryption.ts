@@ -190,25 +190,26 @@ encryptionRoutes.post(
 
     const now = new Date();
 
-    // Deactivate old key
-    await db
-      .update(storageEncryptionKeys)
-      .set({ isActive: false, rotatedAt: now })
-      .where(eq(storageEncryptionKeys.id, oldKeyId));
+    // Deactivate old key and create new key atomically in a transaction.
+    const [newKey] = await db.transaction(async (tx) => {
+      await tx
+        .update(storageEncryptionKeys)
+        .set({ isActive: false, rotatedAt: now })
+        .where(eq(storageEncryptionKeys.id, oldKeyId));
 
-    // Create new key
-    const [newKey] = await db
-      .insert(storageEncryptionKeys)
-      .values({
-        orgId,
-        name: `${oldKey.name} (rotated)`,
-        keyType: oldKey.keyType,
-        publicKeyPem: payload.newPublicKeyPem ?? null,
-        keyHash: payload.newKeyHash,
-        isActive: true,
-        createdAt: now,
-      })
-      .returning();
+      return tx
+        .insert(storageEncryptionKeys)
+        .values({
+          orgId,
+          name: `${oldKey.name} (rotated)`,
+          keyType: oldKey.keyType,
+          publicKeyPem: payload.newPublicKeyPem ?? null,
+          keyHash: payload.newKeyHash,
+          isActive: true,
+          createdAt: now,
+        })
+        .returning();
+    });
 
     if (!newKey) {
       return c.json({ error: 'Failed to create rotated key' }, 500);
