@@ -14,6 +14,7 @@ import {
   purgeTrash,
   type TrashItem,
 } from './fileOperations';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 
 type TrashViewProps = {
   deviceId: string;
@@ -52,6 +53,7 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
   const [actionLoading, setActionLoading] = useState<
     'restore' | 'purge' | 'empty' | null
   >(null);
+  const [confirmAction, setConfirmAction] = useState<'purge' | 'empty' | null>(null);
 
   const fetchTrash = useCallback(async () => {
     setLoading(true);
@@ -113,46 +115,38 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
     }
   }, [deviceId, selected, fetchTrash, onRestore]);
 
-  const handlePurgeSelected = useCallback(async () => {
+  const handlePurgeSelected = useCallback(() => {
     const ids = Array.from(selected);
     if (ids.length === 0) return;
+    setConfirmAction('purge');
+  }, [selected]);
 
-    const confirmed = window.confirm(
-      `Permanently delete ${ids.length} item(s)? This cannot be undone.`
-    );
-    if (!confirmed) return;
+  const handleEmptyTrash = useCallback(() => {
+    setConfirmAction('empty');
+  }, []);
 
-    setActionLoading('purge');
+  const handleConfirmTrashAction = useCallback(async () => {
+    if (!confirmAction) return;
+
+    const action = confirmAction;
+    setConfirmAction(null);
+    setActionLoading(action);
     try {
-      await purgeTrash(deviceId, ids);
+      if (action === 'purge') {
+        const ids = Array.from(selected);
+        await purgeTrash(deviceId, ids);
+      } else {
+        await purgeTrash(deviceId);
+      }
       await fetchTrash();
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : 'Purge failed';
+        err instanceof Error ? err.message : action === 'purge' ? 'Purge failed' : 'Failed to empty trash';
       setError(message);
     } finally {
       setActionLoading(null);
     }
-  }, [deviceId, selected, fetchTrash]);
-
-  const handleEmptyTrash = useCallback(async () => {
-    const confirmed = window.confirm(
-      'Empty the entire trash? All items will be permanently deleted. This cannot be undone.'
-    );
-    if (!confirmed) return;
-
-    setActionLoading('empty');
-    try {
-      await purgeTrash(deviceId);
-      await fetchTrash();
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Failed to empty trash';
-      setError(message);
-    } finally {
-      setActionLoading(null);
-    }
-  }, [deviceId, fetchTrash]);
+  }, [confirmAction, deviceId, selected, fetchTrash]);
 
   const allSelected = items.length > 0 && selected.size === items.length;
   const someSelected = selected.size > 0 && selected.size < items.length;
@@ -281,8 +275,8 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
       {/* Trash table */}
       <div className="flex-1 overflow-auto">
         <table className="min-w-full divide-y divide-gray-700">
-          <thead className="sticky top-0 bg-gray-900">
-            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-gray-400">
+          <thead className="bg-muted/40 sticky top-0">
+            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               <th className="w-10 px-4 py-3">
                 <input
                   type="checkbox"
@@ -350,6 +344,20 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
           </tbody>
         </table>
       </div>
+      <ConfirmDialog
+        open={confirmAction !== null}
+        onClose={() => setConfirmAction(null)}
+        onConfirm={handleConfirmTrashAction}
+        title={confirmAction === 'empty' ? 'Empty Trash' : 'Permanently Delete'}
+        message={
+          confirmAction === 'empty'
+            ? 'Empty the entire trash? All items will be permanently deleted. This cannot be undone.'
+            : `Permanently delete ${selected.size} item(s)? This cannot be undone.`
+        }
+        confirmLabel={confirmAction === 'empty' ? 'Empty Trash' : 'Delete Permanently'}
+        variant="destructive"
+        isLoading={actionLoading !== null}
+      />
     </div>
   );
 }

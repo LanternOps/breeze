@@ -61,3 +61,41 @@ Breeze supports CIS benchmark posture tracking and controlled remediation throug
 - `compliance.cis_deviation`
 - `compliance.cis_score_changed`
 - `compliance.cis_remediation_applied`
+# Compliance Evidence Workflows
+
+This document defines how to collect and retain operational evidence for backup recoverability audits.
+
+## Backup Recoverability Evidence
+
+For each protected device, retain:
+
+- Latest backup verification status (`passed`, `failed`, `partial`)
+- Last successful restore test timestamp
+- Estimated RTO and RPO values
+- Risk factors impacting recovery readiness
+
+Primary API sources:
+
+- `GET /api/v1/backup/health`
+- `GET /api/v1/backup/verifications`
+- `GET /api/v1/backup/recovery-readiness`
+
+## Minimum Verification Cadence
+
+- Post-backup integrity verification after completed backups
+- Weekly restore tests for selected backup sets
+- Daily readiness-score recalculation
+
+## Escalation Criteria
+
+Escalate incidents when any of the following occur:
+
+- Verification status is `failed`
+- Recovery readiness falls below 70
+- Critical assets show repeated verification failures
+
+## Audit Retention Recommendation
+
+- Keep verification and readiness records for at least 12 months
+- Export monthly evidence snapshots for external audits
+- Track remediation actions linked to failed verification runs

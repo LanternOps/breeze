@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { eventTypeConfig, formatDateTime, type DeviceOption, type NetworkChangeEvent } from './networkTypes';
+import { Dialog } from '../shared/Dialog';
 
 type NetworkChangeDetailModalProps = {
   open: boolean;
@@ -47,7 +48,7 @@ export default function NetworkChangeDetailModal({
     return devices.find((device) => device.id === event.linkedDeviceId)?.label ?? event.linkedDeviceId;
   }, [devices, event?.linkedDeviceId]);
 
-  if (!open || !event) return null;
+  if (!event) return null;
 
   const typeInfo = eventTypeConfig[event.eventType];
   const canAcknowledgeThisEvent = canAcknowledge && !event.acknowledged;
@@ -84,8 +85,7 @@ export default function NetworkChangeDetailModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-4xl rounded-lg border bg-card p-6 shadow-sm">
+    <Dialog open={open} onClose={onClose} title={event.hostname || event.ipAddress} maxWidth="4xl" className="p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
@@ -96,8 +96,8 @@ export default function NetworkChangeDetailModal({
               <span
                 className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${
                   event.acknowledged
-                    ? 'bg-green-500/20 text-green-700 border-green-500/40'
-                    : 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40'
+                    ? 'bg-success/15 text-success border-success/30'
+                    : 'bg-warning/15 text-warning border-warning/30'
                 }`}
               >
                 {event.acknowledged ? 'Acknowledged' : 'Unacknowledged'}
@@ -239,8 +239,7 @@ export default function NetworkChangeDetailModal({
             )}
           </div>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }
 

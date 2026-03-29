@@ -221,7 +221,7 @@ export default function LogSearch() {
   return (
     <section className="space-y-4">
       <div>
-        <h1 className="text-2xl font-bold">Event Logs</h1>
+        <h1 className="text-xl font-semibold tracking-tight">Event Logs</h1>
         <p className="text-sm text-muted-foreground">Search and analyze logs from your fleet.</p>
       </div>
       <div className="rounded-lg border bg-card p-4 shadow-sm">
@@ -339,8 +339,8 @@ export default function LogSearch() {
 
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead className="bg-muted/50 text-left text-xs uppercase text-muted-foreground">
-              <tr>
+            <thead className="bg-muted/40">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 <th className="px-3 py-2">Timestamp</th>
                 <th className="px-3 py-2">Level</th>
                 <th className="px-3 py-2">Category</th>

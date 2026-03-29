@@ -1,16 +1,24 @@
 import { useMemo } from 'react';
 import { Activity, AlertTriangle, RefreshCcw } from 'lucide-react';
-import { cn, widthPercentClass } from '@/lib/utils';
+import { cn } from '@/lib/utils';
+import ProgressBar from '../shared/ProgressBar';
 
 type DeviceStatus = 'queued' | 'running' | 'completed' | 'failed';
 
-type DeviceProgress = {
+export type DeviceProgress = {
   id: string;
   name: string;
   status: DeviceStatus;
   startedAt?: string;
   completedAt?: string;
   error?: string;
+};
+
+type DeploymentProgressProps = {
+  title?: string;
+  subtitle?: string;
+  devices?: DeviceProgress[];
+  onRetryFailed?: () => void;
 };
 
 const statusStyles: Record<DeviceStatus, { label: string; color: string }> = {
@@ -20,7 +28,7 @@ const statusStyles: Record<DeviceStatus, { label: string; color: string }> = {
   failed: { label: 'Failed', color: 'bg-red-500/20 text-red-700 border-red-500/40' }
 };
 
-const deviceProgress: DeviceProgress[] = [
+const defaultDevices: DeviceProgress[] = [
   {
     id: 'dev-fin-021',
     name: 'FIN-LT-021',
@@ -49,45 +57,70 @@ const deviceProgress: DeviceProgress[] = [
   }
 ];
 
-export default function DeploymentProgress() {
+export default function DeploymentProgress({
+  title = 'Deployment Progress',
+  subtitle = 'Chrome 122 · Finance rollout',
+  devices = defaultDevices,
+  onRetryFailed,
+}: DeploymentProgressProps) {
   const stats = useMemo(() => {
-    const total = deviceProgress.length;
-    const completed = deviceProgress.filter(item => item.status === 'completed').length;
-    const running = deviceProgress.filter(item => item.status === 'running').length;
-    const failed = deviceProgress.filter(item => item.status === 'failed').length;
-    const queued = deviceProgress.filter(item => item.status === 'queued').length;
-    const progress = total > 0 ? Math.round((completed / total) * 100) : 0;
+    const total = devices.length;
+    const completed = devices.filter(item => item.status === 'completed').length;
+    const running = devices.filter(item => item.status === 'running').length;
+    const failed = devices.filter(item => item.status === 'failed').length;
+    const queued = devices.filter(item => item.status === 'queued').length;
 
-    return { total, completed, running, failed, queued, progress };
-  }, []);
+    return { total, completed, running, failed, queued };
+  }, [devices]);
+
+  const isActive = stats.running > 0 || stats.queued > 0;
+  const progressVariant = stats.failed > 0 && stats.completed === 0
+    ? 'error' as const
+    : stats.failed > 0
+      ? 'warning' as const
+      : stats.completed === stats.total
+        ? 'success' as const
+        : 'default' as const;
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Deployment Progress</h1>
-          <p className="text-sm text-muted-foreground">Chrome 122 · Finance rollout</p>
+          <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+          <p className="text-sm text-muted-foreground">{subtitle}</p>
         </div>
-        <div className="flex items-center gap-2 rounded-full border px-3 py-1 text-xs text-muted-foreground">
-          <Activity className="h-3.5 w-3.5 text-emerald-500" />
-          Live updates enabled
-        </div>
+        {isActive && (
+          <div className="flex items-center gap-2 rounded-full border px-3 py-1 text-xs text-muted-foreground">
+            <Activity className="h-3.5 w-3.5 text-emerald-500" />
+            Live updates enabled
+          </div>
+        )}
       </div>
 
       <div className="rounded-lg border bg-card p-6 shadow-sm">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between mb-4">
           <div>
             <p className="text-sm font-semibold">Overall progress</p>
-            <p className="text-xs text-muted-foreground">{stats.completed} of {stats.total} devices completed</p>
+            <p className="text-xs text-muted-foreground">
+              {stats.completed} of {stats.total} devices completed
+            </p>
           </div>
           <div className="text-right">
-            <p className="text-2xl font-semibold">{stats.progress}%</p>
-            <p className="text-xs text-muted-foreground">Deployment complete</p>
+            <p className="text-2xl font-semibold">
+              {stats.total > 0 ? Math.round((stats.completed / stats.total) * 100) : 0}%
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {stats.completed === stats.total ? 'Deployment complete' : 'In progress'}
+            </p>
           </div>
         </div>
-        <div className="mt-4 h-3 w-full rounded-full bg-muted">
-          <div className={cn('h-3 rounded-full bg-primary', widthPercentClass(stats.progress))} />
-        </div>
+
+        <ProgressBar
+          current={stats.completed}
+          total={stats.total}
+          variant={progressVariant}
+          showCount={false}
+        />
 
         <div className="mt-4 grid gap-4 sm:grid-cols-4">
           <div className="rounded-md border bg-muted/30 p-4">
@@ -108,15 +141,18 @@ export default function DeploymentProgress() {
           </div>
         </div>
 
-        <div className="mt-4 flex items-center justify-end">
-          <button
-            type="button"
-            className="inline-flex h-9 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
-          >
-            <RefreshCcw className="h-4 w-4" />
-            Retry failed
-          </button>
-        </div>
+        {stats.failed > 0 && (
+          <div className="mt-4 flex items-center justify-end">
+            <button
+              type="button"
+              onClick={onRetryFailed}
+              className="inline-flex h-9 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
+            >
+              <RefreshCcw className="h-4 w-4" />
+              Retry failed
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="rounded-lg border bg-card p-6 shadow-sm">
@@ -135,7 +171,7 @@ export default function DeploymentProgress() {
               </tr>
             </thead>
             <tbody className="divide-y">
-              {deviceProgress.map(device => (
+              {devices.map(device => (
                 <tr key={device.id} className="text-sm">
                   <td className="px-4 py-3 font-medium text-foreground">{device.name}</td>
                   <td className="px-4 py-3">

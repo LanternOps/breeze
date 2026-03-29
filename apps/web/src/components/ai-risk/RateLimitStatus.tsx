@@ -110,12 +110,12 @@ function RateLimitCategoryGroup({
         <div className="px-4 pb-3">
           <table className="w-full text-xs">
             <thead>
-              <tr className="text-left text-muted-foreground">
-                <th className="pb-1.5 pl-6 font-medium">Tool</th>
-                <th className="pb-1.5 font-medium">Limit</th>
-                <th className="pb-1.5 font-medium">Window</th>
-                <th className="pb-1.5 font-medium">Tier</th>
-                <th className="pb-1.5 font-medium">Permission</th>
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="pb-1.5 pl-6">Tool</th>
+                <th className="pb-1.5">Limit</th>
+                <th className="pb-1.5">Window</th>
+                <th className="pb-1.5">Tier</th>
+                <th className="pb-1.5">Permission</th>
               </tr>
             </thead>
             <tbody>

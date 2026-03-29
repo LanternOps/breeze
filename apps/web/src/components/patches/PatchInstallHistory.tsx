@@ -73,17 +73,17 @@ const typeConfig: Record<string, { label: string; icon: typeof Download }> = {
 const statusConfig: Record<string, { label: string; color: string; icon: typeof CheckCircle }> = {
   completed: {
     label: 'Completed',
-    color: 'bg-green-500/20 text-green-700 border-green-500/40',
+    color: 'bg-success/15 text-success border-success/30',
     icon: CheckCircle,
   },
   failed: {
     label: 'Failed',
-    color: 'bg-red-500/20 text-red-700 border-red-500/40',
+    color: 'bg-destructive/15 text-destructive border-destructive/30',
     icon: XCircle,
   },
   pending: {
     label: 'Pending',
-    color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40',
+    color: 'bg-warning/15 text-warning border-warning/30',
     icon: Clock,
   },
   running: {
@@ -93,7 +93,7 @@ const statusConfig: Record<string, { label: string; color: string; icon: typeof 
   },
   timeout: {
     label: 'Timeout',
-    color: 'bg-orange-500/20 text-orange-700 border-orange-500/40',
+    color: 'bg-warning/15 text-warning border-warning/30',
     icon: AlertTriangle,
   },
 };
@@ -622,12 +622,12 @@ function HistoryDetail({ entry }: { entry: PatchHistoryEntry }) {
                         </td>
                         <td className="px-4 py-2">
                           {isInstalled ? (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-green-500/20 border border-green-500/40 px-2 py-0.5 text-xs font-medium text-green-700">
+                            <span className="inline-flex items-center gap-1 rounded-full bg-success/15 border border-success/30 px-2 py-0.5 text-xs font-medium text-success">
                               <CheckCircle className="h-3 w-3" />
                               Installed
                             </span>
                           ) : isFailed ? (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-red-500/20 border border-red-500/40 px-2 py-0.5 text-xs font-medium text-red-700">
+                            <span className="inline-flex items-center gap-1 rounded-full bg-destructive/15 border border-destructive/30 px-2 py-0.5 text-xs font-medium text-destructive">
                               <XCircle className="h-3 w-3" />
                               Failed
                             </span>

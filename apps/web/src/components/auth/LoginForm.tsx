@@ -43,7 +43,7 @@ export default function LoginForm({
       onSubmit={handleSubmit(async values => {
         await onSubmit?.(values);
       })}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="space-y-6"
     >
       <div className="space-y-2">
         <label htmlFor="email" className="text-sm font-medium">
@@ -103,7 +103,7 @@ export default function LoginForm({
           <p>
             New here?{' '}
             <a href="/register-partner" className="font-medium text-primary hover:underline">
-              Register your company
+              Register your MSP
             </a>
           </p>
         </div>

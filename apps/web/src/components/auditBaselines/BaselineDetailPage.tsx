@@ -6,6 +6,7 @@ import type { Baseline } from './BaselineFormModal';
 import BaselineOverviewTab from './BaselineOverviewTab';
 import BaselineComplianceTab from './BaselineComplianceTab';
 import BaselineApplyTab from './BaselineApplyTab';
+import Breadcrumbs from '../layout/Breadcrumbs';
 
 const tabs = [
   { id: 'overview', label: 'Overview', icon: Eye },
@@ -85,20 +86,14 @@ export default function BaselineDetailPage({ baselineId }: Props) {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <a
-          href="/audit-baselines"
-          className="hover:text-foreground"
-        >
-          Audit Baselines
-        </a>
-        <span>/</span>
-        <span className="font-medium text-foreground">{baseline.name}</span>
-      </div>
+      <Breadcrumbs items={[
+        { label: 'Audit Baselines', href: '/audit-baselines' },
+        { label: baseline.name || 'Baseline' }
+      ]} />
 
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">{baseline.name}</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{baseline.name}</h1>
           <div className="mt-1 flex items-center gap-3">
             <span
               className={cn(

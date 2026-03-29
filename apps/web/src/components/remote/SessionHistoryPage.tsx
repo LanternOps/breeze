@@ -109,7 +109,7 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
           <History className="h-6 w-6 text-muted-foreground" />
         </div>
         <div>
-          <h1 className="text-2xl font-bold">Session History</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Session History</h1>
           <p className="text-muted-foreground">View and audit remote access sessions</p>
         </div>
       </div>

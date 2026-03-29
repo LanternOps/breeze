@@ -133,13 +133,13 @@ export default function BaselineList() {
       <div className="rounded-lg border bg-card shadow-sm">
         <table className="w-full text-sm">
           <thead className="bg-muted/40">
-            <tr className="border-b">
-              <th className="px-4 py-3 text-left font-medium text-muted-foreground">Name</th>
-              <th className="px-4 py-3 text-left font-medium text-muted-foreground">OS</th>
-              <th className="px-4 py-3 text-left font-medium text-muted-foreground">Profile</th>
-              <th className="px-4 py-3 text-left font-medium text-muted-foreground">Active</th>
-              <th className="px-4 py-3 text-left font-medium text-muted-foreground">Updated</th>
-              <th className="px-4 py-3 text-right font-medium text-muted-foreground">Actions</th>
+            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              <th className="px-4 py-3">Name</th>
+              <th className="px-4 py-3">OS</th>
+              <th className="px-4 py-3">Profile</th>
+              <th className="px-4 py-3">Active</th>
+              <th className="px-4 py-3">Updated</th>
+              <th className="px-4 py-3 text-right">Actions</th>
             </tr>
           </thead>
           <tbody>

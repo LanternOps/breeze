@@ -261,7 +261,7 @@ export default function SnapshotBrowser() {
                 <span className="font-semibold text-foreground">Path:</span>
                 <span className="ml-2 text-muted-foreground">/</span>
                 {breadcrumbs.map((crumb, index) => (
-                  <span key={crumb} className="ml-2 text-muted-foreground">
+                  <span key={`${index}-${crumb}`} className="ml-2 text-muted-foreground">
                     {crumb}
                     {index < breadcrumbs.length - 1 && <span className="mx-1">/</span>}
                   </span>
@@ -279,8 +279,8 @@ export default function SnapshotBrowser() {
               </div>
             </div>
 
-            <div className="overflow-hidden rounded-lg border">
-              <table className="w-full">
+            <div className="overflow-x-auto rounded-lg border">
+              <table className="w-full min-w-[400px]">
                 <thead className="bg-muted/40 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   <tr>
                     <th className="px-4 py-3">Select</th>
@@ -297,6 +297,7 @@ export default function SnapshotBrowser() {
                           type="checkbox"
                           checked={selectedFiles.has(file.id)}
                           onChange={() => toggleFile(file.id)}
+                          aria-label={`Select ${file.name}`}
                           className="h-4 w-4"
                         />
                       </td>
@@ -315,10 +316,10 @@ export default function SnapshotBrowser() {
             </div>
 
             {visibleFiles.length === 0 && (
-              <div className="rounded-md border border-dashed bg-muted/30 p-6 text-center text-sm text-muted-foreground">
+              <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
                 {selectedSnapshot?.files?.length
-                  ? 'Select a folder in the tree to view files.'
-                  : 'No files available for this snapshot.'}
+                  ? 'Select a folder in the tree to view its files.'
+                  : 'No files in this snapshot. The backup may still be processing.'}
               </div>
             )}
           </div>

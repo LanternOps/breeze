@@ -10,22 +10,40 @@ import {
   Search,
   XCircle
 } from 'lucide-react';
-import { cn, widthPercentClass } from '@/lib/utils';
+import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 
-type JobStatus = 'completed' | 'running' | 'failed' | 'queued';
+type JobStatus = 'completed' | 'running' | 'failed' | 'queued' | 'cancelled';
+
+type BackupJobRaw = {
+  id: string;
+  type: string;
+  deviceId: string;
+  configId: string;
+  deviceName?: string | null;
+  configName?: string | null;
+  status: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  createdAt: string;
+  totalSize?: number | null;
+  fileCount?: number | null;
+  errorCount?: number | null;
+  errorLog?: string | null;
+};
 
 type BackupJob = {
   id: string;
-  device: string;
-  config: string;
+  deviceName: string;
+  configName: string;
   type: string;
   status: JobStatus;
-  started: string;
+  startedAt: string | null;
+  completedAt: string | null;
   duration: string;
   size: string;
-  errors: string;
-  progress?: number;
+  errorCount: number;
+  errorSummary: string;
 };
 
 const statusConfig: Record<JobStatus, { label: string; icon: typeof CheckCircle2; className: string }> = {
@@ -48,28 +66,90 @@ const statusConfig: Record<JobStatus, { label: string; icon: typeof CheckCircle2
     label: 'Queued',
     icon: Clock,
     className: 'text-muted-foreground bg-muted'
+  },
+  cancelled: {
+    label: 'Cancelled',
+    icon: XCircle,
+    className: 'text-muted-foreground bg-muted'
   }
 };
 
-const normalizeStatus = (status?: string): JobStatus => {
-  if (!status) {
-    return 'queued';
-  }
-  const normalized = status.toLowerCase();
-  if (normalized.includes('run') || normalized.includes('progress')) {
-    return 'running';
-  }
-  if (normalized.includes('complete') || normalized.includes('success')) {
-    return 'completed';
-  }
-  if (normalized.includes('fail') || normalized.includes('error')) {
-    return 'failed';
-  }
-  if (normalized.includes('queue') || normalized.includes('pending')) {
-    return 'queued';
-  }
+function normalizeStatus(status?: string): JobStatus {
+  if (!status) return 'queued';
+  const s = status.toLowerCase();
+  if (s === 'running' || s.includes('progress')) return 'running';
+  if (s === 'completed' || s.includes('success') || s.includes('complete')) return 'completed';
+  if (s === 'failed' || s.includes('fail') || s.includes('error')) return 'failed';
+  if (s === 'cancelled' || s === 'canceled') return 'cancelled';
+  if (s === 'pending' || s.includes('queue')) return 'queued';
   return 'queued';
-};
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '--';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const precision = value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+function formatDuration(startedAt?: string | null, completedAt?: string | null): string {
+  if (!startedAt) return '--';
+  const start = new Date(startedAt).getTime();
+  if (Number.isNaN(start)) return '--';
+
+  const end = completedAt ? new Date(completedAt).getTime() : Date.now();
+  if (Number.isNaN(end)) return '--';
+
+  const diffMs = Math.max(0, end - start);
+  const seconds = Math.floor(diffMs / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}h ${remainingMinutes}m`;
+}
+
+function formatTime(iso?: string | null): string {
+  if (!iso) return '--';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '--';
+  return date.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
+function mapJob(raw: BackupJobRaw): BackupJob {
+  return {
+    id: raw.id,
+    deviceName: raw.deviceName ?? raw.deviceId?.slice(0, 8) ?? '--',
+    configName: raw.configName ?? '--',
+    type: raw.type ?? '--',
+    status: normalizeStatus(raw.status),
+    startedAt: raw.startedAt ?? null,
+    completedAt: raw.completedAt ?? null,
+    duration: formatDuration(raw.startedAt, raw.completedAt),
+    size: raw.totalSize ? formatBytes(raw.totalSize) : '--',
+    errorCount: raw.errorCount ?? 0,
+    errorSummary: raw.errorLog
+      ? raw.errorLog.length > 60
+        ? `${raw.errorLog.slice(0, 57)}...`
+        : raw.errorLog
+      : raw.errorCount
+        ? `${raw.errorCount} error${raw.errorCount !== 1 ? 's' : ''}`
+        : '-'
+  };
+}
 
 export default function BackupJobList() {
   const [jobs, setJobs] = useState<BackupJob[]>([]);
@@ -78,7 +158,7 @@ export default function BackupJobList() {
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<JobStatus | 'all'>('all');
   const [configFilter, setConfigFilter] = useState('all');
-  const [timeRange, setTimeRange] = useState('24h');
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -91,14 +171,7 @@ export default function BackupJobList() {
       const payload = await response.json();
       const data = payload?.data ?? payload ?? [];
       const nextJobs = Array.isArray(data) ? data : [];
-
-      setJobs(
-        nextJobs.map((job: BackupJob) => ({
-          ...job,
-          status: normalizeStatus(job.status),
-          errors: job.errors ?? '-'
-        }))
-      );
+      setJobs(nextJobs.map(mapJob));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -110,8 +183,30 @@ export default function BackupJobList() {
     fetchJobs();
   }, [fetchJobs]);
 
+  const handleCancel = useCallback(async (jobId: string) => {
+    try {
+      setCancellingId(jobId);
+      const response = await fetchWithAuth(`/backup/jobs/${jobId}/cancel`, {
+        method: 'POST'
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error ?? 'Failed to cancel job');
+      }
+      setJobs((prev) =>
+        prev.map((job) =>
+          job.id === jobId ? { ...job, status: 'cancelled' as JobStatus } : job
+        )
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to cancel job');
+    } finally {
+      setCancellingId(null);
+    }
+  }, []);
+
   const availableConfigs = useMemo(() => {
-    const unique = new Set(jobs.map((job) => job.config).filter(Boolean));
+    const unique = new Set(jobs.map((job) => job.configName).filter((c) => c && c !== '--'));
     return Array.from(unique);
   }, [jobs]);
 
@@ -119,14 +214,14 @@ export default function BackupJobList() {
     const normalizedQuery = query.trim().toLowerCase();
     return jobs.filter((job) => {
       const matchesQuery = normalizedQuery
-        ? job.device.toLowerCase().includes(normalizedQuery)
+        ? job.deviceName.toLowerCase().includes(normalizedQuery) ||
+          job.configName.toLowerCase().includes(normalizedQuery)
         : true;
       const matchesStatus = statusFilter === 'all' ? true : job.status === statusFilter;
-      const matchesConfig = configFilter === 'all' ? true : job.config === configFilter;
-      const matchesTimeRange = timeRange ? true : true;
-      return matchesQuery && matchesStatus && matchesConfig && matchesTimeRange;
+      const matchesConfig = configFilter === 'all' ? true : job.configName === configFilter;
+      return matchesQuery && matchesStatus && matchesConfig;
     });
-  }, [configFilter, jobs, query, statusFilter, timeRange]);
+  }, [configFilter, jobs, query, statusFilter]);
 
   if (loading) {
     return (
@@ -161,10 +256,12 @@ export default function BackupJobList() {
         <p className="text-sm text-muted-foreground">Track job execution status and troubleshoot errors.</p>
       </div>
 
-      <div className="grid gap-3 rounded-lg border bg-card p-4 shadow-sm md:grid-cols-4">
+      <div className="grid gap-3 rounded-lg border bg-card p-4 shadow-sm md:grid-cols-3">
         <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm">
-          <Search className="h-4 w-4 text-muted-foreground" />
+          <Search className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+          <label htmlFor="job-search" className="sr-only">Search device</label>
           <input
+            id="job-search"
             className="w-full bg-transparent text-sm outline-none"
             placeholder="Search device..."
             value={query}
@@ -172,9 +269,11 @@ export default function BackupJobList() {
           />
         </div>
         <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm">
-          <Filter className="h-4 w-4 text-muted-foreground" />
+          <Filter className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+          <label htmlFor="job-status-filter" className="sr-only">Filter by status</label>
           <select
-            className="w-full bg-transparent text-sm outline-none"
+            id="job-status-filter"
+            className="w-full appearance-none bg-transparent text-sm outline-none"
             value={statusFilter}
             onChange={(event) => setStatusFilter(event.target.value as JobStatus | 'all')}
           >
@@ -183,11 +282,14 @@ export default function BackupJobList() {
             <option value="failed">Failed</option>
             <option value="completed">Completed</option>
             <option value="queued">Queued</option>
+            <option value="cancelled">Cancelled</option>
           </select>
         </div>
         <div className="rounded-md border bg-background px-3 py-2 text-sm">
+          <label htmlFor="job-config-filter" className="sr-only">Filter by config</label>
           <select
-            className="w-full bg-transparent text-sm outline-none"
+            id="job-config-filter"
+            className="w-full appearance-none bg-transparent text-sm outline-none"
             value={configFilter}
             onChange={(event) => setConfigFilter(event.target.value)}
           >
@@ -199,17 +301,6 @@ export default function BackupJobList() {
             ))}
           </select>
         </div>
-        <div className="rounded-md border bg-background px-3 py-2 text-sm">
-          <select
-            className="w-full bg-transparent text-sm outline-none"
-            value={timeRange}
-            onChange={(event) => setTimeRange(event.target.value)}
-          >
-            <option value="24h">Last 24 hours</option>
-            <option value="7d">Last 7 days</option>
-            <option value="30d">Last 30 days</option>
-          </select>
-        </div>
       </div>
 
       {error && (
@@ -218,8 +309,8 @@ export default function BackupJobList() {
         </div>
       )}
 
-      <div className="overflow-hidden rounded-lg border bg-card shadow-sm">
-        <table className="w-full">
+      <div className="overflow-x-auto rounded-lg border bg-card shadow-sm">
+        <table className="w-full min-w-[700px]">
           <thead className="bg-muted/40 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             <tr>
               <th className="px-4 py-3">Device</th>
@@ -237,65 +328,71 @@ export default function BackupJobList() {
             {filteredJobs.length === 0 ? (
               <tr>
                 <td colSpan={9} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                  No backup jobs found.
+                  No backup jobs match your filters.
                 </td>
               </tr>
             ) : (
               filteredJobs.map((job) => {
-                const status = statusConfig[job.status];
+                const status = statusConfig[job.status] ?? statusConfig.queued;
                 const StatusIcon = status.icon;
+                const isCancellable = job.status === 'running' || job.status === 'queued';
                 return (
                   <tr key={job.id} className="text-sm text-foreground">
-                    <td className="px-4 py-3 font-medium">{job.device}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{job.config}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{job.type}</td>
+                    <td className="px-4 py-3 font-medium">{job.deviceName}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{job.configName}</td>
+                    <td className="px-4 py-3 capitalize text-muted-foreground">{job.type}</td>
                     <td className="px-4 py-3">
-                      <div className="space-y-2">
-                        <span
-                          className={cn(
-                            'inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium',
-                            status.className
-                          )}
-                        >
-                          <StatusIcon
-                            className={cn('h-3.5 w-3.5', job.status === 'running' && 'animate-spin')}
-                          />
-                          {status.label}
-                        </span>
-                        {job.status === 'running' && (
-                          <div className="h-1.5 w-24 rounded-full bg-muted">
-                            <div
-                              className={cn('h-1.5 rounded-full bg-primary', widthPercentClass(job.progress ?? 0))}
-                            />
-                          </div>
+                      <span
+                        className={cn(
+                          'inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium',
+                          status.className
                         )}
-                      </div>
+                      >
+                        <StatusIcon
+                          className={cn('h-3.5 w-3.5', job.status === 'running' && 'animate-spin')}
+                        />
+                        {status.label}
+                      </span>
                     </td>
-                    <td className="px-4 py-3 text-muted-foreground">{job.started ?? '--'}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{job.duration ?? '--'}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{job.size ?? '--'}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{formatTime(job.startedAt)}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{job.duration}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{job.size}</td>
                     <td className="px-4 py-3">
-                      {job.status === 'failed' ? (
+                      {job.errorCount > 0 ? (
                         <span className="inline-flex items-center gap-1 text-xs font-medium text-destructive">
                           <AlertTriangle className="h-3.5 w-3.5" />
-                          {job.errors}
+                          {job.errorSummary}
                         </span>
                       ) : (
-                        <span className="text-xs text-muted-foreground">{job.errors}</span>
+                        <span className="text-xs text-muted-foreground">-</span>
                       )}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-2">
-                        {job.status === 'running' && (
-                          <button className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-accent">
-                            <PauseCircle className="h-3.5 w-3.5" />
+                        {isCancellable && (
+                          <button
+                            type="button"
+                            onClick={() => handleCancel(job.id)}
+                            disabled={cancellingId === job.id}
+                            aria-label={`Cancel backup for ${job.deviceName}`}
+                            className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent disabled:opacity-50"
+                          >
+                            {cancellingId === job.id ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <PauseCircle className="h-3.5 w-3.5" />
+                            )}
                             Cancel
                           </button>
                         )}
-                        <button className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium text-primary hover:bg-primary/10">
+                        <a
+                          href={`/backup/jobs/${job.id}`}
+                          aria-label={`View details for ${job.deviceName} backup`}
+                          className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/10"
+                        >
                           View details
                           <ChevronRight className="h-3.5 w-3.5" />
-                        </button>
+                        </a>
                       </div>
                     </td>
                   </tr>

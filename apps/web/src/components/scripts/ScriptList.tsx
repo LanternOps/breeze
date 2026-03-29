@@ -37,9 +37,9 @@ const languageConfig: Record<ScriptLanguage, { label: string; color: string; ico
 };
 
 const statusConfig: Record<ScriptStatus, { label: string; color: string }> = {
-  active: { label: 'Active', color: 'bg-green-500/20 text-green-700 border-green-500/40' },
-  draft: { label: 'Draft', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40' },
-  archived: { label: 'Archived', color: 'bg-gray-500/20 text-gray-700 border-gray-500/40' }
+  active: { label: 'Active', color: 'bg-success/15 text-success border-success/30' },
+  draft: { label: 'Draft', color: 'bg-warning/15 text-warning border-warning/30' },
+  archived: { label: 'Archived', color: 'bg-muted text-muted-foreground border-border' }
 };
 
 const osLabels: Record<OSType, string> = {
@@ -204,11 +204,11 @@ export default function ScriptList({
                   key={script.id}
                   className="transition hover:bg-muted/40"
                 >
-                  <td className="px-4 py-3">
-                    <div>
-                      <p className="text-sm font-medium">{script.name}</p>
+                  <td className="max-w-[280px] px-4 py-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium" title={script.name}>{script.name}</p>
                       {script.description && (
-                        <p className="text-xs text-muted-foreground truncate max-w-xs">
+                        <p className="text-xs text-muted-foreground truncate max-w-xs" title={script.description}>
                           {script.description}
                         </p>
                       )}

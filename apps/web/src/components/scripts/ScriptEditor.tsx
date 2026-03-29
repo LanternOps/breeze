@@ -661,7 +661,7 @@ export default function ScriptEditor({ scriptId, timezone }: ScriptEditorProps) 
             <ArrowLeft className="h-5 w-5" />
           </a>
           <div>
-            <h1 className="text-2xl font-bold">Script Editor</h1>
+            <h1 className="text-xl font-semibold tracking-tight">Script Editor</h1>
             <p className="text-sm text-muted-foreground">
               {script?.name || 'Untitled script'}
             </p>
@@ -906,7 +906,7 @@ export default function ScriptEditor({ scriptId, timezone }: ScriptEditorProps) 
                           type="checkbox"
                           checked={Boolean(param.required)}
                           onChange={event => updateParameter(param.id, { required: event.target.checked })}
-                          className="h-4 w-4 rounded border-gray-300"
+                          className="h-4 w-4 rounded border-border"
                         />
                         <span className="text-sm">Yes</span>
                       </div>
@@ -1002,7 +1002,7 @@ export default function ScriptEditor({ scriptId, timezone }: ScriptEditorProps) 
                             type="checkbox"
                             checked={Boolean(value)}
                             onChange={event => handleTestParamChange(paramName, event.target.checked)}
-                            className="h-4 w-4 rounded border-gray-300"
+                            className="h-4 w-4 rounded border-border"
                           />
                           <span className="text-sm font-medium">{paramName}</span>
                         </label>

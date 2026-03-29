@@ -3,6 +3,7 @@ import { Plus, Trash2, Search, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { DEVICE_ROLES, getDeviceRoleLabel } from '@/lib/deviceRoles';
+import HelpTooltip from '../shared/HelpTooltip';
 
 type Assignment = {
   id: string;
@@ -238,7 +239,10 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
         <h2 className="text-lg font-semibold">Add Assignment</h2>
         <div className="mt-4 grid gap-4 sm:grid-cols-3">
           <div>
-            <label className="text-sm font-medium">Level</label>
+            <label className="text-sm font-medium">
+              Level
+              <HelpTooltip text="Scope of the assignment. More specific levels (device) take precedence over broader ones (organization)." />
+            </label>
             <select
               value={newLevel}
               onChange={(e) => setNewLevel(e.target.value)}
@@ -313,7 +317,10 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
             )}
           </div>
           <div>
-            <label className="text-sm font-medium">Priority</label>
+            <label className="text-sm font-medium">
+              Priority
+              <HelpTooltip text="Higher values override lower ones when multiple policies target the same device at the same level." />
+            </label>
             <input
               type="number"
               min={0}
@@ -326,7 +333,10 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
         </div>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <div>
-            <label className="text-sm font-medium">Role Filter <span className="text-xs text-muted-foreground">(optional)</span></label>
+            <label className="text-sm font-medium">
+              Role Filter <span className="text-xs text-muted-foreground">(optional)</span>
+              <HelpTooltip text="Restrict this assignment to devices with specific roles. Leave empty to apply to all roles." />
+            </label>
             <div className="mt-2 flex flex-wrap gap-2 rounded-md border bg-background p-2 min-h-[2.5rem]">
               {DEVICE_ROLES.map((role) => {
                 const isSelected = newRoleFilter.includes(role);

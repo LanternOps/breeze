@@ -603,7 +603,7 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
     <div className="space-y-6">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Scheduled Reports</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Scheduled Reports</h1>
           <p className="text-muted-foreground">Deliver reports automatically on your preferred cadence.</p>
         </div>
       </div>

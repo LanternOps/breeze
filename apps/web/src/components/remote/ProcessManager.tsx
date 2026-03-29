@@ -44,10 +44,10 @@ type SortField = 'pid' | 'name' | 'user' | 'cpuPercent' | 'memoryMb' | 'status';
 type SortOrder = 'asc' | 'desc';
 
 const statusColors: Record<ProcessStatus, string> = {
-  running: 'bg-green-500/20 text-green-700 border-green-500/40',
-  sleeping: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40',
-  stopped: 'bg-gray-500/20 text-gray-700 border-gray-500/40',
-  zombie: 'bg-red-500/20 text-red-700 border-red-500/40',
+  running: 'bg-success/15 text-success border-success/30',
+  sleeping: 'bg-warning/15 text-warning border-warning/30',
+  stopped: 'bg-muted text-muted-foreground border-border',
+  zombie: 'bg-destructive/15 text-destructive border-destructive/30',
   idle: 'bg-blue-500/20 text-blue-700 border-blue-500/40'
 };
 
@@ -268,7 +268,7 @@ export default function ProcessManager({
                 type="checkbox"
                 checked={autoRefresh}
                 onChange={e => setAutoRefresh(e.target.checked)}
-                className="h-4 w-4 rounded border-gray-300"
+                className="h-4 w-4 rounded border-border"
               />
               <span className="whitespace-nowrap">Auto-refresh</span>
             </label>

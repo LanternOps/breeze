@@ -82,13 +82,13 @@ function formatRam(valueMb: number | null | undefined): string {
 function getHealthBadge(health?: string, status?: string) {
   const normalized = (health || status || '').toLowerCase();
   if (['healthy', 'ok', 'good', 'normal'].includes(normalized)) {
-    return { label: health || status || 'Healthy', className: 'bg-green-500/20 text-green-700 border-green-500/40' };
+    return { label: health || status || 'Healthy', className: 'bg-success/15 text-success border-success/30' };
   }
   if (['warning', 'degraded'].includes(normalized)) {
-    return { label: health || status || 'Warning', className: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40' };
+    return { label: health || status || 'Warning', className: 'bg-warning/15 text-warning border-warning/30' };
   }
   if (['critical', 'failed', 'error'].includes(normalized)) {
-    return { label: health || status || 'Critical', className: 'bg-red-500/20 text-red-700 border-red-500/40' };
+    return { label: health || status || 'Critical', className: 'bg-destructive/15 text-destructive border-destructive/30' };
   }
   return { label: health || status || 'Unknown', className: 'bg-muted/40 text-muted-foreground border-muted' };
 }
@@ -225,7 +225,7 @@ export default function DeviceHardwareInventory({ deviceId }: DeviceHardwareInve
 
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="rounded-lg border bg-card p-6 shadow-sm">
-          <h3 className="font-semibold">Disk Drives</h3>
+          <h3 className="text-sm font-semibold">Disk Drives</h3>
           <div className="mt-4 overflow-hidden rounded-md border">
             <table className="min-w-full divide-y">
               <thead className="bg-muted/40">
@@ -263,7 +263,7 @@ export default function DeviceHardwareInventory({ deviceId }: DeviceHardwareInve
         </div>
 
         <div className="rounded-lg border bg-card p-6 shadow-sm">
-          <h3 className="font-semibold">Network Adapters</h3>
+          <h3 className="text-sm font-semibold">Network Adapters</h3>
           <div className="mt-4 space-y-3">
             {adapters.length === 0 ? (
               <p className="text-sm text-muted-foreground">No network adapters reported.</p>

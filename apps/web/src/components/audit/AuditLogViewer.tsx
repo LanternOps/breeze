@@ -272,7 +272,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
       <div className="space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold">Audit Trail</h1>
+            <h1 className="text-xl font-semibold tracking-tight">Audit Trail</h1>
             <p className="text-muted-foreground">
               Track user actions, sensitive operations, and system changes.
             </p>
@@ -292,7 +292,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
       <div className="space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold">Audit Trail</h1>
+            <h1 className="text-xl font-semibold tracking-tight">Audit Trail</h1>
             <p className="text-muted-foreground">
               Track user actions, sensitive operations, and system changes.
             </p>
@@ -318,7 +318,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold">Audit Trail</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Audit Trail</h1>
           <p className="text-muted-foreground">
             Track user actions, sensitive operations, and system changes.
           </p>
@@ -378,7 +378,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
           <thead className="bg-muted/40">
             <tr>
               {Object.entries(columnLabels).map(([key, label]) => (
-                <th key={key} className="px-4 py-3 text-left text-xs font-semibold uppercase">
+                <th key={key} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   <button
                     type="button"
                     onClick={() => handleSort(key as SortKey)}

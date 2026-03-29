@@ -298,7 +298,7 @@ export default function DiscoveryProfileForm({
                   type="checkbox"
                   checked={formValues.methods.includes(option.id)}
                   onChange={() => handleToggleMethod(option.id)}
-                  className="h-4 w-4 rounded border-gray-300"
+                  className="h-4 w-4 rounded border-border"
                 />
                 {option.label}
               </label>

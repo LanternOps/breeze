@@ -298,10 +298,10 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
           <table className="min-w-full divide-y text-sm">
             <thead className="bg-muted/40">
               <tr>
-                <th className="px-3 py-2 text-left text-xs font-semibold uppercase">Time</th>
-                <th className="px-3 py-2 text-left text-xs font-semibold uppercase">Action</th>
-                <th className="px-3 py-2 text-left text-xs font-semibold uppercase">Resource</th>
-                <th className="px-3 py-2 text-left text-xs font-semibold uppercase">IP</th>
+                <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">Time</th>
+                <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">Action</th>
+                <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">Resource</th>
+                <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">IP</th>
               </tr>
             </thead>
             <tbody className="divide-y">

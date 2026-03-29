@@ -1,13 +1,18 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
 import ReportBuilder from '../../components/reports/ReportBuilder';
+import Breadcrumbs from '../../components/layout/Breadcrumbs';
 import { navigateTo } from '../../lib/navigation';
 ---
 
 <DashboardLayout title="Create Report">
+  <Breadcrumbs client:load items={[
+    { label: 'Reports', href: '/reports' },
+    { label: 'New Report' }
+  ]} />
   <div class="space-y-6">
     <div>
-      <h1 class="text-2xl font-bold">Create Report</h1>
+      <h1 class="text-xl font-semibold tracking-tight">Create Report</h1>
       <p class="text-muted-foreground">
         Configure a new report to track and analyze your infrastructure.
       </p>

@@ -14,6 +14,7 @@ import { enqueueMonitorCheckResult, type MonitorCheckResult } from '../jobs/moni
 import { isRedisAvailable } from '../services/redis';
 import { isIP } from 'node:net';
 import { processDeviceIPHistoryUpdate } from '../services/deviceIpHistory';
+import { processBackupVerificationResult } from './backup/verificationService';
 
 declare module 'hono' {
   interface ContextVariableMap {
@@ -572,6 +573,19 @@ async function processCommandResult(
         }
       } catch (err) {
         console.error(`[AgentWs] Failed to process discovery results for ${agentId}:`, err);
+      }
+    }
+
+    // Handle backup verification results
+    if (command.type === 'backup_verify' || command.type === 'backup_test_restore') {
+      try {
+        await processBackupVerificationResult(result.commandId, {
+          status: result.status,
+          stdout,
+          error: result.error,
+        });
+      } catch (err) {
+        console.error(`[AgentWs] Failed to process backup verification result for ${agentId}:`, err);
       }
     }
 

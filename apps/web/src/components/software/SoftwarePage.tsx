@@ -25,7 +25,7 @@ export default function SoftwarePage({ defaultTab = 'inventory' }: { defaultTab?
     <div className="space-y-6">
       <div className="flex items-end justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Software</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Software</h1>
           <p className="text-sm text-muted-foreground">
             {tab === 'inventory'
               ? 'Aggregate view of software installed across all managed devices.'

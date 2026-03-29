@@ -28,18 +28,18 @@ type DevicePeripheralsTabProps = {
 };
 
 const eventTypeBadge: Record<string, string> = {
-  connected: 'bg-green-500/20 text-green-700 border-green-500/40',
-  disconnected: 'bg-gray-500/20 text-gray-700 border-gray-500/40',
-  blocked: 'bg-red-500/20 text-red-700 border-red-500/40',
-  mounted_read_only: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40',
+  connected: 'bg-success/15 text-success border-success/30',
+  disconnected: 'bg-muted text-muted-foreground border-border',
+  blocked: 'bg-destructive/15 text-destructive border-destructive/30',
+  mounted_read_only: 'bg-warning/15 text-warning border-warning/30',
   policy_override: 'bg-blue-500/20 text-blue-700 border-blue-500/40',
 };
 
 const actionBadge: Record<string, string> = {
-  allow: 'bg-green-500/20 text-green-700 border-green-500/40',
-  block: 'bg-red-500/20 text-red-700 border-red-500/40',
-  read_only: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40',
-  alert: 'bg-orange-500/20 text-orange-700 border-orange-500/40',
+  allow: 'bg-success/15 text-success border-success/30',
+  block: 'bg-destructive/15 text-destructive border-destructive/30',
+  read_only: 'bg-warning/15 text-warning border-warning/30',
+  alert: 'bg-warning/15 text-warning border-warning/30',
 };
 
 function formatDateTime(value?: string, timezone?: string) {

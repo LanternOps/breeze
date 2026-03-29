@@ -1,8 +1,13 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
 import EnrollmentKeyManager from '../../components/settings/EnrollmentKeyManager';
+import Breadcrumbs from '../../components/layout/Breadcrumbs';
 ---
 
 <DashboardLayout title="Enrollment Keys">
+  <Breadcrumbs client:load items={[
+    { label: 'Settings', href: '/settings' },
+    { label: 'Enrollment Keys' }
+  ]} />
   <EnrollmentKeyManager client:load />
 </DashboardLayout>

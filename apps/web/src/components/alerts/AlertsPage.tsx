@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { CheckCircle } from 'lucide-react';
 import AlertList, { type Alert } from './AlertList';
 import AlertDetails, { type StatusChange, type NotificationHistory } from './AlertDetails';
 import AlertsSummary from './AlertsSummary';
@@ -271,7 +272,7 @@ export default function AlertsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Alerts</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Alerts</h1>
           <p className="text-muted-foreground">
             Monitor alerts across your devices. Rule configuration is managed in Configuration Policies.
           </p>
@@ -293,18 +294,30 @@ export default function AlertsPage() {
         defaultExpanded={false}
       />
 
-      <AlertList
-        alerts={filteredAlerts}
-        devices={devices}
-        onSelect={handleSelect}
-        onAcknowledge={handleAcknowledge}
-        onResolve={alert => {
-          setSelectedAlert(alert);
-          setModalMode('details');
-        }}
-        onSuppress={handleSuppress}
-        onBulkAction={handleBulkAction}
-      />
+      {alerts.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16 text-center">
+          <div className="rounded-full bg-success/10 p-4 mb-4">
+            <CheckCircle className="h-8 w-8 text-success" />
+          </div>
+          <h2 className="text-lg font-semibold text-foreground mb-1">All clear</h2>
+          <p className="text-sm text-muted-foreground max-w-md">
+            No active alerts. Your fleet is healthy.
+          </p>
+        </div>
+      ) : (
+        <AlertList
+          alerts={filteredAlerts}
+          devices={devices}
+          onSelect={handleSelect}
+          onAcknowledge={handleAcknowledge}
+          onResolve={alert => {
+            setSelectedAlert(alert);
+            setModalMode('details');
+          }}
+          onSuppress={handleSuppress}
+          onBulkAction={handleBulkAction}
+        />
+      )}
 
       {/* Alert Details Modal */}
       {modalMode === 'details' && selectedAlert && (

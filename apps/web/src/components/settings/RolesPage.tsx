@@ -324,7 +324,7 @@ export default function RolesPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Roles</h1>
+        <h1 className="text-xl font-semibold tracking-tight">Roles</h1>
         <p className="text-muted-foreground">
           Manage user roles and permissions. System roles cannot be modified.
         </p>

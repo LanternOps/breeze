@@ -472,11 +472,11 @@ export default function HuntressIntegration() {
           <div className="mt-4 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b text-left text-xs text-muted-foreground">
-                  <th className="pb-2 font-medium">Severity</th>
-                  <th className="pb-2 font-medium">Title</th>
-                  <th className="pb-2 font-medium">Status</th>
-                  <th className="pb-2 font-medium">Reported</th>
+                <tr className="border-b text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  <th className="pb-2">Severity</th>
+                  <th className="pb-2">Title</th>
+                  <th className="pb-2">Status</th>
+                  <th className="pb-2">Reported</th>
                 </tr>
               </thead>
               <tbody>

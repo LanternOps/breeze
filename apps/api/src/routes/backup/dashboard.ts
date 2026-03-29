@@ -7,6 +7,7 @@ import {
   backupPolicies,
   backupJobs,
   backupSnapshots,
+  devices,
 } from '../../db/schema';
 import { getNextRun, resolveScopedOrgId } from './helpers';
 import { usageHistoryQuerySchema } from './schemas';
@@ -171,8 +172,15 @@ dashboardRoutes.get('/dashboard', async (c) => {
         .from(backupPolicies)
         .where(eq(backupPolicies.orgId, orgId)),
       db
-        .select()
+        .select({
+          job: backupJobs,
+          deviceName: devices.displayName,
+          deviceHostname: devices.hostname,
+          configName: backupConfigs.name,
+        })
         .from(backupJobs)
+        .leftJoin(devices, eq(backupJobs.deviceId, devices.id))
+        .leftJoin(backupConfigs, eq(backupJobs.configId, backupConfigs.id))
         .where(eq(backupJobs.orgId, orgId))
         .orderBy(desc(backupJobs.createdAt))
         .limit(5),
@@ -185,19 +193,19 @@ dashboardRoutes.get('/dashboard', async (c) => {
     })
   );
 
-  const latestJobs = recentJobs.map((row) => ({
-    id: row.id,
-    type: row.type,
-    deviceId: row.deviceId,
-    configId: row.configId,
-    policyId: row.policyId ?? null,
-    snapshotId: row.snapshotId ?? null,
-    status: row.status,
-    startedAt: row.startedAt?.toISOString() ?? null,
-    completedAt: row.completedAt?.toISOString() ?? null,
-    createdAt: row.createdAt.toISOString(),
-    updatedAt: row.updatedAt.toISOString(),
-    totalSize: row.totalSize ?? null,
+  const latestJobs = recentJobs.map((r) => ({
+    id: r.job.id,
+    type: r.job.type,
+    deviceId: r.job.deviceId,
+    deviceName: r.deviceName ?? r.deviceHostname ?? null,
+    configId: r.job.configId,
+    configName: r.configName ?? null,
+    status: r.job.status,
+    startedAt: r.job.startedAt?.toISOString() ?? null,
+    completedAt: r.job.completedAt?.toISOString() ?? null,
+    createdAt: r.job.createdAt.toISOString(),
+    totalSize: r.job.totalSize ?? null,
+    errorCount: r.job.errorCount ?? null,
   }));
 
   return c.json({

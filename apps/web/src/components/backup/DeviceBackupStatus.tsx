@@ -80,8 +80,8 @@ export default function DeviceBackupStatus({ deviceId }: DeviceBackupStatusProps
 
   if (!deviceId) {
     return (
-      <div className="rounded-lg border border-dashed bg-muted/20 p-6 text-center text-sm text-muted-foreground">
-        Select a device to view backup status.
+      <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+        Select a device from the list to view its backup status and protection details.
       </div>
     );
   }

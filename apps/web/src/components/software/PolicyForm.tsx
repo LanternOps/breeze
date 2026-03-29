@@ -199,7 +199,7 @@ export default function PolicyForm({
 
         {watchMode === 'allowlist' && (
           <label className="flex items-center gap-2 px-1">
-            <input type="checkbox" className="h-4 w-4 rounded border-gray-300" {...register('allowUnknown')} />
+            <input type="checkbox" className="h-4 w-4 rounded border-border" {...register('allowUnknown')} />
             <span className="text-sm">Allow unknown software (not in the allowlist)</span>
           </label>
         )}
@@ -213,13 +213,13 @@ export default function PolicyForm({
         </p>
         <div className="grid gap-3 md:grid-cols-2 items-center">
           <label className="flex items-center gap-2">
-            <input type="checkbox" className="h-4 w-4 rounded border-gray-300" {...register('enforceMode')} />
+            <input type="checkbox" className="h-4 w-4 rounded border-border" {...register('enforceMode')} />
             <span className="text-sm">Enforce (auto-remediate)</span>
           </label>
 
           {watchEnforceMode && (
             <label className="flex items-center gap-2">
-              <input type="checkbox" className="h-4 w-4 rounded border-gray-300" {...register('autoUninstall')} />
+              <input type="checkbox" className="h-4 w-4 rounded border-border" {...register('autoUninstall')} />
               <span className="text-sm">Auto-uninstall</span>
             </label>
           )}

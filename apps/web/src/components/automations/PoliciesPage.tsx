@@ -140,7 +140,7 @@ export default function PoliciesPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Policies</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Policies</h1>
           <p className="text-muted-foreground">Define and enforce compliance policies across your devices.</p>
         </div>
         <div className="flex items-center gap-3">

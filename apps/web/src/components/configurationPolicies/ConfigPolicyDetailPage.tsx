@@ -18,6 +18,7 @@ import {
   Activity,
   LifeBuoy,
 } from 'lucide-react';
+import Breadcrumbs from '../layout/Breadcrumbs';
 import { cn } from '@/lib/utils';
 import { OverflowTabs } from '../shared/OverflowTabs';
 import { fetchWithAuth } from '../../stores/auth';
@@ -53,9 +54,9 @@ type PolicyDetail = {
 };
 
 const statusConfig: Record<string, { label: string; color: string }> = {
-  active: { label: 'Active', color: 'bg-green-500/20 text-green-700 border-green-500/40' },
-  inactive: { label: 'Inactive', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40' },
-  archived: { label: 'Archived', color: 'bg-gray-500/20 text-gray-700 border-gray-500/40' },
+  active: { label: 'Active', color: 'bg-success/15 text-success border-success/30' },
+  inactive: { label: 'Inactive', color: 'bg-warning/15 text-warning border-warning/30' },
+  archived: { label: 'Archived', color: 'bg-muted text-muted-foreground border-border' },
 };
 
 const featureTabIcons: Partial<Record<FeatureType, React.ReactNode>> = {
@@ -292,6 +293,10 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
 
   return (
     <div className="space-y-6">
+      <Breadcrumbs items={[
+        { label: 'Configuration Policies', href: '/configuration-policies' },
+        { label: policy.name || 'Policy' }
+      ]} />
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
@@ -303,7 +308,7 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
           </a>
           <div>
             <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold">{policy.name}</h1>
+              <h1 className="text-xl font-semibold tracking-tight">{policy.name}</h1>
               <span
                 className={cn(
                   'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium',

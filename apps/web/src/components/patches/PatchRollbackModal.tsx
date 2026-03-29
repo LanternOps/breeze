@@ -8,6 +8,7 @@ import {
   X
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 
@@ -178,14 +179,11 @@ export default function PatchRollbackModal({
     }
   };
 
-  if (!isOpen) return null;
-
   const allFilteredSelected = filteredDevices.length > 0 && filteredDevices.every(d => selectedDeviceIds.has(d.id));
   const someFilteredSelected = filteredDevices.some(d => selectedDeviceIds.has(d.id));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-lg border bg-card shadow-lg">
+    <Dialog open={isOpen} onClose={onClose} title="Rollback Patch" maxWidth="2xl" className="flex max-h-[90vh] flex-col">
         {/* Header */}
         <div className="flex items-start justify-between gap-4 border-b px-6 py-4">
           <div className="flex items-start gap-3">
@@ -391,7 +389,7 @@ export default function PatchRollbackModal({
                             if (el) el.indeterminate = someFilteredSelected && !allFilteredSelected;
                           }}
                           onChange={e => handleSelectAllFiltered(e.target.checked)}
-                          className="h-4 w-4 rounded border-gray-300"
+                          className="h-4 w-4 rounded border-border"
                         />
                         <span className="text-xs font-medium text-muted-foreground">
                           Select all ({filteredDevices.length})
@@ -412,15 +410,15 @@ export default function PatchRollbackModal({
                             type="checkbox"
                             checked={selectedDeviceIds.has(device.id)}
                             onChange={e => handleDeviceToggle(device.id, e.target.checked)}
-                            className="h-4 w-4 rounded border-gray-300"
+                            className="h-4 w-4 rounded border-border"
                           />
                           <span className="flex-1 text-sm">{device.hostname}</span>
                           <span
                             className={cn(
                               'inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium',
                               device.status === 'online'
-                                ? 'border-green-500/40 bg-green-500/20 text-green-700'
-                                : 'border-red-500/40 bg-red-500/20 text-red-700'
+                                ? 'border-success/30 bg-success/15 text-success'
+                                : 'border-destructive/30 bg-destructive/15 text-destructive'
                             )}
                           >
                             {device.status === 'online' ? 'Online' : 'Offline'}
@@ -467,7 +465,7 @@ export default function PatchRollbackModal({
                   type="checkbox"
                   checked={confirmed}
                   onChange={e => setConfirmed(e.target.checked)}
-                  className="mt-0.5 h-4 w-4 rounded border-gray-300"
+                  className="mt-0.5 h-4 w-4 rounded border-border"
                 />
                 <span className="text-sm">
                   I understand this will uninstall the patch and may require a restart on affected devices
@@ -493,14 +491,13 @@ export default function PatchRollbackModal({
             disabled={!canSubmit || isSubmitting}
             className={cn(
               'inline-flex h-10 items-center gap-2 rounded-md px-4 text-sm font-medium transition disabled:opacity-50',
-              'bg-amber-600 text-white hover:bg-amber-700'
+              'bg-warning text-white hover:opacity-90'
             )}
           >
             {isSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
             {scheduleType === 'now' ? 'Start Rollback' : 'Schedule Rollback'}
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

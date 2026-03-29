@@ -21,7 +21,7 @@ export default function PeripheralPage({ defaultTab = 'policies' }: PeripheralPa
     <div className="space-y-6">
       <div className="flex items-center gap-3">
         <Usb className="h-6 w-6 text-primary" />
-        <h1 className="text-2xl font-bold">Peripheral Control</h1>
+        <h1 className="text-xl font-semibold tracking-tight">Peripheral Control</h1>
       </div>
 
       <div className="border-b">

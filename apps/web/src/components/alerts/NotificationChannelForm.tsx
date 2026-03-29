@@ -240,7 +240,7 @@ export default function NotificationChannelForm({
                   type="checkbox"
                   checked={field.value}
                   onChange={e => field.onChange(e.target.checked)}
-                  className="h-4 w-4 rounded border-gray-300"
+                  className="h-4 w-4 rounded border-border"
                 />
                 <span className="text-sm">Enable this notification channel</span>
               </label>

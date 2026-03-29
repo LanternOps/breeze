@@ -371,7 +371,7 @@ export default function OrgNotificationSettings({
           </div>
           <div className="overflow-auto">
             <table className="w-full min-w-[340px] text-left text-xs">
-              <thead className="text-[11px] uppercase text-muted-foreground">
+              <thead className="bg-muted/40 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 <tr>
                   <th className="px-2 py-2">Alert type</th>
                   {channelOptions.map(channel => (

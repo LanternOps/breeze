@@ -1,8 +1,13 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
 import AdminAuditPage from '../../components/security/AdminAuditPage';
+import Breadcrumbs from '../../components/layout/Breadcrumbs';
 ---
 
 <DashboardLayout title="Admin Account Audit">
+  <Breadcrumbs client:load items={[
+    { label: 'Security', href: '/security' },
+    { label: 'Admin Audit' }
+  ]} />
   <AdminAuditPage client:load />
 </DashboardLayout>

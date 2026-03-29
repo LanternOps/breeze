@@ -529,7 +529,7 @@ export default function AccessReviewPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Access Reviews</h1>
+        <h1 className="text-xl font-semibold tracking-tight">Access Reviews</h1>
         <p className="text-muted-foreground">
           Conduct periodic reviews of user access and permissions to ensure compliance.
         </p>
@@ -563,13 +563,13 @@ export default function AccessReviewPage() {
 
         <div className="overflow-hidden rounded-lg border">
           <table className="w-full border-collapse text-left text-sm">
-            <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
-              <tr>
-                <th className="px-4 py-3 font-medium">Campaign</th>
-                <th className="px-4 py-3 font-medium">Completed</th>
-                <th className="px-4 py-3 font-medium">Reviewer</th>
-                <th className="px-4 py-3 font-medium">Due Date</th>
-                <th className="px-4 py-3 font-medium text-right">Actions</th>
+            <thead className="bg-muted/40">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="px-4 py-3">Campaign</th>
+                <th className="px-4 py-3">Completed</th>
+                <th className="px-4 py-3">Reviewer</th>
+                <th className="px-4 py-3">Due Date</th>
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -803,9 +803,9 @@ export default function AccessReviewPage() {
 
             <div className="mt-6 overflow-x-auto rounded-lg border">
               <table className="w-full border-collapse text-left text-sm">
-                <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
-                  <tr>
-                    <th className="px-4 py-3 font-medium">
+                <thead className="bg-muted/40">
+                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <th className="px-4 py-3">
                       <input
                         type="checkbox"
                         checked={allSelected}
@@ -823,13 +823,13 @@ export default function AccessReviewPage() {
                         aria-label="Select all"
                       />
                     </th>
-                    <th className="px-4 py-3 font-medium">User</th>
-                    <th className="px-4 py-3 font-medium">Role</th>
-                    <th className="px-4 py-3 font-medium">Permissions</th>
-                    <th className="px-4 py-3 font-medium">Last Active</th>
-                    <th className="px-4 py-3 font-medium">Decision</th>
-                    <th className="px-4 py-3 font-medium">Reason</th>
-                    <th className="px-4 py-3 font-medium text-right">Actions</th>
+                    <th className="px-4 py-3">User</th>
+                    <th className="px-4 py-3">Role</th>
+                    <th className="px-4 py-3">Permissions</th>
+                    <th className="px-4 py-3">Last Active</th>
+                    <th className="px-4 py-3">Decision</th>
+                    <th className="px-4 py-3">Reason</th>
+                    <th className="px-4 py-3 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody>

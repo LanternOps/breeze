@@ -373,7 +373,7 @@ export default function PolicyForm({
                         type="checkbox"
                         checked={watchTargetIds?.includes(target.id) || false}
                         onChange={() => handleTargetToggle(target.id)}
-                        className="h-4 w-4 rounded border-gray-300"
+                        className="h-4 w-4 rounded border-border"
                       />
                       <span className="text-sm">{target.name}</span>
                     </label>

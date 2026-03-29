@@ -1,6 +1,8 @@
 import { useState, useMemo, useEffect } from 'react';
 import { X, Search, Play, Loader2, CheckCircle, AlertCircle, Filter } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Dialog } from '../shared/Dialog';
+import ProgressBar, { ProgressItemList, type ProgressItem } from '../shared/ProgressBar';
 import type { Script, ScriptLanguage } from './ScriptList';
 import type { ScriptParameter } from './ScriptForm';
 import type { FilterConditionGroup } from '@breeze/shared';
@@ -201,11 +203,8 @@ export default function ScriptExecutionModal({
     setErrorMessage(undefined);
   };
 
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-3xl max-h-[90vh] overflow-hidden rounded-lg border bg-card shadow-lg flex flex-col">
+    <Dialog open={isOpen} onClose={handleClose} title="Execute Script" maxWidth="3xl" className="max-h-[90vh] overflow-hidden flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between border-b px-6 py-4">
           <div>
@@ -280,7 +279,7 @@ export default function ScriptExecutionModal({
                           type="checkbox"
                           checked={Boolean(parameters[param.name])}
                           onChange={e => handleParameterChange(param.name, e.target.checked)}
-                          className="h-4 w-4 rounded border-gray-300"
+                          className="h-4 w-4 rounded border-border"
                         />
                         <span className="ml-2 text-sm">Enabled</span>
                       </div>
@@ -429,7 +428,7 @@ export default function ScriptExecutionModal({
                         checked={selectedDeviceIds.has(device.id)}
                         onChange={() => handleDeviceToggle(device.id)}
                         disabled={device.status !== 'online'}
-                        className="h-4 w-4 rounded border-gray-300"
+                        className="h-4 w-4 rounded border-border"
                       />
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium truncate">{device.hostname}</p>
@@ -439,9 +438,9 @@ export default function ScriptExecutionModal({
                         <span className="text-xs text-muted-foreground capitalize">{device.os}</span>
                         <span className={cn(
                           'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium',
-                          device.status === 'online' && 'bg-green-500/20 text-green-700',
-                          device.status === 'offline' && 'bg-red-500/20 text-red-700',
-                          device.status === 'maintenance' && 'bg-yellow-500/20 text-yellow-700'
+                          device.status === 'online' && 'bg-success/15 text-success',
+                          device.status === 'offline' && 'bg-destructive/15 text-destructive',
+                          device.status === 'maintenance' && 'bg-warning/15 text-warning'
                         )}>
                           {device.status}
                         </span>
@@ -453,6 +452,32 @@ export default function ScriptExecutionModal({
             </div>
           </div>
 
+          {/* Execution Progress */}
+          {(executionState === 'executing' || executionState === 'success') && selectedDeviceIds.size > 1 && (
+            <div className="rounded-md border bg-muted/20 p-4 space-y-3">
+              <ProgressBar
+                current={executionState === 'success' ? selectedDeviceIds.size : 0}
+                total={selectedDeviceIds.size}
+                label={executionState === 'executing'
+                  ? `Submitting to ${selectedDeviceIds.size} devices...`
+                  : `Submitted to ${selectedDeviceIds.size} devices`}
+                variant={executionState === 'success' ? 'success' : 'default'}
+              />
+              <ProgressItemList
+                items={Array.from(selectedDeviceIds).map((id): ProgressItem => {
+                  const device = devices.find(d => d.id === id);
+                  return {
+                    id,
+                    label: device?.hostname ?? id,
+                    status: executionState === 'success' ? 'success' : 'running',
+                    detail: device?.siteName,
+                  };
+                })}
+                maxVisible={8}
+              />
+            </div>
+          )}
+
           {/* Error Message */}
           {errorMessage && (
             <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
@@ -462,11 +487,11 @@ export default function ScriptExecutionModal({
 
           {/* Confirmation */}
           {showConfirm && executionState === 'idle' && (
-            <div className="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-4 py-3">
-              <p className="text-sm font-medium text-yellow-700">
+            <div className="rounded-md border border-warning/30 bg-warning/10 px-4 py-3">
+              <p className="text-sm font-medium text-warning">
                 Confirm Execution
               </p>
-              <p className="text-sm text-yellow-600 mt-1">
+              <p className="text-sm text-warning mt-1">
                 You are about to execute "{script.name}" on {selectedDeviceIds.size} device(s).
                 Run as: {runAs === 'system' ? 'System' : 'Logged-in user'}.
                 This action cannot be undone.
@@ -496,9 +521,9 @@ export default function ScriptExecutionModal({
               className={cn(
                 'inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60',
                 executionState === 'success'
-                  ? 'bg-green-600 text-white'
+                  ? 'bg-success text-white'
                   : showConfirm
-                    ? 'bg-yellow-600 text-white hover:bg-yellow-700'
+                    ? 'bg-warning text-white hover:opacity-90'
                     : 'bg-primary text-primary-foreground hover:opacity-90'
               )}
             >
@@ -524,7 +549,6 @@ export default function ScriptExecutionModal({
             </button>
           </div>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

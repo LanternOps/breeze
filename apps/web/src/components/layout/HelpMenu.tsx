@@ -45,7 +45,7 @@ export default function HelpMenu() {
         type="button"
         onClick={handleToggle}
         className="rounded-md p-2 hover:bg-muted"
-        title="Help"
+        title="Help & resources"
         aria-label="Help menu"
         aria-expanded={open}
         aria-haspopup="true"

@@ -138,21 +138,21 @@ export function RejectionDenialLog({ executions, securityEvents, loading }: Prop
       ) : (
         <div className="overflow-hidden rounded-lg border shadow-sm">
           <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b bg-muted/30">
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">
+            <thead className="bg-muted/40">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="px-4 py-2.5">
                   Timestamp
                 </th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">
+                <th className="px-4 py-2.5">
                   Tool
                 </th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">
+                <th className="px-4 py-2.5">
                   Status
                 </th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">
+                <th className="px-4 py-2.5">
                   Error
                 </th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">
+                <th className="px-4 py-2.5">
                   Session
                 </th>
               </tr>

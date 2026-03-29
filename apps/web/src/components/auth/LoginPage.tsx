@@ -101,23 +101,34 @@ export default function LoginPage() {
 
   if (mfaRequired) {
     return (
-      <MFAVerifyForm
-        onSubmit={handleMfaVerify}
-        errorMessage={error}
-        loading={loading}
-        mfaMethod={mfaMethod}
-        phoneLast4={phoneLast4}
-        onSendSmsCode={handleSendSmsCode}
-        smsSending={smsSending}
-        smsSent={smsSent}
-      />
+      <div>
+        <div className="mb-8">
+          <p className="text-sm font-medium text-muted-foreground">Almost there</p>
+          <h1 className="mt-1 text-2xl font-bold tracking-tight">Verify your identity</h1>
+        </div>
+        <MFAVerifyForm
+          onSubmit={handleMfaVerify}
+          errorMessage={error}
+          loading={loading}
+          mfaMethod={mfaMethod}
+          phoneLast4={phoneLast4}
+          onSendSmsCode={handleSendSmsCode}
+          smsSending={smsSending}
+          smsSent={smsSent}
+        />
+      </div>
     );
   }
 
   return (
-    <>
+    <div>
+      <div className="mb-8">
+        <p className="text-sm font-medium text-muted-foreground">Welcome back</p>
+        <h1 className="mt-1 text-2xl font-bold tracking-tight">Sign in to Breeze</h1>
+      </div>
+
       {registrationNotice && (
-        <div className="mb-4 rounded-md border border-yellow-300 bg-yellow-50 px-4 py-3 text-sm text-yellow-800 dark:border-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-200">
+        <div className="mb-6 rounded-md border border-yellow-300 bg-yellow-50 px-4 py-3 text-sm text-yellow-800 dark:border-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-200">
           {registrationNotice}
         </div>
       )}
@@ -126,6 +137,6 @@ export default function LoginPage() {
         errorMessage={error}
         loading={loading}
       />
-    </>
+    </div>
   );
 }

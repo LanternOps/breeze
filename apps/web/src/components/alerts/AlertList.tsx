@@ -74,10 +74,10 @@ const severityConfig: Record<AlertSeverity, { label: string; color: string; bgCo
 };
 
 const statusConfig: Record<AlertStatus, { label: string; color: string }> = {
-  active: { label: 'Active', color: 'bg-red-500/20 text-red-700 border-red-500/40' },
-  acknowledged: { label: 'Acknowledged', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40' },
-  resolved: { label: 'Resolved', color: 'bg-green-500/20 text-green-700 border-green-500/40' },
-  suppressed: { label: 'Suppressed', color: 'bg-gray-500/20 text-gray-700 border-gray-500/40' }
+  active: { label: 'Active', color: 'bg-destructive/15 text-destructive border-destructive/30 dark:bg-destructive/20 dark:border-destructive/30' },
+  acknowledged: { label: 'Acknowledged', color: 'bg-primary/15 text-primary border-primary/30 dark:bg-primary/20 dark:border-primary/30' },
+  resolved: { label: 'Resolved', color: 'bg-success/15 text-success border-success/30 dark:bg-success/20 dark:border-success/30' },
+  suppressed: { label: 'Suppressed', color: 'bg-muted text-muted-foreground border-border' }
 };
 
 function formatDate(dateString: string): string {
@@ -285,6 +285,22 @@ export default function AlertList({
             <option value="7d">Last 7 Days</option>
             <option value="30d">Last 30 Days</option>
           </select>
+          {(query || statusFilter !== 'all' || severityFilter !== 'all' || deviceFilter !== 'all' || dateRangeFilter !== 'all') && (
+            <button
+              type="button"
+              onClick={() => {
+                setQuery('');
+                setStatusFilter('all');
+                setSeverityFilter('all');
+                setDeviceFilter('all');
+                setDateRangeFilter('all');
+                setCurrentPage(1);
+              }}
+              className="h-10 whitespace-nowrap rounded-md px-3 text-sm font-medium text-muted-foreground hover:text-foreground"
+            >
+              Clear filters
+            </button>
+          )}
         </div>
       </div>
 
@@ -339,7 +355,7 @@ export default function AlertList({
         </div>
       )}
 
-      <div className="mt-6 overflow-hidden rounded-md border">
+      <div className="mt-6 overflow-x-auto rounded-md border">
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -351,7 +367,7 @@ export default function AlertList({
                     if (el) el.indeterminate = someSelected && !allSelected;
                   }}
                   onChange={e => handleSelectAll(e.target.checked)}
-                  className="h-4 w-4 rounded border-gray-300"
+                  className="h-4 w-4 rounded border-border"
                 />
               </th>
               <th className="px-4 py-3">Device</th>
@@ -382,22 +398,23 @@ export default function AlertList({
                       checked={selectedIds.has(alert.id)}
                       onClick={e => e.stopPropagation()}
                       onChange={e => handleSelectOne(alert.id, e.target.checked)}
-                      className="h-4 w-4 rounded border-gray-300"
+                      className="h-4 w-4 rounded border-border"
                     />
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="max-w-[160px] px-4 py-3">
                     <a
                       href={`/devices/${alert.deviceId}`}
                       onClick={e => e.stopPropagation()}
-                      className="flex items-center gap-1 text-sm font-medium hover:underline"
+                      className="flex items-center gap-1 text-sm font-medium hover:underline min-w-0"
+                      title={alert.deviceName}
                     >
-                      {alert.deviceName}
-                      <ExternalLink className="h-3 w-3" />
+                      <span className="truncate">{alert.deviceName}</span>
+                      <ExternalLink className="h-3 w-3 shrink-0" />
                     </a>
                   </td>
-                  <td className="px-4 py-3">
-                    <div>
-                      <p className="text-sm font-medium">{alert.title}</p>
+                  <td className="max-w-[280px] px-4 py-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium" title={alert.title}>{alert.title}</p>
                       <p className="text-xs text-muted-foreground truncate max-w-xs">
                         {alert.message}
                       </p>
@@ -431,7 +448,7 @@ export default function AlertList({
                     </div>
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-1">
+                    <div className="flex items-center justify-end gap-1.5">
                       {alert.status === 'active' && (
                         <button
                           type="button"
@@ -439,10 +456,10 @@ export default function AlertList({
                             e.stopPropagation();
                             onAcknowledge?.(alert);
                           }}
-                          className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-                          title="Acknowledge"
+                          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
                         >
-                          <CheckCircle className="h-4 w-4" />
+                          <CheckCircle className="h-3.5 w-3.5" />
+                          Ack
                         </button>
                       )}
                       {(alert.status === 'active' || alert.status === 'acknowledged') && (
@@ -452,10 +469,10 @@ export default function AlertList({
                             e.stopPropagation();
                             onResolve?.(alert);
                           }}
-                          className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted text-green-600"
-                          title="Resolve"
+                          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-success hover:bg-success/10"
                         >
-                          <XCircle className="h-4 w-4" />
+                          <XCircle className="h-3.5 w-3.5" />
+                          Resolve
                         </button>
                       )}
                       {alert.status !== 'suppressed' && (
@@ -465,10 +482,11 @@ export default function AlertList({
                             e.stopPropagation();
                             onSuppress?.(alert);
                           }}
-                          className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted text-muted-foreground"
+                          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
                           title="Suppress"
                         >
-                          <BellOff className="h-4 w-4" />
+                          <BellOff className="h-3.5 w-3.5" />
+                          Mute
                         </button>
                       )}
                     </div>

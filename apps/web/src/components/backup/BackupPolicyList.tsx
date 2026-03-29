@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { CheckCircle2, Loader2, PauseCircle, Pencil, Plus, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -64,6 +64,8 @@ export default function BackupPolicyList({ timezone }: BackupPolicyListProps) {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formState, setFormState] = useState<PolicyFormState>(defaultFormState);
+  const [confirmDeletePolicy, setConfirmDeletePolicy] = useState<BackupPolicy | null>(null);
+  const confirmDialogRef = useRef<HTMLDialogElement>(null);
 
   const fetchPolicies = useCallback(async () => {
     try {
@@ -127,10 +129,21 @@ export default function BackupPolicyList({ timezone }: BackupPolicyListProps) {
     }
   };
 
-  const handleDelete = async (policy: BackupPolicy) => {
-    if (!confirm(`Delete policy "${policy.name}"?`)) {
-      return;
-    }
+  const requestDelete = (policy: BackupPolicy) => {
+    setConfirmDeletePolicy(policy);
+    confirmDialogRef.current?.showModal();
+  };
+
+  const cancelDelete = () => {
+    confirmDialogRef.current?.close();
+    setConfirmDeletePolicy(null);
+  };
+
+  const handleDelete = async () => {
+    const policy = confirmDeletePolicy;
+    if (!policy) return;
+    confirmDialogRef.current?.close();
+    setConfirmDeletePolicy(null);
     try {
       setDeletingId(policy.id);
       setError(undefined);
@@ -223,8 +236,9 @@ export default function BackupPolicyList({ timezone }: BackupPolicyListProps) {
 
         <div className="grid gap-4 md:grid-cols-2">
           <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground">Policy name</label>
+            <label htmlFor="policy-name" className="text-xs font-medium text-muted-foreground">Policy name</label>
             <input
+              id="policy-name"
               className="w-full rounded-md border bg-background px-3 py-2 text-sm"
               value={formState.name}
               onChange={(event) => setFormState((prev) => ({ ...prev, name: event.target.value }))}
@@ -233,8 +247,9 @@ export default function BackupPolicyList({ timezone }: BackupPolicyListProps) {
             />
           </div>
           <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground">Schedule</label>
+            <label htmlFor="policy-schedule" className="text-xs font-medium text-muted-foreground">Schedule</label>
             <input
+              id="policy-schedule"
               className="w-full rounded-md border bg-background px-3 py-2 text-sm"
               value={formState.schedule}
               onChange={(event) => setFormState((prev) => ({ ...prev, schedule: event.target.value }))}
@@ -243,8 +258,9 @@ export default function BackupPolicyList({ timezone }: BackupPolicyListProps) {
             />
           </div>
           <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground">Retention</label>
+            <label htmlFor="policy-retention" className="text-xs font-medium text-muted-foreground">Retention</label>
             <input
+              id="policy-retention"
               className="w-full rounded-md border bg-background px-3 py-2 text-sm"
               value={formState.retention}
               onChange={(event) => setFormState((prev) => ({ ...prev, retention: event.target.value }))}
@@ -253,9 +269,10 @@ export default function BackupPolicyList({ timezone }: BackupPolicyListProps) {
             />
           </div>
           <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground">Status</label>
+            <label htmlFor="policy-status" className="text-xs font-medium text-muted-foreground">Status</label>
             <select
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+              id="policy-status"
+              className="w-full appearance-none rounded-md border bg-background px-3 py-2 text-sm"
               value={formState.status}
               onChange={(event) =>
                 setFormState((prev) => ({ ...prev, status: event.target.value as PolicyStatus }))
@@ -288,8 +305,8 @@ export default function BackupPolicyList({ timezone }: BackupPolicyListProps) {
         </div>
       </form>
 
-      <div className="overflow-hidden rounded-lg border bg-card shadow-sm">
-        <table className="w-full">
+      <div className="overflow-x-auto rounded-lg border bg-card shadow-sm">
+        <table className="w-full min-w-[650px]">
           <thead className="bg-muted/40 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             <tr>
               <th className="px-4 py-3">Name</th>
@@ -337,15 +354,17 @@ export default function BackupPolicyList({ timezone }: BackupPolicyListProps) {
                         <button
                           type="button"
                           onClick={() => handleEdit(policy)}
-                          className="rounded-md border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+                          aria-label={`Edit policy ${policy.name}`}
+                          className="rounded-md border p-2 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
                         >
                           <Pencil className="h-3.5 w-3.5" />
                         </button>
                         <button
                           type="button"
-                          onClick={() => handleDelete(policy)}
+                          onClick={() => requestDelete(policy)}
                           disabled={deletingId === policy.id}
-                          className="rounded-md border px-2.5 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                          aria-label={`Delete policy ${policy.name}`}
+                          className="rounded-md border p-2 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
                         >
                           {deletingId === policy.id ? (
                             <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -362,6 +381,33 @@ export default function BackupPolicyList({ timezone }: BackupPolicyListProps) {
           </tbody>
         </table>
       </div>
+
+      <dialog
+        ref={confirmDialogRef}
+        className="rounded-lg border bg-card p-6 shadow-lg backdrop:bg-black/40"
+        onClose={cancelDelete}
+      >
+        <h3 className="text-base font-semibold text-foreground">Delete policy</h3>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Are you sure you want to delete &ldquo;{confirmDeletePolicy?.name}&rdquo;? This action cannot be undone.
+        </p>
+        <div className="mt-4 flex items-center justify-end gap-3">
+          <button
+            type="button"
+            onClick={cancelDelete}
+            className="rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-accent"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleDelete}
+            className="rounded-md bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground hover:bg-destructive/90"
+          >
+            Delete
+          </button>
+        </div>
+      </dialog>
     </div>
   );
 }

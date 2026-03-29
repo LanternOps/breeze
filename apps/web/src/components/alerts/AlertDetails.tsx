@@ -77,10 +77,10 @@ const severityConfig: Record<AlertSeverity, { label: string; color: string; bgCo
 };
 
 const statusConfig: Record<AlertStatus, { label: string; color: string }> = {
-  active: { label: 'Active', color: 'bg-red-500/20 text-red-700 border-red-500/40' },
-  acknowledged: { label: 'Acknowledged', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40' },
-  resolved: { label: 'Resolved', color: 'bg-green-500/20 text-green-700 border-green-500/40' },
-  suppressed: { label: 'Suppressed', color: 'bg-gray-500/20 text-gray-700 border-gray-500/40' }
+  active: { label: 'Active', color: 'bg-destructive/15 text-destructive border-destructive/30' },
+  acknowledged: { label: 'Acknowledged', color: 'bg-warning/15 text-warning border-warning/30' },
+  resolved: { label: 'Resolved', color: 'bg-success/15 text-success border-success/30' },
+  suppressed: { label: 'Suppressed', color: 'bg-muted text-muted-foreground border-border' }
 };
 
 const channelIcons: Record<string, typeof Mail> = {
@@ -330,10 +330,10 @@ export default function AlertDetails({
                           className={cn(
                             'inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium',
                             notification.status === 'sent'
-                              ? 'bg-green-500/20 text-green-700 border-green-500/40'
+                              ? 'bg-success/15 text-success border-success/30'
                               : notification.status === 'failed'
-                                ? 'bg-red-500/20 text-red-700 border-red-500/40'
-                                : 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40'
+                                ? 'bg-destructive/15 text-destructive border-destructive/30'
+                                : 'bg-warning/15 text-warning border-warning/30'
                           )}
                         >
                           {notification.status}

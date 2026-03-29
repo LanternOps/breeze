@@ -220,7 +220,7 @@ export default function DeviceSecurityTab({ deviceId, timezone }: DeviceSecurity
         <div className="rounded-lg border bg-card p-6 shadow-sm">
           <div className="mb-4 flex items-center gap-2">
             <ShieldAlert className="h-4 w-4 text-red-500" />
-            <h3 className="font-semibold">Recent Threats</h3>
+            <h3 className="text-sm font-semibold">Recent Threats</h3>
           </div>
 
           {loading ? (
@@ -298,7 +298,7 @@ export default function DeviceSecurityTab({ deviceId, timezone }: DeviceSecurity
         <div className="rounded-lg border bg-card p-6 shadow-sm">
           <div className="mb-4 flex items-center gap-2">
             <ScanSearch className="h-4 w-4 text-primary" />
-            <h3 className="font-semibold">Recent Scans</h3>
+            <h3 className="text-sm font-semibold">Recent Scans</h3>
           </div>
 
           {loading ? (

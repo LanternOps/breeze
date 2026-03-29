@@ -63,7 +63,7 @@ export default function BackupJobProgress() {
             <div className="text-xs text-muted-foreground">Speed 182 MB/s</div>
           </div>
           <div className="mt-3 h-2 w-full rounded-full bg-muted">
-            <div className="h-2 w-[62%] rounded-full bg-primary" />
+            <div className="h-2 rounded-full bg-primary" style={{ width: '62%' }} />
           </div>
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
             <span>Files processed: 12,482 / 20,160</span>
@@ -74,7 +74,7 @@ export default function BackupJobProgress() {
         <div className="grid gap-4 md:grid-cols-2">
           <div className="rounded-md border border-dashed bg-muted/30 p-4">
             <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-              <HardDrive className="h-4 w-4 text-emerald-600" />
+              <HardDrive className="h-4 w-4 text-success" />
               Current file
             </div>
             <p className="mt-2 text-xs text-muted-foreground">

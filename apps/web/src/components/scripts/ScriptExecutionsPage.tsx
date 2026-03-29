@@ -7,6 +7,7 @@ import type { Script } from './ScriptList';
 import type { ScriptParameter } from './ScriptForm';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import Breadcrumbs from '../layout/Breadcrumbs';
 
 type ScriptExecutionsPageProps = {
   scriptId: string;
@@ -167,6 +168,11 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
 
   return (
     <div className="space-y-6">
+      <Breadcrumbs items={[
+        { label: 'Scripts', href: '/scripts' },
+        { label: script?.name || 'Script', href: `/scripts/${scriptId}` },
+        { label: 'Executions' }
+      ]} />
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
           <a
@@ -176,7 +182,7 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
             <ArrowLeft className="h-5 w-5" />
           </a>
           <div>
-            <h1 className="text-2xl font-bold">Execution History</h1>
+            <h1 className="text-xl font-semibold tracking-tight">Execution History</h1>
             <p className="text-muted-foreground">
               {script?.name || 'Loading...'}
             </p>

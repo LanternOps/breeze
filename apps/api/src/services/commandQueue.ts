@@ -107,6 +107,10 @@ export const CommandTypes = {
 
   // Self-uninstall (remote wipe)
   SELF_UNINSTALL: 'self_uninstall',
+  // Backup verification
+  BACKUP_VERIFY: 'backup_verify',
+  BACKUP_TEST_RESTORE: 'backup_test_restore',
+  BACKUP_CLEANUP: 'backup_cleanup',
 } as const;
 
 export type CommandType = typeof CommandTypes[keyof typeof CommandTypes];
@@ -194,6 +198,8 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.PERIPHERAL_POLICY_SYNC,
   // Self-uninstall (remote wipe)
   CommandTypes.SELF_UNINSTALL,
+  CommandTypes.BACKUP_VERIFY,
+  CommandTypes.BACKUP_TEST_RESTORE,
 ]);
 
 /**

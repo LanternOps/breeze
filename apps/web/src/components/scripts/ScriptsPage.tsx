@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Plus, Download, Search, X, Loader2, Check } from 'lucide-react';
+import { Plus, Download, Search, X, Loader2, Check, FileCode, ArrowRight } from 'lucide-react';
 import ScriptList, { type Script, type ScriptLanguage, type OSType } from './ScriptList';
 import ScriptExecutionModal, { type Device, type Site } from './ScriptExecutionModal';
 import ExecutionDetails from './ExecutionDetails';
 import type { ScriptExecution } from './ExecutionHistory';
 import type { ScriptParameter } from './ScriptForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 import { cn } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
 
@@ -194,23 +195,38 @@ export default function ScriptsPage() {
   const handleConfirmDelete = async () => {
     if (!selectedScript) return;
 
-    setSubmitting(true);
-    try {
-      const response = await fetchWithAuth(`/scripts/${selectedScript.id}`, {
-        method: 'DELETE'
-      });
+    const scriptToDelete = selectedScript;
+    handleCloseModal();
 
-      if (!response.ok) {
-        throw new Error('Failed to delete script');
+    // Deferred execution with undo — gives the user 5 seconds to cancel
+    let cancelled = false;
+    showToast({
+      type: 'undo',
+      message: `Deleting "${scriptToDelete.name}"...`,
+      duration: 5000,
+      onUndo: () => {
+        cancelled = true;
+        showToast({ type: 'success', message: 'Script deletion cancelled', duration: 2000 });
       }
+    });
 
-      await fetchScripts();
-      handleCloseModal();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
-    } finally {
-      setSubmitting(false);
-    }
+    setTimeout(async () => {
+      if (cancelled) return;
+      try {
+        const response = await fetchWithAuth(`/scripts/${scriptToDelete.id}`, {
+          method: 'DELETE'
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to delete script');
+        }
+
+        showToast({ type: 'success', message: `"${scriptToDelete.name}" deleted` });
+        await fetchScripts();
+      } catch (err) {
+        showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to delete script. Please try again.' });
+      }
+    }, 5000);
   };
 
   const handleOpenLibrary = async () => {
@@ -308,7 +324,7 @@ export default function ScriptsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Script Library</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Script Library</h1>
           <p className="text-muted-foreground">Manage and execute scripts across your devices.</p>
         </div>
         <div className="flex items-center gap-2">
@@ -336,12 +352,28 @@ export default function ScriptsPage() {
         </div>
       )}
 
-      <ScriptList
-        scripts={scripts}
-        onRun={handleRun}
-        onEdit={handleEdit}
-        onDelete={handleDelete}
-      />
+      {scripts.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16 text-center">
+          <div className="rounded-full bg-primary/10 p-4 mb-4">
+            <FileCode className="h-8 w-8 text-primary" />
+          </div>
+          <h2 className="text-lg font-semibold text-foreground mb-1">No scripts yet</h2>
+          <p className="text-sm text-muted-foreground max-w-md mb-6">
+            Create your first script to automate tasks across your fleet.
+          </p>
+          <a href="/scripts/new" className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
+            Create script
+            <ArrowRight className="h-4 w-4" />
+          </a>
+        </div>
+      ) : (
+        <ScriptList
+          scripts={scripts}
+          onRun={handleRun}
+          onEdit={handleEdit}
+          onDelete={handleDelete}
+        />
+      )}
 
       {/* Execute Modal */}
       {modalMode === 'execute' && selectedScript && (

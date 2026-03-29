@@ -3,6 +3,8 @@ import { Loader2, Pencil, PlusCircle, Trash2, Layers } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { showToast } from '../shared/Toast';
 
 type TemplateRow = {
   id: string;
@@ -71,6 +73,7 @@ export default function SNMPTemplateList({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<TemplateRow | null>(null);
 
   const fetchTemplates = useCallback(async () => {
     try {
@@ -138,21 +141,27 @@ export default function SNMPTemplateList({
     scrollToEditor();
   }, [onCreateTemplate, onSelectTemplate]);
 
-  const handleDeleteTemplate = useCallback(async (template: TemplateRow) => {
+  const handleDeleteTemplate = useCallback((template: TemplateRow) => {
     if (template.source === 'builtin') return;
-    if (!window.confirm(`Delete template "${template.name}"?`)) return;
+    setDeleteTarget(template);
+  }, []);
 
-    setDeletingId(template.id);
+  const handleConfirmDelete = useCallback(async () => {
+    if (!deleteTarget) return;
+
+    setDeleteTarget(null);
+    setDeletingId(deleteTarget.id);
     setError(undefined);
     try {
-      const response = await fetchWithAuth(`/snmp/templates/${template.id}`, { method: 'DELETE' });
+      const response = await fetchWithAuth(`/snmp/templates/${deleteTarget.id}`, { method: 'DELETE' });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         const apiError = asRecord(payload)?.error;
         throw new Error(typeof apiError === 'string' ? apiError : 'Failed to delete template');
       }
       await fetchTemplates();
-      if (selectedTemplateId === template.id) {
+      showToast({ message: `Template "${deleteTarget.name}" deleted`, type: 'success' });
+      if (selectedTemplateId === deleteTarget.id) {
         onCreateTemplate?.();
       }
     } catch (err) {
@@ -160,7 +169,7 @@ export default function SNMPTemplateList({
     } finally {
       setDeletingId(null);
     }
-  }, [fetchTemplates, onCreateTemplate, selectedTemplateId]);
+  }, [deleteTarget, fetchTemplates, onCreateTemplate, selectedTemplateId]);
 
   const sortedTemplates = useMemo(
     () => [...templates].sort((a, b) => a.name.localeCompare(b.name)),
@@ -179,6 +188,7 @@ export default function SNMPTemplateList({
   }
 
   return (
+    <>
     <div className="rounded-lg border bg-card p-6 shadow-sm">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
@@ -203,14 +213,14 @@ export default function SNMPTemplateList({
 
       <div className="mt-6 overflow-hidden rounded-lg border">
         <table className="w-full text-sm">
-          <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
-            <tr>
-              <th className="px-4 py-3 text-left font-medium">Name</th>
-              <th className="px-4 py-3 text-left font-medium">Vendor</th>
-              <th className="px-4 py-3 text-left font-medium">Device type</th>
-              <th className="px-4 py-3 text-left font-medium">OID count</th>
-              <th className="px-4 py-3 text-left font-medium">Usage</th>
-              <th className="px-4 py-3 text-right font-medium">Actions</th>
+          <thead className="bg-muted/40">
+            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              <th className="px-4 py-3">Name</th>
+              <th className="px-4 py-3">Vendor</th>
+              <th className="px-4 py-3">Device type</th>
+              <th className="px-4 py-3">OID count</th>
+              <th className="px-4 py-3">Usage</th>
+              <th className="px-4 py-3 text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -274,5 +284,16 @@ export default function SNMPTemplateList({
         </table>
       </div>
     </div>
+    <ConfirmDialog
+      open={deleteTarget !== null}
+      onClose={() => setDeleteTarget(null)}
+      onConfirm={handleConfirmDelete}
+      title="Delete SNMP Template"
+      message={`Are you sure you want to delete "${deleteTarget?.name}"? Any devices using this template will need to be reassigned.`}
+      confirmLabel="Delete Template"
+      variant="destructive"
+      isLoading={deletingId !== null}
+    />
+    </>
   );
 }
