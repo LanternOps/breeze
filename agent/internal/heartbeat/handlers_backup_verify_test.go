@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -19,28 +20,31 @@ func TestBackupVerifyHandlersRegistered(t *testing.T) {
 	}
 }
 
-func TestHandleBackupVerify_NilManager(t *testing.T) {
-	h := &Heartbeat{backupMgr: nil}
+func TestHandleBackupVerify_NilBroker(t *testing.T) {
+	h := &Heartbeat{}
 	cmd := Command{ID: "test-1", Type: tools.CmdBackupVerify, Payload: map[string]any{}}
 	result := handleBackupVerify(h, cmd)
 	if result.Status != "failed" {
 		t.Errorf("expected failed, got %s", result.Status)
 	}
-	if result.Error == "" {
-		t.Error("expected error message")
+	if !strings.Contains(result.Error, "session broker") {
+		t.Errorf("expected session broker error, got %q", result.Error)
 	}
 }
 
-func TestHandleBackupTestRestore_NilManager(t *testing.T) {
-	h := &Heartbeat{backupMgr: nil}
+func TestHandleBackupTestRestore_NilBroker(t *testing.T) {
+	h := &Heartbeat{}
 	cmd := Command{ID: "test-2", Type: tools.CmdBackupTestRestore, Payload: map[string]any{}}
 	result := handleBackupTestRestore(h, cmd)
 	if result.Status != "failed" {
 		t.Errorf("expected failed, got %s", result.Status)
 	}
+	if !strings.Contains(result.Error, "session broker") {
+		t.Errorf("expected session broker error, got %q", result.Error)
+	}
 }
 
-func TestHandleBackupCleanup_BadPath(t *testing.T) {
+func TestHandleBackupCleanup_NilBroker(t *testing.T) {
 	h := &Heartbeat{}
 	cmd := Command{
 		ID:      "test-3",
@@ -50,5 +54,8 @@ func TestHandleBackupCleanup_BadPath(t *testing.T) {
 	result := handleBackupCleanup(h, cmd)
 	if result.Status != "failed" {
 		t.Errorf("expected failed, got %s", result.Status)
+	}
+	if !strings.Contains(result.Error, "session broker") {
+		t.Errorf("expected session broker error, got %q", result.Error)
 	}
 }

@@ -2,17 +2,21 @@
 package backup
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
+	"github.com/breeze-rmm/agent/internal/backup/systemstate"
+	"github.com/breeze-rmm/agent/internal/backup/vss"
 )
 
 const (
@@ -24,22 +28,26 @@ const (
 
 // BackupConfig defines backup configuration settings.
 type BackupConfig struct {
-	Provider  providers.BackupProvider
-	Paths     []string
-	Schedule  time.Duration
-	Retention int
+	Provider           providers.BackupProvider
+	Paths              []string
+	Schedule           time.Duration
+	Retention          int
+	VSSEnabled         bool // Windows only: create VSS shadow copy before backup
+	SystemStateEnabled bool // Collect system state alongside file backup
 }
 
 // BackupJob tracks the state of a backup run.
 type BackupJob struct {
-	ID            string
-	StartedAt     time.Time
-	CompletedAt   time.Time
-	Snapshot      *Snapshot
-	FilesBackedUp int
-	BytesBackedUp int64
-	Status        string
-	Error         error
+	ID                   string
+	StartedAt            time.Time
+	CompletedAt          time.Time
+	Snapshot             *Snapshot
+	FilesBackedUp        int
+	BytesBackedUp        int64
+	Status               string
+	Error                error
+	VSSMetadata          *vss.VSSMetadata                  // nil when VSS was not used
+	SystemStateManifest  *systemstate.SystemStateManifest  // nil when system state was not collected
 }
 
 // BackupManager orchestrates scheduled and on-demand backups.
@@ -139,8 +147,62 @@ func (m *BackupManager) RunBackup() (*BackupJob, error) {
 		Status:    jobStatusRunning,
 	}
 
+	// VSS: create shadow copy on Windows for application-consistent backup
+	var vssSession *vss.VSSSession
+	if m.config.VSSEnabled && runtime.GOOS == "windows" {
+		vssStart := time.Now()
+		provider := vss.NewProvider(vss.DefaultConfig())
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		session, vssErr := provider.CreateShadowCopy(ctx, extractVolumes(m.config.Paths))
+		cancel()
+		if vssErr != nil {
+			log.Printf("[backup] VSS shadow copy failed, proceeding without VSS: %v", vssErr)
+		} else {
+			vssSession = session
+			job.VSSMetadata = &vss.VSSMetadata{
+				ShadowCopyID: session.ID,
+				CreationTime: session.CreatedAt,
+				Writers:      session.Writers,
+				ExposedPaths: session.ShadowPaths,
+				Warnings:     session.Warnings,
+				DurationMs:   time.Since(vssStart).Milliseconds(),
+			}
+			if len(session.Warnings) > 0 {
+				log.Printf("[backup] VSS completed with %d warning(s): %v", len(session.Warnings), session.Warnings)
+			}
+			defer func() {
+				if releaseErr := provider.ReleaseShadowCopy(session); releaseErr != nil {
+					log.Printf("[backup] failed to release VSS shadow copy: %v", releaseErr)
+				}
+			}()
+		}
+	}
+
+	// System state collection: gather OS config, hardware profile, etc.
+	if m.config.SystemStateEnabled {
+		manifest, stagingDir, ssErr := systemstate.CollectSystemState()
+		if ssErr != nil {
+			log.Printf("[backup] system state collection failed, proceeding without: %v", ssErr)
+		} else {
+			job.SystemStateManifest = manifest
+			// Append staging dir to backup paths so artifacts are included in snapshot
+			m.config.Paths = append(m.config.Paths, stagingDir)
+			defer func() {
+				if removeErr := os.RemoveAll(stagingDir); removeErr != nil {
+					log.Printf("[backup] failed to clean up system state staging dir: %v", removeErr)
+				}
+			}()
+		}
+	}
+
+	// Rewrite paths to shadow copy device paths when VSS is active
+	backupPaths := m.config.Paths
+	if vssSession != nil {
+		backupPaths = rewritePathsForVSS(m.config.Paths, vssSession.ShadowPaths)
+	}
+
 	cutoff := m.lastSnapshotTime
-	files, scanErr := m.collectBackupFiles(cutoff)
+	files, scanErr := m.collectBackupFilesFromPaths(backupPaths, cutoff)
 	if scanErr != nil {
 		log.Printf("[backup] backup file scan completed with errors: %v", scanErr)
 	}
@@ -211,11 +273,15 @@ type backupFile struct {
 }
 
 func (m *BackupManager) collectBackupFiles(cutoff time.Time) ([]backupFile, error) {
+	return m.collectBackupFilesFromPaths(m.config.Paths, cutoff)
+}
+
+func (m *BackupManager) collectBackupFilesFromPaths(paths []string, cutoff time.Time) ([]backupFile, error) {
 	var files []backupFile
 	var errs []error
 	seen := make(map[string]struct{})
 
-	for idx, root := range m.config.Paths {
+	for idx, root := range paths {
 		if root == "" {
 			errs = append(errs, fmt.Errorf("backup path at index %d is empty", idx))
 			continue
@@ -306,4 +372,38 @@ func shouldIncludeFile(modTime, cutoff time.Time) bool {
 		return true
 	}
 	return modTime.After(cutoff)
+}
+
+// extractVolumes returns unique volume roots from a list of paths.
+// e.g., ["C:\\Users\\data", "C:\\Logs", "D:\\Backups"] -> ["C:", "D:"]
+func extractVolumes(paths []string) []string {
+	seen := make(map[string]struct{})
+	var volumes []string
+	for _, p := range paths {
+		vol := filepath.VolumeName(p)
+		if vol == "" {
+			continue
+		}
+		if _, ok := seen[vol]; !ok {
+			seen[vol] = struct{}{}
+			volumes = append(volumes, vol)
+		}
+	}
+	return volumes
+}
+
+// rewritePathsForVSS rewrites source paths to use VSS shadow copy device paths.
+// e.g., "C:\\Users\\data" with shadow "C:" -> "\\\\?\\GLOBALROOT\\...\\Users\\data"
+func rewritePathsForVSS(paths []string, shadowPaths map[string]string) []string {
+	rewritten := make([]string, len(paths))
+	for i, p := range paths {
+		vol := filepath.VolumeName(p)
+		if shadow, ok := shadowPaths[vol]; ok {
+			rest := p[len(vol):]
+			rewritten[i] = shadow + rest
+		} else {
+			rewritten[i] = p // fallback: use original path
+		}
+	}
+	return rewritten
 }

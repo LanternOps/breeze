@@ -93,6 +93,8 @@ import { huntressRoutes } from './routes/huntress';
 import { sensitiveDataRoutes } from './routes/sensitiveData';
 import { peripheralControlRoutes } from './routes/peripheralControl';
 import { browserSecurityRoutes } from './routes/browserSecurity';
+import { c2cRoutes } from './routes/c2c';
+import { drRoutes } from './routes/dr';
 import { captureException } from './services/sentry';
 import { partnerGuard } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
@@ -135,6 +137,8 @@ import { initializeHuntressSyncJob, shutdownHuntressSyncJob } from './jobs/huntr
 import { initializeSensitiveDataWorkers, shutdownSensitiveDataWorkers } from './jobs/sensitiveDataJobs';
 import { initializePeripheralJobs, shutdownPeripheralJobs } from './jobs/peripheralJobs';
 import { initializeBrowserSecurityJobs, shutdownBrowserSecurityJobs } from './jobs/browserSecurityJobs';
+import { initializeC2cBackupWorker, shutdownC2cBackupWorker } from './jobs/c2cBackupWorker';
+import { initializeBackupSlaWorker, shutdownBackupSlaWorker } from './jobs/backupSlaWorker';
 import { initializeWarrantyWorker, shutdownWarrantyWorker } from './services/warrantyWorker';
 import {
   initializeIncidentCorrelationWorker,
@@ -698,6 +702,8 @@ api.route('/software-inventory', softwareInventoryRoutes);
 api.route('/sensitive-data', sensitiveDataRoutes);
 api.route('/peripherals', peripheralControlRoutes);
 api.route('/browser-security', browserSecurityRoutes);
+api.route('/c2c', c2cRoutes);
+api.route('/dr', drRoutes);
 
 app.route('/api/v1', api);
 
@@ -915,6 +921,8 @@ async function initializeWorkers(): Promise<void> {
     ['sensitiveDataWorker', initializeSensitiveDataWorkers],
     ['peripheralJobs', initializePeripheralJobs],
     ['browserSecurityWorker', initializeBrowserSecurityJobs],
+    ['c2cBackupWorker', initializeC2cBackupWorker],
+    ['backupSlaWorker', initializeBackupSlaWorker],
     ['warrantyWorker', initializeWarrantyWorker],
     ['incidentCorrelationWorker', initializeIncidentCorrelationWorker],
     ['incidentTimelineEnricher', initializeIncidentTimelineEnricher],
@@ -1005,6 +1013,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownLogForwardingWorker,
     shutdownPatchJobWorkers,
     shutdownBackupWorker,
+    shutdownC2cBackupWorker,
+    shutdownBackupSlaWorker,
     shutdownPatchSchedulerWorker,
     shutdownSensitiveDataWorkers,
     shutdownPeripheralJobs,

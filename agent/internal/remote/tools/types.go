@@ -147,6 +147,23 @@ const (
 	CmdBackupTestRestore = "backup_test_restore"
 	CmdBackupCleanup     = "backup_cleanup"
 
+	// VSS backup management
+	CmdVSSStatus     = "vss_status"
+	CmdVSSWriterList = "vss_writer_list"
+
+	// MSSQL backup management
+	CmdMSSQLDiscover = "mssql_discover"
+	CmdMSSQLBackup   = "mssql_backup"
+	CmdMSSQLRestore  = "mssql_restore"
+	CmdMSSQLVerify   = "mssql_verify"
+
+	// System state & bare metal recovery
+	CmdSystemStateCollect  = "system_state_collect"
+	CmdHardwareProfile     = "hardware_profile"
+	CmdVMRestoreFromBackup = "vm_restore_from_backup"
+	CmdVMRestoreEstimate   = "vm_restore_estimate"
+	CmdBMRRecover          = "bmr_recover"
+
 	// Log shipping
 	CmdSetLogLevel = "set_log_level"
 
@@ -171,6 +188,13 @@ const (
 
 	// Self-uninstall (remote wipe)
 	CmdSelfUninstall = "self_uninstall"
+
+	// Hyper-V VM backup management
+	CmdHypervDiscover   = "hyperv_discover"
+	CmdHypervBackup     = "hyperv_backup"
+	CmdHypervRestore    = "hyperv_restore"
+	CmdHypervCheckpoint = "hyperv_checkpoint"
+	CmdHypervVMState    = "hyperv_vm_state"
 
 	// Incident response
 	CmdCollectEvidence    = "collect_evidence"
