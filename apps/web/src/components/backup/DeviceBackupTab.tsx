@@ -5,6 +5,7 @@ import {
   Clock,
   Database,
   RefreshCw,
+  ShieldCheck,
   XCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -176,7 +177,7 @@ export default function DeviceBackupTab({ deviceId }: DeviceBackupTabProps) {
       <div className="rounded-lg border bg-card p-4 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-4">
-            {statusCfg && lastJobStatus && (
+            {statusCfg && lastJobStatus ? (
               <div className="flex items-center gap-2">
                 <span className="text-xs font-medium text-muted-foreground">Last backup</span>
                 <span
@@ -189,7 +190,15 @@ export default function DeviceBackupTab({ deviceId }: DeviceBackupTabProps) {
                   {statusCfg.label}
                 </span>
               </div>
-            )}
+            ) : status?.protected ? (
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary">
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  Policy assigned
+                </span>
+                <span className="text-xs text-muted-foreground">Awaiting first backup run</span>
+              </div>
+            ) : null}
             {status?.lastSuccessAt && (
               <div className="flex items-center gap-1 text-xs text-muted-foreground">
                 <CheckCircle2 className="h-3.5 w-3.5 text-success" />
@@ -218,7 +227,11 @@ export default function DeviceBackupTab({ deviceId }: DeviceBackupTabProps) {
       <div className="rounded-lg border bg-card p-5 shadow-sm">
         <h3 className="mb-4 font-semibold">Job History</h3>
         {recentJobs.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No jobs recorded.</p>
+          <p className="text-sm text-muted-foreground">
+            {status?.protected
+              ? 'No jobs yet. The first backup will run at the next scheduled time.'
+              : 'No jobs recorded.'}
+          </p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
