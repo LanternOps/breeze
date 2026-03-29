@@ -7,6 +7,10 @@ sidebar:
 ---
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Image } from 'astro:assets';
+import scriptsScreenshot from '../../../assets/screenshots/scripts.png';
+
+<Image src={scriptsScreenshot} alt="Breeze Script Library showing scripts with language, category, OS, and status" />
 
 Scripts let you define reusable code that runs on managed devices across your fleet. Each script has a language, a set of compatible operating systems, optional parameters, and a configurable execution context. Scripts can be triggered manually, on a schedule via [Automations](/features/automations/), in response to alerts, or through configuration policies.
 

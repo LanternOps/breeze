@@ -7,6 +7,10 @@ sidebar:
 ---
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Image } from 'astro:assets';
+import securityScreenshot from '../../../assets/screenshots/security.png';
+
+<Image src={securityScreenshot} alt="Breeze Security dashboard showing posture score, vulnerability counts, and compliance status" />
 
 The Security module provides continuous visibility into the security posture of every managed device. The Breeze agent collects antivirus status, firewall state, disk encryption details, local administrator accounts, and password policy configuration from each endpoint. That data flows into the API where it is scored, trended, and surfaced through a unified dashboard. When the agent detects threats during a scan, those threats can be quarantined or removed directly from the console. A built-in recommendations engine analyzes posture data across the fleet and produces prioritized, actionable guidance to reduce risk.
 
