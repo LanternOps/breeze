@@ -105,3 +105,41 @@ export type RestoreJob = {
   restoredSize?: number | null;
   restoredFiles?: number | null;
 };
+
+export type BackupVerificationType = 'integrity' | 'test_restore' | 'full_recovery';
+export type BackupVerificationStatus = 'pending' | 'running' | 'passed' | 'failed' | 'partial';
+
+export type BackupVerification = {
+  id: string;
+  orgId: string;
+  deviceId: string;
+  backupJobId: string;
+  snapshotId?: string | null;
+  verificationType: BackupVerificationType;
+  status: BackupVerificationStatus;
+  startedAt: string;
+  completedAt?: string | null;
+  restoreTimeSeconds?: number | null;
+  filesVerified: number;
+  filesFailed: number;
+  sizeBytes?: number | null;
+  details?: Record<string, unknown> | null;
+  createdAt: string;
+};
+
+export type RecoveryRiskFactor = {
+  code: string;
+  severity: 'low' | 'medium' | 'high';
+  message: string;
+};
+
+export type RecoveryReadiness = {
+  id: string;
+  orgId: string;
+  deviceId: string;
+  readinessScore: number;
+  estimatedRtoMinutes?: number | null;
+  estimatedRpoMinutes?: number | null;
+  riskFactors: RecoveryRiskFactor[];
+  calculatedAt: string;
+};

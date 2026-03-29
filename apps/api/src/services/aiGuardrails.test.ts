@@ -23,6 +23,7 @@ vi.mock('./aiTools', () => ({
       query_devices: 1,
       query_change_log: 1,
       execute_command: 3,
+      run_backup_verification: 2,
     };
     return tiers[toolName];
   }),
@@ -193,6 +194,15 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
     expect(result.tier).toBe(1);
     expect(result.allowed).toBe(true);
     expect(result.requiresApproval).toBe(false);
+  });
+
+  it('escalates full recovery verification to Tier 3 approval', () => {
+    const result = checkGuardrails('run_backup_verification', {
+      deviceId: '11111111-1111-1111-1111-111111111111',
+      verificationType: 'full_recovery',
+    });
+    expect(result.tier).toBe(3);
+    expect(result.requiresApproval).toBe(true);
   });
 });
 

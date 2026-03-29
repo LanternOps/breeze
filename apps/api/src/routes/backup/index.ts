@@ -6,6 +6,7 @@ import { jobsRoutes } from './jobs';
 import { snapshotsRoutes } from './snapshots';
 import { restoreRoutes } from './restore';
 import { dashboardRoutes } from './dashboard';
+import { backupVerificationRoutes } from './verification';
 
 export const backupRoutes = new Hono();
 
@@ -17,4 +18,4 @@ backupRoutes.route('/', jobsRoutes);
 backupRoutes.route('/', snapshotsRoutes);
 backupRoutes.route('/', restoreRoutes);
 backupRoutes.route('/', dashboardRoutes);
-
+backupRoutes.route('/', backupVerificationRoutes);
