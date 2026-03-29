@@ -225,6 +225,18 @@ export const configPolicySensitiveDataSettings = pgTable('config_policy_sensitiv
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
+// Single-item: one row per feature link (backup settings)
+export const configPolicyBackupSettings = pgTable('config_policy_backup_settings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  featureLinkId: uuid('feature_link_id').notNull().unique().references(() => configPolicyFeatureLinks.id, { onDelete: 'cascade' }),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  schedule: jsonb('schedule').notNull().default({}),
+  retention: jsonb('retention').notNull().default({}),
+  paths: jsonb('paths').notNull().default([]),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
 // ============================================
 // Monitoring (Service & Process) Per-Feature Tables
 // ============================================

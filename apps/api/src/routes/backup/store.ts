@@ -2,7 +2,6 @@ import { randomUUID } from 'crypto';
 import type { BackupVerification, RecoveryReadiness } from './types';
 import {
   backupConfigs,
-  backupPolicies,
   backupSnapshots,
   backupJobs,
   restoreJobs,
@@ -15,7 +14,6 @@ export const DEFAULT_BACKUP_ORG_ID = 'org-123';
 
 export {
   backupConfigs,
-  backupPolicies,
   backupSnapshots,
   backupJobs,
   restoreJobs,
@@ -27,9 +25,7 @@ export {
 export const configOrgById = new Map<string, string>(
   backupConfigs.map((config) => [config.id, DEFAULT_BACKUP_ORG_ID])
 );
-export const policyOrgById = new Map<string, string>(
-  backupPolicies.map((policy) => [policy.id, DEFAULT_BACKUP_ORG_ID])
-);
+
 export const snapshotOrgById = new Map<string, string>(
   backupSnapshots.map((snapshot) => [snapshot.id, DEFAULT_BACKUP_ORG_ID])
 );

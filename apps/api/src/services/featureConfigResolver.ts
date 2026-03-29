@@ -8,6 +8,7 @@ import {
   configPolicyComplianceRules,
   configPolicyPatchSettings,
   configPolicyMaintenanceSettings,
+  configPolicyBackupSettings,
   devices,
   organizations,
   deviceGroupMemberships,
@@ -368,6 +369,70 @@ export async function resolvePatchConfigForDevice(
 
   const sorted = sortByHierarchy(rows);
   return sorted[0]!.patchSettings;
+}
+
+/**
+ * Resolves backup settings for a device via the hierarchy.
+ * Returns the single backup settings row + metadata from the WINNING assignment, or null.
+ */
+export async function resolveBackupConfigForDevice(
+  deviceId: string
+): Promise<{
+  settings: typeof configPolicyBackupSettings.$inferSelect;
+  featureLinkId: string;
+  configId: string | null;
+} | null> {
+  const hierarchy = await loadDeviceHierarchy(deviceId);
+  if (!hierarchy) return null;
+
+  const targetConditions = buildTargetConditions(hierarchy);
+  const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
+
+  const rows = await db
+    .select({
+      backupSettings: configPolicyBackupSettings,
+      featureLinkId: configPolicyFeatureLinks.id,
+      configId: configPolicyFeatureLinks.featurePolicyId,
+      assignmentLevel: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      assignmentCreatedAt: configPolicyAssignments.createdAt,
+      assignmentId: configPolicyAssignments.id,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active')
+      )
+    )
+    .innerJoin(
+      configPolicyFeatureLinks,
+      and(
+        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyFeatureLinks.featureType, 'backup')
+      )
+    )
+    .innerJoin(
+      configPolicyBackupSettings,
+      eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id)
+    )
+    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+    .orderBy(
+      configPolicyAssignments.level,
+      configPolicyAssignments.priority,
+      configPolicyAssignments.createdAt
+    );
+
+  if (rows.length === 0) return null;
+
+  const sorted = sortByHierarchy(rows);
+  const winner = sorted[0]!;
+  return {
+    settings: winner.backupSettings,
+    featureLinkId: winner.featureLinkId,
+    configId: winner.configId,
+  };
 }
 
 /**
@@ -767,6 +832,139 @@ export async function scanDueComplianceChecks(): Promise<ComplianceRuleWithTarge
     );
 
   return rows;
+}
+
+// ============================================
+// Backup: All Assigned Devices for an Org
+// ============================================
+
+export interface BackupAssignedDevice {
+  deviceId: string;
+  featureLinkId: string;
+  configId: string | null;
+  settings: typeof configPolicyBackupSettings.$inferSelect;
+}
+
+/**
+ * Finds ALL devices with backup config policy assignments for an org.
+ * Used by the backup scheduler (to know which devices to back up) and the run-all endpoint.
+ *
+ * Steps:
+ * 1. Query all active backup feature links for the org
+ * 2. For each, resolve assignment targets to device IDs
+ * 3. Deduplicate: first (highest priority) assignment wins per device
+ */
+export async function resolveAllBackupAssignedDevices(
+  orgId: string
+): Promise<BackupAssignedDevice[]> {
+  // 1. Load all active backup feature links + settings + assignments for this org
+  const rows = await db
+    .select({
+      backupSettings: configPolicyBackupSettings,
+      featureLinkId: configPolicyFeatureLinks.id,
+      configId: configPolicyFeatureLinks.featurePolicyId,
+      assignmentLevel: configPolicyAssignments.level,
+      assignmentTargetId: configPolicyAssignments.targetId,
+      assignmentPriority: configPolicyAssignments.priority,
+      assignmentCreatedAt: configPolicyAssignments.createdAt,
+    })
+    .from(configPolicyBackupSettings)
+    .innerJoin(
+      configPolicyFeatureLinks,
+      and(
+        eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id),
+        eq(configPolicyFeatureLinks.featureType, 'backup')
+      )
+    )
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active'),
+        eq(configurationPolicies.orgId, orgId)
+      )
+    )
+    .innerJoin(
+      configPolicyAssignments,
+      eq(configPolicyAssignments.configPolicyId, configurationPolicies.id)
+    );
+
+  if (rows.length === 0) return [];
+
+  // Sort by hierarchy priority (device > group > site > org > partner)
+  const sorted = sortByHierarchy(rows);
+
+  // 2. Resolve each assignment to device IDs and collect results
+  // Track which devices we've already seen — first (highest priority) wins
+  const seen = new Map<string, BackupAssignedDevice>();
+
+  for (const row of sorted) {
+    let deviceIds: string[];
+
+    switch (row.assignmentLevel) {
+      case 'device': {
+        deviceIds = [row.assignmentTargetId];
+        break;
+      }
+      case 'device_group': {
+        const members = await db
+          .select({ deviceId: deviceGroupMemberships.deviceId })
+          .from(deviceGroupMemberships)
+          .where(eq(deviceGroupMemberships.groupId, row.assignmentTargetId));
+        deviceIds = members.map((m) => m.deviceId);
+        break;
+      }
+      case 'site': {
+        const siteDevices = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .where(and(eq(devices.siteId, row.assignmentTargetId), eq(devices.orgId, orgId)));
+        deviceIds = siteDevices.map((d) => d.id);
+        break;
+      }
+      case 'organization': {
+        const orgDevices = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .where(eq(devices.orgId, row.assignmentTargetId));
+        deviceIds = orgDevices.map((d) => d.id);
+        break;
+      }
+      case 'partner': {
+        // Partner-level: get all orgs under partner, then their devices
+        const orgs = await db
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(eq(organizations.partnerId, row.assignmentTargetId));
+        if (orgs.length === 0) {
+          deviceIds = [];
+        } else {
+          const partnerDevices = await db
+            .select({ id: devices.id })
+            .from(devices)
+            .where(inArray(devices.orgId, orgs.map((o) => o.id)));
+          deviceIds = partnerDevices.map((d) => d.id);
+        }
+        break;
+      }
+      default:
+        deviceIds = [];
+    }
+
+    // First assignment wins per device (sorted is already highest-priority-first)
+    for (const deviceId of deviceIds) {
+      if (!seen.has(deviceId)) {
+        seen.set(deviceId, {
+          deviceId,
+          featureLinkId: row.featureLinkId,
+          configId: row.configId,
+          settings: row.backupSettings,
+        });
+      }
+    }
+  }
+
+  return Array.from(seen.values());
 }
 
 // ============================================

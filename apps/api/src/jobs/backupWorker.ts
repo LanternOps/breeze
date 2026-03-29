@@ -2,7 +2,7 @@
  * Backup Worker
  *
  * BullMQ worker that orchestrates backup jobs:
- * - check-schedules: Polls enabled backup policies, creates jobs when due
+ * - check-schedules: Polls config policy backup assignments, creates jobs when due
  * - dispatch-backup: Sends backup_run command to agent via WebSocket
  * - process-results: Updates job/snapshot rows from agent result payload
  * - dispatch-restore: Sends backup_restore command to agent
@@ -11,14 +11,16 @@
 import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import {
-  backupPolicies,
   backupJobs,
   backupSnapshots,
   backupConfigs,
   restoreJobs,
   devices,
+  configurationPolicies,
+  configPolicyFeatureLinks,
 } from '../db/schema';
 import { eq, and, sql } from 'drizzle-orm';
+import { resolveAllBackupAssignedDevices } from '../services/featureConfigResolver';
 import { getRedisConnection } from '../services/redis';
 import {
   sendCommandToAgent,
@@ -134,110 +136,123 @@ type PolicySchedule = {
   dayOfMonth?: number;
 };
 
-type PolicyTargets = {
-  deviceIds?: string[];
-  siteIds?: string[];
-  groupIds?: string[];
-};
-
 async function processCheckSchedules(): Promise<{ enqueued: number }> {
   const now = new Date();
 
-  const policies = await db
-    .select()
-    .from(backupPolicies)
-    .where(eq(backupPolicies.enabled, true));
+  // 1. Find all org IDs with active backup config policies
+  const orgRows = await db
+    .selectDistinct({ orgId: configurationPolicies.orgId })
+    .from(configurationPolicies)
+    .innerJoin(
+      configPolicyFeatureLinks,
+      and(
+        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyFeatureLinks.featureType, 'backup')
+      )
+    )
+    .where(eq(configurationPolicies.status, 'active'));
 
-  if (policies.length === 0) return { enqueued: 0 };
+  if (orgRows.length === 0) return { enqueued: 0 };
 
   let enqueued = 0;
 
-  for (const policy of policies) {
-    const schedule = policy.schedule as PolicySchedule | null;
-    if (!schedule?.frequency || !schedule.time) continue;
+  // 2. For each org, resolve all backup-assigned devices via config policy hierarchy
+  for (const { orgId } of orgRows) {
+    try {
+      const entries = await resolveAllBackupAssignedDevices(orgId);
 
-    // Check if due now (simple: compare hour:minute)
-    const [schedHour, schedMin] = (schedule.time ?? '02:00')
-      .split(':')
-      .map(Number);
-    const currentHour = now.getUTCHours();
-    const currentMin = now.getUTCMinutes();
+      for (const entry of entries) {
+        // configId (featurePolicyId → backupConfigs.id) is required for dispatch
+        if (!entry.configId) {
+          console.warn(`[BackupWorker] Skipping device ${entry.deviceId}: feature link ${entry.featureLinkId} has no configId`);
+          continue;
+        }
 
-    // Only trigger within the schedule minute window
-    if (currentHour !== schedHour || currentMin !== schedMin) continue;
+        const schedule = entry.settings.schedule as PolicySchedule | null;
+        if (!schedule?.frequency || !schedule.time) continue;
 
-    // Check day-of-week for weekly
-    if (
-      schedule.frequency === 'weekly' &&
-      typeof schedule.dayOfWeek === 'number' &&
-      now.getUTCDay() !== schedule.dayOfWeek
-    ) {
-      continue;
-    }
+        // Check if due now (simple: compare hour:minute in UTC)
+        const [schedHour, schedMin] = (schedule.time ?? '02:00')
+          .split(':')
+          .map(Number);
+        const currentHour = now.getUTCHours();
+        const currentMin = now.getUTCMinutes();
 
-    // Check day-of-month for monthly
-    if (
-      schedule.frequency === 'monthly' &&
-      typeof schedule.dayOfMonth === 'number' &&
-      now.getUTCDate() !== schedule.dayOfMonth
-    ) {
-      continue;
-    }
+        if (currentHour !== schedHour || currentMin !== schedMin) continue;
 
-    // Deduplicate: check if already created a job this minute
-    const minuteStart = new Date(now);
-    minuteStart.setSeconds(0, 0);
-    const minuteEnd = new Date(minuteStart.getTime() + 60_000);
+        // Check day-of-week for weekly
+        if (
+          schedule.frequency === 'weekly' &&
+          typeof schedule.dayOfWeek === 'number' &&
+          now.getUTCDay() !== schedule.dayOfWeek
+        ) {
+          continue;
+        }
 
-    const [existing] = await db
-      .select({ id: backupJobs.id })
-      .from(backupJobs)
-      .where(
-        and(
-          eq(backupJobs.policyId, policy.id),
-          sql`${backupJobs.createdAt} >= ${minuteStart.toISOString()}::timestamptz`,
-          sql`${backupJobs.createdAt} < ${minuteEnd.toISOString()}::timestamptz`
-        )
-      )
-      .limit(1);
+        // Check day-of-month for monthly
+        if (
+          schedule.frequency === 'monthly' &&
+          typeof schedule.dayOfMonth === 'number' &&
+          now.getUTCDate() !== schedule.dayOfMonth
+        ) {
+          continue;
+        }
 
-    if (existing) continue;
+        // 4. Deduplicate: check for existing jobs this minute using featureLinkId + deviceId
+        const minuteStart = new Date(now);
+        minuteStart.setSeconds(0, 0);
+        const minuteEnd = new Date(minuteStart.getTime() + 60_000);
 
-    // Resolve target devices
-    const targets = policy.targets as PolicyTargets;
-    const deviceIds = targets?.deviceIds ?? [];
+        const [existing] = await db
+          .select({ id: backupJobs.id })
+          .from(backupJobs)
+          .where(
+            and(
+              eq(backupJobs.featureLinkId, entry.featureLinkId),
+              eq(backupJobs.deviceId, entry.deviceId),
+              sql`${backupJobs.createdAt} >= ${minuteStart.toISOString()}::timestamptz`,
+              sql`${backupJobs.createdAt} < ${minuteEnd.toISOString()}::timestamptz`
+            )
+          )
+          .limit(1);
 
-    // TODO: Resolve siteIds and groupIds to deviceIds in the future
-    for (const deviceId of deviceIds) {
-      const [job] = await db
-        .insert(backupJobs)
-        .values({
-          orgId: policy.orgId,
-          configId: policy.configId,
-          policyId: policy.id,
-          deviceId,
-          status: 'pending',
-          type: 'scheduled',
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning();
+        if (existing) continue;
 
-      if (job) {
-        await enqueueBackupDispatch(
-          job.id,
-          job.configId,
-          policy.orgId,
-          deviceId
-        );
-        enqueued++;
+        // 5. Create job with featureLinkId and configId from resolver
+        const [job] = await db
+          .insert(backupJobs)
+          .values({
+            orgId,
+            configId: entry.configId,
+            featureLinkId: entry.featureLinkId,
+            deviceId: entry.deviceId,
+            status: 'pending',
+            type: 'scheduled',
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning();
+
+        if (job) {
+          // 6. Enqueue dispatch
+          await enqueueBackupDispatch(
+            job.id,
+            job.configId,
+            orgId,
+            entry.deviceId
+          );
+          enqueued++;
+        }
       }
+    } catch (err) {
+      console.error(`[BackupWorker] Failed to process scheduled backups for org ${orgId}:`, err instanceof Error ? err.message : err);
+      continue;
     }
   }
 
   if (enqueued > 0) {
     console.log(
-      `[BackupWorker] Scheduled ${enqueued} backup job(s) from policies`
+      `[BackupWorker] Scheduled ${enqueued} backup job(s) from config policies`
     );
   }
 
