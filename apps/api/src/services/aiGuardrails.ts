@@ -202,8 +202,6 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   },
   manage_service_monitors: {
     list: { resource: 'monitoring', action: 'read' },
-    add: { resource: 'monitoring', action: 'write' },
-    remove: { resource: 'monitoring', action: 'write' },
   },
   generate_report: {
     list: { resource: 'reports', action: 'read' },
@@ -245,6 +243,12 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   },
   get_effective_configuration: { resource: 'devices', action: 'read' },
   preview_configuration_change: { resource: 'devices', action: 'read' },
+  manage_policy_feature_link: {
+    list: { resource: 'policies', action: 'read' },
+    add: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+    remove: { resource: 'policies', action: 'write' },
+  },
   apply_configuration_policy: { resource: 'policies', action: 'write' },
   remove_configuration_policy_assignment: { resource: 'policies', action: 'write' },
   // Playbook tools
@@ -526,7 +530,12 @@ export async function checkToolPermission(
     required = (permDef as Record<string, { resource: string; action: string }>)[action]!;
   } else if (action) {
     // Unknown action for a mapped tool — deny (fail-closed)
-    return `Unknown action "${action}" for tool "${toolName}"`;
+    // Include redirect hints for tools that have been replaced by policy-based management
+    const redirectHints: Record<string, string> = {
+      manage_service_monitors: 'To add, update, or remove monitoring watches, use manage_policy_feature_link with the existing policy\'s featureLinkId and action "update". First call get_configuration_policy to find the monitoring featureLinkId and current inlineSettings.watches array, then update it with the new watch appended.',
+    };
+    const hint = redirectHints[toolName];
+    return `Unknown action "${action}" for tool "${toolName}".${hint ? ` ${hint}` : ''}`;
   } else {
     return null; // No action provided — allow (base tool permission applies)
   }

@@ -6,6 +6,7 @@ import AuthOverlay from '../components/auth/AuthOverlay';
 import AdminSessionManager from '../components/auth/AdminSessionManager';
 import AccountInactiveGuard from '../components/auth/AccountInactiveGuard';
 import AiChatSidebar from '../components/ai/AiChatSidebar';
+import HelpPanel from '../components/help/HelpPanel';
 import OnboardingTour from '../components/onboarding/OnboardingTour';
 import ToastContainer from '../components/shared/Toast';
 
@@ -46,6 +47,7 @@ const accentClass = getAccentClass(currentPath);
     </div>
   </div>
   <AiChatSidebar client:load transition:persist />
+  <HelpPanel client:load transition:persist />
   <ToastContainer client:load transition:persist />
   <OnboardingTour client:idle />
 </Layout>

@@ -658,7 +658,12 @@ patchRoutes.get(
       return c.json({
         data: {
           summary: { total: 0, pending: 0, installed: 0, failed: 0, missing: 0 },
-          compliancePercent: 100
+          compliancePercent: 100,
+          totalDevices: 0,
+          compliantDevices: 0,
+          criticalSummary: { total: 0, patched: 0, pending: 0 },
+          importantSummary: { total: 0, patched: 0, pending: 0 },
+          devicesNeedingPatches: []
         }
       });
     }
@@ -687,6 +692,11 @@ patchRoutes.get(
           data: {
             summary: { total: 0, pending: 0, installed: 0, failed: 0, missing: 0 },
             compliancePercent: 100,
+            totalDevices: deviceIds.length,
+            compliantDevices: deviceIds.length,
+            criticalSummary: { total: 0, patched: 0, pending: 0 },
+            importantSummary: { total: 0, patched: 0, pending: 0 },
+            devicesNeedingPatches: [],
             ringId: query.ringId ?? null
           }
         });
@@ -731,10 +741,77 @@ patchRoutes.get(
       ? Math.round((summary.installed / summary.total) * 100)
       : 100;
 
+    // Per-device patch breakdown for "devices needing patches" table
+    const deviceBreakdown = await db
+      .select({
+        deviceId: devicePatches.deviceId,
+        hostname: devices.hostname,
+        osType: devices.osType,
+        lastSeenAt: devices.lastSeenAt,
+        missingCount: sql<number>`count(*) filter (where ${devicePatches.status} in ('pending', 'missing'))`,
+        criticalCount: sql<number>`count(*) filter (where ${devicePatches.status} in ('pending', 'missing') and ${patches.severity} = 'critical')`,
+        importantCount: sql<number>`count(*) filter (where ${devicePatches.status} in ('pending', 'missing') and ${patches.severity} = 'important')`,
+        osMissing: sql<number>`count(*) filter (where ${devicePatches.status} in ('pending', 'missing') and ${patches.source} in ('microsoft', 'apple', 'linux'))`,
+        thirdPartyMissing: sql<number>`count(*) filter (where ${devicePatches.status} in ('pending', 'missing') and ${patches.source} in ('third_party', 'custom'))`,
+        lastInstalledAt: sql<string | null>`max(case when ${devicePatches.status} = 'installed' and ${devicePatches.installedAt} is not null then ${devicePatches.installedAt} end)`,
+        pendingReboot: sql<boolean>`bool_or(${patches.requiresReboot} and ${devicePatches.status} = 'installed' and ${devicePatches.installedAt} is not null)`,
+        lastScannedAt: sql<string | null>`max(${devicePatches.lastCheckedAt})`
+      })
+      .from(devicePatches)
+      .innerJoin(patches, eq(devicePatches.patchId, patches.id))
+      .innerJoin(devices, eq(devicePatches.deviceId, devices.id))
+      .where(and(...complianceConditions))
+      .groupBy(devicePatches.deviceId, devices.hostname, devices.osType, devices.lastSeenAt)
+      .having(sql`count(*) filter (where ${devicePatches.status} in ('pending', 'missing')) > 0`)
+      .orderBy(sql`count(*) filter (where ${devicePatches.status} in ('pending', 'missing') and ${patches.severity} = 'critical') desc`);
+
+    const devicesNeedingPatches = deviceBreakdown.map(row => ({
+      id: row.deviceId,
+      name: row.hostname,
+      os: row.osType,
+      missingCount: Number(row.missingCount),
+      criticalCount: Number(row.criticalCount),
+      importantCount: Number(row.importantCount),
+      osMissing: Number(row.osMissing),
+      thirdPartyMissing: Number(row.thirdPartyMissing),
+      lastInstalledAt: row.lastInstalledAt ?? undefined,
+      pendingReboot: row.pendingReboot ?? false,
+      lastScannedAt: row.lastScannedAt ?? undefined,
+      lastSeen: row.lastSeenAt?.toISOString() ?? undefined
+    }));
+
+    // Severity-level summaries
+    const severityCounts = await db
+      .select({
+        severity: patches.severity,
+        total: sql<number>`count(*)`,
+        installed: sql<number>`count(*) filter (where ${devicePatches.status} = 'installed')`
+      })
+      .from(devicePatches)
+      .innerJoin(patches, eq(devicePatches.patchId, patches.id))
+      .where(and(...complianceConditions))
+      .groupBy(patches.severity);
+
+    const severityMap: Record<string, { total: number; patched: number; pending: number }> = {};
+    for (const row of severityCounts) {
+      const key = row.severity ?? 'unknown';
+      const total = Number(row.total);
+      const patched = Number(row.installed);
+      severityMap[key] = { total, patched, pending: total - patched };
+    }
+
+    // Device-level compliance: a device is compliant if it has zero pending/missing patches
+    const compliantDeviceCount = deviceIds.length - devicesNeedingPatches.length;
+
     return c.json({
       data: {
         summary,
         compliancePercent,
+        totalDevices: deviceIds.length,
+        compliantDevices: compliantDeviceCount,
+        criticalSummary: severityMap['critical'] ?? { total: 0, patched: 0, pending: 0 },
+        importantSummary: severityMap['important'] ?? { total: 0, patched: 0, pending: 0 },
+        devicesNeedingPatches,
         filters: {
           source: query.source ?? null,
           severity: query.severity ?? null,

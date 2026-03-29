@@ -388,77 +388,9 @@ describe('manage_service_monitors schema', () => {
     expect(parse('manage_service_monitors', { action: 'list', configPolicyId: TEST_UUID }).success).toBe(true);
   });
 
-  it('requires watchType and name for add', () => {
+  it('rejects invalid actions (add/remove/update are not supported)', () => {
     expect(parse('manage_service_monitors', { action: 'add' }).success).toBe(false);
-    expect(parse('manage_service_monitors', { action: 'add', watchType: 'service' }).success).toBe(false);
-    expect(parse('manage_service_monitors', { action: 'add', name: 'wuauserv' }).success).toBe(false);
-  });
-
-  it('accepts valid add with all options', () => {
-    expect(parse('manage_service_monitors', {
-      action: 'add',
-      configPolicyId: TEST_UUID,
-      watchType: 'service',
-      name: 'wuauserv',
-      displayName: 'Windows Update',
-      alertOnStop: true,
-      alertSeverity: 'high',
-      autoRestart: false,
-    }).success).toBe(true);
-  });
-
-  it('accepts process monitor with thresholds', () => {
-    expect(parse('manage_service_monitors', {
-      action: 'add',
-      watchType: 'process',
-      name: 'nginx',
-      cpuThresholdPercent: 90,
-      memoryThresholdMb: 500,
-    }).success).toBe(true);
-  });
-
-  it('requires watchId for remove', () => {
     expect(parse('manage_service_monitors', { action: 'remove' }).success).toBe(false);
-  });
-
-  it('accepts valid remove', () => {
-    expect(parse('manage_service_monitors', { action: 'remove', watchId: TEST_UUID }).success).toBe(true);
-  });
-
-  it('rejects invalid cpuThresholdPercent', () => {
-    expect(parse('manage_service_monitors', {
-      action: 'add', watchType: 'process', name: 'test', cpuThresholdPercent: 150,
-    }).success).toBe(false);
-    expect(parse('manage_service_monitors', {
-      action: 'add', watchType: 'process', name: 'test', cpuThresholdPercent: -5,
-    }).success).toBe(false);
-  });
-
-  it('rejects out-of-range checkIntervalSeconds', () => {
-    expect(parse('manage_service_monitors', {
-      action: 'add', watchType: 'service', name: 'test', checkIntervalSeconds: 9,
-    }).success).toBe(false);
-    expect(parse('manage_service_monitors', {
-      action: 'add', watchType: 'service', name: 'test', checkIntervalSeconds: 3601,
-    }).success).toBe(false);
-  });
-
-  it('rejects out-of-range maxRestartAttempts', () => {
-    expect(parse('manage_service_monitors', {
-      action: 'add', watchType: 'service', name: 'test', maxRestartAttempts: 0,
-    }).success).toBe(false);
-    expect(parse('manage_service_monitors', {
-      action: 'add', watchType: 'service', name: 'test', maxRestartAttempts: 11,
-    }).success).toBe(false);
-  });
-
-  it('rejects negative memoryThresholdMb', () => {
-    expect(parse('manage_service_monitors', {
-      action: 'add', watchType: 'process', name: 'test', memoryThresholdMb: -100,
-    }).success).toBe(false);
-  });
-
-  it('rejects invalid action', () => {
     expect(parse('manage_service_monitors', { action: 'update' }).success).toBe(false);
     expect(parse('manage_service_monitors', { action: 'restart' }).success).toBe(false);
   });

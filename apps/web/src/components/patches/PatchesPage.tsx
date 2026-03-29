@@ -8,7 +8,7 @@ import PatchList, {
   type PatchSeverity
 } from './PatchList';
 import PatchApprovalModal, { type PatchApprovalAction } from './PatchApprovalModal';
-import PatchComplianceDashboard from './PatchComplianceDashboard';
+import PatchComplianceView from './PatchComplianceView';
 import UpdateRingList, { type UpdateRingItem } from './UpdateRingList';
 import UpdateRingForm, { type UpdateRingFormValues } from './UpdateRingForm';
 import RingSelector, { type UpdateRing } from './RingSelector';
@@ -106,9 +106,32 @@ function normalizeRing(raw: Record<string, unknown>): UpdateRingItem {
 }
 
 type TabKey = 'rings' | 'patches' | 'compliance';
+const validTabs: TabKey[] = ['rings', 'patches', 'compliance'];
+
+function getTabFromUrl(): TabKey {
+  if (typeof window === 'undefined') return 'compliance';
+  const params = new URLSearchParams(window.location.search);
+  const tab = params.get('tab');
+  return tab && validTabs.includes(tab as TabKey) ? (tab as TabKey) : 'compliance';
+}
+
+function setTabInUrl(tab: TabKey) {
+  if (typeof window === 'undefined') return;
+  const url = new URL(window.location.href);
+  if (tab === 'compliance') {
+    url.searchParams.delete('tab');
+  } else {
+    url.searchParams.set('tab', tab);
+  }
+  window.history.replaceState({}, '', url.toString());
+}
 
 export default function PatchesPage() {
-  const [activeTab, setActiveTab] = useState<TabKey>('rings');
+  const [activeTab, setActiveTabState] = useState<TabKey>(getTabFromUrl);
+  const setActiveTab = useCallback((tab: TabKey) => {
+    setActiveTabState(tab);
+    setTabInUrl(tab);
+  }, []);
   const [selectedRingId, setSelectedRingId] = useState<string | null>(null);
   const [selectedPatch, setSelectedPatch] = useState<Patch | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -129,9 +152,9 @@ export default function PatchesPage() {
 
   const tabs = useMemo(
     () => [
-      { id: 'rings' as TabKey, label: 'Update Rings', icon: <Layers className="h-4 w-4" /> },
+      { id: 'compliance' as TabKey, label: 'Compliance', icon: <BarChart3 className="h-4 w-4" /> },
       { id: 'patches' as TabKey, label: 'Patches', icon: <FileCog className="h-4 w-4" /> },
-      { id: 'compliance' as TabKey, label: 'Compliance', icon: <BarChart3 className="h-4 w-4" /> }
+      { id: 'rings' as TabKey, label: 'Update Rings', icon: <Layers className="h-4 w-4" /> }
     ],
     []
   );
@@ -224,6 +247,46 @@ export default function PatchesPage() {
     setSelectedPatch(null);
   };
 
+  const handleBulkApprove = async (patchIds: string[]) => {
+    const response = await fetchWithAuth('/patches/bulk-approve', {
+      method: 'POST',
+      body: JSON.stringify({
+        patchIds,
+        ringId: selectedRingId ?? undefined
+      })
+    });
+    if (!response.ok) {
+      if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
+      throw new Error('Failed to approve patches');
+    }
+    setPatches(prev =>
+      prev.map(patch =>
+        patchIds.includes(patch.id) ? { ...patch, approvalStatus: 'approved' as PatchApprovalStatus } : patch
+      )
+    );
+  };
+
+  const handleBulkDecline = async (patchIds: string[]) => {
+    const failed: string[] = [];
+    for (const id of patchIds) {
+      const response = await fetchWithAuth(`/patches/${id}/decline`, {
+        method: 'POST',
+        body: JSON.stringify({ ringId: selectedRingId ?? undefined })
+      });
+      if (!response.ok) {
+        if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
+        failed.push(id);
+      }
+    }
+    const declined = patchIds.filter(id => !failed.includes(id));
+    setPatches(prev =>
+      prev.map(patch =>
+        declined.includes(patch.id) ? { ...patch, approvalStatus: 'declined' as PatchApprovalStatus } : patch
+      )
+    );
+    if (failed.length > 0) throw new Error(`Failed to decline ${failed.length} patches`);
+  };
+
   const handleScan = async () => {
     try {
       setScanLoading(true);
@@ -311,27 +374,31 @@ export default function PatchesPage() {
           <p className="text-muted-foreground">Manage update rings, approvals, compliance, and patch deployments.</p>
         </div>
         <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={handleScan}
-            disabled={scanLoading}
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted disabled:opacity-50"
-          >
-            {scanLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            {scanLoading ? 'Scanning...' : 'Run Scan'}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setEditingRing(null);
-              setRingsError(undefined);
-              setRingModalOpen(true);
-            }}
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
-          >
-            <Plus className="h-4 w-4" />
-            New Ring
-          </button>
+          {(activeTab === 'compliance' || activeTab === 'patches') && (
+            <button
+              type="button"
+              onClick={handleScan}
+              disabled={scanLoading}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted disabled:opacity-50"
+            >
+              {scanLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              {scanLoading ? 'Scanning...' : 'Run Scan'}
+            </button>
+          )}
+          {activeTab === 'rings' && (
+            <button
+              type="button"
+              onClick={() => {
+                setEditingRing(null);
+                setRingsError(undefined);
+                setRingModalOpen(true);
+              }}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+            >
+              <Plus className="h-4 w-4" />
+              New Ring
+            </button>
+          )}
         </div>
       </div>
 
@@ -436,11 +503,13 @@ export default function PatchesPage() {
           error={patchesError}
           onRetry={fetchPatches}
           onReview={handleReview}
+          onBulkApprove={handleBulkApprove}
+          onBulkDecline={handleBulkDecline}
         />
       )}
 
-      {/* Compliance tab */}
-      {activeTab === 'compliance' && <PatchComplianceDashboard ringId={selectedRingId} />}
+      {/* Compliance tab — merged device view with summary */}
+      {activeTab === 'compliance' && <PatchComplianceView ringId={selectedRingId} />}
 
       {/* Approval modal — passes ringId */}
       <PatchApprovalModal

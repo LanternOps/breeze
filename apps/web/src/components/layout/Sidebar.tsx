@@ -37,6 +37,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
+import { fetchWithAuth } from '../../stores/auth';
+import { WEB_VERSION } from '../../lib/version';
 
 interface SidebarProps {
   currentPath?: string;
@@ -222,6 +224,17 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const [isTablet, setIsTablet] = useState(false);  // < 1024px
   const [isMobile, setIsMobile] = useState(false);   // < 768px
   const { isMobileMenuOpen, closeMobileMenu } = useUiStore();
+
+  // Fetch API version once
+  const [apiVersion, setApiVersion] = useState<string | null>(null);
+  useEffect(() => {
+    fetchWithAuth('/system/version')
+      .then((r) => r.ok ? r.json() : null)
+      .then((data: { version: string } | null) => {
+        if (data) setApiVersion(data.version);
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const mqTablet = window.matchMedia('(max-width: 1023px)');
@@ -414,9 +427,18 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
       {sectionAnimCss}
 
       <div className="flex h-16 items-center justify-between border-b px-4">
-        {showLabels && (
-          <span className="text-lg font-bold tracking-tight text-foreground">Breeze</span>
-        )}
+        <div className="flex items-center gap-2">
+          <div className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-[6px] bg-primary/15">
+            <svg width="14" height="14" viewBox="0 0 64 64" fill="none" className="text-primary">
+              <path d="M12 22C12 22 20 22 28 22C36 22 40 16 48 16C52 16 54 18 54 20C54 22 52 24 48 24C44 24 42 22 42 22" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M8 34C8 34 18 34 30 34C42 34 46 28 52 28C55 28 57 30 57 32C57 34 55 36 52 36C48 36 46 34 46 34" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M14 46C14 46 22 46 32 46C40 46 44 40 50 40C53 40 55 42 55 44C55 46 53 48 50 48C46 48 44 46 44 46" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
+          {showLabels && (
+            <span className="text-lg font-bold tracking-tight text-foreground">Breeze</span>
+          )}
+        </div>
         {/* Only show mode toggle on non-tablet viewports */}
         {!isTablet && (
           <button
@@ -433,6 +455,12 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         {topLevelNav.map((item) => renderNavItem(item))}
         {navSections.map((section) => renderCollapsibleSection(section))}
       </nav>
+
+      {showLabels && (
+        <div className="border-t px-4 py-2 text-[10px] text-muted-foreground/50">
+          <p>Web {WEB_VERSION}{apiVersion ? ` · API ${apiVersion}` : ''}</p>
+        </div>
+      )}
     </aside>
   );
 
@@ -449,7 +477,16 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         {sectionAnimCss}
 
         <div className="flex h-16 items-center justify-between border-b px-4">
-          <span className="text-lg font-bold tracking-tight text-foreground">Breeze</span>
+          <div className="flex items-center gap-2">
+            <div className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-[6px] bg-primary/15">
+              <svg width="14" height="14" viewBox="0 0 64 64" fill="none" className="text-primary">
+                <path d="M12 22C12 22 20 22 28 22C36 22 40 16 48 16C52 16 54 18 54 20C54 22 52 24 48 24C44 24 42 22 42 22" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M8 34C8 34 18 34 30 34C42 34 46 28 52 28C55 28 57 30 57 32C57 34 55 36 52 36C48 36 46 34 46 34" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M14 46C14 46 22 46 32 46C40 46 44 40 50 40C53 40 55 42 55 44C55 46 53 48 50 48C46 48 44 46 44 46" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </div>
+            <span className="text-lg font-bold tracking-tight text-foreground">Breeze</span>
+          </div>
           <button
             onClick={closeMobileMenu}
             className="rounded-md p-1.5 hover:bg-muted"

@@ -319,42 +319,12 @@ describe('manage_service_monitors handler', () => {
     expect(typeof result).toBe('object');
   });
 
-  it('add is disabled (managed via configuration policies)', async () => {
-    const result = JSON.parse(await tool.handler({
-      action: 'add', watchType: 'service', name: 'wuauserv',
-    }, noOrgAuth));
-    expect(result.error).toContain('Action "add" is disabled');
-    expect(result.error).toContain('configuration policies');
-  });
-
-  it('add is disabled regardless of input', async () => {
+  it('unknown actions return error with redirect to manage_policy_feature_link', async () => {
     const result = JSON.parse(await tool.handler({
       action: 'add', name: 'wuauserv',
     }, mockAuth));
-    expect(result.error).toContain('Action "add" is disabled');
+    expect(result.error).toContain('Only "list" is supported');
     expect(result.error).toContain('manage_policy_feature_link');
-  });
-
-  it('add returns policy redirect with all fields provided', async () => {
-    const result = JSON.parse(await tool.handler({
-      action: 'add', watchType: 'service', name: 'test', alertSeverity: 'critical',
-    }, mockAuth));
-    expect(result.error).toContain('Action "add" is disabled');
-    expect(result.error).toContain('featureType "monitoring"');
-  });
-
-  it('remove is disabled (managed via configuration policies)', async () => {
-    const result = JSON.parse(await tool.handler({ action: 'remove' }, mockAuth));
-    expect(result.error).toContain('Action "remove" is disabled');
-    expect(result.error).toContain('configuration policies');
-  });
-
-  it('remove returns error for nonexistent watch (safeHandler catches mock DB limitation)', async () => {
-    // The mock DB doesn't support innerJoin chains, so safeHandler catches the error
-    const result = JSON.parse(await tool.handler({
-      action: 'remove', watchId: '00000000-0000-0000-0000-000000000001',
-    }, mockAuth));
-    expect(result.error).toBeDefined();
   });
 
   it('returns error for unknown action', async () => {

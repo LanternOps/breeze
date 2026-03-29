@@ -1661,26 +1661,15 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
   // ============================================
 
   registerTool({
-    tier: 1, // Base tier; add/remove escalated by guardrails
+    tier: 1,
     definition: {
       name: 'manage_service_monitors',
-      description: 'Query service and process monitoring watches (read-only). To add or remove monitoring watches, use manage_policy_feature_link with featureType "monitoring" to configure watches on a configuration policy.',
+      description: 'Query service and process monitoring watches (read-only). To add or remove monitoring watches, use manage_policy_feature_link with featureType "monitoring" and action "update" to configure watches on a configuration policy.',
       input_schema: {
         type: 'object' as const,
         properties: {
           action: { type: 'string', enum: ['list'], description: 'The action to perform. To add/remove monitors, use manage_policy_feature_link with featureType "monitoring".' },
-          configPolicyId: { type: 'string', description: 'Configuration policy UUID. Required for add. For list, shows all monitors across policies if omitted.' },
-          watchId: { type: 'string', description: 'Watch UUID (required for remove)' },
-          watchType: { type: 'string', enum: ['service', 'process'], description: 'Type of monitor (for add)' },
-          name: { type: 'string', description: 'Service name (e.g. "wuauserv") or process name (e.g. "nginx") (for add)' },
-          displayName: { type: 'string', description: 'Friendly display name (for add)' },
-          alertOnStop: { type: 'boolean', description: 'Alert when service/process stops (default: true)' },
-          alertSeverity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'], description: 'Alert severity (default: high)' },
-          cpuThresholdPercent: { type: 'number', description: 'CPU threshold % to alert on (process only)' },
-          memoryThresholdMb: { type: 'number', description: 'Memory threshold MB to alert on (process only)' },
-          autoRestart: { type: 'boolean', description: 'Auto-restart service on failure (default: false)' },
-          maxRestartAttempts: { type: 'number', description: 'Max auto-restart attempts (default: 3)' },
-          checkIntervalSeconds: { type: 'number', description: 'Check interval in seconds (default: 60, for add when creating new monitoring settings)' },
+          configPolicyId: { type: 'string', description: 'Configuration policy UUID. For list, shows all monitors across policies if omitted.' },
         },
         required: ['action'],
       },
@@ -1688,12 +1677,6 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     handler: safeHandler('manage_service_monitors', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
-
-      if (action === 'add' || action === 'remove') {
-        return JSON.stringify({
-          error: `Action "${action}" is disabled. Service/process monitors must be managed through configuration policies. Use manage_policy_feature_link with featureType "monitoring" to configure watches on a policy.`,
-        });
-      }
 
       if (action === 'list') {
         // List all monitoring watches, optionally filtered by policy
@@ -1729,128 +1712,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ monitors: rows, showing: rows.length });
       }
 
-      if (action === 'add') {
-        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
-        if (!input.watchType) return JSON.stringify({ error: 'watchType is required (service or process)' });
-        if (!['service', 'process'].includes(input.watchType as string)) return JSON.stringify({ error: 'watchType must be "service" or "process"' });
-        if (!input.name) return JSON.stringify({ error: 'name is required (service or process name)' });
-
-        const VALID_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
-        if (typeof input.alertSeverity === 'string' && !VALID_SEVERITIES.includes(input.alertSeverity as typeof VALID_SEVERITIES[number])) {
-          return JSON.stringify({ error: `alertSeverity must be one of: ${VALID_SEVERITIES.join(', ')}` });
-        }
-
-        const watchType = input.watchType as 'service' | 'process';
-        const watchName = input.name as string;
-        let policyId = input.configPolicyId as string | undefined;
-
-        // If no configPolicyId, create a new monitoring policy
-        if (!policyId) {
-          const [newPolicy] = await db.insert(configurationPolicies).values({
-            orgId,
-            name: `Service Monitoring Policy`,
-            description: `Monitoring for ${watchType}s`,
-            status: 'active',
-            createdBy: auth.user.id,
-          }).returning();
-          if (!newPolicy) return JSON.stringify({ error: 'Failed to create configuration policy' });
-          policyId = newPolicy.id;
-        } else {
-          // Verify access
-          const policyConditions: SQL[] = [eq(configurationPolicies.id, policyId)];
-          const oc = orgWhere(auth, configurationPolicies.orgId);
-          if (oc) policyConditions.push(oc);
-          const [policy] = await db.select().from(configurationPolicies).where(and(...policyConditions)).limit(1);
-          if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
-        }
-
-        // Check if monitoring feature link exists on this policy
-        const [existingLink] = await db.select()
-          .from(configPolicyFeatureLinks)
-          .where(and(
-            eq(configPolicyFeatureLinks.configPolicyId, policyId),
-            eq(configPolicyFeatureLinks.featureType, 'monitoring'),
-          )).limit(1);
-
-        let settingsId: string;
-
-        if (existingLink) {
-          // Get existing monitoring settings
-          const [settings] = await db.select()
-            .from(configPolicyMonitoringSettings)
-            .where(eq(configPolicyMonitoringSettings.featureLinkId, existingLink.id))
-            .limit(1);
-          if (!settings) return JSON.stringify({ error: 'Monitoring settings not found — feature link may be corrupted' });
-          settingsId = settings.id;
-        } else {
-          // Create monitoring feature link + settings
-          const link = await addFeatureLink(policyId, 'monitoring', null, {
-            checkIntervalSeconds: typeof input.checkIntervalSeconds === 'number' ? input.checkIntervalSeconds : 60,
-            watches: [],
-          });
-          const [settings] = await db.select()
-            .from(configPolicyMonitoringSettings)
-            .where(eq(configPolicyMonitoringSettings.featureLinkId, link.id))
-            .limit(1);
-          if (!settings) return JSON.stringify({ error: 'Failed to create monitoring settings' });
-          settingsId = settings.id;
-        }
-
-        // Get current max sortOrder
-        const [maxSort] = await db.select({
-          max: sql<number>`coalesce(max(${configPolicyMonitoringWatches.sortOrder}), -1)`,
-        }).from(configPolicyMonitoringWatches)
-          .where(eq(configPolicyMonitoringWatches.settingsId, settingsId));
-
-        const [watch] = await db.insert(configPolicyMonitoringWatches).values({
-          settingsId,
-          watchType,
-          name: watchName,
-          displayName: typeof input.displayName === 'string' ? input.displayName : null,
-          enabled: true,
-          alertOnStop: typeof input.alertOnStop === 'boolean' ? input.alertOnStop : true,
-          alertSeverity: (typeof input.alertSeverity === 'string' ? input.alertSeverity : 'high') as typeof VALID_SEVERITIES[number],
-          cpuThresholdPercent: typeof input.cpuThresholdPercent === 'number' ? input.cpuThresholdPercent : null,
-          memoryThresholdMb: typeof input.memoryThresholdMb === 'number' ? input.memoryThresholdMb : null,
-          autoRestart: typeof input.autoRestart === 'boolean' ? input.autoRestart : false,
-          maxRestartAttempts: typeof input.maxRestartAttempts === 'number' ? input.maxRestartAttempts : 3,
-          sortOrder: (maxSort?.max ?? -1) + 1,
-        }).returning();
-
-        if (!watch) return JSON.stringify({ error: 'Failed to create monitoring watch' });
-        return JSON.stringify({
-          success: true,
-          watchId: watch.id,
-          message: `${watchType} monitor "${input.displayName || watchName}" added`,
-          configPolicyId: policyId,
-          hint: !input.configPolicyId ? 'New policy created. Use apply_configuration_policy to assign it to targets.' : undefined,
-        });
-      }
-
-      if (action === 'remove') {
-        if (!input.watchId) return JSON.stringify({ error: 'watchId is required' });
-
-        // Verify the watch belongs to a policy the user can access — org filter in SQL
-        const watchConditions: SQL[] = [eq(configPolicyMonitoringWatches.id, input.watchId as string)];
-        const oc = orgWhere(auth, configurationPolicies.orgId);
-        if (oc) watchConditions.push(oc);
-
-        const rows = await db.select({
-          watchId: configPolicyMonitoringWatches.id,
-        }).from(configPolicyMonitoringWatches)
-          .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringWatches.settingsId, configPolicyMonitoringSettings.id))
-          .innerJoin(configPolicyFeatureLinks, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyFeatureLinks.id))
-          .innerJoin(configurationPolicies, eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id))
-          .where(and(...watchConditions))
-          .limit(1);
-
-        if (rows.length === 0) return JSON.stringify({ error: 'Monitor not found or access denied' });
-
-        await db.delete(configPolicyMonitoringWatches).where(eq(configPolicyMonitoringWatches.id, input.watchId as string));
-        return JSON.stringify({ success: true, message: 'Monitor removed' });
-      }
-
-      return JSON.stringify({ error: `Unknown action: ${action}` });
+      return JSON.stringify({ error: `Unknown action: ${action}. Only "list" is supported. Use manage_policy_feature_link to add/update/remove monitors.` });
     }),
   });
 }
