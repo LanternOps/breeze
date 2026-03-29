@@ -343,9 +343,9 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 	// Core backup operations
 	case "backup_run":
 		result := marshalResult(mgr.RunBackup())
-		// Auto-sync to vault after successful backup
+		// Auto-sync to vault after successful backup (async — don't block command response)
 		if result.Success && vaultMgr != nil {
-			autoSyncToVault(result.Stdout, vaultMgr)
+			go autoSyncToVault(result.Stdout, vaultMgr)
 		}
 		return result
 	case "backup_list":

@@ -331,7 +331,9 @@ export const drExecutionsQuerySchema = z.object({
 
 export const vaultCreateSchema = z.object({
   deviceId: z.string().uuid(),
-  vaultPath: z.string().min(1).max(1024),
+  vaultPath: z.string().min(1).max(1024)
+    .refine(val => !val.includes('..'), { message: 'Path traversal not allowed' })
+    .refine(val => !val.includes('\0'), { message: 'Null bytes not allowed in path' }),
   vaultType: z.enum(['local', 'smb', 'usb']).default('local'),
   retentionCount: z.number().int().min(1).max(100).default(3),
 });

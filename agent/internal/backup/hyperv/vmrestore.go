@@ -308,6 +308,11 @@ func restoreFilesToVolume(
 
 	for _, file := range manifest.Files {
 		targetPath := filepath.Join(targetRoot, filepath.FromSlash(file.SourcePath))
+		cleaned := filepath.Clean(targetPath)
+		if !strings.HasPrefix(cleaned, filepath.Clean(targetRoot)+string(filepath.Separator)) && cleaned != filepath.Clean(targetRoot) {
+			warnings = append(warnings, fmt.Sprintf("path traversal blocked: %s", file.SourcePath))
+			continue
+		}
 
 		dir := filepath.Dir(targetPath)
 		if err := os.MkdirAll(dir, 0o755); err != nil {

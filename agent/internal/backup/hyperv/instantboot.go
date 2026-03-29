@@ -176,6 +176,12 @@ func InstantBoot(
 	var criticalFailures []string
 	for _, file := range bootFiles {
 		targetPath := filepath.Join(targetRoot, filepath.FromSlash(file.SourcePath))
+		cleaned := filepath.Clean(targetPath)
+		if !strings.HasPrefix(cleaned, filepath.Clean(targetRoot)+string(filepath.Separator)) && cleaned != filepath.Clean(targetRoot) {
+			slog.Warn("instantboot: path traversal blocked", "file", file.SourcePath)
+			criticalFailures = append(criticalFailures, file.SourcePath)
+			continue
+		}
 		dir := filepath.Dir(targetPath)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			slog.Warn("instantboot: mkdir failed", "dir", dir, "error", err.Error())
@@ -267,7 +273,7 @@ func InstantBoot(
 					slog.Error("instantboot: background sync panicked", "error", fmt.Sprintf("%v", r))
 				}
 			}()
-			backgroundSync(cfg.VMName, baseVHDX, diffVHDX, remainingFiles, provider)
+			backgroundSync(ctx, cfg.VMName, baseVHDX, diffVHDX, remainingFiles, provider)
 		}()
 	}
 
@@ -328,6 +334,7 @@ func configureBootLoader(driveLetter string) error {
 // has booted. It writes files to a sync staging directory alongside the base
 // VHDX. A merge into the base can be done later when the VM is stopped.
 func backgroundSync(
+	ctx context.Context,
 	vmName, baseVHDX, diffVHDX string,
 	files []vmRestoreManifFile,
 	provider providers.BackupProvider,
@@ -348,7 +355,17 @@ func backgroundSync(
 	synced := 0
 	failed := 0
 	for _, file := range files {
+		if ctx.Err() != nil {
+			slog.Info("instantboot: background sync cancelled", "vmName", vmName, "synced", synced)
+			return
+		}
 		targetPath := filepath.Join(syncDir, filepath.FromSlash(file.SourcePath))
+		cleaned := filepath.Clean(targetPath)
+		if !strings.HasPrefix(cleaned, filepath.Clean(syncDir)+string(filepath.Separator)) && cleaned != filepath.Clean(syncDir) {
+			slog.Warn("instantboot: sync path traversal blocked", "file", file.SourcePath)
+			failed++
+			continue
+		}
 		dir := filepath.Dir(targetPath)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			slog.Warn("instantboot: sync mkdir failed", "dir", dir, "error", err.Error())

@@ -29,7 +29,7 @@ func execVaultSync(payload json.RawMessage, vaultMgr *backup.VaultManager) backu
 	if err := vaultMgr.SyncAfterBackup(p.SnapshotID); err != nil {
 		return fail("vault sync failed: " + err.Error())
 	}
-	return ok(`{"synced":true,"snapshotId":"` + p.SnapshotID + `"}`)
+	return marshalResult(map[string]any{"synced": true, "snapshotId": p.SnapshotID}, nil)
 }
 
 func execVaultStatus(vaultMgr *backup.VaultManager) backupipc.BackupCommandResult {

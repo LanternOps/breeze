@@ -127,6 +127,22 @@ func RestoreFromSnapshot(provider providers.BackupProvider, cfg RestoreConfig, p
 		// Determine target path
 		targetPath := resolveTargetPath(cfg.TargetPath, file.SourcePath)
 
+		// Path containment check
+		{
+			base := cfg.TargetPath
+			if base == "" {
+				base = filepath.Join(os.TempDir(), "breeze-restore")
+			}
+			cleaned := filepath.Clean(targetPath)
+			cleanBase := filepath.Clean(base)
+			if !strings.HasPrefix(cleaned, cleanBase+string(filepath.Separator)) && cleaned != cleanBase {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("path traversal blocked: %s", file.SourcePath))
+				result.FilesFailed++
+				os.Remove(stagingFile)
+				continue
+			}
+		}
+
 		// Create target directory
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 			result.FilesFailed++
@@ -238,7 +254,8 @@ func filterFiles(files []SnapshotFile, selectedPaths []string) []SnapshotFile {
 // source path is used.
 func resolveTargetPath(targetBase, sourcePath string) string {
 	if targetBase == "" {
-		return sourcePath
+		// Use a safe temp directory instead of the original absolute path
+		return filepath.Join(os.TempDir(), "breeze-restore", sourcePath)
 	}
 	// Preserve full path structure under the target base
 	// e.g., targetBase="/restore", sourcePath="path_0/reports/config.json"
