@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -41,7 +42,11 @@ func execMSSQLBackup(payload json.RawMessage, mgr *backup.BackupManager) backupi
 	if err != nil {
 		return fail("failed to create staging dir: " + err.Error())
 	}
-	defer os.RemoveAll(stagingDir)
+	defer func() {
+		if err := os.RemoveAll(stagingDir); err != nil {
+			slog.Warn("failed to clean up staging dir", "dir", stagingDir, "error", err.Error())
+		}
+	}()
 
 	result, err := mssql.RunBackup(p.Instance, p.Database, p.BackupType, stagingDir)
 	if err != nil {
@@ -58,13 +63,19 @@ func execMSSQLBackup(payload json.RawMessage, mgr *backup.BackupManager) backupi
 		if walkErr != nil || d.IsDir() {
 			return walkErr
 		}
-		relPath, _ := filepath.Rel(stagingDir, path)
+		relPath, relErr := filepath.Rel(stagingDir, path)
+		if relErr != nil {
+			return fmt.Errorf("cannot compute relative path for %s: %w", path, relErr)
+		}
 		remotePath := filepath.ToSlash(filepath.Join(prefix, relPath))
 		info, infoErr := d.Info()
-		if infoErr == nil {
+		if infoErr != nil {
+			slog.Warn("failed to stat file during backup upload, size will be approximate",
+				"path", path, "error", infoErr.Error())
+		} else {
 			totalSize += info.Size()
+			fileCount++
 		}
-		fileCount++
 		return provider.Upload(path, remotePath)
 	})
 	if err != nil {
@@ -128,7 +139,11 @@ func execHypervBackup(payload json.RawMessage, mgr *backup.BackupManager) backup
 	if err != nil {
 		return fail("failed to create staging dir: " + err.Error())
 	}
-	defer os.RemoveAll(stagingDir)
+	defer func() {
+		if err := os.RemoveAll(stagingDir); err != nil {
+			slog.Warn("failed to clean up staging dir", "dir", stagingDir, "error", err.Error())
+		}
+	}()
 
 	result, err := hyperv.ExportVM(p.VMName, stagingDir, p.ConsistencyType)
 	if err != nil {
@@ -145,13 +160,19 @@ func execHypervBackup(payload json.RawMessage, mgr *backup.BackupManager) backup
 		if walkErr != nil || d.IsDir() {
 			return walkErr
 		}
-		relPath, _ := filepath.Rel(stagingDir, path)
+		relPath, relErr := filepath.Rel(stagingDir, path)
+		if relErr != nil {
+			return fmt.Errorf("cannot compute relative path for %s: %w", path, relErr)
+		}
 		remotePath := filepath.ToSlash(filepath.Join(prefix, relPath))
 		info, infoErr := d.Info()
-		if infoErr == nil {
+		if infoErr != nil {
+			slog.Warn("failed to stat file during backup upload, size will be approximate",
+				"path", path, "error", infoErr.Error())
+		} else {
 			totalSize += info.Size()
+			fileCount++
 		}
-		fileCount++
 		return provider.Upload(path, remotePath)
 	})
 	if err != nil {

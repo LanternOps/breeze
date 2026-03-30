@@ -199,7 +199,7 @@ func initBackupManager(cfg *config.Config) *backup.BackupManager {
 	stagingDir := cfg.BackupStagingDir
 	if stagingDir != "" {
 		if err := os.MkdirAll(stagingDir, 0700); err != nil {
-			slog.Warn("failed to create backup staging dir, falling back to OS temp", "dir", stagingDir, "error", err.Error())
+			slog.Error("configured backup staging dir cannot be created, falling back to OS temp dir", "dir", stagingDir, "error", err.Error())
 			stagingDir = ""
 		}
 	}
