@@ -538,3 +538,18 @@ export const configPolicyDeviceIdParamSchema = z.object({ deviceId: z.string().u
 // ============================================
 
 export * from './ai';
+
+// ============================================
+// Backup Target Validators
+// ============================================
+
+export {
+  fileTargetsSchema,
+  hypervTargetsSchema,
+  mssqlTargetsSchema,
+  systemImageTargetsSchema,
+  backupModeSchema,
+  backupInlineSettingsSchema,
+  type BackupMode,
+  type BackupInlineSettings,
+} from './backupTargets';
