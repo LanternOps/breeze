@@ -4,9 +4,11 @@ package monitoring
 
 import (
 	"fmt"
-	"strings"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/svcquery"
+	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/mgr"
 )
 
 func checkService(name string) CheckResult {
@@ -34,16 +36,36 @@ func checkService(name string) CheckResult {
 }
 
 func restartService(name string) error {
-	// Stop then start via "net" commands
-	if err := runCommand("net", "stop", name); err != nil {
-		// Only ignore "not started" errors — log all other stop failures
-		errMsg := err.Error()
-		if !strings.Contains(errMsg, "not started") &&
-			!strings.Contains(errMsg, "service has not been started") {
-			log.Warn("service stop failed (non-fatal)", "name", name, "error", errMsg)
+	m, err := mgr.Connect()
+	if err != nil {
+		return fmt.Errorf("connect to SCM: %w", err)
+	}
+	defer m.Disconnect()
+
+	s, err := m.OpenService(name)
+	if err != nil {
+		return fmt.Errorf("open service %s: %w", name, err)
+	}
+	defer s.Close()
+
+	// Stop the service (ignore error if already stopped)
+	status, err := s.Control(svc.Stop)
+	if err != nil {
+		// Already stopped is fine
+		log.Debug("service stop control returned error (may already be stopped)", "name", name, "error", err.Error())
+	} else {
+		// Wait for stop to complete (up to 15s)
+		for i := 0; i < 30 && status.State != svc.Stopped; i++ {
+			time.Sleep(500 * time.Millisecond)
+			status, err = s.Query()
+			if err != nil {
+				break
+			}
 		}
 	}
-	if err := runCommand("net", "start", name); err != nil {
+
+	// Start the service
+	if err := s.Start(); err != nil {
 		return fmt.Errorf("failed to start service %s: %w", name, err)
 	}
 	return nil

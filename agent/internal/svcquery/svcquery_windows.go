@@ -19,7 +19,9 @@ func IsRunning(name string) (bool, error) {
 	return info.IsActive(), nil
 }
 
-// GetStatus queries a single Windows service by name.
+// GetStatus queries a single Windows service by key name or display name.
+// It first tries the name as a service key name. If that fails, it scans
+// all services for a matching display name (case-insensitive).
 func GetStatus(name string) (ServiceInfo, error) {
 	m, err := mgr.Connect()
 	if err != nil {
@@ -29,7 +31,15 @@ func GetStatus(name string) (ServiceInfo, error) {
 
 	s, err := m.OpenService(name)
 	if err != nil {
-		return ServiceInfo{Name: name, Status: StatusUnknown}, fmt.Errorf("svcquery: open service %s: %w", name, err)
+		// Fallback: try to resolve as a display name
+		resolved, resolveErr := resolveDisplayName(m, name)
+		if resolveErr != nil {
+			return ServiceInfo{Name: name, Status: StatusUnknown}, fmt.Errorf("svcquery: open service %s: %w", name, err)
+		}
+		s, err = m.OpenService(resolved)
+		if err != nil {
+			return ServiceInfo{Name: name, Status: StatusUnknown}, fmt.Errorf("svcquery: open service %s (resolved from %q): %w", resolved, name, err)
+		}
 	}
 	defer s.Close()
 
@@ -85,6 +95,31 @@ func ListServices() ([]ServiceInfo, error) {
 		s.Close()
 	}
 	return services, nil
+}
+
+// resolveDisplayName scans all services to find one whose display name
+// matches (case-insensitive). Returns the service key name.
+func resolveDisplayName(m *mgr.Mgr, displayName string) (string, error) {
+	names, err := m.ListServices()
+	if err != nil {
+		return "", err
+	}
+	lower := strings.ToLower(displayName)
+	for _, keyName := range names {
+		s, err := m.OpenService(keyName)
+		if err != nil {
+			continue
+		}
+		cfg, err := s.Config()
+		s.Close()
+		if err != nil {
+			continue
+		}
+		if strings.ToLower(cfg.DisplayName) == lower {
+			return keyName, nil
+		}
+	}
+	return "", fmt.Errorf("no service with display name %q", displayName)
 }
 
 func mapWindowsState(state svc.State) ServiceStatus {
