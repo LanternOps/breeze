@@ -22,6 +22,12 @@ import { registerFleetTools } from './aiToolsFleet';
 import { registerPolicyPrereqTools } from './aiToolsPolicyPrereqs';
 import { registerIntegrationTools } from './aiToolsIntegrations';
 import { registerMonitoringTools } from './aiToolsMonitoring';
+import { registerMssqlTools } from './aiToolsMssql';
+import { registerHypervTools } from './aiToolsHyperv';
+import { registerVaultTools } from './aiToolsVault';
+import { registerC2CTools } from './aiToolsC2C';
+import { registerSLABackupTools } from './aiToolsSLABackup';
+import { registerDRTools } from './aiToolsDR';
 
 // New domain modules
 import { registerDeviceTools } from './aiToolsDevice';
@@ -124,6 +130,12 @@ export const aiTools: Map<string, AiTool> = new Map();
 // Register all domain modules
 registerAgentLogTools(aiTools);
 registerBackupTools(aiTools);
+registerMssqlTools(aiTools);
+registerHypervTools(aiTools);
+registerVaultTools(aiTools);
+registerC2CTools(aiTools);
+registerSLABackupTools(aiTools);
+registerDRTools(aiTools);
 registerConfigPolicyTools(aiTools);
 registerEventLogTools(aiTools);
 registerAnalyticsTools(aiTools);

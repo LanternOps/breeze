@@ -22,7 +22,7 @@ const getAccentClass = (path: string): string => {
   if (path.startsWith('/devices') || path.startsWith('/fleet') || path.startsWith('/remote')) return 'bg-primary';
   if (path.startsWith('/security') || path.startsWith('/cis-hardening') || path.startsWith('/audit-baselines') || path.startsWith('/sensitive-data') || path.startsWith('/ai-risk')) return 'bg-warning';
   if (path.startsWith('/alerts')) return 'bg-destructive';
-  if (path.startsWith('/scripts') || path.startsWith('/patches') || path.startsWith('/discovery') || path.startsWith('/software') || path.startsWith('/configuration-policies') || path.startsWith('/backup') || path.startsWith('/integrations')) return 'bg-success';
+  if (path.startsWith('/scripts') || path.startsWith('/patches') || path.startsWith('/discovery') || path.startsWith('/software') || path.startsWith('/configuration-policies') || path.startsWith('/backup') || path.startsWith('/c2c') || path.startsWith('/dr') || path.startsWith('/integrations')) return 'bg-success';
   if (path.startsWith('/settings') || path.startsWith('/admin')) return 'bg-muted-foreground/30';
   if (path.startsWith('/reports') || path.startsWith('/analytics') || path.startsWith('/audit') || path.startsWith('/logs')) return 'bg-primary/50';
   if (path.startsWith('/monitoring') || path.startsWith('/snmp') || path.startsWith('/peripherals')) return 'bg-warning/70';

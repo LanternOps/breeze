@@ -13,8 +13,20 @@ import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { friendlyFetchError } from '../../lib/utils';
 import BackupVerificationTab from './BackupVerificationTab';
+import DeviceVaultStatus from './DeviceVaultStatus';
 
 type BackupJobStatus = 'completed' | 'running' | 'failed' | 'pending' | 'cancelled';
+type VssWriterState = 'stable' | 'failed' | 'waiting' | string;
+
+type VssWriter = {
+  name?: string | null;
+  writerName?: string | null;
+  state?: VssWriterState | null;
+};
+
+type VssMetadata = {
+  writers?: VssWriter[] | null;
+} | VssWriter[];
 
 type BackupJob = {
   id: string;
@@ -25,6 +37,7 @@ type BackupJob = {
   completedAt?: string | null;
   sizeBytes?: number | null;
   errorCount?: number | null;
+  vssMetadata?: VssMetadata | null;
 };
 
 type Snapshot = {
@@ -49,6 +62,13 @@ const jobStatusConfig: Record<BackupJobStatus, { icon: typeof CheckCircle2; clas
   failed: { icon: XCircle, className: 'text-destructive bg-destructive/10', label: 'Failed' },
   pending: { icon: Clock, className: 'text-muted-foreground bg-muted', label: 'Pending' },
   cancelled: { icon: XCircle, className: 'text-muted-foreground bg-muted', label: 'Cancelled' },
+};
+
+const vssStateConfig: Record<string, { className: string; label: string }> = {
+  stable: { className: 'text-success bg-success/10', label: 'Stable' },
+  failed: { className: 'text-destructive bg-destructive/10', label: 'Failed' },
+  waiting: { className: 'text-warning bg-warning/10', label: 'Waiting' },
+  unknown: { className: 'text-muted-foreground bg-muted', label: 'Unknown' },
 };
 
 function formatBytes(bytes: number | null | undefined): string {
@@ -84,6 +104,20 @@ function formatDuration(startedAt: string | null | undefined, completedAt: strin
   const hours = Math.floor(minutes / 60);
   const remainMinutes = minutes % 60;
   return `${hours}h ${remainMinutes}m`;
+}
+
+function getVssWriters(vssMetadata: VssMetadata | null | undefined): VssWriter[] {
+  if (!vssMetadata) return [];
+  if (Array.isArray(vssMetadata)) return vssMetadata;
+  return Array.isArray(vssMetadata.writers) ? vssMetadata.writers : [];
+}
+
+function normalizeVssState(state: string | null | undefined): keyof typeof vssStateConfig {
+  const normalized = state?.toLowerCase?.() ?? 'unknown';
+  if (normalized === 'stable' || normalized === 'failed' || normalized === 'waiting') {
+    return normalized;
+  }
+  return 'unknown';
 }
 
 type DeviceBackupTabProps = {
@@ -173,6 +207,9 @@ export default function DeviceBackupTab({ deviceId }: DeviceBackupTabProps) {
   const lastJob = status?.lastJob ?? recentJobs[0] ?? null;
   const lastJobStatus = lastJob?.status as BackupJobStatus | undefined;
   const statusCfg = lastJobStatus ? (jobStatusConfig[lastJobStatus] ?? jobStatusConfig.pending) : null;
+  const latestVssWriters = getVssWriters(status?.lastJob?.vssMetadata);
+  const showVssStatus = status?.lastJob?.vssMetadata != null;
+  const hasVssWarnings = latestVssWriters.some((writer) => normalizeVssState(writer.state) !== 'stable');
 
   return (
     <div className="space-y-6">
@@ -304,6 +341,63 @@ export default function DeviceBackupTab({ deviceId }: DeviceBackupTabProps) {
           </div>
         )}
       </div>
+
+      {/* VSS Status */}
+      {showVssStatus && (
+        <div className="rounded-lg border bg-card p-5 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="font-semibold">VSS Status</h3>
+            <span className="text-xs text-muted-foreground">Latest backup job</span>
+          </div>
+
+          {hasVssWarnings && (
+            <div className="mt-4 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>One or more VSS writers are not stable. Review the latest writer states before the next run.</span>
+            </div>
+          )}
+
+          {latestVssWriters.length > 0 ? (
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-xs text-muted-foreground">
+                    <th className="pb-2 pr-4 font-medium">Writer</th>
+                    <th className="pb-2 font-medium">State</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {latestVssWriters.map((writer, index) => {
+                    const normalizedState = normalizeVssState(writer.state);
+                    const writerState = vssStateConfig[normalizedState] ?? vssStateConfig.unknown;
+                    const writerName = writer.writerName ?? writer.name ?? `Writer ${index + 1}`;
+                    return (
+                      <tr key={`${writerName}-${index}`} className="border-b last:border-0">
+                        <td className="py-2 pr-4 text-foreground">{writerName}</td>
+                        <td className="py-2">
+                          <span
+                            className={cn(
+                              'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium',
+                              writerState.className
+                            )}
+                          >
+                            {writerState.label}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="mt-4 text-sm text-muted-foreground">No VSS writer details were reported for the latest backup.</p>
+          )}
+        </div>
+      )}
+
+      {/* Vault Status */}
+      <DeviceVaultStatus deviceId={deviceId} />
 
       {/* Snapshots */}
       {snapshots.length > 0 && (

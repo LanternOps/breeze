@@ -33,7 +33,9 @@ import {
   Usb,
   MessagesSquare,
   Key,
-  X
+  X,
+  Cloud,
+  ShieldEllipsis,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
@@ -131,6 +133,8 @@ const navSections: NavSection[] = [
       { name: 'Software Policies', href: '/software-inventory', icon: Package },
       { name: 'Config Policies', href: '/configuration-policies', icon: Layers },
       { name: 'Backup', href: '/backup', icon: HardDrive },
+      { name: 'Cloud Backup', href: '/c2c', icon: Cloud },
+      { name: 'Disaster Recovery', href: '/dr', icon: ShieldEllipsis },
       { name: 'Integrations', href: '/integrations', icon: Plug },
     ],
   },

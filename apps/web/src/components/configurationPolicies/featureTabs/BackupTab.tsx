@@ -40,6 +40,17 @@ type BackupScheduleSettings = {
   notifyOnSuccess: boolean;
   notifyOnMissed: boolean;
   s3Prefix: string;
+  gfsDailyRetention: number;
+  gfsWeeklyRetention: number;
+  gfsMonthlyRetention: number;
+  gfsYearlyRetention: number;
+  gfsWeeklyDayOfWeek: number;
+  legalHoldEnabled: boolean;
+  legalHoldReason: string;
+  backupWindowStart: string;
+  backupWindowEnd: string;
+  bandwidthLimitMbps: number;
+  priority: number;
 };
 
 type BackupConfig = {
@@ -70,6 +81,17 @@ const scheduleDefaults: BackupScheduleSettings = {
   notifyOnSuccess: false,
   notifyOnMissed: true,
   s3Prefix: '',
+  gfsDailyRetention: 7,
+  gfsWeeklyRetention: 4,
+  gfsMonthlyRetention: 12,
+  gfsYearlyRetention: 3,
+  gfsWeeklyDayOfWeek: 0,
+  legalHoldEnabled: false,
+  legalHoldReason: '',
+  backupWindowStart: '',
+  backupWindowEnd: '',
+  bandwidthLimitMbps: 0,
+  priority: 50,
 };
 
 const scheduleOptions: { value: ScheduleFrequency; label: string }[] = [
@@ -93,6 +115,16 @@ const dayOfWeekOptions = [
   { value: 4, label: 'Thursday' },
   { value: 5, label: 'Friday' },
   { value: 6, label: 'Saturday' },
+];
+
+const shortDayOfWeekOptions = [
+  { value: 0, label: 'Sun' },
+  { value: 1, label: 'Mon' },
+  { value: 2, label: 'Tue' },
+  { value: 3, label: 'Wed' },
+  { value: 4, label: 'Thu' },
+  { value: 5, label: 'Fri' },
+  { value: 6, label: 'Sat' },
 ];
 
 const providerOptions: { value: BackupProvider; label: string; description: string; icon: typeof Cloud }[] = [
@@ -899,6 +931,151 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
             description="Alert when a scheduled backup didn't run (device offline, agent unreachable)."
             checked={settings.notifyOnMissed}
             onChange={(v) => update('notifyOnMissed', v)}
+          />
+        </div>
+      </div>
+
+      <div className="mt-6">
+        <h3 className="text-sm font-semibold">GFS Retention</h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Keep longer-running restore points for grandfather-father-son retention.
+        </p>
+        <div className="mt-3 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+          <div>
+            <label className="text-xs text-muted-foreground">Daily</label>
+            <input
+              type="number"
+              min={1}
+              max={365}
+              value={settings.gfsDailyRetention}
+              onChange={(e) => update('gfsDailyRetention', Number(e.target.value) || 7)}
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">Weekly</label>
+            <input
+              type="number"
+              min={1}
+              max={260}
+              value={settings.gfsWeeklyRetention}
+              onChange={(e) => update('gfsWeeklyRetention', Number(e.target.value) || 4)}
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">Monthly</label>
+            <input
+              type="number"
+              min={1}
+              max={120}
+              value={settings.gfsMonthlyRetention}
+              onChange={(e) => update('gfsMonthlyRetention', Number(e.target.value) || 12)}
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">Yearly</label>
+            <input
+              type="number"
+              min={1}
+              max={25}
+              value={settings.gfsYearlyRetention}
+              onChange={(e) => update('gfsYearlyRetention', Number(e.target.value) || 3)}
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">Weekly backup day</label>
+            <select
+              value={settings.gfsWeeklyDayOfWeek}
+              onChange={(e) => update('gfsWeeklyDayOfWeek', Number(e.target.value))}
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+            >
+              {shortDayOfWeekOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-6 space-y-3">
+        <h3 className="text-sm font-semibold">Legal Hold</h3>
+        <ToggleRow
+          label="Enable legal hold"
+          description="Prevent backup pruning when a device or dataset is under preservation requirements."
+          checked={settings.legalHoldEnabled}
+          onChange={(v) => update('legalHoldEnabled', v)}
+        />
+        {settings.legalHoldEnabled && (
+          <div className="rounded-md border bg-muted/20 p-4">
+            <label className="text-xs text-muted-foreground">Reason</label>
+            <input
+              value={settings.legalHoldReason}
+              onChange={(e) => update('legalHoldReason', e.target.value)}
+              placeholder="Legal request, audit hold, incident investigation..."
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+        )}
+      </div>
+
+      <div className="mt-6">
+        <h3 className="text-sm font-semibold">Backup Window</h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Leave blank to allow backups at any time of day.
+        </p>
+        <div className="mt-3 grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className="text-xs text-muted-foreground">Start time</label>
+            <input
+              type="time"
+              value={settings.backupWindowStart}
+              onChange={(e) => update('backupWindowStart', e.target.value)}
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">End time</label>
+            <input
+              type="time"
+              value={settings.backupWindowEnd}
+              onChange={(e) => update('backupWindowEnd', e.target.value)}
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-6">
+        <h3 className="text-sm font-semibold">Bandwidth Limit</h3>
+        <div className="mt-3 max-w-sm">
+          <label className="text-xs text-muted-foreground">Mbps</label>
+          <input
+            type="number"
+            min={0}
+            value={settings.bandwidthLimitMbps}
+            onChange={(e) => update('bandwidthLimitMbps', Number(e.target.value) || 0)}
+            className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+          />
+          <p className="mt-1 text-[11px] text-muted-foreground">Set to 0 for unlimited throughput.</p>
+        </div>
+      </div>
+
+      <div className="mt-6">
+        <h3 className="text-sm font-semibold">Priority</h3>
+        <div className="mt-3 max-w-sm">
+          <label className="text-xs text-muted-foreground">Priority (1-100)</label>
+          <input
+            type="number"
+            min={1}
+            max={100}
+            value={settings.priority}
+            onChange={(e) => update('priority', Math.min(100, Math.max(1, Number(e.target.value) || 50)))}
+            className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
           />
         </div>
       </div>

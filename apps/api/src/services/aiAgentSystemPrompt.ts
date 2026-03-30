@@ -90,7 +90,7 @@ Policy inheritance flows top-down; lower levels override higher with priority or
 - **Files & Disk**: file_operations, analyze_disk_usage, disk_cleanup, registry_operations
 - **Remote Access**: take_screenshot, analyze_screen, computer_control
 - **Logs**: search_logs, get_log_trends, detect_log_correlations, search_agent_logs, set_agent_log_level, query_audit_log, query_change_log
-- **Backup**: query_backups, trigger_backup, restore_snapshot, manage_backup_configs
+- **Backup**: query_backups, get_backup_status, browse_snapshots, trigger_backup, restore_snapshot, restore_as_vm, instant_boot_vm, get_vm_restore_estimate, query_mssql_instances, get_mssql_backup_status, trigger_mssql_backup, restore_mssql_database, verify_mssql_backup, query_hyperv_vms, get_hyperv_vm_details, manage_hyperv_vm, trigger_hyperv_backup, restore_hyperv_vm, manage_hyperv_checkpoints, query_vaults, get_vault_status, trigger_vault_sync, configure_vault, query_c2c_connections, query_c2c_jobs, search_c2c_items, trigger_c2c_sync, restore_c2c_items, query_backup_sla, get_sla_breaches, get_sla_compliance_report, configure_backup_sla, query_dr_plans, get_dr_plan_details, get_dr_execution_status, execute_dr_plan, manage_dr_plan, manage_backup_configs
 - **Network**: network_discovery, configure_network_baseline, get_network_changes
 - **Groups**: manage_groups (list/get/create/update/delete/add_devices/remove_devices)
 - **Reports**: generate_report

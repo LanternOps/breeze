@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, Database, HardDrive, ShieldAlert } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -17,7 +17,47 @@ import {
   statIconMap
 } from './backupDashboardHelpers';
 
-type BackupTab = 'overview' | 'verification';
+const MssqlDashboard = lazy(() => import('./MssqlDashboard'));
+const HypervDashboard = lazy(() => import('./HypervDashboard'));
+
+type BackupTab = 'overview' | 'verification' | 'mssql' | 'hyperv' | 'vault' | 'sla' | 'encryption';
+
+const ALL_TABS: BackupTab[] = ['overview', 'verification', 'mssql', 'hyperv', 'vault', 'sla', 'encryption'];
+
+const TAB_LABELS: Record<BackupTab, string> = {
+  overview: 'Overview',
+  verification: 'Verification',
+  mssql: 'SQL Server',
+  hyperv: 'Hyper-V',
+  vault: 'Vault',
+  sla: 'SLA',
+  encryption: 'Encryption',
+};
+
+function isValidTab(hash: string): hash is BackupTab {
+  return ALL_TABS.includes(hash as BackupTab);
+}
+
+function TabFallback() {
+  return (
+    <div className="flex items-center justify-center py-16">
+      <div className="text-center">
+        <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+        <p className="mt-4 text-sm text-muted-foreground">Loading...</p>
+      </div>
+    </div>
+  );
+}
+
+function ComingSoonTab({ name }: { name: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-20 text-center">
+      <Database className="h-12 w-12 text-muted-foreground/40" />
+      <h3 className="mt-4 text-base font-semibold text-foreground">{name}</h3>
+      <p className="mt-1 text-sm text-muted-foreground">This feature is coming soon.</p>
+    </div>
+  );
+}
 
 export default function BackupDashboard() {
   const [activeTab, setActiveTab] = useState<BackupTab>(() => {
