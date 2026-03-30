@@ -50,6 +50,13 @@ export const configAssignmentLevelEnum = pgEnum('config_assignment_level', [
   'device',
 ]);
 
+export const backupModeEnum = pgEnum('backup_mode_enum', [
+  'file',
+  'hyperv',
+  'mssql',
+  'system_image',
+]);
+
 export const configurationPolicies = pgTable('configuration_policies', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
@@ -233,6 +240,8 @@ export const configPolicyBackupSettings = pgTable('config_policy_backup_settings
   schedule: jsonb('schedule').notNull().default({}),
   retention: jsonb('retention').notNull().default({}),
   paths: jsonb('paths').notNull().default([]),
+  backupMode: backupModeEnum('backup_mode').notNull().default('file'),
+  targets: jsonb('targets').notNull().default({}),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
