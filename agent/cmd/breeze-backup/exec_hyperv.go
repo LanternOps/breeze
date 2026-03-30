@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -22,18 +24,59 @@ func execMSSQLDiscover() backupipc.BackupCommandResult {
 	return marshalResult(instances, err)
 }
 
-func execMSSQLBackup(payload json.RawMessage) backupipc.BackupCommandResult {
+func execMSSQLBackup(payload json.RawMessage, mgr *backup.BackupManager) backupipc.BackupCommandResult {
 	var p struct {
 		Instance   string `json:"instance"`
 		Database   string `json:"database"`
 		BackupType string `json:"backupType"`
-		OutputPath string `json:"outputPath"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid MSSQL backup payload: " + err.Error())
 	}
-	result, err := mssql.RunBackup(p.Instance, p.Database, p.BackupType, p.OutputPath)
-	return marshalResult(result, err)
+	if mgr == nil {
+		return fail("backup not configured")
+	}
+
+	stagingDir, err := os.MkdirTemp("", "breeze-mssql-*")
+	if err != nil {
+		return fail("failed to create staging dir: " + err.Error())
+	}
+	defer os.RemoveAll(stagingDir)
+
+	result, err := mssql.RunBackup(p.Instance, p.Database, p.BackupType, stagingDir)
+	if err != nil {
+		return fail(err.Error())
+	}
+
+	provider := mgr.GetProvider()
+	snapshotID := fmt.Sprintf("mssql-%s-%s-%d", p.Instance, p.Database, time.Now().Unix())
+	prefix := fmt.Sprintf("snapshots/%s/files", snapshotID)
+
+	var fileCount int
+	var totalSize int64
+	err = filepath.WalkDir(stagingDir, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() {
+			return walkErr
+		}
+		relPath, _ := filepath.Rel(stagingDir, path)
+		remotePath := filepath.ToSlash(filepath.Join(prefix, relPath))
+		info, infoErr := d.Info()
+		if infoErr == nil {
+			totalSize += info.Size()
+		}
+		fileCount++
+		return provider.Upload(path, remotePath)
+	})
+	if err != nil {
+		return fail("failed to upload MSSQL backup: " + err.Error())
+	}
+
+	return marshalResult(map[string]any{
+		"snapshotId": snapshotID,
+		"result":     result,
+		"fileCount":  fileCount,
+		"totalSize":  totalSize,
+	}, nil)
 }
 
 func execMSSQLRestore(payload json.RawMessage) backupipc.BackupCommandResult {
@@ -69,17 +112,58 @@ func execHypervDiscover() backupipc.BackupCommandResult {
 	return marshalResult(vms, err)
 }
 
-func execHypervBackup(payload json.RawMessage) backupipc.BackupCommandResult {
+func execHypervBackup(payload json.RawMessage, mgr *backup.BackupManager) backupipc.BackupCommandResult {
 	var p struct {
 		VMName          string `json:"vmName"`
-		ExportPath      string `json:"exportPath"`
 		ConsistencyType string `json:"consistencyType"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid Hyper-V backup payload: " + err.Error())
 	}
-	result, err := hyperv.ExportVM(p.VMName, p.ExportPath, p.ConsistencyType)
-	return marshalResult(result, err)
+	if mgr == nil {
+		return fail("backup not configured")
+	}
+
+	stagingDir, err := os.MkdirTemp("", "breeze-hyperv-*")
+	if err != nil {
+		return fail("failed to create staging dir: " + err.Error())
+	}
+	defer os.RemoveAll(stagingDir)
+
+	result, err := hyperv.ExportVM(p.VMName, stagingDir, p.ConsistencyType)
+	if err != nil {
+		return fail(err.Error())
+	}
+
+	provider := mgr.GetProvider()
+	snapshotID := fmt.Sprintf("hyperv-%s-%d", p.VMName, time.Now().Unix())
+	prefix := fmt.Sprintf("snapshots/%s/files", snapshotID)
+
+	var fileCount int
+	var totalSize int64
+	err = filepath.WalkDir(stagingDir, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() {
+			return walkErr
+		}
+		relPath, _ := filepath.Rel(stagingDir, path)
+		remotePath := filepath.ToSlash(filepath.Join(prefix, relPath))
+		info, infoErr := d.Info()
+		if infoErr == nil {
+			totalSize += info.Size()
+		}
+		fileCount++
+		return provider.Upload(path, remotePath)
+	})
+	if err != nil {
+		return fail("failed to upload Hyper-V export: " + err.Error())
+	}
+
+	return marshalResult(map[string]any{
+		"snapshotId": snapshotID,
+		"result":     result,
+		"fileCount":  fileCount,
+		"totalSize":  totalSize,
+	}, nil)
 }
 
 func execHypervRestore(payload json.RawMessage) backupipc.BackupCommandResult {

@@ -392,7 +392,7 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 	case "mssql_discover":
 		return execMSSQLDiscover()
 	case "mssql_backup":
-		return execMSSQLBackup(req.Payload)
+		return execMSSQLBackup(req.Payload, mgr)
 	case "mssql_restore":
 		return execMSSQLRestore(req.Payload)
 	case "mssql_verify":
@@ -402,7 +402,7 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 	case "hyperv_discover":
 		return execHypervDiscover()
 	case "hyperv_backup":
-		return execHypervBackup(req.Payload)
+		return execHypervBackup(req.Payload, mgr)
 	case "hyperv_restore":
 		return execHypervRestore(req.Payload)
 	case "hyperv_checkpoint":
