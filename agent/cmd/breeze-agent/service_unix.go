@@ -3,10 +3,12 @@
 package main
 
 import (
-	"fmt"
 	"os"
+	"os/signal"
 	"runtime"
 	"syscall"
+
+	"github.com/breeze-rmm/agent/internal/logging"
 )
 
 // isWindowsService reports whether the process is running as a system service.
@@ -41,9 +43,24 @@ func redirectStderr(f *os.File) {
 	syscall.Dup2(int(f.Fd()), 2)
 }
 
-// runAsService is a no-op stub on non-Windows platforms.
-func runAsService(_ func() (*agentComponents, error)) error {
-	return fmt.Errorf("Windows service mode is not available on this platform")
+// runAsService runs the agent as a system daemon on Unix (launchd / systemd).
+// Unlike Windows, there is no SCM handshake — just start components and block
+// on SIGTERM, same as console mode.
+func runAsService(start func() (*agentComponents, error)) error {
+	comps, err := start()
+	if err != nil {
+		return err
+	}
+	defer logging.StopShipper()
+
+	signal.Ignore(syscall.SIGINT)
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM)
+	<-sigChan
+
+	log.Info("shutting down agent (service mode)")
+	shutdownAgent(comps)
+	return nil
 }
 
 // ensureSASPolicy is a no-op on non-Windows platforms.
