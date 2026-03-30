@@ -19,6 +19,9 @@ import {
 
 const MssqlDashboard = lazy(() => import('./MssqlDashboard'));
 const HypervDashboard = lazy(() => import('./HypervDashboard'));
+const VaultDashboard = lazy(() => import('./VaultDashboard'));
+const SLADashboard = lazy(() => import('./SLADashboard'));
+const EncryptionKeyList = lazy(() => import('./EncryptionKeyList'));
 
 type BackupTab = 'overview' | 'verification' | 'mssql' | 'hyperv' | 'vault' | 'sla' | 'encryption';
 
@@ -310,8 +313,8 @@ export default function BackupDashboard() {
 
   return (
     <div className="space-y-6">
-      <div className="flex gap-1 border-b">
-        {(['overview', 'verification'] as const).map((tab) => (
+      <div className="flex gap-1 overflow-x-auto border-b">
+        {ALL_TABS.map((tab) => (
           <button
             key={tab}
             type="button"
@@ -320,13 +323,18 @@ export default function BackupDashboard() {
               window.location.hash = tab === 'overview' ? '' : tab;
             }}
             className={cn(
-              'border-b-2 px-4 py-2 text-sm font-medium capitalize transition-colors',
+              'flex shrink-0 items-center gap-1.5 border-b-2 px-4 py-2 text-sm font-medium transition-colors',
               activeTab === tab
                 ? 'border-primary text-primary'
                 : 'border-transparent text-muted-foreground hover:text-foreground'
             )}
           >
-            {tab}
+            {TAB_LABELS[tab]}
+            {tab !== 'overview' && tab !== 'verification' && (
+              <span className="rounded bg-warning/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase leading-none tracking-wider text-warning">
+                Alpha
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -359,6 +367,36 @@ export default function BackupDashboard() {
       )}
 
       {activeTab === 'verification' && <BackupVerificationOverview />}
+
+      {activeTab === 'mssql' && (
+        <Suspense fallback={<TabFallback />}>
+          <MssqlDashboard />
+        </Suspense>
+      )}
+
+      {activeTab === 'hyperv' && (
+        <Suspense fallback={<TabFallback />}>
+          <HypervDashboard />
+        </Suspense>
+      )}
+
+      {activeTab === 'vault' && (
+        <Suspense fallback={<TabFallback />}>
+          <VaultDashboard />
+        </Suspense>
+      )}
+
+      {activeTab === 'sla' && (
+        <Suspense fallback={<TabFallback />}>
+          <SLADashboard />
+        </Suspense>
+      )}
+
+      {activeTab === 'encryption' && (
+        <Suspense fallback={<TabFallback />}>
+          <EncryptionKeyList />
+        </Suspense>
+      )}
     </div>
   );
 }

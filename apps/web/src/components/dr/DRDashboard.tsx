@@ -16,6 +16,7 @@ import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import DRExecutionView from './DRExecutionView';
 import DRPlanEditor from './DRPlanEditor';
+import AlphaBadge from '../shared/AlphaBadge';
 
 type DRTab = 'plans' | 'executions';
 
@@ -194,6 +195,7 @@ export default function DRDashboard() {
 
   return (
     <div className="space-y-6">
+      <AlphaBadge variant="banner" disclaimer="Disaster Recovery orchestration is in early access. DR plans, recovery groups, and rehearsal executions are functional but should be thoroughly tested in a non-production environment before relying on them for actual disaster recovery." />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-foreground">Disaster Recovery</h1>

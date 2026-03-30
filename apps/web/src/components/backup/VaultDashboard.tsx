@@ -15,6 +15,7 @@ import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatBytes, formatTime } from './backupDashboardHelpers';
 import VaultConfigDialog from './VaultConfigDialog';
+import AlphaBadge from '../shared/AlphaBadge';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -155,6 +156,7 @@ export default function VaultDashboard() {
 
   return (
     <div className="space-y-6">
+      <AlphaBadge variant="banner" disclaimer="Local vault (SMB/USB) caching is in early access. Vault sync, retention, and fallback restore are functional but have not been tested across all network and storage configurations." />
       {error && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
           {error}

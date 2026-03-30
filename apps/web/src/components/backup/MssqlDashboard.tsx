@@ -17,6 +17,7 @@ import {
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatBytes, formatTime } from './backupDashboardHelpers';
+import AlphaBadge from '../shared/AlphaBadge';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -208,6 +209,7 @@ export default function MssqlDashboard() {
 
   return (
     <div className="space-y-6">
+      <AlphaBadge variant="banner" disclaimer="SQL Server backup and restore is in early access. Discovery, backup chains, and point-in-time restore are functional but may require additional configuration for your environment." />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold text-foreground">SQL Server Backup</h2>

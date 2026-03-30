@@ -12,6 +12,7 @@ import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatTime } from './backupDashboardHelpers';
 import SLAConfigDialog from './SLAConfigDialog';
+import AlphaBadge from '../shared/AlphaBadge';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -147,6 +148,7 @@ export default function SLADashboard() {
 
   return (
     <div className="space-y-6">
+      <AlphaBadge variant="banner" disclaimer="Backup SLA monitoring is in early access. RPO/RTO compliance tracking and breach alerts are functional but thresholds and detection timing may need tuning." />
       {error && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
           {error}

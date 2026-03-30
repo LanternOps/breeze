@@ -14,6 +14,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { friendlyFetchError } from '../../lib/utils';
 import BackupVerificationTab from './BackupVerificationTab';
 import DeviceVaultStatus from './DeviceVaultStatus';
+import AlphaBadge from '../shared/AlphaBadge';
 
 type BackupJobStatus = 'completed' | 'running' | 'failed' | 'pending' | 'cancelled';
 type VssWriterState = 'stable' | 'failed' | 'waiting' | string;
@@ -346,7 +347,7 @@ export default function DeviceBackupTab({ deviceId }: DeviceBackupTabProps) {
       {showVssStatus && (
         <div className="rounded-lg border bg-card p-5 shadow-sm">
           <div className="flex items-center justify-between gap-3">
-            <h3 className="font-semibold">VSS Status</h3>
+            <h3 className="font-semibold">VSS Status <AlphaBadge /></h3>
             <span className="text-xs text-muted-foreground">Latest backup job</span>
           </div>
 

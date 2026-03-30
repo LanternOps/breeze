@@ -11,6 +11,7 @@ import {
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatTime } from './backupDashboardHelpers';
+import AlphaBadge from '../shared/AlphaBadge';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -150,6 +151,7 @@ export default function EncryptionKeyList() {
 
   return (
     <div className="space-y-6">
+      <AlphaBadge variant="banner" disclaimer="Client-side encryption key management is in early access. Key creation and rotation are functional. Ensure you have secure backups of your encryption keys — lost keys cannot be recovered." />
       {error && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
           {error}

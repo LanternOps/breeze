@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import AlphaBadge from '../shared/AlphaBadge';
 
 type RestoreType = 'full' | 'selective';
 
@@ -155,6 +156,7 @@ export default function RestoreWizard() {
 
   return (
     <div className="space-y-6">
+      <AlphaBadge variant="banner" disclaimer="File restore with staging and selective paths is in early access. Resume support for interrupted restores is available but has not been extensively tested." />
       <div>
         <h2 className="text-xl font-semibold text-foreground">Restore Wizard</h2>
         <p className="text-sm text-muted-foreground">

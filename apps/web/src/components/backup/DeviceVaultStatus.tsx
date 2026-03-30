@@ -3,6 +3,7 @@ import { CheckCircle2, Clock, HardDrive, Loader2, RefreshCw, XCircle } from 'luc
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatTime } from './backupDashboardHelpers';
+import AlphaBadge from '../shared/AlphaBadge';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -89,7 +90,7 @@ export default function DeviceVaultStatus({ deviceId }: { deviceId: string }) {
       <div className="flex items-center justify-between">
         <h4 className="flex items-center gap-2 text-sm font-semibold">
           <HardDrive className="h-4 w-4" />
-          Local Vault
+          Local Vault <AlphaBadge />
         </h4>
         <button
           type="button"

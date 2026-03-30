@@ -18,6 +18,7 @@ import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatTime } from './backupDashboardHelpers';
 import HypervVMActions from './HypervVMActions';
+import AlphaBadge from '../shared/AlphaBadge';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -178,6 +179,7 @@ export default function HypervDashboard() {
 
   return (
     <div className="space-y-6">
+      <AlphaBadge variant="banner" disclaimer="Hyper-V VM backup and restore is in early access. VM export, import, and checkpoint management are functional but may not cover all VM configurations." />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold text-foreground">Hyper-V Backup</h2>

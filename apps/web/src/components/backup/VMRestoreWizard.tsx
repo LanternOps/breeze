@@ -14,6 +14,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { formatBytes, formatTime } from './backupDashboardHelpers';
 import VMRestoreSpecsStep from './VMRestoreSpecsStep';
 import VMRestoreConfirmStep from './VMRestoreConfirmStep';
+import AlphaBadge from '../shared/AlphaBadge';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -173,6 +174,7 @@ export default function VMRestoreWizard() {
 
   return (
     <div className="space-y-6">
+      <AlphaBadge variant="banner" disclaimer="Restoring backups as Hyper-V VMs and Instant Boot are in early access. These features create new VMs from file-level backups and may require manual driver installation for some hardware configurations." />
       <div>
         <h2 className="text-xl font-semibold text-foreground">VM Restore Wizard</h2>
         <p className="text-sm text-muted-foreground">

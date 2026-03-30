@@ -17,6 +17,7 @@ import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import C2CConnectionWizard from './C2CConnectionWizard';
 import C2CRestoreDialog from './C2CRestoreDialog';
+import AlphaBadge from '../shared/AlphaBadge';
 
 type C2CTab = 'connections' | 'configs' | 'jobs' | 'items';
 
@@ -206,6 +207,7 @@ export default function C2CDashboard() {
 
   return (
     <div className="space-y-6">
+      <AlphaBadge variant="banner" disclaimer="Cloud-to-cloud backup for Microsoft 365 and Google Workspace is in early access. OAuth connections, incremental sync, and granular item restore are functional but API rate limits may affect large tenants." />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Cloud-to-Cloud Backup</h1>
