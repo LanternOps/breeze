@@ -26,6 +26,7 @@ DO $$ BEGIN
   ALTER TABLE "hyperv_vms"
     ADD CONSTRAINT "hyperv_vms_device_vm_unique" UNIQUE ("device_id", "vm_id");
 EXCEPTION
+  WHEN duplicate_table THEN NULL;
   WHEN duplicate_object THEN NULL;
 END $$;
 
