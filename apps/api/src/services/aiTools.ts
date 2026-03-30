@@ -15,6 +15,7 @@ import { validateToolInput } from './aiToolSchemas';
 // Pre-existing domain modules
 import { registerAgentLogTools } from './aiToolsAgentLogs';
 import { registerBackupTools } from './aiToolsBackup';
+import { registerBackupVmTools } from './aiToolsBackupVm';
 import { registerConfigPolicyTools } from './aiToolsConfigPolicy';
 import { registerEventLogTools } from './aiToolsEventLogs';
 import { registerAnalyticsTools } from './aiToolsAnalytics';
@@ -130,6 +131,7 @@ export const aiTools: Map<string, AiTool> = new Map();
 // Register all domain modules
 registerAgentLogTools(aiTools);
 registerBackupTools(aiTools);
+registerBackupVmTools(aiTools);
 registerMssqlTools(aiTools);
 registerHypervTools(aiTools);
 registerVaultTools(aiTools);

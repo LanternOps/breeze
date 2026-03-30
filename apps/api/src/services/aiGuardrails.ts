@@ -73,6 +73,9 @@ const TIER3_ACTIONS: Record<string, string[]> = {
   manage_processes: ['kill'],
   manage_policy_feature_link: ['remove'],
   registry_operations: ['set_value', 'create_key', 'delete_key'],
+  // Backup & DR — Tier 3 actions (require user approval)
+  manage_dr_plan: ['delete_group'],
+  manage_hyperv_checkpoints: ['delete', 'apply'],
   // Monitoring tools — Tier 3 actions (require user approval)
   manage_monitors: ['create', 'update', 'delete'],
 };
