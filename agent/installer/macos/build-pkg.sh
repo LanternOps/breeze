@@ -3,25 +3,27 @@
 # Breeze Agent macOS .pkg Builder
 # ============================================
 # Usage:
-#   ./build-pkg.sh <binary-path> <version> <arch> <output-path>
+#   ./build-pkg.sh <agent-binary> <backup-binary> <version> <arch> <output-path>
 #
 # Example:
-#   ./build-pkg.sh ./breeze-agent-darwin-amd64 0.13.3 amd64 ./dist/breeze-agent-darwin-amd64.pkg
+#   ./build-pkg.sh ./breeze-agent-darwin-amd64 ./breeze-backup-darwin-amd64 0.13.3 amd64 ./dist/breeze-agent-darwin-amd64.pkg
 # ============================================
 
 set -euo pipefail
 
-BINARY="$1"
-VERSION="$2"
-ARCH="$3"
-OUTPUT="$4"
+AGENT_BIN="$1"
+BACKUP_BIN="$2"
+VERSION="$3"
+ARCH="$4"
+OUTPUT="$5"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 echo "Building Breeze Agent .pkg"
-echo "  Binary:  $BINARY"
+echo "  Agent:   $AGENT_BIN"
+echo "  Backup:  $BACKUP_BIN"
 echo "  Version: $VERSION"
 echo "  Arch:    $ARCH"
 echo "  Output:  $OUTPUT"
@@ -34,8 +36,12 @@ mkdir -p "$PAYLOAD/usr/local/bin"
 mkdir -p "$PAYLOAD/Library/LaunchDaemons"
 mkdir -p "$PAYLOAD/Library/LaunchAgents"
 
-cp "$BINARY" "$PAYLOAD/usr/local/bin/breeze-agent"
+cp "$AGENT_BIN" "$PAYLOAD/usr/local/bin/breeze-agent"
 chmod 755 "$PAYLOAD/usr/local/bin/breeze-agent"
+
+# Install backup binary
+cp "$BACKUP_BIN" "$PAYLOAD/usr/local/bin/breeze-backup"
+chmod 755 "$PAYLOAD/usr/local/bin/breeze-backup"
 
 cp "$SCRIPT_DIR/../../service/launchd/com.breeze.agent.plist" \
    "$PAYLOAD/Library/LaunchDaemons/com.breeze.agent.plist"
