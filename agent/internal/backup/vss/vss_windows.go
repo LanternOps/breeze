@@ -112,7 +112,7 @@ func (p *WindowsProvider) CreateShadowCopy(ctx context.Context, volumes []string
 
 	if err := ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED); err != nil {
 		// S_FALSE (1) means COM was already initialized on this thread — that's OK.
-		if hr, ok := err.(*ole.OleError); !ok || hr.Code() != ole.S_FALSE {
+		if hr, ok := err.(*ole.OleError); !ok || hr.Code() != sFalse {
 			return nil, fmt.Errorf("vss: CoInitializeEx failed: %w", err)
 		}
 	}
@@ -257,7 +257,7 @@ func (p *WindowsProvider) ReleaseShadowCopy(session *VSSSession) error {
 	defer runtime.UnlockOSThread()
 
 	if err := ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED); err != nil {
-		if hr, ok := err.(*ole.OleError); !ok || hr.Code() != ole.S_FALSE {
+		if hr, ok := err.(*ole.OleError); !ok || hr.Code() != sFalse {
 			return fmt.Errorf("vss: CoInitializeEx failed: %w", err)
 		}
 	}
@@ -307,7 +307,7 @@ func (p *WindowsProvider) ListWriters(ctx context.Context) ([]WriterStatus, erro
 	defer runtime.UnlockOSThread()
 
 	if err := ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED); err != nil {
-		if hr, ok := err.(*ole.OleError); !ok || hr.Code() != ole.S_FALSE {
+		if hr, ok := err.(*ole.OleError); !ok || hr.Code() != sFalse {
 			return nil, fmt.Errorf("vss: CoInitializeEx failed: %w", err)
 		}
 	}
