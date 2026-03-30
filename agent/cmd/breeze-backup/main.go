@@ -195,6 +195,15 @@ func initBackupManager(cfg *config.Config) *backup.BackupManager {
 		retention = 7
 	}
 
+	// Ensure the configured staging directory exists before use.
+	stagingDir := cfg.BackupStagingDir
+	if stagingDir != "" {
+		if err := os.MkdirAll(stagingDir, 0700); err != nil {
+			slog.Error("configured backup staging dir cannot be created, falling back to OS temp dir", "dir", stagingDir, "error", err.Error())
+			stagingDir = ""
+		}
+	}
+
 	mgr := backup.NewBackupManager(backup.BackupConfig{
 		Provider:           backupProvider,
 		Paths:              cfg.BackupPaths,
@@ -202,6 +211,7 @@ func initBackupManager(cfg *config.Config) *backup.BackupManager {
 		Retention:          retention,
 		VSSEnabled:         cfg.BackupVSSEnabled,
 		SystemStateEnabled: cfg.BackupSystemStateEnabled,
+		StagingDir:         stagingDir,
 	})
 
 	return mgr
@@ -392,7 +402,7 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 	case "mssql_discover":
 		return execMSSQLDiscover()
 	case "mssql_backup":
-		return execMSSQLBackup(req.Payload)
+		return execMSSQLBackup(req.Payload, mgr)
 	case "mssql_restore":
 		return execMSSQLRestore(req.Payload)
 	case "mssql_verify":
@@ -402,7 +412,7 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 	case "hyperv_discover":
 		return execHypervDiscover()
 	case "hyperv_backup":
-		return execHypervBackup(req.Payload)
+		return execHypervBackup(req.Payload, mgr)
 	case "hyperv_restore":
 		return execHypervRestore(req.Payload)
 	case "hyperv_checkpoint":

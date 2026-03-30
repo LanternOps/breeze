@@ -7,6 +7,8 @@ import AiApprovalDialog from './AiApprovalDialog';
 import AiPlanReviewCard from './AiPlanReviewCard';
 import AiPlanProgressBar from './AiPlanProgressBar';
 import type { ActionPlanStep } from '@breeze/shared';
+import { DOCS_BASE_URL } from '@breeze/shared';
+import { useHelpStore } from '@/stores/helpStore';
 
 interface Message {
   id: string;
@@ -125,15 +127,31 @@ export default function AiChatMessages({
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
                     components={{
-                      a: ({ href, children }) => (
-                        <a
-                          href={href && /^https?:\/\//.test(href) ? href : '#'}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          {children}
-                        </a>
-                      ),
+                      a: ({ href, children }) => {
+                        if (href && DOCS_BASE_URL && href.startsWith(DOCS_BASE_URL)) {
+                          return (
+                            <a
+                              href={href}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                useHelpStore.getState().open(href);
+                              }}
+                              className="cursor-pointer"
+                            >
+                              {children}
+                            </a>
+                          );
+                        }
+                        return (
+                          <a
+                            href={href && /^https?:\/\//.test(href) ? href : '#'}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            {children}
+                          </a>
+                        );
+                      },
                     }}
                   >
                     {msg.content}

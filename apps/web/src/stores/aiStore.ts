@@ -85,8 +85,17 @@ export const useAiStore = create<AiState>()(
   isFlagged: false,
   flagReason: null,
 
-  toggle: () => set((s) => ({ isOpen: !s.isOpen })),
-  open: () => set({ isOpen: true }),
+  toggle: () => {
+    const opening = !get().isOpen;
+    if (opening) {
+      import('./helpStore').then(({ useHelpStore }) => useHelpStore.getState().close()).catch((err) => console.warn('[AiStore] Failed to close help panel:', err));
+    }
+    set({ isOpen: opening });
+  },
+  open: () => {
+    import('./helpStore').then(({ useHelpStore }) => useHelpStore.getState().close()).catch((err) => console.warn('[AiStore] Failed to close help panel:', err));
+    set({ isOpen: true });
+  },
   close: () => set({ isOpen: false }),
   clearError: () => set({ error: null }),
 

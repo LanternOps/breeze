@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { List, Grid, Plus, Copy, Loader2, X, AlertCircle, Monitor, ArrowRight } from 'lucide-react';
+import { List, Grid, Plus, Copy, Loader2, X, AlertCircle, ArrowRight } from 'lucide-react';
 import { showToast } from '../shared/Toast';
 import type { FilterConditionGroup } from '@breeze/shared';
 import DeviceList, { type Device, type DeviceStatus, type OSType } from './DeviceList';
@@ -12,7 +12,16 @@ import { fetchWithAuth } from '../../stores/auth';
 import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
+import { asRecord, toPercent } from '@/lib/deviceUtils';
 import ProgressBar from '../shared/ProgressBar';
+
+function detectUserOS(): 'windows' | 'macos' | 'linux' {
+  if (typeof navigator === 'undefined') return 'linux';
+  const ua = navigator.userAgent.toLowerCase();
+  if (ua.includes('win')) return 'windows';
+  if (ua.includes('mac')) return 'macos';
+  return 'linux';
+}
 
 type ViewMode = 'list' | 'grid';
 
@@ -25,21 +34,6 @@ type Site = {
   id: string;
   name: string;
 };
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
-}
-
-function toPercent(value: unknown): number {
-  const parsed = typeof value === 'number'
-    ? value
-    : typeof value === 'string'
-      ? Number(value)
-      : NaN;
-
-  if (!Number.isFinite(parsed)) return 0;
-  return Math.min(100, Math.max(0, Number(parsed.toFixed(1))));
-}
 
 export default function DevicesPage() {
   const [devices, setDevices] = useState<Device[]>([]);
@@ -60,6 +54,7 @@ export default function DevicesPage() {
   const [scriptTargetDevices, setScriptTargetDevices] = useState<Device[]>([]);
   const [settingsDevice, setSettingsDevice] = useState<Device | null>(null);
   const [advancedFilter, setAdvancedFilter] = useState<FilterConditionGroup | null>(null);
+  const [selectedOS, setSelectedOS] = useState<'windows' | 'macos' | 'linux'>(detectUserOS);
 
   const scriptTargetLabel =
     scriptTargetDevices.length === 1
@@ -547,6 +542,7 @@ export default function DevicesPage() {
                 viewMode === 'list' ? 'bg-muted' : 'hover:bg-muted/50'
               }`}
               title="List view"
+              aria-label="List view"
             >
               <List className="h-4 w-4" />
             </button>
@@ -557,6 +553,7 @@ export default function DevicesPage() {
                 viewMode === 'grid' ? 'bg-muted' : 'hover:bg-muted/50'
               }`}
               title="Grid view"
+              aria-label="Grid view"
             >
               <Grid className="h-4 w-4" />
             </button>
@@ -590,22 +587,21 @@ export default function DevicesPage() {
       )}
 
       {devices.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-16 text-center">
-          <div className="rounded-full bg-primary/10 p-4 mb-4">
-            <Monitor className="h-8 w-8 text-primary" />
-          </div>
-          <h2 className="text-lg font-semibold text-foreground mb-1">No devices yet</h2>
-          <p className="text-sm text-muted-foreground max-w-md mb-6">
-            Enroll your first device to start monitoring. You'll need an enrollment key and the Breeze agent installer.
-          </p>
-          <div className="flex gap-3">
-            <a href="/settings/enrollment-keys" className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
-              Get enrollment key
-              <ArrowRight className="h-4 w-4" />
-            </a>
-            <a href="https://docs.breezermm.com/getting-started" target="_blank" rel="noopener" className="inline-flex items-center gap-1.5 rounded-md border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors">
-              View setup guide
-            </a>
+        <div className="rounded-lg border bg-card p-8">
+          <div className="max-w-lg">
+            <h2 className="text-lg font-semibold text-foreground mb-2">Your fleet is empty</h2>
+            <p className="text-sm text-muted-foreground mb-6">
+              Get started by enrolling your first device. You'll need an enrollment key and the Breeze agent installer.
+            </p>
+            <div className="flex gap-3">
+              <a href="/settings/enrollment-keys" className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
+                Get enrollment key
+                <ArrowRight className="h-4 w-4" />
+              </a>
+              <a href="https://docs.breezermm.com/getting-started" target="_blank" rel="noopener" className="inline-flex items-center gap-1.5 rounded-md border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors">
+                View setup guide
+              </a>
+            </div>
           </div>
         </div>
       ) : viewMode === 'list' ? (
@@ -632,10 +628,21 @@ export default function DevicesPage() {
       )}
 
       {showOnboarding && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8 overflow-y-auto">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8 overflow-y-auto"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="onboarding-title"
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setShowOnboarding(false);
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowOnboarding(false);
+          }}
+        >
           <div className="w-full max-w-2xl rounded-lg border bg-card p-6 shadow-sm">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold">Add New Device</h2>
+              <h2 id="onboarding-title" className="text-lg font-semibold">Add New Device</h2>
               <button
                 type="button"
                 onClick={() => setShowOnboarding(false)}
@@ -650,51 +657,54 @@ export default function DevicesPage() {
             </p>
 
             <div className="space-y-6">
-              <div className="rounded-lg border bg-muted/30 p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-sm font-medium">Installation Token</label>
-                  <button
-                    type="button"
-                    onClick={handleCopyToken}
-                    disabled={tokenLoading || !onboardingToken}
-                    className="inline-flex items-center gap-1 text-xs text-primary hover:underline disabled:opacity-50"
-                  >
-                    <Copy className="h-3 w-3" />
-                    {tokenCopied ? 'Copied!' : 'Copy'}
-                  </button>
-                </div>
-                {tokenLoading ? (
-                  <div className="flex items-center gap-2 py-2">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    <span className="text-sm text-muted-foreground">Generating token...</span>
-                  </div>
-                ) : tokenError === 'MFA_REQUIRED' ? (
-                  <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700">
-                    Multi-factor authentication is required to generate installation tokens.{' '}
-                    <a
-                      href="/settings/profile"
-                      className="font-medium underline hover:no-underline"
-                    >
-                      Set up MFA in your profile settings
-                    </a>{' '}
-                    and sign in again, then retry.
-                  </div>
-                ) : tokenError ? (
-                  <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-                    {tokenError}
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">Step 1 — Copy your installation token</p>
+                <div className="rounded-lg border bg-muted/30 p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-sm font-medium">Installation Token</label>
                     <button
                       type="button"
-                      onClick={handleOpenOnboarding}
-                      className="ml-2 underline hover:no-underline"
+                      onClick={handleCopyToken}
+                      disabled={tokenLoading || !onboardingToken}
+                      className="inline-flex items-center gap-1 text-xs text-primary hover:underline disabled:opacity-50"
                     >
-                      Retry
+                      <Copy className="h-3 w-3" />
+                      {tokenCopied ? 'Copied!' : 'Copy'}
                     </button>
                   </div>
-                ) : (
-                  <code className="block rounded-md bg-background p-3 text-sm font-mono break-all">
-                    {onboardingToken || 'No token available'}
-                  </code>
-                )}
+                  {tokenLoading ? (
+                    <div className="flex items-center gap-2 py-2">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <span className="text-sm text-muted-foreground">Generating token...</span>
+                    </div>
+                  ) : tokenError === 'MFA_REQUIRED' ? (
+                    <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700">
+                      Multi-factor authentication is required to generate installation tokens.{' '}
+                      <a
+                        href="/settings/profile"
+                        className="font-medium underline hover:no-underline"
+                      >
+                        Set up MFA in your profile settings
+                      </a>{' '}
+                      and sign in again, then retry.
+                    </div>
+                  ) : tokenError ? (
+                    <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+                      {tokenError}
+                      <button
+                        type="button"
+                        onClick={handleOpenOnboarding}
+                        className="ml-2 underline hover:no-underline"
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  ) : (
+                    <code className="block rounded-md bg-background p-3 text-sm font-mono break-all">
+                      {onboardingToken || 'No token available'}
+                    </code>
+                  )}
+                </div>
               </div>
 
               {(() => {
@@ -708,69 +718,52 @@ export default function DevicesPage() {
                 const linuxCmd = `curl -fsSL -o breeze-agent "${ghBase}/breeze-agent-linux-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" && chmod +x breeze-agent && sudo mv breeze-agent /usr/local/bin/ && sudo breeze-agent service install && sudo breeze-agent enroll "${token}" --server "${apiUrl}"${secretFlag} && sudo breeze-agent service start`;
 
                 return (
-                  <>
-                    <div>
-                      <h3 className="text-sm font-semibold mb-3">Windows (PowerShell - Run as Administrator)</h3>
-                      <div className="rounded-lg border bg-muted/30 p-4">
-                        <div className="flex items-start justify-between gap-2">
-                          <code className="text-xs font-mono text-muted-foreground break-all">
-                            {winCmd}
-                          </code>
-                          <button
-                            type="button"
-                            onClick={() => handleCopyCommand(winCmd)}
-                            className="flex-shrink-0 p-1 hover:bg-muted rounded"
-                          >
-                            <Copy className="h-4 w-4" />
-                          </button>
-                        </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">Step 2 — Run the install command</p>
+                    <div className="flex gap-1 mb-3">
+                      {(['windows', 'macos', 'linux'] as const).map(os => (
+                        <button
+                          key={os}
+                          type="button"
+                          onClick={() => setSelectedOS(os)}
+                          className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                            selectedOS === os
+                              ? 'bg-primary text-primary-foreground'
+                              : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                          }`}
+                        >
+                          {os === 'windows' ? 'Windows' : os === 'macos' ? 'macOS' : 'Linux'}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="rounded-lg border bg-muted/30 p-4">
+                      <div className="flex items-start justify-between gap-2">
+                        <code className="text-xs font-mono text-muted-foreground break-all">
+                          {selectedOS === 'windows' ? winCmd : selectedOS === 'macos' ? macCmd : linuxCmd}
+                        </code>
+                        <button
+                          type="button"
+                          onClick={() => handleCopyCommand(selectedOS === 'windows' ? winCmd : selectedOS === 'macos' ? macCmd : linuxCmd)}
+                          className="flex-shrink-0 p-1 hover:bg-muted rounded"
+                        >
+                          <Copy className="h-4 w-4" />
+                        </button>
                       </div>
                     </div>
-
-                    <div>
-                      <h3 className="text-sm font-semibold mb-3">macOS (Terminal)</h3>
-                      <div className="rounded-lg border bg-muted/30 p-4">
-                        <div className="flex items-start justify-between gap-2">
-                          <code className="text-xs font-mono text-muted-foreground break-all">
-                            {macCmd}
-                          </code>
-                          <button
-                            type="button"
-                            onClick={() => handleCopyCommand(macCmd)}
-                            className="flex-shrink-0 p-1 hover:bg-muted rounded"
-                          >
-                            <Copy className="h-4 w-4" />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div>
-                      <h3 className="text-sm font-semibold mb-3">Linux (Terminal)</h3>
-                      <div className="rounded-lg border bg-muted/30 p-4">
-                        <div className="flex items-start justify-between gap-2">
-                          <code className="text-xs font-mono text-muted-foreground break-all">
-                            {linuxCmd}
-                          </code>
-                          <button
-                            type="button"
-                            onClick={() => handleCopyCommand(linuxCmd)}
-                            className="flex-shrink-0 p-1 hover:bg-muted rounded"
-                          >
-                            <Copy className="h-4 w-4" />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {selectedOS === 'windows' ? 'Run as Administrator in PowerShell' : 'Run in Terminal'}
+                    </p>
+                  </div>
                 );
               })()}
 
-              <div className="rounded-md border border-blue-500/40 bg-blue-500/10 p-4 text-sm">
-                <p className="font-medium text-blue-700">Note</p>
-                <p className="mt-1 text-blue-600 text-xs">
-                  The installation token expires in 24 hours. The device will appear in your list once the agent is installed and connected.
-                </p>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">Step 3 — Wait for connection</p>
+                <div className="rounded-md border border-blue-500/40 bg-blue-500/10 p-4 text-sm">
+                  <p className="text-blue-600 text-xs">
+                    The installation token expires in 24 hours. Your device will appear in the list once the agent connects.
+                  </p>
+                </div>
               </div>
             </div>
 

@@ -491,10 +491,8 @@ export default function ScriptExecutionModal({
               <p className="text-sm font-medium text-warning">
                 Confirm Execution
               </p>
-              <p className="text-sm text-warning mt-1">
-                You are about to execute "{script.name}" on {selectedDeviceIds.size} device(s).
-                Run as: {runAs === 'system' ? 'System' : 'Logged-in user'}.
-                This action cannot be undone.
+              <p className="text-sm text-warning/80 mt-1">
+                Run &ldquo;{script.name}&rdquo; on {selectedDeviceIds.size} device(s) as {runAs === 'system' ? 'System' : 'logged-in user'}. Scripts are queued and begin executing immediately.
               </p>
             </div>
           )}
@@ -523,8 +521,8 @@ export default function ScriptExecutionModal({
                 executionState === 'success'
                   ? 'bg-success text-white'
                   : showConfirm
-                    ? 'bg-warning text-white hover:opacity-90'
-                    : 'bg-primary text-primary-foreground hover:opacity-90'
+                    ? 'bg-warning text-white hover:bg-warning/90'
+                    : 'bg-primary text-primary-foreground hover:bg-primary/90'
               )}
             >
               {executionState === 'executing' && (

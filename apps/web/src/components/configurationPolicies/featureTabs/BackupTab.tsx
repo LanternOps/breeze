@@ -40,6 +40,17 @@ type BackupScheduleSettings = {
   notifyOnSuccess: boolean;
   notifyOnMissed: boolean;
   s3Prefix: string;
+  gfsDailyRetention: number;
+  gfsWeeklyRetention: number;
+  gfsMonthlyRetention: number;
+  gfsYearlyRetention: number;
+  gfsWeeklyDayOfWeek: number;
+  legalHoldEnabled: boolean;
+  legalHoldReason: string;
+  backupWindowStart: string;
+  backupWindowEnd: string;
+  bandwidthLimitMbps: number;
+  priority: number;
 };
 
 type BackupConfig = {
@@ -70,6 +81,17 @@ const scheduleDefaults: BackupScheduleSettings = {
   notifyOnSuccess: false,
   notifyOnMissed: true,
   s3Prefix: '',
+  gfsDailyRetention: 7,
+  gfsWeeklyRetention: 4,
+  gfsMonthlyRetention: 12,
+  gfsYearlyRetention: 3,
+  gfsWeeklyDayOfWeek: 0,
+  legalHoldEnabled: false,
+  legalHoldReason: '',
+  backupWindowStart: '',
+  backupWindowEnd: '',
+  bandwidthLimitMbps: 0,
+  priority: 50,
 };
 
 const scheduleOptions: { value: ScheduleFrequency; label: string }[] = [
@@ -93,6 +115,16 @@ const dayOfWeekOptions = [
   { value: 4, label: 'Thursday' },
   { value: 5, label: 'Friday' },
   { value: 6, label: 'Saturday' },
+];
+
+const shortDayOfWeekOptions = [
+  { value: 0, label: 'Sun' },
+  { value: 1, label: 'Mon' },
+  { value: 2, label: 'Tue' },
+  { value: 3, label: 'Wed' },
+  { value: 4, label: 'Thu' },
+  { value: 5, label: 'Fri' },
+  { value: 6, label: 'Sat' },
 ];
 
 const providerOptions: { value: BackupProvider; label: string; description: string; icon: typeof Cloud }[] = [
@@ -246,6 +278,14 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
     return merged;
   });
 
+  // Backup mode and targets
+  const [backupMode, setBackupMode] = useState<string>(
+    (effectiveLink?.inlineSettings as Record<string, unknown>)?.backupMode as string ?? 'file'
+  );
+  const [targets, setTargets] = useState<Record<string, unknown>>(
+    (effectiveLink?.inlineSettings as Record<string, unknown>)?.targets as Record<string, unknown> ?? {}
+  );
+
   // ── Fetch existing configs ─────────────────────────────────────────────────
 
   const fetchConfigs = useCallback(async () => {
@@ -270,12 +310,15 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
     const link = existingLink ?? parentLink;
     if (link?.featurePolicyId) setSelectedConfigId(link.featurePolicyId);
     if (link?.inlineSettings) {
+      const stored = link.inlineSettings as Record<string, unknown>;
       setSettings((prev) => {
-        const merged = { ...prev, ...(link.inlineSettings as Partial<BackupScheduleSettings>) };
+        const merged = { ...prev, ...(stored as Partial<BackupScheduleSettings>) };
         if (!Array.isArray(merged.paths)) merged.paths = [...scheduleDefaults.paths];
         if (!Array.isArray(merged.excludePatterns)) merged.excludePatterns = [...scheduleDefaults.excludePatterns];
         return merged;
       });
+      if (stored.backupMode) setBackupMode(stored.backupMode as string);
+      if (stored.targets) setTargets(stored.targets as Record<string, unknown>);
     }
   }, [existingLink, parentLink]);
 
@@ -383,10 +426,13 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
 
     if (!configId) { setConfigError('Please select or create a backup configuration'); return; }
 
+    const saveTargets = backupMode === 'file'
+      ? { paths: settings.paths ?? [], excludes: settings.excludePatterns ?? [] }
+      : targets;
     const result = await save(existingLink?.id ?? null, {
       featureType: 'backup',
       featurePolicyId: configId,
-      inlineSettings: settings,
+      inlineSettings: { ...settings, backupMode, targets: saveTargets },
     });
     if (result) onLinkChanged(result, 'backup');
   };
@@ -399,10 +445,13 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
 
   const handleOverride = async () => {
     clearError();
+    const saveTargets = backupMode === 'file'
+      ? { paths: settings.paths ?? [], excludes: settings.excludePatterns ?? [] }
+      : targets;
     const result = await save(null, {
       featureType: 'backup',
       featurePolicyId: selectedConfigId || null,
-      inlineSettings: settings,
+      inlineSettings: { ...settings, backupMode, targets: saveTargets },
     });
     if (result) onLinkChanged(result, 'backup');
   };
@@ -432,6 +481,131 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
       onOverride={isInherited ? handleOverride : undefined}
       onRevert={!isInherited && !!linkedPolicyId && !!existingLink ? handleRevert : undefined}
     >
+      {/* ══════════════════════════════════════════════════════════════════════
+          SECTION 0: Backup Type
+          ══════════════════════════════════════════════════════════════════════ */}
+      <div className="space-y-3">
+        <label className="text-sm font-medium text-zinc-300">Backup Type</label>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {[
+            { value: 'file', label: 'File Backup' },
+            { value: 'hyperv', label: 'Hyper-V VMs' },
+            { value: 'mssql', label: 'SQL Server' },
+            { value: 'system_image', label: 'System Image' },
+          ].map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => {
+                setBackupMode(opt.value);
+                setTargets({});
+              }}
+              className={`rounded-md border px-3 py-2 text-sm ${
+                backupMode === opt.value
+                  ? 'border-blue-500 bg-blue-500/10 text-blue-400'
+                  : 'border-zinc-700 text-zinc-400 hover:border-zinc-600'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Mode-specific target fields ──────────────────────────────────────── */}
+      {backupMode === 'hyperv' && (
+        <div className="mt-4 space-y-4 rounded-md border border-zinc-700 bg-zinc-800/40 p-4">
+          <p className="text-xs text-muted-foreground">
+            All discovered VMs are backed up automatically. Exclude specific ones below.
+          </p>
+          <p className="text-xs text-zinc-500">
+            Backups are stored in the configured storage destination. The agent stages files locally and uploads automatically.
+          </p>
+          <div>
+            <label className="text-sm font-medium text-zinc-300">Consistency Type</label>
+            <select
+              value={(targets.consistencyType as string) ?? 'application'}
+              onChange={(e) => setTargets({ ...targets, consistencyType: e.target.value })}
+              className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              <option value="application">Application-Consistent (VSS)</option>
+              <option value="crash">Crash-Consistent</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-sm font-medium text-zinc-300">Exclude VMs</label>
+            <input
+              value={Array.isArray(targets.excludeVms) ? (targets.excludeVms as string[]).join(', ') : ''}
+              onChange={(e) =>
+                setTargets({
+                  ...targets,
+                  excludeVms: e.target.value.split(',').map((s) => s.trim()).filter(Boolean),
+                })
+              }
+              placeholder="VM-Dev-01, VM-Test-02"
+              className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+            <p className="mt-1 text-[11px] text-muted-foreground">Comma-separated VM names to skip.</p>
+          </div>
+        </div>
+      )}
+
+      {backupMode === 'mssql' && (
+        <div className="mt-4 space-y-4 rounded-md border border-zinc-700 bg-zinc-800/40 p-4">
+          <p className="text-xs text-muted-foreground">
+            All discovered databases are backed up automatically. Exclude specific ones below.
+          </p>
+          <p className="text-xs text-zinc-500">
+            Backups are stored in the configured storage destination. The agent stages files locally and uploads automatically.
+          </p>
+          <div>
+            <label className="text-sm font-medium text-zinc-300">Backup Type</label>
+            <select
+              value={(targets.backupType as string) ?? 'full'}
+              onChange={(e) => setTargets({ ...targets, backupType: e.target.value })}
+              className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              <option value="full">Full</option>
+              <option value="differential">Differential</option>
+              <option value="log">Transaction Log</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-sm font-medium text-zinc-300">Exclude Databases</label>
+            <input
+              value={Array.isArray(targets.excludeDatabases) ? (targets.excludeDatabases as string[]).join(', ') : ''}
+              onChange={(e) =>
+                setTargets({
+                  ...targets,
+                  excludeDatabases: e.target.value.split(',').map((s) => s.trim()).filter(Boolean),
+                })
+              }
+              placeholder="tempdb, model"
+              className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+            <p className="mt-1 text-[11px] text-muted-foreground">Comma-separated database names to skip.</p>
+          </div>
+        </div>
+      )}
+
+      {backupMode === 'system_image' && (
+        <div className="mt-4 rounded-md border border-zinc-700 bg-zinc-800/40 p-4">
+          <div className="flex items-center justify-between rounded-md border border-zinc-700 bg-background px-4 py-3">
+            <div>
+              <p className="text-sm font-medium">Include System State</p>
+              <p className="text-xs text-muted-foreground">Capture registry, boot files, and system components alongside the disk image.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setTargets({ ...targets, includeSystemState: !targets.includeSystemState })}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${targets.includeSystemState ? 'bg-emerald-500/80' : 'bg-muted'}`}
+            >
+              <span className={`inline-block h-5 w-5 rounded-full bg-white transition ${targets.includeSystemState ? 'translate-x-5' : 'translate-x-1'}`} />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ══════════════════════════════════════════════════════════════════════
           SECTION 1: Storage Configuration
           ══════════════════════════════════════════════════════════════════════ */}
@@ -676,58 +850,62 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
       </div>
 
       {/* ══════════════════════════════════════════════════════════════════════
-          SECTION 2: What to Back Up
+          SECTION 2: What to Back Up (file mode only)
           ══════════════════════════════════════════════════════════════════════ */}
-      <div className="mt-6">
-        <h3 className="text-sm font-semibold flex items-center gap-2">
-          <FolderOpen className="h-4 w-4" />
-          Backup Paths
-        </h3>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Directories and files to include in backups. Agents back up these paths on each assigned device.
-        </p>
-        <div className="mt-3">
-          <PathList
-            items={settings.paths}
-            onAdd={(v) => update('paths', [...settings.paths, v])}
-            onRemove={(v) => update('paths', settings.paths.filter((p) => p !== v))}
-            placeholder="C:\Users or /home or /etc"
-            label="paths"
-          />
-        </div>
-      </div>
+      {backupMode === 'file' && (
+        <>
+          <div className="mt-6">
+            <h3 className="text-sm font-semibold flex items-center gap-2">
+              <FolderOpen className="h-4 w-4" />
+              Backup Paths
+            </h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Directories and files to include in backups. Agents back up these paths on each assigned device.
+            </p>
+            <div className="mt-3">
+              <PathList
+                items={settings.paths}
+                onAdd={(v) => update('paths', [...settings.paths, v])}
+                onRemove={(v) => update('paths', settings.paths.filter((p) => p !== v))}
+                placeholder="C:\Users or /home or /etc"
+                label="paths"
+              />
+            </div>
+          </div>
 
-      {/* ── Exclusion patterns ──────────────────────────────────────────── */}
-      <div className="mt-6">
-        <h3 className="text-sm font-semibold">Exclusion Patterns</h3>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Glob patterns to skip during backup. Click a common pattern to add it.
-        </p>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {commonExclusions
-            .filter((e) => !settings.excludePatterns.includes(e.pattern))
-            .map((e) => (
-              <button
-                key={e.pattern}
-                type="button"
-                onClick={() => update('excludePatterns', [...settings.excludePatterns, e.pattern])}
-                className="rounded-full border px-2.5 py-1 text-[11px] text-muted-foreground transition hover:border-primary/40 hover:text-primary"
-              >
-                + {e.label}
-              </button>
-            ))
-          }
-        </div>
-        <div className="mt-3">
-          <PathList
-            items={settings.excludePatterns}
-            onAdd={(v) => update('excludePatterns', [...settings.excludePatterns, v])}
-            onRemove={(v) => update('excludePatterns', settings.excludePatterns.filter((p) => p !== v))}
-            placeholder="*.tmp or logs/**"
-            label="exclusions"
-          />
-        </div>
-      </div>
+          {/* ── Exclusion patterns ──────────────────────────────────────────── */}
+          <div className="mt-6">
+            <h3 className="text-sm font-semibold">Exclusion Patterns</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Glob patterns to skip during backup. Click a common pattern to add it.
+            </p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {commonExclusions
+                .filter((e) => !settings.excludePatterns.includes(e.pattern))
+                .map((e) => (
+                  <button
+                    key={e.pattern}
+                    type="button"
+                    onClick={() => update('excludePatterns', [...settings.excludePatterns, e.pattern])}
+                    className="rounded-full border px-2.5 py-1 text-[11px] text-muted-foreground transition hover:border-primary/40 hover:text-primary"
+                  >
+                    + {e.label}
+                  </button>
+                ))
+              }
+            </div>
+            <div className="mt-3">
+              <PathList
+                items={settings.excludePatterns}
+                onAdd={(v) => update('excludePatterns', [...settings.excludePatterns, v])}
+                onRemove={(v) => update('excludePatterns', settings.excludePatterns.filter((p) => p !== v))}
+                placeholder="*.tmp or logs/**"
+                label="exclusions"
+              />
+            </div>
+          </div>
+        </>
+      )}
 
       {/* ══════════════════════════════════════════════════════════════════════
           SECTION 3: Schedule
@@ -899,6 +1077,151 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
             description="Alert when a scheduled backup didn't run (device offline, agent unreachable)."
             checked={settings.notifyOnMissed}
             onChange={(v) => update('notifyOnMissed', v)}
+          />
+        </div>
+      </div>
+
+      <div className="mt-6">
+        <h3 className="text-sm font-semibold">GFS Retention</h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Keep longer-running restore points for grandfather-father-son retention.
+        </p>
+        <div className="mt-3 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+          <div>
+            <label className="text-xs text-muted-foreground">Daily</label>
+            <input
+              type="number"
+              min={1}
+              max={365}
+              value={settings.gfsDailyRetention}
+              onChange={(e) => update('gfsDailyRetention', Number(e.target.value) || 7)}
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">Weekly</label>
+            <input
+              type="number"
+              min={1}
+              max={260}
+              value={settings.gfsWeeklyRetention}
+              onChange={(e) => update('gfsWeeklyRetention', Number(e.target.value) || 4)}
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">Monthly</label>
+            <input
+              type="number"
+              min={1}
+              max={120}
+              value={settings.gfsMonthlyRetention}
+              onChange={(e) => update('gfsMonthlyRetention', Number(e.target.value) || 12)}
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">Yearly</label>
+            <input
+              type="number"
+              min={1}
+              max={25}
+              value={settings.gfsYearlyRetention}
+              onChange={(e) => update('gfsYearlyRetention', Number(e.target.value) || 3)}
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">Weekly backup day</label>
+            <select
+              value={settings.gfsWeeklyDayOfWeek}
+              onChange={(e) => update('gfsWeeklyDayOfWeek', Number(e.target.value))}
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+            >
+              {shortDayOfWeekOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-6 space-y-3">
+        <h3 className="text-sm font-semibold">Legal Hold</h3>
+        <ToggleRow
+          label="Enable legal hold"
+          description="Prevent backup pruning when a device or dataset is under preservation requirements."
+          checked={settings.legalHoldEnabled}
+          onChange={(v) => update('legalHoldEnabled', v)}
+        />
+        {settings.legalHoldEnabled && (
+          <div className="rounded-md border bg-muted/20 p-4">
+            <label className="text-xs text-muted-foreground">Reason</label>
+            <input
+              value={settings.legalHoldReason}
+              onChange={(e) => update('legalHoldReason', e.target.value)}
+              placeholder="Legal request, audit hold, incident investigation..."
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+        )}
+      </div>
+
+      <div className="mt-6">
+        <h3 className="text-sm font-semibold">Backup Window</h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Leave blank to allow backups at any time of day.
+        </p>
+        <div className="mt-3 grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className="text-xs text-muted-foreground">Start time</label>
+            <input
+              type="time"
+              value={settings.backupWindowStart}
+              onChange={(e) => update('backupWindowStart', e.target.value)}
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">End time</label>
+            <input
+              type="time"
+              value={settings.backupWindowEnd}
+              onChange={(e) => update('backupWindowEnd', e.target.value)}
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-6">
+        <h3 className="text-sm font-semibold">Bandwidth Limit</h3>
+        <div className="mt-3 max-w-sm">
+          <label className="text-xs text-muted-foreground">Mbps</label>
+          <input
+            type="number"
+            min={0}
+            value={settings.bandwidthLimitMbps}
+            onChange={(e) => update('bandwidthLimitMbps', Number(e.target.value) || 0)}
+            className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+          />
+          <p className="mt-1 text-[11px] text-muted-foreground">Set to 0 for unlimited throughput.</p>
+        </div>
+      </div>
+
+      <div className="mt-6">
+        <h3 className="text-sm font-semibold">Priority</h3>
+        <div className="mt-3 max-w-sm">
+          <label className="text-xs text-muted-foreground">Priority (1-100)</label>
+          <input
+            type="number"
+            min={1}
+            max={100}
+            value={settings.priority}
+            onChange={(e) => update('priority', Math.min(100, Math.max(1, Number(e.target.value) || 50)))}
+            className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
           />
         </div>
       </div>

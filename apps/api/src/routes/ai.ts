@@ -26,7 +26,7 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { assertNotLocked } from '../services/effectiveSettings';
 import { db } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions, auditLogs } from '../db/schema';
-import { eq, and, desc, gte, count, avg, sql as drizzleSql } from 'drizzle-orm';
+import { eq, and, desc, gte, lte, count, avg, sql as drizzleSql } from 'drizzle-orm';
 import {
   createAiSessionSchema as sharedCreateAiSessionSchema,
   sendAiMessageSchema,
@@ -803,7 +803,7 @@ aiRoutes.get(
     const baseConditions = [
       eq(aiSessions.orgId, orgId),
       gte(aiToolExecutions.createdAt, since),
-      drizzleSql`${aiToolExecutions.createdAt} <= ${until}`,
+      lte(aiToolExecutions.createdAt, until),
     ];
     if (statusFilter) {
       baseConditions.push(drizzleSql`${aiToolExecutions.status} = ${statusFilter}`);

@@ -11,6 +11,7 @@ import {
   backupSnapshots,
   backupPolicies,
   backupJobs,
+  configPolicyBackupSettings,
 } from '../db/schema';
 import { eq, and, lt, sql, isNull, or } from 'drizzle-orm';
 
@@ -72,20 +73,47 @@ export async function resolveGfsConfigForJob(
   jobId: string
 ): Promise<GfsConfig | null> {
   const [job] = await db
-    .select({ policyId: backupJobs.policyId })
+    .select({
+      featureLinkId: backupJobs.featureLinkId,
+      policyId: backupJobs.policyId,
+    })
     .from(backupJobs)
     .where(eq(backupJobs.id, jobId))
     .limit(1);
 
-  if (!job?.policyId) return null;
+  if (!job) return null;
 
-  const [policy] = await db
-    .select({ gfsConfig: backupPolicies.gfsConfig })
-    .from(backupPolicies)
-    .where(eq(backupPolicies.id, job.policyId))
-    .limit(1);
+  // New path: config policy backup settings
+  if (job.featureLinkId) {
+    const [settings] = await db
+      .select({ retention: configPolicyBackupSettings.retention })
+      .from(configPolicyBackupSettings)
+      .where(eq(configPolicyBackupSettings.featureLinkId, job.featureLinkId))
+      .limit(1);
 
-  return (policy?.gfsConfig as GfsConfig) ?? null;
+    if (settings?.retention) {
+      const r = settings.retention as Record<string, number>;
+      return {
+        daily: r.keepDaily,
+        weekly: r.keepWeekly,
+        monthly: r.keepMonthly,
+        yearly: r.keepYearly,
+      };
+    }
+  }
+
+  // Legacy fallback: deprecated backupPolicies
+  if (job.policyId) {
+    const [policy] = await db
+      .select({ gfsConfig: backupPolicies.gfsConfig })
+      .from(backupPolicies)
+      .where(eq(backupPolicies.id, job.policyId))
+      .limit(1);
+
+    return (policy?.gfsConfig as GfsConfig) ?? null;
+  }
+
+  return null;
 }
 
 // ── Apply GFS tags to a snapshot ─────────────────────────────────────────────

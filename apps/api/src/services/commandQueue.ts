@@ -109,7 +109,8 @@ export const CommandTypes = {
   REBOOT_SAFE_MODE: 'reboot_safe_mode',
   // Self-uninstall (remote wipe)
   SELF_UNINSTALL: 'self_uninstall',
-  // Backup verification
+  // Backup
+  BACKUP_RUN: 'backup_run',
   BACKUP_VERIFY: 'backup_verify',
   BACKUP_TEST_RESTORE: 'backup_test_restore',
   BACKUP_CLEANUP: 'backup_cleanup',
@@ -230,6 +231,7 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.REBOOT_SAFE_MODE,
   // Self-uninstall (remote wipe)
   CommandTypes.SELF_UNINSTALL,
+  CommandTypes.BACKUP_RUN,
   CommandTypes.BACKUP_VERIFY,
   CommandTypes.BACKUP_TEST_RESTORE,
   // VSS

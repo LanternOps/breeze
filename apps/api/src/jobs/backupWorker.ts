@@ -18,6 +18,9 @@ import {
   devices,
   configurationPolicies,
   configPolicyFeatureLinks,
+  configPolicyBackupSettings,
+  hypervVms,
+  sqlInstances,
 } from '../db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { resolveAllBackupAssignedDevices } from '../services/featureConfigResolver';
@@ -136,7 +139,7 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
           continue;
         }
 
-        const schedule = entry.settings.schedule as PolicySchedule | null;
+        const schedule = entry.settings?.schedule as PolicySchedule | null;
         if (!schedule?.frequency || !schedule.time) continue;
 
         // Check if due now (simple: compare hour:minute in UTC)
@@ -231,6 +234,95 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
   return { enqueued };
 }
 
+// ── Backup target resolution ─────────────────────────────────────────────────
+
+export interface BackupTarget {
+  commandType: string;
+  payload: Record<string, unknown>;
+}
+
+/**
+ * Resolves backup mode + targets into one or more typed commands.
+ *
+ * For file/system_image, returns a single backup_run command.
+ * For hyperv, queries discovered VMs and returns one hyperv_backup per VM (minus excludes).
+ * For mssql, queries discovered SQL instances and returns one mssql_backup per database (minus excludes).
+ */
+export async function resolveBackupTargets(
+  backupMode: string,
+  targets: Record<string, unknown>,
+  deviceId: string
+): Promise<BackupTarget[]> {
+  switch (backupMode) {
+    case 'file': {
+      const t = targets as { paths?: string[] };
+      return [{ commandType: 'backup_run', payload: { paths: t.paths ?? [] } }];
+    }
+
+    case 'system_image':
+      return [{ commandType: 'backup_run', payload: { systemImage: true } }];
+
+    case 'hyperv': {
+      const t = targets as {
+        consistencyType?: string;
+        excludeVms?: string[];
+      };
+      const vms = await db
+        .select({ vmName: hypervVms.vmName })
+        .from(hypervVms)
+        .where(eq(hypervVms.deviceId, deviceId));
+
+      const excludeSet = new Set(t.excludeVms ?? []);
+      return vms
+        .filter((vm) => !excludeSet.has(vm.vmName))
+        .map((vm) => ({
+          commandType: 'hyperv_backup',
+          payload: {
+            vmName: vm.vmName,
+            consistencyType: t.consistencyType ?? 'application',
+          },
+        }));
+    }
+
+    case 'mssql': {
+      const t = targets as {
+        backupType?: string;
+        excludeDatabases?: string[];
+      };
+      const instances = await db
+        .select({
+          instanceName: sqlInstances.instanceName,
+          databases: sqlInstances.databases,
+        })
+        .from(sqlInstances)
+        .where(eq(sqlInstances.deviceId, deviceId));
+
+      const excludeSet = new Set(t.excludeDatabases ?? []);
+      const results: BackupTarget[] = [];
+      for (const inst of instances) {
+        const dbs = (inst.databases as string[]) ?? [];
+        for (const database of dbs) {
+          if (!excludeSet.has(database)) {
+            results.push({
+              commandType: 'mssql_backup',
+              payload: {
+                instance: inst.instanceName,
+                database,
+                backupType: t.backupType ?? 'full',
+              },
+            });
+          }
+        }
+      }
+      return results;
+    }
+
+    default:
+      console.error(`[BackupWorker] Unknown backup mode "${backupMode}" for device ${deviceId}`);
+      return [];
+  }
+}
+
 // ── dispatch-backup ───────────────────────────────────────────────────────────
 
 async function processDispatchBackup(
@@ -261,24 +353,122 @@ async function processDispatchBackup(
     return { dispatched: false };
   }
 
+  // Resolve backup mode from config policy backup settings (if feature link exists)
+  const [job] = await db
+    .select({ featureLinkId: backupJobs.featureLinkId })
+    .from(backupJobs)
+    .where(eq(backupJobs.id, data.jobId))
+    .limit(1);
+
+  let backupMode = 'file';
+  let modeTargets: Record<string, unknown> = {};
+
+  if (job?.featureLinkId) {
+    const [settings] = await db
+      .select({
+        backupMode: configPolicyBackupSettings.backupMode,
+        targets: configPolicyBackupSettings.targets,
+      })
+      .from(configPolicyBackupSettings)
+      .where(eq(configPolicyBackupSettings.featureLinkId, job.featureLinkId))
+      .limit(1);
+
+    if (settings) {
+      backupMode = settings.backupMode;
+      modeTargets = (settings.targets as Record<string, unknown>) ?? {};
+    }
+  }
+
+  // Resolve targets into typed commands based on backup mode
+  const targets = await resolveBackupTargets(backupMode, modeTargets, data.deviceId);
+
+  if (targets.length === 0) {
+    console.warn(`[BackupWorker] No backup targets resolved for job ${data.jobId} (mode=${backupMode}, device=${data.deviceId}) — marking job failed`);
+    await db
+      .update(backupJobs)
+      .set({
+        status: 'failed',
+        completedAt: new Date(),
+        updatedAt: new Date(),
+        errorLog: `No backup targets resolved (mode=${backupMode}). Ensure discovery has been run for this device.`,
+      })
+      .where(eq(backupJobs.id, data.jobId));
+    return { dispatched: false };
+  }
+
   const providerConfig = config.providerConfig as Record<string, unknown>;
+  let sentCount = 0;
+  const failedTargets: string[] = [];
 
-  const command: AgentCommand = {
-    id: data.jobId,
-    type: 'backup_run',
-    payload: {
-      jobId: data.jobId,
-      configId: data.configId,
-      provider: config.provider,
-      providerConfig,
-      paths: providerConfig.paths ?? [],
-    },
-  };
+  for (let i = 0; i < targets.length; i++) {
+    const target = targets[i]!;
 
-  const sent = sendCommandToAgent(agentId, command);
-  if (!sent) {
+    // First target reuses the original jobId; additional targets get their own DB row
+    let commandJobId = data.jobId;
+    if (i > 0) {
+      const [newJob] = await db
+        .insert(backupJobs)
+        .values({
+          orgId: data.orgId,
+          configId: data.configId,
+          featureLinkId: job?.featureLinkId ?? null,
+          deviceId: data.deviceId,
+          status: 'running',
+          type: 'scheduled',
+          startedAt: new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .returning();
+      if (!newJob?.id) {
+        console.error(`[BackupWorker] Failed to create child job for target ${i} (${target.commandType}), skipping`);
+        failedTargets.push(`${target.commandType} (job creation failed)`);
+        continue;
+      }
+      commandJobId = newJob.id;
+    }
+
+    const command: AgentCommand = {
+      id: commandJobId,
+      type: target.commandType,
+      payload: {
+        jobId: commandJobId,
+        configId: data.configId,
+        provider: config.provider,
+        providerConfig,
+        ...target.payload,
+      },
+    };
+
+    const sent = sendCommandToAgent(agentId, command);
+    if (sent) {
+      sentCount++;
+    } else {
+      console.warn(`[BackupWorker] Failed to send ${target.commandType} command for job ${commandJobId}`);
+      failedTargets.push(target.commandType);
+      // Mark the child job as failed so it doesn't stay orphaned in "running"
+      if (commandJobId !== data.jobId) {
+        await db
+          .update(backupJobs)
+          .set({ status: 'failed', completedAt: new Date(), updatedAt: new Date(), errorLog: `Failed to send ${target.commandType} command to agent` })
+          .where(eq(backupJobs.id, commandJobId));
+      }
+    }
+  }
+
+  if (sentCount === 0) {
     await markJobFailed(data.jobId, 'Failed to send command to agent');
     return { dispatched: false };
+  }
+
+  if (failedTargets.length > 0) {
+    console.warn(
+      `[BackupWorker] Partial dispatch for job ${data.jobId}: ${sentCount}/${targets.length} sent, failed targets: ${failedTargets.join(', ')}`
+    );
+    await db
+      .update(backupJobs)
+      .set({ errorLog: `Partial dispatch: ${failedTargets.length} target(s) failed to send (${failedTargets.join(', ')})`, updatedAt: new Date() })
+      .where(eq(backupJobs.id, data.jobId));
   }
 
   await db
@@ -291,7 +481,7 @@ async function processDispatchBackup(
     .where(eq(backupJobs.id, data.jobId));
 
   console.log(
-    `[BackupWorker] Backup dispatched to agent ${agentId} for job ${data.jobId}`
+    `[BackupWorker] Dispatched ${sentCount}/${targets.length} ${backupMode} command(s) to agent ${agentId} for job ${data.jobId}`
   );
   return { dispatched: true };
 }

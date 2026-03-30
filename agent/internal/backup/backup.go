@@ -32,8 +32,9 @@ type BackupConfig struct {
 	Paths              []string
 	Schedule           time.Duration
 	Retention          int
-	VSSEnabled         bool // Windows only: create VSS shadow copy before backup
-	SystemStateEnabled bool // Collect system state alongside file backup
+	VSSEnabled         bool   // Windows only: create VSS shadow copy before backup
+	SystemStateEnabled bool   // Collect system state alongside file backup
+	StagingDir         string // Base directory for temporary staging (empty = OS temp dir)
 }
 
 // BackupJob tracks the state of a backup run.
@@ -72,6 +73,13 @@ func NewBackupManager(config BackupConfig) *BackupManager {
 // GetProvider returns the configured backup provider.
 func (m *BackupManager) GetProvider() providers.BackupProvider {
 	return m.config.Provider
+}
+
+// GetStagingDir returns the configured staging base directory, or an empty
+// string if none is set (callers should pass "" to os.MkdirTemp to use the
+// OS default temp directory).
+func (m *BackupManager) GetStagingDir() string {
+	return m.config.StagingDir
 }
 
 // Start begins scheduled backups.

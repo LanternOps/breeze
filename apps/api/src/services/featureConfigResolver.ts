@@ -378,9 +378,10 @@ export async function resolvePatchConfigForDevice(
 export async function resolveBackupConfigForDevice(
   deviceId: string
 ): Promise<{
-  settings: typeof configPolicyBackupSettings.$inferSelect;
+  settings: typeof configPolicyBackupSettings.$inferSelect | null;
   featureLinkId: string;
   configId: string | null;
+  inlineSettings: Record<string, unknown> | null;
 } | null> {
   const hierarchy = await loadDeviceHierarchy(deviceId);
   if (!hierarchy) return null;
@@ -393,6 +394,7 @@ export async function resolveBackupConfigForDevice(
       backupSettings: configPolicyBackupSettings,
       featureLinkId: configPolicyFeatureLinks.id,
       configId: configPolicyFeatureLinks.featurePolicyId,
+      inlineSettings: configPolicyFeatureLinks.inlineSettings,
       assignmentLevel: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
       assignmentCreatedAt: configPolicyAssignments.createdAt,
@@ -413,7 +415,7 @@ export async function resolveBackupConfigForDevice(
         eq(configPolicyFeatureLinks.featureType, 'backup')
       )
     )
-    .innerJoin(
+    .leftJoin(
       configPolicyBackupSettings,
       eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id)
     )
@@ -432,6 +434,7 @@ export async function resolveBackupConfigForDevice(
     settings: winner.backupSettings,
     featureLinkId: winner.featureLinkId,
     configId: winner.configId,
+    inlineSettings: winner.inlineSettings as Record<string, unknown> | null,
   };
 }
 
@@ -842,7 +845,7 @@ export interface BackupAssignedDevice {
   deviceId: string;
   featureLinkId: string;
   configId: string | null;
-  settings: typeof configPolicyBackupSettings.$inferSelect;
+  settings: typeof configPolicyBackupSettings.$inferSelect | null;
 }
 
 /**
@@ -858,6 +861,8 @@ export async function resolveAllBackupAssignedDevices(
   orgId: string
 ): Promise<BackupAssignedDevice[]> {
   // 1. Load all active backup feature links + settings + assignments for this org
+  // LEFT JOIN backup settings so devices are still found even when the
+  // normalized settings row is missing (e.g. feature link predates migration).
   const rows = await db
     .select({
       backupSettings: configPolicyBackupSettings,
@@ -868,14 +873,7 @@ export async function resolveAllBackupAssignedDevices(
       assignmentPriority: configPolicyAssignments.priority,
       assignmentCreatedAt: configPolicyAssignments.createdAt,
     })
-    .from(configPolicyBackupSettings)
-    .innerJoin(
-      configPolicyFeatureLinks,
-      and(
-        eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id),
-        eq(configPolicyFeatureLinks.featureType, 'backup')
-      )
-    )
+    .from(configPolicyFeatureLinks)
     .innerJoin(
       configurationPolicies,
       and(
@@ -887,7 +885,12 @@ export async function resolveAllBackupAssignedDevices(
     .innerJoin(
       configPolicyAssignments,
       eq(configPolicyAssignments.configPolicyId, configurationPolicies.id)
-    );
+    )
+    .leftJoin(
+      configPolicyBackupSettings,
+      eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id)
+    )
+    .where(eq(configPolicyFeatureLinks.featureType, 'backup'));
 
   if (rows.length === 0) return [];
 

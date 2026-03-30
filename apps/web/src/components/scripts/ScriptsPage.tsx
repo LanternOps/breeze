@@ -312,7 +312,7 @@ export default function ScriptsPage() {
         <button
           type="button"
           onClick={fetchScripts}
-          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
         >
           Try again
         </button>
@@ -338,7 +338,7 @@ export default function ScriptsPage() {
           </button>
           <a
             href="/scripts/new"
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:bg-primary/90"
           >
             <Plus className="h-4 w-4" />
             New Script
@@ -417,7 +417,7 @@ export default function ScriptsPage() {
                 type="button"
                 onClick={handleConfirmDelete}
                 disabled={submitting}
-                className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:bg-destructive/90 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {submitting ? 'Deleting...' : 'Delete'}
               </button>
