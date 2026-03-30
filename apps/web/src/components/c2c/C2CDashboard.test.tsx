@@ -72,6 +72,52 @@ describe('C2CDashboard', () => {
     await screen.findByText('No items found. Run a sync to populate backup items.');
   });
 
+  it('renders connection rows when data exists', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/c2c/connections') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'conn-1',
+              provider: 'microsoft365',
+              displayName: 'Contoso M365',
+              status: 'active',
+              lastSyncAt: null,
+              createdAt: '2026-03-29T00:00:00.000Z',
+            },
+          ],
+        });
+      }
+      if (url === '/c2c/configs' || url === '/c2c/jobs' || url === '/c2c/items') {
+        return makeJsonResponse({ data: [] });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<C2CDashboard />);
+
+    expect(await screen.findByText('Contoso M365')).toBeTruthy();
+    expect(screen.getByText('Microsoft 365')).toBeTruthy();
+  });
+
+  it('shows error state on fetch failure', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/c2c/connections') {
+        return makeJsonResponse({}, false, 500);
+      }
+      if (url === '/c2c/configs' || url === '/c2c/jobs' || url === '/c2c/items') {
+        return makeJsonResponse({ data: [] });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<C2CDashboard />);
+
+    expect(await screen.findByText(/Failed to fetch connections/i)).toBeTruthy();
+  });
+
   it('opens the add connection wizard when the button is clicked', async () => {
     render(<C2CDashboard />);
 

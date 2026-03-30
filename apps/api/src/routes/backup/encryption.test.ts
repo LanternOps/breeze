@@ -180,6 +180,41 @@ describe('encryption routes', () => {
     expect(body.newKey.id).toBe(NEW_KEY_ID);
   });
 
+  it('should get single key by id', async () => {
+    selectMock.mockReturnValueOnce(chainMock([makeKey()]));
+
+    const res = await app.request(`/backup/encryption/keys/${KEY_ID}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.id).toBe(KEY_ID);
+    expect(body.name).toBe('Primary key');
+    expect(body.keyType).toBe('aes_256');
+    expect(body.isActive).toBe(true);
+    // Verify private key material is NOT in the response
+    expect(body.publicKeyPem).toBeUndefined();
+    expect(body.encryptedPrivateKey).toBeUndefined();
+  });
+
+  it('should reject rotating inactive key', async () => {
+    selectMock.mockReturnValueOnce(chainMock([makeKey({ isActive: false })]));
+
+    const res = await app.request(`/backup/encryption/keys/${KEY_ID}/rotate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        newKeyHash: 'fedcba0987654321fedcba0987654321',
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe('Cannot rotate an inactive key');
+  });
+
   it('enforces multi-tenant isolation', async () => {
     selectMock.mockReturnValueOnce(chainMock([]));
 

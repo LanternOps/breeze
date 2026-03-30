@@ -198,4 +198,27 @@ describe('vault routes', () => {
       expect.objectContaining({ userId: 'user-123' })
     );
   });
+
+  it('should get vault status', async () => {
+    selectMock.mockReturnValueOnce(chainMock([makeVault({
+      lastSyncAt: new Date('2026-03-28T12:00:00.000Z'),
+      lastSyncStatus: 'completed',
+      lastSyncSnapshotId: 'snap-ext-001',
+      syncSizeBytes: 1073741824,
+    })]));
+
+    const res = await app.request(`/backup/vault/${VAULT_ID}/status`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.id).toBe(VAULT_ID);
+    expect(body.deviceId).toBe(DEVICE_ID);
+    expect(body.isActive).toBe(true);
+    expect(body.lastSyncStatus).toBe('completed');
+    expect(body.lastSyncSnapshotId).toBe('snap-ext-001');
+    expect(body.syncSizeBytes).toBe(1073741824);
+  });
 });

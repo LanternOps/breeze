@@ -155,6 +155,37 @@ describe('c2c connection routes', () => {
     expect(await res.json()).toEqual({ deleted: true });
   });
 
+  it('should test an active connection', async () => {
+    selectMock.mockReturnValueOnce(chainMock([makeConnection({ status: 'active' })]));
+
+    const res = await app.request(`/c2c/connections/${CONNECTION_ID}/test`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.id).toBe(CONNECTION_ID);
+    expect(body.status).toBe('success');
+    expect(body.message).toBe('Connection is active and credentials are configured');
+    expect(body.checkedAt).toBeDefined();
+  });
+
+  it('should report failed status when testing a revoked connection', async () => {
+    selectMock.mockReturnValueOnce(chainMock([makeConnection({ status: 'revoked' })]));
+
+    const res = await app.request(`/c2c/connections/${CONNECTION_ID}/test`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.id).toBe(CONNECTION_ID);
+    expect(body.status).toBe('failed');
+    expect(body.message).toBe('Connection status is revoked');
+  });
+
   it('never returns secrets from GET responses', async () => {
     selectMock.mockReturnValueOnce(chainMock([makeConnection()]));
 
