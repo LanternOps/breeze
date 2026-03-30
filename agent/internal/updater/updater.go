@@ -470,6 +470,10 @@ func (u *Updater) downloadFromURL(rawURL string) (string, error) {
 	return tempFile.Name(), nil
 }
 
+// ErrFileLocked is returned when the binary is locked by another process.
+// This is transient (not permanent like ErrReadOnlyFS) and should be retried.
+var ErrFileLocked = fmt.Errorf("binary is locked by another process")
+
 // checkWritable verifies we can write to the target binary path by opening
 // the existing file for writing without truncating it. This tests file-level
 // write permission, matching what replaceBinary (os.Create) does, and works
@@ -477,6 +481,9 @@ func (u *Updater) downloadFromURL(rawURL string) (string, error) {
 func checkWritable(binaryPath string) error {
 	f, err := os.OpenFile(binaryPath, os.O_WRONLY, 0)
 	if err != nil {
+		if isFileLocked(err) {
+			return fmt.Errorf("%w: %v", ErrFileLocked, err)
+		}
 		return err
 	}
 	return f.Close()
