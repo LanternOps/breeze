@@ -5,6 +5,9 @@
 <?ifndef AgentExePath?>
 <?define AgentExePath=..\breeze-agent-windows-amd64.exe?>
 <?endif?>
+<?ifndef BackupExePath?>
+<?define BackupExePath=..\breeze-backup-windows-amd64.exe?>
+<?endif?>
 <?ifndef UserTaskXmlPath?>
 <?define UserTaskXmlPath=..\service\windows\breeze-agent-user-task.xml?>
 <?endif?>
@@ -64,6 +67,11 @@
             Stop="both"
             Remove="uninstall"
             Wait="yes" />
+        </Component>
+
+        <Component Id="cmpBreezeBackupExe" Guid="*">
+          <File Id="filBreezeBackupExe" Name="breeze-backup.exe"
+                Source="$(var.BackupExePath)" KeyPath="yes" />
         </Component>
 
         <!-- Register BreezeAgent to run in Safe Mode with Networking. Without this,
@@ -166,6 +174,7 @@
 
     <Feature Id="MainFeature" Title="Breeze Agent" Level="1">
       <ComponentRef Id="cmpBreezeAgentExe" />
+      <ComponentRef Id="cmpBreezeBackupExe" />
       <ComponentRef Id="cmpSafeBootNetworkReg" />
       <ComponentRef Id="cmpUserTaskXml" />
       <ComponentRef Id="cmpInstallWindowsPs1" />

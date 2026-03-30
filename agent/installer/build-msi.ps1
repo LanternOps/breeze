@@ -6,6 +6,9 @@ param(
     [string]$AgentExePath = "",
 
     [Parameter(Mandatory = $false)]
+    [string]$BackupExePath = "",
+
+    [Parameter(Mandatory = $false)]
     [string]$OutputPath = ""
 )
 
@@ -64,6 +67,7 @@ $wixArgs = @(
     "-arch", "x64",
     "-d", "Version=$msiVersion",
     "-d", "AgentExePath=$AgentExePath",
+    "-d", "BackupExePath=$BackupExePath",
     "-d", "UserTaskXmlPath=$taskXmlPath",
     "-d", "InstallUserHelperScriptPath=$installUserHelperScriptPath",
     "-d", "RemoveUserHelperScriptPath=$removeUserHelperScriptPath",
