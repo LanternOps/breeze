@@ -278,6 +278,14 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
     return merged;
   });
 
+  // Backup mode and targets
+  const [backupMode, setBackupMode] = useState<string>(
+    (effectiveLink?.inlineSettings as Record<string, unknown>)?.backupMode as string ?? 'file'
+  );
+  const [targets, setTargets] = useState<Record<string, unknown>>(
+    (effectiveLink?.inlineSettings as Record<string, unknown>)?.targets as Record<string, unknown> ?? {}
+  );
+
   // ── Fetch existing configs ─────────────────────────────────────────────────
 
   const fetchConfigs = useCallback(async () => {
@@ -302,12 +310,15 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
     const link = existingLink ?? parentLink;
     if (link?.featurePolicyId) setSelectedConfigId(link.featurePolicyId);
     if (link?.inlineSettings) {
+      const stored = link.inlineSettings as Record<string, unknown>;
       setSettings((prev) => {
-        const merged = { ...prev, ...(link.inlineSettings as Partial<BackupScheduleSettings>) };
+        const merged = { ...prev, ...(stored as Partial<BackupScheduleSettings>) };
         if (!Array.isArray(merged.paths)) merged.paths = [...scheduleDefaults.paths];
         if (!Array.isArray(merged.excludePatterns)) merged.excludePatterns = [...scheduleDefaults.excludePatterns];
         return merged;
       });
+      if (stored.backupMode) setBackupMode(stored.backupMode as string);
+      if (stored.targets) setTargets(stored.targets as Record<string, unknown>);
     }
   }, [existingLink, parentLink]);
 
@@ -418,7 +429,7 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
     const result = await save(existingLink?.id ?? null, {
       featureType: 'backup',
       featurePolicyId: configId,
-      inlineSettings: settings,
+      inlineSettings: { ...settings, backupMode, targets },
     });
     if (result) onLinkChanged(result, 'backup');
   };
@@ -434,7 +445,7 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
     const result = await save(null, {
       featureType: 'backup',
       featurePolicyId: selectedConfigId || null,
-      inlineSettings: settings,
+      inlineSettings: { ...settings, backupMode, targets },
     });
     if (result) onLinkChanged(result, 'backup');
   };
@@ -464,6 +475,143 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
       onOverride={isInherited ? handleOverride : undefined}
       onRevert={!isInherited && !!linkedPolicyId && !!existingLink ? handleRevert : undefined}
     >
+      {/* ══════════════════════════════════════════════════════════════════════
+          SECTION 0: Backup Type
+          ══════════════════════════════════════════════════════════════════════ */}
+      <div className="space-y-3">
+        <label className="text-sm font-medium text-zinc-300">Backup Type</label>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {[
+            { value: 'file', label: 'File Backup' },
+            { value: 'hyperv', label: 'Hyper-V VMs' },
+            { value: 'mssql', label: 'SQL Server' },
+            { value: 'system_image', label: 'System Image' },
+          ].map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => {
+                setBackupMode(opt.value);
+                setTargets({});
+              }}
+              className={`rounded-md border px-3 py-2 text-sm ${
+                backupMode === opt.value
+                  ? 'border-blue-500 bg-blue-500/10 text-blue-400'
+                  : 'border-zinc-700 text-zinc-400 hover:border-zinc-600'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Mode-specific target fields ──────────────────────────────────────── */}
+      {backupMode === 'hyperv' && (
+        <div className="mt-4 space-y-4 rounded-md border border-zinc-700 bg-zinc-800/40 p-4">
+          <p className="text-xs text-muted-foreground">
+            All discovered VMs are backed up automatically. Exclude specific ones below.
+          </p>
+          <div>
+            <label className="text-sm font-medium text-zinc-300">Export Path</label>
+            <input
+              value={(targets.exportPath as string) ?? ''}
+              onChange={(e) => setTargets({ ...targets, exportPath: e.target.value })}
+              placeholder="C:\HyperVBackups"
+              className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+          <div>
+            <label className="text-sm font-medium text-zinc-300">Consistency Type</label>
+            <select
+              value={(targets.consistencyType as string) ?? 'applicationConsistent'}
+              onChange={(e) => setTargets({ ...targets, consistencyType: e.target.value })}
+              className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              <option value="applicationConsistent">Application-Consistent (VSS)</option>
+              <option value="crashConsistent">Crash-Consistent</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-sm font-medium text-zinc-300">Exclude VMs</label>
+            <input
+              value={Array.isArray(targets.excludeVms) ? (targets.excludeVms as string[]).join(', ') : ''}
+              onChange={(e) =>
+                setTargets({
+                  ...targets,
+                  excludeVms: e.target.value.split(',').map((s) => s.trim()).filter(Boolean),
+                })
+              }
+              placeholder="VM-Dev-01, VM-Test-02"
+              className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+            <p className="mt-1 text-[11px] text-muted-foreground">Comma-separated VM names to skip.</p>
+          </div>
+        </div>
+      )}
+
+      {backupMode === 'mssql' && (
+        <div className="mt-4 space-y-4 rounded-md border border-zinc-700 bg-zinc-800/40 p-4">
+          <p className="text-xs text-muted-foreground">
+            All discovered databases are backed up automatically. Exclude specific ones below.
+          </p>
+          <div>
+            <label className="text-sm font-medium text-zinc-300">Output Path</label>
+            <input
+              value={(targets.outputPath as string) ?? ''}
+              onChange={(e) => setTargets({ ...targets, outputPath: e.target.value })}
+              placeholder="C:\SQLBackups"
+              className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+          <div>
+            <label className="text-sm font-medium text-zinc-300">Backup Type</label>
+            <select
+              value={(targets.sqlBackupType as string) ?? 'full'}
+              onChange={(e) => setTargets({ ...targets, sqlBackupType: e.target.value })}
+              className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              <option value="full">Full</option>
+              <option value="differential">Differential</option>
+              <option value="log">Transaction Log</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-sm font-medium text-zinc-300">Exclude Databases</label>
+            <input
+              value={Array.isArray(targets.excludeDatabases) ? (targets.excludeDatabases as string[]).join(', ') : ''}
+              onChange={(e) =>
+                setTargets({
+                  ...targets,
+                  excludeDatabases: e.target.value.split(',').map((s) => s.trim()).filter(Boolean),
+                })
+              }
+              placeholder="tempdb, model"
+              className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+            <p className="mt-1 text-[11px] text-muted-foreground">Comma-separated database names to skip.</p>
+          </div>
+        </div>
+      )}
+
+      {backupMode === 'system_image' && (
+        <div className="mt-4 rounded-md border border-zinc-700 bg-zinc-800/40 p-4">
+          <div className="flex items-center justify-between rounded-md border border-zinc-700 bg-background px-4 py-3">
+            <div>
+              <p className="text-sm font-medium">Include System State</p>
+              <p className="text-xs text-muted-foreground">Capture registry, boot files, and system components alongside the disk image.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setTargets({ ...targets, includeSystemState: !targets.includeSystemState })}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${targets.includeSystemState ? 'bg-emerald-500/80' : 'bg-muted'}`}
+            >
+              <span className={`inline-block h-5 w-5 rounded-full bg-white transition ${targets.includeSystemState ? 'translate-x-5' : 'translate-x-1'}`} />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ══════════════════════════════════════════════════════════════════════
           SECTION 1: Storage Configuration
           ══════════════════════════════════════════════════════════════════════ */}
@@ -708,58 +856,62 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
       </div>
 
       {/* ══════════════════════════════════════════════════════════════════════
-          SECTION 2: What to Back Up
+          SECTION 2: What to Back Up (file mode only)
           ══════════════════════════════════════════════════════════════════════ */}
-      <div className="mt-6">
-        <h3 className="text-sm font-semibold flex items-center gap-2">
-          <FolderOpen className="h-4 w-4" />
-          Backup Paths
-        </h3>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Directories and files to include in backups. Agents back up these paths on each assigned device.
-        </p>
-        <div className="mt-3">
-          <PathList
-            items={settings.paths}
-            onAdd={(v) => update('paths', [...settings.paths, v])}
-            onRemove={(v) => update('paths', settings.paths.filter((p) => p !== v))}
-            placeholder="C:\Users or /home or /etc"
-            label="paths"
-          />
-        </div>
-      </div>
+      {backupMode === 'file' && (
+        <>
+          <div className="mt-6">
+            <h3 className="text-sm font-semibold flex items-center gap-2">
+              <FolderOpen className="h-4 w-4" />
+              Backup Paths
+            </h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Directories and files to include in backups. Agents back up these paths on each assigned device.
+            </p>
+            <div className="mt-3">
+              <PathList
+                items={settings.paths}
+                onAdd={(v) => update('paths', [...settings.paths, v])}
+                onRemove={(v) => update('paths', settings.paths.filter((p) => p !== v))}
+                placeholder="C:\Users or /home or /etc"
+                label="paths"
+              />
+            </div>
+          </div>
 
-      {/* ── Exclusion patterns ──────────────────────────────────────────── */}
-      <div className="mt-6">
-        <h3 className="text-sm font-semibold">Exclusion Patterns</h3>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Glob patterns to skip during backup. Click a common pattern to add it.
-        </p>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {commonExclusions
-            .filter((e) => !settings.excludePatterns.includes(e.pattern))
-            .map((e) => (
-              <button
-                key={e.pattern}
-                type="button"
-                onClick={() => update('excludePatterns', [...settings.excludePatterns, e.pattern])}
-                className="rounded-full border px-2.5 py-1 text-[11px] text-muted-foreground transition hover:border-primary/40 hover:text-primary"
-              >
-                + {e.label}
-              </button>
-            ))
-          }
-        </div>
-        <div className="mt-3">
-          <PathList
-            items={settings.excludePatterns}
-            onAdd={(v) => update('excludePatterns', [...settings.excludePatterns, v])}
-            onRemove={(v) => update('excludePatterns', settings.excludePatterns.filter((p) => p !== v))}
-            placeholder="*.tmp or logs/**"
-            label="exclusions"
-          />
-        </div>
-      </div>
+          {/* ── Exclusion patterns ──────────────────────────────────────────── */}
+          <div className="mt-6">
+            <h3 className="text-sm font-semibold">Exclusion Patterns</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Glob patterns to skip during backup. Click a common pattern to add it.
+            </p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {commonExclusions
+                .filter((e) => !settings.excludePatterns.includes(e.pattern))
+                .map((e) => (
+                  <button
+                    key={e.pattern}
+                    type="button"
+                    onClick={() => update('excludePatterns', [...settings.excludePatterns, e.pattern])}
+                    className="rounded-full border px-2.5 py-1 text-[11px] text-muted-foreground transition hover:border-primary/40 hover:text-primary"
+                  >
+                    + {e.label}
+                  </button>
+                ))
+              }
+            </div>
+            <div className="mt-3">
+              <PathList
+                items={settings.excludePatterns}
+                onAdd={(v) => update('excludePatterns', [...settings.excludePatterns, v])}
+                onRemove={(v) => update('excludePatterns', settings.excludePatterns.filter((p) => p !== v))}
+                placeholder="*.tmp or logs/**"
+                label="exclusions"
+              />
+            </div>
+          </div>
+        </>
+      )}
 
       {/* ══════════════════════════════════════════════════════════════════════
           SECTION 3: Schedule
