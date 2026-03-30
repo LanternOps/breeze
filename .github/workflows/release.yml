@@ -430,6 +430,18 @@ jobs:
           name: breeze-agent-darwin-arm64
           path: staging/
 
+      - name: Download backup darwin/amd64 artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: breeze-backup-darwin-amd64
+          path: staging/
+
+      - name: Download backup darwin/arm64 artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: breeze-backup-darwin-arm64
+          path: staging/
+
       - name: Import certificate into keychain
         if: vars.ENABLE_MACOS_SIGNING == 'true'
         env:
@@ -459,7 +471,8 @@ jobs:
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
-          for bin in staging/breeze-agent-darwin-*; do
+          for bin in staging/breeze-agent-darwin-* staging/breeze-backup-darwin-*; do
+            [ -f "$bin" ] || continue
             codesign --force --options runtime \
               --entitlements agent/entitlements/agent-macos.entitlements.plist \
               --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$bin"
@@ -474,7 +487,8 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          for bin in staging/breeze-agent-darwin-*; do
+          for bin in staging/breeze-agent-darwin-* staging/breeze-backup-darwin-*; do
+            [ -f "$bin" ] || continue
             ZIP_PATH="${bin}.zip"
             ditto -c -k --keepParent "$bin" "$ZIP_PATH"
 
@@ -514,6 +528,7 @@ jobs:
           for arch in amd64 arm64; do
             agent/installer/macos/build-pkg.sh \
               "staging/breeze-agent-darwin-${arch}" \
+              "staging/breeze-backup-darwin-${arch}" \
               "$VERSION" \
               "$arch" \
               "staging/breeze-agent-darwin-${arch}.pkg"
