@@ -30,7 +30,7 @@ function safeHandler(toolName: string, fn: HypervHandler): HypervHandler {
       return await fn(input, auth);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Internal error';
-      console.error(`[hyperv:${toolName}]`, message, err);
+      console.error(`[hyperv:${toolName}] ${err?.constructor?.name ?? 'Error'}:`, message, err);
       return JSON.stringify({ error: 'Operation failed. Check server logs for details.' });
     }
   };

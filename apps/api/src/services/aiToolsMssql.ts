@@ -38,7 +38,7 @@ function safeHandler(toolName: string, fn: MssqlHandler): MssqlHandler {
       return await fn(input, auth);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Internal error';
-      console.error(`[mssql:${toolName}]`, message, err);
+      console.error(`[mssql:${toolName}] ${err?.constructor?.name ?? 'Error'}:`, message, err);
       return JSON.stringify({ error: 'Operation failed. Check server logs for details.' });
     }
   };

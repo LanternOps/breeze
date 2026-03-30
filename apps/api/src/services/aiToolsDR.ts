@@ -34,7 +34,7 @@ function safeHandler(toolName: string, fn: DRHandler): DRHandler {
       return await fn(input, auth);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Internal error';
-      console.error(`[dr:${toolName}]`, message, err);
+      console.error(`[dr:${toolName}] ${err?.constructor?.name ?? 'Error'}:`, message, err);
       return JSON.stringify({ error: 'Operation failed. Check server logs for details.' });
     }
   };
@@ -456,8 +456,10 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
         .returning();
 
       return JSON.stringify({
-        success: true,
+        success: dispatchStatus !== 'failed',
+        warning: dispatchStatus === 'partial' ? `${failedDispatches.length} group(s) failed to dispatch` : undefined,
         executionId: execution.id,
+        dispatchStatus,
         status: updatedExecution?.status ?? execution.status,
         planId: plan.id,
         planName: plan.name,

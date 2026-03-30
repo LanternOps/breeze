@@ -46,7 +46,7 @@ function safeHandler(toolName: string, fn: C2CHandler): C2CHandler {
       return await fn(input, auth);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Internal error';
-      console.error(`[c2c:${toolName}]`, message, err);
+      console.error(`[c2c:${toolName}] ${err?.constructor?.name ?? 'Error'}:`, message, err);
       return JSON.stringify({ error: 'Operation failed. Check server logs for details.' });
     }
   };
@@ -54,11 +54,6 @@ function safeHandler(toolName: string, fn: C2CHandler): C2CHandler {
 
 function clampLimit(value: unknown, fallback = 25, max = 100): number {
   return Math.min(Math.max(1, Number(value) || fallback), max);
-}
-
-function maskSecret(value: string): string {
-  if (value.length <= 4) return '****';
-  return `****${value.slice(-4)}`;
 }
 
 // ============================================
@@ -104,9 +99,9 @@ export function registerC2CTools(aiTools: Map<string, AiTool>): void {
           displayName: c2cConnections.displayName,
           tenantId: c2cConnections.tenantId,
           clientId: c2cConnections.clientId,
-          clientSecret: c2cConnections.clientSecret,
-          refreshToken: c2cConnections.refreshToken,
-          accessToken: c2cConnections.accessToken,
+          hasClientSecret: sql<boolean>`${c2cConnections.clientSecret} IS NOT NULL`.as('has_client_secret'),
+          hasRefreshToken: sql<boolean>`${c2cConnections.refreshToken} IS NOT NULL`.as('has_refresh_token'),
+          hasAccessToken: sql<boolean>`${c2cConnections.accessToken} IS NOT NULL`.as('has_access_token'),
           tokenExpiresAt: c2cConnections.tokenExpiresAt,
           scopes: c2cConnections.scopes,
           status: c2cConnections.status,
@@ -119,22 +114,7 @@ export function registerC2CTools(aiTools: Map<string, AiTool>): void {
         .orderBy(desc(c2cConnections.updatedAt))
         .limit(limit);
 
-      const connections = rows.map((row) => ({
-        id: row.id,
-        provider: row.provider,
-        displayName: row.displayName,
-        tenantId: row.tenantId,
-        clientId: row.clientId ? maskSecret(row.clientId) : null,
-        hasClientSecret: Boolean(row.clientSecret),
-        hasRefreshToken: Boolean(row.refreshToken),
-        hasAccessToken: Boolean(row.accessToken),
-        tokenExpiresAt: row.tokenExpiresAt,
-        scopes: row.scopes,
-        status: row.status,
-        lastSyncAt: row.lastSyncAt,
-        createdAt: row.createdAt,
-        updatedAt: row.updatedAt,
-      }));
+      const connections = rows;
 
       return JSON.stringify({ connections, showing: connections.length });
     }),

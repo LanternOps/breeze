@@ -281,9 +281,18 @@ export default function C2CDashboard() {
                         type="button"
                         className="rounded p-1 hover:bg-muted"
                         title="Sync now"
-                        onClick={() => {
-                          fetchWithAuth(`/c2c/connections/${conn.id}/sync`, { method: 'POST' })
-                            .then(() => fetchConnections());
+                        onClick={async () => {
+                          try {
+                            const res = await fetchWithAuth(`/c2c/connections/${conn.id}/sync`, { method: 'POST' });
+                            if (!res.ok) {
+                              const body = await res.json().catch(() => null);
+                              setError(body?.error ?? 'Sync failed');
+                              return;
+                            }
+                            await fetchConnections();
+                          } catch (err) {
+                            setError(err instanceof Error ? err.message : 'Sync request failed');
+                          }
                         }}
                       >
                         <RefreshCw className="h-4 w-4" />

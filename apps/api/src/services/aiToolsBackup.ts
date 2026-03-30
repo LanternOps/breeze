@@ -214,6 +214,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
 
         // Latest backup job for device
+        const jobOrgCond = orgWhere(auth, backupJobs.orgId);
         const [latestJob] = await db.select({
           id: backupJobs.id,
           status: backupJobs.status,
@@ -222,7 +223,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
           totalSize: backupJobs.totalSize,
           errorCount: backupJobs.errorCount,
         }).from(backupJobs)
-          .where(eq(backupJobs.deviceId, deviceId))
+          .where(and(eq(backupJobs.deviceId, deviceId), ...(jobOrgCond ? [jobOrgCond] : [])))
           .orderBy(desc(backupJobs.startedAt))
           .limit(1);
 
@@ -233,16 +234,18 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
           .where(and(
             eq(backupJobs.deviceId, deviceId),
             eq(backupJobs.status, 'completed'),
+            ...(jobOrgCond ? [jobOrgCond] : []),
           ))
           .orderBy(desc(backupJobs.completedAt))
           .limit(1);
 
         // Total snapshot count and size
+        const snapOrgCond = orgWhere(auth, backupSnapshots.orgId);
         const [snapshotStats] = await db.select({
           count: sql<number>`count(*)`,
           totalSize: sql<number>`coalesce(sum(${backupSnapshots.size}), 0)`,
         }).from(backupSnapshots)
-          .where(eq(backupSnapshots.deviceId, deviceId));
+          .where(and(eq(backupSnapshots.deviceId, deviceId), ...(snapOrgCond ? [snapOrgCond] : [])));
 
         return JSON.stringify({
           deviceId,
@@ -421,10 +424,30 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         type: 'manual',
       }).returning({ id: backupJobs.id, status: backupJobs.status, createdAt: backupJobs.createdAt });
 
+      if (!job) return JSON.stringify({ error: 'Failed to create backup job' });
+
+      // Dispatch command to agent
+      try {
+        const { error: dispatchError } = await queueCommandForExecution(
+          deviceId,
+          CommandTypes.BACKUP_RUN,
+          { jobId: job.id, configId },
+          { userId: auth.user?.id }
+        );
+
+        if (dispatchError) {
+          await db.update(backupJobs).set({ status: 'failed', errorLog: 'Command dispatch failed' }).where(eq(backupJobs.id, job.id));
+          return JSON.stringify({ error: 'Failed to dispatch backup command to agent' });
+        }
+      } catch (dispatchErr) {
+        await db.update(backupJobs).set({ status: 'failed', errorLog: 'Command dispatch failed' }).where(eq(backupJobs.id, job.id));
+        return JSON.stringify({ error: 'Failed to dispatch backup command to agent' });
+      }
+
       return JSON.stringify({
         success: true,
-        jobId: job?.id,
-        status: job?.status,
+        jobId: job.id,
+        status: job.status,
         configName: config.name,
         deviceId,
         message: `On-demand backup job created for config "${config.name}"`,
