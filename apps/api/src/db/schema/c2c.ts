@@ -24,6 +24,7 @@ export const c2cConnections = pgTable(
       .references(() => organizations.id),
     provider: varchar('provider', { length: 30 }).notNull(),
     displayName: varchar('display_name', { length: 200 }).notNull(),
+    authMethod: varchar('auth_method', { length: 20 }).notNull().default('manual'),
     tenantId: varchar('tenant_id', { length: 100 }),
     clientId: varchar('client_id', { length: 200 }),
     // SECURITY TODO: These three fields store OAuth secrets as plaintext.
@@ -105,6 +106,22 @@ export const c2cBackupJobs = pgTable(
     statusIdx: index('c2c_jobs_status_idx').on(table.status),
   })
 );
+
+// ── C2C Consent Sessions (OAuth admin consent state) ───────────────────────
+
+export const c2cConsentSessions = pgTable('c2c_consent_sessions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id')
+    .notNull()
+    .references(() => organizations.id),
+  state: varchar('state', { length: 64 }).notNull().unique(),
+  provider: varchar('provider', { length: 30 }).notNull().default('microsoft_365'),
+  displayName: varchar('display_name', { length: 200 }),
+  scopes: text('scopes'),
+  redirectUrl: varchar('redirect_url', { length: 500 }),
+  expiresAt: timestamp('expires_at').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
 
 // ── C2C Backup Items ────────────────────────────────────────────────────────
 

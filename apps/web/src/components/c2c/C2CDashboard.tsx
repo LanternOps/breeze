@@ -125,6 +125,28 @@ export default function C2CDashboard() {
   const [itemSearch, setItemSearch] = useState('');
   const [itemTypeFilter, setItemTypeFilter] = useState('');
   const [itemUserFilter, setItemUserFilter] = useState('');
+  const [consentSuccess, setConsentSuccess] = useState<string>();
+  const [consentError, setConsentError] = useState<string>();
+
+  // Handle callback params from M365 admin consent redirect
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('c2c_connected') === 'true') {
+      setConsentSuccess('Microsoft 365 connection created successfully');
+      // Clean URL params
+      const url = new URL(window.location.href);
+      url.searchParams.delete('c2c_connected');
+      url.searchParams.delete('connectionId');
+      window.history.replaceState({}, '', url.pathname);
+    }
+    const c2cError = params.get('c2c_error');
+    if (c2cError) {
+      setConsentError(decodeURIComponent(c2cError));
+      const url = new URL(window.location.href);
+      url.searchParams.delete('c2c_error');
+      window.history.replaceState({}, '', url.pathname);
+    }
+  }, []);
 
   const fetchConnections = useCallback(async () => {
     try {
@@ -208,6 +230,27 @@ export default function C2CDashboard() {
   return (
     <div className="space-y-6">
       <AlphaBadge variant="banner" disclaimer="Cloud-to-cloud backup for Microsoft 365 and Google Workspace is in early access. OAuth connections, incremental sync, and granular item restore are functional but API rate limits may affect large tenants." />
+
+      {consentSuccess && (
+        <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300">
+          <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
+          {consentSuccess}
+          <button type="button" onClick={() => setConsentSuccess(undefined)} className="ml-auto text-emerald-600 hover:text-emerald-800 dark:text-emerald-400">
+            &times;
+          </button>
+        </div>
+      )}
+
+      {consentError && (
+        <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300">
+          <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+          M365 consent failed: {consentError}
+          <button type="button" onClick={() => setConsentError(undefined)} className="ml-auto text-red-600 hover:text-red-800 dark:text-red-400">
+            &times;
+          </button>
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Cloud-to-Cloud Backup</h1>
