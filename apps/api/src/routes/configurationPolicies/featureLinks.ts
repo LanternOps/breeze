@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import type { AuthContext } from '../../middleware/auth';
 import { requireScope } from '../../middleware/auth';
+import { backupInlineSettingsSchema } from '@breeze/shared/validators';
 import { writeRouteAudit } from '../../services/auditEvents';
 import {
   getConfigPolicy,
@@ -63,6 +64,14 @@ featureLinkRoutes.post(
       }
     }
 
+    if (data.featureType === 'backup' && data.inlineSettings) {
+      const parsed = backupInlineSettingsSchema.safeParse(data.inlineSettings);
+      if (!parsed.success) {
+        return c.json({ error: 'Invalid backup settings', details: parsed.error.flatten() }, 400);
+      }
+      data.inlineSettings = parsed.data;
+    }
+
     try {
       const link = await addFeatureLink(
         id,
@@ -115,6 +124,18 @@ featureLinkRoutes.patch(
         if (!validation.valid) {
           return c.json({ error: validation.error }, 400);
         }
+      }
+    }
+
+    if (data.inlineSettings) {
+      const links = await listFeatureLinks(id);
+      const link = links.find((l: any) => l.id === linkId);
+      if (link?.featureType === 'backup') {
+        const parsed = backupInlineSettingsSchema.safeParse(data.inlineSettings);
+        if (!parsed.success) {
+          return c.json({ error: 'Invalid backup settings', details: parsed.error.flatten() }, 400);
+        }
+        data.inlineSettings = parsed.data;
       }
     }
 
