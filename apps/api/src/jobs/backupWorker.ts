@@ -318,7 +318,8 @@ export async function resolveBackupTargets(
     }
 
     default:
-      return [{ commandType: 'backup_run', payload: {} }];
+      console.error(`[BackupWorker] Unknown backup mode "${backupMode}" for device ${deviceId}`);
+      return [];
   }
 }
 
@@ -382,23 +383,51 @@ async function processDispatchBackup(
   const targets = await resolveBackupTargets(backupMode, modeTargets, data.deviceId);
 
   if (targets.length === 0) {
-    console.log(`[BackupWorker] No targets resolved for job ${data.jobId} (mode=${backupMode}), marking completed`);
+    console.warn(`[BackupWorker] No backup targets resolved for job ${data.jobId} (mode=${backupMode}, device=${data.deviceId}) — marking job failed`);
     await db
       .update(backupJobs)
-      .set({ status: 'completed', completedAt: new Date(), updatedAt: new Date() })
+      .set({
+        status: 'failed',
+        completedAt: new Date(),
+        updatedAt: new Date(),
+        errorLog: `No backup targets resolved (mode=${backupMode}). Ensure discovery has been run for this device.`,
+      })
       .where(eq(backupJobs.id, data.jobId));
     return { dispatched: false };
   }
 
   const providerConfig = config.providerConfig as Record<string, unknown>;
-  let dispatched = false;
+  let sentCount = 0;
+  const failedTargets: string[] = [];
 
-  for (const target of targets) {
+  for (let i = 0; i < targets.length; i++) {
+    const target = targets[i]!;
+
+    // First target reuses the original jobId; additional targets get their own DB row
+    let commandJobId = data.jobId;
+    if (i > 0) {
+      const [newJob] = await db
+        .insert(backupJobs)
+        .values({
+          orgId: data.orgId,
+          configId: data.configId,
+          featureLinkId: job?.featureLinkId ?? null,
+          deviceId: data.deviceId,
+          status: 'running',
+          type: 'scheduled',
+          startedAt: new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .returning();
+      commandJobId = newJob?.id ?? data.jobId;
+    }
+
     const command: AgentCommand = {
-      id: data.jobId,
+      id: commandJobId,
       type: target.commandType,
       payload: {
-        jobId: data.jobId,
+        jobId: commandJobId,
         configId: data.configId,
         provider: config.provider,
         providerConfig,
@@ -408,15 +437,26 @@ async function processDispatchBackup(
 
     const sent = sendCommandToAgent(agentId, command);
     if (sent) {
-      dispatched = true;
+      sentCount++;
     } else {
-      console.warn(`[BackupWorker] Failed to send ${target.commandType} command for job ${data.jobId}`);
+      console.warn(`[BackupWorker] Failed to send ${target.commandType} command for job ${commandJobId}`);
+      failedTargets.push(target.commandType);
     }
   }
 
-  if (!dispatched) {
+  if (sentCount === 0) {
     await markJobFailed(data.jobId, 'Failed to send command to agent');
     return { dispatched: false };
+  }
+
+  if (failedTargets.length > 0) {
+    console.warn(
+      `[BackupWorker] Partial dispatch for job ${data.jobId}: ${sentCount}/${targets.length} sent, failed targets: ${failedTargets.join(', ')}`
+    );
+    await db
+      .update(backupJobs)
+      .set({ errorLog: `Partial dispatch: ${failedTargets.length} target(s) failed to send (${failedTargets.join(', ')})`, updatedAt: new Date() })
+      .where(eq(backupJobs.id, data.jobId));
   }
 
   await db
@@ -429,7 +469,7 @@ async function processDispatchBackup(
     .where(eq(backupJobs.id, data.jobId));
 
   console.log(
-    `[BackupWorker] Dispatched ${targets.length} ${backupMode} command(s) to agent ${agentId} for job ${data.jobId}`
+    `[BackupWorker] Dispatched ${sentCount}/${targets.length} ${backupMode} command(s) to agent ${agentId} for job ${data.jobId}`
   );
   return { dispatched: true };
 }

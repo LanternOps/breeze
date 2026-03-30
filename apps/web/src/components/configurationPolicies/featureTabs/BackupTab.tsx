@@ -518,12 +518,12 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
           <div>
             <label className="text-sm font-medium text-zinc-300">Consistency Type</label>
             <select
-              value={(targets.consistencyType as string) ?? 'applicationConsistent'}
+              value={(targets.consistencyType as string) ?? 'application'}
               onChange={(e) => setTargets({ ...targets, consistencyType: e.target.value })}
               className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-ring"
             >
-              <option value="applicationConsistent">Application-Consistent (VSS)</option>
-              <option value="crashConsistent">Crash-Consistent</option>
+              <option value="application">Application-Consistent (VSS)</option>
+              <option value="crash">Crash-Consistent</option>
             </select>
           </div>
           <div>
@@ -555,8 +555,8 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
           <div>
             <label className="text-sm font-medium text-zinc-300">Backup Type</label>
             <select
-              value={(targets.sqlBackupType as string) ?? 'full'}
-              onChange={(e) => setTargets({ ...targets, sqlBackupType: e.target.value })}
+              value={(targets.backupType as string) ?? 'full'}
+              onChange={(e) => setTargets({ ...targets, backupType: e.target.value })}
               className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-ring"
             >
               <option value="full">Full</option>
