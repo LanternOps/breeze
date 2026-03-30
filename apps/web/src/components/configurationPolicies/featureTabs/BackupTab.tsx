@@ -426,10 +426,13 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
 
     if (!configId) { setConfigError('Please select or create a backup configuration'); return; }
 
+    const saveTargets = backupMode === 'file'
+      ? { paths: settings.paths ?? [], excludes: settings.excludePatterns ?? [] }
+      : targets;
     const result = await save(existingLink?.id ?? null, {
       featureType: 'backup',
       featurePolicyId: configId,
-      inlineSettings: { ...settings, backupMode, targets },
+      inlineSettings: { ...settings, backupMode, targets: saveTargets },
     });
     if (result) onLinkChanged(result, 'backup');
   };
@@ -442,10 +445,13 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
 
   const handleOverride = async () => {
     clearError();
+    const saveTargets = backupMode === 'file'
+      ? { paths: settings.paths ?? [], excludes: settings.excludePatterns ?? [] }
+      : targets;
     const result = await save(null, {
       featureType: 'backup',
       featurePolicyId: selectedConfigId || null,
-      inlineSettings: { ...settings, backupMode, targets },
+      inlineSettings: { ...settings, backupMode, targets: saveTargets },
     });
     if (result) onLinkChanged(result, 'backup');
   };

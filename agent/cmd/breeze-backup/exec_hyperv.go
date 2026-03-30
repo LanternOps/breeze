@@ -74,8 +74,8 @@ func execMSSQLBackup(payload json.RawMessage, mgr *backup.BackupManager) backupi
 				"path", path, "error", infoErr.Error())
 		} else {
 			totalSize += info.Size()
-			fileCount++
 		}
+		fileCount++
 		return provider.Upload(path, remotePath)
 	})
 	if err != nil {
@@ -171,8 +171,8 @@ func execHypervBackup(payload json.RawMessage, mgr *backup.BackupManager) backup
 				"path", path, "error", infoErr.Error())
 		} else {
 			totalSize += info.Size()
-			fileCount++
 		}
+		fileCount++
 		return provider.Upload(path, remotePath)
 	})
 	if err != nil {

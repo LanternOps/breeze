@@ -420,7 +420,12 @@ async function processDispatchBackup(
           updatedAt: new Date(),
         })
         .returning();
-      commandJobId = newJob?.id ?? data.jobId;
+      if (!newJob?.id) {
+        console.error(`[BackupWorker] Failed to create child job for target ${i} (${target.commandType}), skipping`);
+        failedTargets.push(`${target.commandType} (job creation failed)`);
+        continue;
+      }
+      commandJobId = newJob.id;
     }
 
     const command: AgentCommand = {
@@ -441,6 +446,13 @@ async function processDispatchBackup(
     } else {
       console.warn(`[BackupWorker] Failed to send ${target.commandType} command for job ${commandJobId}`);
       failedTargets.push(target.commandType);
+      // Mark the child job as failed so it doesn't stay orphaned in "running"
+      if (commandJobId !== data.jobId) {
+        await db
+          .update(backupJobs)
+          .set({ status: 'failed', completedAt: new Date(), updatedAt: new Date(), errorLog: `Failed to send ${target.commandType} command to agent` })
+          .where(eq(backupJobs.id, commandJobId));
+      }
     }
   }
 
