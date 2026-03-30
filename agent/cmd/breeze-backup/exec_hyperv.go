@@ -37,7 +37,7 @@ func execMSSQLBackup(payload json.RawMessage, mgr *backup.BackupManager) backupi
 		return fail("backup not configured")
 	}
 
-	stagingDir, err := os.MkdirTemp("", "breeze-mssql-*")
+	stagingDir, err := os.MkdirTemp(mgr.GetStagingDir(), "breeze-mssql-*")
 	if err != nil {
 		return fail("failed to create staging dir: " + err.Error())
 	}
@@ -124,7 +124,7 @@ func execHypervBackup(payload json.RawMessage, mgr *backup.BackupManager) backup
 		return fail("backup not configured")
 	}
 
-	stagingDir, err := os.MkdirTemp("", "breeze-hyperv-*")
+	stagingDir, err := os.MkdirTemp(mgr.GetStagingDir(), "breeze-hyperv-*")
 	if err != nil {
 		return fail("failed to create staging dir: " + err.Error())
 	}

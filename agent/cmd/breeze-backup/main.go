@@ -195,6 +195,15 @@ func initBackupManager(cfg *config.Config) *backup.BackupManager {
 		retention = 7
 	}
 
+	// Ensure the configured staging directory exists before use.
+	stagingDir := cfg.BackupStagingDir
+	if stagingDir != "" {
+		if err := os.MkdirAll(stagingDir, 0700); err != nil {
+			slog.Warn("failed to create backup staging dir, falling back to OS temp", "dir", stagingDir, "error", err.Error())
+			stagingDir = ""
+		}
+	}
+
 	mgr := backup.NewBackupManager(backup.BackupConfig{
 		Provider:           backupProvider,
 		Paths:              cfg.BackupPaths,
@@ -202,6 +211,7 @@ func initBackupManager(cfg *config.Config) *backup.BackupManager {
 		Retention:          retention,
 		VSSEnabled:         cfg.BackupVSSEnabled,
 		SystemStateEnabled: cfg.BackupSystemStateEnabled,
+		StagingDir:         stagingDir,
 	})
 
 	return mgr
