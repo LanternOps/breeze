@@ -116,11 +116,22 @@ Backup feature links use **inline settings** stored in the `config_policy_backup
 
 | Field | Type | Description |
 |---|---|---|
+| **Backup Mode** | enum | What to back up: `file` (default), `hyperv`, `mssql`, or `system_image` |
 | **Schedule** | JSONB | Frequency (`daily`, `weekly`, `monthly`), time (`HH:MM`), timezone, day of week/month |
 | **Retention** | JSONB | `keepDaily`, `keepWeekly`, `keepMonthly` snapshot counts |
-| **Paths** | JSONB array | Directories to include in the backup |
+| **Paths** | JSONB array | Directories to include (file mode only) |
+| **Targets** | JSONB | Mode-specific targeting with optional exclude lists (Hyper-V and MSSQL modes) |
 
-When a backup feature is linked to a configuration policy, the schedule and retention settings in the policy override whatever is set on the standalone backup configuration. The policy system resolves which backup settings apply to a device using the same hierarchical precedence rules as other feature types (device-level wins over group, site, org, partner).
+**Backup modes:**
+
+- **File** — backs up directories listed in the Paths field.
+- **Hyper-V** — exports all discovered VMs by default. Set `targets.excludeVms` to skip specific VMs by name.
+- **MSSQL** — backs up all discovered databases by default. Set `targets.excludeDatabases` to skip specific databases.
+- **System Image** — full system image capture with no additional targeting needed.
+
+Hyper-V and MSSQL modes use **all-by-default targeting** — newly created VMs or databases are automatically included on the next scheduled backup run without any policy changes.
+
+When a backup feature is linked to a configuration policy, the schedule, retention, and mode settings in the policy override whatever is set on the standalone backup configuration. The policy system resolves which backup settings apply to a device using the same hierarchical precedence rules as other feature types (device-level wins over group, site, org, partner).
 
 <Aside type="tip">
   Use the effective configuration endpoint to verify which backup schedule a specific device will receive: `GET /configuration-policies/effective/:deviceId`
