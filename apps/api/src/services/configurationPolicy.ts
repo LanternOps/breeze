@@ -446,6 +446,8 @@ async function decomposeInlineSettings(
         schedule: (s.schedule ?? {}) as Record<string, unknown>,
         retention: (s.retention ?? {}) as Record<string, unknown>,
         paths: (Array.isArray(s.paths) ? s.paths : []) as unknown[],
+        backupMode: (s.backupMode ?? 'file') as 'file' | 'hyperv' | 'mssql' | 'system_image',
+        targets: (s.targets ?? {}) as Record<string, unknown>,
       });
       break;
     }
@@ -740,6 +742,22 @@ async function assembleInlineSettings(
         })),
         eventLogAlerts,
         alertRules: metricAlertRules,
+      };
+    }
+
+    case 'backup': {
+      const [row] = await db
+        .select()
+        .from(configPolicyBackupSettings)
+        .where(eq(configPolicyBackupSettings.featureLinkId, linkId))
+        .limit(1);
+      if (!row) return null;
+      return {
+        schedule: row.schedule,
+        retention: row.retention,
+        paths: row.paths,
+        backupMode: row.backupMode,
+        targets: row.targets,
       };
     }
 
