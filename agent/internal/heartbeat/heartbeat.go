@@ -2479,6 +2479,11 @@ func (h *Heartbeat) handleUpgrade(targetVersion string) {
 			h.config.AutoUpdate = false
 			return
 		}
+		// File locked by another process is transient — log and retry next heartbeat.
+		if errors.Is(err, updater.ErrFileLocked) {
+			log.Warn("update deferred: binary locked by another process, will retry", "targetVersion", targetVersion, "error", err.Error())
+			return
+		}
 		log.Error("failed to update", "targetVersion", targetVersion, "error", err.Error())
 		return
 	}
