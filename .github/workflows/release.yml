@@ -157,6 +157,26 @@ jobs:
           path: agent/breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
           retention-days: 30
 
+      - name: Build breeze-backup
+        working-directory: agent
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: ${{ matrix.cgo }}
+          BUILD_VERSION: ${{ steps.version.outputs.version }}
+          CGO_LDFLAGS_ALLOW: '-weak_framework|ScreenCaptureKit'
+        run: |
+          go build -ldflags="-s -w -X main.version=${BUILD_VERSION}" \
+            -o "breeze-backup-${GOOS}-${GOARCH}${{ matrix.suffix }}" \
+            ./cmd/breeze-backup
+
+      - name: Upload breeze-backup artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: breeze-backup-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: agent/breeze-backup-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
+          retention-days: 30
+
   build-windows-msi:
     name: Build + Sign Windows Artifacts
     if: vars.ENABLE_WINDOWS_SIGNING == 'true'
