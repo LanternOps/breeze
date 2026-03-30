@@ -150,9 +150,9 @@ complianceRoutes.get(
         importantCount: sql<number>`count(*) filter (where ${devicePatches.status} in ('pending', 'missing') and ${patches.severity} = 'important')`,
         osMissing: sql<number>`count(*) filter (where ${devicePatches.status} in ('pending', 'missing') and ${patches.source} in ('microsoft', 'apple', 'linux'))`,
         thirdPartyMissing: sql<number>`count(*) filter (where ${devicePatches.status} in ('pending', 'missing') and ${patches.source} in ('third_party', 'custom'))`,
-        lastInstalledAt: sql<string | null>`max(case when ${devicePatches.status} = 'installed' and ${devicePatches.installedAt} is not null then ${devicePatches.installedAt} end)`,
+        lastInstalledAt: sql<string | null>`max(case when ${devicePatches.status} = 'installed' and ${devicePatches.installedAt} is not null then ${devicePatches.installedAt}::timestamptz::text end)`,
         pendingReboot: sql<boolean>`bool_or(${patches.requiresReboot} and ${devicePatches.status} = 'installed' and ${devicePatches.installedAt} is not null)`,
-        lastScannedAt: sql<string | null>`max(${devicePatches.lastCheckedAt})`
+        lastScannedAt: sql<string | null>`max(${devicePatches.lastCheckedAt})::timestamptz::text`
       })
       .from(devicePatches)
       .innerJoin(patches, eq(devicePatches.patchId, patches.id))
