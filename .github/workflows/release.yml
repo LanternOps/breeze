@@ -1122,7 +1122,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           path: artifacts
-          pattern: '{api-dist,web-dist,breeze-agent-*,breeze-viewer-*,breeze-helper-*}'
+          pattern: '{api-dist,web-dist,breeze-agent-*,breeze-backup-*,breeze-viewer-*,breeze-helper-*}'
           merge-multiple: false
 
       - name: Prepare release assets
@@ -1131,6 +1131,13 @@ jobs:
 
           # Copy agent binaries
           for dir in artifacts/breeze-agent-*; do
+            if [ -d "$dir" ] && ls "$dir"/* >/dev/null 2>&1; then
+              cp "$dir"/* release-assets/
+            fi
+          done
+
+          # Copy backup binaries
+          for dir in artifacts/breeze-backup-*; do
             if [ -d "$dir" ] && ls "$dir"/* >/dev/null 2>&1; then
               cp "$dir"/* release-assets/
             fi
