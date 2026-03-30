@@ -26,7 +26,7 @@ The AI Risk Engine categorises every AI tool into one of four tiers that control
 
 | Tier | Execution | Examples |
 |---|---|---|
-| **Tier 1** | Auto-execute (read-only, no approval) | `query_devices`, `analyze_metrics`, `get_security_posture`, `get_active_users`, `file_operations` (list/read), `disk_cleanup` (preview), `propose_action_plan`, `list_configuration_policies`, `get_effective_configuration`, `preview_configuration_change`, `get_configuration_policy`, `configuration_policy_compliance`, `manage_processes` (list), `get_service_monitoring_status`, `query_monitors`, `query_backups`, `get_backup_status`, `browse_snapshots`, `get_incident_timeline`, `generate_incident_report`, `list_playbooks`, `get_playbook_history` |
+| **Tier 1** | Auto-execute (read-only, no approval) | `query_devices`, `analyze_metrics`, `get_security_posture`, `get_active_users`, `file_operations` (list/read), `disk_cleanup` (preview), `propose_action_plan`, `list_configuration_policies`, `get_effective_configuration`, `preview_configuration_change`, `get_configuration_policy`, `configuration_policy_compliance`, `manage_processes` (list), `get_service_monitoring_status`, `query_monitors`, `query_backups`, `get_backup_status`, `browse_snapshots`, `get_incident_timeline`, `generate_incident_report`, `list_playbooks`, `get_playbook_history`, `search_documentation` |
 | **Tier 2** | Auto-execute + audit logged | `manage_alerts` acknowledge/resolve actions, `manage_services` list action, `set_device_context`, `resolve_device_context`, `apply_configuration_policy`, `remove_configuration_policy_assignment`, `manage_configuration_policy` (activate/deactivate), `create_incident`, `collect_evidence` |
 | **Tier 3** | Requires human approval before execution | `execute_command`, `run_script`, `disk_cleanup` (execute), `network_discovery`, `security_scan` (quarantine/remove/restore), `file_operations` (write/delete/mkdir/rename), `manage_configuration_policy` (create/update/delete), `manage_processes` (kill), `manage_monitors` (create/update/delete), `trigger_backup`, `restore_snapshot`, `execute_containment`, `execute_playbook` |
 | **Tier 4** | Blocked — never executed | Cross-org operations |
@@ -302,6 +302,29 @@ The AI can create and manage security incidents, execute containment actions, an
 | `generate_incident_report` | 1 | Generate a structured report with action and evidence summaries |
 
 See [Incident Response](/features/incident-response/) for the full workflow.
+
+---
+
+## Context-Aware Help Panel
+
+The dashboard includes a slide-out documentation panel that opens the correct docs page based on your current location in the app. Open it with **Cmd+Shift+H** (macOS) or **Ctrl+Shift+H** (Windows/Linux).
+
+| Page you're on | Docs page that opens |
+|---|---|
+| Scripts | Scripting docs |
+| Patches | Patch management docs |
+| Devices | Device management docs |
+| Configuration Policies | Policy docs |
+
+The help panel coordinates with the AI chat sidebar — opening one closes the other. When the AI assistant references documentation in a chat response, the links open directly in the help panel instead of a new browser tab.
+
+### AI Documentation Search
+
+The AI assistant can search all documentation pages using the `search_documentation` tool (Tier 1, auto-execute). The search index is built at compile time and covers all pages in the docs site.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `search_documentation` | 1 | Search documentation pages by keyword and return relevant sections with direct links |
 
 ---
 

@@ -44,6 +44,7 @@
       "System",
       "`reboot` / `shutdown`",
       "`lock`",
+      "`reboot_safe_mode`",
       "File Operations",
       "`file_list`",
       "`file_read`",
@@ -90,6 +91,9 @@
       "`backup_run`",
       "`backup_list`",
       "`backup_stop`",
+      "`backup_verify`",
+      "`backup_test_restore`",
+      "`backup_cleanup`",
       "Software Inventory",
       "File Transfer",
       "`file_transfer`",
@@ -101,6 +105,7 @@
       "Linux (systemd)",
       "macOS (launchd)",
       "Windows (Services)",
+      "Command Timeouts",
       "Heartbeat Telemetry",
       "User-Mode Helper"
     ],
@@ -246,6 +251,7 @@
       "Agent Binaries",
       "Viewer Installers",
       "Helper Binaries",
+      "Backup Binary",
       "Install Script",
       "Decision Guide"
     ],
@@ -292,6 +298,7 @@
       "Feature Flags",
       "MCP Server",
       "Cloudflare mTLS",
+      "Cloud-to-Cloud Backup (M365)",
       "AI"
     ],
     "section": "deploy"
@@ -442,6 +449,11 @@
       "AI Cost Tracking",
       "Viewing costs",
       "AI Input Sanitization",
+      "Backup AI Tools",
+      "Incident Response AI Tools",
+      "Context-Aware Help Panel",
+      "AI Documentation Search",
+      "Playbook AI Tools",
       "Troubleshooting"
     ],
     "section": "features"
@@ -727,7 +739,8 @@
       "Alert Rules",
       "Maintenance Windows",
       "Compliance Rules",
-      "Backup, Security, Monitoring, Automation",
+      "Backup",
+      "Security, Monitoring, Automation",
       "Assigning a policy",
       "Viewing effective configuration",
       "Patch jobs",
@@ -816,11 +829,9 @@
       "Testing Connectivity",
       "Deleting a Configuration",
       "Database Schema",
-      "Backup Policies",
-      "Creating a Policy",
-      "Updating a Policy",
-      "Deleting a Policy",
-      "Database Schema",
+      "Backup Scheduling (Configuration Policies)",
+      "Backup Modes",
+      "Binary Architecture",
       "Backup Jobs",
       "Running a Manual Backup",
       "Listing Jobs",
@@ -849,7 +860,19 @@
       "Snapshots",
       "Restore Operations",
       "Dashboard",
-      "Troubleshooting"
+      "Troubleshooting",
+      "Enterprise Backup Features",
+      "Volume Shadow Copy (VSS)",
+      "SQL Server Backup (MSSQL)",
+      "Hyper-V VM Backup",
+      "Bare Metal Recovery (BMR)",
+      "Backup Verification",
+      "Recovery Readiness",
+      "Encryption Key Management",
+      "Local Vault",
+      "Cloud-to-Cloud Backup (C2C)",
+      "Disaster Recovery (DR)",
+      "Enterprise Backup API Reference"
     ],
     "section": "features"
   },
@@ -1052,6 +1075,29 @@
       "Incremental scan returns minimal results",
       "Scan shows \"partial: true\" in the snapshot",
       "Permission denied errors in scan results"
+    ],
+    "section": "features"
+  },
+  {
+    "path": "/features/incident-response/",
+    "title": "Incident Response",
+    "description": "Create, investigate, contain, and close security incidents with automated evidence collection and AI-assisted response.",
+    "headings": [
+      "Incident Lifecycle",
+      "Classifications",
+      "Severity Levels",
+      "Creating an Incident",
+      "Containment Actions",
+      "Action Types",
+      "Action Statuses",
+      "Evidence Collection",
+      "Evidence Types",
+      "Incident Timeline",
+      "Closing an Incident",
+      "Incident Reports",
+      "AI-Assisted Incident Response",
+      "API Reference",
+      "Troubleshooting"
     ],
     "section": "features"
   },
@@ -1522,6 +1568,8 @@
       "API Reference",
       "POST /playbooks/:id/execute",
       "PATCH /playbooks/executions/:id",
+      "Incident Response Integration",
+      "Security Playbooks",
       "Troubleshooting"
     ],
     "section": "features"

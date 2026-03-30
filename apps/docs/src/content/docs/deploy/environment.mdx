@@ -207,6 +207,17 @@ The Breeze stack includes a [coturn](https://github.com/coturn/coturn) TURN serv
   mTLS is fully optional. When these variables are unset, Breeze operates normally without mutual TLS.
 </Aside>
 
+## Cloud-to-Cloud Backup (M365)
+
+| Variable | Default | Description |
+|---|---|---|
+| `C2C_M365_CLIENT_ID` | — | Azure AD app (client) ID for multi-tenant M365 backup. When set with the secret below, enables one-click admin consent flow for connecting Microsoft 365 backups. |
+| `C2C_M365_CLIENT_SECRET` | — | Azure AD app client secret for multi-tenant M365 backup |
+
+<Aside>
+  These variables are optional. When unset, the C2C connection wizard falls back to manual credential entry (Client ID, Secret, Tenant ID). Setting both enables a streamlined "Grant Access" button that redirects to Microsoft's admin consent flow.
+</Aside>
+
 ## AI
 
 | Variable | Default | Description |

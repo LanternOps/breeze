@@ -75,6 +75,37 @@ describe('getDocsForPath', () => {
     });
   });
 
+  describe('backup & incident routes', () => {
+    it('/backup maps to device backup docs', () => {
+      const result = getDocsForPath('/backup');
+      expect(result.label).toBe('Backup');
+      expect(result.url).toContain('/features/device-backup/');
+    });
+
+    it('/c2c maps to cloud-to-cloud backup docs', () => {
+      const result = getDocsForPath('/c2c');
+      expect(result.label).toBe('Cloud-to-Cloud Backup');
+      expect(result.url).toContain('/features/device-backup/');
+    });
+
+    it('/dr maps to disaster recovery docs', () => {
+      const result = getDocsForPath('/dr');
+      expect(result.label).toBe('Disaster Recovery');
+      expect(result.url).toContain('/features/device-backup/');
+    });
+
+    it('/incidents maps to incident response docs', () => {
+      const result = getDocsForPath('/incidents');
+      expect(result.label).toBe('Incident Response');
+      expect(result.url).toContain('/features/incident-response/');
+    });
+
+    it('/incidents/abc-123 matches incident response', () => {
+      const result = getDocsForPath('/incidents/abc-123');
+      expect(result.label).toBe('Incident Response');
+    });
+  });
+
   describe('trailing slash normalization', () => {
     it('/devices/ is treated the same as /devices', () => {
       const withSlash = getDocsForPath('/devices/');

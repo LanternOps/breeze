@@ -181,114 +181,30 @@ Indexes exist on `org_id`, `type`, `provider`, and `is_active` for efficient fil
 
 ---
 
-## Backup Policies
+## Backup Scheduling (Configuration Policies)
 
-Backup policies are templates that bind a backup configuration to a set of target devices, sites, or groups with a defined schedule and retention strategy.
+Backup scheduling and retention are managed through [Configuration Policies](/features/configuration-policies/). Assign a policy with a **Backup** feature to any scope (organization, site, device group, or device) and the scheduler resolves which devices need backups using the same hierarchical precedence rules as other feature types.
 
-### Creating a Policy
-
-```bash
-POST /backup/policies
-Content-Type: application/json
-Authorization: Bearer <token>
-
-{
-  "name": "Daily Endpoints",
-  "configId": "cfg-s3-primary",
-  "enabled": true,
-  "targets": {
-    "deviceIds": ["dev-001", "dev-002", "dev-003"],
-    "siteIds": ["site-nyc"],
-    "groupIds": []
-  },
-  "schedule": {
-    "frequency": "daily",
-    "time": "02:00",
-    "timezone": "UTC"
-  },
-  "retention": {
-    "keepDaily": 7,
-    "keepWeekly": 4,
-    "keepMonthly": 3
-  }
-}
-```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `name` | string | Yes | Policy name (minimum 1 character) |
-| `configId` | string | Yes | ID of the backup configuration to use. Must belong to the same organization |
-| `enabled` | boolean | No | Whether the policy is active. Defaults to `true` |
-| `targets` | object | No | Target assignments (see below) |
-| `schedule` | object | Yes | Schedule definition (see below) |
-| `retention` | object | No | Retention rules. Defaults: 7 daily, 4 weekly, 3 monthly |
-
-#### Target Assignment
-
-Policies can target devices at three levels of granularity:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `deviceIds` | string[] | Specific device UUIDs to back up |
-| `siteIds` | string[] | All devices at these sites |
-| `groupIds` | string[] | All devices in these device groups |
-
-#### Schedule Configuration
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `frequency` | string | Yes | `daily`, `weekly`, or `monthly` |
-| `time` | string | Yes | Time of day in `HH:MM` format (24-hour) |
-| `timezone` | string | No | IANA timezone. Defaults to `UTC` |
-| `dayOfWeek` | integer | No | Day of week for weekly schedules (0 = Sunday through 6 = Saturday) |
-| `dayOfMonth` | integer | No | Day of month for monthly schedules (1-28) |
-
-<Aside>
-  The `dayOfMonth` field accepts values from 1 to 28 to avoid edge cases with months that have fewer than 31 days.
+<Aside type="tip">
+  The standalone `backup_policies` table is deprecated. Existing policies continue to work, but new backup schedules should be created through Configuration Policies for hierarchy-based device resolution and enterprise backup mode support. See [Configuration Policies — Backup](/features/configuration-policies/#backup) for details.
 </Aside>
 
-### Updating a Policy
+### Backup Modes
 
-```bash
-PATCH /backup/policies/:id
-Content-Type: application/json
+Configuration Policies support four backup modes:
 
-{
-  "schedule": {
-    "frequency": "weekly",
-    "dayOfWeek": 0
-  },
-  "retention": {
-    "keepWeekly": 8
-  }
-}
-```
+| Mode | Description |
+|------|-------------|
+| `file` | File-level backup of selected directories (default) |
+| `hyperv` | Hyper-V VM export with application or crash consistency |
+| `mssql` | SQL Server database backup (full, differential, and log) |
+| `system_image` | Full system image capture |
 
-All fields are optional. Nested objects (`targets`, `schedule`, `retention`) are partially merged -- only the sub-fields you include are updated; others retain their current values. When changing `configId`, the new configuration must exist within the same organization.
+Hyper-V and MSSQL modes use **all-by-default targeting** — newly discovered VMs and databases are automatically included on the next scheduled run. You can optionally configure exclude lists to skip specific VMs or databases.
 
-### Deleting a Policy
+### Binary Architecture
 
-```bash
-DELETE /backup/policies/:id
-```
-
-Returns `{ "deleted": true }` on success.
-
-### Database Schema
-
-The `backup_policies` table links configurations to targets:
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | UUID | Primary key, auto-generated |
-| `config_id` | UUID | Foreign key to `backup_configs` |
-| `target_type` | varchar(50) | Type of target (e.g., device, site, group) |
-| `target_id` | UUID | ID of the target entity |
-| `includes` | JSONB | Paths or items to include in the backup |
-| `excludes` | JSONB | Paths or items to exclude from the backup |
-| `priority` | integer | Execution priority (default 50) |
-
-Indexes exist on `config_id` and the composite `(target_type, target_id)`.
+Enterprise backup operations (Hyper-V, MSSQL, system image, C2C) run in a dedicated `breeze-backup` process that communicates with the main agent over HMAC-signed IPC. This keeps the core agent lightweight (~15 MB) while the backup binary includes the heavier cloud SDKs and backup tooling. The backup binary is bundled in both the Windows MSI and macOS .pkg installers.
 
 ---
 
@@ -1028,6 +944,86 @@ GET /backup/vault/...
 ```
 
 The vault manager syncs snapshots intelligently (only downloads missing files) and enforces configurable retention (default: 3 most recent snapshots).
+
+### Cloud-to-Cloud Backup (C2C)
+
+Back up Microsoft 365 and Google Workspace data — mailboxes, OneDrive files, SharePoint sites, and Google Drive — with delta sync for incremental updates.
+
+**Connecting a Microsoft 365 tenant:**
+
+Two authentication modes are available:
+
+| Mode | When | How |
+|------|------|-----|
+| **Multi-tenant app** (recommended) | `C2C_M365_CLIENT_ID` and `C2C_M365_CLIENT_SECRET` are set in `.env` | One-click "Grant Access" button redirects to Microsoft's admin consent flow |
+| **Manual credentials** | Env vars not set | Wizard prompts for Client ID, Client Secret, and Tenant ID from a manually registered Azure AD app |
+
+```bash
+# Check if platform app is available
+GET /c2c/m365/config
+# → { "platformAppAvailable": true }
+
+# Generate consent URL (authenticated)
+POST /c2c/m365/consent-url
+# → { "url": "https://login.microsoftonline.com/..." }
+
+# Callback (public, CSRF-protected via state)
+GET /c2c/m365/callback?code=...&state=...
+```
+
+**Connecting Google Workspace:**
+
+Requires a service account key with domain-wide delegation. Configure via the C2C connection wizard.
+
+**Managing connections:**
+
+```bash
+GET  /c2c/connections           # List all C2C connections
+POST /c2c/connections           # Create connection (manual mode)
+GET  /c2c/connections/:id       # Get connection details
+POST /c2c/connections/:id/sync  # Trigger delta sync
+```
+
+### Disaster Recovery (DR)
+
+DR plans define ordered recovery groups for coordinated failover and rehearsal.
+
+```bash
+POST /backup/dr/plans
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Plan name |
+| `recoveryGroups` | array | Yes | Ordered groups of devices/services to recover |
+| `rpoTarget` | string | No | Target RPO (e.g., `4h`, `1d`) |
+| `rtoTarget` | string | No | Target RTO |
+
+Each recovery group specifies devices or services and their recovery order. Groups execute sequentially — the next group starts only after the previous group completes.
+
+**Execution modes:**
+
+| Mode | Description |
+|------|-------------|
+| `rehearsal` | Dry run — validates recovery steps without modifying production systems |
+| `failover` | Live execution — restores systems according to the plan |
+
+```bash
+POST /backup/dr/plans/:id/execute
+# { "mode": "rehearsal" }
+
+GET /backup/dr/plans/:id/executions
+# List past executions with status and timing
+```
+
+**SLA Monitoring:**
+
+The DR system monitors RPO and RTO compliance across all protected devices. When a device falls behind its recovery targets, the system generates breach alerts and can trigger automatic escalation.
+
+```bash
+GET /backup/dr/sla/status
+# Returns RPO/RTO compliance per device and breach counts
+```
 
 ---
 
