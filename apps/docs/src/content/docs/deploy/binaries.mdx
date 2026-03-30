@@ -146,6 +146,16 @@ GET /api/v1/agents/download/helper/:os/:arch
 
 Helper binaries are companion processes used for remote desktop in headless/service contexts (Session 0 on Windows, LaunchDaemon on macOS, systemd on Linux).
 
+### Backup Binary
+
+The `breeze-backup` binary handles enterprise backup operations (Hyper-V, MSSQL, system image, cloud-to-cloud). It is **bundled in installers**, not downloaded separately:
+
+- **Windows MSI**: installed to the same directory as `breeze-agent.exe`
+- **macOS .pkg**: installed to `/usr/local/bin/breeze-backup`
+- **Linux**: included alongside the agent binary
+
+The backup binary communicates with the main agent over HMAC-signed IPC. It is not served through the download API — it ships as part of the agent installer package.
+
 ### Install Script
 
 ```
