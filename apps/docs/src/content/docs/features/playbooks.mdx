@@ -403,6 +403,24 @@ All playbook endpoints require authentication and scope-based authorization. Org
 
 ---
 
+## Incident Response Integration
+
+Playbooks integrate with the [Incident Response](/features/incident-response/) system. When a playbook is executed in the context of an active incident, the execution record includes the `incidentId` in its context, creating a direct link between the remediation workflow and the incident timeline.
+
+The AI assistant can trigger playbooks during incident response conversations. For example, when investigating a compromised device, the AI might execute the **Service Restart** playbook to restart a suspicious service, then record the result as evidence on the incident.
+
+### Security Playbooks
+
+Create custom playbooks with `category: "security"` for incident-specific workflows:
+
+- **Endpoint isolation** — disable network interfaces, block USB, kill suspicious processes
+- **Evidence collection** — gather logs, running processes, network connections, and screenshots
+- **Service recovery** — restart affected services after containment, verify health
+
+Security playbooks can be linked to alert trigger conditions with `alertTypes: ["security_threat"]` so they execute automatically (or with confirmation) when a security alert fires.
+
+---
+
 ## Troubleshooting
 
 **Playbook not appearing in the list.**

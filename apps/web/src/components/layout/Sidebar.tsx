@@ -282,11 +282,13 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
   const toggleSection = useCallback((sectionId: string) => {
     setExpandedSections((prev) => {
-      const next = { ...prev, [sectionId]: !prev[sectionId] };
+      // Determine current effective state: explicit toggle takes precedence, then auto-expand
+      const currentlyExpanded = sectionId in prev ? prev[sectionId] : sectionId === activeSectionId;
+      const next = { ...prev, [sectionId]: !currentlyExpanded };
       saveExpandedSections(next);
       return next;
     });
-  }, []);
+  }, [activeSectionId]);
 
   // --- Sidebar mode cycling ------------------------------------------------
   const cycleMode = () => {

@@ -148,6 +148,7 @@ import {
   initializeIncidentSlaMonitor,
   shutdownIncidentSlaMonitor,
 } from './jobs/incidentJobs';
+import { initializeStaleCommandReaper, shutdownStaleCommandReaper } from './jobs/staleCommandReaper';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -927,6 +928,7 @@ async function initializeWorkers(): Promise<void> {
     ['incidentCorrelationWorker', initializeIncidentCorrelationWorker],
     ['incidentTimelineEnricher', initializeIncidentTimelineEnricher],
     ['incidentSlaMonitor', initializeIncidentSlaMonitor],
+    ['staleCommandReaper', initializeStaleCommandReaper],
   ];
 
   await Promise.allSettled(
@@ -1053,6 +1055,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownNotificationDispatcher,
     shutdownOfflineDetector,
     shutdownAlertWorkers,
+    shutdownStaleCommandReaper,
     async () => getEventBus().close(),
     closeRedis,
     async () => {

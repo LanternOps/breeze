@@ -70,14 +70,19 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
       });
 
       if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to save script');
+        let errorMessage = 'Failed to save script';
+        try {
+          const data = await response.json();
+          if (data.error) errorMessage = data.error;
+        } catch { /* non-JSON response body (e.g. proxy error page) */ }
+        throw new Error(errorMessage);
       }
 
       showToast({ type: 'success', message: isNew ? 'Script created' : 'Script saved' });
       void navigateTo('/scripts');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
+      throw err; // re-throw so ScriptForm knows the save failed
     } finally {
       setSubmitting(false);
     }

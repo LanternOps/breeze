@@ -66,7 +66,7 @@ export default function BackupDashboard() {
   const [activeTab, setActiveTab] = useState<BackupTab>(() => {
     if (typeof window === 'undefined') return 'overview';
     const hash = window.location.hash.replace('#', '');
-    return hash === 'verification' ? 'verification' : 'overview';
+    return isValidTab(hash) ? hash : 'overview';
   });
   const [stats, setStats] = useState<BackupStat[]>([]);
   const [recentJobs, setRecentJobs] = useState<BackupJob[]>([]);
@@ -178,7 +178,7 @@ export default function BackupDashboard() {
   useEffect(() => {
     const onHashChange = () => {
       const hash = window.location.hash.replace('#', '');
-      setActiveTab(hash === 'verification' ? 'verification' : 'overview');
+      setActiveTab(isValidTab(hash) ? hash : 'overview');
     };
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
