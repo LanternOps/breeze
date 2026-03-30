@@ -296,21 +296,6 @@ export default function BackupDashboard() {
     );
   }
 
-  if (error && !hasData) {
-    return (
-      <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
-        <p className="text-sm text-destructive">{error}</p>
-        <button
-          type="button"
-          onClick={fetchOverview}
-          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
-        >
-          Try again
-        </button>
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-6">
       <div className="flex gap-1 overflow-x-auto border-b">
@@ -339,7 +324,20 @@ export default function BackupDashboard() {
         ))}
       </div>
 
-      {activeTab === 'overview' && (
+      {activeTab === 'overview' && error && !hasData && (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
+          <p className="text-sm text-destructive">{error}</p>
+          <button
+            type="button"
+            onClick={fetchOverview}
+            className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+          >
+            Try again
+          </button>
+        </div>
+      )}
+
+      {activeTab === 'overview' && !(error && !hasData) && (
         <BackupOverviewContent
           stats={stats}
           recentJobs={recentJobs}
