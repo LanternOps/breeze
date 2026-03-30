@@ -4,6 +4,8 @@ import { eq, and } from 'drizzle-orm';
 import { db } from '../../db';
 import { c2cConnections } from '../../db/schema';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { captureException } from '../../services/sentry';
+import { ensureFreshToken } from '../../services/c2cM365';
 import { createConnectionSchema, idParamSchema } from './schemas';
 import { resolveScopedOrgId, maskSecret } from './helpers';
 
@@ -57,6 +59,12 @@ connectionsRoutes.post(
     if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
 
     const payload = c.req.valid('json');
+
+    // platform_app connections are only created via the consent callback flow
+    if (payload.authMethod === 'platform_app') {
+      return c.json({ error: 'platform_app connections must be created via the consent flow' }, 400);
+    }
+
     const now = new Date();
 
     const [row] = await db
@@ -64,10 +72,11 @@ connectionsRoutes.post(
       .values({
         orgId,
         provider: payload.provider,
+        authMethod: 'manual',
         displayName: payload.displayName,
         tenantId: payload.tenantId ?? null,
-        clientId: payload.clientId,
-        clientSecret: payload.clientSecret,
+        clientId: payload.clientId ?? null,
+        clientSecret: payload.clientSecret ?? null,
         scopes: payload.scopes ?? null,
         status: 'active',
         createdAt: now,
@@ -140,8 +149,45 @@ connectionsRoutes.post(
 
     if (!row) return c.json({ error: 'Connection not found' }, 404);
 
-    // Scaffold: in production, this would validate OAuth tokens against the provider
     const checkedAt = new Date().toISOString();
+    let testStatus: 'success' | 'failed' = row.status === 'active' ? 'success' : 'failed';
+    let message = row.status === 'active'
+      ? 'Connection is active and credentials are configured'
+      : `Connection status is ${row.status}`;
+
+    // For platform_app connections, try to refresh token and validate via Graph API
+    if (row.authMethod === 'platform_app' && row.tenantId) {
+      try {
+        const tokenResult = await ensureFreshToken({
+          tenantId: row.tenantId,
+          currentToken: row.accessToken,
+          tokenExpiresAt: row.tokenExpiresAt,
+        });
+
+        if (tokenResult) {
+          // Update stored token if refreshed (scoped to orgId for defense-in-depth)
+          const tokenExpiresAt = new Date(Date.now() + tokenResult.expiresIn * 1000);
+          await db
+            .update(c2cConnections)
+            .set({ accessToken: tokenResult.accessToken, tokenExpiresAt, updatedAt: new Date() })
+            .where(and(eq(c2cConnections.id, row.id), eq(c2cConnections.orgId, orgId)));
+
+          testStatus = 'success';
+          message = 'Platform app token is valid and Graph API is accessible';
+        } else {
+          testStatus = 'failed';
+          message = 'Multi-tenant app is no longer configured on this instance';
+        }
+      } catch (err) {
+        console.error('[c2c/connections/test] Token refresh failed', {
+          connectionId: row.id, orgId, tenantId: row.tenantId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        captureException(err);
+        testStatus = 'failed';
+        message = err instanceof Error ? err.message : 'Token refresh failed';
+      }
+    }
 
     writeRouteAudit(c, {
       orgId,
@@ -154,11 +200,9 @@ connectionsRoutes.post(
     return c.json({
       id: row.id,
       provider: row.provider,
-      status: row.status === 'active' ? 'success' : 'failed',
-      message:
-        row.status === 'active'
-          ? 'Connection is active and credentials are configured'
-          : `Connection status is ${row.status}`,
+      authMethod: row.authMethod,
+      status: testStatus,
+      message,
       checkedAt,
     });
   }
@@ -170,6 +214,7 @@ function toConnectionResponse(row: typeof c2cConnections.$inferSelect) {
   return {
     id: row.id,
     provider: row.provider,
+    authMethod: row.authMethod,
     displayName: row.displayName,
     tenantId: row.tenantId,
     clientId: row.clientId ? maskSecret(row.clientId) : null,

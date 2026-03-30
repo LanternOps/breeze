@@ -274,6 +274,28 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   // Compute the effective mode: on tablet force collapsed, on mobile hide entirely
   const effectiveMode: SidebarMode = isMobile ? 'collapsed' : isTablet ? 'collapsed' : mode;
 
+  // --- Derived state -------------------------------------------------------
+  const showLabels = effectiveMode === 'open' || (effectiveMode === 'hover' && hovered);
+  const isNarrow = effectiveMode !== 'open';
+
+  // Find the best matching active href
+  const resolvedPath = pathAliases[currentPath] ?? currentPath;
+  const activeHref = useMemo(() => {
+    let best: string | null = null;
+    for (const item of allNavItems) {
+      const matches = item.href === '/'
+        ? resolvedPath === '/'
+        : resolvedPath === item.href || resolvedPath.startsWith(item.href + '/');
+      if (matches && (!best || item.href.length > best.length)) {
+        best = item.href;
+      }
+    }
+    return best;
+  }, [resolvedPath]);
+
+  // Auto-expand: the section containing the active page should be expanded
+  const activeSectionId = activeHref ? sectionForHref(activeHref) : null;
+
   // --- Expanded sections state (with auto-expand for active page) ----------
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() => {
     const saved = readExpandedSections();
@@ -296,28 +318,6 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     setMode(next);
     try { localStorage.setItem('sidebar-mode', next); } catch { /* Storage unavailable */ }
   };
-
-  // --- Derived state -------------------------------------------------------
-  const showLabels = effectiveMode === 'open' || (effectiveMode === 'hover' && hovered);
-  const isNarrow = effectiveMode !== 'open';
-
-  // Find the best matching active href
-  const resolvedPath = pathAliases[currentPath] ?? currentPath;
-  const activeHref = useMemo(() => {
-    let best: string | null = null;
-    for (const item of allNavItems) {
-      const matches = item.href === '/'
-        ? resolvedPath === '/'
-        : resolvedPath === item.href || resolvedPath.startsWith(item.href + '/');
-      if (matches && (!best || item.href.length > best.length)) {
-        best = item.href;
-      }
-    }
-    return best;
-  }, [resolvedPath]);
-
-  // Auto-expand: the section containing the active page should be expanded
-  const activeSectionId = activeHref ? sectionForHref(activeHref) : null;
 
   // Determine if a section is expanded (explicit toggle OR auto-expand)
   const isSectionExpanded = useCallback((sectionId: string): boolean => {

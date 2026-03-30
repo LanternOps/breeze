@@ -4,14 +4,27 @@ import { z } from 'zod';
 
 export const c2cProviders = ['microsoft_365', 'google_workspace'] as const;
 
-export const createConnectionSchema = z.object({
-  provider: z.enum(c2cProviders),
-  displayName: z.string().min(1).max(200),
-  tenantId: z.string().max(100).optional(),
-  clientId: z.string().min(1).max(200),
-  clientSecret: z.string().min(1),
-  scopes: z.string().optional(),
-});
+export const c2cAuthMethods = ['platform_app', 'manual'] as const;
+
+export const createConnectionSchema = z
+  .object({
+    provider: z.enum(c2cProviders),
+    displayName: z.string().min(1).max(200),
+    tenantId: z.string().max(100).optional(),
+    clientId: z.string().min(1).max(200).optional(),
+    clientSecret: z.string().min(1).optional(),
+    scopes: z.string().optional(),
+    authMethod: z.enum(c2cAuthMethods).optional().default('manual'),
+  })
+  .refine(
+    (data) => {
+      if (data.authMethod === 'manual') {
+        return !!data.clientId && !!data.clientSecret;
+      }
+      return true;
+    },
+    { message: 'clientId and clientSecret are required for manual connections' }
+  );
 
 export const idParamSchema = z.object({ id: z.string().uuid() });
 
