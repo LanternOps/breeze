@@ -519,6 +519,22 @@ jobs:
           overwrite: true
           retention-days: 30
 
+      - name: Upload signed backup darwin/amd64
+        uses: actions/upload-artifact@v7
+        with:
+          name: breeze-backup-darwin-amd64
+          path: staging/breeze-backup-darwin-amd64
+          overwrite: true
+          retention-days: 30
+
+      - name: Upload signed backup darwin/arm64
+        uses: actions/upload-artifact@v7
+        with:
+          name: breeze-backup-darwin-arm64
+          path: staging/breeze-backup-darwin-arm64
+          overwrite: true
+          retention-days: 30
+
       - name: Build macOS .pkg installers
         env:
           BUILD_VERSION: ${{ github.ref_name }}
