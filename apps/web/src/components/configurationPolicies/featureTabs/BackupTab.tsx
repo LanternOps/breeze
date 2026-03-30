@@ -512,15 +512,9 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
           <p className="text-xs text-muted-foreground">
             All discovered VMs are backed up automatically. Exclude specific ones below.
           </p>
-          <div>
-            <label className="text-sm font-medium text-zinc-300">Export Path</label>
-            <input
-              value={(targets.exportPath as string) ?? ''}
-              onChange={(e) => setTargets({ ...targets, exportPath: e.target.value })}
-              placeholder="C:\HyperVBackups"
-              className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-          </div>
+          <p className="text-xs text-zinc-500">
+            Backups are stored in the configured storage destination. The agent stages files locally and uploads automatically.
+          </p>
           <div>
             <label className="text-sm font-medium text-zinc-300">Consistency Type</label>
             <select
@@ -555,15 +549,9 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
           <p className="text-xs text-muted-foreground">
             All discovered databases are backed up automatically. Exclude specific ones below.
           </p>
-          <div>
-            <label className="text-sm font-medium text-zinc-300">Output Path</label>
-            <input
-              value={(targets.outputPath as string) ?? ''}
-              onChange={(e) => setTargets({ ...targets, outputPath: e.target.value })}
-              placeholder="C:\SQLBackups"
-              className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-          </div>
+          <p className="text-xs text-zinc-500">
+            Backups are stored in the configured storage destination. The agent stages files locally and uploads automatically.
+          </p>
           <div>
             <label className="text-sm font-medium text-zinc-300">Backup Type</label>
             <select

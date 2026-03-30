@@ -18,6 +18,9 @@ import {
   devices,
   configurationPolicies,
   configPolicyFeatureLinks,
+  configPolicyBackupSettings,
+  hypervVms,
+  sqlInstances,
 } from '../db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { resolveAllBackupAssignedDevices } from '../services/featureConfigResolver';
@@ -231,6 +234,94 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
   return { enqueued };
 }
 
+// ── Backup target resolution ─────────────────────────────────────────────────
+
+export interface BackupTarget {
+  commandType: string;
+  payload: Record<string, unknown>;
+}
+
+/**
+ * Resolves backup mode + targets into one or more typed commands.
+ *
+ * For file/system_image, returns a single backup_run command.
+ * For hyperv, queries discovered VMs and returns one hyperv_backup per VM (minus excludes).
+ * For mssql, queries discovered SQL instances and returns one mssql_backup per database (minus excludes).
+ */
+export async function resolveBackupTargets(
+  backupMode: string,
+  targets: Record<string, unknown>,
+  deviceId: string
+): Promise<BackupTarget[]> {
+  switch (backupMode) {
+    case 'file': {
+      const t = targets as { paths?: string[] };
+      return [{ commandType: 'backup_run', payload: { paths: t.paths ?? [] } }];
+    }
+
+    case 'system_image':
+      return [{ commandType: 'backup_run', payload: { systemImage: true } }];
+
+    case 'hyperv': {
+      const t = targets as {
+        consistencyType?: string;
+        excludeVms?: string[];
+      };
+      const vms = await db
+        .select({ vmName: hypervVms.vmName })
+        .from(hypervVms)
+        .where(eq(hypervVms.deviceId, deviceId));
+
+      const excludeSet = new Set(t.excludeVms ?? []);
+      return vms
+        .filter((vm) => !excludeSet.has(vm.vmName))
+        .map((vm) => ({
+          commandType: 'hyperv_backup',
+          payload: {
+            vmName: vm.vmName,
+            consistencyType: t.consistencyType ?? 'application',
+          },
+        }));
+    }
+
+    case 'mssql': {
+      const t = targets as {
+        backupType?: string;
+        excludeDatabases?: string[];
+      };
+      const instances = await db
+        .select({
+          instanceName: sqlInstances.instanceName,
+          databases: sqlInstances.databases,
+        })
+        .from(sqlInstances)
+        .where(eq(sqlInstances.deviceId, deviceId));
+
+      const excludeSet = new Set(t.excludeDatabases ?? []);
+      const results: BackupTarget[] = [];
+      for (const inst of instances) {
+        const dbs = (inst.databases as string[]) ?? [];
+        for (const database of dbs) {
+          if (!excludeSet.has(database)) {
+            results.push({
+              commandType: 'mssql_backup',
+              payload: {
+                instance: inst.instanceName,
+                database,
+                backupType: t.backupType ?? 'full',
+              },
+            });
+          }
+        }
+      }
+      return results;
+    }
+
+    default:
+      return [{ commandType: 'backup_run', payload: {} }];
+  }
+}
+
 // ── dispatch-backup ───────────────────────────────────────────────────────────
 
 async function processDispatchBackup(
@@ -261,22 +352,69 @@ async function processDispatchBackup(
     return { dispatched: false };
   }
 
+  // Resolve backup mode from config policy backup settings (if feature link exists)
+  const [job] = await db
+    .select({ featureLinkId: backupJobs.featureLinkId })
+    .from(backupJobs)
+    .where(eq(backupJobs.id, data.jobId))
+    .limit(1);
+
+  let backupMode = 'file';
+  let modeTargets: Record<string, unknown> = {};
+
+  if (job?.featureLinkId) {
+    const [settings] = await db
+      .select({
+        backupMode: configPolicyBackupSettings.backupMode,
+        targets: configPolicyBackupSettings.targets,
+      })
+      .from(configPolicyBackupSettings)
+      .where(eq(configPolicyBackupSettings.featureLinkId, job.featureLinkId))
+      .limit(1);
+
+    if (settings) {
+      backupMode = settings.backupMode;
+      modeTargets = (settings.targets as Record<string, unknown>) ?? {};
+    }
+  }
+
+  // Resolve targets into typed commands based on backup mode
+  const targets = await resolveBackupTargets(backupMode, modeTargets, data.deviceId);
+
+  if (targets.length === 0) {
+    console.log(`[BackupWorker] No targets resolved for job ${data.jobId} (mode=${backupMode}), marking completed`);
+    await db
+      .update(backupJobs)
+      .set({ status: 'completed', completedAt: new Date(), updatedAt: new Date() })
+      .where(eq(backupJobs.id, data.jobId));
+    return { dispatched: false };
+  }
+
   const providerConfig = config.providerConfig as Record<string, unknown>;
+  let dispatched = false;
 
-  const command: AgentCommand = {
-    id: data.jobId,
-    type: 'backup_run',
-    payload: {
-      jobId: data.jobId,
-      configId: data.configId,
-      provider: config.provider,
-      providerConfig,
-      paths: providerConfig.paths ?? [],
-    },
-  };
+  for (const target of targets) {
+    const command: AgentCommand = {
+      id: data.jobId,
+      type: target.commandType,
+      payload: {
+        jobId: data.jobId,
+        configId: data.configId,
+        provider: config.provider,
+        providerConfig,
+        ...target.payload,
+      },
+    };
 
-  const sent = sendCommandToAgent(agentId, command);
-  if (!sent) {
+    const sent = sendCommandToAgent(agentId, command);
+    if (sent) {
+      dispatched = true;
+    } else {
+      console.warn(`[BackupWorker] Failed to send ${target.commandType} command for job ${data.jobId}`);
+    }
+  }
+
+  if (!dispatched) {
     await markJobFailed(data.jobId, 'Failed to send command to agent');
     return { dispatched: false };
   }
@@ -291,7 +429,7 @@ async function processDispatchBackup(
     .where(eq(backupJobs.id, data.jobId));
 
   console.log(
-    `[BackupWorker] Backup dispatched to agent ${agentId} for job ${data.jobId}`
+    `[BackupWorker] Dispatched ${targets.length} ${backupMode} command(s) to agent ${agentId} for job ${data.jobId}`
   );
   return { dispatched: true };
 }

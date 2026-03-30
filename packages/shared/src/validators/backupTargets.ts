@@ -6,13 +6,11 @@ export const fileTargetsSchema = z.object({
 });
 
 export const hypervTargetsSchema = z.object({
-  exportPath: z.string().min(1),
   consistencyType: z.enum(['application', 'crash']).default('application'),
   excludeVms: z.array(z.string()).default([]),
 });
 
 export const mssqlTargetsSchema = z.object({
-  outputPath: z.string().min(1),
   backupType: z.enum(['full', 'differential', 'log']).default('full'),
   excludeDatabases: z.array(z.string()).default([]),
 });

@@ -31,36 +31,25 @@ describe('fileTargetsSchema', () => {
 describe('hypervTargetsSchema', () => {
   it('accepts valid hyperv targets', () => {
     const result = hypervTargetsSchema.safeParse({
-      exportPath: 'D:\\Backups\\VMs',
       consistencyType: 'application',
     });
     expect(result.success).toBe(true);
   });
 
   it('defaults consistencyType to application', () => {
-    const result = hypervTargetsSchema.safeParse({
-      exportPath: 'D:\\Backups',
-    });
+    const result = hypervTargetsSchema.safeParse({});
     expect(result.success).toBe(true);
     expect(result.data?.consistencyType).toBe('application');
   });
 
   it('defaults excludeVms to empty array', () => {
-    const result = hypervTargetsSchema.safeParse({
-      exportPath: 'D:\\Backups',
-    });
+    const result = hypervTargetsSchema.safeParse({});
     expect(result.success).toBe(true);
     expect(result.data?.excludeVms).toEqual([]);
   });
 
-  it('rejects empty exportPath', () => {
-    const result = hypervTargetsSchema.safeParse({ exportPath: '' });
-    expect(result.success).toBe(false);
-  });
-
   it('accepts excludeVms list', () => {
     const result = hypervTargetsSchema.safeParse({
-      exportPath: 'D:\\Backups',
       excludeVms: ['TestVM', 'DevVM'],
     });
     expect(result.success).toBe(true);
@@ -71,40 +60,34 @@ describe('hypervTargetsSchema', () => {
 describe('mssqlTargetsSchema', () => {
   it('accepts valid mssql targets', () => {
     const result = mssqlTargetsSchema.safeParse({
-      outputPath: 'D:\\SQLBackups',
       backupType: 'full',
     });
     expect(result.success).toBe(true);
   });
 
   it('defaults backupType to full', () => {
-    const result = mssqlTargetsSchema.safeParse({
-      outputPath: 'D:\\SQLBackups',
-    });
+    const result = mssqlTargetsSchema.safeParse({});
     expect(result.success).toBe(true);
     expect(result.data?.backupType).toBe('full');
   });
 
   it('defaults excludeDatabases to empty array', () => {
-    const result = mssqlTargetsSchema.safeParse({
-      outputPath: 'D:\\SQLBackups',
-    });
+    const result = mssqlTargetsSchema.safeParse({});
     expect(result.success).toBe(true);
     expect(result.data?.excludeDatabases).toEqual([]);
   });
 
   it('accepts differential and log backup types', () => {
     expect(
-      mssqlTargetsSchema.safeParse({ outputPath: '/bak', backupType: 'differential' }).success
+      mssqlTargetsSchema.safeParse({ backupType: 'differential' }).success
     ).toBe(true);
     expect(
-      mssqlTargetsSchema.safeParse({ outputPath: '/bak', backupType: 'log' }).success
+      mssqlTargetsSchema.safeParse({ backupType: 'log' }).success
     ).toBe(true);
   });
 
   it('rejects invalid backupType', () => {
     const result = mssqlTargetsSchema.safeParse({
-      outputPath: '/bak',
       backupType: 'incremental',
     });
     expect(result.success).toBe(false);
@@ -141,16 +124,16 @@ describe('backupInlineSettingsSchema', () => {
   it('validates hyperv mode with matching targets', () => {
     const result = backupInlineSettingsSchema.safeParse({
       backupMode: 'hyperv',
-      targets: { exportPath: 'D:\\Backups' },
+      targets: { consistencyType: 'application' },
       schedule: { frequency: 'daily', time: '02:00' },
     });
     expect(result.success).toBe(true);
   });
 
-  it('rejects hyperv mode with file targets', () => {
+  it('rejects hyperv mode with invalid targets', () => {
     const result = backupInlineSettingsSchema.safeParse({
       backupMode: 'hyperv',
-      targets: { paths: ['/data'] },
+      targets: { consistencyType: 'invalid_type' },
       schedule: { frequency: 'daily', time: '02:00' },
     });
     expect(result.success).toBe(false);
