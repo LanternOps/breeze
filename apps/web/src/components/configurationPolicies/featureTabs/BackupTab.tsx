@@ -485,13 +485,13 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
           SECTION 0: Backup Type
           ══════════════════════════════════════════════════════════════════════ */}
       <div className="space-y-3">
-        <label className="text-sm font-medium text-zinc-300">Backup Type</label>
+        <label className="text-sm font-medium text-foreground">Backup Type</label>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           {[
             { value: 'file', label: 'File Backup' },
             { value: 'hyperv', label: 'Hyper-V VMs' },
             { value: 'mssql', label: 'SQL Server' },
-            { value: 'system_image', label: 'System Image' },
+            { value: 'system_image', label: 'System State' },
           ].map((opt) => (
             <button
               key={opt.value}
@@ -502,8 +502,8 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
               }}
               className={`rounded-md border px-3 py-2 text-sm ${
                 backupMode === opt.value
-                  ? 'border-blue-500 bg-blue-500/10 text-blue-400'
-                  : 'border-zinc-700 text-zinc-400 hover:border-zinc-600'
+                  ? 'border-primary bg-primary/10 text-primary'
+                  : 'border-muted text-muted-foreground hover:border-muted-foreground/30'
               }`}
             >
               {opt.label}
@@ -514,26 +514,26 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
 
       {/* ── Mode-specific target fields ──────────────────────────────────────── */}
       {backupMode === 'hyperv' && (
-        <div className="mt-4 space-y-4 rounded-md border border-zinc-700 bg-zinc-800/40 p-4">
+        <div className="mt-4 space-y-4 rounded-md border bg-muted/30 p-4">
           <p className="text-xs text-muted-foreground">
             All discovered VMs are backed up automatically. Exclude specific ones below.
           </p>
-          <p className="text-xs text-zinc-500">
+          <p className="text-xs text-muted-foreground/70">
             Backups are stored in the configured storage destination. The agent stages files locally and uploads automatically.
           </p>
           <div>
-            <label className="text-sm font-medium text-zinc-300">Consistency Type</label>
+            <label className="text-sm font-medium text-foreground">Consistency Type</label>
             <select
               value={(targets.consistencyType as string) ?? 'application'}
               onChange={(e) => setTargets({ ...targets, consistencyType: e.target.value })}
-              className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             >
               <option value="application">Application-Consistent (VSS)</option>
               <option value="crash">Crash-Consistent</option>
             </select>
           </div>
           <div>
-            <label className="text-sm font-medium text-zinc-300">Exclude VMs</label>
+            <label className="text-sm font-medium text-foreground">Exclude VMs</label>
             <input
               value={Array.isArray(targets.excludeVms) ? (targets.excludeVms as string[]).join(', ') : ''}
               onChange={(e) =>
@@ -543,7 +543,7 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
                 })
               }
               placeholder="VM-Dev-01, VM-Test-02"
-              className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             />
             <p className="mt-1 text-[11px] text-muted-foreground">Comma-separated VM names to skip.</p>
           </div>
@@ -551,19 +551,19 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
       )}
 
       {backupMode === 'mssql' && (
-        <div className="mt-4 space-y-4 rounded-md border border-zinc-700 bg-zinc-800/40 p-4">
+        <div className="mt-4 space-y-4 rounded-md border bg-muted/30 p-4">
           <p className="text-xs text-muted-foreground">
             All discovered databases are backed up automatically. Exclude specific ones below.
           </p>
-          <p className="text-xs text-zinc-500">
+          <p className="text-xs text-muted-foreground/70">
             Backups are stored in the configured storage destination. The agent stages files locally and uploads automatically.
           </p>
           <div>
-            <label className="text-sm font-medium text-zinc-300">Backup Type</label>
+            <label className="text-sm font-medium text-foreground">Backup Type</label>
             <select
               value={(targets.backupType as string) ?? 'full'}
               onChange={(e) => setTargets({ ...targets, backupType: e.target.value })}
-              className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             >
               <option value="full">Full</option>
               <option value="differential">Differential</option>
@@ -571,7 +571,7 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
             </select>
           </div>
           <div>
-            <label className="text-sm font-medium text-zinc-300">Exclude Databases</label>
+            <label className="text-sm font-medium text-foreground">Exclude Databases</label>
             <input
               value={Array.isArray(targets.excludeDatabases) ? (targets.excludeDatabases as string[]).join(', ') : ''}
               onChange={(e) =>
@@ -581,7 +581,7 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
                 })
               }
               placeholder="tempdb, model"
-              className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             />
             <p className="mt-1 text-[11px] text-muted-foreground">Comma-separated database names to skip.</p>
           </div>
@@ -589,11 +589,11 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
       )}
 
       {backupMode === 'system_image' && (
-        <div className="mt-4 rounded-md border border-zinc-700 bg-zinc-800/40 p-4">
-          <div className="flex items-center justify-between rounded-md border border-zinc-700 bg-background px-4 py-3">
+        <div className="mt-4 rounded-md border bg-muted/30 p-4">
+          <div className="flex items-center justify-between rounded-md border bg-background px-4 py-3">
             <div>
               <p className="text-sm font-medium">Include System State</p>
-              <p className="text-xs text-muted-foreground">Capture registry, boot files, and system components alongside the disk image.</p>
+              <p className="text-xs text-muted-foreground">Capture registry, boot files, and system components.</p>
             </div>
             <button
               type="button"

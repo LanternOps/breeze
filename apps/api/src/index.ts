@@ -93,7 +93,7 @@ import { huntressRoutes } from './routes/huntress';
 import { sensitiveDataRoutes } from './routes/sensitiveData';
 import { peripheralControlRoutes } from './routes/peripheralControl';
 import { browserSecurityRoutes } from './routes/browserSecurity';
-import { c2cRoutes } from './routes/c2c';
+import { c2cRoutes, m365CallbackRoute } from './routes/c2c';
 import { drRoutes } from './routes/dr';
 import { captureException } from './services/sentry';
 import { partnerGuard } from './middleware/partnerGuard';
@@ -703,6 +703,7 @@ api.route('/software-inventory', softwareInventoryRoutes);
 api.route('/sensitive-data', sensitiveDataRoutes);
 api.route('/peripherals', peripheralControlRoutes);
 api.route('/browser-security', browserSecurityRoutes);
+api.route('/', m365CallbackRoute); // Public callback (no auth) — must precede c2c group
 api.route('/c2c', c2cRoutes);
 api.route('/dr', drRoutes);
 

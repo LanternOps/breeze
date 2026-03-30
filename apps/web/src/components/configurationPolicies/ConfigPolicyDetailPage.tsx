@@ -149,14 +149,9 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
     fetchFeatureLinks();
   }, [fetchFeatureLinks]);
 
-  // Sync linkedPolicyId from existing feature links (if not already set from query param)
-  useEffect(() => {
-    if (linkedPolicyId) return; // already set from query param
-    const linkedLink = featureLinks.find((l) => l.featurePolicyId);
-    if (linkedLink) {
-      setLinkedPolicyId(linkedLink.featurePolicyId);
-    }
-  }, [featureLinks, linkedPolicyId]);
+  // linkedPolicyId is only set via ?linked= query param (parent policy inheritance).
+  // featurePolicyId on individual feature links points to standalone entities
+  // (backup configs, patch policies, etc.) — not parent configuration policies.
 
   // Resolve linked policy name and fetch parent's feature links
   useEffect(() => {
