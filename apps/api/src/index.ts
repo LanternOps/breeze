@@ -39,7 +39,7 @@ import { webhookRoutes } from './routes/webhooks';
 import { policyRoutes } from './routes/policyManagement';
 import { configPolicyRoutes } from './routes/configurationPolicies';
 import { psaRoutes } from './routes/psa';
-import { patchRoutes } from './routes/patches';
+import { patchRoutes } from './routes/patches/index';
 import { patchPolicyRoutes } from './routes/patchPolicies';
 import { updateRingRoutes } from './routes/updateRings';
 import { mobileRoutes } from './routes/mobile';
@@ -148,6 +148,7 @@ import {
   initializeIncidentSlaMonitor,
   shutdownIncidentSlaMonitor,
 } from './jobs/incidentJobs';
+import { initializeStaleCommandReaper, shutdownStaleCommandReaper } from './jobs/staleCommandReaper';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -927,6 +928,7 @@ async function initializeWorkers(): Promise<void> {
     ['incidentCorrelationWorker', initializeIncidentCorrelationWorker],
     ['incidentTimelineEnricher', initializeIncidentTimelineEnricher],
     ['incidentSlaMonitor', initializeIncidentSlaMonitor],
+    ['staleCommandReaper', initializeStaleCommandReaper],
   ];
 
   await Promise.allSettled(
@@ -1053,6 +1055,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownNotificationDispatcher,
     shutdownOfflineDetector,
     shutdownAlertWorkers,
+    shutdownStaleCommandReaper,
     async () => getEventBus().close(),
     closeRedis,
     async () => {

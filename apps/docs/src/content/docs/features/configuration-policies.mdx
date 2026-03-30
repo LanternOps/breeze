@@ -110,9 +110,25 @@ Optionally link a title and message template to control notification formatting.
 | **Check interval** | How often to re-evaluate (minutes) |
 | **Remediation script** | Script to run when `enforce` mode detects non-compliance |
 
-### Backup, Security, Monitoring, Automation
+### Backup
 
-Configure schedule and retention for **Backup**; security policy settings for **Security**; check intervals and targets for **Monitoring**; and event triggers, cron schedules, and action chains for **Automation**.
+Backup feature links use **inline settings** stored in the `config_policy_backup_settings` table (one row per feature link).
+
+| Field | Type | Description |
+|---|---|---|
+| **Schedule** | JSONB | Frequency (`daily`, `weekly`, `monthly`), time (`HH:MM`), timezone, day of week/month |
+| **Retention** | JSONB | `keepDaily`, `keepWeekly`, `keepMonthly` snapshot counts |
+| **Paths** | JSONB array | Directories to include in the backup |
+
+When a backup feature is linked to a configuration policy, the schedule and retention settings in the policy override whatever is set on the standalone backup configuration. The policy system resolves which backup settings apply to a device using the same hierarchical precedence rules as other feature types (device-level wins over group, site, org, partner).
+
+<Aside type="tip">
+  Use the effective configuration endpoint to verify which backup schedule a specific device will receive: `GET /configuration-policies/effective/:deviceId`
+</Aside>
+
+### Security, Monitoring, Automation
+
+Configure security policy settings for **Security**; check intervals and targets for **Monitoring**; and event triggers, cron schedules, and action chains for **Automation**.
 
 ## Assigning a policy
 

@@ -3,18 +3,27 @@ import {
   Search,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   CheckCircle,
   XCircle,
-  Bell,
   BellOff,
   MoreHorizontal,
   ExternalLink,
-  Calendar
+  Calendar,
+  SlidersHorizontal,
+  X,
+  Loader2
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import {
+  severityConfig,
+  statusConfig,
+  formatRelativeTime,
+  type AlertSeverity,
+  type AlertStatus,
+} from './alertConfig';
 
-export type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
-export type AlertStatus = 'active' | 'acknowledged' | 'resolved' | 'suppressed';
+export type { AlertSeverity, AlertStatus };
 
 export type Alert = {
   id: string;
@@ -42,60 +51,9 @@ type AlertListProps = {
   onResolve?: (alert: Alert) => void;
   onSuppress?: (alert: Alert) => void;
   onBulkAction?: (action: string, alerts: Alert[]) => void;
+  submittingId?: string | null;
   pageSize?: number;
 };
-
-const severityConfig: Record<AlertSeverity, { label: string; color: string; bgColor: string }> = {
-  critical: {
-    label: 'Critical',
-    color: 'text-red-700 dark:text-red-400',
-    bgColor: 'bg-red-500/20 border-red-500/40'
-  },
-  high: {
-    label: 'High',
-    color: 'text-orange-700 dark:text-orange-400',
-    bgColor: 'bg-orange-500/20 border-orange-500/40'
-  },
-  medium: {
-    label: 'Medium',
-    color: 'text-yellow-700 dark:text-yellow-400',
-    bgColor: 'bg-yellow-500/20 border-yellow-500/40'
-  },
-  low: {
-    label: 'Low',
-    color: 'text-blue-700 dark:text-blue-400',
-    bgColor: 'bg-blue-500/20 border-blue-500/40'
-  },
-  info: {
-    label: 'Info',
-    color: 'text-gray-700 dark:text-gray-400',
-    bgColor: 'bg-gray-500/20 border-gray-500/40'
-  }
-};
-
-const statusConfig: Record<AlertStatus, { label: string; color: string }> = {
-  active: { label: 'Active', color: 'bg-destructive/15 text-destructive border-destructive/30 dark:bg-destructive/20 dark:border-destructive/30' },
-  acknowledged: { label: 'Acknowledged', color: 'bg-primary/15 text-primary border-primary/30 dark:bg-primary/20 dark:border-primary/30' },
-  resolved: { label: 'Resolved', color: 'bg-success/15 text-success border-success/30 dark:bg-success/20 dark:border-success/30' },
-  suppressed: { label: 'Suppressed', color: 'bg-muted text-muted-foreground border-border' }
-};
-
-function formatDate(dateString: string): string {
-  const date = new Date(dateString);
-  if (Number.isNaN(date.getTime())) return dateString;
-
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / (1000 * 60));
-  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-  if (diffMins < 1) return 'Just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
-}
 
 export default function AlertList({
   alerts,
@@ -105,7 +63,8 @@ export default function AlertList({
   onResolve,
   onSuppress,
   onBulkAction,
-  pageSize = 10
+  submittingId,
+  pageSize = 25
 }: AlertListProps) {
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -115,6 +74,10 @@ export default function AlertList({
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
+  const [filtersExpanded, setFiltersExpanded] = useState(false);
+
+  const hasActiveFilters = statusFilter !== 'all' || severityFilter !== 'all' || deviceFilter !== 'all' || dateRangeFilter !== 'all';
+  const activeFilterCount = [statusFilter, severityFilter, deviceFilter, dateRangeFilter].filter(f => f !== 'all').length;
 
   const filteredAlerts = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -180,17 +143,25 @@ export default function AlertList({
   };
 
   const handleBulkAction = (action: string) => {
-    const selectedAlerts = alerts.filter(a => selectedIds.has(a.id));
-    onBulkAction?.(action, selectedAlerts);
+    const selected = alerts.filter(a => selectedIds.has(a.id));
+    onBulkAction?.(action, selected);
     setBulkMenuOpen(false);
     setSelectedIds(new Set());
+  };
+
+  const clearFilters = () => {
+    setQuery('');
+    setStatusFilter('all');
+    setSeverityFilter('all');
+    setDeviceFilter('all');
+    setDateRangeFilter('all');
+    setCurrentPage(1);
   };
 
   const allSelected =
     paginatedAlerts.length > 0 && paginatedAlerts.every(a => selectedIds.has(a.id));
   const someSelected = paginatedAlerts.some(a => selectedIds.has(a.id));
 
-  // Extract unique devices from alerts if not provided
   const availableDevices = useMemo(() => {
     if (devices.length > 0) return devices;
     const deviceMap = new Map<string, string>();
@@ -203,35 +174,56 @@ export default function AlertList({
   }, [alerts, devices]);
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-lg font-semibold">Alerts</h2>
-          <p className="text-sm text-muted-foreground">
-            {filteredAlerts.length} of {alerts.length} alerts
-          </p>
+    <div className="rounded-lg border bg-card shadow-sm">
+      {/* Search + filter toggle bar */}
+      <div className="flex items-center gap-2 p-4 border-b">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <input
+            type="search"
+            placeholder="Search alerts..."
+            value={query}
+            onChange={event => {
+              setQuery(event.target.value);
+              setCurrentPage(1);
+            }}
+            className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          />
         </div>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center flex-wrap">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <input
-              type="search"
-              placeholder="Search alerts..."
-              value={query}
-              onChange={event => {
-                setQuery(event.target.value);
-                setCurrentPage(1);
-              }}
-              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-48"
-            />
-          </div>
+        <button
+          type="button"
+          onClick={() => setFiltersExpanded(!filtersExpanded)}
+          aria-expanded={filtersExpanded}
+          className={cn(
+            'flex h-9 items-center gap-1.5 rounded-md border px-3 text-sm font-medium transition',
+            filtersExpanded || hasActiveFilters
+              ? 'border-primary/40 bg-primary/5 text-primary'
+              : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+          )}
+        >
+          <SlidersHorizontal className="h-3.5 w-3.5" />
+          Filters
+          {activeFilterCount > 0 && (
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
+              {activeFilterCount}
+            </span>
+          )}
+        </button>
+        <span className="text-xs text-muted-foreground whitespace-nowrap">
+          {filteredAlerts.length} of {alerts.length}
+        </span>
+      </div>
+
+      {/* Collapsible filter panel */}
+      {filtersExpanded && (
+        <div className="flex flex-wrap items-center gap-2 border-b bg-muted/20 px-4 py-3">
           <select
             value={statusFilter}
             onChange={event => {
               setStatusFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-36"
+            className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           >
             <option value="all">All Status</option>
             <option value="active">Active</option>
@@ -245,7 +237,7 @@ export default function AlertList({
               setSeverityFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-32"
+            className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           >
             <option value="all">All Severity</option>
             <option value="critical">Critical</option>
@@ -261,7 +253,7 @@ export default function AlertList({
                 setDeviceFilter(event.target.value);
                 setCurrentPage(1);
               }}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-40"
+              className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             >
               <option value="all">All Devices</option>
               {availableDevices.map(device => (
@@ -277,7 +269,7 @@ export default function AlertList({
               setDateRangeFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-32"
+            className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           >
             <option value="all">All Time</option>
             <option value="1h">Last Hour</option>
@@ -285,41 +277,39 @@ export default function AlertList({
             <option value="7d">Last 7 Days</option>
             <option value="30d">Last 30 Days</option>
           </select>
-          {(query || statusFilter !== 'all' || severityFilter !== 'all' || deviceFilter !== 'all' || dateRangeFilter !== 'all') && (
+          {hasActiveFilters && (
             <button
               type="button"
-              onClick={() => {
-                setQuery('');
-                setStatusFilter('all');
-                setSeverityFilter('all');
-                setDeviceFilter('all');
-                setDateRangeFilter('all');
-                setCurrentPage(1);
-              }}
-              className="h-10 whitespace-nowrap rounded-md px-3 text-sm font-medium text-muted-foreground hover:text-foreground"
+              onClick={clearFilters}
+              className="flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-muted-foreground hover:text-foreground"
             >
-              Clear filters
+              <X className="h-3 w-3" />
+              Clear all
             </button>
           )}
         </div>
-      </div>
+      )}
 
+      {/* Bulk action bar */}
       {selectedIds.size > 0 && (
-        <div className="mt-4 flex items-center gap-3 rounded-md border bg-muted/40 px-4 py-2">
+        <div className="flex items-center gap-3 border-b bg-muted/30 px-4 py-2">
           <span className="text-sm font-medium">{selectedIds.size} selected</span>
           <div className="relative">
             <button
               type="button"
               onClick={() => setBulkMenuOpen(!bulkMenuOpen)}
+              aria-expanded={bulkMenuOpen}
+              aria-haspopup="menu"
               className="flex items-center gap-1 rounded-md border bg-background px-3 py-1.5 text-sm font-medium hover:bg-muted"
             >
               Bulk Actions
-              <MoreHorizontal className="h-4 w-4" />
+              <ChevronDown className="h-3.5 w-3.5" />
             </button>
             {bulkMenuOpen && (
-              <div className="absolute left-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg">
+              <div role="menu" className="absolute left-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg">
                 <button
                   type="button"
+                  role="menuitem"
                   onClick={() => handleBulkAction('acknowledge')}
                   className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
                 >
@@ -328,14 +318,16 @@ export default function AlertList({
                 </button>
                 <button
                   type="button"
+                  role="menuitem"
                   onClick={() => handleBulkAction('resolve')}
                   className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
                 >
-                  <XCircle className="h-4 w-4" />
+                  <CheckCircle className="h-4 w-4 text-success" />
                   Resolve
                 </button>
                 <button
                   type="button"
+                  role="menuitem"
                   onClick={() => handleBulkAction('suppress')}
                   className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
                 >
@@ -355,14 +347,16 @@ export default function AlertList({
         </div>
       )}
 
-      <div className="mt-6 overflow-x-auto rounded-md border">
+      {/* Table */}
+      <div className="overflow-x-auto">
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">
+              <th className="px-4 py-3 w-10">
                 <input
                   type="checkbox"
                   checked={allSelected}
+                  aria-label="Select all alerts"
                   ref={el => {
                     if (el) el.indeterminate = someSelected && !allSelected;
                   }}
@@ -381,127 +375,156 @@ export default function AlertList({
           <tbody className="divide-y">
             {paginatedAlerts.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                  No alerts found. Try adjusting your search or filters.
+                <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                  No alerts match your filters.
+                  {hasActiveFilters && (
+                    <button
+                      type="button"
+                      onClick={clearFilters}
+                      className="ml-1 text-primary hover:underline"
+                    >
+                      Clear filters
+                    </button>
+                  )}
                 </td>
               </tr>
             ) : (
-              paginatedAlerts.map(alert => (
-                <tr
-                  key={alert.id}
-                  onClick={() => onSelect?.(alert)}
-                  className="cursor-pointer transition hover:bg-muted/40"
-                >
-                  <td className="px-4 py-3">
-                    <input
-                      type="checkbox"
-                      checked={selectedIds.has(alert.id)}
-                      onClick={e => e.stopPropagation()}
-                      onChange={e => handleSelectOne(alert.id, e.target.checked)}
-                      className="h-4 w-4 rounded border-border"
-                    />
-                  </td>
-                  <td className="max-w-[160px] px-4 py-3">
-                    <a
-                      href={`/devices/${alert.deviceId}`}
-                      onClick={e => e.stopPropagation()}
-                      className="flex items-center gap-1 text-sm font-medium hover:underline min-w-0"
-                      title={alert.deviceName}
-                    >
-                      <span className="truncate">{alert.deviceName}</span>
-                      <ExternalLink className="h-3 w-3 shrink-0" />
-                    </a>
-                  </td>
-                  <td className="max-w-[280px] px-4 py-3">
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium" title={alert.title}>{alert.title}</p>
-                      <p className="text-xs text-muted-foreground truncate max-w-xs">
-                        {alert.message}
-                      </p>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={cn(
-                        'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium',
-                        severityConfig[alert.severity].bgColor,
-                        severityConfig[alert.severity].color
-                      )}
-                    >
-                      {severityConfig[alert.severity].label}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={cn(
-                        'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium',
-                        statusConfig[alert.status].color
-                      )}
-                    >
-                      {statusConfig[alert.status].label}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-sm text-muted-foreground">
-                    <div className="flex items-center gap-1">
-                      <Calendar className="h-3 w-3" />
-                      {formatDate(alert.triggeredAt)}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-1.5">
-                      {alert.status === 'active' && (
-                        <button
-                          type="button"
-                          onClick={e => {
-                            e.stopPropagation();
-                            onAcknowledge?.(alert);
-                          }}
-                          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
-                        >
-                          <CheckCircle className="h-3.5 w-3.5" />
-                          Ack
-                        </button>
-                      )}
-                      {(alert.status === 'active' || alert.status === 'acknowledged') && (
-                        <button
-                          type="button"
-                          onClick={e => {
-                            e.stopPropagation();
-                            onResolve?.(alert);
-                          }}
-                          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-success hover:bg-success/10"
-                        >
-                          <XCircle className="h-3.5 w-3.5" />
-                          Resolve
-                        </button>
-                      )}
-                      {alert.status !== 'suppressed' && (
-                        <button
-                          type="button"
-                          onClick={e => {
-                            e.stopPropagation();
-                            onSuppress?.(alert);
-                          }}
-                          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
-                          title="Suppress"
-                        >
-                          <BellOff className="h-3.5 w-3.5" />
-                          Mute
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))
+              paginatedAlerts.map(alert => {
+                const isSubmitting = submittingId === alert.id;
+                return (
+                  <tr
+                    key={alert.id}
+                    onClick={() => onSelect?.(alert)}
+                    className={cn(
+                      'cursor-pointer transition hover:bg-muted/40',
+                      isSubmitting && 'opacity-60 pointer-events-none'
+                    )}
+                  >
+                    <td className="px-4 py-3">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(alert.id)}
+                        aria-label={`Select ${alert.title}`}
+                        onClick={e => e.stopPropagation()}
+                        onChange={e => handleSelectOne(alert.id, e.target.checked)}
+                        className="h-4 w-4 rounded border-border"
+                      />
+                    </td>
+                    <td className="max-w-[160px] px-4 py-3">
+                      <a
+                        href={`/devices/${alert.deviceId}`}
+                        onClick={e => e.stopPropagation()}
+                        className="flex items-center gap-1 text-sm font-medium hover:underline min-w-0"
+                        title={alert.deviceName}
+                      >
+                        <span className="truncate">{alert.deviceName}</span>
+                        <ExternalLink className="h-3 w-3 shrink-0" />
+                      </a>
+                    </td>
+                    <td className="max-w-[280px] px-4 py-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium" title={alert.title}>{alert.title}</p>
+                        <p className="text-xs text-muted-foreground truncate max-w-xs">
+                          {alert.message}
+                        </p>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={cn(
+                          'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium',
+                          severityConfig[alert.severity].bg,
+                          severityConfig[alert.severity].border,
+                          severityConfig[alert.severity].color
+                        )}
+                      >
+                        {severityConfig[alert.severity].label}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={cn(
+                          'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium',
+                          statusConfig[alert.status].color
+                        )}
+                      >
+                        {statusConfig[alert.status].label}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-muted-foreground">
+                      <div className="flex items-center gap-1">
+                        <Calendar className="h-3 w-3" />
+                        {formatRelativeTime(alert.triggeredAt)}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-end gap-1.5">
+                        {isSubmitting ? (
+                          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                        ) : (
+                          <>
+                            {alert.status === 'active' && (
+                              <button
+                                type="button"
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  onAcknowledge?.(alert);
+                                }}
+                                title="Mark as seen — stops escalation but keeps alert active"
+                                aria-label={`Acknowledge: ${alert.title}`}
+                                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+                              >
+                                <CheckCircle className="h-3.5 w-3.5" />
+                                Ack
+                              </button>
+                            )}
+                            {(alert.status === 'active' || alert.status === 'acknowledged') && (
+                              <button
+                                type="button"
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  onResolve?.(alert);
+                                }}
+                                title="Close this alert — marks the issue as fixed"
+                                aria-label={`Resolve: ${alert.title}`}
+                                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-success hover:bg-success/10"
+                              >
+                                <CheckCircle className="h-3.5 w-3.5" />
+                                Resolve
+                              </button>
+                            )}
+                            {alert.status !== 'suppressed' && (
+                              <button
+                                type="button"
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  onSuppress?.(alert);
+                                }}
+                                title="Silence this alert — stops notifications without resolving"
+                                aria-label={`Suppress: ${alert.title}`}
+                                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+                              >
+                                <BellOff className="h-3.5 w-3.5" />
+                                Mute
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
       </div>
 
+      {/* Pagination */}
       {totalPages > 1 && (
-        <div className="mt-4 flex items-center justify-between">
+        <div className="flex items-center justify-between border-t px-4 py-3">
           <p className="text-sm text-muted-foreground">
-            Showing {startIndex + 1} to {Math.min(startIndex + pageSize, filteredAlerts.length)} of{' '}
+            {startIndex + 1}–{Math.min(startIndex + pageSize, filteredAlerts.length)} of{' '}
             {filteredAlerts.length}
           </p>
           <div className="flex items-center gap-2">
@@ -509,18 +532,18 @@ export default function AlertList({
               type="button"
               onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
               disabled={currentPage === 1}
-              className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             >
               <ChevronLeft className="h-4 w-4" />
             </button>
-            <span className="text-sm">
-              Page {currentPage} of {totalPages}
+            <span className="text-sm tabular-nums">
+              {currentPage} / {totalPages}
             </span>
             <button
               type="button"
               onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
               disabled={currentPage === totalPages}
-              className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             >
               <ChevronRight className="h-4 w-4" />
             </button>

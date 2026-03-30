@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, Database, HardDrive, ShieldAlert } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -17,13 +17,56 @@ import {
   statIconMap
 } from './backupDashboardHelpers';
 
-type BackupTab = 'overview' | 'verification';
+const MssqlDashboard = lazy(() => import('./MssqlDashboard'));
+const HypervDashboard = lazy(() => import('./HypervDashboard'));
+const VaultDashboard = lazy(() => import('./VaultDashboard'));
+const SLADashboard = lazy(() => import('./SLADashboard'));
+const EncryptionKeyList = lazy(() => import('./EncryptionKeyList'));
+
+type BackupTab = 'overview' | 'verification' | 'mssql' | 'hyperv' | 'vault' | 'sla' | 'encryption';
+
+const ALL_TABS: BackupTab[] = ['overview', 'verification', 'mssql', 'hyperv', 'vault', 'sla', 'encryption'];
+
+const TAB_LABELS: Record<BackupTab, string> = {
+  overview: 'Overview',
+  verification: 'Verification',
+  mssql: 'SQL Server',
+  hyperv: 'Hyper-V',
+  vault: 'Vault',
+  sla: 'SLA',
+  encryption: 'Encryption',
+};
+
+function isValidTab(hash: string): hash is BackupTab {
+  return ALL_TABS.includes(hash as BackupTab);
+}
+
+function TabFallback() {
+  return (
+    <div className="flex items-center justify-center py-16">
+      <div className="text-center">
+        <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+        <p className="mt-4 text-sm text-muted-foreground">Loading...</p>
+      </div>
+    </div>
+  );
+}
+
+function ComingSoonTab({ name }: { name: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-20 text-center">
+      <Database className="h-12 w-12 text-muted-foreground/40" />
+      <h3 className="mt-4 text-base font-semibold text-foreground">{name}</h3>
+      <p className="mt-1 text-sm text-muted-foreground">This feature is coming soon.</p>
+    </div>
+  );
+}
 
 export default function BackupDashboard() {
   const [activeTab, setActiveTab] = useState<BackupTab>(() => {
     if (typeof window === 'undefined') return 'overview';
     const hash = window.location.hash.replace('#', '');
-    return hash === 'verification' ? 'verification' : 'overview';
+    return isValidTab(hash) ? hash : 'overview';
   });
   const [stats, setStats] = useState<BackupStat[]>([]);
   const [recentJobs, setRecentJobs] = useState<BackupJob[]>([]);
@@ -135,7 +178,7 @@ export default function BackupDashboard() {
   useEffect(() => {
     const onHashChange = () => {
       const hash = window.location.hash.replace('#', '');
-      setActiveTab(hash === 'verification' ? 'verification' : 'overview');
+      setActiveTab(isValidTab(hash) ? hash : 'overview');
     };
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
@@ -253,25 +296,10 @@ export default function BackupDashboard() {
     );
   }
 
-  if (error && !hasData) {
-    return (
-      <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
-        <p className="text-sm text-destructive">{error}</p>
-        <button
-          type="button"
-          onClick={fetchOverview}
-          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
-        >
-          Try again
-        </button>
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-6">
-      <div className="flex gap-1 border-b">
-        {(['overview', 'verification'] as const).map((tab) => (
+      <div className="flex gap-1 overflow-x-auto border-b">
+        {ALL_TABS.map((tab) => (
           <button
             key={tab}
             type="button"
@@ -280,18 +308,36 @@ export default function BackupDashboard() {
               window.location.hash = tab === 'overview' ? '' : tab;
             }}
             className={cn(
-              'border-b-2 px-4 py-2 text-sm font-medium capitalize transition-colors',
+              'flex shrink-0 items-center gap-1.5 border-b-2 px-4 py-2 text-sm font-medium transition-colors',
               activeTab === tab
                 ? 'border-primary text-primary'
                 : 'border-transparent text-muted-foreground hover:text-foreground'
             )}
           >
-            {tab}
+            {TAB_LABELS[tab]}
+            {tab !== 'overview' && tab !== 'verification' && (
+              <span className="rounded bg-warning/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase leading-none tracking-wider text-warning">
+                Alpha
+              </span>
+            )}
           </button>
         ))}
       </div>
 
-      {activeTab === 'overview' && (
+      {activeTab === 'overview' && error && !hasData && (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
+          <p className="text-sm text-destructive">{error}</p>
+          <button
+            type="button"
+            onClick={fetchOverview}
+            className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+          >
+            Try again
+          </button>
+        </div>
+      )}
+
+      {activeTab === 'overview' && !(error && !hasData) && (
         <BackupOverviewContent
           stats={stats}
           recentJobs={recentJobs}
@@ -319,6 +365,36 @@ export default function BackupDashboard() {
       )}
 
       {activeTab === 'verification' && <BackupVerificationOverview />}
+
+      {activeTab === 'mssql' && (
+        <Suspense fallback={<TabFallback />}>
+          <MssqlDashboard />
+        </Suspense>
+      )}
+
+      {activeTab === 'hyperv' && (
+        <Suspense fallback={<TabFallback />}>
+          <HypervDashboard />
+        </Suspense>
+      )}
+
+      {activeTab === 'vault' && (
+        <Suspense fallback={<TabFallback />}>
+          <VaultDashboard />
+        </Suspense>
+      )}
+
+      {activeTab === 'sla' && (
+        <Suspense fallback={<TabFallback />}>
+          <SLADashboard />
+        </Suspense>
+      )}
+
+      {activeTab === 'encryption' && (
+        <Suspense fallback={<TabFallback />}>
+          <EncryptionKeyList />
+        </Suspense>
+      )}
     </div>
   );
 }

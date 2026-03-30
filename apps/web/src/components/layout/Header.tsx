@@ -10,14 +10,15 @@ import {
   Shield,
   Activity,
   Sparkles,
+  BookOpen,
   Menu
 } from 'lucide-react';
 import OrgSwitcher from './OrgSwitcher';
 import NotificationCenter from './NotificationCenter';
 import CommandPalette from './CommandPalette';
-import HelpMenu from './HelpMenu';
 import { useAuthStore, apiLogout, fetchWithAuth } from '../../stores/auth';
 import { useAiStore } from '../../stores/aiStore';
+import { useHelpStore } from '../../stores/helpStore';
 import { useUiStore } from '../../stores/uiStore';
 import { navigateTo } from '../../lib/navigation';
 
@@ -30,6 +31,7 @@ export default function Header() {
 
   const { user, isAuthenticated } = useAuthStore();
   const { isOpen: isAiOpen, toggle: toggleAi } = useAiStore();
+  const { isOpen: isHelpOpen, toggle: toggleHelp } = useHelpStore();
   const { toggleMobileMenu } = useUiStore();
 
   // Mark as mounted after hydration to avoid SSR/client mismatch
@@ -138,8 +140,20 @@ export default function Header() {
           {mounted ? (darkMode ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />) : <Moon className="h-5 w-5" />}
         </button>
 
-        {/* Help Menu */}
-        {mounted && isAuthenticated && <HelpMenu />}
+        {/* Help & Docs */}
+        {mounted && isAuthenticated && (
+          <button
+            type="button"
+            onClick={toggleHelp}
+            className="relative rounded-md p-2 hover:bg-muted transition-colors"
+            title="Help & Docs (Cmd+Shift+H)"
+          >
+            <BookOpen className="h-5 w-5" />
+            {isHelpOpen && (
+              <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-primary" />
+            )}
+          </button>
+        )}
 
         {/* User Menu */}
         <div className="relative" ref={dropdownRef}>

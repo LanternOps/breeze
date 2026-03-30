@@ -26,9 +26,9 @@ The AI Risk Engine categorises every AI tool into one of four tiers that control
 
 | Tier | Execution | Examples |
 |---|---|---|
-| **Tier 1** | Auto-execute (read-only, no approval) | `query_devices`, `analyze_metrics`, `get_security_posture`, `get_active_users`, `file_operations` (list/read), `disk_cleanup` (preview), `propose_action_plan`, `list_configuration_policies`, `get_effective_configuration`, `preview_configuration_change`, `get_configuration_policy`, `configuration_policy_compliance`, `manage_processes` (list), `get_service_monitoring_status`, `query_monitors` |
-| **Tier 2** | Auto-execute + audit logged | `manage_alerts` acknowledge/resolve actions, `manage_services` list action, `set_device_context`, `resolve_device_context`, `apply_configuration_policy`, `remove_configuration_policy_assignment`, `manage_configuration_policy` (activate/deactivate) |
-| **Tier 3** | Requires human approval before execution | `execute_command`, `run_script`, `disk_cleanup` (execute), `network_discovery`, `security_scan` (quarantine/remove/restore), `file_operations` (write/delete/mkdir/rename), `manage_configuration_policy` (create/update/delete), `manage_processes` (kill), `manage_monitors` (create/update/delete) |
+| **Tier 1** | Auto-execute (read-only, no approval) | `query_devices`, `analyze_metrics`, `get_security_posture`, `get_active_users`, `file_operations` (list/read), `disk_cleanup` (preview), `propose_action_plan`, `list_configuration_policies`, `get_effective_configuration`, `preview_configuration_change`, `get_configuration_policy`, `configuration_policy_compliance`, `manage_processes` (list), `get_service_monitoring_status`, `query_monitors`, `query_backups`, `get_backup_status`, `browse_snapshots`, `get_incident_timeline`, `generate_incident_report`, `list_playbooks`, `get_playbook_history` |
+| **Tier 2** | Auto-execute + audit logged | `manage_alerts` acknowledge/resolve actions, `manage_services` list action, `set_device_context`, `resolve_device_context`, `apply_configuration_policy`, `remove_configuration_policy_assignment`, `manage_configuration_policy` (activate/deactivate), `create_incident`, `collect_evidence` |
+| **Tier 3** | Requires human approval before execution | `execute_command`, `run_script`, `disk_cleanup` (execute), `network_discovery`, `security_scan` (quarantine/remove/restore), `file_operations` (write/delete/mkdir/rename), `manage_configuration_policy` (create/update/delete), `manage_processes` (kill), `manage_monitors` (create/update/delete), `trigger_backup`, `restore_snapshot`, `execute_containment`, `execute_playbook` |
 | **Tier 4** | Blocked — never executed | Cross-org operations |
 
 <Aside>
@@ -73,6 +73,18 @@ Each tool has a per-tool sliding window rate limit. Requests that exceed the lim
 | `query_monitors` | 30 requests | 5 min |
 | `manage_monitors` | 10 requests | 5 min |
 | `get_service_monitoring_status` | 30 requests | 5 min |
+| `query_backups` | 20 requests | 5 min |
+| `get_backup_status` | 20 requests | 5 min |
+| `browse_snapshots` | 20 requests | 5 min |
+| `trigger_backup` | 3 requests | 10 min |
+| `restore_snapshot` | 3 requests | 10 min |
+| `create_incident` | 5 requests | 5 min |
+| `execute_containment` | 5 requests | 10 min |
+| `collect_evidence` | 10 requests | 5 min |
+| `get_incident_timeline` | 20 requests | 5 min |
+| `generate_incident_report` | 10 requests | 5 min |
+| `list_playbooks` | 20 requests | 5 min |
+| `execute_playbook` | 3 requests | 10 min |
 
 ### Action Plans
 
@@ -258,6 +270,52 @@ Sanitization includes:
 - Validation against Zod schemas defined in `aiToolSchemas.ts`
 
 All rejected inputs are logged in the security event trail accessible via the Risk Engine dashboard.
+
+---
+
+## Backup AI Tools
+
+The AI assistant can query, manage, and operate backups across your fleet. These tools are available in any AI chat session.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `query_backups` | 1 | List backup configurations, jobs, and policies |
+| `get_backup_status` | 1 | Health summary for a device or organization (active configs, job counts, storage totals) |
+| `browse_snapshots` | 1 | List available snapshots for a device with timestamps, sizes, and expiration |
+| `trigger_backup` | 3 | Initiate an on-demand backup for a device (requires approval) |
+| `restore_snapshot` | 3 | Restore data from a snapshot to a device (requires approval) |
+
+See [Device Backup](/features/device-backup/) for configuration details.
+
+---
+
+## Incident Response AI Tools
+
+The AI can create and manage security incidents, execute containment actions, and collect forensic evidence.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `create_incident` | 2 | Create a new security incident with classification and severity |
+| `execute_containment` | 3 | Run a containment action on a device (process kill, network isolation, account disable, USB block) |
+| `collect_evidence` | 2 | Collect forensic evidence from a device (logs, processes, connections, screenshots) |
+| `get_incident_timeline` | 1 | View the full timeline of an incident |
+| `generate_incident_report` | 1 | Generate a structured report with action and evidence summaries |
+
+See [Incident Response](/features/incident-response/) for the full workflow.
+
+---
+
+## Playbook AI Tools
+
+The AI can list and execute remediation playbooks as part of automated incident response.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `list_playbooks` | 1 | List available playbooks, optionally filtered by category |
+| `execute_playbook` | 3 | Execute a playbook on a device with runtime variables (requires approval) |
+| `get_playbook_history` | 1 | View execution history for a playbook or device |
+
+See [Playbooks](/features/playbooks/) for playbook definitions and step types.
 
 ---
 

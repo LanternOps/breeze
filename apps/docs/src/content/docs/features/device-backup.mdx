@@ -7,10 +7,6 @@ import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Device Backup provides centralized backup management for devices enrolled in Breeze. You define storage configurations (where backups go), policies (what gets backed up, on what schedule, and how long to keep it), then monitor everything through the backup dashboard. Backups produce snapshots that can be browsed file-by-file and restored to the original device or a different target. All backup operations are scoped to an organization and enforced through the standard authentication middleware.
 
-<Aside type="caution" title="Implementation Status">
-  The backup API surface is fully implemented, but the current backend uses an **in-memory mock store** for configurations, policies, jobs, snapshots, and restore operations. Data does not persist across API restarts. The database schema tables documented below (`backup_configs`, `backup_policies`, `backup_jobs`, `backup_snapshots`, `restore_jobs`) are defined in Drizzle but are not yet wired to the route handlers. Production use requires completing the migration from in-memory storage to the database layer.
-</Aside>
-
 The backup system is organized around five core concepts: configurations, policies, jobs, snapshots, and restore operations. Configurations define the storage target. Policies bind a configuration to devices with a schedule and retention rules. Jobs represent individual backup or restore executions. Snapshots are the point-in-time archives produced by completed backup jobs. Restore operations recover data from a snapshot back to a device.
 
 ---
@@ -19,14 +15,15 @@ The backup system is organized around five core concepts: configurations, polici
 
 ### Storage Providers
 
-Backup configurations support two storage provider types:
+Backup configurations support five storage provider types:
 
 | Provider | Description |
 |----------|-------------|
 | `s3` | Amazon S3 or S3-compatible object storage. Configuration details include bucket, region, prefix, storage class, and encryption settings. |
-| `local` | Local filesystem or network-attached storage. Configuration details include the mount path, retention days, and compression algorithm. |
-
-The database schema defines additional provider types (`azure_blob`, `google_cloud`, `backblaze`) for future use, but the current API validates against `s3` and `local`.
+| `local` | Local filesystem, network-attached storage, or USB drives. Configuration details include the mount path, retention days, and compression algorithm. |
+| `azure_blob` | Azure Blob Storage. Configuration details include SAS tokens and connection strings. |
+| `google_cloud` | Google Cloud Storage. Configuration details include service account keys. |
+| `backblaze` | Backblaze B2 cloud storage. Configuration details include B2 API keys. |
 
 ### Backup Types (Schema)
 
@@ -830,3 +827,231 @@ The usage history endpoint calculates cumulative storage from snapshot `sizeByte
 
 **Partner-scoped token returns "orgId is required for this scope".**
 Partner tokens that have access to multiple organizations cannot automatically resolve which organization to use. The partner must have access to exactly one organization, or the request must include the `orgId` in the authentication context.
+
+---
+
+## Enterprise Backup Features
+
+The following features extend the core backup system with application-aware, platform-specific, and compliance-oriented capabilities.
+
+### Volume Shadow Copy (VSS)
+
+On Windows devices, Breeze uses Volume Shadow Copy Service to create application-consistent snapshots. VSS ensures that databases, email servers, and other write-heavy applications are in a clean state before the snapshot is taken.
+
+- Automatic volume detection from backup paths
+- VSS writer status monitoring (SQL Server, Exchange, Hyper-V writers)
+- Configurable timeout (default 600 seconds)
+- Fallback to file-level backup if VSS is unavailable
+
+Check VSS writer health for a device:
+
+```bash
+GET /backup/vss/status/:deviceId
+```
+
+Returns a list of VSS writers and their current states (`stable`, `failed`, `waiting`, `unknown`).
+
+### SQL Server Backup (MSSQL)
+
+Breeze can discover, back up, and restore SQL Server databases directly — no third-party SQL backup tool required.
+
+**Discovery:**
+
+```bash
+GET /backup/mssql/instances
+GET /backup/mssql/instances/:deviceId
+```
+
+Returns discovered SQL Server instances with name, version, edition, authentication type, and status. Each instance includes its databases with size, recovery model, TDE status, and compatibility level.
+
+**Backup:**
+
+```bash
+POST /backup/mssql/backup
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `deviceId` | UUID | Yes | Target device |
+| `instance` | string | Yes | SQL Server instance name |
+| `database` | string | Yes | Database to back up |
+| `backupType` | string | Yes | `full`, `differential`, or `log` |
+| `outputPath` | string | Yes | Backup file destination |
+| `configId` | UUID | No | Backup configuration for cloud upload |
+
+Differential and log backups track LSN chains for point-in-time recovery.
+
+**Restore:**
+
+```bash
+POST /backup/mssql/restore
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `deviceId` | UUID | Yes | Target device |
+| `instance` | string | Yes | SQL Server instance name |
+| `backupFile` | string | Yes | Path to the backup file |
+| `targetDatabase` | string | Yes | Database name to restore into |
+| `noRecovery` | boolean | No | Leave database in restoring state for log chain application |
+
+### Hyper-V VM Backup
+
+Back up, restore, and manage Hyper-V virtual machines including checkpoints and power state control.
+
+**VM Discovery:**
+
+```bash
+GET /backup/hyperv/vms
+GET /backup/hyperv/vms/:deviceId
+```
+
+Returns VMs with name, generation, memory, CPU count, VHD paths, and current state. Filter by `deviceId` or `state`.
+
+**VM Backup:**
+
+```bash
+POST /backup/hyperv/backup
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `deviceId` | UUID | Yes | Hyper-V host device |
+| `vmName` | string | Yes | VM to back up |
+| `exportPath` | string | Yes | Export destination |
+| `consistencyType` | string | No | `application` (default, uses Hyper-V VSS) or `crash` (saves state first) |
+
+Supports full and incremental backups via Resilient Change Tracking (RCT).
+
+**VM Restore:**
+
+```bash
+POST /backup/hyperv/restore
+```
+
+Imports an exported VM to a host, generating a new VM ID. Also supports checkpoint management (`POST /backup/hyperv/checkpoint`) and VM power state control (`POST /backup/hyperv/vm-state`).
+
+### Bare Metal Recovery (BMR)
+
+Full system recovery from backup to bare hardware or a replacement device.
+
+**Recovery Token:**
+
+```bash
+POST /backup/bmr/token
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `snapshotId` | UUID | Yes | Snapshot to recover from |
+| `expiresInHours` | number | No | Token lifetime (default varies) |
+| `restoreType` | string | No | `full`, `selective`, or `bare_metal` |
+| `targetConfig` | object | No | Target hardware configuration |
+
+Returns a one-time recovery token (shown once, stored as SHA-256 hash). Recovery agents authenticate with this token instead of JWT — no pre-existing enrollment required.
+
+The BMR process:
+1. Boot recovery media on target hardware
+2. Authenticate with the recovery token
+3. Download and restore system state (OS config, drivers, registry on Windows; /etc, boot config on Linux)
+4. Restore all backed-up files
+5. Post-restore validation (service status, network connectivity, critical file presence)
+
+### Backup Verification
+
+Verify that backups are recoverable before you need them.
+
+```bash
+POST /backup/verify
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `deviceId` | UUID | Yes | Device whose backup to verify |
+| `verificationType` | string | Yes | `integrity`, `test_restore`, or `full_recovery` |
+| `backupJobId` | UUID | No | Specific job to verify |
+| `snapshotId` | UUID | No | Specific snapshot to verify |
+| `highImpactApproved` | boolean | No | Required for `full_recovery` verification |
+
+**Verification types:**
+
+| Type | Duration | What it checks |
+|------|----------|----------------|
+| `integrity` | Fast | Checksums, file counts, manifest consistency — no restore required |
+| `test_restore` | Medium | Extracts entire snapshot to temp location, measures restore time (RTO) |
+| `full_recovery` | Long | Full system restore to target device with post-restore validation (requires approval) |
+
+List verification results:
+
+```bash
+GET /backup/verifications?deviceId=&verificationType=&status=&from=&to=&limit=
+```
+
+### Recovery Readiness
+
+Track how prepared each device is for recovery:
+
+```bash
+GET /backup/recovery-readiness?deviceId=&refresh=true
+```
+
+Returns a readiness score (0–100) per device based on:
+- How recent the latest snapshot is
+- Whether recent verifications passed
+- Estimated RTO and RPO
+- Risk factors (missing backups, failed verifications, expired snapshots)
+
+Organization-level backup health:
+
+```bash
+GET /backup/health?refresh=true
+```
+
+Returns overall status (`critical`, `degraded`, `healthy`), escalation counts, and readiness metrics.
+
+### Encryption Key Management
+
+```bash
+GET /backup/encryption/keys
+POST /backup/encryption/keys
+GET /backup/encryption/keys/:id
+```
+
+Manage AES-256 encryption keys for backup snapshots. Keys are tracked with SHA-256 fingerprints and support rotation. Snapshots reference their encryption key ID for decryption during restore.
+
+### Local Vault
+
+Mirror snapshots from cloud storage to a local SMB share or USB drive for fast, offline recovery:
+
+```bash
+GET /backup/vault/...
+```
+
+The vault manager syncs snapshots intelligently (only downloads missing files) and enforces configurable retention (default: 3 most recent snapshots).
+
+---
+
+## Enterprise Backup API Reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/backup/vss/status/:deviceId` | VSS writer status |
+| GET | `/backup/mssql/instances` | List discovered SQL Server instances (org-wide) |
+| GET | `/backup/mssql/instances/:deviceId` | List SQL instances on a device |
+| POST | `/backup/mssql/backup` | Back up a SQL Server database |
+| POST | `/backup/mssql/restore` | Restore a SQL Server database |
+| GET | `/backup/hyperv/vms` | List Hyper-V VMs (org-wide) |
+| GET | `/backup/hyperv/vms/:deviceId` | List VMs on a host |
+| POST | `/backup/hyperv/backup` | Export a Hyper-V VM |
+| POST | `/backup/hyperv/restore` | Import a VM from backup |
+| POST | `/backup/hyperv/checkpoint` | Manage VM checkpoints |
+| POST | `/backup/hyperv/vm-state` | Control VM power state |
+| POST | `/backup/bmr/token` | Generate BMR recovery token |
+| GET | `/backup/bmr/token/:id` | Get recovery token metadata |
+| POST | `/backup/verify` | Run backup verification |
+| GET | `/backup/verifications` | List verification results |
+| GET | `/backup/health` | Organization backup health summary |
+| GET | `/backup/recovery-readiness` | Per-device recovery readiness scores |
+| GET | `/backup/encryption/keys` | List encryption keys |
+| POST | `/backup/encryption/keys` | Create encryption key |
+| GET | `/backup/encryption/keys/:id` | Get encryption key metadata |

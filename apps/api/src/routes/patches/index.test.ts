@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-import { patchRoutes } from './patches';
+import { patchRoutes } from './index';
 
 const ACCESSIBLE_ORG_ID = '11111111-1111-1111-1111-111111111111';
 const BLOCKED_ORG_ID = '22222222-2222-2222-2222-222222222222';
@@ -32,7 +32,7 @@ vi.mock('drizzle-orm', () => {
   };
 });
 
-vi.mock('../db', () => ({
+vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     select: vi.fn(),
@@ -43,7 +43,7 @@ vi.mock('../db', () => ({
   }
 }));
 
-vi.mock('../db/schema', () => ({
+vi.mock('../../db/schema', () => ({
   patches: {
     id: 'patches.id',
     source: 'patches.source',
@@ -104,16 +104,16 @@ vi.mock('../db/schema', () => ({
   }
 }));
 
-vi.mock('../services/commandQueue', () => ({
+vi.mock('../../services/commandQueue', () => ({
   queueCommand: vi.fn(),
   queueCommandForExecution: vi.fn()
 }));
 
-vi.mock('../jobs/patchComplianceReportWorker', () => ({
+vi.mock('../../jobs/patchComplianceReportWorker', () => ({
   enqueuePatchComplianceReport: vi.fn(async () => ({ enqueued: true, jobId: 'patch-compliance-report:test' }))
 }));
 
-vi.mock('../middleware/auth', () => ({
+vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     const canAccessOrg = (orgId: string) => {
       if (mockAuthState.accessibleOrgIds === null) {
@@ -137,9 +137,9 @@ vi.mock('../middleware/auth', () => ({
   requireScope: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
-import { db } from '../db';
-import { queueCommand, queueCommandForExecution } from '../services/commandQueue';
-import { enqueuePatchComplianceReport } from '../jobs/patchComplianceReportWorker';
+import { db } from '../../db';
+import { queueCommand, queueCommandForExecution } from '../../services/commandQueue';
+import { enqueuePatchComplianceReport } from '../../jobs/patchComplianceReportWorker';
 
 function selectWhereResult(rows: unknown[]) {
   return {

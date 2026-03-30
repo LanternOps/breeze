@@ -12,6 +12,7 @@ import {
   devicePatches,
   devices
 } from '../db/schema';
+import { resolveRingDeviceCounts } from './updateRingsHelpers';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 
@@ -197,7 +198,14 @@ updateRingRoutes.get(
       .where(and(eq(patchPolicies.orgId, orgId), eq(patchPolicies.enabled, true)))
       .orderBy(asc(patchPolicies.ringOrder), asc(patchPolicies.createdAt));
 
-    return c.json({ data: rings });
+    const deviceCountMap = await resolveRingDeviceCounts(rings.map(r => r.id));
+
+    const ringsWithCounts = rings.map(r => ({
+      ...r,
+      deviceCount: deviceCountMap.get(r.id) ?? 0,
+    }));
+
+    return c.json({ data: ringsWithCounts });
   }
 );
 

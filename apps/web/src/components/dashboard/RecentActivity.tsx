@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { FileCode, User, Settings, Monitor, AlertCircle, Activity } from 'lucide-react';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { fetchWithAuth } from '../../stores/auth';
+import { formatTimeAgo } from '@/lib/formatTime';
 
 interface AuditLogEntry {
   id: string;
@@ -34,20 +35,6 @@ const typeIcons: Record<string, typeof Monitor> = {
   default: Activity
 };
 
-function formatTimeAgo(dateString: string): string {
-  const date = new Date(dateString);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMs / 3600000);
-  const diffDays = Math.floor(diffMs / 86400000);
-
-  if (diffMins < 1) return 'Just now';
-  if (diffMins < 60) return `${diffMins} minute${diffMins === 1 ? '' : 's'} ago`;
-  if (diffHours < 24) return `${diffHours} hour${diffHours === 1 ? '' : 's'} ago`;
-  return `${diffDays} day${diffDays === 1 ? '' : 's'} ago`;
-}
-
 export default function RecentActivity() {
   const [activities, setActivities] = useState<AuditLogEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -79,12 +66,18 @@ export default function RecentActivity() {
     fetchActivities();
   }, [retryCount]);
 
+  // Auto-refresh every 60 seconds
+  useEffect(() => {
+    const interval = setInterval(() => setRetryCount(c => c + 1), 60_000);
+    return () => clearInterval(interval);
+  }, []);
+
   const retry = () => {
     setRetryCount(c => c + 1);
     setError(null);
   };
 
-  if (isLoading) {
+  if (isLoading && activities.length === 0) {
     return (
       <div className="border-t pt-6 mt-2">
         <div className="mb-4 flex items-center justify-between">
@@ -107,7 +100,7 @@ export default function RecentActivity() {
     );
   }
 
-  if (error) {
+  if (error && activities.length === 0) {
     return (
       <div className="border-t pt-6 mt-2">
         <div className="mb-4 flex items-center justify-between">
@@ -166,7 +159,7 @@ export default function RecentActivity() {
                 const timestamp = activity.timestamp || activity.createdAt || '';
 
                 return (
-                  <tr key={activity.id} className="border-b border-border/50 last:border-b-0">
+                  <tr key={activity.id} className="border-b border-border/50 last:border-b-0 hover:bg-muted/30 transition-colors">
                     <td className="py-3 text-sm">{userName}</td>
                     <td className="py-3 text-sm text-muted-foreground">
                       {activity.action}

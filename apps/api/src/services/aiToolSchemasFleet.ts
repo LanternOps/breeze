@@ -202,24 +202,7 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
   ),
 
   manage_service_monitors: z.object({
-    action: z.enum(['list', 'add', 'remove']),
+    action: z.enum(['list']),
     configPolicyId: uuid.optional(),
-    watchId: uuid.optional(),
-    watchType: z.enum(['service', 'process']).optional(),
-    name: z.string().min(1).max(255).optional(),
-    displayName: z.string().max(255).optional(),
-    alertOnStop: z.boolean().optional(),
-    alertSeverity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
-    cpuThresholdPercent: z.number().min(0).max(100).optional(),
-    memoryThresholdMb: z.number().min(0).optional(),
-    autoRestart: z.boolean().optional(),
-    maxRestartAttempts: z.number().int().min(1).max(10).optional(),
-    checkIntervalSeconds: z.number().int().min(10).max(3600).optional(),
-  }).refine(
-    (d) => d.action !== 'add' || (!!d.watchType && !!d.name),
-    { message: 'watchType and name are required for add' },
-  ).refine(
-    (d) => d.action !== 'remove' || !!d.watchId,
-    { message: 'watchId is required for remove' },
-  ),
+  }),
 };

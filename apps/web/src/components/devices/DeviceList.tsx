@@ -1,9 +1,10 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
-import { Search, ChevronLeft, ChevronRight, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Package } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2 } from 'lucide-react';
 import type { FilterConditionGroup } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
 import { widthPercentClass } from '@/lib/utils';
+import { formatLastSeen } from '@/lib/formatTime';
 import { DEVICE_ROLES, getDeviceRoleLabel, getDeviceRoleIcon, type DeviceRole } from '@/lib/deviceRoles';
 
 export type DeviceStatus = 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined';
@@ -66,22 +67,8 @@ const osLabels: Record<OSType, string> = {
   linux: 'Linux'
 };
 
-function formatLastSeen(dateString: string, timezone?: string): string {
-  const date = new Date(dateString);
-  if (Number.isNaN(date.getTime())) return dateString;
-
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / (1000 * 60));
-  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-  if (diffMins < 1) return 'Just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString([], timezone ? { timeZone: timezone } : undefined);
-}
+type SortField = 'hostname' | 'status' | 'cpuPercent' | 'ramPercent' | 'lastSeen' | null;
+type SortDirection = 'asc' | 'desc';
 
 export default function DeviceList({
   devices,
@@ -110,6 +97,9 @@ export default function DeviceList({
   const rowMenuRef = useRef<HTMLDivElement>(null);
   const [serverFilterIds, setServerFilterIds] = useState<Set<string> | null>(null);
   const [serverFilterLoading, setServerFilterLoading] = useState(false);
+  const [showMoreFilters, setShowMoreFilters] = useState(false);
+  const [sortField, setSortField] = useState<SortField>(null);
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
 
   // Close row action menu on outside click
   useEffect(() => {
@@ -190,9 +180,49 @@ export default function DeviceList({
     });
   }, [devices, query, statusFilter, osFilter, roleFilter, orgFilter, siteFilter, serverFilterIds]);
 
-  const totalPages = Math.ceil(filteredDevices.length / pageSize);
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDirection(d => d === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
+  };
+
+  const sortedDevices = useMemo(() => {
+    if (!sortField) return filteredDevices;
+
+    return [...filteredDevices].sort((a, b) => {
+      let cmp = 0;
+      switch (sortField) {
+        case 'hostname':
+          cmp = a.hostname.localeCompare(b.hostname);
+          break;
+        case 'status':
+          cmp = a.status.localeCompare(b.status);
+          break;
+        case 'cpuPercent':
+          cmp = a.cpuPercent - b.cpuPercent;
+          break;
+        case 'ramPercent':
+          cmp = a.ramPercent - b.ramPercent;
+          break;
+        case 'lastSeen': {
+          const aTime = new Date(a.lastSeen).getTime() || 0;
+          const bTime = new Date(b.lastSeen).getTime() || 0;
+          cmp = aTime - bTime;
+          break;
+        }
+      }
+      return sortDirection === 'desc' ? -cmp : cmp;
+    });
+  }, [filteredDevices, sortField, sortDirection]);
+
+  const moreFiltersCount = [roleFilter, orgFilter, siteFilter].filter(f => f !== 'all').length;
+
+  const totalPages = Math.ceil(sortedDevices.length / pageSize);
   const startIndex = (currentPage - 1) * pageSize;
-  const paginatedDevices = filteredDevices.slice(startIndex, startIndex + pageSize);
+  const paginatedDevices = sortedDevices.slice(startIndex, startIndex + pageSize);
 
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
@@ -224,129 +254,150 @@ export default function DeviceList({
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-lg font-semibold">Devices</h2>
-          <div className="flex items-center gap-2">
-            <p className="text-sm text-muted-foreground">
-              {filteredDevices.length} of {devices.length} devices
-            </p>
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-muted-foreground">
+            {filteredDevices.length} of {devices.length} devices
             {serverFilterIds !== null && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+              <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
                 <Filter className="h-3 w-3" />
                 Advanced filter active
                 {serverFilterLoading && <span className="ml-1 animate-pulse">...</span>}
               </span>
             )}
-          </div>
-        </div>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <input
-              type="search"
-              placeholder="Search by hostname"
-              value={query}
-              onChange={event => {
-                setQuery(event.target.value);
-                setCurrentPage(1);
-              }}
-              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-56"
-            />
-          </div>
-          <select
-            value={statusFilter}
-            onChange={event => {
-              setStatusFilter(event.target.value);
-              setCurrentPage(1);
-            }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-32"
-          >
-            <option value="all">All Status</option>
-            <option value="online">Online</option>
-            <option value="offline">Offline</option>
-            <option value="maintenance">Maintenance</option>
-            <option value="decommissioned">Decommissioned</option>
-          </select>
-          <select
-            value={osFilter}
-            onChange={event => {
-              setOsFilter(event.target.value);
-              setCurrentPage(1);
-            }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-32"
-          >
-            <option value="all">All OS</option>
-            <option value="windows">Windows</option>
-            <option value="macos">macOS</option>
-            <option value="linux">Linux</option>
-          </select>
-          <select
-            value={roleFilter}
-            onChange={event => {
-              setRoleFilter(event.target.value);
-              setCurrentPage(1);
-            }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-36"
-          >
-            <option value="all">All Roles</option>
-            {DEVICE_ROLES.map(role => (
-              <option key={role} value={role}>
-                {getDeviceRoleLabel(role)}
-              </option>
-            ))}
-          </select>
-          {orgs.length > 0 && (
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <input
+                type="search"
+                placeholder="Search by hostname"
+                value={query}
+                onChange={event => {
+                  setQuery(event.target.value);
+                  setCurrentPage(1);
+                }}
+                className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-56"
+              />
+            </div>
             <select
-              value={orgFilter}
+              value={statusFilter}
+              aria-label="Filter by status"
               onChange={event => {
-                setOrgFilter(event.target.value);
+                setStatusFilter(event.target.value);
                 setCurrentPage(1);
               }}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-40"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-32"
             >
-              <option value="all">All Orgs</option>
-              {orgs.map(org => (
-                <option key={org.id} value={org.id}>
-                  {org.name}
-                </option>
-              ))}
+              <option value="all">All Status</option>
+              <option value="online">Online</option>
+              <option value="offline">Offline</option>
+              <option value="maintenance">Maintenance</option>
+              <option value="decommissioned">Decommissioned</option>
             </select>
-          )}
-          {sites.length > 0 && (
             <select
-              value={siteFilter}
+              value={osFilter}
+              aria-label="Filter by operating system"
               onChange={event => {
-                setSiteFilter(event.target.value);
+                setOsFilter(event.target.value);
                 setCurrentPage(1);
               }}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-40"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-32"
             >
-              <option value="all">All Sites</option>
-              {sites.map(site => (
-                <option key={site.id} value={site.id}>
-                  {site.name}
-                </option>
-              ))}
+              <option value="all">All OS</option>
+              <option value="windows">Windows</option>
+              <option value="macos">macOS</option>
+              <option value="linux">Linux</option>
             </select>
-          )}
-          {(query || statusFilter !== 'all' || osFilter !== 'all' || roleFilter !== 'all' || orgFilter !== 'all' || siteFilter !== 'all') && (
             <button
               type="button"
-              onClick={() => {
-                setQuery('');
-                setStatusFilter('all');
-                setOsFilter('all');
-                setRoleFilter('all');
-                setOrgFilter('all');
-                setSiteFilter('all');
-                setCurrentPage(1);
-              }}
-              className="h-10 whitespace-nowrap rounded-md px-3 text-sm font-medium text-muted-foreground hover:text-foreground"
+              onClick={() => setShowMoreFilters(!showMoreFilters)}
+              className="h-10 whitespace-nowrap rounded-md border px-3 text-sm font-medium hover:bg-muted flex items-center gap-1.5"
             >
-              Clear filters
+              <Filter className="h-3.5 w-3.5" />
+              More
+              {moreFiltersCount > 0 && (
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[10px] font-semibold text-primary-foreground">
+                  {moreFiltersCount}
+                </span>
+              )}
             </button>
-          )}
+            {(query || statusFilter !== 'all' || osFilter !== 'all' || roleFilter !== 'all' || orgFilter !== 'all' || siteFilter !== 'all') && (
+              <button
+                type="button"
+                onClick={() => {
+                  setQuery('');
+                  setStatusFilter('all');
+                  setOsFilter('all');
+                  setRoleFilter('all');
+                  setOrgFilter('all');
+                  setSiteFilter('all');
+                  setCurrentPage(1);
+                }}
+                className="h-10 whitespace-nowrap rounded-md px-3 text-sm font-medium text-muted-foreground hover:text-foreground"
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
+        </div>
+        <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${showMoreFilters ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+          <div className="overflow-hidden">
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <select
+                value={roleFilter}
+                aria-label="Filter by device role"
+                onChange={event => {
+                  setRoleFilter(event.target.value);
+                  setCurrentPage(1);
+                }}
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-36"
+              >
+                <option value="all">All Roles</option>
+                {DEVICE_ROLES.map(role => (
+                  <option key={role} value={role}>
+                    {getDeviceRoleLabel(role)}
+                  </option>
+                ))}
+              </select>
+              {orgs.length > 0 && (
+                <select
+                  value={orgFilter}
+                  aria-label="Filter by organization"
+                  onChange={event => {
+                    setOrgFilter(event.target.value);
+                    setCurrentPage(1);
+                  }}
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-40"
+                >
+                  <option value="all">All Orgs</option>
+                  {orgs.map(org => (
+                    <option key={org.id} value={org.id}>
+                      {org.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {sites.length > 0 && (
+                <select
+                  value={siteFilter}
+                  aria-label="Filter by site"
+                  onChange={event => {
+                    setSiteFilter(event.target.value);
+                    setCurrentPage(1);
+                  }}
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-40"
+                >
+                  <option value="all">All Sites</option>
+                  {sites.map(site => (
+                    <option key={site.id} value={site.id}>
+                      {site.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -428,6 +479,7 @@ export default function DeviceList({
                 <input
                   type="checkbox"
                   checked={allSelected}
+                  aria-label="Select all devices on this page"
                   ref={el => {
                     if (el) el.indeterminate = someSelected && !allSelected;
                   }}
@@ -435,15 +487,80 @@ export default function DeviceList({
                   className="h-4 w-4 rounded border-border"
                 />
               </th>
-              <th className="px-4 py-3">Hostname</th>
+              <th
+                className="px-4 py-3 cursor-pointer select-none hover:text-foreground"
+                title="Sort by hostname"
+                onClick={() => handleSort('hostname')}
+              >
+                <span className="inline-flex items-center gap-1">
+                  Hostname
+                  {sortField === 'hostname' ? (
+                    sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+                  ) : (
+                    <ArrowUpDown className="h-3 w-3 opacity-30" />
+                  )}
+                </span>
+              </th>
               <th className="hidden px-4 py-3 xl:table-cell">Organization</th>
               <th className="hidden px-4 py-3 xl:table-cell">Site</th>
               <th className="px-4 py-3">OS</th>
               <th className="hidden px-4 py-3 lg:table-cell">Role</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="hidden px-4 py-3 md:table-cell">CPU %</th>
-              <th className="hidden px-4 py-3 md:table-cell">RAM %</th>
-              <th className="px-4 py-3">Last Seen</th>
+              <th
+                className="px-4 py-3 cursor-pointer select-none hover:text-foreground"
+                title="Sort by status"
+                onClick={() => handleSort('status')}
+              >
+                <span className="inline-flex items-center gap-1">
+                  Status
+                  {sortField === 'status' ? (
+                    sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+                  ) : (
+                    <ArrowUpDown className="h-3 w-3 opacity-30" />
+                  )}
+                </span>
+              </th>
+              <th
+                className="hidden px-4 py-3 md:table-cell cursor-pointer select-none hover:text-foreground"
+                title="Sort by CPU usage"
+                onClick={() => handleSort('cpuPercent')}
+              >
+                <span className="inline-flex items-center gap-1">
+                  CPU %
+                  {sortField === 'cpuPercent' ? (
+                    sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+                  ) : (
+                    <ArrowUpDown className="h-3 w-3 opacity-30" />
+                  )}
+                </span>
+              </th>
+              <th
+                className="hidden px-4 py-3 md:table-cell cursor-pointer select-none hover:text-foreground"
+                title="Sort by RAM usage"
+                onClick={() => handleSort('ramPercent')}
+              >
+                <span className="inline-flex items-center gap-1">
+                  RAM %
+                  {sortField === 'ramPercent' ? (
+                    sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+                  ) : (
+                    <ArrowUpDown className="h-3 w-3 opacity-30" />
+                  )}
+                </span>
+              </th>
+              <th
+                className="px-4 py-3 cursor-pointer select-none hover:text-foreground"
+                title="Sort by last seen time"
+                onClick={() => handleSort('lastSeen')}
+              >
+                <span className="inline-flex items-center gap-1">
+                  Last Seen
+                  {sortField === 'lastSeen' ? (
+                    sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+                  ) : (
+                    <ArrowUpDown className="h-3 w-3 opacity-30" />
+                  )}
+                </span>
+              </th>
               <th className="px-4 py-3 text-right">Actions</th>
             </tr>
           </thead>
@@ -459,12 +576,20 @@ export default function DeviceList({
                 <tr
                   key={device.id}
                   onClick={() => onSelect?.(device)}
-                  className="cursor-pointer transition hover:bg-muted/40"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onSelect?.(device);
+                    }
+                  }}
+                  className="cursor-pointer transition hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none"
                 >
                   <td className="px-4 py-3">
                     <input
                       type="checkbox"
                       checked={selectedIds.has(device.id)}
+                      aria-label={`Select ${device.hostname}`}
                       onClick={e => e.stopPropagation()}
                       onChange={e => handleSelectOne(device.id, e.target.checked)}
                       className="h-4 w-4 rounded border-border"
@@ -600,7 +725,7 @@ export default function DeviceList({
                                   onAction?.('restore', device);
                                   setRowMenuOpenId(null);
                                 }}
-                                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-green-600 hover:bg-green-50"
+                                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-success hover:bg-success/10"
                               >
                                 <RotateCcw className="h-4 w-4" />
                                 Restore
@@ -633,7 +758,7 @@ export default function DeviceList({
       {totalPages > 1 && (
         <div className="mt-4 flex items-center justify-between">
           <p className="text-sm text-muted-foreground">
-            Showing {startIndex + 1} to {Math.min(startIndex + pageSize, filteredDevices.length)} of {filteredDevices.length}
+            Showing {startIndex + 1} to {Math.min(startIndex + pageSize, sortedDevices.length)} of {sortedDevices.length}
           </p>
           <div className="flex items-center gap-2">
             <button

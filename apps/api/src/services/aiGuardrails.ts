@@ -73,6 +73,9 @@ const TIER3_ACTIONS: Record<string, string[]> = {
   manage_processes: ['kill'],
   manage_policy_feature_link: ['remove'],
   registry_operations: ['set_value', 'create_key', 'delete_key'],
+  // Backup & DR — Tier 3 actions (require user approval)
+  manage_dr_plan: ['delete_group'],
+  manage_hyperv_checkpoints: ['delete', 'apply'],
   // Monitoring tools — Tier 3 actions (require user approval)
   manage_monitors: ['create', 'update', 'delete'],
 };
@@ -202,8 +205,6 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   },
   manage_service_monitors: {
     list: { resource: 'monitoring', action: 'read' },
-    add: { resource: 'monitoring', action: 'write' },
-    remove: { resource: 'monitoring', action: 'write' },
   },
   generate_report: {
     list: { resource: 'reports', action: 'read' },
@@ -245,6 +246,12 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   },
   get_effective_configuration: { resource: 'devices', action: 'read' },
   preview_configuration_change: { resource: 'devices', action: 'read' },
+  manage_policy_feature_link: {
+    list: { resource: 'policies', action: 'read' },
+    add: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+    remove: { resource: 'policies', action: 'write' },
+  },
   apply_configuration_policy: { resource: 'policies', action: 'write' },
   remove_configuration_policy_assignment: { resource: 'policies', action: 'write' },
   // Playbook tools
@@ -268,6 +275,8 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
     create_key: { resource: 'devices', action: 'execute' },
     delete_key: { resource: 'devices', action: 'execute' },
   },
+  // Documentation tools
+  search_documentation: { resource: 'general', action: 'read' },
   // Script library tools
   search_script_library: { resource: 'scripts', action: 'read' },
   get_script_details: { resource: 'scripts', action: 'read' },
@@ -277,6 +286,38 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   browse_snapshots: { resource: 'devices', action: 'read' },
   trigger_backup: { resource: 'devices', action: 'execute' },
   restore_snapshot: { resource: 'devices', action: 'execute' },
+  restore_as_vm: { resource: 'devices', action: 'execute' },
+  instant_boot_vm: { resource: 'devices', action: 'execute' },
+  get_vm_restore_estimate: { resource: 'devices', action: 'read' },
+  query_mssql_instances: { resource: 'devices', action: 'read' },
+  get_mssql_backup_status: { resource: 'devices', action: 'read' },
+  trigger_mssql_backup: { resource: 'devices', action: 'execute' },
+  restore_mssql_database: { resource: 'devices', action: 'execute' },
+  verify_mssql_backup: { resource: 'devices', action: 'execute' },
+  query_hyperv_vms: { resource: 'devices', action: 'read' },
+  get_hyperv_vm_details: { resource: 'devices', action: 'read' },
+  manage_hyperv_vm: { resource: 'devices', action: 'execute' },
+  trigger_hyperv_backup: { resource: 'devices', action: 'execute' },
+  restore_hyperv_vm: { resource: 'devices', action: 'execute' },
+  manage_hyperv_checkpoints: { resource: 'devices', action: 'execute' },
+  query_vaults: { resource: 'devices', action: 'read' },
+  get_vault_status: { resource: 'devices', action: 'read' },
+  trigger_vault_sync: { resource: 'devices', action: 'execute' },
+  configure_vault: { resource: 'devices', action: 'write' },
+  query_c2c_connections: { resource: 'organizations', action: 'read' },
+  query_c2c_jobs: { resource: 'organizations', action: 'read' },
+  search_c2c_items: { resource: 'organizations', action: 'read' },
+  trigger_c2c_sync: { resource: 'organizations', action: 'write' },
+  restore_c2c_items: { resource: 'organizations', action: 'write' },
+  query_backup_sla: { resource: 'organizations', action: 'read' },
+  get_sla_breaches: { resource: 'organizations', action: 'read' },
+  get_sla_compliance_report: { resource: 'organizations', action: 'read' },
+  configure_backup_sla: { resource: 'organizations', action: 'write' },
+  query_dr_plans: { resource: 'organizations', action: 'read' },
+  get_dr_plan_details: { resource: 'organizations', action: 'read' },
+  get_dr_execution_status: { resource: 'organizations', action: 'read' },
+  execute_dr_plan: { resource: 'devices', action: 'execute' },
+  manage_dr_plan: { resource: 'organizations', action: 'write' },
   // Monitoring tools — RBAC mappings
   query_monitors: { resource: 'devices', action: 'read' },
   manage_monitors: {
@@ -377,6 +418,22 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   // Backup tools
   trigger_backup: { limit: 5, windowSeconds: 600 },
   restore_snapshot: { limit: 3, windowSeconds: 600 },
+  restore_as_vm: { limit: 3, windowSeconds: 900 },
+  instant_boot_vm: { limit: 3, windowSeconds: 900 },
+  trigger_mssql_backup: { limit: 5, windowSeconds: 600 },
+  restore_mssql_database: { limit: 3, windowSeconds: 900 },
+  verify_mssql_backup: { limit: 5, windowSeconds: 600 },
+  manage_hyperv_vm: { limit: 10, windowSeconds: 300 },
+  trigger_hyperv_backup: { limit: 5, windowSeconds: 900 },
+  restore_hyperv_vm: { limit: 3, windowSeconds: 900 },
+  manage_hyperv_checkpoints: { limit: 5, windowSeconds: 600 },
+  trigger_vault_sync: { limit: 10, windowSeconds: 600 },
+  configure_vault: { limit: 10, windowSeconds: 300 },
+  trigger_c2c_sync: { limit: 10, windowSeconds: 300 },
+  restore_c2c_items: { limit: 5, windowSeconds: 600 },
+  configure_backup_sla: { limit: 10, windowSeconds: 300 },
+  execute_dr_plan: { limit: 3, windowSeconds: 900 },
+  manage_dr_plan: { limit: 10, windowSeconds: 300 },
   // Monitoring tools
   query_monitors: { limit: 30, windowSeconds: 300 },
   manage_monitors: { limit: 10, windowSeconds: 300 },
@@ -526,7 +583,12 @@ export async function checkToolPermission(
     required = (permDef as Record<string, { resource: string; action: string }>)[action]!;
   } else if (action) {
     // Unknown action for a mapped tool — deny (fail-closed)
-    return `Unknown action "${action}" for tool "${toolName}"`;
+    // Include redirect hints for tools that have been replaced by policy-based management
+    const redirectHints: Record<string, string> = {
+      manage_service_monitors: 'To add, update, or remove monitoring watches, use manage_policy_feature_link with the existing policy\'s featureLinkId and action "update". First call get_configuration_policy to find the monitoring featureLinkId and current inlineSettings.watches array, then update it with the new watch appended.',
+    };
+    const hint = redirectHints[toolName];
+    return `Unknown action "${action}" for tool "${toolName}".${hint ? ` ${hint}` : ''}`;
   } else {
     return null; // No action provided — allow (base tool permission applies)
   }

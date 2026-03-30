@@ -4,6 +4,26 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## Enterprise Backup UI + AI Tools — 2026-03-29
+
+**Branch:** `main`
+**Commit:** `d55d118e`
+**Tested by:** Claude (Playwright MCP)
+**Result:** PARTIAL — UI renders correctly, API 404s expected (migrations not yet applied)
+
+### Tested
+- [x] Sidebar: Backup, Cloud Backup, Disaster Recovery links present
+- [x] `/c2c` loads: alpha banner, 4 tabs, connections table, empty state, Add Connection button
+- [x] `/dr` loads: alpha banner, 2 tabs, plans table, empty state, Create Plan + Refresh buttons
+- [x] `/backup` loads: React island hydrates, overview fetch attempted
+- [ ] Backup enterprise tabs not visible (see issue #1)
+- [ ] Enterprise tab content (blocked by #1 + API 404s from missing migrations)
+- [ ] Dialogs/wizards (blocked by API 404s)
+
+### Issues Found
+1. **BUG: BackupDashboard tab bar hidden on API error** — When `/backup/dashboard` returns error, entire component shows only error + retry. Tab bar not rendered, blocking navigation to enterprise tabs. Fix: render tab bar regardless of overview fetch status.
+2. **Expected: API 404s** — Migrations 0074-0082 not applied to live DB. All enterprise endpoints return 404.
+
 ## GitHub Issues #183, #182, #168 Bug Fixes — 2026-03-01
 
 **Branch:** `fix/integration-testing-502s`
