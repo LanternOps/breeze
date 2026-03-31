@@ -58,7 +58,7 @@ Additional components log events from subsystems such as `terminal`, `executor`,
 The agent buffers logs internally and ships them in gzip-compressed batches every 60 seconds (or when the buffer reaches 500 entries) via `POST /agents/:id/logs`.
 
 <Aside type="note">
-  The Go agent normalizes log levels to lowercase (e.g., `"info"`, `"warn"`) before shipping via the `strings.ToLower` call in the log handler. The API ingestion endpoint expects lowercase values.
+  The agent normalizes log levels to lowercase (e.g., `info`, `warn`) before shipping. The API ingestion endpoint expects lowercase values.
 </Aside>
 
 <Aside type="note">
@@ -88,6 +88,33 @@ To change the retention period, set the `AGENT_LOG_RETENTION_DAYS` environment v
 ```bash
 AGENT_LOG_RETENTION_DAYS=30
 ```
+
+### Adjusting the shipping level at runtime
+
+By default, the agent only ships `warn` and `error` logs to conserve bandwidth. You can temporarily lower the shipping level to capture `info` or `debug` logs without restarting the agent or redeploying configuration.
+
+Send the `set_log_level` command to the device:
+
+```json
+{
+  "action": "set_log_level",
+  "payload": {
+    "level": "debug",
+    "durationMinutes": 30
+  }
+}
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `level` | string | Required | New shipping level: `debug`, `info`, `warn`, or `error` |
+| `durationMinutes` | int | `60` | Minutes before the level automatically reverts to `warn`. Set to `0` to keep the new level until the agent restarts. |
+
+After the specified duration, the agent automatically reverts to `warn`. This prevents accidentally leaving verbose logging enabled and filling storage with debug data.
+
+<Aside type="tip">
+  Use this when diagnosing a connectivity or update issue on a specific device. Lower the level to `debug`, reproduce the problem, then query the diagnostic logs API filtered to the time window. The level reverts on its own -- no cleanup step needed.
+</Aside>
 
 ### API reference
 

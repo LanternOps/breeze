@@ -1,0 +1,98 @@
+---
+title: Backup Overview
+description: Centralized backup management for your fleet — file, system image, Hyper-V, and SQL Server backups with cloud and local storage options.
+sidebar:
+  order: 1
+  label: "Overview"
+---
+
+import { Steps, Aside, Card, CardGrid } from '@astrojs/starlight/components';
+
+Device Backup gives you centralized control over backups across your managed fleet. From the **Backup** dashboard you can configure where backups are stored, schedule what gets backed up, monitor protection coverage, and restore data when you need it — whether that's a single file, an entire system, a Hyper-V VM, or a SQL Server database.
+
+---
+
+## What You Can Back Up
+
+<CardGrid>
+  <Card title="Files & Folders" icon="document">
+    Back up selected directories with include/exclude path rules. Uses Volume Shadow Copy (VSS) on Windows for application-consistent snapshots.
+  </Card>
+  <Card title="System Images" icon="laptop">
+    Full system state capture including OS configuration, drivers, registry (Windows), and boot configuration.
+  </Card>
+  <Card title="Hyper-V VMs" icon="server">
+    Export virtual machines with application-consistent or crash-consistent snapshots. Supports Resilient Change Tracking (RCT) for incremental backups.
+  </Card>
+  <Card title="SQL Server Databases" icon="database">
+    Full, differential, and transaction log backups with LSN chain tracking for point-in-time recovery.
+  </Card>
+</CardGrid>
+
+---
+
+## Where Backups Are Stored
+
+Breeze supports five storage providers:
+
+| Provider | Best for |
+|----------|----------|
+| **Amazon S3** (or S3-compatible) | Primary cloud storage — works with MinIO, Wasabi, Backblaze B2 |
+| **Azure Blob Storage** | Organizations already on Azure |
+| **Google Cloud Storage** | Multi-region durability |
+| **Local / NAS** | Fast restores from on-site storage, USB drives, or SMB shares |
+| **Backblaze B2** | Cost-effective cloud archival |
+
+You can configure multiple storage targets and assign different ones to different policies. For example, critical servers might back up to S3 with a local vault mirror, while workstations use local NAS only.
+
+---
+
+## How It Works
+
+Backup is organized around five core concepts:
+
+1. **Storage configurations** — where backups go (S3 bucket, Azure container, local path, etc.)
+2. **Policies** — what gets backed up, on what schedule, and how long to keep it. Managed through [Configuration Policies](/features/configuration-policies/) for hierarchical assignment.
+3. **Jobs** — individual backup or restore executions. Created automatically by schedules or triggered manually.
+4. **Snapshots** — point-in-time archives produced by completed backup jobs. You can browse their contents file-by-file.
+5. **Restore operations** — recover data from a snapshot to the original device or a different target.
+
+---
+
+## The Backup Dashboard
+
+Navigate to **Operations > Backup** in the sidebar to reach the backup dashboard. It has seven tabs:
+
+| Tab | What it shows |
+|-----|---------------|
+| **Overview** | Protection coverage, success rates, storage trends, recent activity, devices needing attention |
+| **Verification** | Backup integrity checks, test restores, recovery readiness scores |
+| **SQL Server** | Discovered SQL instances, databases, backup chains |
+| **Hyper-V** | Virtual machines, checkpoint trees, VM backup/restore |
+| **Vault** | Local and network vault mirrors for fast offline recovery |
+| **SLA** | RPO/RTO targets, compliance tracking, breach alerts |
+| **Encryption** | Encryption key management and rotation |
+
+---
+
+## Quick Start
+
+New to Breeze Backup? Here's the fastest path to protecting your first device:
+
+<Steps>
+1. **Add a storage target.** From the Overview tab, open the storage configuration wizard. Pick a provider (S3 is recommended), enter your credentials, set a schedule and retention policy, and publish the configuration. See [Storage Configuration](/backup/storage/) for details.
+
+2. **Create a backup policy.** Go to **Settings > Configuration Policies**, create a new policy, and add a **Backup** feature link. Choose your backup mode (file, Hyper-V, MSSQL, or system image), select the storage configuration you just created, and assign the policy to devices, sites, or groups. See [Backup Policies](/backup/policies/) for details.
+
+3. **Verify it works.** Back on the Backup dashboard, click **Run all backups** to trigger an immediate run. Watch the job appear in Recent Jobs. Once it completes, go to the **Verification** tab and run an integrity check. See [Verification & Recovery Readiness](/backup/verification/) for details.
+</Steps>
+
+---
+
+## Backup Binary Architecture
+
+Enterprise backup operations (Hyper-V, SQL Server, system image, cloud-to-cloud) run in a dedicated `breeze-backup` helper process that communicates with the main agent over HMAC-signed IPC. This keeps the core agent lightweight (~15 MB) while the backup binary includes the heavier cloud SDKs and backup tooling. The backup binary is bundled in both the Windows MSI and macOS .pkg installers.
+
+<Aside type="note">
+  The backup binary is installed automatically. No additional setup is needed unless you're building from source.
+</Aside>

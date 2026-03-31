@@ -42,9 +42,11 @@ Breeze runs entirely in Docker containers. Install Docker Engine with the Compos
   </TabItem>
 </Tabs>
 
-### Node.js & pnpm
+### Node.js & pnpm (Development Only)
 
-Required for running database migrations during deployment:
+Node.js and pnpm are **not required for standard Docker deployments** — the API container handles database migrations automatically on startup via `AUTO_MIGRATE=true` (the default).
+
+You only need these tools if you are doing local development or managing migrations manually:
 
 ```bash
 # Install Node 20+

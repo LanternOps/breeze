@@ -14,7 +14,17 @@ Currently supported EDR vendors:
 | **Huntress** | Agents, incidents | Webhook ingestion, manual sync |
 | **SentinelOne** | Agents, threats, site mappings | Device isolation, threat actions (kill, quarantine, rollback), manual sync |
 
-Both integrations follow the same pattern: you provide API credentials, Breeze syncs agent and threat data on a schedule, and the synced data is mapped to your existing Breeze devices by hostname or agent ID.
+Both integrations follow the same pattern: you provide API credentials, Breeze syncs agent and threat data on a schedule, and the synced data is automatically mapped to your existing Breeze devices.
+
+### Auto-Linking: How EDR Agents Map to Breeze Devices
+
+During each sync, Breeze automatically attempts to match imported EDR agents to enrolled Breeze devices. The matching logic differs slightly by vendor:
+
+**Huntress**: Agents are matched by **hostname** (case-insensitive, trimmed). Breeze compares the Huntress agent's hostname against both the `hostname` and `displayName` of every enrolled device in the organization. If a match is found, the Huntress agent and any associated incidents are linked to that Breeze device.
+
+**SentinelOne**: Agents are matched first by **hostname** (the `computerName` field), then by **IP address** as a fallback. If the SentinelOne agent's computer name matches a Breeze device hostname (case-insensitive), the match is made. If no hostname match exists, Breeze checks the agent's network interfaces against known device IP addresses.
+
+Agents that cannot be matched appear as "unmapped" in the integration status dashboard. To resolve unmapped agents, either enroll the missing device in Breeze or verify that the hostname in the EDR system matches the hostname reported by the Breeze agent.
 
 ---
 
@@ -47,7 +57,14 @@ Huntress can push event notifications to Breeze in real time via webhooks. Confi
 POST https://your-breeze-instance.com/api/v1/huntress/webhook
 ```
 
-Webhook payloads are verified using HMAC signature validation. Breeze checks both the `x-huntress-signature` (or `x-signature`) and `x-huntress-timestamp` (or `x-timestamp`) headers against the webhook secret you configured.
+Webhook payloads are verified using HMAC-SHA256 signature validation:
+
+1. Breeze reads the **signature** from the `x-huntress-signature` header (fallback: `x-signature`).
+2. Breeze reads the **timestamp** from the `x-huntress-timestamp` header (fallback: `x-timestamp`).
+3. Breeze computes `HMAC-SHA256(secret, "{timestamp}.{body}")` and compares the result to the provided signature using a timing-safe comparison.
+4. The timestamp must be within **10 minutes** of the current server time, or the webhook is rejected as a potential replay.
+
+The expected signature format is `sha256={hex_digest}`.
 
 <Aside type="caution">
   Webhook signature verification is mandatory. If no webhook secret is configured for the integration, all incoming webhooks are rejected with a 403 error. Always configure a webhook secret when enabling webhook ingestion.
@@ -63,7 +80,7 @@ When Breeze receives a Huntress webhook, it needs to determine which integration
 
 If multiple active integrations match the same account and no explicit integration ID is provided, the webhook returns a 409 conflict.
 
-### Data Model
+### Data Model (For Integrators)
 
 #### Huntress Agents
 
@@ -144,7 +161,19 @@ The SentinelOne integration provides deeper operational capabilities beyond data
   Creating or updating a SentinelOne integration requires the `orgs:write` permission and MFA verification. Only one SentinelOne integration is allowed per organization.
 </Aside>
 
-### Data Model
+#### MFA Requirements by Operation
+
+The following SentinelOne operations require MFA verification before they can be executed:
+
+| Operation | MFA Required |
+|-----------|-------------|
+| Create or update integration | Yes |
+| Isolate / unisolate devices | Yes |
+| Execute threat actions (kill, quarantine, rollback) | Yes |
+| Trigger manual sync | No |
+| View status, threats, or sites | No |
+
+### Data Model (For Integrators)
 
 #### SentinelOne Agents
 
@@ -276,7 +305,7 @@ Both integrations support manual and automatic syncing.
 
 ### Manual Sync
 
-Trigger a sync from the Breeze dashboard or API. The sync job is queued via BullMQ and processes in the background.
+Trigger a sync from the Breeze dashboard or API. The sync job is queued via the background queue and processes in the background.
 
 | Vendor | Requirements |
 |--------|-------------|
@@ -292,6 +321,15 @@ Each integration tracks its last sync result:
 | `lastSyncAt` | Timestamp of the most recent sync |
 | `lastSyncStatus` | Result: success or failure indicator |
 | `lastSyncError` | Error message from the last failed sync (nullable) |
+
+### Sync Error Handling and Retries
+
+Sync jobs are processed through a background queue. If a sync fails (for example, due to a network timeout or an API rate limit from the EDR vendor), the following happens:
+
+- **SentinelOne syncs** automatically retry up to **3 times** with exponential backoff (starting at 2 seconds, then 4 seconds, then 8 seconds).
+- **Huntress syncs** do not have built-in retries. If a Huntress sync fails, trigger another manual sync or wait for the next scheduled sync cycle.
+- The `lastSyncError` field on the integration record is updated with the error message from the most recent failure. Check this field in the dashboard or API to diagnose sync issues.
+- If the initial sync scheduled on integration creation fails, a warning is returned in the API response: *"Initial sync could not be scheduled. Data will sync on the next scheduled cycle."*
 
 ---
 

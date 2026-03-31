@@ -1,0 +1,98 @@
+---
+title: Restoring Data
+description: Restore files, folders, or full systems from backup snapshots.
+sidebar:
+  order: 5
+  label: "Restoring Data"
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Breeze supports several restore methods depending on what you need to recover — from a single file to a complete system.
+
+---
+
+## Browsing Snapshots
+
+Before restoring, you can inspect what a snapshot contains:
+
+<Steps>
+1. Go to **Operations > Backup**.
+2. Find the device in the job list or device backup tab.
+3. Open the **Snapshot Browser** and select a snapshot from the dropdown.
+4. Navigate the file tree — expand folders to see their contents, including file names, sizes, and modification dates.
+</Steps>
+
+<Aside type="tip">
+  Always browse a snapshot before restoring to confirm the files you need are present. This is especially useful when deciding between a full restore and a selective one.
+</Aside>
+
+---
+
+## Restore Types
+
+| Type | What it recovers | When to use |
+|------|-----------------|-------------|
+| **Full restore** | Everything in the snapshot | Replacing a failed drive or rebuilding a system |
+| **Selective restore** | Specific files and folders you choose | Recovering accidentally deleted files or a specific directory |
+| **Bare metal recovery** | Full system to new hardware | Replacing a dead machine entirely. See [Bare Metal Recovery](/backup/bare-metal-recovery/) |
+
+---
+
+## Running a Restore
+
+### Full Restore
+
+<Steps>
+1. Open the **Restore Wizard** from a snapshot or device backup tab.
+2. Select the snapshot to restore from.
+3. Choose **Full Restore**.
+4. Choose the destination:
+   - **Original location** — restores files to their original paths on the same device
+   - **Alternate path** — specify a different directory (e.g., `/var/restore` or `D:\Restored`)
+5. Optionally change the target device — you can restore to a different device in the same organization.
+6. Review the summary and click **Restore**.
+</Steps>
+
+### Selective Restore
+
+<Steps>
+1. Open the **Restore Wizard**.
+2. Select the snapshot.
+3. Choose **Selective Restore**.
+4. Browse the file tree and check the boxes next to the files and folders you want to recover.
+5. Choose the destination path.
+6. Review and click **Restore**.
+</Steps>
+
+---
+
+## Monitoring a Restore
+
+After you start a restore, the job appears in the backup job list with a progress indicator (0–100%). You can track it from:
+
+- The **Backup** dashboard's Recent Jobs section
+- The target device's **Backup** tab
+
+The restore job shows bytes restored, files restored, and an estimated completion time.
+
+---
+
+## Cross-Device Restore
+
+You can restore a snapshot to a different device than the one it was taken from. Both devices must be in the same organization. This is useful when:
+
+- The original device is offline or decommissioned
+- You need to clone data to a replacement machine
+- You want to test a restore without touching the production device
+
+In the Restore Wizard, change the target device in the destination step.
+
+---
+
+## Restore Considerations
+
+- **Existing files.** A full restore to the original location overwrites files at the same paths. Use an alternate path if you want to compare before replacing.
+- **Permissions.** Restored files retain the permissions from the snapshot. If restoring to a different device or OS, permissions may need adjustment.
+- **Open files.** On Windows, files locked by running applications may fail to restore. Stop the relevant services first, or restore to an alternate path.
+- **Disk space.** Ensure the target device has enough free space for the restore. The snapshot's total size is shown in the Restore Wizard summary.

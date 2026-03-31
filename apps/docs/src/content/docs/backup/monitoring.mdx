@@ -1,0 +1,129 @@
+---
+title: Monitoring Backups
+description: Track backup health, job history, storage trends, and per-device protection status.
+sidebar:
+  order: 4
+  label: "Monitoring Backups"
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+The Backup dashboard gives you a real-time view of protection coverage, job activity, and storage consumption across your organization. Navigate to **Operations > Backup** to access it.
+
+---
+
+## Overview Tab
+
+The **Overview** tab is your primary monitoring surface. It includes:
+
+### Metrics Cards
+
+At the top of the dashboard, summary cards show:
+
+| Metric | What it means |
+|--------|---------------|
+| **Total Jobs** | Number of backup jobs created |
+| **Snapshots** | Total point-in-time snapshots stored |
+| **Success Rate (24h)** | Percentage of jobs that completed successfully in the last 24 hours. Color-coded: green (90%+), yellow (70–89%), red (below 70%) |
+| **Devices Protected** | Devices assigned to at least one backup policy |
+| **Storage Used** | Total storage consumed across all providers |
+
+### Recent Jobs
+
+A live feed of the latest backup activity. Each job card shows:
+- Device name and configuration
+- Status: **Completed** (green), **Running** (blue), **Failed** (red), **Queued** (gray), **Canceled**
+- Start time, duration, and data size
+
+Click **View all** to see the full job history with filters for status, device, and date range.
+
+### Storage by Provider
+
+A breakdown of storage usage per provider (S3, Azure, Local, etc.) with usage bars and a 14-day trend chart. Useful for tracking growth and planning capacity.
+
+### Devices Needing Backup
+
+Cards highlighting devices with overdue backups, showing the device name, when it was last backed up, and how many days overdue it is. Address these first.
+
+### Attention Items
+
+Issues requiring admin action — failed jobs, configuration errors, or policy gaps — listed with severity indicators.
+
+---
+
+## Running Backups On Demand
+
+### All Devices
+
+Click the **Run all backups** button at the top of the Overview tab. A confirmation dialog shows how many devices will be included and lists any jobs already in progress. Confirm to trigger immediate backups across your fleet.
+
+### Single Device
+
+To back up one device:
+
+<Steps>
+1. Navigate to the device's detail page.
+2. Open the **Backup** tab.
+3. Click **Run Backup Now**.
+</Steps>
+
+The job appears immediately in the dashboard's Recent Jobs feed.
+
+---
+
+## Per-Device Backup Status
+
+Each device's detail page includes a **Backup** tab showing:
+
+| Field | Description |
+|-------|-------------|
+| **Protection status** | Whether the device is assigned to a backup policy |
+| **Last successful backup** | Timestamp of the most recent completed job |
+| **Next scheduled backup** | Computed from the policy schedule |
+| **Recent jobs** | List of recent backup/restore jobs for this device |
+| **VSS writer status** (Windows) | Health of Volume Shadow Copy writers — Stable, Failed, or Waiting |
+
+---
+
+## Job Lifecycle
+
+Backup and restore jobs move through these statuses:
+
+| Status | Meaning |
+|--------|---------|
+| **Queued** | Created and waiting to be dispatched to the agent |
+| **Running** | Actively in progress on the device |
+| **Completed** | Finished successfully; a snapshot was created |
+| **Failed** | Encountered an error (check the error details) |
+| **Canceled** | Explicitly stopped by a user before completion |
+
+Jobs are triggered either **automatically** by a policy schedule, **manually** via the Run Backup button, or as part of a **restore** operation.
+
+<Aside type="caution">
+  Only jobs in the **Running** or **Queued** status can be canceled. Canceling a running job stops the operation, but data already transferred to the storage target remains.
+</Aside>
+
+---
+
+## Storage Usage History
+
+Track storage growth over time from the **Overview** tab's storage section. The usage chart shows cumulative storage by provider over the past 14 days (configurable from 3 to 90 days via the API).
+
+If storage is growing faster than expected, check whether retention policies are cleaning up old snapshots as intended, or whether large datasets were recently added to backup scope.
+
+---
+
+## Audit Trail
+
+All backup operations are recorded in the [audit log](/reference/audit-logs/):
+
+| Event | When it's logged |
+|-------|-----------------|
+| Configuration created/updated/deleted | Storage target changes |
+| Configuration tested | Connectivity checks |
+| Policy created/updated/deleted | Schedule or targeting changes |
+| Manual backup triggered | On-demand backup runs |
+| Job canceled | Admin stops a running/queued job |
+| Restore initiated | Data recovery operations |
+
+Each entry includes the organization, resource, and user who performed the action.

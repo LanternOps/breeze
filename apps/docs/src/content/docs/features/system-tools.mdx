@@ -5,17 +5,51 @@ description: Browse files, manage processes and services, edit the Windows regis
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-System Tools provide a suite of remote administration capabilities that let technicians inspect and manage managed devices directly from the Breeze dashboard. Every operation is dispatched to the Breeze agent running on the target device via the command queue -- the API sends a typed command, the agent executes it locally, and the result is returned as structured JSON. All mutating actions (killing processes, starting/stopping services, editing the registry, uploading files, running/enabling/disabling scheduled tasks) are recorded in the audit log.
+System Tools provide a suite of remote administration capabilities that let technicians inspect and manage managed devices directly from the Breeze dashboard. You access System Tools from a device's detail page by opening the **Remote Tools** panel, which organizes all tools into a tabbed interface.
+
+Every operation is dispatched to the Breeze agent running on the target device via the command queue. All mutating actions (killing processes, starting/stopping services, editing the registry, uploading files, running/enabling/disabling scheduled tasks) are recorded in the audit log.
 
 <Aside>
-  System Tools require authentication with MFA and a role that includes the `devices.read` permission for read operations or `devices.execute` for mutating operations. The RBAC check is enforced globally across all System Tools endpoints.
+  System Tools require authentication with MFA and a role that includes the `devices.read` permission for read operations or `devices.execute` for mutating operations.
 </Aside>
 
 ---
 
-## File Browser
+## Accessing Remote Tools
 
-The File Browser lets you list directory contents, download files from a device, and upload files to a device. It works on all platforms (Windows, macOS, Linux).
+<Steps>
+
+1. **Navigate to the device.** Open the device detail page from the Devices list or by clicking a device name anywhere in the dashboard.
+
+2. **Open Remote Tools.** Click the **Remote Tools** button on the device page. The Remote Tools panel opens showing the device name, OS type, and a row of tool tabs.
+
+3. **Select a tool tab.** Click any tab to switch between tools:
+   - **Processes** -- available on all platforms
+   - **Services** -- Windows only
+   - **Registry** -- Windows only
+   - **Event Log** -- Windows only
+   - **Scheduled Tasks** -- Windows only
+   - **Terminal** -- available on all platforms
+   - **File Browser** -- available on all platforms
+
+   On macOS and Linux devices, Windows-only tabs are automatically hidden.
+
+</Steps>
+
+---
+
+## Using the File Browser
+
+The File Browser tab lets you navigate the device's filesystem, download files, and upload files. It works on all platforms (Windows, macOS, Linux).
+
+- **Navigate directories.** The browser opens to a default path based on the OS. Click folder names to navigate into them. Use the breadcrumb path at the top to jump back to parent directories.
+- **View file details.** Each entry shows the file or directory name, size, last modified date, and permissions.
+- **Download files.** Select a file and click the download button. The file is transferred from the device and downloaded to your browser.
+- **Upload files.** Click the upload button to send a file to the device at the current path. You can upload text or binary files.
+
+### File Browser API reference
+
+For scripted file operations, the File Browser API is documented below.
 
 ### Listing a directory
 
@@ -67,9 +101,18 @@ File uploads are audit-logged with the destination path, encoding, and size.
 
 ---
 
-## Process Manager
+## Using the Process Manager
 
-The Process Manager lists running processes, retrieves details for a specific process by PID, and can terminate processes. It works on all platforms using the `gopsutil` library on the agent side.
+The **Processes** tab displays all running processes on the device, sorted by CPU usage by default. Use this tool to identify resource-heavy processes and terminate misbehaving ones.
+
+- **View processes.** The process list shows PID, name, CPU usage, memory usage, owning user, and status for each process. Click a process row to view additional details including command line, thread count, and parent PID.
+- **Search and filter.** Use the search bar to filter by process name, user, command line, or PID.
+- **Kill a process.** Click the kill button next to a process to terminate it. A confirmation is required. Force-kill sends SIGKILL (or the Windows equivalent) instead of a graceful SIGTERM.
+- **Refresh.** Click the refresh button to reload the process list from the device.
+
+The Process Manager works on all platforms (Windows, macOS, Linux).
+
+### Process Manager API reference
 
 ### Listing processes
 
@@ -121,9 +164,22 @@ This action is audit-logged with the PID, force flag, and result.
 
 ---
 
-## Service Manager
+## Using the Service Manager
 
-The Service Manager lists, inspects, starts, stops, and restarts system services. It has platform-specific implementations:
+The **Services** tab lists all system services with their current status. Use it to start, stop, or restart services without opening a remote session.
+
+- **View services.** Each service shows its name, display name, status (Running, Stopped, Paused, Starting, Stopping), startup type (Automatic, Manual, Disabled), and service account.
+- **Search and filter.** Search by service name and filter by status (e.g., show only running services or only stopped services).
+- **Start, stop, or restart.** Click the corresponding action button next to a service. The action is sent to the agent and the service list refreshes automatically.
+- **Agent service detection.** If you restart the Breeze agent service itself, the UI displays a "Agent Restarting" banner and automatically polls until the agent reconnects.
+
+<Aside>
+  The Services tab appears only on Windows devices in the Remote Tools panel. On Linux and macOS, service management is available through the Terminal tab using systemctl or launchctl.
+</Aside>
+
+### Service Manager API reference
+
+The Service Manager has platform-specific implementations:
 
 - **Windows**: Uses the Windows Service Control Manager API
 - **Linux**: Uses `systemctl` (systemd)
@@ -173,13 +229,26 @@ All three actions are audit-logged with the service name and result.
 
 ---
 
-## Registry Editor
+## Using the Registry Editor
+
+The **Registry** tab provides a tree-based browser for the Windows registry. Use it to inspect configuration settings, modify values, and create or delete keys -- all without opening a remote desktop session.
+
+- **Navigate hives and keys.** The left panel shows a tree structure starting from the supported hives (HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER, HKEY_CLASSES_ROOT, HKEY_USERS, HKEY_CURRENT_CONFIG). Click a key to expand its subkeys. The right panel displays the values at the selected key.
+- **View values.** Each value shows its name, type (REG_SZ, REG_DWORD, REG_QWORD, REG_MULTI_SZ, REG_EXPAND_SZ, REG_BINARY), and data.
+- **Edit values.** Click a value to open the edit dialog. Modify the data and save.
+- **Create and delete.** Create new keys or values using the corresponding buttons. Delete keys or values with the delete action.
 
 <Aside type="caution">
-  The Registry Editor is **Windows-only**. Calling registry endpoints on a macOS or Linux device returns an error: `"registry is only supported on Windows"`.
+  The Registry Editor is **Windows-only**. It only appears on Windows devices in the Remote Tools panel.
 </Aside>
 
-The Registry Editor provides full read and write access to the Windows registry. You can browse keys, read/write/delete values, and create/delete keys.
+<Aside type="danger">
+  Registry modifications can make a Windows system unbootable. All write and delete operations are audit-logged.
+</Aside>
+
+### Registry Editor API reference
+
+The Registry Editor provides full read and write access to the Windows registry via API.
 
 ### Supported hives
 
@@ -282,18 +351,27 @@ DELETE /api/v1/system-tools/devices/:deviceId/registry/key?hive=HKEY_LOCAL_MACHI
 ```
 
 <Aside type="danger">
-  Registry modifications can make a Windows system unbootable. All registry write and delete operations are audit-logged, including the hive, path, value name, type, and data (truncated to 200 characters).
+  Registry modifications can make a Windows system unbootable. All registry write and delete operations are audit-logged, including the hive, path, value name, type, and data.
 </Aside>
 
 ---
 
-## Event Logs
+## Using Event Logs
+
+The **Event Log** tab lets you query the Windows Event Log system directly from the dashboard. Use it to investigate errors, audit security events, and troubleshoot service failures.
+
+- **Select a log.** The left panel lists all available event logs (System, Application, Security, etc.) with their record count and last write time. Click a log to select it.
+- **Filter events.** Use the filter controls to narrow results by severity level (Information, Warning, Error, Critical), source, event ID, and date range.
+- **Browse results.** Events are displayed in a table with timestamp, level, source, event ID, and message. Severity levels are color-coded for quick scanning.
+- **View event details.** Click an event to see its full details including the raw XML data.
 
 <Aside type="caution">
-  Event Logs are **Windows-only**. Calling event log endpoints on a macOS or Linux device returns an error: `"event logs are only supported on Windows"`.
+  Event Logs are **Windows-only**. This tab only appears on Windows devices in the Remote Tools panel.
 </Aside>
 
-The Event Logs tool queries the Windows Event Log system. You can list available logs, query events with filters, and retrieve individual event details.
+### Event Logs API reference
+
+The Event Logs API queries the Windows Event Log system programmatically.
 
 ### Listing available logs
 
@@ -360,13 +438,23 @@ Returns full details for a single event by record ID, including the optional `ra
 
 ---
 
-## Scheduled Tasks
+## Using Scheduled Tasks
+
+The **Scheduled Tasks** tab provides a view of the Windows Task Scheduler. Use it to inspect scheduled jobs, trigger them on demand, and enable or disable tasks.
+
+- **Browse tasks.** Tasks are displayed in a searchable, paginated list with name, status (Ready, Running, Disabled, Queued), last run time, last result, and next run time. Browse by folder to navigate the Task Scheduler folder hierarchy.
+- **View task details.** Click a task to open its detail panel showing triggers (daily, weekly, boot, logon, etc.), actions (executables, arguments), conditions, and settings.
+- **Run a task.** Click the **Run** button to trigger immediate execution.
+- **Enable or disable.** Toggle a task between enabled and disabled states.
+- **View task history.** Open the history panel for a task to see past executions with timestamps, event IDs, status levels (info, warning, error), and result codes.
 
 <Aside type="caution">
-  Scheduled Tasks are **Windows-only**. Calling task endpoints on a macOS or Linux device returns an error: `"scheduled tasks are only supported on Windows"`.
+  Scheduled Tasks are **Windows-only**. This tab only appears on Windows devices in the Remote Tools panel.
 </Aside>
 
-The Scheduled Tasks tool lets you view, run, enable, and disable Windows Task Scheduler tasks, and inspect their execution history.
+### Scheduled Tasks API reference
+
+The Scheduled Tasks API provides programmatic access to Windows Task Scheduler.
 
 ### Listing tasks
 
@@ -451,7 +539,7 @@ Each history entry includes:
 
 ---
 
-## API Reference
+## API Reference (For Integrators)
 
 All endpoints are prefixed with `/api/v1/system-tools/devices/:deviceId`. Replace `:deviceId` with a valid device UUID.
 

@@ -1,0 +1,195 @@
+---
+title: Alerts & Rules
+description: Create alert rules, manage notifications, and respond to device alerts in Breeze RMM.
+sidebar:
+  label: "Alerts & Rules"
+---
+
+import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Breeze has a built-in alert system that monitors your devices and notifies the right people when something goes wrong. Alerts are triggered by **rules** you define, routed through **notification channels** you configure, and managed from the **Alerts** page in the dashboard.
+
+## Viewing Alerts
+
+Open **Alerts** from the left sidebar to see all active alerts across your organization. The page has three main sections:
+
+- **Summary bar** -- counts of active alerts grouped by severity, with trend indicators showing whether alert volume is rising or falling.
+- **Filter bar** -- narrow the list by severity, status, device, or date range.
+- **Alert list** -- every alert with its severity badge, title, affected device, triggering rule, and timestamp.
+
+Click any alert to open its detail view, which shows:
+
+- Full alert message and context data
+- The device that triggered it (with a link to the device page)
+- The rule that fired (with a link to the rule editor)
+- Status timeline (when it was triggered, acknowledged, resolved)
+- Notification delivery history (which channels were notified and whether delivery succeeded)
+
+<Aside>
+  The main dashboard also shows the five most recent alerts in the **Recent Alerts** widget, auto-refreshing every 60 seconds.
+</Aside>
+
+## Severity Levels
+
+Every alert has a severity that controls how it appears in the dashboard and how notification routing handles it:
+
+| Severity | Use for | Color |
+|---|---|---|
+| **Critical** | Service-down conditions, security events, data loss risk | Red |
+| **High** | Degraded performance, failed backups, disk nearly full | Orange |
+| **Medium** | Threshold warnings, unusual patterns | Yellow |
+| **Low** | Informational issues that may need attention | Blue |
+| **Info** | Audit events, status changes, non-actionable notices | Gray |
+
+## Alert Statuses
+
+Alerts move through a lifecycle:
+
+| Status | Meaning |
+|---|---|
+| **Active** | The condition is still true and no one has responded yet |
+| **Acknowledged** | A technician has seen the alert and is investigating |
+| **Resolved** | The issue is fixed (manually or auto-resolved by the rule) |
+| **Suppressed** | Temporarily silenced until a specified time |
+
+## Responding to Alerts
+
+### Acknowledge an Alert
+
+Acknowledging tells the team you are aware and working on it. From the alert list or detail page, click **Acknowledge**. The alert moves to "acknowledged" status and records who acknowledged it and when.
+
+### Resolve an Alert
+
+Once the underlying issue is fixed, click **Resolve**. You can optionally add a **resolution note** describing what was done. Resolving an alert sets a cooldown period (configured on the rule) to prevent the same condition from immediately re-firing.
+
+### Suppress an Alert
+
+If you need to silence a noisy alert during planned maintenance, click **Suppress** and pick a date/time. The alert moves to "suppressed" status until that time, then returns to active if the condition is still true.
+
+### Bulk Actions
+
+Select multiple alerts using the checkboxes, then choose **Acknowledge Selected** or **Resolve Selected** from the bulk action menu. You can act on up to 100 alerts at once.
+
+## Alert Correlation
+
+When multiple related alerts fire at once (for example, a network outage causing many devices to go offline), Breeze automatically groups them using **alert correlation**. The correlation view shows:
+
+- **Root cause** -- the alert most likely to be the underlying problem, with a confidence score
+- **Related alerts** -- child alerts classified as causal, symptom, or duplicate
+- **Timeline** -- chronological view of when each related alert fired
+
+Open the correlation view from the alert detail page when the "Related Alerts" badge appears.
+
+## Creating Alert Rules
+
+Alert rules define what conditions to watch for and which devices to monitor.
+
+<Steps>
+
+1. Navigate to **Alerts > Rules** and click **Create Rule** (or open a Configuration Policy and go to the **Alert Rules** tab).
+
+2. Give the rule a **name** and choose a **severity** level.
+
+3. Add one or more **conditions**. Each condition specifies:
+   - **Type** -- metric threshold, status change, or custom condition
+   - **Metric** -- CPU, memory, disk, or network usage
+   - **Operator** -- greater than, less than, equals, etc.
+   - **Threshold value** -- the numeric value that triggers the alert
+   - **Duration** -- how long the condition must persist before firing
+
+4. Choose the **target scope**:
+   - **All Devices** -- applies to every device in the organization
+   - **Specific Sites** -- applies to all devices at selected sites
+   - **Specific Groups** -- applies to devices in selected device groups
+   - **Specific Devices** -- applies to individually selected devices
+
+5. Select one or more **notification channels** to route the alert through.
+
+6. Set the **cooldown** (1--1440 minutes) to prevent rapid re-firing after resolution.
+
+7. Optionally enable **auto-resolve** so the alert resolves itself when the condition clears.
+
+8. Click **Save**.
+
+</Steps>
+
+### Testing a Rule
+
+Before deploying a rule to production, you can test it against a specific device. From the rule list, click the **Test** button, select a target device, and Breeze will simulate condition evaluation and show you whether the rule would trigger.
+
+## Notification Channels
+
+Notification channels are the delivery endpoints where alert notifications are sent. Each channel belongs to an organization.
+
+### Supported Channel Types
+
+| Type | Configuration Required |
+|---|---|
+| **Email** | Recipient email addresses |
+| **Slack** | Incoming webhook URL |
+| **Microsoft Teams** | Incoming webhook URL |
+| **Webhook** | URL, HTTP method, headers, payload template |
+| **PagerDuty** | Service/integration key |
+| **SMS** | Phone numbers (requires Twilio configuration) |
+
+### Setting Up a Channel
+
+<Steps>
+
+1. Go to **Alerts > Channels** and click **Add Channel**.
+
+2. Enter a **name** (e.g., "Ops Team Slack") and select the **channel type**.
+
+3. Fill in the type-specific configuration (webhook URL, email addresses, etc.).
+
+4. Click **Save**.
+
+5. Click **Test** on the newly created channel to send a test notification and verify delivery.
+
+</Steps>
+
+## Notification Routing Rules
+
+Routing rules let you control which channels receive which alerts, based on conditions like severity, alert type, device tags, or site.
+
+<Steps>
+
+1. On the **Alerts > Channels** page, expand the **Routing Rules** section.
+
+2. Click **Add Routing Rule**.
+
+3. Set a **name** and **priority** (lower number = higher priority; rules are evaluated in order).
+
+4. Define **conditions**:
+   - **Severities** -- only route alerts of these severity levels
+   - **Condition types** -- only route alerts triggered by these condition types
+   - **Device tags** -- only route alerts from devices with these tags
+   - **Site IDs** -- only route alerts from devices at these sites
+
+5. Select one or more **notification channels** to deliver to.
+
+6. Enable or disable the rule, then click **Save**.
+
+</Steps>
+
+Routing rules are evaluated from lowest priority number to highest. The first matching rule determines where the notification is sent.
+
+## Escalation Policies
+
+For critical alerts that need a guaranteed response, create escalation policies that notify progressively broader audiences if no one acknowledges within a given time.
+
+<Steps>
+
+1. Go to **Alerts > Policies** and click **Create Policy**.
+
+2. Give the policy a **name** and define escalation **steps**. Each step specifies:
+   - Which notification channels to contact
+   - How long to wait before escalating to the next step
+
+3. Attach the policy to alert rules by selecting it in the rule's **Escalation Policy** field.
+
+</Steps>
+
+---
+
+For infrastructure-level alerting (monitoring the Breeze platform itself with Prometheus and Alertmanager), see [Infrastructure Alerts](/monitoring/alerts/).

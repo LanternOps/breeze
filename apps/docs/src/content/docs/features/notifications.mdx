@@ -5,18 +5,21 @@ description: Configure notification channels and deliver alerts via email, Slack
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Breeze RMM delivers notifications through multiple channels whenever alerts trigger, automations execute, or other platform events occur. Notification channels are configured per organization and dispatched asynchronously through a BullMQ queue backed by Redis. Every alert automatically generates in-app notifications for all active users in the affected organization; additional channels (email, webhook, Slack, Teams, PagerDuty, SMS) are routed based on alert rule configuration or organization defaults.
+Breeze RMM delivers notifications through multiple channels whenever alerts trigger, automations execute, or other platform events occur. Notification channels are configured per organization and dispatched asynchronously through a background job queue. Every alert automatically generates in-app notifications for all active users in the affected organization; additional channels (email, webhook, Slack, Teams, PagerDuty, SMS) are routed based on alert rule configuration or organization defaults.
 
 ---
 
-## Architecture Overview
+<details>
+<summary>How notifications work internally</summary>
 
 Notification delivery follows a two-stage pipeline:
 
 1. **Event Bus** -- When an alert is triggered, acknowledged, or resolved, the internal event bus emits an event (`alert.triggered`, `alert.acknowledged`, `alert.resolved`).
-2. **Notification Dispatcher** -- A BullMQ worker picks up the event, sends in-app notifications immediately, then queues individual send jobs for each configured notification channel.
+2. **Notification Dispatcher** -- A background worker picks up the event, sends in-app notifications immediately, then queues individual send jobs for each configured notification channel.
 
-The dispatcher runs with a concurrency of 5 workers and tracks delivery status (`pending`, `sent`, `failed`) in the `alert_notifications` table. Escalation policies can schedule delayed follow-up notifications that are automatically cancelled when an alert is acknowledged or resolved.
+The dispatcher runs with a concurrency of 5 workers and tracks delivery status (`pending`, `sent`, `failed`) for each notification. Escalation policies can schedule delayed follow-up notifications that are automatically cancelled when an alert is acknowledged or resolved.
+
+</details>
 
 <Aside type="tip">
   In-app notifications are always sent as a baseline, regardless of channel configuration. They do not need to be explicitly configured.
@@ -38,19 +41,6 @@ Channels define where notifications are delivered. Each channel belongs to an or
 | `webhook` | Sends an HTTP request to any HTTPS endpoint | `url`, `method`, `headers`, `authType`, ... |
 | `pagerduty` | Creates an incident via PagerDuty Events API v2 | `routingKey` or `integrationKey` |
 | `sms` | Sends text messages via Twilio Programmable Messaging | `phoneNumbers`, `from`, `messagingServiceSid` |
-
-### Channel database schema
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | UUID | Primary key |
-| `orgId` | UUID | Owning organization (required) |
-| `name` | varchar(255) | Human-readable channel name |
-| `type` | enum | One of: `email`, `slack`, `teams`, `webhook`, `pagerduty`, `sms` |
-| `config` | JSONB | Type-specific configuration object |
-| `enabled` | boolean | Whether the channel is active (default `true`) |
-| `createdAt` | timestamp | Creation timestamp |
-| `updatedAt` | timestamp | Last modification timestamp |
 
 ---
 
@@ -341,7 +331,7 @@ When an alert triggers, the notification dispatcher determines which channels to
 1. **In-app notifications** are sent immediately to all active users in the organization (always).
 2. If the alert was created by an **alert rule** with `notificationChannelIds` in its override settings, those specific channels are used.
 3. If no rule-level channel overrides exist (or the alert has no associated rule), **all enabled channels** for the organization are used.
-4. Each channel receives a queued send job via BullMQ.
+4. Each channel receives a queued send job via the background queue.
 </Steps>
 
 ### From automations
@@ -556,4 +546,4 @@ Escalation cancellation listens for `alert.acknowledged` and `alert.resolved` ev
 Partner users only receive in-app notifications if they have `orgAccess: 'all'` or `orgAccess: 'selected'` with the specific organization included in their `orgIds` array. Verify the partner user's access configuration.
 
 **Notification queue backed up.**
-Use `getNotificationQueueStatus()` to check queue metrics (waiting, active, completed, failed, delayed counts). The worker runs with concurrency 5. A large number of failed jobs may indicate a downstream service outage. Check Redis connectivity and the BullMQ worker health.
+Check notification queue health in the monitoring dashboard. The worker runs with concurrency 5. A large number of failed jobs may indicate a downstream service outage. Check Redis connectivity and the background queue worker health.

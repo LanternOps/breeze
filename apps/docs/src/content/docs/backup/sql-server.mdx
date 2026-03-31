@@ -1,0 +1,95 @@
+---
+title: SQL Server Backup
+description: Discover SQL Server instances and run full, differential, and transaction log backups with point-in-time recovery.
+sidebar:
+  order: 8
+  label: "SQL Server"
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Breeze can discover, back up, and restore SQL Server databases directly — no third-party SQL backup tool required. The agent runs native `sqlcmd` commands to produce standard `.bak` and `.trn` backup files.
+
+---
+
+## Discovering Instances
+
+<Steps>
+1. Go to **Operations > Backup > SQL Server**.
+2. Click **Discover Instances** for a device to scan it for SQL Server installations.
+3. Discovered instances appear in the list.
+</Steps>
+
+Each instance shows:
+- Instance name, version, and edition
+- Authentication type and port
+- Status (Online / Offline)
+
+Expand an instance to see its databases, including:
+- Database name and size
+- Recovery model (Simple, Full, Bulk-logged)
+- TDE (Transparent Data Encryption) status
+- Compatibility level
+
+---
+
+## Backup Types
+
+SQL Server supports three backup types that work together for point-in-time recovery:
+
+| Type | What it captures | File extension | Frequency |
+|------|-----------------|----------------|-----------|
+| **Full** | Complete database | `.bak` | Weekly (typical) |
+| **Differential** | Changes since last full backup | `.bak` | Daily (typical) |
+| **Transaction Log** | Log entries since last log backup | `.trn` | Every 15–60 min (typical) |
+
+Breeze tracks the **LSN (Log Sequence Number) chain** across backups so you can restore to any point in time covered by the chain.
+
+### Backup Chain View
+
+The SQL Server tab shows the backup chain for each database — a timeline of full, differential, and log backups color-coded by type. This helps you verify chain continuity and identify gaps.
+
+---
+
+## Running a Manual Backup
+
+<Steps>
+1. On the **SQL Server** tab, find the database you want to back up.
+2. Click the **Backup** action.
+3. Select the backup type: **Full**, **Differential**, or **Log**.
+4. Specify the output path for the backup file.
+5. Optionally select a storage configuration for cloud upload.
+6. Confirm to start the backup.
+</Steps>
+
+### Scheduled Backups
+
+Create a [backup policy](/backup/policies/) with the **MSSQL** mode to automate SQL Server backups. Like Hyper-V, MSSQL mode uses **all-by-default targeting** — newly discovered databases are included automatically. Use exclude lists for databases that don't need backup (e.g., `tempdb`).
+
+<Aside type="note">
+  For full point-in-time recovery, schedule a combination: weekly full + daily differential + frequent log backups. The backup policy schedule controls the primary backup type; you may want separate policies for different backup frequencies.
+</Aside>
+
+---
+
+## Restoring a Database
+
+<Steps>
+1. On the **SQL Server** tab, find the database and click **Restore**.
+2. The restore dialog walks you through:
+   - **Source** — select the instance and source database
+   - **Restore point** — choose **Latest** (most recent backup) or **Point-in-time** (pick a specific date and time using the datetime picker)
+   - **Target database** — name of the database to restore into (can be a new name to restore alongside the original)
+   - **No Recovery mode** — optionally leave the database in a restoring state so you can apply additional log backups before bringing it online
+3. Review and confirm.
+</Steps>
+
+<Aside type="caution">
+  Restoring a database overwrites the target database if it already exists. To preserve the original, restore into a differently-named database and verify before swapping.
+</Aside>
+
+---
+
+## Security
+
+All SQL Server backup and restore commands use strict input validation to prevent T-SQL injection. Instance names, database names, and file paths are validated against allowed patterns before being passed to `sqlcmd`.

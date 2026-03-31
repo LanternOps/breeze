@@ -1,0 +1,72 @@
+---
+title: Local Vaults
+description: Mirror backup snapshots to local or network storage for fast, offline recovery.
+sidebar:
+  order: 9
+  label: "Local Vaults"
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+A local vault mirrors your backup snapshots from cloud storage to a local location — a NAS share, an external drive, or a local disk. This gives you fast, offline recovery when the cloud is unreachable or when you need to restore large datasets without waiting for a download.
+
+---
+
+## Creating a Vault
+
+<Steps>
+1. Go to **Operations > Backup > Vault**.
+2. Click **Add New Vault**.
+3. Fill in the vault configuration:
+   - **Device** — which device the vault is attached to
+   - **Vault path** — local mount point, SMB share, or USB drive path
+   - **Type** — Local Disk, SMB Share, or USB Device
+   - **Retention count** — number of snapshots to keep locally (1–100)
+4. Click **Save**.
+</Steps>
+
+The vault appears in the list with a **Never synced** status.
+
+---
+
+## Syncing a Vault
+
+Click the **Sync** button on a vault to trigger an immediate sync. The sync process:
+
+1. Compares local vault contents against the latest cloud snapshots
+2. Downloads only missing files (incremental sync)
+3. Removes snapshots that exceed the retention count
+4. Updates the vault status and last sync timestamp
+
+<Aside type="tip">
+  Vaults sync intelligently — they only download files that aren't already present locally. After the initial sync, subsequent syncs are fast and bandwidth-efficient.
+</Aside>
+
+---
+
+## Vault Status
+
+| Status | Meaning |
+|--------|---------|
+| **Syncing** | A sync operation is in progress |
+| **Completed** | Last sync finished successfully |
+| **Failed** | Last sync encountered an error — check the vault path and connectivity |
+| **Never synced** | Vault was created but hasn't been synced yet |
+
+---
+
+## Managing Vaults
+
+- **Deactivate** — temporarily disables the vault without deleting its configuration. No further syncs will run. Reactivate at any time.
+- **Delete** — removes the vault configuration. Does not delete the data already on the local storage.
+
+---
+
+## When to Use Vaults
+
+| Scenario | Recommendation |
+|----------|---------------|
+| **Critical servers** | Pair cloud backup with a local vault for sub-minute restore times |
+| **Remote offices with slow WAN** | Vault to local NAS so restores don't depend on internet bandwidth |
+| **Compliance** | Keep an offline copy on USB or air-gapped storage |
+| **Disaster recovery** | Local vaults provide a second restore option if the cloud provider is down |

@@ -27,7 +27,9 @@ import { Steps, Aside } from '@astrojs/starlight/components';
    ```
 
    This pulls the new API, web, and binaries images and restarts all services.
-   Database migrations run automatically on API startup.
+   Database migrations run automatically on API startup when `AUTO_MIGRATE=true` (the default).
+
+   **Expected downtime**: Typically **5--15 seconds** while containers restart. If the new version includes database migrations, the API container will take additional time to apply them before accepting traffic -- usually under 60 seconds for routine schema changes, but potentially several minutes for large data migrations. Agents continue running independently during this window and reconnect automatically.
 
 3. **Verify**
 
@@ -62,6 +64,66 @@ The binary source depends on your `BINARY_SOURCE` setting:
 | `local` | Your API server (or S3 if configured) |
 
 See [Binary Distribution](/deploy/binaries/) for details.
+
+## Migration Failure Recovery
+
+If the API container fails to start after an upgrade due to a migration error, follow these steps:
+
+<Steps>
+
+1. **Check the container logs** to identify the failing migration.
+
+   ```bash
+   docker compose logs api --tail 100
+   ```
+
+   Look for lines starting with `[auto-migrate]`. Common failure messages include:
+   - `Migration checksum mismatch` -- a previously applied migration file was modified. This should never happen in normal operation.
+   - SQL errors during a specific migration file (e.g., constraint violations, missing columns).
+
+2. **Do not manually edit migration files.** Migrations are tracked by checksum. Modifying a previously applied migration will cause all future startups to fail.
+
+3. **Fix and restart.** The most common causes and resolutions:
+   - **Incompatible extension** (e.g., TimescaleDB not installed): Install the required extension and restart.
+   - **Permissions issue**: Ensure the database user has sufficient privileges.
+   - **Data conflict**: Manually resolve the conflicting data in the database, then restart the API container.
+
+   ```bash
+   docker compose restart api
+   ```
+
+4. **If unrecoverable**, restore your database from a pre-upgrade backup and re-attempt the upgrade after resolving the underlying issue.
+
+</Steps>
+
+<Aside type="caution">
+  Migrations run inside a transaction. If a migration fails partway through, the transaction is rolled back and no partial changes are applied. The API will not start until all migrations succeed.
+</Aside>
+
+## Zero-Downtime Upgrades
+
+For production deployments where any downtime is unacceptable, you can perform a blue-green upgrade using two parallel Compose stacks:
+
+<Steps>
+
+1. **Deploy the new version alongside the old one.** Use a separate Compose project name or directory with the new `BREEZE_VERSION` and point it at the same database and Redis.
+
+   ```bash
+   COMPOSE_PROJECT_NAME=breeze-new BREEZE_VERSION=0.12.0 \
+     docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
+   ```
+
+2. **Wait for migrations and health check.** The new API container applies any pending migrations on startup. Once the health endpoint returns the expected version, the new stack is ready.
+
+   ```bash
+   curl -s http://localhost:NEW_PORT/health | jq .version
+   ```
+
+3. **Switch traffic.** Update your reverse proxy (Caddy, nginx, Cloudflare tunnel) to route traffic to the new stack.
+
+4. **Tear down the old stack.** Once traffic is fully migrated, stop the old containers.
+
+</Steps>
 
 ## Rolling Back
 
@@ -124,14 +186,23 @@ You can test a release candidate before making it available to users:
    docker compose up -d
    ```
 
-3. **Sync agents to the RC**
+3. **Sync agents to the RC** using the `sync-github` endpoint. This fetches the release assets from GitHub and registers them in the Breeze database so agents know a new version is available.
 
    ```bash
    curl -X POST "https://your-domain/api/v1/agent-versions/sync-github?version=v0.11.3-rc.1" \
      -H "Authorization: Bearer <api-key>"
    ```
 
-   Agents will pick up the RC binary on their next heartbeat.
+   The response includes the version that was synced and the list of platform/architecture targets that were registered:
+
+   ```json
+   {
+     "version": "0.11.3-rc.1",
+     "synced": ["agent:linux/amd64", "agent:macos/arm64", "agent:windows/amd64", "helper:windows/amd64"]
+   }
+   ```
+
+   Agents will pick up the new binary on their next heartbeat (~60 seconds). Omit the `?version=` parameter to sync the latest stable release instead of a specific version. This endpoint requires system-level (admin) authentication.
 
 4. **Test, then promote**
 

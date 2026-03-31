@@ -1,0 +1,97 @@
+---
+title: Hyper-V VM Backup
+description: Discover, back up, and restore Hyper-V virtual machines with application-consistent or crash-consistent snapshots.
+sidebar:
+  order: 7
+  label: "Hyper-V"
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Breeze can discover, back up, and restore Hyper-V virtual machines directly from the Backup dashboard. VM backups support both application-consistent and crash-consistent modes, and incremental backups via Resilient Change Tracking (RCT).
+
+---
+
+## Discovering VMs
+
+Before you can back up VMs, Breeze needs to discover what's running on your Hyper-V hosts.
+
+<Steps>
+1. Go to **Operations > Backup > Hyper-V**.
+2. Click **Discover VMs** for the host device you want to scan.
+3. Breeze queries the Hyper-V host and populates the VM list.
+</Steps>
+
+The VM list shows:
+
+| Column | Description |
+|--------|-------------|
+| **VM name** | The virtual machine's display name |
+| **State** | Running (green), Off (gray), Paused/Saved (yellow) |
+| **CPU count** | Number of virtual processors assigned |
+| **Memory** | Allocated memory in MB |
+| **VHD count** | Number of virtual hard disks |
+| **RCT enabled** | Whether Resilient Change Tracking is available for incremental backups |
+
+Use the search box and state filter to find specific VMs.
+
+---
+
+## Backing Up a VM
+
+### Manual Backup
+
+<Steps>
+1. On the **Hyper-V** tab, find the VM you want to back up.
+2. Click the **Backup** button on the VM row.
+3. Choose the export destination path.
+4. Select the consistency type:
+   - **Application-consistent** (default) — uses Hyper-V's VSS integration for a clean snapshot. Best for VMs running databases or Exchange.
+   - **Crash-consistent** — saves the VM state before export. Faster, but equivalent to pulling the power plug.
+5. Confirm to start the export.
+</Steps>
+
+The backup job appears in the Recent Jobs feed on the Overview tab.
+
+### Scheduled Backup
+
+To back up VMs automatically, create a [backup policy](/backup/policies/) with the **Hyper-V** mode. By default, all VMs on assigned hosts are included. Configure exclude lists in the policy to skip specific VMs (e.g., test or development VMs).
+
+<Aside type="note">
+  Hyper-V mode uses **all-by-default targeting**. Newly created VMs on a host are automatically included in the next scheduled backup run. Add them to the exclude list if they shouldn't be backed up.
+</Aside>
+
+---
+
+## Viewing Checkpoints
+
+Expand a VM row to see its checkpoint (snapshot) tree. Each checkpoint shows its name and creation timestamp, arranged in a hierarchy that reflects the checkpoint chain.
+
+---
+
+## Restoring a VM
+
+<Steps>
+1. On the **Hyper-V** tab, find the VM and click **Restore**.
+2. The restore dialog walks you through:
+   - **Select snapshot** — choose which backup snapshot to restore from
+   - **Target host** — pick the Hyper-V host to import the VM onto (can be a different host)
+   - **VM name and ID** — keep the original name or rename. Toggle whether to generate a new VM ID.
+3. Review the settings and confirm.
+</Steps>
+
+The restore imports the exported VM onto the target host with a new VM ID (unless you chose to keep the original). The VM is created in an **Off** state — start it manually when you're ready.
+
+### Restore as New VM
+
+You can also restore a backup snapshot as a new VM from the Restore Wizard. This lets you adjust hardware specs (CPU count, memory, disk size) and select a virtual switch before creating the VM.
+
+### Instant Boot
+
+For fast recovery validation, use **Instant Boot** to boot a VM directly from a snapshot without fully restoring it. This lets you verify that the backup is usable without waiting for a full import. Instant boot status is tracked on the Hyper-V tab.
+
+---
+
+## VM Power State Control
+
+From the Hyper-V tab you can manage VM power state — start, stop, save, or pause VMs on managed hosts. This is useful for pre-backup preparation or post-restore validation.

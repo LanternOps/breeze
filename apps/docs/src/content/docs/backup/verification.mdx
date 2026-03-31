@@ -1,0 +1,105 @@
+---
+title: Verification & Recovery Readiness
+description: Verify backup integrity, run test restores, and track recovery readiness scores.
+sidebar:
+  order: 6
+  label: "Verification"
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+A backup you can't restore is worthless. The Verification tab helps you continuously validate that your backups are recoverable and measure how prepared each device is for a recovery scenario.
+
+---
+
+## Verification Types
+
+Go to **Operations > Backup > Verification** to access verification controls.
+
+| Type | Duration | What it checks | Impact |
+|------|----------|----------------|--------|
+| **Integrity check** | Fast (minutes) | Checksums, file counts, manifest consistency | None — no data is restored |
+| **Test restore** | Medium (10+ min) | Extracts the full snapshot to a temporary location and measures restore time | Low — uses temp space, no production impact |
+| **Full recovery** | Long (varies) | Complete system restore to a target device with post-restore validation | High — requires approval before running |
+
+### Running a Verification
+
+<Steps>
+1. Go to **Operations > Backup > Verification**.
+2. Click one of the verification buttons: **Run Integrity Check**, **Test Restore**, or **Full Recovery Test**.
+3. Confirm the action in the dialog.
+4. The verification appears in the history table with a status of **Running**.
+5. When complete, the status updates to **Passed**, **Failed**, or **Partial**.
+</Steps>
+
+<Aside type="caution">
+  **Full recovery** verification restores data to a real device. You must approve a high-impact confirmation before it runs. Use this sparingly — typically during planned maintenance windows.
+</Aside>
+
+### Verification History
+
+The history table shows all past verifications with:
+- Verification type
+- Status (Pending, Running, Passed, Failed, Partial)
+- Start time and duration
+- Files verified and files failed
+- Total size checked
+
+---
+
+## Automated Verification
+
+Breeze runs verifications automatically on a schedule:
+
+| Check | Frequency | What it does |
+|-------|-----------|-------------|
+| **Post-backup integrity** | Every 10 minutes | Validates the most recent completed backup |
+| **Weekly test restore** | Sundays at 03:00 UTC | Runs a full test restore to verify recoverability |
+| **Readiness score recalculation** | Daily at 02:00 UTC | Updates recovery readiness scores for all devices |
+| **Timeout detection** | Every 5 minutes | Flags verifications that have been running too long |
+
+No setup is needed — automated verifications run as soon as backup is configured.
+
+---
+
+## Recovery Readiness Score
+
+Each device gets a readiness score from 0 to 100, visible on the Verification tab:
+
+| Score | Rating | Meaning |
+|-------|--------|---------|
+| **85–100** | High | Device is well-protected and verified |
+| **70–84** | Acceptable | Minor gaps — review risk factors |
+| **Below 70** | Low | Significant recovery risk — take action |
+
+The score is calculated from:
+- **Recency** — how fresh the latest snapshot is (within 30 days)
+- **Verification success rate** — recent integrity and restore test results
+- **RTO/RPO compliance** — whether estimated recovery times meet SLA targets
+- **Risk factor assessment** — missing backups, failed verifications, or expired snapshots
+
+### Risk Factors
+
+The Verification tab lists specific risk factors for each device, color-coded by severity:
+
+| Risk factor | Severity | What to do |
+|-------------|----------|------------|
+| No recent backups | High (red) | Check policy assignment and agent connectivity |
+| Verification failures | High (red) | Investigate the failed verification — storage may be unreachable |
+| SLA breaches | Medium (orange) | Review SLA targets or increase backup frequency |
+| Data change accumulation | Medium (orange) | Large volume of unprotected changes — run a backup |
+| Immutable backup gaps | Low (yellow) | Consider enabling immutability on your storage configuration |
+
+---
+
+## Organization Backup Health
+
+The Verification tab also shows an organization-wide health summary:
+
+| Status | Meaning |
+|--------|---------|
+| **Healthy** | All devices have recent, verified backups |
+| **Degraded** | Some devices have low readiness scores or recent failures |
+| **Critical** | Multiple devices are unprotected or have failed verifications |
+
+Use this as a quick indicator of overall backup posture.

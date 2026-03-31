@@ -376,4 +376,4 @@ The patch's `uninstallCommand` returned a non-zero exit code on the target devic
 Check for devices with `failed` or `missing` patch status — these reduce the compliance score. Also verify that the relevant patches are in `approved` state for the organization in question. Unapproved patches are not deployed and show as `pending`, which counts against compliance.
 
 **Compliance report stuck in `running`.**
-Check the BullMQ worker status in your infrastructure. The compliance report worker is a separate worker process from the main API worker. If that worker is down or backlogged, reports will remain in `running` or `pending` indefinitely. Restarting the compliance worker will resume processing.
+Check the background queue worker status in your infrastructure. The compliance report worker is a separate worker process from the main API worker. If that worker is down or backlogged, reports will remain in `running` or `pending` indefinitely. Restarting the compliance worker will resume processing.

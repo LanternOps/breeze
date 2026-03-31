@@ -14,7 +14,7 @@ Together, these systems let you answer questions like "which devices are running
 </Aside>
 
 <Aside type="tip">
-  The software catalog, deployments, and inventory endpoints are fully persisted via Drizzle ORM with PostgreSQL. Software packages can be uploaded to S3 with SHA-256 checksum verification and deployed silently to endpoints. The sidebar labels for these features are **App Library** (`/software`) and **App Policies** (`/software-inventory`).
+  Software packages can be uploaded with SHA-256 checksum verification and deployed silently to endpoints. In the sidebar, these features appear as **App Library** (`/software`) and **App Policies** (`/software-inventory`).
 </Aside>
 
 ---
@@ -372,6 +372,10 @@ Returns all per-device results for a given deployment. Use this to understand wh
 
 ## Device Software Inventory
 
+<Aside type="caution">
+  The `/devices/:id/software` endpoint returns persisted agent-reported data from the database. The `/software/inventory/*` endpoints currently serve from an in-memory layer that does not persist across server restarts. If you see different results between the two, this is expected. A future release will unify both endpoints against the database.
+</Aside>
+
 The device software inventory records what is actually installed on each endpoint. This data is reported by the Breeze agent during periodic scans and is stored in the `software_inventory` database table.
 
 ### Inventory Record Fields
@@ -588,4 +592,4 @@ The device has not yet checked in to receive the deployment command. Verify the 
 Ensure the `sha256` value provided when creating the version matches the actual SHA-256 hash of the installer file at the `downloadUrl`. The hash must be exactly 64 hexadecimal characters. Re-download the file and compute the hash with `sha256sum` (Linux/macOS) or `Get-FileHash` (Windows PowerShell) to verify.
 
 **Device-specific software endpoint (`/devices/:id/software`) returns different data than `/software/inventory/:deviceId`.**
-The `/devices/:id/software` endpoint queries the `software_inventory` database table directly using Drizzle ORM, while `/software/inventory/:deviceId` is served from the in-memory software route layer. These are currently separate data sources — the database endpoint reflects persisted agent-reported data, while the `/software/*` endpoints use in-memory mock data that does not persist across restarts.
+These two endpoints currently use different data sources. See the caution note at the top of the Device Software Inventory section for details.

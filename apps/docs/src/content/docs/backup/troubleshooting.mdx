@@ -1,0 +1,141 @@
+---
+title: Backup Troubleshooting
+description: Common backup issues and how to resolve them.
+sidebar:
+  order: 15
+  label: "Troubleshooting"
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+---
+
+## No backup configuration available
+
+**Symptom:** Manual backup fails with "No backup config available."
+
+**Cause:** No storage configuration exists for your organization, or no policy targets the device.
+
+**Fix:**
+1. Create a [storage configuration](/backup/storage/) if you haven't already.
+2. Create a [backup policy](/backup/policies/) that targets the device, or ensure at least one storage configuration exists in the organization (the system falls back to any available config).
+
+---
+
+## Job stuck in Queued status
+
+**Symptom:** A backup job stays in **Queued** and never starts.
+
+**Cause:** The job was created but the agent hasn't picked it up.
+
+**Fix:**
+1. Verify the target device is online (check the device list for connectivity status).
+2. Confirm the Breeze agent is running on the device.
+3. Check that Redis is operational — backup jobs are dispatched through the job queue.
+
+---
+
+## Job fails immediately
+
+**Symptom:** Job moves to **Failed** status within seconds.
+
+**Cause:** Typically a storage connectivity issue or permission error.
+
+**Fix:**
+1. Open the failed job to read the error message.
+2. Test the storage configuration connectivity (click Refresh/Test on the config).
+3. Verify storage credentials haven't expired or been rotated.
+4. Check that the agent has network access to the storage target.
+
+---
+
+## Snapshot browse returns empty
+
+**Symptom:** A snapshot exists but the file browser shows no contents.
+
+**Cause:** The agent didn't report file-level metadata during the backup, or the browsing index was pruned while the snapshot record remains.
+
+**Fix:** This is expected for some backup types (e.g., system image or Hyper-V exports). File-level browsing is available for file-mode backups. For other types, restore the full snapshot to inspect contents.
+
+---
+
+## Restore goes to wrong device
+
+**Symptom:** Data was restored to the original device instead of the intended target.
+
+**Cause:** The target device wasn't explicitly specified in the restore wizard.
+
+**Fix:** When restoring, explicitly select the target device in the destination step. If omitted, the restore defaults to the snapshot's original device. Both devices must be in the same organization.
+
+---
+
+## Dashboard shows 0 protected devices
+
+**Symptom:** Backup dashboard reports no devices are protected, but policies exist.
+
+**Cause:** The protection count is based on direct device assignments in policies. Devices targeted only through site or device group assignments are resolved at runtime and may not appear in this count.
+
+**Fix:** If you need accurate coverage reporting, ensure policies include explicit device assignments. Alternatively, check individual device backup tabs to confirm they have a policy assigned.
+
+---
+
+## VSS writers in Failed state
+
+**Symptom:** The device backup tab shows one or more VSS writers as **Failed**.
+
+**Cause:** A Windows service that provides a VSS writer is not running or is in an error state (common with SQL Server, Exchange, or Hyper-V writers).
+
+**Fix:**
+1. On the Windows device, run `vssadmin list writers` to see writer status.
+2. Restart the service associated with the failed writer.
+3. If the writer is not needed for your backup scope, it can be ignored — file backups will fall back to file-level copy if VSS is unavailable.
+
+---
+
+## SLA breach alerts firing unexpectedly
+
+**Symptom:** Receiving RPO or RTO breach notifications when backups appear to be running normally.
+
+**Cause:** The SLA target may be tighter than the actual backup frequency, or test restore times are exceeding the RTO target.
+
+**Fix:**
+1. Review the [SLA configuration](/backup/sla/) — ensure RPO targets are compatible with your backup schedule (e.g., a 30-minute RPO requires backups at least every 30 minutes).
+2. For RTO breaches, check whether the measured restore time in [verification results](/backup/verification/) exceeds the target. Consider faster storage (local vault) or smaller backup scope.
+
+---
+
+## SQL Server backup chain broken
+
+**Symptom:** Differential or log backups fail with a chain continuity error.
+
+**Cause:** A full backup is needed to start a new chain. This happens after a database restore, a backup to a different tool, or a missed full backup.
+
+**Fix:** Run a manual **Full** backup for the affected database from the [SQL Server tab](/backup/sql-server/). Subsequent differential and log backups will chain from it.
+
+---
+
+## Hyper-V export fails
+
+**Symptom:** VM backup job fails during export.
+
+**Cause:** Common causes include insufficient disk space at the export path, the VM being in an unsupported state, or Hyper-V integration services not running in the guest.
+
+**Fix:**
+1. Check available disk space at the export destination.
+2. Verify the VM state — exports work best when the VM is **Running** or **Off**.
+3. For application-consistent exports, ensure Hyper-V integration services are installed and running in the guest OS.
+4. Try a **crash-consistent** export if application-consistent fails.
+
+---
+
+## Recovery token not working
+
+**Symptom:** Bare metal recovery agent rejects the recovery token.
+
+**Cause:** The token may have expired, been used already, or was copied incorrectly.
+
+**Fix:** Generate a [new recovery token](/backup/bare-metal-recovery/). Tokens are single-use and time-limited. Ensure you copy the full token string without trailing whitespace.
+
+<Aside type="tip">
+  For persistent issues, check the device's diagnostic logs via the device detail page. Filter by the `backup` component to see agent-side backup logs.
+</Aside>

@@ -1,0 +1,81 @@
+---
+title: Bare Metal Recovery
+description: Recover a full system from backup to bare hardware or a replacement device.
+sidebar:
+  order: 12
+  label: "Bare Metal Recovery"
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Bare Metal Recovery (BMR) lets you restore a complete system — OS, drivers, configuration, and data — to new or replacement hardware. Unlike a standard restore that requires an enrolled agent, BMR uses a one-time recovery token so you can recover to a machine that has never been enrolled in Breeze.
+
+---
+
+## How It Works
+
+1. You generate a **recovery token** from a backup snapshot
+2. Boot the target hardware from recovery media
+3. The recovery agent authenticates with the token (no enrollment needed)
+4. System state and data are downloaded and restored
+5. Post-restore validation checks confirm success
+
+---
+
+## Generating a Recovery Token
+
+<Steps>
+1. Find the snapshot you want to recover from (via the Backup dashboard or device backup tab).
+2. Select **Bare Metal Recovery** from the restore options.
+3. Configure the recovery:
+   - **Snapshot** — the backup to recover from
+   - **Token lifetime** — how long the token remains valid (in hours)
+   - **Restore type** — Full, Selective, or Bare Metal
+   - **Target configuration** — optional hardware configuration hints
+4. Click **Generate Token**.
+5. The token is displayed **once**. Copy it immediately — it's stored as a SHA-256 hash and cannot be retrieved later.
+</Steps>
+
+<Aside type="danger">
+  Recovery tokens are shown only once at creation time. Store the token securely and use it promptly. If lost, generate a new one.
+</Aside>
+
+---
+
+## Running the Recovery
+
+<Steps>
+1. Boot the target machine from Breeze recovery media.
+2. When prompted, enter the recovery token.
+3. The recovery agent connects to Breeze and authenticates with the token.
+4. The recovery process begins:
+   - **System state** is restored first (OS configuration, drivers, registry on Windows; `/etc`, boot config on Linux)
+   - **Data files** are restored next
+5. Post-restore validation runs automatically:
+   - Service status checks
+   - Network connectivity verification
+   - Critical file presence confirmation
+6. The machine reboots into the restored OS.
+</Steps>
+
+---
+
+## When to Use BMR
+
+| Scenario | Approach |
+|----------|----------|
+| **Hard drive failure** | BMR to new disk in same hardware |
+| **Machine replacement** | BMR to new hardware of similar specification |
+| **Disaster recovery** | BMR as part of a [DR plan](/backup/disaster-recovery/) |
+| **Migration** | System image restore to different hardware (may need driver updates) |
+
+For recovering individual files or databases, use the standard [restore workflow](/backup/restoring/) instead — it's faster and doesn't require recovery media.
+
+---
+
+## Recovery Token Security
+
+- Tokens authenticate recovery agents the same way JWT authenticates regular users — they grant time-limited access to a specific snapshot
+- Tokens are hashed (SHA-256) at rest and cannot be retrieved after creation
+- Each token is scoped to a single snapshot and organization
+- Expired tokens are automatically invalidated
