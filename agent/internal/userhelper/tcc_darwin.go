@@ -90,6 +90,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/remote/desktop"
 )
 
 // accessibilityPrompted tracks whether we have already triggered the
@@ -117,10 +118,21 @@ const tccHelperCommandTimeout = 15 * time.Second
 
 // CheckTCCPermissions probes macOS TCC permissions. On the first call,
 // triggers the accessibility system prompt; subsequent calls check silently.
-func CheckTCCPermissions() *ipc.TCCStatus {
+func CheckTCCPermissions(desktopContext string) *ipc.TCCStatus {
+	return checkTCCPermissions(desktopContext, true, true, nil)
+}
+
+// ProbeTCCPermissions returns the current macOS TCC state for the selected
+// desktop context. When allowPrompt is false the check is read-only and will
+// not trigger the Accessibility consent flow.
+func ProbeTCCPermissions(desktopContext string, allowPrompt bool, allowCaptureProbe bool) *ipc.TCCStatus {
+	return checkTCCPermissions(desktopContext, allowPrompt, allowCaptureProbe, nil)
+}
+
+func checkTCCPermissions(desktopContext string, allowPrompt bool, allowCaptureProbe bool, lastRemoteDesktop *bool) *ipc.TCCStatus {
 	accessibilityPromptedMu.Lock()
 	var accessibility bool
-	if !accessibilityPrompted {
+	if allowPrompt && !accessibilityPrompted {
 		accessibility = bool(C.checkAccessibilityWithPrompt())
 		accessibilityPrompted = true
 	} else {
@@ -128,10 +140,16 @@ func CheckTCCPermissions() *ipc.TCCStatus {
 	}
 	accessibilityPromptedMu.Unlock()
 
+	remoteDesktop := cloneBoolPtr(lastRemoteDesktop)
+	if allowCaptureProbe {
+		remoteDesktop = probeRemoteDesktopPermission(desktopContext)
+	}
+
 	return &ipc.TCCStatus{
 		ScreenRecording: bool(C.checkScreenRecording()),
 		Accessibility:   accessibility,
 		FullDiskAccess:  probeFullDiskAccess(),
+		RemoteDesktop:   remoteDesktop,
 		CheckedAt:       time.Now().UTC(),
 	}
 }
@@ -165,14 +183,20 @@ func probeFullDiskAccess() bool {
 // It runs an immediate check on start (triggering the Screen Recording prompt
 // if not yet granted), then re-checks at a fast interval while permissions are
 // missing, switching to the slower interval once all are granted.
-func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}) {
+func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext string, canProbe func() bool) {
 	startedAt := time.Now()
 	var seq uint64
 	var consecutiveFailures int
 	allGranted := false
+	var lastRemoteDesktop *bool
 
 	check := func() {
-		status := CheckTCCPermissions()
+		allowProbe := true
+		if canProbe != nil {
+			allowProbe = canProbe()
+		}
+		status := checkTCCPermissions(desktopContext, true, allowProbe, lastRemoteDesktop)
+		lastRemoteDesktop = cloneBoolPtr(status.RemoteDesktop)
 		allGranted = len(missingPermissions(status)) == 0
 		if err := sendTCCStatus(conn, status, &seq); err != nil {
 			consecutiveFailures++
@@ -279,6 +303,42 @@ func missingPermissions(status *ipc.TCCStatus) []string {
 		missing = append(missing, "Full Disk Access")
 	}
 	return missing
+}
+
+func normalizedDesktopContext(desktopContext string) string {
+	if desktopContext == ipc.DesktopContextLoginWindow {
+		return ipc.DesktopContextLoginWindow
+	}
+	return ipc.DesktopContextUserSession
+}
+
+func probeRemoteDesktopPermission(desktopContext string) *bool {
+	granted, err := desktop.ProbeCaptureAccess(desktop.CaptureConfig{
+		DesktopContext: normalizedDesktopContext(desktopContext),
+	})
+	if err == nil {
+		return boolPtr(granted)
+	}
+	if errors.Is(err, desktop.ErrPermissionDenied) {
+		return boolPtr(false)
+	}
+
+	log.Debug("desktop capture probe inconclusive",
+		"context", normalizedDesktopContext(desktopContext),
+		"error", err.Error())
+	return nil
+}
+
+func boolPtr(v bool) *bool {
+	return &v
+}
+
+func cloneBoolPtr(v *bool) *bool {
+	if v == nil {
+		return nil
+	}
+	copied := *v
+	return &copied
 }
 
 // tccPromptFilePath returns the path to the marker file that tracks whether

@@ -3,8 +3,6 @@
 package patching
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -31,8 +29,7 @@ func (y *YumProvider) Scan() ([]AvailablePatch, error) {
 		return nil, err
 	}
 
-	cmd := exec.Command(mgr, "check-update", "-q")
-	output, runErr := cmd.CombinedOutput()
+	output, runErr := commandCombinedOutputWithTimeout(patchScanTimeout, mgr, "check-update", "-q")
 	if runErr != nil {
 		// dnf/yum return exit code 100 when updates are available.
 		if exitErr, ok := runErr.(*exec.ExitError); !ok || exitErr.ExitCode() != 100 {
@@ -40,7 +37,7 @@ func (y *YumProvider) Scan() ([]AvailablePatch, error) {
 		}
 	}
 
-	scanner := bufio.NewScanner(bytes.NewReader(output))
+	scanner := newPatchScanner(output)
 	patches := []AvailablePatch{}
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -58,12 +55,21 @@ func (y *YumProvider) Scan() ([]AvailablePatch, error) {
 		if idx := strings.LastIndex(pkgArch, "."); idx > 0 {
 			name = pkgArch[:idx]
 		}
+		if err := validateYumPackageName(name); err != nil {
+			continue
+		}
 
 		patches = append(patches, AvailablePatch{
-			ID:      name,
-			Title:   name,
-			Version: fields[1],
+			ID:      truncatePatchField(name),
+			Title:   truncatePatchField(name),
+			Version: truncatePatchField(fields[1]),
 		})
+		if len(patches) >= patchResultItemLimit {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("%s check-update parse failed: %w", mgr, err)
 	}
 
 	return patches, nil
@@ -74,19 +80,23 @@ func (y *YumProvider) Install(patchID string) (InstallResult, error) {
 	if err != nil {
 		return InstallResult{}, err
 	}
-
-	output, runErr := exec.Command(mgr, "-y", "update", patchID).CombinedOutput()
-	if runErr != nil {
-		return InstallResult{}, fmt.Errorf("%s update failed: %w: %s", mgr, runErr, strings.TrimSpace(string(output)))
+	if err := validateYumPackageName(patchID); err != nil {
+		return InstallResult{}, err
 	}
 
-	lower := strings.ToLower(string(output))
+	output, runErr := commandCombinedOutputWithTimeout(patchMutateTimeout, mgr, "-y", "update", patchID)
+	if runErr != nil {
+		return InstallResult{}, fmt.Errorf("%s update failed: %w: %s", mgr, runErr, truncatePatchOutput(output))
+	}
+
+	message := truncatePatchOutput(output)
+	lower := strings.ToLower(message)
 	rebootRequired := strings.Contains(lower, "reboot") || strings.Contains(lower, "restart")
 
 	return InstallResult{
 		PatchID:        patchID,
 		RebootRequired: rebootRequired,
-		Message:        strings.TrimSpace(string(output)),
+		Message:        message,
 	}, nil
 }
 
@@ -95,22 +105,25 @@ func (y *YumProvider) Uninstall(patchID string) error {
 	if err != nil {
 		return err
 	}
+	if err := validateYumPackageName(patchID); err != nil {
+		return err
+	}
 
-	output, runErr := exec.Command(mgr, "-y", "remove", patchID).CombinedOutput()
+	output, runErr := commandCombinedOutputWithTimeout(patchMutateTimeout, mgr, "-y", "remove", patchID)
 	if runErr != nil {
-		return fmt.Errorf("%s remove failed: %w: %s", mgr, runErr, strings.TrimSpace(string(output)))
+		return fmt.Errorf("%s remove failed: %w: %s", mgr, runErr, truncatePatchOutput(output))
 	}
 
 	return nil
 }
 
 func (y *YumProvider) GetInstalled() ([]InstalledPatch, error) {
-	output, err := exec.Command("rpm", "-qa", "--queryformat", "%{NAME}\t%{VERSION}-%{RELEASE}\n").Output()
+	output, err := commandOutputWithTimeout(patchListTimeout, "rpm", "-qa", "--queryformat", "%{NAME}\t%{VERSION}-%{RELEASE}\n")
 	if err != nil {
 		return nil, fmt.Errorf("rpm query failed: %w", err)
 	}
 
-	scanner := bufio.NewScanner(bytes.NewReader(output))
+	scanner := newPatchScanner(output)
 	installed := []InstalledPatch{}
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -121,11 +134,20 @@ func (y *YumProvider) GetInstalled() ([]InstalledPatch, error) {
 		if len(parts) != 2 {
 			continue
 		}
+		if err := validateYumPackageName(parts[0]); err != nil {
+			continue
+		}
 		installed = append(installed, InstalledPatch{
-			ID:      parts[0],
-			Title:   parts[0],
-			Version: parts[1],
+			ID:      truncatePatchField(parts[0]),
+			Title:   truncatePatchField(parts[0]),
+			Version: truncatePatchField(parts[1]),
 		})
+		if len(installed) >= patchResultItemLimit {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("rpm query parse failed: %w", err)
 	}
 
 	return installed, nil

@@ -3,9 +3,10 @@
 package collectors
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
-	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -15,8 +16,9 @@ func collectServices() ([]ServiceInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	unitFilesCmd := exec.CommandContext(
+	unitFilesOut, err := runCollectorOutputWithContext(
 		ctx,
+		collectorShortCommandTimeout,
 		"systemctl",
 		"list-unit-files",
 		"--type=service",
@@ -24,13 +26,13 @@ func collectServices() ([]ServiceInfo, error) {
 		"--no-pager",
 		"--plain",
 	)
-	unitFilesOut, err := unitFilesCmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("systemctl list-unit-files failed: %w", err)
 	}
 
-	unitsCmd := exec.CommandContext(
+	unitsOut, err := runCollectorOutputWithContext(
 		ctx,
+		collectorShortCommandTimeout,
 		"systemctl",
 		"list-units",
 		"--type=service",
@@ -39,7 +41,6 @@ func collectServices() ([]ServiceInfo, error) {
 		"--no-pager",
 		"--plain",
 	)
-	unitsOut, err := unitsCmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("systemctl list-units failed: %w", err)
 	}
@@ -74,14 +75,17 @@ func collectServices() ([]ServiceInfo, error) {
 
 func parseLinuxUnitFileStates(output string) map[string]string {
 	result := make(map[string]string)
-	for _, line := range strings.Split(output, "\n") {
-		fields := strings.Fields(strings.TrimSpace(line))
+	scanner := bufio.NewScanner(bytes.NewReader([]byte(output)))
+	scanner.Buffer(make([]byte, 0, 64*1024), collectorScannerLimit)
+	count := 0
+	for scanner.Scan() {
+		fields := strings.Fields(strings.TrimSpace(scanner.Text()))
 		if len(fields) < 2 {
 			continue
 		}
 
 		unit := strings.TrimSpace(fields[0])
-		if unit == "" || !strings.HasSuffix(unit, ".service") {
+		if !isValidCollectorServiceUnit(unit) {
 			continue
 		}
 
@@ -100,20 +104,27 @@ func parseLinuxUnitFileStates(output string) map[string]string {
 				result[unit] = state
 			}
 		}
+		count++
+		if count >= collectorResultLimit {
+			break
+		}
 	}
 	return result
 }
 
 func parseLinuxRuntimeStates(output string) map[string]string {
 	result := make(map[string]string)
-	for _, line := range strings.Split(output, "\n") {
-		fields := strings.Fields(strings.TrimSpace(line))
+	scanner := bufio.NewScanner(bytes.NewReader([]byte(output)))
+	scanner.Buffer(make([]byte, 0, 64*1024), collectorScannerLimit)
+	count := 0
+	for scanner.Scan() {
+		fields := strings.Fields(strings.TrimSpace(scanner.Text()))
 		if len(fields) < 4 {
 			continue
 		}
 
 		unit := strings.TrimSpace(fields[0])
-		if unit == "" || !strings.HasSuffix(unit, ".service") {
+		if !isValidCollectorServiceUnit(unit) {
 			continue
 		}
 
@@ -140,6 +151,10 @@ func parseLinuxRuntimeStates(output string) map[string]string {
 			} else {
 				result[unit] = activeState
 			}
+		}
+		count++
+		if count >= collectorResultLimit {
+			break
 		}
 	}
 	return result

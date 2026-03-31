@@ -78,12 +78,12 @@ func (c *EventLogCollector) Collect() ([]EventLogEntry, error) {
 // journalEntry matches the JSON output of journalctl --output=json
 type journalEntry struct {
 	RealtimeTimestamp string `json:"__REALTIME_TIMESTAMP"` // microseconds since epoch
-	SyslogIdentifier string `json:"SYSLOG_IDENTIFIER"`
-	Unit             string `json:"_SYSTEMD_UNIT"`
-	Message          string `json:"MESSAGE"`
-	Priority         string `json:"PRIORITY"` // 0-7 syslog levels
-	PID              string `json:"_PID"`
-	BootID           string `json:"_BOOT_ID"`
+	SyslogIdentifier  string `json:"SYSLOG_IDENTIFIER"`
+	Unit              string `json:"_SYSTEMD_UNIT"`
+	Message           string `json:"MESSAGE"`
+	Priority          string `json:"PRIORITY"` // 0-7 syslog levels
+	PID               string `json:"_PID"`
+	BootID            string `json:"_BOOT_ID"`
 }
 
 // collectSecurityEvents gathers auth failures, sudo events, sshd events
@@ -116,14 +116,17 @@ func (c *EventLogCollector) collectSecurityEvents(since time.Time) ([]EventLogEn
 			Timestamp: parseJournalTimestamp(e.RealtimeTimestamp),
 			Level:     level,
 			Category:  "security",
-			Source:    e.SyslogIdentifier,
-			EventID:   fmt.Sprintf("%s:%s", e.SyslogIdentifier, e.PID),
+			Source:    truncateCollectorString(e.SyslogIdentifier),
+			EventID:   truncateCollectorString(fmt.Sprintf("%s:%s", e.SyslogIdentifier, e.PID)),
 			Message:   truncateString(e.Message, 500),
 			Details: map[string]any{
-				"unit": e.Unit,
-				"pid":  e.PID,
+				"unit": truncateCollectorString(e.Unit),
+				"pid":  truncateCollectorString(e.PID),
 			},
 		})
+		if len(results) >= collectorResultLimit {
+			break
+		}
 	}
 
 	return results, nil
@@ -156,12 +159,15 @@ func (c *EventLogCollector) collectKernelErrors(since time.Time) ([]EventLogEntr
 			Level:     level,
 			Category:  "hardware",
 			Source:    "kernel",
-			EventID:   fmt.Sprintf("kernel:%s", e.PID),
+			EventID:   truncateCollectorString(fmt.Sprintf("kernel:%s", e.PID)),
 			Message:   truncateString(e.Message, 500),
 			Details: map[string]any{
-				"pid": e.PID,
+				"pid": truncateCollectorString(e.PID),
 			},
 		})
+		if len(results) >= collectorResultLimit {
+			break
+		}
 	}
 
 	return results, nil
@@ -198,13 +204,16 @@ func (c *EventLogCollector) collectServiceFailures(since time.Time) ([]EventLogE
 			Level:     level,
 			Category:  "application",
 			Source:    source,
-			EventID:   fmt.Sprintf("%s:%s", source, e.PID),
+			EventID:   truncateCollectorString(fmt.Sprintf("%s:%s", source, e.PID)),
 			Message:   truncateString(e.Message, 500),
 			Details: map[string]any{
-				"unit": e.Unit,
-				"pid":  e.PID,
+				"unit": truncateCollectorString(e.Unit),
+				"pid":  truncateCollectorString(e.PID),
 			},
 		})
+		if len(results) >= collectorResultLimit {
+			break
+		}
 	}
 
 	return results, nil
@@ -245,13 +254,16 @@ func (c *EventLogCollector) collectSystemEvents(since time.Time) ([]EventLogEntr
 			Level:     level,
 			Category:  "system",
 			Source:    "systemd",
-			EventID:   fmt.Sprintf("systemd:%s:%s", e.BootID, e.PID),
+			EventID:   truncateCollectorString(fmt.Sprintf("systemd:%s:%s", e.BootID, e.PID)),
 			Message:   truncateString(e.Message, 500),
 			Details: map[string]any{
-				"unit":   e.Unit,
-				"bootId": e.BootID,
+				"unit":   truncateCollectorString(e.Unit),
+				"bootId": truncateCollectorString(e.BootID),
 			},
 		})
+		if len(results) >= collectorResultLimit {
+			break
+		}
 	}
 
 	return results, nil
@@ -269,8 +281,7 @@ func (c *EventLogCollector) queryJournal(since time.Time, matches ...string) ([]
 	}
 	args = append(args, matches...)
 
-	cmd := exec.Command("journalctl", args...)
-	output, err := cmd.Output()
+	output, err := runCollectorOutput(collectorLongCommandTimeout, "journalctl", args...)
 	if err != nil {
 		// journalctl returns exit code 1 when no entries match
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
@@ -283,21 +294,7 @@ func (c *EventLogCollector) queryJournal(since time.Time, matches ...string) ([]
 		return nil, nil
 	}
 
-	// journalctl --output=json outputs one JSON object per line (JSONL)
-	var entries []journalEntry
-	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var entry journalEntry
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			continue
-		}
-		entries = append(entries, entry)
-	}
-
-	return entries, nil
+	return parseJournalJSONLines(output), nil
 }
 
 // parseJournalTimestamp converts journalctl __REALTIME_TIMESTAMP (microseconds) to RFC3339
@@ -339,4 +336,30 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+func parseJournalJSONLines(output []byte) []journalEntry {
+	var entries []journalEntry
+	scanner := newCollectorScanner(output)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var entry journalEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		entry.SyslogIdentifier = truncateCollectorString(entry.SyslogIdentifier)
+		entry.Unit = truncateCollectorString(entry.Unit)
+		entry.Message = truncateString(entry.Message, 500)
+		entry.Priority = truncateCollectorString(entry.Priority)
+		entry.PID = truncateCollectorString(entry.PID)
+		entry.BootID = truncateCollectorString(entry.BootID)
+		entries = append(entries, entry)
+		if len(entries) >= collectorResultLimit {
+			break
+		}
+	}
+	return entries
 }

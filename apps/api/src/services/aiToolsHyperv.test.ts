@@ -20,6 +20,12 @@ vi.mock('./commandQueue', () => ({
   queueCommandForExecution: vi.fn(),
 }));
 
+const resolveBackupConfigForDeviceMock = vi.fn();
+vi.mock('./featureConfigResolver', () => ({
+  resolveBackupConfigForDevice: (...args: unknown[]) =>
+    resolveBackupConfigForDeviceMock(...(args as [])),
+}));
+
 import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -94,6 +100,10 @@ function setDefaultDbMocks() {
   vi.mocked(db.insert).mockImplementation(() => createInsertChain([]) as any);
   vi.mocked(db.update).mockImplementation(() => createUpdateChain([]) as any);
   vi.mocked(db.delete).mockImplementation(() => createDeleteChain([]) as any);
+  resolveBackupConfigForDeviceMock.mockResolvedValue({
+    configId: '44444444-4444-4444-8444-444444444444',
+    featureLinkId: '55555555-5555-4555-8555-555555555555',
+  });
   vi.mocked(queueCommandForExecution).mockResolvedValue({
     command: { id: 'cmd-1', status: 'queued' },
     error: null,
@@ -156,11 +166,19 @@ function prepareHandlerMocks(toolName: string) {
       break;
     case 'manage_hyperv_vm':
     case 'trigger_hyperv_backup':
+      mockSelectSequence([[vmRow]]);
+      vi.mocked(db.insert).mockImplementationOnce(() =>
+        createInsertChain([{ id: 'backup-job-1' }]) as any
+      );
+      break;
     case 'manage_hyperv_checkpoints':
       mockSelectSequence([[vmRow]]);
       break;
     case 'restore_hyperv_vm':
-      mockSelectSequence([[{ id: DEVICE_ID }]]);
+      mockSelectSequence([
+        [{ id: DEVICE_ID }],
+        [{ id: '66666666-6666-4666-8666-666666666666', providerSnapshotId: 'hyperv-accounting-1', metadata: { backupKind: 'hyperv_export' } }],
+      ]);
       break;
     default:
       mockSelectSequence([[]]);
@@ -189,8 +207,8 @@ describe('registerHypervTools', () => {
     ['query_hyperv_vms', { deviceId: DEVICE_ID, state: 'running', limit: 10 }],
     ['get_hyperv_vm_details', { vmId: VM_ID }],
     ['manage_hyperv_vm', { vmId: VM_ID, action: 'start' }],
-    ['trigger_hyperv_backup', { vmId: VM_ID, exportPath: '/tmp/hyperv-export', consistencyType: 'application' }],
-    ['restore_hyperv_vm', { deviceId: DEVICE_ID, exportPath: '/tmp/hyperv-export', vmName: 'Recovered VM' }],
+    ['trigger_hyperv_backup', { vmId: VM_ID, consistencyType: 'application' }],
+    ['restore_hyperv_vm', { deviceId: DEVICE_ID, snapshotId: '66666666-6666-4666-8666-666666666666', vmName: 'Recovered VM' }],
     ['manage_hyperv_checkpoints', { vmId: VM_ID, action: 'create', checkpointName: 'prepatch' }],
   ])('accepts valid input for %s', (toolName, input) => {
     expect(validateToolInput(toolName, input as Record<string, unknown>)).toEqual({ success: true });
@@ -200,7 +218,7 @@ describe('registerHypervTools', () => {
     ['query_hyperv_vms', { deviceId: 'not-a-uuid' }],
     ['get_hyperv_vm_details', {}],
     ['manage_hyperv_vm', { vmId: VM_ID }],
-    ['trigger_hyperv_backup', { vmId: VM_ID }],
+    ['trigger_hyperv_backup', {}],
     ['restore_hyperv_vm', { deviceId: DEVICE_ID }],
     ['manage_hyperv_checkpoints', { vmId: VM_ID }],
   ])('rejects invalid input for %s', (toolName, input) => {
@@ -222,8 +240,8 @@ describe('aiToolsHyperv handlers', () => {
     ['query_hyperv_vms', {}],
     ['get_hyperv_vm_details', { vmId: VM_ID }],
     ['manage_hyperv_vm', { vmId: VM_ID, action: 'start' }],
-    ['trigger_hyperv_backup', { vmId: VM_ID, exportPath: '/tmp/hyperv-export' }],
-    ['restore_hyperv_vm', { deviceId: DEVICE_ID, exportPath: '/tmp/hyperv-export' }],
+    ['trigger_hyperv_backup', { vmId: VM_ID }],
+    ['restore_hyperv_vm', { deviceId: DEVICE_ID, snapshotId: '66666666-6666-4666-8666-666666666666' }],
     ['manage_hyperv_checkpoints', { vmId: VM_ID, action: 'create', checkpointName: 'prepatch' }],
   ])('%s handler returns a JSON string', async (toolName, input) => {
     prepareHandlerMocks(toolName);
@@ -250,5 +268,51 @@ describe('aiToolsHyperv handlers', () => {
     const parsed = JSON.parse(result);
 
     expect(parsed).toEqual({ error: 'Operation failed. Check server logs for details.' });
+  });
+
+  it('queues VM state commands with targetState for the agent', async () => {
+    prepareHandlerMocks('manage_hyperv_vm');
+
+    await toolMap.get('manage_hyperv_vm')!.handler({ vmId: VM_ID, action: 'start' }, makeAuth());
+
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      DEVICE_ID,
+      'hyperv_vm_state',
+      { vmName: 'Accounting VM', targetState: 'start' },
+      expect.objectContaining({ userId: 'user-1' })
+    );
+  });
+
+  it('queues Hyper-V backups without a local export path', async () => {
+    prepareHandlerMocks('trigger_hyperv_backup');
+
+    await toolMap.get('trigger_hyperv_backup')!.handler({ vmId: VM_ID, consistencyType: 'crash' }, makeAuth());
+
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      DEVICE_ID,
+      'hyperv_backup',
+      { backupJobId: 'backup-job-1', vmName: 'Accounting VM', consistencyType: 'crash' },
+      expect.objectContaining({ userId: 'user-1' })
+    );
+  });
+
+  it('queues Hyper-V restore commands using snapshotId', async () => {
+    prepareHandlerMocks('restore_hyperv_vm');
+
+    await toolMap.get('restore_hyperv_vm')!.handler(
+      { deviceId: DEVICE_ID, snapshotId: '66666666-6666-4666-8666-666666666666', vmName: 'Recovered VM' },
+      makeAuth()
+    );
+
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      DEVICE_ID,
+      'hyperv_restore',
+      {
+        snapshotId: 'hyperv-accounting-1',
+        vmName: 'Recovered VM',
+        generateNewId: true,
+      },
+      expect.objectContaining({ userId: 'user-1' })
+    );
   });
 });

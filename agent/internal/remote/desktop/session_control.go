@@ -292,7 +292,7 @@ func (s *Session) handleControlMessage(data []byte) {
 			return
 		}
 		slog.Info("Switching monitor", "session", s.id, "display", msg.Value)
-		cfg := DefaultConfig()
+		cfg := s.captureConfig
 		cfg.DisplayIndex = msg.Value
 		newCap, capErr := NewScreenCapturer(cfg)
 		if capErr != nil {
@@ -311,6 +311,7 @@ func (s *Session) handleControlMessage(data []byte) {
 		s.oldCapturers = append(s.oldCapturers, s.capturer)
 		s.capturer = newCap
 		s.displayIndex = msg.Value
+		s.captureConfig = cfg
 		s.mu.Unlock()
 		s.capturerSwapped.Store(true)
 		applyDisplayOffset(s.inputHandler, msg.Value, &s.cursorOffsetX, &s.cursorOffsetY)

@@ -130,8 +130,10 @@ export default function C2CRestoreDialog({
     () => connections.filter((connection) => connection.status === 'active'),
     [connections]
   );
+  const restoreAvailable = false;
 
   const canSubmit =
+    restoreAvailable &&
     selectedIds.size > 0 &&
     (targetMode === 'original' || (targetMode === 'alternate' && !!targetConnectionId));
 
@@ -180,7 +182,7 @@ export default function C2CRestoreDialog({
         <div>
           <h2 className="text-lg font-semibold text-foreground">Restore Cloud Items</h2>
           <p className="text-sm text-muted-foreground">
-            Search backed-up items, pick what to restore, and choose the destination.
+            Search backed-up items now; restore execution is not yet implemented.
           </p>
         </div>
         <button type="button" onClick={onClose} className="rounded-md p-1 hover:bg-muted">
@@ -432,7 +434,7 @@ export default function C2CRestoreDialog({
 
       <div className="flex items-center justify-between border-t px-6 py-4">
         <p className="text-xs text-muted-foreground">
-          Restore jobs are queued asynchronously and will appear in cloud backup job history.
+          Restore submission is disabled until cloud-to-cloud restore execution is implemented.
         </p>
         <div className="flex gap-3">
           <button
@@ -450,7 +452,7 @@ export default function C2CRestoreDialog({
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
           >
             {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Undo2 className="h-4 w-4" />}
-            Restore selected
+            Restore coming soon
           </button>
         </div>
       </div>

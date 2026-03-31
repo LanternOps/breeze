@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,6 +50,9 @@ var (
 // a response to a pending command.
 type MessageHandler func(session *Session, env *ipc.Envelope)
 
+// SessionClosedHandler is called after a helper session has been removed.
+type SessionClosedHandler func(session *Session)
+
 // Broker manages IPC connections from user helper processes.
 type Broker struct {
 	socketPath  string
@@ -62,8 +66,9 @@ type Broker struct {
 	backup       *backupHelper         // backup helper process and session
 	closed       bool
 
-	onMessage MessageHandler
-	selfHash  string // SHA-256 of our own binary
+	onMessage       MessageHandler
+	onSessionClosed SessionClosedHandler
+	selfHashes      map[string]struct{} // SHA-256 of allowed helper binaries
 }
 
 // New creates a new session broker.
@@ -76,8 +81,14 @@ func New(socketPath string, onMessage MessageHandler) *Broker {
 		staleHelpers: make(map[string][]int),
 		onMessage:    onMessage,
 	}
-	b.selfHash = b.computeSelfHash()
+	b.selfHashes = b.computeAllowedHashes()
 	return b
+}
+
+func (b *Broker) SetSessionClosedHandler(handler SessionClosedHandler) {
+	b.mu.Lock()
+	b.onSessionClosed = handler
+	b.mu.Unlock()
 }
 
 // Listen starts the IPC listener. Blocks until stopChan is closed.
@@ -255,6 +266,28 @@ func (b *Broker) PreferredSessionWithScope(scope string) *Session {
 	return best
 }
 
+func (b *Broker) PreferredDesktopSession() *Session {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.preferredDesktopSessionLocked()
+}
+
+func (b *Broker) preferredDesktopSessionLocked() *Session {
+	var best *Session
+	for _, s := range b.sessions {
+		if !s.HasScope("desktop") {
+			continue
+		}
+		if s.Capabilities == nil || !s.Capabilities.CanCapture {
+			continue
+		}
+		if best == nil || betterDesktopSession(s, best) {
+			best = s
+		}
+	}
+	return best
+}
+
 // TCCStatus returns the TCC permission status from the first connected helper
 // session that has reported one, or nil if none have. In practice, only one
 // macOS helper per user reports TCC status. Returns a copy to prevent mutation
@@ -262,6 +295,24 @@ func (b *Broker) PreferredSessionWithScope(scope string) *Session {
 func (b *Broker) TCCStatus() *ipc.TCCStatus {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
+
+	if preferred := b.preferredDesktopSessionLocked(); preferred != nil {
+		if tcc := preferred.GetTCCStatus(); tcc != nil {
+			cp := *tcc
+			return &cp
+		}
+	}
+
+	for _, s := range b.sessions {
+		if !s.HasScope("desktop") {
+			continue
+		}
+		if tcc := s.GetTCCStatus(); tcc != nil {
+			cp := *tcc
+			return &cp
+		}
+	}
+
 	for _, s := range b.sessions {
 		if tcc := s.GetTCCStatus(); tcc != nil {
 			cp := *tcc
@@ -634,23 +685,23 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		}
 	}
 
-	// Step 8: Verify binary hash — reject ALL helpers if our own hash is unavailable
-	if b.selfHash == "" {
-		log.Error("rejecting helper connection: agent binary hash unavailable — cannot verify helper integrity",
+	// Step 8: Verify binary hash — reject helpers if no allowed helper hash could be loaded.
+	if len(b.selfHashes) == 0 {
+		log.Error("rejecting helper connection: helper binary hash allowlist unavailable",
 			"identity", identityKey,
 			"pid", creds.PID,
 		)
 		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
 			Accepted: false,
-			Reason:   "agent binary hash unavailable",
+			Reason:   "helper binary hash allowlist unavailable",
 		})
 		conn.Close()
 		return
 	}
-	if authReq.BinaryHash != b.selfHash {
+	if !b.isAllowedBinaryHash(authReq.BinaryHash) {
 		log.Warn("binary hash mismatch",
 			"identity", identityKey,
-			"expected", b.selfHash,
+			"expected", "allowed-helper-binary",
 			"got", authReq.BinaryHash,
 		)
 		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
@@ -751,6 +802,11 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	session := NewSession(conn, creds.UID, identityKey, authReq.Username, authReq.DisplayEnv, authReq.SessionID, scopes)
 	session.PID = int(creds.PID)
 	session.HelperRole = helperRole
+	session.BinaryKind = authReq.BinaryKind
+	if session.BinaryKind == "" {
+		session.BinaryKind = ipc.HelperBinaryUserHelper
+	}
+	session.DesktopContext = authReq.DesktopContext
 
 	// Use kernel-verified Windows session ID (from peer PID) instead of
 	// trusting the self-reported value, preventing session-jumping attacks.
@@ -787,6 +843,8 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		"display", authReq.DisplayEnv,
 		"pid", creds.PID,
 		"role", helperRole,
+		"binaryKind", session.BinaryKind,
+		"desktopContext", session.DesktopContext,
 	)
 
 	// Start receive loop — blocks until disconnect
@@ -802,14 +860,14 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 			if err := json.Unmarshal(env.Payload, &caps); err != nil {
 				log.Warn("invalid capabilities payload", "uid", s.UID, "error", err.Error())
 			} else {
-				s.SetCapabilities(&caps)
+				s.SetCapabilities(sanitizeCapabilitiesForSession(s, &caps))
 				log.Info("capabilities received",
 					"uid", s.UID,
-					"canNotify", caps.CanNotify,
-					"canTray", caps.CanTray,
-					"canCapture", caps.CanCapture,
-					"canClipboard", caps.CanClipboard,
-					"displayServer", caps.DisplayServer,
+					"canNotify", s.Capabilities.CanNotify,
+					"canTray", s.Capabilities.CanTray,
+					"canCapture", s.Capabilities.CanCapture,
+					"canClipboard", s.Capabilities.CanClipboard,
+					"displayServer", s.Capabilities.DisplayServer,
 				)
 			}
 		case ipc.TypeTCCStatus:
@@ -817,12 +875,19 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 			if err := json.Unmarshal(env.Payload, &status); err != nil {
 				log.Warn("invalid tcc_status payload", "uid", s.UID, "error", err.Error())
 			} else {
-				s.SetTCCStatus(&status)
+				sanitized := sanitizeTCCStatusForSession(s, &status)
+				if sanitized == nil {
+					log.Warn("dropping unauthorized tcc_status message",
+						"sessionId", s.SessionID, "role", s.HelperRole)
+					return
+				}
+				s.SetTCCStatus(sanitized)
 				log.Info("TCC permissions received",
 					"uid", s.UID,
-					"screenRecording", status.ScreenRecording,
-					"accessibility", status.Accessibility,
-					"fullDiskAccess", status.FullDiskAccess,
+					"screenRecording", sanitized.ScreenRecording,
+					"accessibility", sanitized.Accessibility,
+					"fullDiskAccess", sanitized.FullDiskAccess,
+					"remoteDesktop", sanitized.RemoteDesktop,
 				)
 			}
 		case ipc.TypeDisconnect:
@@ -862,8 +927,6 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 
 func (b *Broker) removeSession(session *Session) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-
 	delete(b.sessions, session.SessionID)
 
 	key := session.IdentityKey
@@ -884,6 +947,12 @@ func (b *Broker) removeSession(session *Session) {
 	if session.PID > 0 {
 		staleKey := session.WinSessionID + "-" + session.HelperRole
 		b.trackStaleHelper(staleKey, session.PID)
+	}
+	onSessionClosed := b.onSessionClosed
+	b.mu.Unlock()
+
+	if onSessionClosed != nil {
+		onSessionClosed(session)
 	}
 }
 
@@ -918,40 +987,77 @@ func (b *Broker) KillStaleHelpers(winSessionID string) {
 // setupSocket is implemented in broker_windows.go and broker_unix.go.
 
 func (b *Broker) verifyBinaryPath(peerPath string) bool {
-	expected, err := os.Executable()
-	if err != nil {
-		log.Warn("failed to get own executable path", "error", err.Error())
-		return false
-	}
-	expected, err = filepath.EvalSymlinks(expected)
-	if err != nil {
-		log.Warn("failed to resolve symlinks for own path", "error", err.Error())
-		return false
-	}
 	peerResolved, err := filepath.EvalSymlinks(peerPath)
 	if err != nil {
 		// Peer path might not be resolvable if the process has exited
 		peerResolved = peerPath
 	}
-	return filepath.Clean(expected) == filepath.Clean(peerResolved)
+	peerResolved = filepath.Clean(peerResolved)
+	for _, candidate := range b.allowedHelperPaths() {
+		if filepath.Clean(candidate) == peerResolved {
+			return true
+		}
+	}
+	return false
 }
 
-func (b *Broker) computeSelfHash() string {
+func (b *Broker) allowedHelperPaths() []string {
 	exePath, err := os.Executable()
 	if err != nil {
-		log.Warn("failed to get executable path for hash", "error", err.Error())
-		return ""
+		log.Warn("failed to get executable path, using hardcoded helper paths", "error", err.Error())
+		return []string{
+			"/usr/local/bin/breeze-agent",
+			"/usr/local/bin/breeze-desktop-helper",
+		}
 	}
 	exePath, err = filepath.EvalSymlinks(exePath)
 	if err != nil {
-		return ""
+		exePath = filepath.Clean(exePath)
 	}
-	sum, err := hashFileSHA256(exePath)
-	if err != nil {
-		log.Warn("failed to read executable for hash", "error", err.Error())
-		return ""
+	paths := []string{
+		exePath,
+		filepath.Join(filepath.Dir(exePath), "breeze-desktop-helper"),
+		"/usr/local/bin/breeze-agent",
+		"/usr/local/bin/breeze-desktop-helper",
 	}
-	return sum
+	seen := make(map[string]struct{}, len(paths))
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		clean := filepath.Clean(path)
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		out = append(out, clean)
+	}
+	return out
+}
+
+func (b *Broker) computeAllowedHashes() map[string]struct{} {
+	hashes := make(map[string]struct{})
+	for _, path := range b.allowedHelperPaths() {
+		sum, err := hashFileSHA256(path)
+		if err != nil {
+			log.Warn("failed to hash allowed helper binary", "path", path, "error", err.Error())
+			continue
+		}
+		hashes[sum] = struct{}{}
+	}
+	if len(hashes) == 0 {
+		log.Error("no valid helper binary hashes could be computed; all helper connections will be rejected")
+	}
+	return hashes
+}
+
+func (b *Broker) isAllowedBinaryHash(hash string) bool {
+	if hash == "" {
+		return false
+	}
+	_, ok := b.selfHashes[hash]
+	return ok
 }
 
 func hashFileSHA256(path string) (string, error) {
@@ -1031,6 +1137,34 @@ func betterSession(candidate, current *Session) bool {
 	return candidate.SessionID < current.SessionID
 }
 
+func betterDesktopSession(candidate, current *Session) bool {
+	if candidate == nil {
+		return false
+	}
+	if current == nil {
+		return true
+	}
+	if candidate.BinaryKind == ipc.HelperBinaryDesktopHelper && current.BinaryKind != ipc.HelperBinaryDesktopHelper {
+		return true
+	}
+	if candidate.BinaryKind != ipc.HelperBinaryDesktopHelper && current.BinaryKind == ipc.HelperBinaryDesktopHelper {
+		return false
+	}
+	if candidate.DesktopContext == ipc.DesktopContextUserSession && current.DesktopContext != ipc.DesktopContextUserSession {
+		return true
+	}
+	if candidate.DesktopContext != ipc.DesktopContextUserSession && current.DesktopContext == ipc.DesktopContextUserSession {
+		return false
+	}
+	if candidate.DesktopContext == ipc.DesktopContextLoginWindow && current.DesktopContext == "" {
+		return true
+	}
+	if candidate.DesktopContext == "" && current.DesktopContext == ipc.DesktopContextLoginWindow {
+		return false
+	}
+	return betterSession(candidate, current)
+}
+
 func shouldForwardUnsolicitedHelperMessage(session *Session, env *ipc.Envelope) bool {
 	switch env.Type {
 	case backupipc.TypeBackupResult, backupipc.TypeBackupProgress, backupipc.TypeBackupReady:
@@ -1044,4 +1178,47 @@ func shouldForwardUnsolicitedHelperMessage(session *Session, env *ipc.Envelope) 
 	default:
 		return false
 	}
+}
+
+func sanitizeCapabilitiesForSession(session *Session, caps *ipc.Capabilities) *ipc.Capabilities {
+	if caps == nil {
+		return nil
+	}
+	sanitized := *caps
+	sanitized.DisplayServer = truncateSessionString(sanitized.DisplayServer, 64)
+	if session == nil {
+		return &sanitized
+	}
+	if !session.HasScope("notify") {
+		sanitized.CanNotify = false
+	}
+	if !session.HasScope("tray") {
+		sanitized.CanTray = false
+	}
+	if !session.HasScope("desktop") {
+		sanitized.CanCapture = false
+	}
+	if !session.HasScope("clipboard") {
+		sanitized.CanClipboard = false
+	}
+	return &sanitized
+}
+
+func sanitizeTCCStatusForSession(session *Session, status *ipc.TCCStatus) *ipc.TCCStatus {
+	if status == nil {
+		return nil
+	}
+	if session != nil && !session.HasScope("desktop") {
+		return nil
+	}
+	sanitized := *status
+	return &sanitized
+}
+
+func truncateSessionString(value string, max int) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= max {
+		return value
+	}
+	return strings.TrimSpace(value[:max]) + "... [truncated]"
 }

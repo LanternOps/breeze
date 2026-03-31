@@ -2,6 +2,10 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { eq, and } from 'drizzle-orm';
+import { randomUUID } from 'crypto';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { DeleteObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { db } from '../../db';
 import { backupConfigs } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
@@ -13,6 +17,52 @@ import { configSchema, configUpdateSchema } from './schemas';
 export const configsRoutes = new Hono();
 
 const configIdParamSchema = z.object({ id: z.string().uuid() });
+
+async function probeLocalConfig(details: Record<string, unknown>): Promise<void> {
+  const rootPath = typeof details.path === 'string' ? details.path : '';
+  if (!rootPath.trim()) {
+    throw new Error('Local backup path is not configured');
+  }
+
+  await mkdir(rootPath, { recursive: true });
+  const probePath = join(rootPath, `.breeze-probe-${randomUUID()}`);
+  await writeFile(probePath, 'breeze-backup-probe');
+  await rm(probePath, { force: true });
+}
+
+async function probeS3Config(details: Record<string, unknown>): Promise<void> {
+  const bucket = typeof details.bucket === 'string' ? details.bucket : '';
+  const region = typeof details.region === 'string' ? details.region : 'us-east-1';
+  const accessKeyId = typeof details.accessKey === 'string' ? details.accessKey : '';
+  const secretAccessKey = typeof details.secretKey === 'string' ? details.secretKey : '';
+  const endpoint = typeof details.endpoint === 'string' ? details.endpoint : undefined;
+  const prefix = typeof details.prefix === 'string' ? details.prefix.replace(/\/+$/, '') : '';
+
+  if (!bucket.trim() || !accessKeyId.trim() || !secretAccessKey.trim()) {
+    throw new Error('S3 bucket and credentials are required');
+  }
+
+  const client = new S3Client({
+    region,
+    endpoint,
+    forcePathStyle: Boolean(endpoint),
+    credentials: {
+      accessKeyId,
+      secretAccessKey,
+    },
+  });
+
+  const key = `${prefix ? `${prefix}/` : ''}.breeze-probe-${randomUUID()}`;
+  await client.send(new PutObjectCommand({
+    Bucket: bucket,
+    Key: key,
+    Body: 'breeze-backup-probe',
+  }));
+  await client.send(new DeleteObjectCommand({
+    Bucket: bucket,
+    Key: key,
+  }));
+}
 
 configsRoutes.get('/configs', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
@@ -209,6 +259,31 @@ configsRoutes.post(
     resourceId: row.id,
     resourceName: row.name,
   });
+
+  try {
+    const details = (row.providerConfig ?? {}) as Record<string, unknown>;
+    if (row.provider === 'local') {
+      await probeLocalConfig(details);
+    } else if (row.provider === 's3') {
+      await probeS3Config(details);
+    } else {
+      return c.json({
+        id: row.id,
+        provider: row.provider,
+        status: 'unsupported',
+        checkedAt,
+        error: `Connection testing is not implemented for provider ${row.provider}`,
+      }, 400);
+    }
+  } catch (error) {
+    return c.json({
+      id: row.id,
+      provider: row.provider,
+      status: 'failed',
+      checkedAt,
+      error: error instanceof Error ? error.message : 'Connection test failed',
+    }, 400);
+  }
 
   return c.json({
     id: row.id,

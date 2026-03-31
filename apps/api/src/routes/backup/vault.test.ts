@@ -74,6 +74,8 @@ vi.mock('../../middleware/auth', () => ({
     c.set('auth', authState);
     return next();
   }),
+  requirePermission: vi.fn(() => (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => (_c: any, next: any) => next()),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
 }));
 

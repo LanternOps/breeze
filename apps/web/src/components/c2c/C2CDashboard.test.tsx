@@ -44,7 +44,7 @@ describe('C2CDashboard', () => {
     await screen.findByText('Cloud-to-Cloud Backup');
     expect(
       screen.getByText(
-        /Cloud-to-cloud backup for Microsoft 365 and Google Workspace is in early access/i
+        /Cloud-to-cloud backup is in early access/i
       )
     ).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Add Connection' })).toBeTruthy();

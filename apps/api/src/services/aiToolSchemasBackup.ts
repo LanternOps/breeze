@@ -95,30 +95,19 @@ export const backupToolSchemas: Record<string, z.ZodType> = {
     instance: z.string().min(1).max(256).regex(/^[a-zA-Z0-9_\-. ]+$/),
     database: z.string().min(1).max(256).regex(/^[a-zA-Z0-9_\-. ]+$/),
     backupType: z.enum(['full', 'differential', 'log']).optional(),
-    outputPath: backupPath,
-    configId: uuid.optional(),
   }),
 
   restore_mssql_database: z.object({
     deviceId: uuid,
-    instance: z.string().min(1).max(256).regex(/^[a-zA-Z0-9_\-. ]+$/),
-    backupFile: backupPath,
+    snapshotId: uuid,
+    instance: z.string().min(1).max(256).regex(/^[a-zA-Z0-9_\-. ]+$/).optional(),
     targetDatabase: z.string().min(1).max(256).regex(/^[a-zA-Z0-9_\-. ]+$/),
     noRecovery: z.boolean().optional(),
   }),
 
   verify_mssql_backup: z.object({
-    snapshotId: uuid.optional(),
-    deviceId: uuid.optional(),
+    snapshotId: uuid,
     instance: z.string().min(1).max(256).regex(/^[a-zA-Z0-9_\-. ]+$/).optional(),
-    backupFile: backupPath.optional(),
-  }).superRefine((data, ctx) => {
-    if (!data.snapshotId && !(data.deviceId && data.instance && data.backupFile)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Provide snapshotId or deviceId, instance, and backupFile',
-      });
-    }
   }),
 
   query_hyperv_vms: z.object({
@@ -138,13 +127,12 @@ export const backupToolSchemas: Record<string, z.ZodType> = {
 
   trigger_hyperv_backup: z.object({
     vmId: uuid,
-    exportPath: backupPath,
     consistencyType: z.enum(['application', 'crash']).optional(),
   }),
 
   restore_hyperv_vm: z.object({
     deviceId: uuid,
-    exportPath: backupPath,
+    snapshotId: uuid,
     vmName: z.string().min(1).max(256).optional(),
     generateNewId: z.boolean().optional(),
   }),
@@ -332,8 +320,7 @@ export const backupToolSchemas: Record<string, z.ZodType> = {
     deviceId: backupEntityId,
     backupJobId: backupEntityId.optional(),
     snapshotId: backupEntityId.optional(),
-    verificationType: z.enum(['integrity', 'test_restore', 'full_recovery']).optional(),
-    highImpactApproved: z.boolean().optional(),
+    verificationType: z.enum(['integrity', 'test_restore']).optional(),
   }),
 
   get_recovery_readiness: z.object({

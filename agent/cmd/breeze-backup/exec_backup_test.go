@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup"
+	"github.com/breeze-rmm/agent/internal/backup/bmr"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -23,7 +24,7 @@ func TestExecBackupRestoreWithProgressNilManager(t *testing.T) {
 		t.Fatalf("marshal payload: %v", err)
 	}
 
-	result := execBackupRestoreWithProgress("", payload, nil, nil)
+	result := execBackupRestoreWithProgress("", payload, nil, nil, nil)
 	if result.Success {
 		t.Fatal("expected restore to fail without a configured backup manager")
 	}
@@ -108,7 +109,7 @@ func TestExecBackupRestoreWithProgressUsesWrapperCommandID(t *testing.T) {
 		t.Fatalf("marshal payload: %v", err)
 	}
 
-	result := execBackupRestoreWithProgress("wrapper-cmd-1", payload, mgr, serverIPC)
+	result := execBackupRestoreWithProgress("wrapper-cmd-1", payload, mgr, nil, serverIPC)
 	if !result.Success {
 		t.Fatalf("expected restore to succeed, got stderr %q", result.Stderr)
 	}
@@ -120,5 +121,56 @@ func TestExecBackupRestoreWithProgressUsesWrapperCommandID(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for restore progress")
+	}
+}
+
+func TestExecBMRRecoverRequiresTokenAndServer(t *testing.T) {
+	payload, err := json.Marshal(map[string]any{
+		"snapshotId": "snap-1",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result := execBMRRecover(payload, nil)
+	if result.Success {
+		t.Fatal("expected BMR recovery to fail without token/server")
+	}
+	if result.Stderr != "bmr recovery requires recoveryToken and serverUrl" {
+		t.Fatalf("unexpected stderr: %q", result.Stderr)
+	}
+}
+
+func TestExecBMRRecoverUsesTokenDrivenRunner(t *testing.T) {
+	origRunner := runBMRRecovery
+	defer func() { runBMRRecovery = origRunner }()
+
+	var gotCfg any
+	runBMRRecovery = func(cfg bmr.RecoveryConfig) (*bmr.RecoveryResult, error) {
+		gotCfg = cfg
+		return &bmr.RecoveryResult{Status: "completed"}, nil
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"recoveryToken": "brz_rec_test",
+		"serverUrl":     "https://api.example.com",
+		"targetPaths": map[string]string{
+			"/src": "/dst",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result := execBMRRecover(payload, nil)
+	if !result.Success {
+		t.Fatalf("expected BMR recovery to succeed, got stderr %q", result.Stderr)
+	}
+	cfg, ok := gotCfg.(bmr.RecoveryConfig)
+	if !ok {
+		t.Fatalf("runner did not receive RecoveryConfig, got %T", gotCfg)
+	}
+	if cfg.RecoveryToken != "brz_rec_test" || cfg.ServerURL != "https://api.example.com" {
+		t.Fatalf("runner cfg = %+v", cfg)
 	}
 }

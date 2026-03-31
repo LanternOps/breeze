@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { eq, and, desc } from 'drizzle-orm';
 import { db } from '../../db';
-import { backupSnapshots } from '../../db/schema';
+import { backupSnapshotFiles, backupSnapshots } from '../../db/schema';
 import { requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
@@ -13,6 +13,73 @@ import type { SnapshotTreeItem } from './types';
 export const snapshotsRoutes = new Hono();
 
 const snapshotIdParamSchema = z.object({ id: z.string().uuid() });
+
+type SnapshotFileRow = {
+  sourcePath: string;
+  size: number | null;
+  modifiedAt: Date | null;
+};
+
+function normalizeSourcePath(value: string): string {
+  return value.replaceAll('\\', '/');
+}
+
+function buildSnapshotTree(files: SnapshotFileRow[]): SnapshotTreeItem[] {
+  const root: SnapshotTreeItem[] = [];
+
+  const ensureDirectory = (container: SnapshotTreeItem[], name: string, path: string): SnapshotTreeItem => {
+    const existing = container.find((entry) => entry.type === 'directory' && entry.path === path);
+    if (existing) return existing;
+    const next: SnapshotTreeItem = { name, path, type: 'directory', children: [] };
+    container.push(next);
+    return next;
+  };
+
+  for (const file of files) {
+    const normalizedPath = normalizeSourcePath(file.sourcePath);
+    const parts = normalizedPath.split('/').filter(Boolean);
+    if (parts.length === 0) continue;
+
+    let currentLevel = root;
+    let currentPath = '';
+    for (let index = 0; index < parts.length; index += 1) {
+      const part = parts[index]!;
+      currentPath = `${currentPath}/${part}`.replace('//', '/');
+      const isLeaf = index === parts.length - 1;
+
+      if (isLeaf) {
+        const existingLeafIndex = currentLevel.findIndex((entry) => entry.type === 'file' && entry.path === normalizedPath);
+        const nextLeaf: SnapshotTreeItem = {
+          name: part,
+          path: normalizedPath,
+          type: 'file',
+          sizeBytes: file.size ?? undefined,
+          modifiedAt: file.modifiedAt?.toISOString(),
+        };
+        if (existingLeafIndex >= 0) currentLevel[existingLeafIndex] = nextLeaf;
+        else currentLevel.push(nextLeaf);
+        continue;
+      }
+
+      const directory = ensureDirectory(currentLevel, part, currentPath);
+      directory.children = directory.children ?? [];
+      currentLevel = directory.children;
+    }
+  }
+
+  const sortNodes = (nodes: SnapshotTreeItem[]): SnapshotTreeItem[] =>
+    nodes
+      .map((node) => ({
+        ...node,
+        children: node.children ? sortNodes(node.children) : undefined,
+      }))
+      .sort((left, right) => {
+        if (left.type !== right.type) return left.type === 'directory' ? -1 : 1;
+        return left.name.localeCompare(right.name);
+      });
+
+  return sortNodes(root);
+}
 
 snapshotsRoutes.get(
   '/snapshots',
@@ -93,10 +160,22 @@ snapshotsRoutes.get('/snapshots/:id/browse', requirePermission(PERMISSIONS.ORGS_
     return c.json({ error: 'Snapshot not found' }, 404);
   }
 
-  const metadata = row.metadata as { files?: SnapshotTreeItem[] } | null;
+  const files = await db
+    .select({
+      sourcePath: backupSnapshotFiles.sourcePath,
+      size: backupSnapshotFiles.size,
+      modifiedAt: backupSnapshotFiles.modifiedAt,
+    })
+    .from(backupSnapshotFiles)
+    .where(eq(backupSnapshotFiles.snapshotDbId, row.id))
+    .orderBy(backupSnapshotFiles.sourcePath);
+
+  const tree = buildSnapshotTree(files);
+  const manifestUnavailable = files.length === 0 && (row.fileCount ?? 0) > 0;
   return c.json({
     snapshotId: row.id,
-    data: metadata?.files ?? [],
+    manifestUnavailable,
+    data: tree,
   });
 });
 

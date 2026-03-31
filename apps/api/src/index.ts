@@ -139,7 +139,11 @@ import { initializePeripheralJobs, shutdownPeripheralJobs } from './jobs/periphe
 import { initializeBrowserSecurityJobs, shutdownBrowserSecurityJobs } from './jobs/browserSecurityJobs';
 import { initializeC2cBackupWorker, shutdownC2cBackupWorker } from './jobs/c2cBackupWorker';
 import { initializeBackupSlaWorker, shutdownBackupSlaWorker } from './jobs/backupSlaWorker';
+import { initializeDrExecutionWorker, shutdownDrExecutionWorker } from './jobs/drExecutionWorker';
+import { initializeRecoveryMediaWorker, shutdownRecoveryMediaWorker } from './jobs/recoveryMediaWorker';
+import { initializeRecoveryBootMediaWorker, shutdownRecoveryBootMediaWorker } from './jobs/recoveryBootMediaWorker';
 import { initializeWarrantyWorker, shutdownWarrantyWorker } from './services/warrantyWorker';
+import { backfillC2cConnectionSecrets } from './services/c2cSecrets';
 import {
   initializeIncidentCorrelationWorker,
   shutdownIncidentCorrelationWorker,
@@ -925,6 +929,9 @@ async function initializeWorkers(): Promise<void> {
     ['browserSecurityWorker', initializeBrowserSecurityJobs],
     ['c2cBackupWorker', initializeC2cBackupWorker],
     ['backupSlaWorker', initializeBackupSlaWorker],
+    ['drExecutionWorker', initializeDrExecutionWorker],
+    ['recoveryMediaWorker', initializeRecoveryMediaWorker],
+    ['recoveryBootMediaWorker', initializeRecoveryBootMediaWorker],
     ['warrantyWorker', initializeWarrantyWorker],
     ['incidentCorrelationWorker', initializeIncidentCorrelationWorker],
     ['incidentTimelineEnricher', initializeIncidentTimelineEnricher],
@@ -1018,6 +1025,9 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownBackupWorker,
     shutdownC2cBackupWorker,
     shutdownBackupSlaWorker,
+    shutdownDrExecutionWorker,
+    shutdownRecoveryMediaWorker,
+    shutdownRecoveryBootMediaWorker,
     shutdownPatchSchedulerWorker,
     shutdownSensitiveDataWorkers,
     shutdownPeripheralJobs,
@@ -1151,6 +1161,17 @@ async function bootstrap(): Promise<void> {
     });
   } catch (err) {
     console.error('[startup] Failed to seed audit baseline templates:', err);
+  }
+
+  try {
+    await runWithSystemDbAccess(async () => {
+      const result = await backfillC2cConnectionSecrets();
+      if (result.updated > 0) {
+        console.log(`[startup] Encrypted C2C secrets for ${result.updated} connection(s)`);
+      }
+    });
+  } catch (err) {
+    console.error('[startup] Failed to backfill C2C connection secrets:', err);
   }
 
   // Register local agent binaries in DB and optionally sync to S3 (BINARY_SOURCE=local only)

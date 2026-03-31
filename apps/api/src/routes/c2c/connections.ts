@@ -6,6 +6,7 @@ import { c2cConnections } from '../../db/schema';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { captureException } from '../../services/sentry';
 import { ensureFreshToken } from '../../services/c2cM365';
+import { decryptSecret, encryptSecret } from '../../services/secretCrypto';
 import { createConnectionSchema, idParamSchema } from './schemas';
 import { resolveScopedOrgId, maskSecret } from './helpers';
 
@@ -76,7 +77,7 @@ connectionsRoutes.post(
         displayName: payload.displayName,
         tenantId: payload.tenantId ?? null,
         clientId: payload.clientId ?? null,
-        clientSecret: payload.clientSecret ?? null,
+        clientSecret: encryptSecret(payload.clientSecret),
         scopes: payload.scopes ?? null,
         status: 'active',
         createdAt: now,
@@ -160,7 +161,7 @@ connectionsRoutes.post(
       try {
         const tokenResult = await ensureFreshToken({
           tenantId: row.tenantId,
-          currentToken: row.accessToken,
+          currentToken: decryptSecret(row.accessToken),
           tokenExpiresAt: row.tokenExpiresAt,
         });
 
@@ -169,7 +170,7 @@ connectionsRoutes.post(
           const tokenExpiresAt = new Date(Date.now() + tokenResult.expiresIn * 1000);
           await db
             .update(c2cConnections)
-            .set({ accessToken: tokenResult.accessToken, tokenExpiresAt, updatedAt: new Date() })
+            .set({ accessToken: encryptSecret(tokenResult.accessToken), tokenExpiresAt, updatedAt: new Date() })
             .where(and(eq(c2cConnections.id, row.id), eq(c2cConnections.orgId, orgId)));
 
           testStatus = 'success';

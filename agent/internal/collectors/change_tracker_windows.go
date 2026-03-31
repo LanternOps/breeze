@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
 )
 
@@ -47,7 +46,10 @@ func (c *ChangeTrackerCollector) collectStartupItems(_ context.Context) ([]Track
 				continue
 			}
 			seen[key] = struct{}{}
-			items = append(items, tracked)
+			items = append(items, sanitizeTrackedStartupItem(tracked))
+			if len(items) >= collectorResultLimit {
+				break
+			}
 		}
 	}
 
@@ -67,7 +69,10 @@ func (c *ChangeTrackerCollector) collectStartupItems(_ context.Context) ([]Track
 				continue
 			}
 			seen[key] = struct{}{}
-			items = append(items, tracked)
+			items = append(items, sanitizeTrackedStartupItem(tracked))
+			if len(items) >= collectorResultLimit {
+				break
+			}
 		}
 	}
 
@@ -117,6 +122,10 @@ $tasks | ConvertTo-Json -Compress -Depth 4
 			Schedule: strings.TrimSpace(row.Schedule),
 			Command:  strings.TrimSpace(row.Command),
 		})
+		tasks[len(tasks)-1] = sanitizeTrackedScheduledTask(tasks[len(tasks)-1])
+		if len(tasks) >= collectorResultLimit {
+			break
+		}
 	}
 
 	return tasks, nil
@@ -146,13 +155,16 @@ Get-CimInstance Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction Silen
 			Disabled: row.Disabled,
 			Locked:   row.Lockout,
 		})
+		users[len(users)-1] = sanitizeTrackedUserAccount(users[len(users)-1])
+		if len(users) >= collectorResultLimit {
+			break
+		}
 	}
 	return users, nil
 }
 
 func runWindowsJSON[T any](ctx context.Context, script string) ([]T, error) {
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
-	output, err := cmd.Output()
+	output, err := runCollectorOutputWithContext(ctx, collectorLongCommandTimeout, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
 	if err != nil {
 		return nil, fmt.Errorf("powershell execution failed: %w", err)
 	}
@@ -171,4 +183,26 @@ func runWindowsJSON[T any](ctx context.Context, script string) ([]T, error) {
 		rows = []T{single}
 	}
 	return rows, nil
+}
+
+func sanitizeTrackedStartupItem(item TrackedStartupItem) TrackedStartupItem {
+	item.Name = truncateCollectorString(item.Name)
+	item.Type = truncateCollectorString(item.Type)
+	item.Path = truncateCollectorString(item.Path)
+	return item
+}
+
+func sanitizeTrackedScheduledTask(task TrackedScheduledTask) TrackedScheduledTask {
+	task.Name = truncateCollectorString(task.Name)
+	task.Path = truncateCollectorString(task.Path)
+	task.Status = truncateCollectorString(task.Status)
+	task.Schedule = truncateCollectorString(task.Schedule)
+	task.Command = truncateCollectorString(task.Command)
+	return task
+}
+
+func sanitizeTrackedUserAccount(account TrackedUserAccount) TrackedUserAccount {
+	account.Username = truncateCollectorString(account.Username)
+	account.FullName = truncateCollectorString(account.FullName)
+	return account
 }

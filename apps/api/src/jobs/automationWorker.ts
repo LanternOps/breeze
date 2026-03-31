@@ -29,6 +29,7 @@ import {
   type ScheduledAutomationWithTarget,
 } from '../services/featureConfigResolver';
 import { getRedisConnection, isRedisAvailable } from '../services/redis';
+import { isReusableState } from '../services/bullmqUtils';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -118,6 +119,7 @@ type AutomationJobData =
 
 let automationQueue: Queue<AutomationJobData> | null = null;
 let automationWorker: Worker<AutomationJobData> | null = null;
+
 let eventSubscription: (() => void) | null = null;
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -254,6 +256,38 @@ export function getAutomationQueue(): Queue<AutomationJobData> {
   return automationQueue;
 }
 
+export async function enqueueConfigPolicyRun(
+  data: ExecuteConfigPolicyRunJobData,
+  stableJobId?: string,
+): Promise<{ jobId?: string }> {
+  const queue = getAutomationQueue();
+
+  if (stableJobId) {
+    const existing = await queue.getJob(stableJobId);
+    if (existing) {
+      const state = await existing.getState();
+      if (isReusableState(state)) {
+        return { jobId: existing.id ? String(existing.id) : stableJobId };
+      }
+      await existing.remove().catch((error) => {
+        console.error(`[AutomationWorker] Failed to remove stale config-policy run job ${stableJobId}:`, error);
+      });
+    }
+  }
+
+  const job = await queue.add(
+    'execute-config-policy-run',
+    data,
+    {
+      ...(stableJobId ? { jobId: stableJobId } : {}),
+      removeOnComplete: { count: 200 },
+      removeOnFail: { count: 500 },
+    },
+  );
+
+  return { jobId: job.id ? String(job.id) : stableJobId };
+}
+
 async function executeRunInline(runId: string, targetDeviceIds?: string[]): Promise<void> {
   await runWithSystemDbAccess(async () => {
     await executeAutomationRun(runId, targetDeviceIds);
@@ -276,6 +310,21 @@ export async function enqueueAutomationRun(
 
   try {
     const queue = getAutomationQueue();
+    const stableJobId = `automation-run:${runId}`;
+    const existing = await queue.getJob(stableJobId);
+    if (existing) {
+      const state = await existing.getState();
+      if (isReusableState(state)) {
+        return {
+          enqueued: true,
+          jobId: existing.id ? String(existing.id) : stableJobId,
+        };
+      }
+      await existing.remove().catch((error) => {
+        console.error(`[AutomationWorker] Failed to remove stale automation run job ${stableJobId}:`, error);
+      });
+    }
+
     const job = await queue.add(
       'execute-run',
       {
@@ -284,6 +333,7 @@ export async function enqueueAutomationRun(
         targetDeviceIds,
       },
       {
+        jobId: stableJobId,
         removeOnComplete: { count: 200 },
         removeOnFail: { count: 500 },
       },
@@ -616,20 +666,14 @@ async function processTriggerConfigPolicySchedule(
     return { skipped: 'all_devices_in_maintenance' };
   }
 
-  // Queue execute-config-policy-run job
-  const queue = getAutomationQueue();
-  await queue.add(
-    'execute-config-policy-run',
+  await enqueueConfigPolicyRun(
     {
       type: 'execute-config-policy-run',
       configPolicyAutomationId: cpAutomation.id,
-      targetDeviceIds: eligibleDeviceIds,
+      targetDeviceIds: eligibleDeviceIds.sort(),
       triggeredBy: `schedule:${data.slotKey}`,
     },
-    {
-      removeOnComplete: { count: 200 },
-      removeOnFail: { count: 500 },
-    },
+    `cp-automation-run:${cpAutomation.id}:${data.slotKey}`,
   );
 
   return { devicesQueued: eligibleDeviceIds.length };
@@ -790,19 +834,14 @@ async function queueEventTriggers(event: BreezeEvent<Record<string, unknown>>): 
           continue;
         }
 
-        await queue.add(
-          'execute-config-policy-run',
+        await enqueueConfigPolicyRun(
           {
             type: 'execute-config-policy-run',
             configPolicyAutomationId: cpAutomation.id,
             targetDeviceIds: [deviceId],
             triggeredBy: `config-policy-event:${event.type}`,
           },
-          {
-            jobId: `cp-automation-event-${cpAutomation.id}-${deviceId}-${event.id}`,
-            removeOnComplete: { count: 200 },
-            removeOnFail: { count: 500 },
-          },
+          `cp-automation-event-${cpAutomation.id}-${deviceId}-${event.id}`,
         );
       }
     }

@@ -10,6 +10,7 @@ import { db } from '../db';
 import {
   backupChains,
   backupConfigs,
+  backupJobs,
   backupSnapshots,
   devices,
   sqlInstances,
@@ -18,6 +19,7 @@ import { eq, and, desc, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { CommandTypes, queueCommandForExecution } from './commandQueue';
+import { resolveBackupConfigForDevice } from './featureConfigResolver';
 
 type MssqlHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -229,21 +231,18 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
             enum: ['full', 'differential', 'log'],
             description: 'Backup type to run',
           },
-          outputPath: { type: 'string', description: 'Destination path for the backup file (required)' },
-          configId: { type: 'string', description: 'Optional related backup config UUID' },
         },
-        required: ['deviceId', 'instance', 'database', 'outputPath'],
+        required: ['deviceId', 'instance', 'database'],
       },
     },
     handler: safeHandler('trigger_mssql_backup', async (input, auth) => {
       const deviceId = input.deviceId as string;
       const instance = input.instance as string;
       const database = input.database as string;
-      const outputPath = input.outputPath as string;
       const backupType = (input.backupType as string) ?? 'full';
 
-      if (!deviceId || !instance || !database || !outputPath) {
-        return JSON.stringify({ error: 'deviceId, instance, database, and outputPath are required' });
+      if (!deviceId || !instance || !database) {
+        return JSON.stringify({ error: 'deviceId, instance, and database are required' });
       }
       if (!isValidSqlIdentifier(instance) || !isValidSqlIdentifier(database)) {
         return JSON.stringify({ error: 'instance and database contain invalid characters' });
@@ -253,42 +252,63 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
       const dc = orgWhere(auth, devices.orgId);
       if (dc) deviceConditions.push(dc);
       const [device] = await db
-        .select({ id: devices.id })
+        .select({ id: devices.id, orgId: devices.orgId })
         .from(devices)
         .where(and(...deviceConditions))
         .limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
 
-      if (typeof input.configId === 'string') {
-        const configConditions: SQL[] = [eq(backupConfigs.id, input.configId)];
-        const cc = orgWhere(auth, backupConfigs.orgId);
-        if (cc) configConditions.push(cc);
-        const [config] = await db
-          .select({ id: backupConfigs.id })
-          .from(backupConfigs)
-          .where(and(...configConditions))
-          .limit(1);
-        if (!config) return JSON.stringify({ error: 'Backup config not found or access denied' });
+      const resolvedConfig = await resolveBackupConfigForDevice(deviceId);
+      if (!resolvedConfig?.configId) {
+        return JSON.stringify({ error: 'A provider-backed backup configuration is required on this device' });
       }
+
+      const [backupJob] = await db
+        .insert(backupJobs)
+        .values({
+          orgId: device.orgId,
+          configId: resolvedConfig.configId,
+          featureLinkId: resolvedConfig.featureLinkId,
+          deviceId,
+          status: 'pending',
+          type: 'manual',
+          backupType: 'database',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .returning({ id: backupJobs.id });
 
       const { command, error } = await queueCommandForExecution(
         deviceId,
         CommandTypes.MSSQL_BACKUP,
         {
+          backupJobId: backupJob?.id,
           instance,
           database,
           backupType,
-          outputPath,
-          configId: typeof input.configId === 'string' ? input.configId : undefined,
         },
         { userId: auth.user?.id }
       );
 
-      if (error) return JSON.stringify({ error });
+      if (error) {
+        if (backupJob?.id) {
+          await db
+            .update(backupJobs)
+            .set({
+              status: 'failed',
+              completedAt: new Date(),
+              updatedAt: new Date(),
+              errorLog: error,
+            })
+            .where(eq(backupJobs.id, backupJob.id));
+        }
+        return JSON.stringify({ error });
+      }
 
       return JSON.stringify({
         success: true,
         commandId: command?.id,
+        backupJobId: backupJob?.id,
         status: command?.status,
         deviceId,
         instance,
@@ -311,24 +331,28 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
         type: 'object' as const,
         properties: {
           deviceId: { type: 'string', description: 'Device UUID (required)' },
-          instance: { type: 'string', description: 'SQL instance name (required)' },
-          backupFile: { type: 'string', description: 'Backup file path (required)' },
+          snapshotId: { type: 'string', description: 'Backup snapshot UUID (required)' },
+          instance: { type: 'string', description: 'Optional SQL instance name override' },
           targetDatabase: { type: 'string', description: 'Target database name (required)' },
           noRecovery: { type: 'boolean', description: 'Leave database in restoring state after restore' },
         },
-        required: ['deviceId', 'instance', 'backupFile', 'targetDatabase'],
+        required: ['deviceId', 'snapshotId', 'targetDatabase'],
       },
     },
     handler: safeHandler('restore_mssql_database', async (input, auth) => {
       const deviceId = input.deviceId as string;
-      const instance = input.instance as string;
-      const backupFile = input.backupFile as string;
+      const snapshotId = input.snapshotId as string;
       const targetDatabase = input.targetDatabase as string;
 
-      if (!deviceId || !instance || !backupFile || !targetDatabase) {
-        return JSON.stringify({ error: 'deviceId, instance, backupFile, and targetDatabase are required' });
+      if (!deviceId || !snapshotId || !targetDatabase) {
+        return JSON.stringify({ error: 'deviceId, snapshotId, and targetDatabase are required' });
       }
-      if (!isValidSqlIdentifier(instance) || !isValidSqlIdentifier(targetDatabase)) {
+      const instanceOverride =
+        typeof input.instance === 'string' ? input.instance : '';
+      if (
+        (instanceOverride && !isValidSqlIdentifier(instanceOverride))
+        || !isValidSqlIdentifier(targetDatabase)
+      ) {
         return JSON.stringify({ error: 'instance and targetDatabase contain invalid characters' });
       }
 
@@ -342,12 +366,52 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
         .limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
 
+      const snapshotConditions: SQL[] = [eq(backupSnapshots.id, snapshotId)];
+      const sc = orgWhere(auth, backupSnapshots.orgId);
+      if (sc) snapshotConditions.push(sc);
+      const [snapshot] = await db
+        .select({
+          id: backupSnapshots.id,
+          providerSnapshotId: backupSnapshots.snapshotId,
+          metadata: backupSnapshots.metadata,
+        })
+        .from(backupSnapshots)
+        .where(and(...snapshotConditions))
+        .limit(1);
+      if (!snapshot) return JSON.stringify({ error: 'Snapshot not found or access denied' });
+
+      const metadata =
+        snapshot.metadata && typeof snapshot.metadata === 'object' && !Array.isArray(snapshot.metadata)
+          ? snapshot.metadata as Record<string, unknown>
+          : {};
+      if (metadata.backupKind !== 'mssql_database' && metadata.backupKind !== 'mssql_backup') {
+        return JSON.stringify({ error: 'Snapshot is not an MSSQL backup artifact' });
+      }
+      const backupFileName =
+        typeof metadata.backupFileName === 'string'
+          ? metadata.backupFileName
+          : typeof metadata.backupFile === 'string'
+            ? String(metadata.backupFile).split('/').pop() ?? ''
+          : '';
+      if (!backupFileName) {
+        return JSON.stringify({ error: 'Snapshot is missing MSSQL backup file metadata' });
+      }
+
       const { command, error } = await queueCommandForExecution(
         deviceId,
         CommandTypes.MSSQL_RESTORE,
         {
-          instance,
-          backupFile,
+          instance:
+            instanceOverride
+            || (
+              typeof metadata.instance === 'string'
+                ? metadata.instance
+                : typeof metadata.instanceName === 'string'
+                  ? metadata.instanceName
+                  : 'MSSQLSERVER'
+            ),
+          snapshotId: snapshot.providerSnapshotId,
+          backupFileName,
           targetDatabase,
           noRecovery: Boolean(input.noRecovery),
         },
@@ -361,7 +425,8 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
         commandId: command?.id,
         status: command?.status,
         deviceId,
-        instance,
+        snapshotId: snapshot.id,
+        providerSnapshotId: snapshot.providerSnapshotId,
         targetDatabase,
       });
     }),
@@ -375,76 +440,73 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
     tier: 2,
     definition: {
       name: 'verify_mssql_backup',
-      description: 'Dispatch an MSSQL backup verification command using either a snapshot or a direct backup file path.',
+      description: 'Dispatch an MSSQL backup verification command for a provider-backed MSSQL snapshot.',
       input_schema: {
         type: 'object' as const,
         properties: {
-          snapshotId: { type: 'string', description: 'Backup snapshot UUID to verify' },
-          deviceId: { type: 'string', description: 'Device UUID when verifying a direct backup file' },
-          instance: { type: 'string', description: 'SQL instance name. Optional when metadata provides it.' },
-          backupFile: { type: 'string', description: 'Backup file path. Optional when snapshot metadata provides it.' },
+          snapshotId: { type: 'string', description: 'Backup snapshot UUID to verify (required)' },
+          instance: { type: 'string', description: 'Optional SQL instance name override' },
         },
-        required: [],
+        required: ['snapshotId'],
       },
     },
     handler: safeHandler('verify_mssql_backup', async (input, auth) => {
-      let deviceId = typeof input.deviceId === 'string' ? input.deviceId : '';
-      let instance = typeof input.instance === 'string' ? input.instance : '';
-      let backupFile = typeof input.backupFile === 'string' ? input.backupFile : '';
-
-      if (typeof input.snapshotId === 'string') {
-        const snapshotConditions: SQL[] = [eq(backupSnapshots.id, input.snapshotId)];
-        const sc = orgWhere(auth, backupSnapshots.orgId);
-        if (sc) snapshotConditions.push(sc);
-
-        const [snapshot] = await db
-          .select({
-            id: backupSnapshots.id,
-            deviceId: backupSnapshots.deviceId,
-            snapshotId: backupSnapshots.snapshotId,
-            location: backupSnapshots.location,
-            metadata: backupSnapshots.metadata,
-          })
-          .from(backupSnapshots)
-          .where(and(...snapshotConditions))
-          .limit(1);
-
-        if (!snapshot) return JSON.stringify({ error: 'Snapshot not found or access denied' });
-
-        const metadata = (snapshot.metadata ?? {}) as Record<string, unknown>;
-        deviceId = snapshot.deviceId;
-        instance = instance || (typeof metadata.instance === 'string' ? metadata.instance : 'MSSQLSERVER');
-        backupFile =
-          backupFile
-          || snapshot.location
-          || (typeof metadata.backupFile === 'string' ? metadata.backupFile : '');
-
-        if (!backupFile) {
-          return JSON.stringify({ error: 'Snapshot does not include a backup file location' });
-        }
-      }
-
-      if (!deviceId || !instance || !backupFile) {
-        return JSON.stringify({ error: 'Provide snapshotId or deviceId, instance, and backupFile' });
-      }
-      if (!isValidSqlIdentifier(instance)) {
+      const snapshotId = input.snapshotId as string;
+      if (!snapshotId) return JSON.stringify({ error: 'snapshotId is required' });
+      const instanceOverride =
+        typeof input.instance === 'string' ? input.instance : '';
+      if (instanceOverride && !isValidSqlIdentifier(instanceOverride)) {
         return JSON.stringify({ error: 'instance contains invalid characters' });
       }
 
-      const deviceConditions: SQL[] = [eq(devices.id, deviceId)];
-      const dc = orgWhere(auth, devices.orgId);
-      if (dc) deviceConditions.push(dc);
-      const [device] = await db
-        .select({ id: devices.id })
-        .from(devices)
-        .where(and(...deviceConditions))
+      const snapshotConditions: SQL[] = [eq(backupSnapshots.id, snapshotId)];
+      const sc = orgWhere(auth, backupSnapshots.orgId);
+      if (sc) snapshotConditions.push(sc);
+      const [snapshot] = await db
+        .select({
+          id: backupSnapshots.id,
+          deviceId: backupSnapshots.deviceId,
+          providerSnapshotId: backupSnapshots.snapshotId,
+          metadata: backupSnapshots.metadata,
+        })
+        .from(backupSnapshots)
+        .where(and(...snapshotConditions))
         .limit(1);
-      if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
+      if (!snapshot) return JSON.stringify({ error: 'Snapshot not found or access denied' });
+
+      const metadata =
+        snapshot.metadata && typeof snapshot.metadata === 'object' && !Array.isArray(snapshot.metadata)
+          ? snapshot.metadata as Record<string, unknown>
+          : {};
+      if (metadata.backupKind !== 'mssql_database' && metadata.backupKind !== 'mssql_backup') {
+        return JSON.stringify({ error: 'Snapshot is not an MSSQL backup artifact' });
+      }
+      const backupFileName =
+        typeof metadata.backupFileName === 'string'
+          ? metadata.backupFileName
+          : typeof metadata.backupFile === 'string'
+            ? String(metadata.backupFile).split('/').pop() ?? ''
+          : '';
+      if (!backupFileName) {
+        return JSON.stringify({ error: 'Snapshot is missing MSSQL backup file metadata' });
+      }
 
       const { command, error } = await queueCommandForExecution(
-        deviceId,
+        snapshot.deviceId,
         CommandTypes.MSSQL_VERIFY,
-        { instance, backupFile },
+        {
+          instance:
+            instanceOverride
+            || (
+              typeof metadata.instance === 'string'
+                ? metadata.instance
+                : typeof metadata.instanceName === 'string'
+                  ? metadata.instanceName
+                  : 'MSSQLSERVER'
+            ),
+          snapshotId: snapshot.providerSnapshotId,
+          backupFileName,
+        },
         { userId: auth.user?.id }
       );
 
@@ -454,9 +516,9 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
         success: true,
         commandId: command?.id,
         status: command?.status,
-        deviceId,
-        instance,
-        backupFile,
+        deviceId: snapshot.deviceId,
+        snapshotId: snapshot.id,
+        providerSnapshotId: snapshot.providerSnapshotId,
       });
     }),
   });

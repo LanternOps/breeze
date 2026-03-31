@@ -277,7 +277,7 @@ dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ
         const frequency = (schedule.frequency ?? schedule.scheduleFrequency) as string | undefined;
         const time = (schedule.time ?? schedule.scheduleTime) as string | undefined;
         if (typeof frequency !== 'string' || typeof time !== 'string') return null;
-        return getNextRun({ ...schedule, frequency, time } as any);
+        return getNextRun({ ...schedule, frequency, time } as any, resolved?.resolvedTimezone);
       })(),
     },
   });

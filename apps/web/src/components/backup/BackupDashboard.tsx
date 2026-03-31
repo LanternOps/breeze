@@ -22,10 +22,11 @@ const HypervDashboard = lazy(() => import('./HypervDashboard'));
 const VaultDashboard = lazy(() => import('./VaultDashboard'));
 const SLADashboard = lazy(() => import('./SLADashboard'));
 const EncryptionKeyList = lazy(() => import('./EncryptionKeyList'));
+const RecoveryBootstrapTab = lazy(() => import('./RecoveryBootstrapTab'));
 
-type BackupTab = 'overview' | 'verification' | 'mssql' | 'hyperv' | 'vault' | 'sla' | 'encryption';
+type BackupTab = 'overview' | 'verification' | 'mssql' | 'hyperv' | 'vault' | 'sla' | 'encryption' | 'recovery-bootstrap';
 
-const ALL_TABS: BackupTab[] = ['overview', 'verification', 'mssql', 'hyperv', 'vault', 'sla', 'encryption'];
+const ALL_TABS: BackupTab[] = ['overview', 'verification', 'mssql', 'hyperv', 'vault', 'sla', 'encryption', 'recovery-bootstrap'];
 
 const TAB_LABELS: Record<BackupTab, string> = {
   overview: 'Overview',
@@ -35,6 +36,7 @@ const TAB_LABELS: Record<BackupTab, string> = {
   vault: 'Vault',
   sla: 'SLA',
   encryption: 'Encryption',
+  'recovery-bootstrap': 'Recovery Bootstrap',
 };
 
 function isValidTab(hash: string): hash is BackupTab {
@@ -393,6 +395,12 @@ export default function BackupDashboard() {
       {activeTab === 'encryption' && (
         <Suspense fallback={<TabFallback />}>
           <EncryptionKeyList />
+        </Suspense>
+      )}
+
+      {activeTab === 'recovery-bootstrap' && (
+        <Suspense fallback={<TabFallback />}>
+          <RecoveryBootstrapTab />
         </Suspense>
       )}
     </div>

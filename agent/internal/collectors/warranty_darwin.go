@@ -3,12 +3,10 @@
 package collectors
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -47,10 +45,7 @@ func CollectAppleWarranty() (*AppleWarrantyInfo, error) {
 
 // getDeviceSerial returns the hardware serial number via ioreg, or "" if unavailable.
 func getDeviceSerial() string {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	out, err := exec.CommandContext(ctx, "ioreg", "-rd1", "-c", "IOPlatformExpertDevice").Output()
+	out, err := runCollectorOutput(collectorShortCommandTimeout, "ioreg", "-rd1", "-c", "IOPlatformExpertDevice")
 	if err != nil {
 		return ""
 	}
@@ -136,6 +131,14 @@ func collectFromCoverageCache(serial string) (*AppleWarrantyInfo, error) {
 
 // parseCoverageDetailsJSON reads an NDO coverage cache JSON file.
 func parseCoverageDetailsJSON(path string) (*AppleWarrantyInfo, error) {
+	statInfo, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if statInfo.Size() > collectorFileReadLimit {
+		return nil, fmt.Errorf("coverage cache too large")
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -151,8 +154,8 @@ func parseCoverageDetailsJSON(path string) (*AppleWarrantyInfo, error) {
 	}
 
 	info := &AppleWarrantyInfo{
-		CoverageType: cd.CoverageLabel,
-		DeviceName:   cd.SerialNumber,
+		CoverageType: truncateCollectorString(cd.CoverageLabel),
+		DeviceName:   truncateCollectorString(cd.SerialNumber),
 	}
 
 	// Parse end date from Unix timestamp or human-readable label
@@ -253,16 +256,16 @@ func collectFromPlists() (*AppleWarrantyInfo, error) {
 
 // parseAppleWarrantyPlist converts a plist to JSON via plutil and extracts warranty fields.
 func parseAppleWarrantyPlist(path string) (*AppleWarrantyInfo, error) {
-	// Verify file exists and is readable
-	if _, err := os.Stat(path); err != nil {
+	statInfo, err := os.Stat(path)
+	if err != nil {
 		return nil, err
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	if statInfo.Size() > collectorFileReadLimit {
+		return nil, fmt.Errorf("plist too large")
+	}
 
 	// Convert plist to JSON using plutil (available on all macOS)
-	out, err := exec.CommandContext(ctx, "plutil", "-convert", "json", "-o", "-", path).Output()
+	out, err := runCollectorOutput(collectorShortCommandTimeout, "plutil", "-convert", "json", "-o", "-", path)
 	if err != nil {
 		return nil, fmt.Errorf("plutil convert: %w", err)
 	}
@@ -285,16 +288,16 @@ func parseAppleWarrantyPlist(path string) (*AppleWarrantyInfo, error) {
 		lower := strings.ToLower(key)
 		switch {
 		case lower == "coverageenddate" || lower == "coverage_end_date" || lower == "warrantyenddate":
-			info.CoverageEndDate = normalizeDate(val)
+			info.CoverageEndDate = truncateCollectorString(normalizeDate(val))
 		case lower == "coveragestartdate" || lower == "coverage_start_date" || lower == "warrantystartdate":
-			info.CoverageStartDate = normalizeDate(val)
+			info.CoverageStartDate = truncateCollectorString(normalizeDate(val))
 		case lower == "devicename" || lower == "device_name" || lower == "productname":
 			if s, ok := val.(string); ok {
-				info.DeviceName = s
+				info.DeviceName = truncateCollectorString(s)
 			}
 		case lower == "coveragetype" || lower == "coverage_type" || lower == "warrantytype":
 			if s, ok := val.(string); ok {
-				info.CoverageType = s
+				info.CoverageType = truncateCollectorString(s)
 			}
 		}
 	}

@@ -111,6 +111,8 @@ type Session struct {
 
 	// displayIndex is the monitor index this session was started on.
 	displayIndex int
+	// captureConfig stores the context needed to recreate capturers on monitor switches.
+	captureConfig CaptureConfig
 
 	// Cached encoded H264 frame used as a fallback resend source when secure
 	// desktop capture yields temporary no-frame periods.
@@ -118,13 +120,13 @@ type Session struct {
 	lastEncodedFrame []byte
 	// Nanoseconds since epoch of the last successful video sample write.
 	lastVideoWriteUnixNano atomic.Int64
-
 }
 
 // SessionManager manages remote desktop sessions
 type SessionManager struct {
 	sessions map[string]*Session
 	mu       sync.RWMutex
+	config   CaptureConfig
 
 	// OnSASRequest is called when a viewer requests Ctrl+Alt+Del. In service
 	// mode the helper sets this to route the request via IPC to the SCM service
@@ -144,7 +146,35 @@ func NewSessionManager() *SessionManager {
 	go PreloadOpenH264()
 	return &SessionManager{
 		sessions: make(map[string]*Session),
+		config:   DefaultConfig(),
 	}
+}
+
+func (m *SessionManager) SetCaptureConfig(config CaptureConfig) {
+	m.mu.Lock()
+	m.config = config
+	m.mu.Unlock()
+}
+
+func (m *SessionManager) CaptureConfig() CaptureConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.config
+}
+
+// HasActiveSessions reports whether any desktop session is currently active.
+func (m *SessionManager) HasActiveSessions() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, s := range m.sessions {
+		s.mu.RLock()
+		active := s.isActive
+		s.mu.RUnlock()
+		if active {
+			return true
+		}
+	}
+	return false
 }
 
 // ICEServerConfig represents an ICE server from the API payload.

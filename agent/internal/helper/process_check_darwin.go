@@ -3,18 +3,16 @@
 package helper
 
 import (
-	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 )
 
 func processExePath(pid int) (string, error) {
-	out, err := exec.Command("ps", "-o", "comm=", "-p", strconv.Itoa(pid)).Output()
+	out, err := outputHelperCommand("ps", "-o", "comm=", "-p", strconv.Itoa(pid))
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(out)), nil
+	return parseProcessPathOutput(out)
 }
 
 func isOurProcess(pid int, binaryPath string) bool {

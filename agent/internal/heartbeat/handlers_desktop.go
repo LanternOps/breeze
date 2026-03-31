@@ -2,6 +2,8 @@ package heartbeat
 
 import (
 	"fmt"
+	"math"
+	"strings"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -9,6 +11,44 @@ import (
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
+
+const (
+	maxDesktopDisplayIndex  = 16
+	maxDesktopCoordinateAbs = 100000
+	maxDesktopScrollDelta   = 120
+	maxDesktopKeyBytes      = 64
+	maxDesktopModifierBytes = 16
+	maxDesktopModifiers     = 8
+)
+
+var desktopInputTypes = map[string]struct{}{
+	"mouse_move":   {},
+	"mouse_click":  {},
+	"mouse_down":   {},
+	"mouse_up":     {},
+	"mouse_scroll": {},
+	"key_press":    {},
+	"key_down":     {},
+	"key_up":       {},
+}
+
+var desktopMouseButtons = map[string]struct{}{
+	"":       {},
+	"left":   {},
+	"right":  {},
+	"middle": {},
+}
+
+var desktopInputModifiers = map[string]string{
+	"alt":     "alt",
+	"cmd":     "meta",
+	"control": "ctrl",
+	"ctrl":    "ctrl",
+	"meta":    "meta",
+	"shift":   "shift",
+	"super":   "meta",
+	"win":     "meta",
+}
 
 // handleSASFromHelper is called when the user helper requests a Secure
 // Attention Sequence. The service process (this process) is SCM-registered
@@ -107,6 +147,13 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 			DurationMs: time.Since(start).Milliseconds(),
 		}
 	}
+	if err := validateDesktopSessionID(sessionID); err != nil {
+		return tools.CommandResult{
+			Status:     "failed",
+			Error:      err.Error(),
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
 
 	// Parse optional ICE servers from payload
 	var iceServers []desktop.ICEServerConfig
@@ -127,7 +174,14 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 
 	// Parse optional display index (multi-monitor selection)
 	displayIndex := 0
-	if di, ok := cmd.Payload["displayIndex"].(float64); ok && di >= 0 {
+	if di, ok := cmd.Payload["displayIndex"].(float64); ok {
+		if di < 0 || di > maxDesktopDisplayIndex || math.Trunc(di) != di {
+			return tools.CommandResult{
+				Status:     "failed",
+				Error:      fmt.Sprintf("displayIndex must be an integer between 0 and %d", maxDesktopDisplayIndex),
+				DurationMs: time.Since(start).Milliseconds(),
+			}
+		}
 		displayIndex = int(di)
 	}
 
@@ -153,7 +207,7 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
-	sessionID, errResult := tools.RequirePayloadString(cmd.Payload, "sessionId")
+	sessionID, errResult := requireValidatedDesktopSessionID(cmd.Payload)
 	if errResult != nil {
 		errResult.DurationMs = time.Since(start).Milliseconds()
 		return *errResult
@@ -233,7 +287,7 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 		return serviceUnavailable("desktop_stream_start", start)
 	}
 
-	sessionID, errResult := tools.RequirePayloadString(cmd.Payload, "sessionId")
+	sessionID, errResult := requireValidatedDesktopSessionID(cmd.Payload)
 	if errResult != nil {
 		errResult.DurationMs = time.Since(start).Milliseconds()
 		return *errResult
@@ -250,7 +304,14 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 		config.MaxFPS = int(f)
 	}
 	displayIndex := 0
-	if di, ok := cmd.Payload["displayIndex"].(float64); ok && di >= 0 {
+	if di, ok := cmd.Payload["displayIndex"].(float64); ok {
+		if di < 0 || di > maxDesktopDisplayIndex || math.Trunc(di) != di {
+			return tools.CommandResult{
+				Status:     "failed",
+				Error:      fmt.Sprintf("displayIndex must be an integer between 0 and %d", maxDesktopDisplayIndex),
+				DurationMs: time.Since(start).Milliseconds(),
+			}
+		}
 		displayIndex = int(di)
 	}
 
@@ -280,7 +341,7 @@ func handleDesktopStreamStop(h *Heartbeat, cmd Command) tools.CommandResult {
 		// No WS stream running in headless mode — return success as a no-op.
 		return tools.NewSuccessResult(map[string]any{"stopped": true}, time.Since(start).Milliseconds())
 	}
-	sessionID, errResult := tools.RequirePayloadString(cmd.Payload, "sessionId")
+	sessionID, errResult := requireValidatedDesktopSessionID(cmd.Payload)
 	if errResult != nil {
 		errResult.DurationMs = time.Since(start).Milliseconds()
 		return *errResult
@@ -298,7 +359,7 @@ func handleDesktopInput(h *Heartbeat, cmd Command) tools.CommandResult {
 		return serviceUnavailable("desktop_input", start)
 	}
 
-	sessionID, errResult := tools.RequirePayloadString(cmd.Payload, "sessionId")
+	sessionID, errResult := requireValidatedDesktopSessionID(cmd.Payload)
 	if errResult != nil {
 		errResult.DurationMs = time.Since(start).Milliseconds()
 		return *errResult
@@ -312,31 +373,12 @@ func handleDesktopInput(h *Heartbeat, cmd Command) tools.CommandResult {
 			DurationMs: time.Since(start).Milliseconds(),
 		}
 	}
-	event := desktop.InputEvent{}
-	event.Type, _ = e["type"].(string)
-	if event.Type == "" {
+	event, err := normalizeDesktopInputEvent(e)
+	if err != nil {
 		return tools.CommandResult{
 			Status:     "failed",
-			Error:      "event type is required",
+			Error:      err.Error(),
 			DurationMs: time.Since(start).Milliseconds(),
-		}
-	}
-	if x, ok := e["x"].(float64); ok {
-		event.X = int(x)
-	}
-	if y, ok := e["y"].(float64); ok {
-		event.Y = int(y)
-	}
-	event.Button, _ = e["button"].(string)
-	event.Key, _ = e["key"].(string)
-	if d, ok := e["delta"].(float64); ok {
-		event.Delta = int(d)
-	}
-	if mods, ok := e["modifiers"].([]any); ok {
-		for _, m := range mods {
-			if ms, ok := m.(string); ok {
-				event.Modifiers = append(event.Modifiers, ms)
-			}
 		}
 	}
 	if err := h.wsDesktopMgr.HandleInput(sessionID, event); err != nil {
@@ -350,7 +392,7 @@ func handleDesktopConfig(h *Heartbeat, cmd Command) tools.CommandResult {
 	if h.isService || h.isHeadless {
 		return serviceUnavailable("desktop_config", start)
 	}
-	sessionID, errResult := tools.RequirePayloadString(cmd.Payload, "sessionId")
+	sessionID, errResult := requireValidatedDesktopSessionID(cmd.Payload)
 	if errResult != nil {
 		errResult.DurationMs = time.Since(start).Milliseconds()
 		return *errResult
@@ -381,4 +423,184 @@ func handleDesktopConfig(h *Heartbeat, cmd Command) tools.CommandResult {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 	return tools.NewSuccessResult(map[string]any{"ok": true}, time.Since(start).Milliseconds())
+}
+
+func requireValidatedDesktopSessionID(payload map[string]any) (string, *tools.CommandResult) {
+	sessionID, errResult := tools.RequirePayloadString(payload, "sessionId")
+	if errResult != nil {
+		return "", errResult
+	}
+	if err := validateDesktopSessionID(sessionID); err != nil {
+		return "", &tools.CommandResult{
+			Status: "failed",
+			Error:  err.Error(),
+		}
+	}
+	return sessionID, nil
+}
+
+func validateDesktopSessionID(sessionID string) error {
+	if !desktopSessionIDPattern.MatchString(sessionID) {
+		return fmt.Errorf("invalid sessionId")
+	}
+	return nil
+}
+
+func normalizeDesktopInputEvent(raw map[string]any) (desktop.InputEvent, error) {
+	var event desktop.InputEvent
+
+	eventType, ok := raw["type"].(string)
+	if !ok || strings.TrimSpace(eventType) == "" {
+		return event, fmt.Errorf("event type is required")
+	}
+	event.Type = strings.ToLower(strings.TrimSpace(eventType))
+	if _, ok := desktopInputTypes[event.Type]; !ok {
+		return event, fmt.Errorf("invalid event type")
+	}
+
+	x, err := readDesktopCoordinate(raw["x"])
+	if err != nil {
+		return event, fmt.Errorf("invalid x coordinate")
+	}
+	y, err := readDesktopCoordinate(raw["y"])
+	if err != nil {
+		return event, fmt.Errorf("invalid y coordinate")
+	}
+	event.X = x
+	event.Y = y
+
+	button, err := normalizeDesktopButton(raw["button"])
+	if err != nil {
+		return event, err
+	}
+	event.Button = button
+
+	key, err := normalizeDesktopKey(raw["key"])
+	if err != nil {
+		return event, err
+	}
+	event.Key = key
+
+	delta, err := normalizeDesktopScrollDelta(raw["delta"])
+	if err != nil {
+		return event, err
+	}
+	event.Delta = delta
+
+	modifiers, err := normalizeDesktopModifiers(raw["modifiers"])
+	if err != nil {
+		return event, err
+	}
+	event.Modifiers = modifiers
+
+	switch event.Type {
+	case "mouse_click", "mouse_down", "mouse_up":
+		if event.Button == "" {
+			event.Button = "left"
+		}
+	case "key_press", "key_down", "key_up":
+		if event.Key == "" {
+			return event, fmt.Errorf("key is required for keyboard events")
+		}
+	case "mouse_scroll":
+		if event.Delta == 0 {
+			return event, fmt.Errorf("delta is required for mouse_scroll")
+		}
+	}
+
+	return event, nil
+}
+
+func readDesktopCoordinate(value any) (int, error) {
+	if value == nil {
+		return 0, nil
+	}
+	number, ok := value.(float64)
+	if !ok || math.IsNaN(number) || math.IsInf(number, 0) || math.Trunc(number) != number || math.Abs(number) > maxDesktopCoordinateAbs {
+		return 0, fmt.Errorf("invalid coordinate")
+	}
+	return int(number), nil
+}
+
+func normalizeDesktopButton(value any) (string, error) {
+	if value == nil {
+		return "", nil
+	}
+	button, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("invalid mouse button")
+	}
+	if button == "" {
+		return "", nil
+	}
+	button = strings.ToLower(strings.TrimSpace(button))
+	if _, ok := desktopMouseButtons[button]; !ok {
+		return "", fmt.Errorf("invalid mouse button")
+	}
+	return button, nil
+}
+
+func normalizeDesktopKey(value any) (string, error) {
+	if value == nil {
+		return "", nil
+	}
+	key, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("invalid key")
+	}
+	if key == "" {
+		return "", nil
+	}
+	key = strings.TrimSpace(key)
+	if key == "" || len(key) > maxDesktopKeyBytes {
+		return "", fmt.Errorf("invalid key")
+	}
+	return key, nil
+}
+
+func normalizeDesktopScrollDelta(value any) (int, error) {
+	if value == nil {
+		return 0, nil
+	}
+	delta, ok := value.(float64)
+	if !ok || math.IsNaN(delta) || math.IsInf(delta, 0) || math.Trunc(delta) != delta || math.Abs(delta) > maxDesktopScrollDelta {
+		return 0, fmt.Errorf("invalid scroll delta")
+	}
+	return int(delta), nil
+}
+
+func normalizeDesktopModifiers(value any) ([]string, error) {
+	if value == nil {
+		return nil, nil
+	}
+	rawModifiers, ok := value.([]any)
+	if !ok {
+		return nil, fmt.Errorf("invalid modifiers")
+	}
+	if len(rawModifiers) > maxDesktopModifiers {
+		return nil, fmt.Errorf("too many modifiers")
+	}
+
+	normalized := make([]string, 0, len(rawModifiers))
+	seen := make(map[string]struct{}, len(rawModifiers))
+	for _, rawModifier := range rawModifiers {
+		modifier, ok := rawModifier.(string)
+		if !ok {
+			return nil, fmt.Errorf("invalid modifier")
+		}
+		modifier = strings.ToLower(strings.TrimSpace(modifier))
+		if modifier == "" || len(modifier) > maxDesktopModifierBytes {
+			return nil, fmt.Errorf("invalid modifier")
+		}
+		canonical, ok := desktopInputModifiers[modifier]
+		if !ok {
+			return nil, fmt.Errorf("invalid modifier")
+		}
+		if _, ok := seen[canonical]; ok {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		normalized = append(normalized, canonical)
+	}
+	return normalized, nil
 }

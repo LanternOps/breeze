@@ -69,10 +69,20 @@ type HeartbeatPayload struct {
 	DroppedLogs      int64                     `json:"droppedLogs,omitempty"`
 	HelperVersion    string                    `json:"helperVersion,omitempty"`
 	TCCPermissions   *ipc.TCCStatus            `json:"tccPermissions,omitempty"`
+	DesktopAccess    *DesktopAccessState       `json:"desktopAccess,omitempty"`
 	Hostname         string                    `json:"hostname,omitempty"`
 	OSVersion        string                    `json:"osVersion,omitempty"`
 	OSBuild          string                    `json:"osBuild,omitempty"`
 	IsHeadless       bool                      `json:"isHeadless"`
+}
+
+type DesktopAccessState struct {
+	Mode                    string    `json:"mode"`
+	LoginUIReachable        bool      `json:"loginUiReachable"`
+	VirtualDisplayReady     bool      `json:"virtualDisplayReady"`
+	Reason                  string    `json:"reason,omitempty"`
+	RemoteDesktopPermission *bool     `json:"remoteDesktopPermission,omitempty"`
+	CheckedAt               time.Time `json:"checkedAt"`
 }
 
 type HeartbeatResponse struct {
@@ -333,6 +343,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			socketPath = ipc.DefaultSocketPath()
 		}
 		h.sessionBroker = sessionbroker.New(socketPath, h.handleUserHelperMessage)
+		h.sessionBroker.SetSessionClosedHandler(h.handleHelperSessionClosed)
 		reason := "config"
 		if cfg.IsService {
 			reason = "system-service"
@@ -444,7 +455,39 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 				"sessionId", notice.SessionID, "helperSession", session.SessionID)
 			return
 		}
+		h.forgetDesktopOwner(notice.SessionID)
 		go h.sendDesktopDisconnectNotification(notice.SessionID)
+	case backupipc.TypeBackupResult:
+		if h.wsClient == nil {
+			return
+		}
+		var backupResult backupipc.BackupCommandResult
+		if err := json.Unmarshal(env.Payload, &backupResult); err != nil {
+			log.Warn("invalid backup result payload", "error", err.Error())
+			return
+		}
+
+		result := websocket.CommandResult{
+			Type:      "command_result",
+			CommandID: backupResult.CommandID,
+			Status:    "failed",
+		}
+		if backupResult.Success {
+			result.Status = "completed"
+		}
+		if backupResult.Stderr != "" {
+			result.Error = backupResult.Stderr
+		} else if backupResult.Stdout != "" {
+			var parsed any
+			if err := json.Unmarshal([]byte(backupResult.Stdout), &parsed); err == nil {
+				result.Result = parsed
+			} else {
+				result.Result = backupResult.Stdout
+			}
+		}
+		if err := h.wsClient.SendResult(result); err != nil {
+			log.Warn("failed to send backup result", "commandId", backupResult.CommandID, "error", err.Error())
+		}
 	case backupipc.TypeBackupProgress:
 		if h.wsClient == nil {
 			return
@@ -510,6 +553,7 @@ func (h *Heartbeat) Start() {
 	// Start session broker for user helpers
 	if h.sessionBroker != nil {
 		go h.sessionBroker.Listen(h.stopChan)
+		h.startDarwinDesktopWatcher()
 	}
 	if h.sessionCol != nil {
 		h.sessionCol.Start(h.stopChan)
@@ -1786,6 +1830,7 @@ func (h *Heartbeat) sendHeartbeat() {
 			}
 			payload.TCCPermissions = tccStatus
 		}
+		payload.DesktopAccess = h.computeDesktopAccess(sysInfo)
 	}
 
 	// Include user helper session info in heartbeat
@@ -1803,6 +1848,12 @@ func (h *Heartbeat) sendHeartbeat() {
 				}
 				if s.Capabilities != nil {
 					helpers[i]["capabilities"] = s.Capabilities
+				}
+				if s.BinaryKind != "" {
+					helpers[i]["binaryKind"] = s.BinaryKind
+				}
+				if s.DesktopContext != "" {
+					helpers[i]["desktopContext"] = s.DesktopContext
 				}
 			}
 			payload.HealthStatus["userHelpers"] = helpers

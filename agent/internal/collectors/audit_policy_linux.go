@@ -3,10 +3,8 @@
 package collectors
 
 import (
-	"bufio"
 	"errors"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -15,28 +13,35 @@ func collectAuditPolicyState() (AuditPolicySnapshot, error) {
 	settings := map[string]any{}
 	raw := map[string]any{}
 
-	if output, err := exec.Command("systemctl", "is-enabled", "auditd").Output(); err == nil {
+	if output, err := runCollectorOutput(collectorShortCommandTimeout, "systemctl", "is-enabled", "auditd"); err == nil {
 		value := strings.TrimSpace(string(output))
 		settings["auditd.enabled"] = value == "enabled"
-		raw["systemctl_is_enabled"] = value
+		raw["systemctl_is_enabled"] = truncateCollectorString(value)
 	} else {
-		raw["systemctl_is_enabled_error"] = err.Error()
+		raw["systemctl_is_enabled_error"] = truncateCollectorString(err.Error())
 	}
 
-	if output, err := exec.Command("auditctl", "-s").Output(); err == nil {
+	if output, err := runCollectorOutput(collectorShortCommandTimeout, "auditctl", "-s"); err == nil {
 		content := string(output)
-		raw["auditctl_status"] = content
+		raw["auditctl_status"] = truncateCollectorString(content)
 		parseAuditctlStatus(content, settings)
 	} else {
-		raw["auditctl_status_error"] = err.Error()
+		raw["auditctl_status_error"] = truncateCollectorString(err.Error())
 	}
 
-	if configData, err := os.ReadFile("/etc/audit/auditd.conf"); err == nil {
-		content := string(configData)
-		raw["auditd_conf"] = content
-		parseAuditdConfig(content, settings)
+	if statInfo, err := os.Stat("/etc/audit/auditd.conf"); err == nil && statInfo.Size() <= collectorFileReadLimit {
+		configData, err := os.ReadFile("/etc/audit/auditd.conf")
+		if err == nil {
+			content := string(configData)
+			raw["auditd_conf"] = truncateCollectorString(content)
+			parseAuditdConfig(content, settings)
+		} else {
+			raw["auditd_conf_error"] = truncateCollectorString(err.Error())
+		}
+	} else if err == nil {
+		raw["auditd_conf_error"] = "auditd.conf too large"
 	} else {
-		raw["auditd_conf_error"] = err.Error()
+		raw["auditd_conf_error"] = truncateCollectorString(err.Error())
 	}
 
 	return AuditPolicySnapshot{
@@ -48,8 +53,9 @@ func collectAuditPolicyState() (AuditPolicySnapshot, error) {
 }
 
 func parseAuditctlStatus(content string, settings map[string]any) {
-	for _, line := range strings.Split(content, "\n") {
-		fields := strings.Fields(strings.TrimSpace(line))
+	scanner := newCollectorScanner([]byte(content))
+	for scanner.Scan() {
+		fields := strings.Fields(strings.TrimSpace(scanner.Text()))
 		if len(fields) < 2 {
 			continue
 		}
@@ -65,7 +71,7 @@ func parseAuditctlStatus(content string, settings map[string]any) {
 }
 
 func parseAuditdConfig(content string, settings map[string]any) {
-	scanner := bufio.NewScanner(strings.NewReader(content))
+	scanner := newCollectorScanner([]byte(content))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {

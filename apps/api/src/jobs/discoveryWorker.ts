@@ -5,7 +5,7 @@
  * and processes results when they come back via WebSocket.
  */
 
-import { Queue, Worker, Job } from 'bullmq';
+import { Queue, Worker, Job, type JobsOptions } from 'bullmq';
 import * as dbModule from '../db';
 import {
   discoveryProfiles,
@@ -23,10 +23,12 @@ import type { DiscoveryProfileAlertSettings } from '../db/schema';
 import { eq, and, or, sql, inArray, type SQL } from 'drizzle-orm';
 import { normalizeMac, buildApprovalDecision } from '../services/assetApproval';
 import { getRedisConnection } from '../services/redis';
+import { isReusableState } from '../services/bullmqUtils';
 import { sendCommandToAgent, isAgentConnected, type AgentCommand } from '../routes/agentWs';
 import { isCronDue } from '../services/automationRuntime';
 import { lookupMacVendor, inferAssetTypeFromVendor } from '../services/macVendorLookup';
 import { buildEventFingerprint } from '../services/networkBaseline';
+import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -272,17 +274,19 @@ async function enqueueScheduledProfileRun(
   orgId: string,
   siteId: string
 ): Promise<{ queued: boolean; jobId: string | null }> {
-  const [created] = await db.insert(discoveryJobs).values({
+  const created = await createDiscoveryJobIfIdle({
     profileId,
     orgId,
     siteId,
-    status: 'scheduled',
-    scheduledAt: new Date()
-  }).returning();
+  });
 
-  const createdJobId = created?.id ?? null;
+  const createdJobId = created?.job.id ?? null;
   if (!created || !createdJobId) {
     return { queued: false, jobId: null };
+  }
+
+  if (!created.created) {
+    return { queued: false, jobId: createdJobId };
   }
 
   try {
@@ -1081,7 +1085,8 @@ export async function enqueueDiscoveryScan(
   agentId?: string | null
 ): Promise<string> {
   const queue = getDiscoveryQueue();
-  const job = await queue.add(
+  const job = await addUniqueDiscoveryJob(
+    queue,
     'dispatch-scan',
     {
       type: 'dispatch-scan',
@@ -1091,6 +1096,7 @@ export async function enqueueDiscoveryScan(
       siteId,
       agentId
     },
+    `discovery-dispatch:${jobId}`,
     {
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 }
@@ -1112,7 +1118,8 @@ export async function enqueueDiscoveryResults(
   profileId?: string
 ): Promise<string> {
   const queue = getDiscoveryQueue();
-  const job = await queue.add(
+  const job = await addUniqueDiscoveryJob(
+    queue,
     'process-results',
     {
       type: 'process-results',
@@ -1124,12 +1131,37 @@ export async function enqueueDiscoveryResults(
       hostsScanned,
       hostsDiscovered
     },
+    `discovery-result:${jobId}`,
     {
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 }
     }
   );
   return job.id!;
+}
+
+async function addUniqueDiscoveryJob(
+  queue: Queue,
+  name: string,
+  data: DispatchScanJobData | ProcessResultsJobData | ScheduleProfilesJobData,
+  jobId: string,
+  opts: Omit<JobsOptions, 'jobId'> = {},
+) {
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      return existing;
+    }
+    await existing.remove().catch((error) => {
+      console.error(`[DiscoveryWorker] Failed to remove stale job ${jobId}:`, error);
+    });
+  }
+
+  return queue.add(name, data, {
+    jobId,
+    ...opts,
+  });
 }
 
 async function scheduleRecurringProfilePlanner(): Promise<void> {

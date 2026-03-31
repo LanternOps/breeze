@@ -72,6 +72,16 @@ const (
 	HelperRoleUser   = "user"
 )
 
+const (
+	HelperBinaryUserHelper    = "user_helper"
+	HelperBinaryDesktopHelper = "desktop_helper"
+)
+
+const (
+	DesktopContextUserSession = "user_session"
+	DesktopContextLoginWindow = "login_window"
+)
+
 // AuthRequest is sent by the user helper to the root daemon after connecting.
 type AuthRequest struct {
 	ProtocolVersion int    `json:"protocolVersion"`
@@ -84,6 +94,8 @@ type AuthRequest struct {
 	BinaryHash      string `json:"binaryHash"`
 	WinSessionID    uint32 `json:"winSessionId,omitempty"` // Windows session ID (1, 2, etc.)
 	HelperRole      string `json:"helperRole,omitempty"`   // "system" or "user" (default: "system")
+	BinaryKind      string `json:"binaryKind,omitempty"`   // "user_helper" or "desktop_helper"
+	DesktopContext  string `json:"desktopContext,omitempty"`
 }
 
 // AuthResponse is sent by the root daemon back to the user helper.
@@ -222,6 +234,7 @@ type TCCStatus struct {
 	ScreenRecording bool      `json:"screenRecording"`
 	Accessibility   bool      `json:"accessibility"`
 	FullDiskAccess  bool      `json:"fullDiskAccess"`
+	RemoteDesktop   *bool     `json:"remoteDesktop,omitempty"`
 	CheckedAt       time.Time `json:"checkedAt"`
 }
 

@@ -8,6 +8,8 @@
     <array>
         <string>/usr/local/bin/breeze-agent</string>
         <string>user-helper</string>
+        <string>--role</string>
+        <string>user</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

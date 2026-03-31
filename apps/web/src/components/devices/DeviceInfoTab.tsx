@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Monitor, Cpu, HardDrive, MemoryStick, Shield, Tag, Info, ListChecks, Pencil, Check, X } from 'lucide-react';
-import type { TCCPermissions } from '@breeze/shared';
+import { Monitor, Cpu, Shield, Tag, Info, ListChecks, Pencil, Check, X, AlertTriangle } from 'lucide-react';
+import type { DesktopAccessState, TCCPermissions } from '@breeze/shared';
 import MacOSPermissionsCard from './MacOSPermissionsCard';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatUptime } from '../../lib/utils';
@@ -45,6 +45,7 @@ type DeviceInfo = {
   tags?: string[];
   customFields?: Record<string, unknown>;
   tccPermissions?: TCCPermissions | null;
+  desktopAccess?: DesktopAccessState | null;
   hardware?: {
     serialNumber?: string | null;
     manufacturer?: string | null;
@@ -99,6 +100,38 @@ function formatOsVersionForDisplay(raw: string | null | undefined): string {
   if (!raw) return '—';
   // Strip kernel name prefix (e.g. "darwin 26.3.1" → "26.3.1")
   return raw.replace(/^(darwin|linux)\s+/i, '');
+}
+
+function formatDesktopAccessMode(mode: DesktopAccessState['mode'] | undefined): string {
+  switch (mode) {
+    case 'user_session':
+      return 'Ready After User Login';
+    case 'login_window':
+      return 'Ready At Login Window';
+    case 'unavailable':
+      return 'Unavailable';
+    default:
+      return 'Unknown';
+  }
+}
+
+function formatDesktopAccessReason(reason: DesktopAccessState['reason'] | undefined | null): string {
+  switch (reason) {
+    case 'missing_permission':
+      return 'Missing Permission';
+    case 'missing_entitlement':
+      return 'Missing Entitlement';
+    case 'helper_not_connected':
+      return 'Helper Not Connected';
+    case 'virtual_display_unavailable':
+      return 'Virtual Display Unavailable';
+    case 'unsupported_os':
+      return 'Unsupported macOS Version';
+    case 'manual_install':
+      return 'Manual Install';
+    default:
+      return '—';
+  }
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
@@ -484,6 +517,40 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         <InfoRow label="System Uptime" value={formatUptime(info?.uptimeSeconds)} />
         <InfoRow label="Logged-in User" value={info?.lastUser ?? '—'} />
       </Section>
+
+      {info?.osType === 'macos' && info?.desktopAccess && (
+        <Section title="Desktop Access" icon={<Monitor className="h-4 w-4 text-muted-foreground" />}>
+          <InfoRow label="Mode" value={formatDesktopAccessMode(info.desktopAccess.mode)} />
+          <InfoRow label="Login UI Reachable" value={info.desktopAccess.loginUiReachable ? 'Yes' : 'No'} />
+          <InfoRow label="Virtual Display" value={info.desktopAccess.virtualDisplayReady ? 'Ready' : 'Not Ready'} />
+          <InfoRow
+            label="Remote Desktop Permission"
+            value={
+              info.desktopAccess.remoteDesktopPermission == null
+                ? 'Unknown'
+                : info.desktopAccess.remoteDesktopPermission ? 'Granted' : 'Missing'
+            }
+          />
+          <InfoRow label="Reason" value={formatDesktopAccessReason(info.desktopAccess.reason)} />
+          <InfoRow label="Last Checked" value={formatDate(info.desktopAccess.checkedAt)} />
+          {info.desktopAccess.mode === 'unavailable' && (
+            <div className="pt-3">
+              <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                <p className="text-sm text-amber-700 dark:text-amber-400">
+                  {info.desktopAccess.reason === 'unsupported_os'
+                    ? 'This Mac is below the macOS 14+ floor for the native login-window desktop path.'
+                    : info.desktopAccess.reason === 'manual_install'
+                      ? 'Login-window reachability is only advertised for managed installs with the desktop helper deployed.'
+                      : info.desktopAccess.reason === 'missing_entitlement'
+                        ? 'The native login-window desktop path is gated behind Apple entitlement approval.'
+                        : 'The native login-window desktop path is not ready on this device yet.'}
+                </p>
+              </div>
+            </div>
+          )}
+        </Section>
+      )}
 
       {info?.osType === 'macos' && info?.tccPermissions && (
         <MacOSPermissionsCard deviceId={deviceId} tccPermissions={info.tccPermissions} formatDate={formatDate} />

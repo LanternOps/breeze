@@ -12,6 +12,7 @@ import { Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import {
   backupJobs,
+  backupSnapshotFiles,
   backupSnapshots,
   backupConfigs,
   restoreJobs,
@@ -22,7 +23,8 @@ import {
   hypervVms,
   sqlInstances,
 } from '../db/schema';
-import { eq, and, sql } from 'drizzle-orm';
+import { recoveryTokens } from '../db/schema/recoveryTokens';
+import { eq, and, sql, isNull, lt } from 'drizzle-orm';
 import { resolveAllBackupAssignedDevices } from '../services/featureConfigResolver';
 import { getRedisConnection } from '../services/redis';
 import {
@@ -31,11 +33,15 @@ import {
   type AgentCommand,
 } from '../routes/agentWs';
 import {
-  applyGfsTagsToSnapshot,
-  computeExpiresAt,
-  resolveGfsConfigForJob,
+  cleanupExpiredSnapshots,
 } from './backupRetention';
 import * as backupEnqueue from './backupEnqueue';
+import type { ParsedBackupCommandResult } from '../routes/backup/resultSchemas';
+import { backupCommandResultSchema } from '../routes/backup/resultSchemas';
+import { getDueOccurrenceKey } from '../routes/backup/helpers';
+import { applyBackupCommandResultToJob } from '../services/backupResultPersistence';
+import { markBackupJobFailedIfInFlight } from '../services/backupResultPersistence';
+import { createScheduledBackupJobIfAbsent } from '../services/backupJobCreation';
 
 // Re-export enqueue functions for backward compatibility
 export const getBackupQueue = backupEnqueue.getBackupQueue;
@@ -53,16 +59,24 @@ const BACKUP_QUEUE = 'backup';
 // ── Job data types ────────────────────────────────────────────────────────────
 
 interface CheckSchedulesJobData { type: 'check-schedules' }
+interface ExpireRecoveryTokensJobData { type: 'expire-recovery-tokens' }
+interface CleanupExpiredSnapshotsJobData { type: 'cleanup-expired-snapshots' }
 interface DispatchBackupJobData { type: 'dispatch-backup'; jobId: string; configId: string; orgId: string; deviceId: string }
 interface ProcessResultsJobData {
   type: 'process-results'; jobId: string; orgId: string; deviceId: string;
-  result: { status: string; jobId?: string; snapshotId?: string; filesBackedUp?: number; bytesBackedUp?: number; warning?: string; error?: string };
+  result: ParsedBackupCommandResult & { status: string; error?: string };
 }
 interface DispatchRestoreJobData {
   type: 'dispatch-restore'; restoreJobId: string; snapshotId: string;
   deviceId: string; orgId: string; targetPath?: string; selectedPaths?: string[];
 }
-type BackupJobData = CheckSchedulesJobData | DispatchBackupJobData | ProcessResultsJobData | DispatchRestoreJobData;
+type BackupJobData =
+  | CheckSchedulesJobData
+  | ExpireRecoveryTokensJobData
+  | CleanupExpiredSnapshotsJobData
+  | DispatchBackupJobData
+  | ProcessResultsJobData
+  | DispatchRestoreJobData;
 
 // ── Worker ────────────────────────────────────────────────────────────────────
 
@@ -74,6 +88,10 @@ function createBackupWorker(): Worker<BackupJobData> {
         switch (job.data.type) {
           case 'check-schedules':
             return await processCheckSchedules();
+          case 'expire-recovery-tokens':
+            return await processExpireRecoveryTokens();
+          case 'cleanup-expired-snapshots':
+            return await processCleanupExpiredSnapshots();
           case 'dispatch-backup':
             return await processDispatchBackup(job.data);
           case 'process-results':
@@ -106,6 +124,8 @@ type PolicySchedule = {
   dayOfWeek?: number;
   dayOfMonth?: number;
 };
+
+const SCHEDULE_LOOKBACK_MINUTES = 5;
 
 async function processCheckSchedules(): Promise<{ enqueued: number }> {
   const now = new Date();
@@ -141,74 +161,29 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
 
         const schedule = entry.settings?.schedule as PolicySchedule | null;
         if (!schedule?.frequency || !schedule.time) continue;
+        const occurrenceKey = getDueOccurrenceKey(
+          schedule as never,
+          now,
+          entry.resolvedTimezone,
+          SCHEDULE_LOOKBACK_MINUTES,
+        );
+        if (!occurrenceKey) continue;
 
-        // Check if due now (simple: compare hour:minute in UTC)
-        const [schedHour, schedMin] = (schedule.time ?? '02:00')
-          .split(':')
-          .map(Number);
-        const currentHour = now.getUTCHours();
-        const currentMin = now.getUTCMinutes();
+        const result = await createScheduledBackupJobIfAbsent({
+          orgId,
+          configId: entry.configId,
+          featureLinkId: entry.featureLinkId,
+          deviceId: entry.deviceId,
+          occurrenceKey,
+          createdAt: now,
+          dedupeWindowMinutes: SCHEDULE_LOOKBACK_MINUTES,
+        });
 
-        if (currentHour !== schedHour || currentMin !== schedMin) continue;
-
-        // Check day-of-week for weekly
-        if (
-          schedule.frequency === 'weekly' &&
-          typeof schedule.dayOfWeek === 'number' &&
-          now.getUTCDay() !== schedule.dayOfWeek
-        ) {
-          continue;
-        }
-
-        // Check day-of-month for monthly
-        if (
-          schedule.frequency === 'monthly' &&
-          typeof schedule.dayOfMonth === 'number' &&
-          now.getUTCDate() !== schedule.dayOfMonth
-        ) {
-          continue;
-        }
-
-        // 4. Deduplicate: check for existing jobs this minute using featureLinkId + deviceId
-        const minuteStart = new Date(now);
-        minuteStart.setSeconds(0, 0);
-        const minuteEnd = new Date(minuteStart.getTime() + 60_000);
-
-        const [existing] = await db
-          .select({ id: backupJobs.id })
-          .from(backupJobs)
-          .where(
-            and(
-              eq(backupJobs.featureLinkId, entry.featureLinkId),
-              eq(backupJobs.deviceId, entry.deviceId),
-              sql`${backupJobs.createdAt} >= ${minuteStart.toISOString()}::timestamptz`,
-              sql`${backupJobs.createdAt} < ${minuteEnd.toISOString()}::timestamptz`
-            )
-          )
-          .limit(1);
-
-        if (existing) continue;
-
-        // 5. Create job with featureLinkId and configId from resolver
-        const [job] = await db
-          .insert(backupJobs)
-          .values({
-            orgId,
-            configId: entry.configId,
-            featureLinkId: entry.featureLinkId,
-            deviceId: entry.deviceId,
-            status: 'pending',
-            type: 'scheduled',
-            createdAt: now,
-            updatedAt: now,
-          })
-          .returning();
-
-        if (job) {
+        if (result?.created) {
           // 6. Enqueue dispatch
           await enqueueBackupDispatch(
-            job.id,
-            job.configId,
+            result.job.id,
+            result.job.configId,
             orgId,
             entry.deviceId
           );
@@ -232,6 +207,42 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
   }
 
   return { enqueued };
+}
+
+async function processExpireRecoveryTokens(): Promise<{ expired: number }> {
+  const now = new Date();
+  const expired = await db
+    .update(recoveryTokens)
+    .set({ status: 'expired' })
+    .where(
+      and(
+        eq(recoveryTokens.status, 'active'),
+        isNull(recoveryTokens.authenticatedAt),
+        lt(recoveryTokens.expiresAt, now)
+      )
+    )
+    .returning({ id: recoveryTokens.id });
+
+  return { expired: expired.length };
+}
+
+async function processCleanupExpiredSnapshots(): Promise<{ deleted: number; skipped: number; prunedByMaxVersions: number }> {
+  const orgRows = await db
+    .selectDistinct({ orgId: backupSnapshots.orgId })
+    .from(backupSnapshots);
+
+  let deleted = 0;
+  let skipped = 0;
+  let prunedByMaxVersions = 0;
+
+  for (const { orgId } of orgRows) {
+    const result = await cleanupExpiredSnapshots(orgId);
+    deleted += result.deleted;
+    skipped += result.skippedLegalHold + result.skippedImmutable;
+    prunedByMaxVersions += result.prunedByMaxVersions;
+  }
+
+  return { deleted, skipped, prunedByMaxVersions };
 }
 
 // ── Backup target resolution ─────────────────────────────────────────────────
@@ -300,8 +311,20 @@ export async function resolveBackupTargets(
       const excludeSet = new Set(t.excludeDatabases ?? []);
       const results: BackupTarget[] = [];
       for (const inst of instances) {
-        const dbs = (inst.databases as string[]) ?? [];
-        for (const database of dbs) {
+        const dbs = Array.isArray(inst.databases) ? inst.databases : [];
+        for (const databaseEntry of dbs) {
+          const database =
+            typeof databaseEntry === 'string'
+              ? databaseEntry
+              : databaseEntry &&
+                  typeof databaseEntry === 'object' &&
+                  'name' in databaseEntry &&
+                  typeof databaseEntry.name === 'string'
+                ? databaseEntry.name
+                : null;
+          if (!database) {
+            continue;
+          }
           if (!excludeSet.has(database)) {
             results.push({
               commandType: 'mssql_backup',
@@ -491,89 +514,30 @@ async function processDispatchBackup(
 async function processResults(
   data: ProcessResultsJobData
 ): Promise<{ processed: boolean }> {
-  const result = data.result;
-
-  const updateData: Record<string, unknown> = {
-    updatedAt: new Date(),
-    completedAt: new Date(),
-  };
-
-  if (result.status === 'completed') {
-    updateData.status = 'completed';
-    updateData.fileCount = result.filesBackedUp ?? null;
-    updateData.totalSize = result.bytesBackedUp ?? null;
-    if (result.warning) {
-      updateData.errorLog = result.warning;
-    }
-  } else {
-    updateData.status = 'failed';
-    updateData.errorLog = result.error ?? result.warning ?? 'Unknown error';
+  const resultStatus = data.result.status;
+  const parsed = backupCommandResultSchema.safeParse(data.result);
+  if (!parsed.success) {
+    await markBackupJobFailedIfInFlight(
+      data.jobId,
+      `Malformed backup result payload: ${parsed.error.issues.map((issue) => issue.message).join(', ')}`,
+    );
+    return { processed: false };
   }
 
-  if (result.snapshotId) {
-    updateData.snapshotId = result.snapshotId;
-  }
-
-  await db
-    .update(backupJobs)
-    .set(updateData)
-    .where(eq(backupJobs.id, data.jobId));
-
-  // Create snapshot row if successful, then apply GFS tags
-  if (result.status === 'completed' && result.snapshotId) {
-    // Look up configId from the job
-    const [job] = await db
-      .select({ configId: backupJobs.configId })
-      .from(backupJobs)
-      .where(eq(backupJobs.id, data.jobId))
-      .limit(1);
-
-    const completedAt = new Date();
-
-    const [snapshot] = await db
-      .insert(backupSnapshots)
-      .values({
-        orgId: data.orgId,
-        jobId: data.jobId,
-        deviceId: data.deviceId,
-        configId: job?.configId ?? null,
-        snapshotId: result.snapshotId,
-        label: `Backup ${completedAt.toISOString().slice(0, 10)}`,
-        size: result.bytesBackedUp ?? null,
-        fileCount: result.filesBackedUp ?? null,
-        timestamp: completedAt,
-      })
-      .returning();
-
-    // Apply GFS retention tags
-    if (snapshot) {
-      try {
-        const tags = await applyGfsTagsToSnapshot(
-          snapshot.id,
-          completedAt,
-          data.jobId
-        );
-
-        // Set expiration based on GFS config + tags
-        const gfsConfig = await resolveGfsConfigForJob(data.jobId);
-        const expiresAt = computeExpiresAt(completedAt, tags, gfsConfig);
-        if (expiresAt) {
-          await db
-            .update(backupSnapshots)
-            .set({ expiresAt })
-            .where(eq(backupSnapshots.id, snapshot.id));
-        }
-      } catch (err) {
-        console.error(
-          `[BackupWorker] Failed to apply GFS tags to snapshot ${snapshot.id}:`,
-          err instanceof Error ? err.message : err
-        );
-      }
-    }
-  }
+  const result = parsed.data;
+  await applyBackupCommandResultToJob({
+    jobId: data.jobId,
+    orgId: data.orgId,
+    deviceId: data.deviceId,
+    resultStatus,
+    result: {
+      ...result,
+      error: data.result.error,
+    },
+  });
 
   console.log(
-    `[BackupWorker] Job ${data.jobId} result processed: ${result.status}`
+    `[BackupWorker] Job ${data.jobId} result processed: ${resultStatus}`
   );
   return { processed: true };
 }
@@ -664,12 +628,33 @@ export async function initializeBackupWorker(): Promise<void> {
       }
     );
 
+    const expireJob = await queue.add(
+      'expire-recovery-tokens',
+      { type: 'expire-recovery-tokens' as const },
+      {
+        repeat: { every: 60 * 60 * 1000 },
+        removeOnComplete: { count: 10 },
+        removeOnFail: { count: 20 },
+      }
+    );
+
+    const cleanupJob = await queue.add(
+      'cleanup-expired-snapshots',
+      { type: 'cleanup-expired-snapshots' as const },
+      {
+        repeat: { every: 6 * 60 * 60 * 1000 },
+        removeOnComplete: { count: 10 },
+        removeOnFail: { count: 20 },
+      }
+    );
+
     // Clean up stale repeatable jobs
     const repeatable = await queue.getRepeatableJobs();
     for (const job of repeatable) {
       if (
-        job.name === 'check-schedules' &&
-        job.key !== newJob.repeatJobKey
+        (job.name === 'check-schedules' && job.key !== newJob.repeatJobKey) ||
+        (job.name === 'expire-recovery-tokens' && job.key !== expireJob.repeatJobKey) ||
+        (job.name === 'cleanup-expired-snapshots' && job.key !== cleanupJob.repeatJobKey)
       ) {
         await queue.removeRepeatableByKey(job.key);
       }

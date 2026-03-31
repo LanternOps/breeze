@@ -37,6 +37,7 @@ var (
 	enrollSiteID     string
 	enrollDeviceRole string
 	helperRole       string
+	desktopContext   string
 )
 
 var log = logging.L("main")
@@ -92,6 +93,14 @@ via a local IPC socket and has no direct network access.`,
 	},
 }
 
+var desktopHelperCmd = &cobra.Command{
+	Use:   "desktop-helper",
+	Short: "Run as the dedicated desktop helper",
+	Run: func(cmd *cobra.Command, args []string) {
+		runDesktopHelper()
+	},
+}
+
 func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is /etc/breeze/agent.yaml)")
 	rootCmd.PersistentFlags().StringVar(&serverURL, "server", "", "Breeze server URL")
@@ -99,15 +108,27 @@ func init() {
 	enrollCmd.Flags().StringVar(&enrollSiteID, "site-id", "", "Site ID to enroll into (optional, overrides enrollment key default)")
 	enrollCmd.Flags().StringVar(&enrollDeviceRole, "device-role", "", "Device role override (e.g. workstation, server)")
 	userHelperCmd.Flags().StringVar(&helperRole, "role", "system", "Helper role: 'system' (desktop capture) or 'user' (script execution)")
+	desktopHelperCmd.Flags().StringVar(&desktopContext, "context", ipc.DesktopContextUserSession, "Desktop context: 'user_session' or 'login_window'")
 
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(enrollCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(userHelperCmd)
+	rootCmd.AddCommand(desktopHelperCmd)
 }
 
 func main() {
+	if filepath.Base(os.Args[0]) == "breeze-desktop-helper" {
+		for i := 1; i < len(os.Args)-1; i++ {
+			if os.Args[i] == "--context" {
+				desktopContext = os.Args[i+1]
+				break
+			}
+		}
+		runDesktopHelper()
+		return
+	}
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -610,10 +631,22 @@ func checkStatus() {
 // runUserHelper starts the per-user session helper process.
 // It connects to the root daemon via IPC and handles user-context operations.
 func runUserHelper() {
+	runHelperProcess("user helper", helperRole, "", ipc.HelperBinaryUserHelper)
+}
+
+func runDesktopHelper() {
+	runHelperProcess("desktop helper", ipc.HelperRoleSystem, desktopContext, ipc.HelperBinaryDesktopHelper)
+}
+
+func runHelperProcess(name, role, context, binaryKind string) {
 	// Log to file in the same logs folder as the main agent
 	logDir := filepath.Dir(config.Default().LogFile) // e.g. C:\ProgramData\Breeze\logs
 	os.MkdirAll(logDir, 0700)
-	logPath := filepath.Join(logDir, "user-helper.log")
+	logFileName := "user-helper.log"
+	if binaryKind == ipc.HelperBinaryDesktopHelper {
+		logFileName = "desktop-helper.log"
+	}
+	logPath := filepath.Join(logDir, logFileName)
 	var output io.Writer = os.Stdout
 	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
 		// When spawned with CREATE_NO_WINDOW (service helper), stdout is invalid.
@@ -656,28 +689,31 @@ func runUserHelper() {
 		defer logging.StopShipper()
 	}
 
-	log.Info("starting user helper",
+	log.Info("starting helper",
+		"name", name,
 		"version", version,
 		"socket", socketPath,
 		"pid", os.Getpid(),
-		"role", helperRole,
+		"role", role,
+		"context", context,
+		"binaryKind", binaryKind,
 	)
 
-	client := userhelper.New(socketPath, helperRole)
+	client := userhelper.NewWithOptions(socketPath, role, binaryKind, context)
 
 	// Handle shutdown signals
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		log.Info("shutting down user helper")
+		log.Info("shutting down helper", "name", name)
 		client.Stop()
 	}()
 
 	if err := client.Run(); err != nil {
-		log.Error("user helper error", "error", err)
+		log.Error("helper error", "name", name, "error", err)
 		os.Exit(1)
 	}
 
-	log.Info("user helper stopped")
+	log.Info("helper stopped", "name", name)
 }

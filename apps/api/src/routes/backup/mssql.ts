@@ -3,16 +3,21 @@ import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../../db';
-import { devices } from '../../db/schema';
+import { backupJobs, backupSnapshots, devices } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { sqlInstances, backupChains } from '../../db/schema/applicationBackup';
 import {
   executeCommand,
-  queueCommandForExecution,
   CommandTypes,
 } from '../../services/commandQueue';
 import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
+import { resolveBackupConfigForDevice } from '../../services/featureConfigResolver';
+import { backupCommandResultSchema } from './resultSchemas';
+import {
+  applyBackupCommandResultToJob,
+  markBackupJobFailedIfInFlight,
+} from '../../services/backupResultPersistence';
 
 export const mssqlRoutes = new Hono();
 
@@ -35,14 +40,12 @@ const mssqlBackupSchema = z.object({
   instance: z.string().min(1).regex(sqlIdentifierRegex, 'Invalid instance name characters'),
   database: z.string().min(1).regex(sqlIdentifierRegex, 'Invalid database name characters'),
   backupType: z.enum(['full', 'differential', 'log']).default('full'),
-  outputPath: z.string().min(1),
-  configId: z.string().uuid().optional(),
 });
 
 const mssqlRestoreSchema = z.object({
   deviceId: z.string().uuid(),
-  instance: z.string().min(1).regex(sqlIdentifierRegex, 'Invalid instance name characters'),
-  backupFile: z.string().min(1),
+  snapshotId: z.string().uuid(),
+  instance: z.string().min(1).regex(sqlIdentifierRegex, 'Invalid instance name characters').optional(),
   targetDatabase: z.string().min(1).regex(sqlIdentifierRegex, 'Invalid database name characters'),
   noRecovery: z.boolean().default(false),
 });
@@ -212,23 +215,88 @@ mssqlRoutes.post(
       return c.json({ error: 'Device not found' }, 404);
     }
 
-    const { command, error } = await queueCommandForExecution(
+    const resolvedConfig = await resolveBackupConfigForDevice(payload.deviceId);
+    if (!resolvedConfig?.configId) {
+      return c.json({ error: 'A provider-backed backup configuration is required on this device' }, 400);
+    }
+
+    const [backupJob] = await db
+      .insert(backupJobs)
+      .values({
+        orgId,
+        configId: resolvedConfig.configId,
+        featureLinkId: resolvedConfig.featureLinkId,
+        deviceId: payload.deviceId,
+        status: 'pending',
+        type: 'manual',
+        backupType: 'database',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .returning();
+
+    if (!backupJob) {
+      return c.json({ error: 'Failed to create backup job' }, 500);
+    }
+
+    const result = await executeCommand(
       payload.deviceId,
       CommandTypes.MSSQL_BACKUP,
       {
         instance: payload.instance,
         database: payload.database,
         backupType: payload.backupType,
-        outputPath: payload.outputPath,
       },
-      { userId: auth?.user?.id }
+      { userId: auth?.user?.id, timeoutMs: 600000 }
     );
 
-    if (error) {
-      return c.json({ error }, 500);
+    let parsedData: unknown = null;
+    let snapshotDbId: string | null = null;
+    let providerSnapshotId: string | null = null;
+    try {
+      parsedData = result.stdout ? JSON.parse(result.stdout) : {};
+      const parsedBackup = backupCommandResultSchema.safeParse(parsedData);
+      if (!parsedBackup.success) {
+        throw new Error(parsedBackup.error.issues.map((issue) => issue.message).join(', '));
+      }
+
+      const persisted = await applyBackupCommandResultToJob({
+        jobId: backupJob.id,
+        orgId,
+        deviceId: payload.deviceId,
+        resultStatus: result.status,
+        result: {
+          ...parsedBackup.data,
+          error: result.error,
+        },
+      });
+      snapshotDbId = persisted.snapshotDbId;
+      providerSnapshotId = persisted.providerSnapshotId;
+    } catch (error) {
+      await markBackupJobFailedIfInFlight(
+        backupJob.id,
+        error instanceof Error ? error.message : 'Failed to persist MSSQL backup result',
+      );
+      if (result.status === 'completed') {
+        return c.json(
+          { error: error instanceof Error ? error.message : 'Failed to persist MSSQL backup result' },
+          500
+        );
+      }
     }
 
-    return c.json({ data: { commandId: command?.id, status: command?.status } });
+    if (result.status === 'failed') {
+      return c.json({ error: result.error || 'MSSQL backup failed' }, 500);
+    }
+
+    return c.json({
+      data: {
+        ...(parsedData && typeof parsedData === 'object' ? parsedData : { raw: result.stdout ?? null }),
+        backupJobId: backupJob.id,
+        snapshotDbId,
+        snapshotId: providerSnapshotId,
+      },
+    });
   }
 );
 
@@ -276,23 +344,74 @@ mssqlRoutes.post(
       return c.json({ error: 'Device not found' }, 404);
     }
 
-    const { command, error } = await queueCommandForExecution(
+    const [snapshot] = await db
+      .select({
+        id: backupSnapshots.id,
+        providerSnapshotId: backupSnapshots.snapshotId,
+        metadata: backupSnapshots.metadata,
+      })
+      .from(backupSnapshots)
+      .where(
+        and(
+          eq(backupSnapshots.id, payload.snapshotId),
+          eq(backupSnapshots.orgId, orgId)
+        )
+      )
+      .limit(1);
+
+    if (!snapshot) {
+      return c.json({ error: 'Snapshot not found' }, 404);
+    }
+
+    const metadata =
+      snapshot.metadata && typeof snapshot.metadata === 'object' && !Array.isArray(snapshot.metadata)
+        ? snapshot.metadata as Record<string, unknown>
+        : {};
+    if (metadata.backupKind !== 'mssql_database' && metadata.backupKind !== 'mssql_backup') {
+      return c.json({ error: 'Snapshot is not an MSSQL backup artifact' }, 400);
+    }
+
+    const backupFileName =
+      typeof metadata.backupFileName === 'string'
+        ? metadata.backupFileName
+        : typeof metadata.backupFile === 'string'
+          ? String(metadata.backupFile).split('/').pop() ?? null
+          : null;
+    if (!backupFileName) {
+      return c.json({ error: 'Snapshot is missing MSSQL backup file metadata' }, 400);
+    }
+
+    const result = await executeCommand(
       payload.deviceId,
       CommandTypes.MSSQL_RESTORE,
       {
-        instance: payload.instance,
-        backupFile: payload.backupFile,
+        instance:
+          payload.instance
+          ?? (
+            typeof metadata.instance === 'string'
+              ? metadata.instance
+              : typeof metadata.instanceName === 'string'
+                ? metadata.instanceName
+                : 'MSSQLSERVER'
+          ),
+        snapshotId: snapshot.providerSnapshotId,
+        backupFileName,
         targetDatabase: payload.targetDatabase,
         noRecovery: payload.noRecovery,
       },
-      { userId: auth?.user?.id }
+      { userId: auth?.user?.id, timeoutMs: 600000 }
     );
 
-    if (error) {
-      return c.json({ error }, 500);
+    if (result.status === 'failed') {
+      return c.json({ error: result.error || 'MSSQL restore failed' }, 500);
     }
 
-    return c.json({ data: { commandId: command?.id, status: command?.status } });
+    try {
+      const data = result.stdout ? JSON.parse(result.stdout) : null;
+      return c.json({ data });
+    } catch {
+      return c.json({ data: result.stdout });
+    }
   }
 );
 
@@ -313,11 +432,13 @@ mssqlRoutes.post(
 
     const { snapshotId } = c.req.valid('param');
 
-    // Look up snapshot to find device and backup file location
-    const { backupSnapshots } = await import('../../db/schema');
-
     const [snapshot] = await db
-      .select()
+      .select({
+        id: backupSnapshots.id,
+        deviceId: backupSnapshots.deviceId,
+        providerSnapshotId: backupSnapshots.snapshotId,
+        metadata: backupSnapshots.metadata,
+      })
       .from(backupSnapshots)
       .where(
         and(
@@ -332,12 +453,23 @@ mssqlRoutes.post(
     }
 
     const metadata = (snapshot.metadata ?? {}) as Record<string, unknown>;
-    const instance = (metadata.instance as string) || 'MSSQLSERVER';
-    const backupFile = snapshot.location || (metadata.backupFile as string);
+    if (metadata.backupKind !== 'mssql_database' && metadata.backupKind !== 'mssql_backup') {
+      return c.json({ error: 'Snapshot is not an MSSQL backup artifact' }, 400);
+    }
+    const instance =
+      (metadata.instance as string)
+      || (metadata.instanceName as string)
+      || 'MSSQLSERVER';
+    const backupFileName =
+      typeof metadata.backupFileName === 'string'
+        ? metadata.backupFileName
+        : typeof metadata.backupFile === 'string'
+          ? String(metadata.backupFile).split('/').pop() ?? null
+        : null;
 
-    if (!backupFile) {
+    if (!backupFileName) {
       return c.json(
-        { error: 'Snapshot has no backup file location' },
+        { error: 'Snapshot is missing MSSQL backup file metadata' },
         400
       );
     }
@@ -345,7 +477,11 @@ mssqlRoutes.post(
     const result = await executeCommand(
       snapshot.deviceId,
       CommandTypes.MSSQL_VERIFY,
-      { instance, backupFile },
+      {
+        instance,
+        snapshotId: snapshot.providerSnapshotId,
+        backupFileName,
+      },
       { userId: auth?.user?.id, timeoutMs: 120000 }
     );
 

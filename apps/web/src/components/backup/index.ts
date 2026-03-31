@@ -12,6 +12,7 @@ export { default as HypervVMActions } from './HypervVMActions';
 export { default as InstantBootStatus } from './InstantBootStatus';
 export { default as MssqlDashboard } from './MssqlDashboard';
 export { default as MssqlRestoreDialog } from './MssqlRestoreDialog';
+export { default as RecoveryBootstrapTab } from './RecoveryBootstrapTab';
 export { default as RestoreWizard } from './RestoreWizard';
 export { default as SLAConfigDialog } from './SLAConfigDialog';
 export { default as SLADashboard } from './SLADashboard';

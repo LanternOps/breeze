@@ -63,6 +63,31 @@ type BackupConfig = {
   updatedAt: string;
 };
 
+type BackupInlineSettingsPayload = {
+  schedule: {
+    frequency: ScheduleFrequency;
+    time: string;
+    timezone?: string;
+    dayOfWeek?: number;
+    dayOfMonth?: number;
+    windowStart?: string;
+    windowEnd?: string;
+  };
+  retention: {
+    preset: RetentionPreset;
+    retentionDays: number;
+    maxVersions: number;
+    keepDaily: number;
+    keepWeekly: number;
+    keepMonthly: number;
+    keepYearly: number;
+    weeklyDay: number;
+  };
+  paths: string[];
+  backupMode: string;
+  targets: Record<string, unknown>;
+};
+
 // ── Constants ──────────────────────────────────────────────────────────────────
 
 const scheduleDefaults: BackupScheduleSettings = {
@@ -228,14 +253,77 @@ function scheduleDescription(s: BackupScheduleSettings): string {
   const dayName = dayOfWeekOptions.find((d) => d.value === s.scheduleDayOfWeek)?.label ?? 'Sunday';
   switch (s.scheduleFrequency) {
     case 'daily':
-      return `Every day at ${time} UTC`;
+      return `Every day at ${time} in the device's effective timezone`;
     case 'weekly':
-      return `Every ${dayName} at ${time} UTC`;
+      return `Every ${dayName} at ${time} in the device's effective timezone`;
     case 'monthly':
-      return `Day ${s.scheduleDayOfMonth} of each month at ${time} UTC`;
+      return `Day ${s.scheduleDayOfMonth} of each month at ${time} in the device's effective timezone`;
     default:
       return '';
   }
+}
+
+function inflateSettings(stored?: Record<string, unknown> | null): BackupScheduleSettings {
+  const schedule = (stored?.schedule ?? {}) as Record<string, unknown>;
+  const retention = (stored?.retention ?? {}) as Record<string, unknown>;
+  const targets = (stored?.targets ?? {}) as Record<string, unknown>;
+  const persistedPaths = Array.isArray(stored?.paths) ? stored?.paths as string[] : [];
+  const targetPaths = Array.isArray(targets.paths) ? targets.paths as string[] : [];
+  const excludes = Array.isArray(targets.excludes) ? targets.excludes as string[] : [];
+
+  return {
+    ...scheduleDefaults,
+    scheduleFrequency: (schedule.frequency as ScheduleFrequency) ?? scheduleDefaults.scheduleFrequency,
+    scheduleTime: (schedule.time as string) ?? scheduleDefaults.scheduleTime,
+    scheduleDayOfWeek: (schedule.dayOfWeek as number) ?? scheduleDefaults.scheduleDayOfWeek,
+    scheduleDayOfMonth: (schedule.dayOfMonth as number) ?? scheduleDefaults.scheduleDayOfMonth,
+    retentionPreset: (retention.preset as RetentionPreset) ?? scheduleDefaults.retentionPreset,
+    retentionDays: (retention.retentionDays as number) ?? scheduleDefaults.retentionDays,
+    retentionVersions: (retention.maxVersions as number) ?? scheduleDefaults.retentionVersions,
+    paths: persistedPaths.length > 0 ? persistedPaths : targetPaths,
+    excludePatterns: excludes,
+    gfsDailyRetention: (retention.keepDaily as number) ?? scheduleDefaults.gfsDailyRetention,
+    gfsWeeklyRetention: (retention.keepWeekly as number) ?? scheduleDefaults.gfsWeeklyRetention,
+    gfsMonthlyRetention: (retention.keepMonthly as number) ?? scheduleDefaults.gfsMonthlyRetention,
+    gfsYearlyRetention: (retention.keepYearly as number) ?? scheduleDefaults.gfsYearlyRetention,
+    gfsWeeklyDayOfWeek: (retention.weeklyDay as number) ?? scheduleDefaults.gfsWeeklyDayOfWeek,
+    backupWindowStart: (schedule.windowStart as string) ?? scheduleDefaults.backupWindowStart,
+    backupWindowEnd: (schedule.windowEnd as string) ?? scheduleDefaults.backupWindowEnd,
+  };
+}
+
+function buildInlineSettings(
+  settings: BackupScheduleSettings,
+  backupMode: string,
+  targets: Record<string, unknown>,
+): BackupInlineSettingsPayload {
+  const normalizedTargets = backupMode === 'file'
+    ? { paths: settings.paths ?? [], excludes: settings.excludePatterns ?? [] }
+    : targets;
+
+  return {
+    schedule: {
+      frequency: settings.scheduleFrequency,
+      time: settings.scheduleTime,
+      ...(settings.scheduleFrequency === 'weekly' ? { dayOfWeek: settings.scheduleDayOfWeek } : {}),
+      ...(settings.scheduleFrequency === 'monthly' ? { dayOfMonth: settings.scheduleDayOfMonth } : {}),
+      ...(settings.backupWindowStart ? { windowStart: settings.backupWindowStart } : {}),
+      ...(settings.backupWindowEnd ? { windowEnd: settings.backupWindowEnd } : {}),
+    },
+    retention: {
+      preset: settings.retentionPreset,
+      retentionDays: settings.retentionDays,
+      maxVersions: settings.retentionVersions,
+      keepDaily: settings.gfsDailyRetention,
+      keepWeekly: settings.gfsWeeklyRetention,
+      keepMonthly: settings.gfsMonthlyRetention,
+      keepYearly: settings.gfsYearlyRetention,
+      weeklyDay: settings.gfsWeeklyDayOfWeek,
+    },
+    paths: settings.paths ?? [],
+    backupMode,
+    targets: normalizedTargets,
+  };
 }
 
 // ── Main Component ─────────────────────────────────────────────────────────────
@@ -271,11 +359,7 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
 
   // Schedule/retention inline settings
   const [settings, setSettings] = useState<BackupScheduleSettings>(() => {
-    const stored = effectiveLink?.inlineSettings as Partial<BackupScheduleSettings> | undefined;
-    const merged = { ...scheduleDefaults, ...stored };
-    if (!Array.isArray(merged.paths)) merged.paths = [...scheduleDefaults.paths];
-    if (!Array.isArray(merged.excludePatterns)) merged.excludePatterns = [...scheduleDefaults.excludePatterns];
-    return merged;
+    return inflateSettings(effectiveLink?.inlineSettings as Record<string, unknown> | null | undefined);
   });
 
   // Backup mode and targets
@@ -311,12 +395,7 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
     if (link?.featurePolicyId) setSelectedConfigId(link.featurePolicyId);
     if (link?.inlineSettings) {
       const stored = link.inlineSettings as Record<string, unknown>;
-      setSettings((prev) => {
-        const merged = { ...prev, ...(stored as Partial<BackupScheduleSettings>) };
-        if (!Array.isArray(merged.paths)) merged.paths = [...scheduleDefaults.paths];
-        if (!Array.isArray(merged.excludePatterns)) merged.excludePatterns = [...scheduleDefaults.excludePatterns];
-        return merged;
-      });
+      setSettings(inflateSettings(stored));
       if (stored.backupMode) setBackupMode(stored.backupMode as string);
       if (stored.targets) setTargets(stored.targets as Record<string, unknown>);
     }
@@ -426,13 +505,10 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
 
     if (!configId) { setConfigError('Please select or create a backup configuration'); return; }
 
-    const saveTargets = backupMode === 'file'
-      ? { paths: settings.paths ?? [], excludes: settings.excludePatterns ?? [] }
-      : targets;
     const result = await save(existingLink?.id ?? null, {
       featureType: 'backup',
       featurePolicyId: configId,
-      inlineSettings: { ...settings, backupMode, targets: saveTargets },
+      inlineSettings: buildInlineSettings(settings, backupMode, targets),
     });
     if (result) onLinkChanged(result, 'backup');
   };
@@ -445,13 +521,10 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
 
   const handleOverride = async () => {
     clearError();
-    const saveTargets = backupMode === 'file'
-      ? { paths: settings.paths ?? [], excludes: settings.excludePatterns ?? [] }
-      : targets;
     const result = await save(null, {
       featureType: 'backup',
       featurePolicyId: selectedConfigId || null,
-      inlineSettings: { ...settings, backupMode, targets: saveTargets },
+      inlineSettings: buildInlineSettings(settings, backupMode, targets),
     });
     if (result) onLinkChanged(result, 'backup');
   };
@@ -929,7 +1002,7 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
             </select>
           </div>
           <div>
-            <label className="text-xs text-muted-foreground">Time (UTC)</label>
+            <label className="text-xs text-muted-foreground">Time</label>
             <input
               type="time"
               value={settings.scheduleTime}
@@ -1036,51 +1109,6 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
         )}
       </div>
 
-      {/* ══════════════════════════════════════════════════════════════════════
-          SECTION 5: Options & Notifications
-          ══════════════════════════════════════════════════════════════════════ */}
-      <div className="mt-6 space-y-3">
-        <h3 className="text-sm font-semibold">Options</h3>
-        <div className="grid gap-3 lg:grid-cols-2">
-          <ToggleRow
-            label="Compression"
-            description="Compress backup data to reduce storage usage."
-            checked={settings.compression}
-            onChange={(v) => update('compression', v)}
-          />
-          <ToggleRow
-            label="Encryption"
-            description="Encrypt backups at rest with AES-256."
-            checked={settings.encryption}
-            onChange={(v) => update('encryption', v)}
-          />
-        </div>
-      </div>
-
-      <div className="mt-4 space-y-3">
-        <h3 className="text-sm font-semibold">Notifications</h3>
-        <div className="grid gap-3 lg:grid-cols-2">
-          <ToggleRow
-            label="Notify on failure"
-            description="Send an alert when a backup job fails."
-            checked={settings.notifyOnFailure}
-            onChange={(v) => update('notifyOnFailure', v)}
-          />
-          <ToggleRow
-            label="Notify on success"
-            description="Send a confirmation after each successful backup."
-            checked={settings.notifyOnSuccess}
-            onChange={(v) => update('notifyOnSuccess', v)}
-          />
-          <ToggleRow
-            label="Notify on missed"
-            description="Alert when a scheduled backup didn't run (device offline, agent unreachable)."
-            checked={settings.notifyOnMissed}
-            onChange={(v) => update('notifyOnMissed', v)}
-          />
-        </div>
-      </div>
-
       <div className="mt-6">
         <h3 className="text-sm font-semibold">GFS Retention</h3>
         <p className="mt-1 text-xs text-muted-foreground">
@@ -1148,27 +1176,6 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
         </div>
       </div>
 
-      <div className="mt-6 space-y-3">
-        <h3 className="text-sm font-semibold">Legal Hold</h3>
-        <ToggleRow
-          label="Enable legal hold"
-          description="Prevent backup pruning when a device or dataset is under preservation requirements."
-          checked={settings.legalHoldEnabled}
-          onChange={(v) => update('legalHoldEnabled', v)}
-        />
-        {settings.legalHoldEnabled && (
-          <div className="rounded-md border bg-muted/20 p-4">
-            <label className="text-xs text-muted-foreground">Reason</label>
-            <input
-              value={settings.legalHoldReason}
-              onChange={(e) => update('legalHoldReason', e.target.value)}
-              placeholder="Legal request, audit hold, incident investigation..."
-              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-          </div>
-        )}
-      </div>
-
       <div className="mt-6">
         <h3 className="text-sm font-semibold">Backup Window</h3>
         <p className="mt-1 text-xs text-muted-foreground">
@@ -1193,36 +1200,6 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
               className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
             />
           </div>
-        </div>
-      </div>
-
-      <div className="mt-6">
-        <h3 className="text-sm font-semibold">Bandwidth Limit</h3>
-        <div className="mt-3 max-w-sm">
-          <label className="text-xs text-muted-foreground">Mbps</label>
-          <input
-            type="number"
-            min={0}
-            value={settings.bandwidthLimitMbps}
-            onChange={(e) => update('bandwidthLimitMbps', Number(e.target.value) || 0)}
-            className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
-          />
-          <p className="mt-1 text-[11px] text-muted-foreground">Set to 0 for unlimited throughput.</p>
-        </div>
-      </div>
-
-      <div className="mt-6">
-        <h3 className="text-sm font-semibold">Priority</h3>
-        <div className="mt-3 max-w-sm">
-          <label className="text-xs text-muted-foreground">Priority (1-100)</label>
-          <input
-            type="number"
-            min={1}
-            max={100}
-            value={settings.priority}
-            onChange={(e) => update('priority', Math.min(100, Math.max(1, Number(e.target.value) || 50)))}
-            className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
-          />
         </div>
       </div>
     </FeatureTabShell>

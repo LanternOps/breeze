@@ -12,8 +12,10 @@ import {
   backupPolicies,
   backupJobs,
   configPolicyBackupSettings,
+  backupConfigs,
 } from '../db/schema';
-import { eq, and, lt, sql, isNull, or } from 'drizzle-orm';
+import { eq, and, lt, desc } from 'drizzle-orm';
+import { deleteBackupSnapshotArtifacts } from '../services/backupSnapshotStorage';
 
 // ── GFS tag types ────────────────────────────────────────────────────────────
 
@@ -30,6 +32,8 @@ export type GfsConfig = {
   monthly?: number;
   yearly?: number;
   weeklyDay?: number;
+  retentionDays?: number;
+  maxVersions?: number;
 };
 
 // ── GFS tag computation ──────────────────────────────────────────────────────
@@ -98,6 +102,9 @@ export async function resolveGfsConfigForJob(
         weekly: r.keepWeekly,
         monthly: r.keepMonthly,
         yearly: r.keepYearly,
+        weeklyDay: r.weeklyDay,
+        retentionDays: r.retentionDays,
+        maxVersions: r.maxVersions,
       };
     }
   }
@@ -140,7 +147,27 @@ export type RetentionCleanupResult = {
   deleted: number;
   skippedLegalHold: number;
   skippedImmutable: number;
+  prunedByMaxVersions: number;
 };
+
+async function deleteSnapshotRow(params: {
+  id: string;
+  snapshotId: string;
+  provider: string | null | undefined;
+  providerConfig: unknown;
+  metadata: unknown;
+}): Promise<void> {
+  await deleteBackupSnapshotArtifacts({
+    provider: params.provider,
+    providerConfig: params.providerConfig,
+    snapshotId: params.snapshotId,
+    metadata: params.metadata,
+  });
+
+  await db
+    .delete(backupSnapshots)
+    .where(eq(backupSnapshots.id, params.id));
+}
 
 /**
  * Cleans up expired snapshots for an org, respecting legal holds and immutability.
@@ -158,6 +185,7 @@ export async function cleanupExpiredSnapshots(
     deleted: 0,
     skippedLegalHold: 0,
     skippedImmutable: 0,
+    prunedByMaxVersions: 0,
   };
 
   // Find all expired snapshots for this org
@@ -165,11 +193,15 @@ export async function cleanupExpiredSnapshots(
     .select({
       id: backupSnapshots.id,
       snapshotId: backupSnapshots.snapshotId,
+      metadata: backupSnapshots.metadata,
       legalHold: backupSnapshots.legalHold,
       isImmutable: backupSnapshots.isImmutable,
       immutableUntil: backupSnapshots.immutableUntil,
+      provider: backupConfigs.provider,
+      providerConfig: backupConfigs.providerConfig,
     })
     .from(backupSnapshots)
+    .leftJoin(backupConfigs, eq(backupSnapshots.configId, backupConfigs.id))
     .where(
       and(
         eq(backupSnapshots.orgId, orgId),
@@ -197,18 +229,98 @@ export async function cleanupExpiredSnapshots(
     }
 
     // Safe to delete
-    await db
-      .delete(backupSnapshots)
-      .where(eq(backupSnapshots.id, snap.id));
+    await deleteSnapshotRow({
+      id: snap.id,
+      snapshotId: snap.snapshotId,
+      provider: snap.provider,
+      providerConfig: snap.providerConfig,
+      metadata: snap.metadata,
+    });
 
     result.deleted++;
   }
 
-  if (result.deleted > 0 || result.skippedLegalHold > 0 || result.skippedImmutable > 0) {
+  const versionBoundSnapshots = await db
+    .select({
+      id: backupSnapshots.id,
+      snapshotId: backupSnapshots.snapshotId,
+      timestamp: backupSnapshots.timestamp,
+      deviceId: backupSnapshots.deviceId,
+      configId: backupSnapshots.configId,
+      metadata: backupSnapshots.metadata,
+      legalHold: backupSnapshots.legalHold,
+      isImmutable: backupSnapshots.isImmutable,
+      immutableUntil: backupSnapshots.immutableUntil,
+      provider: backupConfigs.provider,
+      providerConfig: backupConfigs.providerConfig,
+      retention: configPolicyBackupSettings.retention,
+    })
+    .from(backupSnapshots)
+    .innerJoin(backupJobs, eq(backupSnapshots.jobId, backupJobs.id))
+    .leftJoin(backupConfigs, eq(backupSnapshots.configId, backupConfigs.id))
+    .leftJoin(
+      configPolicyBackupSettings,
+      eq(backupJobs.featureLinkId, configPolicyBackupSettings.featureLinkId),
+    )
+    .where(eq(backupSnapshots.orgId, orgId))
+    .orderBy(
+      backupSnapshots.deviceId,
+      backupSnapshots.configId,
+      desc(backupSnapshots.timestamp),
+    );
+
+  const snapshotsByGroup = new Map<string, typeof versionBoundSnapshots>();
+  for (const row of versionBoundSnapshots) {
+    const groupKey = `${row.deviceId}:${row.configId ?? 'none'}`;
+    const existing = snapshotsByGroup.get(groupKey);
+    if (existing) {
+      existing.push(row);
+    } else {
+      snapshotsByGroup.set(groupKey, [row]);
+    }
+  }
+
+  for (const groupRows of snapshotsByGroup.values()) {
+    const retention = groupRows[0]?.retention as Record<string, unknown> | null | undefined;
+    const maxVersions = typeof retention?.maxVersions === 'number' ? retention.maxVersions : null;
+    if (!maxVersions || maxVersions < 1 || groupRows.length <= maxVersions) {
+      continue;
+    }
+
+    for (const snap of groupRows.slice(maxVersions)) {
+      if (snap.legalHold) {
+        result.skippedLegalHold++;
+        continue;
+      }
+
+      if (snap.isImmutable && snap.immutableUntil && snap.immutableUntil > now) {
+        result.skippedImmutable++;
+        continue;
+      }
+
+      await deleteSnapshotRow({
+        id: snap.id,
+        snapshotId: snap.snapshotId,
+        provider: snap.provider,
+        providerConfig: snap.providerConfig,
+        metadata: snap.metadata,
+      });
+      result.deleted++;
+      result.prunedByMaxVersions++;
+    }
+  }
+
+  if (
+    result.deleted > 0 ||
+    result.skippedLegalHold > 0 ||
+    result.skippedImmutable > 0 ||
+    result.prunedByMaxVersions > 0
+  ) {
     console.log(
       `[BackupRetention] Org ${orgId}: deleted ${result.deleted}, ` +
       `skipped ${result.skippedLegalHold} (legal hold), ` +
-      `${result.skippedImmutable} (immutable)`
+      `${result.skippedImmutable} (immutable), ` +
+      `pruned ${result.prunedByMaxVersions} by maxVersions`
     );
   }
 
@@ -242,6 +354,10 @@ export function computeExpiresAt(
   }
   if (tags.yearly && gfsConfig.yearly) {
     maxDays = Math.max(maxDays, gfsConfig.yearly * 365);
+  }
+
+  if (maxDays === 0 && gfsConfig.retentionDays) {
+    maxDays = gfsConfig.retentionDays;
   }
 
   if (maxDays === 0) return null;

@@ -439,6 +439,7 @@ export async function resolveBackupConfigForDevice(
   featureLinkId: string;
   configId: string | null;
   inlineSettings: Record<string, unknown> | null;
+  resolvedTimezone: string;
 } | null> {
   const hierarchy = await loadDeviceHierarchy(deviceId);
   if (!hierarchy) return null;
@@ -492,6 +493,7 @@ export async function resolveBackupConfigForDevice(
     featureLinkId: winner.featureLinkId,
     configId: winner.configId,
     inlineSettings: winner.inlineSettings as Record<string, unknown> | null,
+    resolvedTimezone: await resolveDeviceTimezone(deviceId),
   };
 }
 
@@ -903,6 +905,7 @@ export interface BackupAssignedDevice {
   featureLinkId: string;
   configId: string | null;
   settings: typeof configPolicyBackupSettings.$inferSelect | null;
+  resolvedTimezone: string;
 }
 
 /**
@@ -991,20 +994,17 @@ export async function resolveAllBackupAssignedDevices(
         break;
       }
       case 'partner': {
-        // Partner-level: get all orgs under partner, then their devices
-        const orgs = await db
-          .select({ id: organizations.id })
-          .from(organizations)
-          .where(eq(organizations.partnerId, row.assignmentTargetId));
-        if (orgs.length === 0) {
-          deviceIds = [];
-        } else {
-          const partnerDevices = await db
-            .select({ id: devices.id })
-            .from(devices)
-            .where(inArray(devices.orgId, orgs.map((o) => o.id)));
-          deviceIds = partnerDevices.map((d) => d.id);
-        }
+        const partnerDevices = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .innerJoin(organizations, eq(devices.orgId, organizations.id))
+          .where(
+            and(
+              eq(organizations.partnerId, row.assignmentTargetId),
+              eq(devices.orgId, orgId),
+            )
+          );
+        deviceIds = partnerDevices.map((d) => d.id);
         break;
       }
       default:
@@ -1019,12 +1019,20 @@ export async function resolveAllBackupAssignedDevices(
           featureLinkId: row.featureLinkId,
           configId: row.configId,
           settings: row.backupSettings,
+          resolvedTimezone: 'UTC',
         });
       }
     }
   }
 
-  return Array.from(seen.values());
+  const resolved = await Promise.all(
+    Array.from(seen.values()).map(async (entry) => ({
+      ...entry,
+      resolvedTimezone: await resolveDeviceTimezone(entry.deviceId),
+    }))
+  );
+
+  return resolved;
 }
 
 // ============================================

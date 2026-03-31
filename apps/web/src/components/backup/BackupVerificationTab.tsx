@@ -13,7 +13,7 @@ import {
 import { fetchWithAuth } from '../../stores/auth';
 import { friendlyFetchError } from '../../lib/utils';
 
-type VerificationType = 'integrity' | 'test_restore' | 'full_recovery';
+type VerificationType = 'integrity' | 'test_restore';
 type VerificationStatus = 'pending' | 'running' | 'passed' | 'failed' | 'partial';
 
 type Verification = {
@@ -146,8 +146,6 @@ export default function BackupVerificationTab({ deviceId }: { deviceId: string }
     setError(undefined);
     try {
       const body: Record<string, unknown> = { deviceId, verificationType: type };
-      if (type === 'full_recovery') body.highImpactApproved = true;
-
       const res = await fetchWithAuth('/backup/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

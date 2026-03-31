@@ -22,6 +22,7 @@ const multipartUploadThreshold = 100 * 1024 * 1024 // 100 MB
 type S3Provider struct {
 	Bucket          string
 	Region          string
+	endpoint        string
 	accessKeyID     string
 	secretAccessKey string
 	sessionToken    string
@@ -31,9 +32,15 @@ type S3Provider struct {
 
 // NewS3Provider creates a new S3Provider.
 func NewS3Provider(bucket, region, accessKeyID, secretAccessKey, sessionToken string) *S3Provider {
+	return NewS3ProviderWithEndpoint(bucket, region, "", accessKeyID, secretAccessKey, sessionToken)
+}
+
+// NewS3ProviderWithEndpoint creates a new S3Provider with an optional custom endpoint.
+func NewS3ProviderWithEndpoint(bucket, region, endpoint, accessKeyID, secretAccessKey, sessionToken string) *S3Provider {
 	return &S3Provider{
 		Bucket:          bucket,
 		Region:          region,
+		endpoint:        endpoint,
 		accessKeyID:     accessKeyID,
 		secretAccessKey: secretAccessKey,
 		sessionToken:    sessionToken,
@@ -208,6 +215,20 @@ func (s *S3Provider) getClient() (*s3.Client, error) {
 
 	options := []func(*awscfg.LoadOptions) error{
 		awscfg.WithRegion(s.Region),
+	}
+	if s.endpoint != "" {
+		options = append(options, awscfg.WithEndpointResolverWithOptions(
+			aws.EndpointResolverWithOptionsFunc(func(service, region string, _ ...interface{}) (aws.Endpoint, error) {
+				if service != s3.ServiceID {
+					return aws.Endpoint{}, &aws.EndpointNotFoundError{}
+				}
+				return aws.Endpoint{
+					URL:               s.endpoint,
+					SigningRegion:     region,
+					HostnameImmutable: true,
+				}, nil
+			}),
+		))
 	}
 	if s.accessKeyID != "" && s.secretAccessKey != "" {
 		options = append(options, awscfg.WithCredentialsProvider(

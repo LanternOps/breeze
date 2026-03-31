@@ -21,6 +21,7 @@ import { isRedisAvailable } from '../services/redis';
 import { writeRouteAudit } from '../services/auditEvents';
 import { isCronDue } from '../services/automationRuntime';
 import { PERMISSIONS } from '../services/permissions';
+import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 
 export const discoveryRoutes = new Hono();
 const requireDiscoveryRead = requirePermission(
@@ -518,16 +519,17 @@ discoveryRoutes.post(
       return c.json({ error: requestedAgentValidation.error }, requestedAgentValidation.status);
     }
 
-    const rows = await db.insert(discoveryJobs).values({
+    const created = await createDiscoveryJobIfIdle({
       profileId: profile.id,
       orgId: profile.orgId,
       siteId: profile.siteId,
       agentId: body.agentId ?? null,
-      status: 'scheduled',
-      scheduledAt: new Date()
-    }).returning();
-    const job = rows[0];
+    });
+    const job = created?.job;
     if (!job) return c.json({ error: 'Failed to create job' }, 500);
+    if (!created.created) {
+      return c.json({ error: 'A discovery job is already scheduled or running for this profile', jobId: job.id }, 409);
+    }
 
     // Enqueue scan dispatch via BullMQ
     if (!isRedisAvailable()) {

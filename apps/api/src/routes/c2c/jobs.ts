@@ -4,9 +4,10 @@ import { eq, and, desc, gte, lte } from 'drizzle-orm';
 import { db } from '../../db';
 import { c2cBackupJobs, c2cBackupConfigs } from '../../db/schema';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { getC2cQueue } from '../../jobs/c2cBackupWorker';
+import { enqueueC2cSync } from '../../jobs/c2cEnqueue';
 import { c2cJobListSchema, idParamSchema } from './schemas';
 import { resolveScopedOrgId } from './helpers';
+import { createC2cSyncJobIfIdle } from '../../services/c2cJobCreation';
 
 export const c2cJobsRoutes = new Hono();
 
@@ -76,29 +77,23 @@ c2cJobsRoutes.post(
 
     if (!config) return c.json({ error: 'Config not found' }, 404);
 
-    // Create job record
-    const now = new Date();
-    const [job] = await db
-      .insert(c2cBackupJobs)
-      .values({
-        orgId,
-        configId,
-        status: 'pending',
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning();
-
-    if (!job) return c.json({ error: 'Failed to create job' }, 500);
-
-    // Enqueue BullMQ job
-    const queue = getC2cQueue();
-    await queue.add('run-sync', {
-      type: 'run-sync' as const,
-      jobId: job.id,
-      configId,
+    const created = await createC2cSyncJobIfIdle({
       orgId,
+      configId,
     });
+    const job = created?.job;
+    if (!job) return c.json({ error: 'Failed to create job' }, 500);
+    if (!created.created) {
+      return c.json(
+        {
+          error: 'A C2C sync job is already pending or running for this configuration',
+          jobId: job.id,
+        },
+        409
+      );
+    }
+
+    await enqueueC2cSync(job.id, configId, orgId);
 
     writeRouteAudit(c, {
       orgId,

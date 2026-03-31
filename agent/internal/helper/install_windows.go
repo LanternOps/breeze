@@ -51,7 +51,7 @@ func installAutoStart(binaryPath string) error {
 }
 
 func isHelperRunning() bool {
-	out, err := exec.Command("tasklist", "/FI", "IMAGENAME eq breeze-helper.exe", "/NH").Output()
+	out, err := outputHelperCommand("tasklist", "/FI", "IMAGENAME eq breeze-helper.exe", "/NH")
 	if err != nil {
 		return false
 	}
@@ -59,7 +59,7 @@ func isHelperRunning() bool {
 }
 
 func stopHelper() error {
-	return exec.Command("taskkill", "/F", "/IM", "breeze-helper.exe").Run()
+	return runHelperCommand("taskkill", "/F", "/IM", "breeze-helper.exe")
 }
 
 func removeAutoStart() error {

@@ -11,6 +11,7 @@ import { getRedisConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { compareBaselineScan, normalizeBaselineScanSchedule } from '../services/networkBaseline';
 import { enqueueDiscoveryScan, type DiscoveredHostResult } from './discoveryWorker';
+import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -132,6 +133,7 @@ async function processScheduleScans(): Promise<{ enqueued: number }> {
           subnet: baseline.subnet
         },
         {
+          jobId: `baseline-scan:${baseline.id}`,
           removeOnComplete: { count: 50 },
           removeOnFail: { count: 100 }
         }
@@ -225,41 +227,39 @@ async function processExecuteScan(data: ExecuteBaselineScanJobData): Promise<{
     throw new Error(`Unable to resolve discovery profile for baseline ${baseline.id}`);
   }
 
-  const [discoveryJob] = await db
-    .insert(discoveryJobs)
-    .values({
-      profileId: profile.id,
-      orgId: baseline.orgId,
-      siteId: baseline.siteId,
-      status: 'scheduled',
-      scheduledAt: new Date()
-    })
-    .returning();
+  const created = await createDiscoveryJobIfIdle({
+    profileId: profile.id,
+    orgId: baseline.orgId,
+    siteId: baseline.siteId,
+  });
 
+  const discoveryJob = created?.job;
   if (!discoveryJob) {
     throw new Error(`Failed to create discovery job for baseline ${baseline.id}`);
   }
 
-  try {
-    await enqueueDiscoveryScan(
-      discoveryJob.id,
-      profile.id,
-      baseline.orgId,
-      baseline.siteId,
-      null
-    );
-  } catch (error) {
-    await db
-      .update(discoveryJobs)
-      .set({
-        status: 'failed',
-        completedAt: new Date(),
-        errors: { message: 'Failed to enqueue baseline discovery scan' },
-        updatedAt: new Date()
-      })
-      .where(eq(discoveryJobs.id, discoveryJob.id));
+  if (created.created) {
+    try {
+      await enqueueDiscoveryScan(
+        discoveryJob.id,
+        profile.id,
+        baseline.orgId,
+        baseline.siteId,
+        null
+      );
+    } catch (error) {
+      await db
+        .update(discoveryJobs)
+        .set({
+          status: 'failed',
+          completedAt: new Date(),
+          errors: { message: 'Failed to enqueue baseline discovery scan' },
+          updatedAt: new Date()
+        })
+        .where(eq(discoveryJobs.id, discoveryJob.id));
 
-    throw error;
+      throw error;
+    }
   }
 
   await db
@@ -354,6 +354,7 @@ export async function enqueueBaselineScan(
       subnet
     },
     {
+      jobId: `baseline-scan:${baselineId}`,
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 }
     }
@@ -384,6 +385,7 @@ export async function enqueueBaselineComparison(
       hosts
     },
     {
+      jobId: `baseline-compare:${baselineId}:${jobId}`,
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 }
     }

@@ -178,6 +178,10 @@ export function clearPermissionCache(userId?: string): void {
 
 // Built-in system permissions
 export const PERMISSIONS = {
+  // Backup / recovery
+  BACKUP_READ: { resource: 'backup', action: 'read' },
+  BACKUP_WRITE: { resource: 'backup', action: 'write' },
+
   // Devices
   DEVICES_READ: { resource: 'devices', action: 'read' },
   DEVICES_WRITE: { resource: 'devices', action: 'write' },

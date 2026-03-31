@@ -19,11 +19,16 @@ vi.mock('./commandQueue', () => ({
   queueCommandForExecution: vi.fn(),
 }));
 
+vi.mock('./featureConfigResolver', () => ({
+  resolveBackupConfigForDevice: vi.fn(),
+}));
+
 import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { validateToolInput } from './aiToolSchemas';
 import { queueCommandForExecution } from './commandQueue';
+import { resolveBackupConfigForDevice } from './featureConfigResolver';
 import { registerMssqlTools } from './aiToolsMssql';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
@@ -92,6 +97,10 @@ function setDefaultDbMocks() {
   vi.mocked(db.insert).mockImplementation(() => createInsertChain([]) as any);
   vi.mocked(db.update).mockImplementation(() => createUpdateChain([]) as any);
   vi.mocked(db.delete).mockImplementation(() => createDeleteChain([]) as any);
+  vi.mocked(resolveBackupConfigForDevice).mockResolvedValue({
+    configId: CONFIG_ID,
+    featureLinkId: 'feature-1',
+  } as any);
   vi.mocked(queueCommandForExecution).mockResolvedValue({
     command: { id: 'cmd-1', status: 'queued' },
     error: null,
@@ -164,13 +173,35 @@ function prepareHandlerMocks(toolName: string) {
       ]]);
       break;
     case 'trigger_mssql_backup':
-      mockSelectSequence([[{ id: DEVICE_ID }]]);
+      mockSelectSequence([[{ id: DEVICE_ID, orgId: ORG_ID }]]);
       break;
     case 'restore_mssql_database':
-      mockSelectSequence([[{ id: DEVICE_ID }]]);
+      mockSelectSequence([
+        [{ id: DEVICE_ID }],
+        [{
+          id: SNAPSHOT_ID,
+          providerSnapshotId: 'provider-snapshot-1',
+          metadata: {
+            backupKind: 'mssql_database',
+            instance: 'MSSQLSERVER',
+            backupFileName: 'AppDb_full_20260331.bak',
+          },
+        }],
+      ]);
       break;
     case 'verify_mssql_backup':
-      mockSelectSequence([[{ id: DEVICE_ID }]]);
+      mockSelectSequence([[
+        {
+          id: SNAPSHOT_ID,
+          deviceId: DEVICE_ID,
+          providerSnapshotId: 'provider-snapshot-1',
+          metadata: {
+            backupKind: 'mssql_database',
+            instance: 'MSSQLSERVER',
+            backupFileName: 'AppDb_full_20260331.bak',
+          },
+        },
+      ]]);
       break;
     default:
       mockSelectSequence([[]]);
@@ -198,8 +229,8 @@ describe('registerMssqlTools', () => {
   it.each([
     ['query_mssql_instances', { deviceId: DEVICE_ID, status: 'ready', limit: 10 }],
     ['get_mssql_backup_status', { deviceId: DEVICE_ID, database: 'AppDb', limit: 10 }],
-    ['trigger_mssql_backup', { deviceId: DEVICE_ID, instance: 'MSSQLSERVER', database: 'AppDb', outputPath: '/tmp/appdb.bak' }],
-    ['restore_mssql_database', { deviceId: DEVICE_ID, instance: 'MSSQLSERVER', backupFile: '/tmp/appdb.bak', targetDatabase: 'RestoredDb' }],
+    ['trigger_mssql_backup', { deviceId: DEVICE_ID, instance: 'MSSQLSERVER', database: 'AppDb' }],
+    ['restore_mssql_database', { deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, targetDatabase: 'RestoredDb' }],
     ['verify_mssql_backup', { snapshotId: SNAPSHOT_ID }],
   ])('accepts valid input for %s', (toolName, input) => {
     expect(validateToolInput(toolName, input as Record<string, unknown>)).toEqual({ success: true });
@@ -208,8 +239,8 @@ describe('registerMssqlTools', () => {
   it.each([
     ['query_mssql_instances', { deviceId: 'not-a-uuid' }],
     ['get_mssql_backup_status', { deviceId: 'not-a-uuid' }],
-    ['trigger_mssql_backup', { deviceId: DEVICE_ID, instance: 'MSSQLSERVER', database: 'AppDb' }],
-    ['restore_mssql_database', { deviceId: DEVICE_ID, instance: 'MSSQLSERVER', backupFile: '/tmp/appdb.bak' }],
+    ['trigger_mssql_backup', { deviceId: DEVICE_ID, instance: 'MSSQLSERVER' }],
+    ['restore_mssql_database', { deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID }],
     ['verify_mssql_backup', {}],
   ])('rejects invalid input for %s', (toolName, input) => {
     const result = validateToolInput(toolName, input as Record<string, unknown>);
@@ -229,9 +260,9 @@ describe('aiToolsMssql handlers', () => {
   it.each([
     ['query_mssql_instances', {}],
     ['get_mssql_backup_status', {}],
-    ['trigger_mssql_backup', { deviceId: DEVICE_ID, instance: 'MSSQLSERVER', database: 'AppDb', outputPath: '/tmp/appdb.bak' }],
-    ['restore_mssql_database', { deviceId: DEVICE_ID, instance: 'MSSQLSERVER', backupFile: '/tmp/appdb.bak', targetDatabase: 'RestoredDb' }],
-    ['verify_mssql_backup', { deviceId: DEVICE_ID, instance: 'MSSQLSERVER', backupFile: '/tmp/appdb.bak' }],
+    ['trigger_mssql_backup', { deviceId: DEVICE_ID, instance: 'MSSQLSERVER', database: 'AppDb' }],
+    ['restore_mssql_database', { deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, targetDatabase: 'RestoredDb' }],
+    ['verify_mssql_backup', { snapshotId: SNAPSHOT_ID }],
   ])('%s handler returns a JSON string', async (toolName, input) => {
     prepareHandlerMocks(toolName);
     const result = await toolMap.get(toolName)!.handler(input as Record<string, unknown>, makeAuth());
@@ -257,5 +288,46 @@ describe('aiToolsMssql handlers', () => {
     const parsed = JSON.parse(result);
 
     expect(parsed).toEqual({ error: 'Operation failed. Check server logs for details.' });
+  });
+
+  it('queues MSSQL backup with a persisted backup job id', async () => {
+    prepareHandlerMocks('trigger_mssql_backup');
+    vi.mocked(db.insert).mockImplementation(() => createInsertChain([{ id: 'job-1' }]) as any);
+
+    await toolMap.get('trigger_mssql_backup')!.handler(
+      { deviceId: DEVICE_ID, instance: 'MSSQLSERVER', database: 'AppDb' },
+      makeAuth()
+    );
+
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      DEVICE_ID,
+      'mssql_backup',
+      expect.objectContaining({
+        backupJobId: 'job-1',
+        instance: 'MSSQLSERVER',
+        database: 'AppDb',
+      }),
+      expect.any(Object)
+    );
+  });
+
+  it('queues MSSQL restore from snapshot metadata instead of a local backup path', async () => {
+    prepareHandlerMocks('restore_mssql_database');
+
+    await toolMap.get('restore_mssql_database')!.handler(
+      { deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, targetDatabase: 'RestoredDb' },
+      makeAuth()
+    );
+
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      DEVICE_ID,
+      'mssql_restore',
+      expect.objectContaining({
+        snapshotId: 'provider-snapshot-1',
+        backupFileName: 'AppDb_full_20260331.bak',
+        targetDatabase: 'RestoredDb',
+      }),
+      expect.any(Object)
+    );
   });
 });

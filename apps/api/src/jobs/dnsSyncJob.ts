@@ -18,6 +18,7 @@ import {
 } from '../db/schema';
 import { createDnsProvider, type DnsEvent } from '../services/dnsProviders';
 import { getRedisConnection } from '../services/redis';
+import { isReusableState } from '../services/bullmqUtils';
 import { decryptSecret } from '../services/secretCrypto';
 import { captureException } from '../services/sentry';
 
@@ -228,13 +229,7 @@ async function addUniqueJob(
   const existing = await queue.getJob(jobId);
   if (existing) {
     const state = await existing.getState();
-    if (
-      state === 'active'
-      || state === 'waiting'
-      || state === 'delayed'
-      || state === 'waiting-children'
-      || state === 'prioritized'
-    ) {
+    if (isReusableState(state)) {
       return String(existing.id);
     }
     await existing.remove().catch((err) => {

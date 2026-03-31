@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { discoveryRoutes } from './discovery';
 import { db } from '../db';
+import { isRedisAvailable } from '../services/redis';
 
 vi.mock('../services', () => ({}));
 
@@ -11,7 +12,30 @@ vi.mock('../services/auditEvents', () => ({
 }));
 
 vi.mock('../services/redis', () => ({
-  isRedisAvailable: vi.fn(() => false)
+  isRedisAvailable: vi.fn(() => false),
+  getRedisConnection: vi.fn(),
+}));
+
+vi.mock('../jobs/discoveryWorker', () => ({
+  enqueueDiscoveryScan: vi.fn(async () => {}),
+  getDiscoveryQueue: vi.fn(() => null),
+}));
+
+vi.mock('../services/discoveryJobCreation', () => ({
+  createDiscoveryJobIfIdle: vi.fn(async ({ profileId, orgId, siteId, agentId }: any) => ({
+    job: {
+      id: 'job-001',
+      profileId,
+      orgId,
+      siteId,
+      agentId: agentId ?? null,
+      status: 'scheduled',
+      scheduledAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+    created: true,
+  })),
 }));
 
 vi.mock('../db', () => ({
@@ -115,16 +139,37 @@ describe('discovery routes', () => {
 
   describe('POST /discovery/scan', () => {
     it('should queue a discovery scan for a profile', async () => {
+      const profileId = '00000000-0000-0000-0000-000000000099';
+
+      // Mock profile lookup to return a valid profile
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: profileId,
+              orgId: '00000000-0000-0000-0000-000000000000',
+              siteId: '00000000-0000-0000-0000-000000000001',
+              name: 'Test Profile',
+              subnets: ['10.0.0.0/24'],
+              methods: ['ping'],
+            }]),
+          }),
+        }),
+      } as any);
+
+      // Enable Redis so enqueue path succeeds
+      vi.mocked(isRedisAvailable).mockReturnValueOnce(true);
+
       const res = await app.request('/discovery/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-        body: JSON.stringify({
-          profileId: 'profile-001'
-        })
+        body: JSON.stringify({ profileId })
       });
 
-      // Scan queuing may return 201 or fail depending on job queue mock
-      expect([200, 201, 400, 500]).toContain(res.status);
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.id).toBe('job-001');
+      expect(body.status).toBe('scheduled');
     });
 
     it('rejects requested agents from a different site', async () => {

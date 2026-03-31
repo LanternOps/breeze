@@ -1,8 +1,17 @@
 package bmr
 
 import (
+	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path"
+	"path/filepath"
 	"testing"
+
+	"github.com/breeze-rmm/agent/internal/backup"
+	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
 func TestRecoveryConfigSerialization(t *testing.T) {
@@ -266,5 +275,143 @@ func TestVMEstimateSerialization(t *testing.T) {
 	}
 	if decoded.Platform != "windows" {
 		t.Errorf("Platform: got %q, want %q", decoded.Platform, "windows")
+	}
+}
+
+func TestRunRecoveryWithToken_AuthenticatesAndCompletes(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+	snapshotID := "bmr-session-snapshot"
+	sourcePath := "/original/data.txt"
+	restorePath := filepath.Join(t.TempDir(), "restored", "data.txt")
+
+	srcDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "data.txt")
+	content := []byte("restored by token-driven bmr")
+	if err := os.WriteFile(srcPath, content, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "data.txt.gz"))
+	if err := provider.Upload(srcPath, backupPath); err != nil {
+		t.Fatalf("upload snapshot file: %v", err)
+	}
+
+	manifest := backup.Snapshot{
+		ID: snapshotID,
+		Files: []backup.SnapshotFile{
+			{SourcePath: sourcePath, BackupPath: backupPath, Size: int64(len(content))},
+		},
+		Size: int64(len(content)),
+	}
+	manifestData, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	manifestPath := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(manifestPath, manifestData, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if err := provider.Upload(manifestPath, filepath.ToSlash(path.Join("snapshots", snapshotID, "manifest.json"))); err != nil {
+		t.Fatalf("upload manifest: %v", err)
+	}
+
+	var completionToken string
+	var completionResult RecoveryResult
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/backup/bmr/recover/authenticate":
+			var payload map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode authenticate payload: %v", err)
+			}
+			if payload["token"] != "brz_rec_test" {
+				t.Fatalf("unexpected token %q", payload["token"])
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"bootstrap": BootstrapResponse{
+					Version:     BootstrapResponseVersion,
+					TokenID:     "token-1",
+					DeviceID:    "device-1",
+					SnapshotID:  "db-snapshot-1",
+					RestoreType: "bare_metal",
+					TargetConfig: map[string]any{
+						"targetPaths": map[string]string{
+							sourcePath: restorePath,
+						},
+					},
+					Snapshot: &AuthenticatedSnapshot{
+						ID:         "db-snapshot-1",
+						SnapshotID: snapshotID,
+						Size:       int64(len(content)),
+						FileCount:  1,
+					},
+					BackupConfig: &AuthenticatedProviderConfig{
+						ID:       "cfg-1",
+						Provider: "local",
+						ProviderConfig: map[string]any{
+							"path": baseDir,
+						},
+					},
+					AuthenticatedAt: "2026-03-31T12:00:00.000Z",
+				},
+			})
+		case "/api/v1/backup/bmr/recover/complete":
+			var payload struct {
+				Token  string         `json:"token"`
+				Result RecoveryResult `json:"result"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode complete payload: %v", err)
+			}
+			completionToken = payload.Token
+			completionResult = payload.Result
+			_ = json.NewEncoder(w).Encode(map[string]any{"restoreJobId": "restore-1", "status": payload.Result.Status})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	result, err := RunRecoveryWithToken(RecoveryConfig{
+		RecoveryToken: "brz_rec_test",
+		ServerURL:     server.URL,
+	})
+	if err != nil {
+		t.Fatalf("RunRecoveryWithToken failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected recovery result")
+	}
+	if completionToken != "brz_rec_test" {
+		t.Fatalf("completion token = %q, want brz_rec_test", completionToken)
+	}
+	if completionResult.FilesRestored != 1 {
+		t.Fatalf("completion filesRestored = %d, want 1", completionResult.FilesRestored)
+	}
+	restored, err := os.ReadFile(restorePath)
+	if err != nil {
+		t.Fatalf("read restored file: %v", err)
+	}
+	if !bytes.Equal(restored, content) {
+		t.Fatalf("restored content mismatch: got %q", string(restored))
+	}
+}
+
+func TestProviderFromAuthenticatedConfig_S3(t *testing.T) {
+	provider, err := providerFromAuthenticatedConfig(map[string]any{
+		"provider": "s3",
+		"providerConfig": map[string]any{
+			"bucket":    "bucket-1",
+			"region":    "us-east-1",
+			"accessKey": "abc",
+			"secretKey": "def",
+		},
+	})
+	if err != nil {
+		t.Fatalf("providerFromAuthenticatedConfig: %v", err)
+	}
+	if provider == nil {
+		t.Fatal("expected provider")
 	}
 }

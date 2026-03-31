@@ -1,45 +1,312 @@
 import { Hono } from 'hono';
+import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { eq, and } from 'drizzle-orm';
-import { createHash, randomBytes } from 'crypto';
+import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   backupSnapshots,
-  restoreJobs,
   devices,
+  recoveryBootMediaArtifacts,
+  recoveryMediaArtifacts,
+  recoveryTokens,
+  restoreJobs,
 } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
-import { recoveryTokens } from '../../db/schema/recoveryTokens';
-import { writeRouteAudit } from '../../services/auditEvents';
+import { writeAuditEvent, writeRouteAudit } from '../../services/auditEvents';
+import { enqueueRecoveryMediaBuild } from '../../jobs/recoveryMediaWorker';
+import { enqueueRecoveryBootMediaBuild } from '../../jobs/recoveryBootMediaWorker';
 import { PERMISSIONS } from '../../services/permissions';
+import { getGithubReleasePageUrl } from '../../services/binarySource';
+import {
+  BMR_BOOTSTRAP_VERSION,
+  BMR_MIN_HELPER_VERSION,
+  asRecord,
+  buildAuthenticatedBootstrapPayload,
+  expireUnusedRecoveryTokens,
+  generateRecoveryToken,
+  hashRecoveryToken,
+  resolveRecoveryTokenPresentation,
+  resolveServerUrl,
+  resolveSnapshotProviderConfig,
+  syncExpiredRecoveryMediaArtifacts,
+  toIsoString,
+} from '../../services/recoveryBootstrap';
+import { getAuthenticatedRecoveryDownloadTarget } from '../../services/recoveryDownloadService';
+import {
+  createRecoveryBootMediaRequest,
+  getRecoveryBootMediaArtifact,
+  getRecoveryBootMediaDownloadTarget,
+  listRecoveryBootMediaArtifacts,
+  toRecoveryBootMediaSigningDetails,
+} from '../../services/recoveryBootMediaService';
+import {
+  getRecoveryMediaArtifact,
+  getRecoveryMediaDownloadTarget,
+  getRecoveryMediaSignatureDownloadTarget,
+  listRecoveryMediaArtifacts,
+  normalizeRecoveryMediaStatus,
+  toRecoveryMediaSigningDetails,
+} from '../../services/recoveryMediaService';
+import { getRecoverySigningKey, getRecoverySigningKeys } from '../../services/recoverySigning';
+import { getTrustedClientIp } from '../../services/clientIp';
+import { rateLimiter } from '../../services/rate-limit';
+import { getRedis } from '../../services/redis';
 import { resolveScopedOrgId } from './helpers';
 import {
-  bmrCreateTokenSchema,
   bmrAuthenticateSchema,
+  bmrBootMediaCreateSchema,
+  bmrBootMediaListSchema,
   bmrCompleteSchema,
+  bmrCreateTokenSchema,
+  bmrMediaCreateSchema,
+  bmrMediaListSchema,
+  bmrRecoveryDownloadSchema,
+  bmrTokenListSchema,
 } from './schemas';
 
 export const bmrRoutes = new Hono();
-
-// Public routes that bypass JWT auth — recovery agents authenticate via token.
 export const bmrPublicRoutes = new Hono();
 
-// ── Helpers ─────────────────────────────────────────────────────────
+const idParamSchema = z.object({ id: z.string().uuid() });
+const signingKeyParamSchema = z.object({ id: z.string().min(1) });
 
-function hashToken(token: string): string {
-  return createHash('sha256').update(token).digest('hex');
+function getSessionStatus(row: {
+  status: string;
+  authenticatedAt?: Date | null;
+  usedAt?: Date | null;
+  completedAt?: Date | null;
+}) {
+  if (row.status === 'revoked' || row.status === 'expired') return row.status;
+  if (row.completedAt || row.status === 'used') return 'completed';
+  if (row.authenticatedAt || row.usedAt) return 'authenticated';
+  return 'pending';
 }
 
-function generateToken(): string {
-  return `brz_rec_${randomBytes(32).toString('hex')}`;
+function toTokenSummary(row: {
+  id: string;
+  deviceId: string;
+  snapshotId: string;
+  restoreType: string;
+  status: string;
+  createdAt: Date;
+  expiresAt: Date;
+  authenticatedAt?: Date | null;
+  completedAt?: Date | null;
+  usedAt?: Date | null;
+}) {
+  return {
+    id: row.id,
+    deviceId: row.deviceId,
+    snapshotId: row.snapshotId,
+    restoreType: row.restoreType,
+    status: row.status,
+    sessionStatus: getSessionStatus(row),
+    createdAt: row.createdAt.toISOString(),
+    expiresAt: row.expiresAt.toISOString(),
+    authenticatedAt: row.authenticatedAt?.toISOString() ?? null,
+    completedAt: row.completedAt?.toISOString() ?? null,
+    usedAt: row.usedAt?.toISOString() ?? null,
+  };
 }
 
-// ── POST /bmr/token — Generate recovery token ──────────────────────
+function toMediaResponse(row: {
+  id: string;
+  tokenId: string;
+  snapshotId: string;
+  platform: string;
+  architecture: string;
+  status: string;
+  checksumSha256: string | null;
+  signatureFormat?: string | null;
+  signingKeyId?: string | null;
+  signedAt?: Date | null;
+  metadata: unknown;
+  createdAt: Date;
+  completedAt: Date | null;
+  tokenStatus?: string | null;
+}) {
+  const effectiveStatus = normalizeRecoveryMediaStatus(row);
+  const signing = toRecoveryMediaSigningDetails(row);
+  return {
+    id: row.id,
+    tokenId: row.tokenId,
+    snapshotId: row.snapshotId,
+    platform: row.platform,
+    architecture: row.architecture,
+    status: effectiveStatus,
+    checksumSha256: row.checksumSha256,
+    signatureFormat: signing.signatureFormat,
+    signingKeyId: signing.signingKeyId,
+    signedAt: signing.signedAt,
+    publicKey: signing.publicKey,
+    publicKeyPath: signing.publicKeyPath,
+    metadata: asRecord(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    completedAt: row.completedAt?.toISOString() ?? null,
+    downloadPath:
+      effectiveStatus === 'ready_signed' || effectiveStatus === 'legacy_unsigned'
+        ? `/api/v1/backup/bmr/media/${row.id}/download`
+        : null,
+    signatureDownloadPath:
+      effectiveStatus === 'ready_signed' ? `/api/v1/backup/bmr/media/${row.id}/signature` : null,
+  };
+}
+
+function toBootMediaResponse(row: {
+  id: string;
+  tokenId: string;
+  snapshotId: string;
+  bundleArtifactId: string;
+  platform: string;
+  architecture: string;
+  mediaType: string;
+  status: string;
+  checksumSha256: string | null;
+  signatureFormat?: string | null;
+  signingKeyId?: string | null;
+  signedAt?: Date | null;
+  metadata: unknown;
+  createdAt: Date;
+  completedAt: Date | null;
+  tokenStatus?: string | null;
+}) {
+  const effectiveStatus =
+    row.tokenStatus === 'revoked' || row.tokenStatus === 'expired' || row.tokenStatus === 'used'
+      ? 'expired'
+      : row.status;
+  const signing = toRecoveryBootMediaSigningDetails(row);
+  return {
+    id: row.id,
+    tokenId: row.tokenId,
+    snapshotId: row.snapshotId,
+    bundleArtifactId: row.bundleArtifactId,
+    platform: row.platform,
+    architecture: row.architecture,
+    mediaType: row.mediaType,
+    status: effectiveStatus,
+    checksumSha256: row.checksumSha256,
+    signatureFormat: signing.signatureFormat,
+    signingKeyId: signing.signingKeyId,
+    signedAt: signing.signedAt,
+    publicKey: signing.publicKey,
+    publicKeyPath: signing.publicKeyPath,
+    metadata: asRecord(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    completedAt: row.completedAt?.toISOString() ?? null,
+    downloadPath:
+      effectiveStatus === 'ready_signed' ? `/api/v1/backup/bmr/boot-media/${row.id}/download` : null,
+    signatureDownloadPath:
+      effectiveStatus === 'ready_signed' ? `/api/v1/backup/bmr/boot-media/${row.id}/signature` : null,
+  };
+}
+
+function toDownloadStreamResponse(
+  target: {
+    stream: NodeJS.ReadableStream & { destroy(): void };
+    fileName: string;
+    contentLength: number;
+  },
+  contentType: string
+) {
+  const webStream = new ReadableStream({
+    start(controller) {
+      target.stream.on('data', (chunk: string | Buffer) => {
+        const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+        controller.enqueue(new Uint8Array(bytes));
+      });
+      target.stream.on('end', () => controller.close());
+      target.stream.on('error', (error) => controller.error(error));
+    },
+    cancel() {
+      target.stream.destroy();
+    },
+  });
+
+  return new Response(webStream, {
+    status: 200,
+    headers: {
+      'Content-Type': contentType,
+      'Content-Disposition': `attachment; filename="${target.fileName}"`,
+      'Content-Length': String(target.contentLength),
+      'Cache-Control': 'no-cache',
+    },
+  });
+}
+
+async function expireTokenArtifacts(orgId: string) {
+  await expireUnusedRecoveryTokens();
+  await syncExpiredRecoveryMediaArtifacts(orgId);
+}
+
+async function enforcePublicRateLimit(
+  c: Parameters<typeof bmrPublicRoutes.post>[1] extends never ? never : any,
+  action: 'authenticate' | 'complete',
+  limit: number
+) {
+  const ip = getTrustedClientIp(c);
+  const rateCheck = await rateLimiter(getRedis(), `bmr:${action}:${ip}`, limit, 60);
+  if (rateCheck.allowed) return null;
+
+  const retryAfter = Math.max(1, Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000));
+  c.header('Retry-After', String(retryAfter));
+  return c.json({ error: 'Rate limit exceeded. Please wait before retrying.' }, 429);
+}
+
+bmrRoutes.get(
+  '/bmr/tokens',
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
+  zValidator('query', bmrTokenListSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
+    await expireTokenArtifacts(orgId);
+
+    const query = c.req.valid('query');
+    const rows = await db
+      .select({
+        id: recoveryTokens.id,
+        deviceId: recoveryTokens.deviceId,
+        snapshotId: recoveryTokens.snapshotId,
+        restoreType: recoveryTokens.restoreType,
+        status: recoveryTokens.status,
+        createdAt: recoveryTokens.createdAt,
+        expiresAt: recoveryTokens.expiresAt,
+        authenticatedAt: recoveryTokens.authenticatedAt,
+        completedAt: recoveryTokens.completedAt,
+        usedAt: recoveryTokens.usedAt,
+      })
+      .from(recoveryTokens)
+      .where(
+        and(
+          eq(recoveryTokens.orgId, orgId),
+          query.status ? eq(recoveryTokens.status, query.status) : undefined,
+          query.deviceId ? eq(recoveryTokens.deviceId, query.deviceId) : undefined,
+          query.snapshotId ? eq(recoveryTokens.snapshotId, query.snapshotId) : undefined
+        )
+      )
+      .orderBy(desc(recoveryTokens.createdAt))
+      .limit(query.limit)
+      .offset(query.offset);
+
+    return c.json({
+      data: rows.map(toTokenSummary),
+      pagination: {
+        limit: query.limit,
+        offset: query.offset,
+        count: rows.length,
+      },
+    });
+  }
+);
 
 bmrRoutes.post(
-  '/bmr/token',
+  '/bmr/tokens',
   requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
   requireMfa(),
   zValidator('json', bmrCreateTokenSchema),
   async (c) => {
@@ -50,28 +317,19 @@ bmrRoutes.post(
     }
 
     const payload = c.req.valid('json');
-
-    // Verify snapshot exists and belongs to this org.
     const [snapshot] = await db
       .select()
       .from(backupSnapshots)
-      .where(
-        and(
-          eq(backupSnapshots.id, payload.snapshotId),
-          eq(backupSnapshots.orgId, orgId)
-        )
-      )
+      .where(and(eq(backupSnapshots.id, payload.snapshotId), eq(backupSnapshots.orgId, orgId)))
       .limit(1);
 
     if (!snapshot) {
       return c.json({ error: 'Snapshot not found' }, 404);
     }
 
-    const plainToken = generateToken();
-    const tokenHash = hashToken(plainToken);
-    const expiresAt = new Date(
-      Date.now() + payload.expiresInHours * 60 * 60 * 1000
-    );
+    const plainToken = generateRecoveryToken();
+    const tokenHash = hashRecoveryToken(plainToken);
+    const expiresAt = new Date(Date.now() + payload.expiresInHours * 60 * 60 * 1000);
 
     const [row] = await db
       .insert(recoveryTokens)
@@ -92,6 +350,8 @@ bmrRoutes.post(
       return c.json({ error: 'Failed to create recovery token' }, 500);
     }
 
+    const serverUrl = resolveServerUrl(c.req.url);
+
     writeRouteAudit(c, {
       orgId,
       action: 'bmr.token.create',
@@ -106,104 +366,557 @@ bmrRoutes.post(
 
     return c.json(
       {
-        id: row.id,
-        token: plainToken, // Only time the plaintext token is shown
-        deviceId: row.deviceId,
-        snapshotId: row.snapshotId,
-        restoreType: row.restoreType,
-        expiresAt: row.expiresAt.toISOString(),
-        createdAt: row.createdAt.toISOString(),
+        ...toTokenSummary(row),
+        token: plainToken,
+        bootstrap: {
+          version: BMR_BOOTSTRAP_VERSION,
+          minHelperVersion: BMR_MIN_HELPER_VERSION,
+          serverUrl,
+          releaseUrl: getGithubReleasePageUrl(),
+          command: `breeze-backup bmr-recover --token ${plainToken} --server "${serverUrl}"`,
+          commandTemplate: `breeze-backup bmr-recover --token <recovery-token> --server "${serverUrl}"`,
+          prerequisites: [
+            'Boot the target machine into a compatible recovery environment.',
+            'Download the current breeze-backup helper before starting recovery.',
+            'Ensure the environment can reach the Breeze server and backup storage.',
+            'Have storage or network drivers ready if the target hardware needs them.',
+          ],
+        },
       },
       201
     );
   }
 );
 
-// ── GET /bmr/token/:id — Get token metadata ────────────────────────
+bmrRoutes.get(
+  '/bmr/tokens/:id',
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
+  zValidator('param', idParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
 
-bmrRoutes.get('/bmr/token/:id', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
-  const auth = c.get('auth');
-  const orgId = resolveScopedOrgId(auth);
-  if (!orgId) {
-    return c.json({ error: 'orgId is required for this scope' }, 400);
+    await expireTokenArtifacts(orgId);
+
+    const { id } = c.req.valid('param');
+    const payload = await resolveRecoveryTokenPresentation(orgId, id, c.req.url);
+    if (!payload) {
+      return c.json({ error: 'Recovery token not found' }, 404);
+    }
+
+    return c.json(payload);
   }
-
-  const tokenId = c.req.param('id')!;
-  const [row] = await db
-    .select({
-      id: recoveryTokens.id,
-      deviceId: recoveryTokens.deviceId,
-      snapshotId: recoveryTokens.snapshotId,
-      restoreType: recoveryTokens.restoreType,
-      status: recoveryTokens.status,
-      createdAt: recoveryTokens.createdAt,
-      expiresAt: recoveryTokens.expiresAt,
-      usedAt: recoveryTokens.usedAt,
-    })
-    .from(recoveryTokens)
-    .where(
-      and(eq(recoveryTokens.id, tokenId), eq(recoveryTokens.orgId, orgId))
-    )
-    .limit(1);
-
-  if (!row) {
-    return c.json({ error: 'Recovery token not found' }, 404);
-  }
-
-  return c.json({
-    ...row,
-    createdAt: row.createdAt.toISOString(),
-    expiresAt: row.expiresAt.toISOString(),
-    usedAt: row.usedAt?.toISOString() ?? null,
-  });
-});
-
-// ── DELETE /bmr/token/:id — Revoke token ────────────────────────────
+);
 
 bmrRoutes.delete(
-  '/bmr/token/:id',
+  '/bmr/tokens/:id',
   requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
   requireMfa(),
+  zValidator('param', idParamSchema),
   async (c) => {
-  const auth = c.get('auth');
-  const orgId = resolveScopedOrgId(auth);
-  if (!orgId) {
-    return c.json({ error: 'orgId is required for this scope' }, 400);
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
+    const { id } = c.req.valid('param');
+    const [row] = await db
+      .update(recoveryTokens)
+      .set({ status: 'revoked' })
+      .where(and(eq(recoveryTokens.id, id), eq(recoveryTokens.orgId, orgId)))
+      .returning({ id: recoveryTokens.id });
+
+    if (!row) {
+      return c.json({ error: 'Recovery token not found' }, 404);
+    }
+
+    await db
+      .update(recoveryMediaArtifacts)
+      .set({ status: 'expired' })
+      .where(eq(recoveryMediaArtifacts.tokenId, row.id));
+    await db
+      .update(recoveryBootMediaArtifacts)
+      .set({ status: 'expired' })
+      .where(eq(recoveryBootMediaArtifacts.tokenId, row.id));
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'bmr.token.revoke',
+      resourceType: 'recovery_token',
+      resourceId: row.id,
+    });
+
+    return c.json({ id: row.id, status: 'revoked' });
   }
+);
 
-  const tokenId = c.req.param('id')!;
-  const [row] = await db
-    .update(recoveryTokens)
-    .set({ status: 'revoked' })
-    .where(
-      and(eq(recoveryTokens.id, tokenId), eq(recoveryTokens.orgId, orgId))
-    )
-    .returning({ id: recoveryTokens.id });
-
-  if (!row) {
-    return c.json({ error: 'Recovery token not found' }, 404);
+bmrRoutes.get(
+  '/bmr/signing-keys',
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
+  async (c) => {
+    return c.json({ data: getRecoverySigningKeys() });
   }
+);
 
-  writeRouteAudit(c, {
-    orgId,
-    action: 'bmr.token.revoke',
-    resourceType: 'recovery_token',
-    resourceId: row.id,
-  });
+bmrRoutes.get(
+  '/bmr/signing-keys/:id',
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
+  zValidator('param', signingKeyParamSchema),
+  async (c) => {
+    const { id } = c.req.valid('param');
+    const key = getRecoverySigningKey(id);
+    if (!key) {
+      return c.json({ error: 'Recovery signing key not found' }, 404);
+    }
+    return c.json(key);
+  }
+);
 
-  return c.json({ id: row.id, status: 'revoked' });
-});
+bmrRoutes.get(
+  '/bmr/media',
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
+  zValidator('query', bmrMediaListSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
 
-// ── POST /bmr/recover/authenticate — Recovery agent auth ────────────
-// Mounted on bmrPublicRoutes (no JWT auth — token-based auth instead).
+    await expireTokenArtifacts(orgId);
+    const query = c.req.valid('query');
+    const rows = await listRecoveryMediaArtifacts(orgId, query);
+    return c.json({
+      data: rows.map(toMediaResponse),
+      pagination: {
+        limit: query.limit,
+        offset: query.offset,
+        count: rows.length,
+      },
+    });
+  }
+);
+
+bmrRoutes.post(
+  '/bmr/media',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
+  requireMfa(),
+  zValidator('json', bmrMediaCreateSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
+    await expireTokenArtifacts(orgId);
+    const payload = c.req.valid('json');
+
+    const [token] = await db
+      .select()
+      .from(recoveryTokens)
+      .where(and(eq(recoveryTokens.id, payload.tokenId), eq(recoveryTokens.orgId, orgId)))
+      .limit(1);
+
+    if (!token) {
+      return c.json({ error: 'Recovery token not found' }, 404);
+    }
+    if (token.status !== 'active') {
+      return c.json({ error: `Recovery token is ${token.status}` }, 409);
+    }
+
+    const [existing] = await db
+      .select()
+      .from(recoveryMediaArtifacts)
+      .where(
+        and(
+          eq(recoveryMediaArtifacts.tokenId, token.id),
+          eq(recoveryMediaArtifacts.platform, payload.platform),
+          eq(recoveryMediaArtifacts.architecture, payload.architecture)
+        )
+      )
+      .limit(1);
+
+    if (existing) {
+      const existingStatus = normalizeRecoveryMediaStatus({ ...existing, tokenStatus: token.status });
+      if (existingStatus === 'pending' || existingStatus === 'building') {
+        return c.json(toMediaResponse({ ...existing, tokenStatus: token.status }), 202);
+      }
+      if (existingStatus === 'ready_signed' || existingStatus === 'legacy_unsigned') {
+        return c.json(toMediaResponse({ ...existing, tokenStatus: token.status }), 200);
+      }
+
+      const [reset] = await db
+        .update(recoveryMediaArtifacts)
+        .set({
+          status: 'pending',
+          storageKey: null,
+          checksumSha256: null,
+          checksumStorageKey: null,
+          signatureFormat: null,
+          signatureStorageKey: null,
+          signingKeyId: null,
+          signedAt: null,
+          metadata: {
+            ...asRecord(existing.metadata),
+            restartedAt: new Date().toISOString(),
+          },
+          completedAt: null,
+        })
+        .where(eq(recoveryMediaArtifacts.id, existing.id))
+        .returning();
+
+      await enqueueRecoveryMediaBuild(reset!.id);
+      return c.json(toMediaResponse({ ...reset!, tokenStatus: token.status }), 202);
+    }
+
+    const [row] = await db
+      .insert(recoveryMediaArtifacts)
+      .values({
+        orgId,
+        tokenId: token.id,
+        snapshotId: token.snapshotId,
+        platform: payload.platform,
+        architecture: payload.architecture,
+        status: 'pending',
+        metadata: {
+          requestedBy: auth.user?.id ?? null,
+          requestedAt: new Date().toISOString(),
+        },
+        createdBy: auth.user?.id ?? null,
+      })
+      .returning();
+
+    if (!row) {
+      return c.json({ error: 'Failed to create recovery media job' }, 500);
+    }
+
+    await enqueueRecoveryMediaBuild(row.id);
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'bmr.media.create',
+      resourceType: 'recovery_media_artifact',
+      resourceId: row.id,
+      details: {
+        tokenId: token.id,
+        snapshotId: token.snapshotId,
+        platform: row.platform,
+        architecture: row.architecture,
+      },
+    });
+
+    return c.json(toMediaResponse({ ...row, tokenStatus: token.status }), 202);
+  }
+);
+
+bmrRoutes.get(
+  '/bmr/media/:id',
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
+  zValidator('param', idParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
+    await expireTokenArtifacts(orgId);
+
+    const { id } = c.req.valid('param');
+    const row = await getRecoveryMediaArtifact(orgId, id);
+    if (!row) {
+      return c.json({ error: 'Recovery media artifact not found' }, 404);
+    }
+    return c.json(toMediaResponse(row));
+  }
+);
+
+bmrRoutes.get(
+  '/bmr/media/:id/download',
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
+  zValidator('param', idParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
+    await expireTokenArtifacts(orgId);
+    const { id } = c.req.valid('param');
+    const target = await getRecoveryMediaDownloadTarget(orgId, id);
+    if (!target) {
+      return c.json({ error: 'Recovery media artifact not found' }, 404);
+    }
+    if (target.unavailable) {
+      return c.json({ error: 'Recovery media artifact is no longer available' }, 410);
+    }
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'bmr.media.download',
+      resourceType: 'recovery_media_artifact',
+      resourceId: id,
+    });
+
+    if (target.type === 'redirect') {
+      return c.redirect(target.url, 302);
+    }
+
+    return toDownloadStreamResponse(target, 'application/gzip');
+  }
+);
+
+bmrRoutes.get(
+  '/bmr/media/:id/signature',
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
+  zValidator('param', idParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
+    await expireTokenArtifacts(orgId);
+    const { id } = c.req.valid('param');
+    const target = await getRecoveryMediaSignatureDownloadTarget(orgId, id);
+    if (!target) {
+      return c.json({ error: 'Recovery media artifact not found' }, 404);
+    }
+    if (target.unavailable) {
+      return c.json({ error: 'Recovery media signature is not available' }, 410);
+    }
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'bmr.media.signature.download',
+      resourceType: 'recovery_media_artifact',
+      resourceId: id,
+    });
+
+    if (target.type === 'redirect') {
+      return c.redirect(target.url, 302);
+    }
+
+    return toDownloadStreamResponse(target, 'application/octet-stream');
+  }
+);
+
+bmrRoutes.get(
+  '/bmr/boot-media',
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
+  zValidator('query', bmrBootMediaListSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
+    await expireTokenArtifacts(orgId);
+    const query = c.req.valid('query');
+    const rows = await listRecoveryBootMediaArtifacts(orgId, query);
+    return c.json({
+      data: rows.map(toBootMediaResponse),
+      pagination: {
+        limit: query.limit,
+        offset: query.offset,
+        count: rows.length,
+      },
+    });
+  }
+);
+
+bmrRoutes.post(
+  '/bmr/boot-media',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
+  requireMfa(),
+  zValidator('json', bmrBootMediaCreateSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
+    await expireTokenArtifacts(orgId);
+    const payload = c.req.valid('json');
+
+    const [token] = await db
+      .select()
+      .from(recoveryTokens)
+      .where(and(eq(recoveryTokens.id, payload.tokenId), eq(recoveryTokens.orgId, orgId)))
+      .limit(1);
+
+    if (!token) {
+      return c.json({ error: 'Recovery token not found' }, 404);
+    }
+    if (token.status !== 'active') {
+      return c.json({ error: `Recovery token is ${token.status}` }, 409);
+    }
+
+    let row;
+    try {
+      row = await createRecoveryBootMediaRequest({
+        orgId,
+        tokenId: token.id,
+        createdBy: auth.user?.id ?? null,
+        bundleArtifactId: payload.bundleArtifactId ?? null,
+      });
+    } catch (error) {
+      return c.json(
+        { error: error instanceof Error ? error.message : 'Failed to create boot media request' },
+        409
+      );
+    }
+
+    const responseStatus =
+      row.status === 'pending' || row.status === 'building' ? 202 : row.status === 'ready_signed' ? 200 : 202;
+    if (row.status === 'pending') {
+      await enqueueRecoveryBootMediaBuild(row.id);
+    }
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'bmr.boot_media.create',
+      resourceType: 'recovery_boot_media_artifact',
+      resourceId: row.id,
+      details: {
+        tokenId: token.id,
+        snapshotId: token.snapshotId,
+        platform: row.platform,
+        architecture: row.architecture,
+        mediaType: row.mediaType,
+      },
+    });
+
+    return c.json(toBootMediaResponse({ ...row, tokenStatus: token.status }), responseStatus);
+  }
+);
+
+bmrRoutes.get(
+  '/bmr/boot-media/:id',
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
+  zValidator('param', idParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
+    await expireTokenArtifacts(orgId);
+    const { id } = c.req.valid('param');
+    const row = await getRecoveryBootMediaArtifact(orgId, id);
+    if (!row) {
+      return c.json({ error: 'Recovery boot media artifact not found' }, 404);
+    }
+    return c.json(toBootMediaResponse(row));
+  }
+);
+
+bmrRoutes.get(
+  '/bmr/boot-media/:id/download',
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
+  zValidator('param', idParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
+    await expireTokenArtifacts(orgId);
+    const { id } = c.req.valid('param');
+    const target = await getRecoveryBootMediaDownloadTarget(orgId, id);
+    if (!target) {
+      return c.json({ error: 'Recovery boot media artifact not found' }, 404);
+    }
+    if (target.unavailable) {
+      return c.json({ error: 'Recovery boot media artifact is no longer available' }, 410);
+    }
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'bmr.boot_media.download',
+      resourceType: 'recovery_boot_media_artifact',
+      resourceId: id,
+    });
+
+    if (target.type === 'redirect') {
+      return c.redirect(target.url, 302);
+    }
+
+    return toDownloadStreamResponse(target, 'application/x-iso9660-image');
+  }
+);
+
+bmrRoutes.get(
+  '/bmr/boot-media/:id/signature',
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
+  zValidator('param', idParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
+    await expireTokenArtifacts(orgId);
+    const { id } = c.req.valid('param');
+    const target = await getRecoveryBootMediaDownloadTarget(orgId, id, 'signature');
+    if (!target) {
+      return c.json({ error: 'Recovery boot media artifact not found' }, 404);
+    }
+    if (target.unavailable) {
+      return c.json({ error: 'Recovery boot media signature is not available' }, 410);
+    }
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'bmr.boot_media.signature.download',
+      resourceType: 'recovery_boot_media_artifact',
+      resourceId: id,
+    });
+
+    if (target.type === 'redirect') {
+      return c.redirect(target.url, 302);
+    }
+
+    return toDownloadStreamResponse(target, 'application/octet-stream');
+  }
+);
 
 bmrPublicRoutes.post(
   '/bmr/recover/authenticate',
   zValidator('json', bmrAuthenticateSchema),
   async (c) => {
+    const rateLimited = await enforcePublicRateLimit(c, 'authenticate', 10);
+    if (rateLimited) {
+      writeAuditEvent(c, {
+        orgId: null,
+        action: 'bmr.recovery.authenticate',
+        resourceType: 'recovery_token',
+        details: { reason: 'rate_limited' },
+        result: 'denied',
+        errorMessage: 'rate_limited',
+      });
+      return rateLimited;
+    }
+
+    await expireUnusedRecoveryTokens();
+
     const { token } = c.req.valid('json');
-    const tokenHash = hashToken(token);
+    const tokenHash = hashRecoveryToken(token);
 
     const [row] = await db
       .select()
@@ -212,83 +925,186 @@ bmrPublicRoutes.post(
       .limit(1);
 
     if (!row) {
+      writeAuditEvent(c, {
+        orgId: null,
+        action: 'bmr.recovery.authenticate',
+        resourceType: 'recovery_token',
+        details: { reason: 'invalid_token' },
+        result: 'failure',
+        errorMessage: 'Invalid recovery token',
+      });
       return c.json({ error: 'Invalid recovery token' }, 401);
     }
 
+    if (row.status === 'used' && !row.completedAt) {
+      const [existingRestoreJob] = await db
+        .select({ id: restoreJobs.id })
+        .from(restoreJobs)
+        .where(eq(restoreJobs.recoveryTokenId, row.id))
+        .limit(1);
+
+      if (!existingRestoreJob) {
+        await db
+          .update(recoveryTokens)
+          .set({
+            status: 'active',
+            authenticatedAt: row.authenticatedAt ?? row.usedAt ?? new Date(),
+          })
+          .where(eq(recoveryTokens.id, row.id));
+        row.status = 'active';
+      }
+    }
+
     if (row.status !== 'active') {
+      writeAuditEvent(c, {
+        orgId: row.orgId,
+        action: 'bmr.recovery.authenticate',
+        resourceType: 'recovery_token',
+        resourceId: row.id,
+        details: { snapshotId: row.snapshotId, reason: row.status },
+        result: 'failure',
+        errorMessage: `Token is ${row.status}`,
+      });
       return c.json({ error: `Token is ${row.status}` }, 401);
     }
 
     if (row.expiresAt < new Date()) {
       await db
         .update(recoveryTokens)
-        .set({ status: 'expired' })
-        .where(eq(recoveryTokens.id, row.id));
+          .set({ status: 'expired' })
+          .where(eq(recoveryTokens.id, row.id));
+      writeAuditEvent(c, {
+        orgId: row.orgId,
+        action: 'bmr.recovery.authenticate',
+        resourceType: 'recovery_token',
+        resourceId: row.id,
+        details: { snapshotId: row.snapshotId, reason: 'expired' },
+        result: 'failure',
+        errorMessage: 'Token has expired',
+      });
       return c.json({ error: 'Token has expired' }, 401);
     }
 
-    // Fetch snapshot and device info for the recovery agent.
-    const [snapshot] = await db
-      .select()
-      .from(backupSnapshots)
-      .where(eq(backupSnapshots.id, row.snapshotId))
-      .limit(1);
+    const authenticatedAt = new Date();
+    const resolvedSnapshot = await resolveSnapshotProviderConfig(row.snapshotId);
+    const snapshot = resolvedSnapshot?.snapshot ?? null;
+    const config = resolvedSnapshot?.config ?? null;
+
+    if (!snapshot) {
+      writeAuditEvent(c, {
+        orgId: row.orgId,
+        action: 'bmr.recovery.authenticate',
+        resourceType: 'recovery_token',
+        resourceId: row.id,
+        details: { snapshotId: row.snapshotId, reason: 'snapshot_missing' },
+        result: 'failure',
+        errorMessage: 'Recovery snapshot not found',
+      });
+      return c.json({ error: 'Recovery snapshot not found' }, 404);
+    }
 
     const [device] = await db
       .select({
         id: devices.id,
         hostname: devices.hostname,
         osType: devices.osType,
+        architecture: devices.architecture,
+        displayName: devices.displayName,
       })
       .from(devices)
       .where(eq(devices.id, row.deviceId))
       .limit(1);
 
-    // Mark token as used.
     await db
       .update(recoveryTokens)
-      .set({ status: 'used', usedAt: new Date() })
+      .set({ authenticatedAt })
       .where(eq(recoveryTokens.id, row.id));
 
-    return c.json({
-      tokenId: row.id,
-      deviceId: row.deviceId,
-      snapshotId: row.snapshotId,
-      restoreType: row.restoreType,
-      targetConfig: row.targetConfig,
-      device: device
-        ? {
-            id: device.id,
-            hostname: device.hostname,
-            osType: device.osType,
-          }
-        : null,
-      snapshot: snapshot
-        ? {
-            id: snapshot.id,
-            snapshotId: snapshot.snapshotId,
-            size: snapshot.size,
-            fileCount: snapshot.fileCount,
-            hardwareProfile: snapshot.hardwareProfile,
-            systemStateManifest: snapshot.systemStateManifest,
-          }
-        : null,
+    writeAuditEvent(c, {
+      orgId: row.orgId,
+      action: 'bmr.recovery.authenticate',
+      resourceType: 'recovery_token',
+      resourceId: row.id,
+      details: {
+        snapshotId: row.snapshotId,
+        deviceId: row.deviceId,
+        restoreType: row.restoreType,
+      },
+      result: 'success',
     });
+
+    return c.json(
+      buildAuthenticatedBootstrapPayload({
+        tokenId: row.id,
+        deviceId: row.deviceId,
+        snapshotId: row.snapshotId,
+        restoreType: row.restoreType,
+        targetConfig: row.targetConfig,
+        authenticatedAt,
+        device: device
+          ? {
+              id: device.id,
+              hostname: device.hostname,
+              displayName: device.displayName ?? null,
+              osType: device.osType,
+              architecture: device.architecture,
+            }
+          : null,
+        snapshot: {
+          id: snapshot.id,
+          orgId: snapshot.orgId,
+          jobId: snapshot.jobId,
+          deviceId: snapshot.deviceId,
+          configId: snapshot.configId ?? null,
+          snapshotId: snapshot.snapshotId,
+          label: snapshot.label,
+          location: snapshot.location,
+          timestamp: toIsoString(snapshot.timestamp),
+          size: snapshot.size,
+          fileCount: snapshot.fileCount,
+          hardwareProfile: snapshot.hardwareProfile,
+          systemStateManifest: snapshot.systemStateManifest,
+          backupType: snapshot.backupType,
+          isIncremental: snapshot.isIncremental,
+          metadata: asRecord(snapshot.metadata),
+        },
+        providerType: resolvedSnapshot?.providerType,
+        config: config
+          ? {
+              id: config.id,
+              orgId: config.orgId,
+              name: config.name,
+              type: config.type,
+              provider: config.provider,
+              providerConfig: config.providerConfig,
+              schedule: config.schedule ?? null,
+              retention: config.retention ?? null,
+              isActive: config.isActive,
+            }
+          : null,
+        requestUrl: c.req.url,
+        tokenExpiresAt: row.expiresAt,
+      })
+    );
   }
 );
 
-// ── POST /bmr/recover/complete — Agent reports recovery done ────────
-// Mounted on bmrPublicRoutes (no JWT auth — token-based auth instead).
-
-bmrPublicRoutes.post(
-  '/bmr/recover/complete',
-  zValidator('json', bmrCompleteSchema),
+bmrPublicRoutes.get(
+  '/bmr/recover/download',
+  zValidator('query', bmrRecoveryDownloadSchema),
   async (c) => {
-    const { token, result } = c.req.valid('json');
-    const tokenHash = hashToken(token);
+    await expireUnusedRecoveryTokens();
 
+    const { token, path } = c.req.valid('query');
+    const tokenHash = hashRecoveryToken(token);
     const [row] = await db
-      .select()
+      .select({
+        id: recoveryTokens.id,
+        snapshotId: recoveryTokens.snapshotId,
+        status: recoveryTokens.status,
+        authenticatedAt: recoveryTokens.authenticatedAt,
+        expiresAt: recoveryTokens.expiresAt,
+      })
       .from(recoveryTokens)
       .where(eq(recoveryTokens.tokenHash, tokenHash))
       .limit(1);
@@ -297,7 +1113,119 @@ bmrPublicRoutes.post(
       return c.json({ error: 'Invalid recovery token' }, 401);
     }
 
-    // Create a restore job record for the completed recovery.
+    let target;
+    try {
+      target = await getAuthenticatedRecoveryDownloadTarget(row, path);
+    } catch (error) {
+      return c.json(
+        { error: error instanceof Error ? error.message : 'Failed to resolve recovery download' },
+        500
+      );
+    }
+
+    if (target.unavailable) {
+      const status =
+        target.reason === 'Recovery session has expired. Re-authenticate to continue.'
+          ? 401
+          : target.reason.startsWith('Token is ')
+            ? 401
+            : 409;
+      return c.json({ error: target.reason }, status);
+    }
+
+    if (target.type === 'redirect') {
+      return c.redirect(target.url, 302);
+    }
+
+    const webStream = new ReadableStream({
+      start(controller) {
+        target.stream.on('data', (chunk: string | Buffer) => {
+          const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+          controller.enqueue(new Uint8Array(bytes));
+        });
+        target.stream.on('end', () => controller.close());
+        target.stream.on('error', (error) => controller.error(error));
+      },
+      cancel() {
+        target.stream.destroy();
+      },
+    });
+
+    return new Response(webStream, {
+      status: 200,
+      headers: {
+        'Content-Type': target.contentType,
+        'Content-Length': String(target.contentLength),
+        'Cache-Control': 'no-store',
+      },
+    });
+  }
+);
+
+bmrPublicRoutes.post(
+  '/bmr/recover/complete',
+  zValidator('json', bmrCompleteSchema),
+  async (c) => {
+    const rateLimited = await enforcePublicRateLimit(c, 'complete', 5);
+    if (rateLimited) {
+      writeAuditEvent(c, {
+        orgId: null,
+        action: 'bmr.recovery.complete',
+        resourceType: 'recovery_token',
+        details: { reason: 'rate_limited' },
+        result: 'denied',
+        errorMessage: 'rate_limited',
+      });
+      return rateLimited;
+    }
+
+    await expireUnusedRecoveryTokens();
+
+    const { token, result } = c.req.valid('json');
+    const tokenHash = hashRecoveryToken(token);
+
+    const [row] = await db
+      .select()
+      .from(recoveryTokens)
+      .where(eq(recoveryTokens.tokenHash, tokenHash))
+      .limit(1);
+
+    if (!row) {
+      writeAuditEvent(c, {
+        orgId: null,
+        action: 'bmr.recovery.complete',
+        resourceType: 'recovery_token',
+        details: { reason: 'invalid_token' },
+        result: 'failure',
+        errorMessage: 'Invalid recovery token',
+      });
+      return c.json({ error: 'Invalid recovery token' }, 401);
+    }
+    if (row.status === 'revoked' || row.status === 'expired') {
+      writeAuditEvent(c, {
+        orgId: row.orgId,
+        action: 'bmr.recovery.complete',
+        resourceType: 'recovery_token',
+        resourceId: row.id,
+        details: { snapshotId: row.snapshotId, status: result.status, reason: row.status },
+        result: 'failure',
+        errorMessage: `Token is ${row.status}`,
+      });
+      return c.json({ error: `Token is ${row.status}` }, 401);
+    }
+    if (!row.authenticatedAt && !row.usedAt) {
+      writeAuditEvent(c, {
+        orgId: row.orgId,
+        action: 'bmr.recovery.complete',
+        resourceType: 'recovery_token',
+        resourceId: row.id,
+        details: { snapshotId: row.snapshotId, status: result.status, reason: 'not_authenticated' },
+        result: 'failure',
+        errorMessage: 'Recovery token has not been authenticated',
+      });
+      return c.json({ error: 'Recovery token has not been authenticated' }, 409);
+    }
+
     const restoreStatus =
       result.status === 'completed'
         ? 'completed'
@@ -305,30 +1233,91 @@ bmrPublicRoutes.post(
           ? 'partial'
           : 'failed';
 
-    const [restoreJob] = await db
-      .insert(restoreJobs)
-      .values({
-        orgId: row.orgId,
+    const completionTime = new Date();
+    const persistedRestoreJob = await db.transaction(async (tx) => {
+      const [restoreJob] = await tx
+        .insert(restoreJobs)
+        .values({
+          orgId: row.orgId,
+          snapshotId: row.snapshotId,
+          deviceId: row.deviceId,
+          restoreType: 'bare_metal',
+          status: restoreStatus,
+          targetConfig: {
+            ...asRecord(row.targetConfig),
+            result: {
+              status: result.status,
+              filesRestored: result.filesRestored ?? null,
+              bytesRestored: result.bytesRestored ?? null,
+              stateApplied: result.stateApplied ?? null,
+              driversInjected: result.driversInjected ?? null,
+              validated: result.validated ?? null,
+              warnings: result.warnings ?? [],
+              error: result.error ?? null,
+            },
+          },
+          recoveryTokenId: row.id,
+          restoredSize: result.bytesRestored ?? null,
+          restoredFiles: result.filesRestored ?? null,
+          startedAt: row.authenticatedAt ?? row.usedAt ?? row.createdAt,
+          completedAt: completionTime,
+          createdAt: completionTime,
+          updatedAt: completionTime,
+        })
+        .onConflictDoNothing({ target: restoreJobs.recoveryTokenId })
+        .returning({
+          id: restoreJobs.id,
+          status: restoreJobs.status,
+        });
+
+      const persisted =
+        restoreJob ??
+        (
+          await tx
+            .select({
+              id: restoreJobs.id,
+              status: restoreJobs.status,
+            })
+            .from(restoreJobs)
+            .where(eq(restoreJobs.recoveryTokenId, row.id))
+            .limit(1)
+        )[0];
+
+      if (persisted) {
+        await tx
+          .update(recoveryTokens)
+          .set({
+            status: 'used',
+            completedAt: completionTime,
+            usedAt: completionTime,
+          })
+          .where(eq(recoveryTokens.id, row.id));
+
+        await tx
+          .update(recoveryMediaArtifacts)
+          .set({ status: 'expired' })
+          .where(eq(recoveryMediaArtifacts.tokenId, row.id));
+      }
+
+      return persisted ?? null;
+    });
+
+    writeAuditEvent(c, {
+      orgId: row.orgId,
+      action: 'bmr.recovery.complete',
+      resourceType: 'recovery_token',
+      resourceId: row.id,
+      details: {
         snapshotId: row.snapshotId,
-        deviceId: row.deviceId,
-        restoreType: 'bare_metal',
-        status: restoreStatus,
-        targetConfig: row.targetConfig,
-        recoveryTokenId: row.id,
-        restoredSize: result.bytesRestored ?? null,
-        restoredFiles: result.filesRestored ?? null,
-        startedAt: row.usedAt ?? row.createdAt,
-        completedAt: new Date(),
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .returning();
+        restoreJobId: persistedRestoreJob?.id ?? null,
+        status: result.status,
+      },
+      result: 'success',
+    });
 
     return c.json({
-      restoreJobId: restoreJob?.id ?? null,
-      status: restoreStatus,
+      restoreJobId: persistedRestoreJob?.id ?? null,
+      status: persistedRestoreJob?.status ?? restoreStatus,
     });
   }
 );
-
-// VM restore + instant boot + estimate routes are in vmrestore.ts

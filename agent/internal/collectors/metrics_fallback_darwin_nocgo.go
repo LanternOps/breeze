@@ -3,12 +3,9 @@
 package collectors
 
 import (
-	"context"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"strconv"
-	"time"
 
 	"github.com/shirou/gopsutil/v3/disk"
 )
@@ -16,10 +13,7 @@ import (
 // cpuPercentFallback returns CPU usage by parsing macOS `top` output.
 // Used when gopsutil fails (CGO_ENABLED=0 builds).
 func cpuPercentFallback() (float64, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	out, err := exec.CommandContext(ctx, "top", "-l", "1", "-n", "0", "-s", "0").Output()
+	out, err := runCollectorOutput(collectorShortCommandTimeout, "top", "-l", "1", "-n", "0", "-s", "0")
 	if err != nil {
 		return 0, fmt.Errorf("top failed: %w", err)
 	}
@@ -41,10 +35,7 @@ func cpuPercentFallback() (float64, error) {
 // Parses all IOBlockStorageDriver Statistics blocks and returns the one with the
 // highest total IO (the physical disk), avoiding double-counting from sub-components.
 func diskIOCountersFallback() (map[string]disk.IOCountersStat, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	out, err := exec.CommandContext(ctx, "ioreg", "-c", "IOBlockStorageDriver", "-r", "-w", "0").Output()
+	out, err := runCollectorOutput(collectorShortCommandTimeout, "ioreg", "-c", "IOBlockStorageDriver", "-r", "-w", "0")
 	if err != nil {
 		return nil, fmt.Errorf("ioreg failed: %w", err)
 	}

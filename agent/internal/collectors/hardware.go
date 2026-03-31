@@ -2,7 +2,6 @@ package collectors
 
 import (
 	"os"
-	"os/exec"
 	"runtime"
 	"strings"
 
@@ -56,9 +55,9 @@ func (c *HardwareCollector) CollectSystemInfo() (*SystemInfo, error) {
 	// On macOS, prefer LocalHostName (e.g. "MacBook-Pro-3") over the
 	// short DNS hostname (e.g. "Mac") which can be generic.
 	if runtime.GOOS == "darwin" {
-		if out, scErr := exec.Command("scutil", "--get", "LocalHostName").Output(); scErr == nil {
+		if out, scErr := runCollectorOutput(collectorShortCommandTimeout, "scutil", "--get", "LocalHostName"); scErr == nil {
 			if name := strings.TrimSpace(string(out)); name != "" {
-				info.Hostname = name
+				info.Hostname = truncateCollectorString(name)
 			}
 		}
 	}

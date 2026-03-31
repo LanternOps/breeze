@@ -10,10 +10,11 @@ import {
   integer,
   bigint,
   index,
+  uniqueIndex,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import { organizations } from './orgs';
-import { devices } from './devices';
+import { devices, deviceCommands } from './devices';
 import { users } from './users';
 import { configPolicyFeatureLinks } from './configurationPolicies';
 import { storageEncryptionKeys } from './storageEncryption';
@@ -205,6 +206,25 @@ export const backupSnapshots = pgTable(
   })
 );
 
+export const backupSnapshotFiles = pgTable(
+  'backup_snapshot_files',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    snapshotDbId: uuid('snapshot_db_id')
+      .notNull()
+      .references(() => backupSnapshots.id, { onDelete: 'cascade' }),
+    sourcePath: text('source_path').notNull(),
+    backupPath: text('backup_path').notNull(),
+    size: bigint('size', { mode: 'number' }),
+    modifiedAt: timestamp('modified_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    snapshotIdx: index('backup_snapshot_files_snapshot_idx').on(table.snapshotDbId),
+    snapshotSourceIdx: index('backup_snapshot_files_snapshot_source_idx').on(table.snapshotDbId, table.sourcePath),
+  })
+);
+
 export const restoreJobs = pgTable(
   'restore_jobs',
   {
@@ -229,6 +249,7 @@ export const restoreJobs = pgTable(
     initiatedBy: uuid('initiated_by').references(() => users.id),
     targetConfig: jsonb('target_config'),
     recoveryTokenId: uuid('recovery_token_id'),
+    commandId: uuid('command_id').references(() => deviceCommands.id),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
@@ -237,5 +258,7 @@ export const restoreJobs = pgTable(
     snapshotIdIdx: index('restore_jobs_snapshot_id_idx').on(table.snapshotId),
     deviceIdIdx: index('restore_jobs_device_id_idx').on(table.deviceId),
     statusIdx: index('restore_jobs_status_idx').on(table.status),
+    commandIdIdx: index('restore_jobs_command_id_idx').on(table.commandId),
+    recoveryTokenUniqueIdx: uniqueIndex('restore_jobs_recovery_token_id_uniq').on(table.recoveryTokenId),
   })
 );

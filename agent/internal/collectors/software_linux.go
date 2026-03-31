@@ -3,9 +3,6 @@
 package collectors
 
 import (
-	"bufio"
-	"bytes"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -32,14 +29,13 @@ func (c *SoftwareCollector) Collect() ([]SoftwareItem, error) {
 
 // collectFromDpkg retrieves packages using dpkg-query (Debian/Ubuntu)
 func collectFromDpkg() ([]SoftwareItem, error) {
-	cmd := exec.Command("dpkg-query", "-W", "-f=${Package}\t${Version}\t${Maintainer}\t${Installed-Size}\n")
-	output, err := cmd.Output()
+	output, err := runCollectorOutput(collectorLongCommandTimeout, "dpkg-query", "-W", "-f=${Package}\t${Version}\t${Maintainer}\t${Installed-Size}\n")
 	if err != nil {
 		return nil, err
 	}
 
 	var software []SoftwareItem
-	scanner := bufio.NewScanner(bytes.NewReader(output))
+	scanner := newCollectorScanner(output)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -77,7 +73,10 @@ func collectFromDpkg() ([]SoftwareItem, error) {
 			continue
 		}
 
-		software = append(software, item)
+		software = append(software, sanitizeLinuxSoftwareItem(item))
+		if len(software) >= collectorResultLimit {
+			break
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -89,14 +88,13 @@ func collectFromDpkg() ([]SoftwareItem, error) {
 
 // collectFromRpm retrieves packages using rpm (RHEL/CentOS/Fedora)
 func collectFromRpm() ([]SoftwareItem, error) {
-	cmd := exec.Command("rpm", "-qa", "--queryformat", "%{NAME}\t%{VERSION}-%{RELEASE}\t%{VENDOR}\t%{INSTALLTIME}\n")
-	output, err := cmd.Output()
+	output, err := runCollectorOutput(collectorLongCommandTimeout, "rpm", "-qa", "--queryformat", "%{NAME}\t%{VERSION}-%{RELEASE}\t%{VENDOR}\t%{INSTALLTIME}\n")
 	if err != nil {
 		return nil, err
 	}
 
 	var software []SoftwareItem
-	scanner := bufio.NewScanner(bytes.NewReader(output))
+	scanner := newCollectorScanner(output)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -140,7 +138,10 @@ func collectFromRpm() ([]SoftwareItem, error) {
 			continue
 		}
 
-		software = append(software, item)
+		software = append(software, sanitizeLinuxSoftwareItem(item))
+		if len(software) >= collectorResultLimit {
+			break
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -148,4 +149,14 @@ func collectFromRpm() ([]SoftwareItem, error) {
 	}
 
 	return software, nil
+}
+
+func sanitizeLinuxSoftwareItem(item SoftwareItem) SoftwareItem {
+	item.Name = truncateCollectorString(item.Name)
+	item.Version = truncateCollectorString(item.Version)
+	item.Vendor = truncateCollectorString(item.Vendor)
+	item.InstallDate = truncateCollectorString(item.InstallDate)
+	item.InstallLocation = truncateCollectorString(item.InstallLocation)
+	item.UninstallString = truncateCollectorString(item.UninstallString)
+	return item
 }

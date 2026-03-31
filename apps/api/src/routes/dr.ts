@@ -15,6 +15,7 @@ import {
   drExecutionsQuerySchema,
 } from './backup/schemas';
 import { PERMISSIONS } from '../services/permissions';
+import { createDrExecutionAndEnqueue } from '../services/drExecutionService';
 
 export const drRoutes = new Hono();
 const requireDrRead = requirePermission(
@@ -377,19 +378,12 @@ drRoutes.post(
       return c.json({ error: 'Cannot execute an archived plan' }, 400);
     }
 
-    const now = new Date();
-    const [execution] = await db
-      .insert(drExecutions)
-      .values({
-        planId,
-        orgId,
-        executionType,
-        status: 'pending',
-        startedAt: now,
-        initiatedBy: auth.user?.id ?? null,
-        createdAt: now,
-      })
-      .returning();
+    const execution = await createDrExecutionAndEnqueue({
+      planId,
+      orgId,
+      executionType,
+      initiatedBy: auth.user?.id ?? null,
+    });
 
     if (!execution) return c.json({ error: 'Failed to create execution' }, 500);
 

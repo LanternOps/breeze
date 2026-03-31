@@ -7,11 +7,19 @@
  * - process-restore: Handles C2C restore requests
  */
 
-import { Worker, Queue, Job } from 'bullmq';
+import { Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import { c2cBackupConfigs, c2cBackupJobs } from '../db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { getRedisConnection } from '../services/redis';
+import {
+  closeC2cQueue,
+  enqueueC2cSync,
+  getC2cQueue,
+  type ProcessRestoreData,
+  type RunSyncData,
+} from './c2cEnqueue';
+import { createC2cSyncJobIfIdle } from '../services/c2cJobCreation';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -21,45 +29,10 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 
 const C2C_QUEUE = 'c2c-backup';
 
-// ── Queue ────────────────────────────────────────────────────────────────────
-
-let c2cQueue: Queue | null = null;
-
-export function getC2cQueue(): Queue {
-  if (!c2cQueue) {
-    c2cQueue = new Queue(C2C_QUEUE, {
-      connection: getRedisConnection(),
-    });
-  }
-  return c2cQueue;
-}
-
-async function closeC2cQueue(): Promise<void> {
-  if (c2cQueue) {
-    await c2cQueue.close();
-    c2cQueue = null;
-  }
-}
-
 // ── Job data types ───────────────────────────────────────────────────────────
 
 interface CheckSchedulesData {
   type: 'check-schedules';
-}
-
-interface RunSyncData {
-  type: 'run-sync';
-  jobId: string;
-  configId: string;
-  orgId: string;
-}
-
-interface ProcessRestoreData {
-  type: 'process-restore';
-  restoreJobId: string;
-  orgId: string;
-  itemIds: string[];
-  targetConnectionId: string | null;
 }
 
 type C2cJobData = CheckSchedulesData | RunSyncData | ProcessRestoreData;
@@ -121,49 +94,16 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
     const isDue = isScheduleDue(schedule, now);
     if (!isDue) continue;
 
-    // Check for existing pending/running job for this config
-    const [existing] = await db
-      .select({ id: c2cBackupJobs.id })
-      .from(c2cBackupJobs)
-      .where(
-        and(
-          eq(c2cBackupJobs.configId, config.id),
-          eq(c2cBackupJobs.status, 'pending')
-        )
-      )
-      .limit(1);
+    const created = await createC2cSyncJobIfIdle({
+      orgId: config.orgId,
+      configId: config.id,
+      createdAt: now,
+    });
+    const c2cJob = created?.job;
+    if (!c2cJob || !created.created) continue;
 
-    if (existing) continue;
-
-    // Create job record and enqueue
-    const [job] = await db
-      .insert(c2cBackupJobs)
-      .values({
-        orgId: config.orgId,
-        configId: config.id,
-        status: 'pending',
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning();
-
-    if (job) {
-      const queue = getC2cQueue();
-      await queue.add(
-        'run-sync',
-        {
-          type: 'run-sync' as const,
-          jobId: job.id,
-          configId: config.id,
-          orgId: config.orgId,
-        },
-        {
-          removeOnComplete: { count: 50 },
-          removeOnFail: { count: 100 },
-        }
-      );
-      enqueued++;
-    }
+    await enqueueC2cSync(c2cJob.id, config.id, config.orgId);
+    enqueued++;
   }
 
   if (enqueued > 0) {
@@ -216,20 +156,21 @@ async function processRunSync(data: RunSyncData): Promise<{ synced: boolean }> {
   // 5. Upload content to the configured storage provider
   // 6. Update delta_token for incremental sync
 
-  // Scaffold: mark as completed for now
+  const errorLog = 'C2C sync not yet implemented';
   await db
     .update(c2cBackupJobs)
     .set({
-      status: 'completed',
+      status: 'failed',
       completedAt: new Date(),
+      errorLog,
       updatedAt: new Date(),
     })
     .where(eq(c2cBackupJobs.id, data.jobId));
 
   console.log(
-    `[C2CBackupWorker] Sync job ${data.jobId} completed (scaffold)`
+    `[C2CBackupWorker] Sync job ${data.jobId} failed: ${errorLog}`
   );
-  return { synced: true };
+  return { synced: false };
 }
 
 // ── process-restore ──────────────────────────────────────────────────────────
@@ -249,21 +190,22 @@ async function processRestore(
   // 3. Upload back to the target provider (MS Graph / Google API)
   // 4. Update item status
 
-  // Scaffold: mark as completed
+  const errorLog = 'C2C restore not yet implemented';
   await db
     .update(c2cBackupJobs)
     .set({
-      status: 'completed',
+      status: 'failed',
       completedAt: new Date(),
       itemsProcessed: data.itemIds.length,
+      errorLog,
       updatedAt: new Date(),
     })
     .where(eq(c2cBackupJobs.id, data.restoreJobId));
 
   console.log(
-    `[C2CBackupWorker] Restore job ${data.restoreJobId} completed (scaffold, ${data.itemIds.length} items)`
+    `[C2CBackupWorker] Restore job ${data.restoreJobId} failed: ${errorLog}`
   );
-  return { restored: true };
+  return { restored: false };
 }
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────

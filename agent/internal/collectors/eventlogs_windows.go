@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -98,18 +97,21 @@ func (c *EventLogCollector) collectSecurityEvents(since time.Time) ([]EventLogEn
 	var results []EventLogEntry
 	for _, e := range events {
 		results = append(results, EventLogEntry{
-			Timestamp: e.TimeCreated,
+			Timestamp: truncateCollectorString(e.TimeCreated),
 			Level:     mapWinLevel(e.Level),
 			Category:  "security",
-			Source:    e.ProviderName,
-			EventID:   fmt.Sprintf("%d:%d", e.Id, e.RecordId),
+			Source:    truncateCollectorString(e.ProviderName),
+			EventID:   truncateCollectorString(fmt.Sprintf("%d:%d", e.Id, e.RecordId)),
 			Message:   truncateString(e.Message, 500),
 			Details: map[string]any{
 				"recordId": e.RecordId,
-				"logName":  e.LogName,
+				"logName":  truncateCollectorString(e.LogName),
 				"eventId":  e.Id,
 			},
 		})
+		if len(results) >= collectorResultLimit {
+			break
+		}
 	}
 
 	return results, nil
@@ -125,18 +127,21 @@ func (c *EventLogCollector) collectSystemErrors(since time.Time) ([]EventLogEntr
 	var results []EventLogEntry
 	for _, e := range events {
 		results = append(results, EventLogEntry{
-			Timestamp: e.TimeCreated,
+			Timestamp: truncateCollectorString(e.TimeCreated),
 			Level:     mapWinLevel(e.Level),
 			Category:  "hardware",
-			Source:    e.ProviderName,
-			EventID:   fmt.Sprintf("%d:%d", e.Id, e.RecordId),
+			Source:    truncateCollectorString(e.ProviderName),
+			EventID:   truncateCollectorString(fmt.Sprintf("%d:%d", e.Id, e.RecordId)),
 			Message:   truncateString(e.Message, 500),
 			Details: map[string]any{
 				"recordId": e.RecordId,
-				"logName":  e.LogName,
+				"logName":  truncateCollectorString(e.LogName),
 				"eventId":  e.Id,
 			},
 		})
+		if len(results) >= collectorResultLimit {
+			break
+		}
 	}
 
 	return results, nil
@@ -152,18 +157,21 @@ func (c *EventLogCollector) collectApplicationCrashes(since time.Time) ([]EventL
 	var results []EventLogEntry
 	for _, e := range events {
 		results = append(results, EventLogEntry{
-			Timestamp: e.TimeCreated,
+			Timestamp: truncateCollectorString(e.TimeCreated),
 			Level:     mapWinLevel(e.Level),
 			Category:  "application",
-			Source:    e.ProviderName,
-			EventID:   fmt.Sprintf("%d:%d", e.Id, e.RecordId),
+			Source:    truncateCollectorString(e.ProviderName),
+			EventID:   truncateCollectorString(fmt.Sprintf("%d:%d", e.Id, e.RecordId)),
 			Message:   truncateString(e.Message, 500),
 			Details: map[string]any{
 				"recordId": e.RecordId,
-				"logName":  e.LogName,
+				"logName":  truncateCollectorString(e.LogName),
 				"eventId":  e.Id,
 			},
 		})
+		if len(results) >= collectorResultLimit {
+			break
+		}
 	}
 
 	return results, nil
@@ -182,8 +190,7 @@ func (c *EventLogCollector) collectPowerEvents(since time.Time) ([]EventLogEntry
 		sinceStr,
 	)
 
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psCmd)
-	output, err := cmd.Output()
+	output, err := runCollectorOutput(collectorLongCommandTimeout, "powershell", "-NoProfile", "-NonInteractive", "-Command", psCmd)
 	if err != nil {
 		// No events found is not an error
 		return nil, nil
@@ -200,19 +207,22 @@ func (c *EventLogCollector) collectPowerEvents(since time.Time) ([]EventLogEntry
 		level := mapPowerEventLevel(e.Id)
 
 		results = append(results, EventLogEntry{
-			Timestamp: e.TimeCreated,
+			Timestamp: truncateCollectorString(e.TimeCreated),
 			Level:     level,
 			Category:  "system",
-			Source:    e.ProviderName,
-			EventID:   fmt.Sprintf("%d:%d", e.Id, e.RecordId),
+			Source:    truncateCollectorString(e.ProviderName),
+			EventID:   truncateCollectorString(fmt.Sprintf("%d:%d", e.Id, e.RecordId)),
 			Message:   truncateString(e.Message, 500),
 			Details: map[string]any{
 				"recordId":  e.RecordId,
-				"logName":   e.LogName,
+				"logName":   truncateCollectorString(e.LogName),
 				"eventId":   e.Id,
-				"eventType": mapPowerEventType(e.Id),
+				"eventType": truncateCollectorString(mapPowerEventType(e.Id)),
 			},
 		})
+		if len(results) >= collectorResultLimit {
+			break
+		}
 	}
 
 	return results, nil
@@ -237,8 +247,7 @@ func (c *EventLogCollector) queryWinEvents(logName string, maxLevel int, since t
 		logName, levelFilter, sinceStr,
 	)
 
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psCmd)
-	output, err := cmd.Output()
+	output, err := runCollectorOutput(collectorLongCommandTimeout, "powershell", "-NoProfile", "-NonInteractive", "-Command", psCmd)
 	if err != nil {
 		// No events found is not an error
 		return nil, nil
@@ -262,16 +271,30 @@ func parseWinEventJSON(data []byte) []winEvent {
 	// Try array first
 	var events []winEvent
 	if err := json.Unmarshal([]byte(trimmed), &events); err == nil {
-		return events
+		return sanitizeWinEvents(events)
 	}
 
 	// Single object (PowerShell omits array wrapper for 1 result)
 	var single winEvent
 	if err := json.Unmarshal([]byte(trimmed), &single); err == nil {
-		return []winEvent{single}
+		return sanitizeWinEvents([]winEvent{single})
 	}
 
 	return nil
+}
+
+func sanitizeWinEvents(events []winEvent) []winEvent {
+	if len(events) > collectorResultLimit {
+		events = events[:collectorResultLimit]
+	}
+	for i := range events {
+		events[i].LogName = truncateCollectorString(events[i].LogName)
+		events[i].LevelDisplayName = truncateCollectorString(events[i].LevelDisplayName)
+		events[i].TimeCreated = truncateCollectorString(events[i].TimeCreated)
+		events[i].ProviderName = truncateCollectorString(events[i].ProviderName)
+		events[i].Message = truncateString(events[i].Message, 500)
+	}
+	return events
 }
 
 // mapWinLevel maps Windows Event Log numeric level to our level enum

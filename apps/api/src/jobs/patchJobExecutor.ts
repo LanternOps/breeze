@@ -18,6 +18,7 @@ import {
 } from '../db/schema';
 import { eq, and, sql, inArray } from 'drizzle-orm';
 import { getRedisConnection } from '../services/redis';
+import { isReusableState } from '../services/bullmqUtils';
 import { resolveApprovedPatchesForDevice, type RingConfig } from '../services/patchApprovalEvaluator';
 import { evaluateRebootPolicy, executeReboot } from '../services/patchRebootHandler';
 import { queueCommandForExecution } from '../services/commandQueue';
@@ -41,6 +42,39 @@ const PATCH_JOB_DEVICE_QUEUE = 'patch-job-devices';
 
 let patchJobQueue: Queue | null = null;
 let patchJobDeviceQueue: Queue | null = null;
+
+function getPatchJobExecutionId(patchJobId: string): string {
+  return `patch-job:${patchJobId}`;
+}
+
+function getPatchJobDeviceExecutionId(
+  patchJobId: string,
+  deviceId: string
+): string {
+  return `patch-job-device:${patchJobId}:${deviceId}`;
+}
+
+function getPatchJobCompletionId(patchJobId: string): string {
+  return `patch-job-completion:${patchJobId}`;
+}
+
+async function resolveActiveQueueJob(queue: Queue, candidateIds: string[]) {
+  for (const candidateId of candidateIds) {
+    const existing = await queue.getJob(candidateId);
+    if (!existing) continue;
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      return existing;
+    }
+    if (state === 'completed' || state === 'failed') {
+      await existing.remove().catch((error) => {
+        console.error(`[PatchJobExecutor] Failed to remove stale job ${candidateId}:`, error);
+      });
+    }
+  }
+
+  return null;
+}
 
 export function getPatchJobQueue(): Queue {
   if (!patchJobQueue) {
@@ -90,10 +124,15 @@ type PatchJobDeviceData = ExecutePatchJobDeviceData;
 
 export async function enqueuePatchJob(patchJobId: string, delayMs?: number): Promise<void> {
   const queue = getPatchJobQueue();
+  const stableJobId = getPatchJobExecutionId(patchJobId);
+  const existing = await resolveActiveQueueJob(queue, [stableJobId]);
+  if (existing) {
+    return;
+  }
   await queue.add(
     'execute-patch-job',
     { type: 'execute-patch-job', patchJobId } satisfies ExecutePatchJobData,
-    delayMs ? { delay: delayMs } : undefined
+    delayMs ? { delay: delayMs, jobId: stableJobId } : { jobId: stableJobId }
   );
 }
 
@@ -101,7 +140,7 @@ export async function enqueuePatchJob(patchJobId: string, delayMs?: number): Pro
 // Job orchestration worker
 // ============================================
 
-function createPatchJobWorker(): Worker<PatchJobData> {
+export function createPatchJobWorker(): Worker<PatchJobData> {
   return new Worker<PatchJobData>(
     PATCH_JOB_QUEUE,
     async (job: Job<PatchJobData>) => {
@@ -144,10 +183,15 @@ async function processExecutePatchJob(data: ExecutePatchJobData): Promise<unknow
   }
 
   // Transition to running
-  await db
+  const claimed = await db
     .update(patchJobs)
     .set({ status: 'running', startedAt: new Date() })
-    .where(eq(patchJobs.id, patchJobId));
+    .where(and(eq(patchJobs.id, patchJobId), eq(patchJobs.status, 'scheduled')))
+    .returning({ id: patchJobs.id });
+
+  if (claimed.length === 0) {
+    return { skipped: true, reason: 'Job was already claimed' };
+  }
 
   // Extract target device IDs from the JSONB targets field
   const targets = patchJob.targets as { deviceIds?: string[] };
@@ -164,24 +208,35 @@ async function processExecutePatchJob(data: ExecutePatchJobData): Promise<unknow
   // Fan out to per-device queue
   const deviceQueue = getPatchJobDeviceQueue();
   for (const deviceId of deviceIds) {
-    await deviceQueue.add(
-      'execute-patch-job-device',
-      {
-        type: 'execute-patch-job-device',
-        patchJobId,
-        deviceId,
-        orgId: patchJob.orgId,
-      } satisfies ExecutePatchJobDeviceData
-    );
+    const stableJobId = getPatchJobDeviceExecutionId(patchJobId, deviceId);
+    const existing = await resolveActiveQueueJob(deviceQueue, [stableJobId]);
+    if (!existing) {
+      await deviceQueue.add(
+        'execute-patch-job-device',
+        {
+          type: 'execute-patch-job-device',
+          patchJobId,
+          deviceId,
+          orgId: patchJob.orgId,
+        } satisfies ExecutePatchJobDeviceData,
+        {
+          jobId: stableJobId,
+        }
+      );
+    }
   }
 
   // Enqueue completion checker (35 min delay)
   const queue = getPatchJobQueue();
-  await queue.add(
-    'check-completion',
-    { type: 'check-completion', patchJobId } satisfies CheckCompletionData,
-    { delay: 35 * 60 * 1000 }
-  );
+  const completionJobId = getPatchJobCompletionId(patchJobId);
+  const existingCompletion = await resolveActiveQueueJob(queue, [completionJobId]);
+  if (!existingCompletion) {
+    await queue.add(
+      'check-completion',
+      { type: 'check-completion', patchJobId } satisfies CheckCompletionData,
+      { delay: 35 * 60 * 1000, jobId: completionJobId }
+    );
+  }
 
   return { dispatched: deviceIds.length };
 }

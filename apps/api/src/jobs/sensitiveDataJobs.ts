@@ -1,4 +1,4 @@
-import { Job, Queue, Worker } from 'bullmq';
+import { Job, Queue, Worker, type JobsOptions } from 'bullmq';
 import { and, eq, inArray, ne, sql, type SQL } from 'drizzle-orm';
 
 import * as dbModule from '../db';
@@ -6,6 +6,7 @@ import { deviceCommands, devices, sensitiveDataPolicies, sensitiveDataScans } fr
 import { CommandTypes, queueCommandForExecution } from '../services/commandQueue';
 import { isCronDue } from '../services/automationRuntime';
 import { getRedisConnection } from '../services/redis';
+import { isReusableState } from '../services/bullmqUtils';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -45,6 +46,10 @@ type SensitiveDataJobData = DispatchScanJobData | SchedulePoliciesJobData;
 let sensitiveDataQueue: Queue<SensitiveDataJobData> | null = null;
 let sensitiveDataWorker: Worker<SensitiveDataJobData> | null = null;
 
+function getSensitiveDataDispatchJobId(scanId: string): string {
+  return `sensitive-scan-${scanId}`;
+}
+
 export function getSensitiveDataQueue(): Queue<SensitiveDataJobData> {
   if (!sensitiveDataQueue) {
     sensitiveDataQueue = new Queue<SensitiveDataJobData>(SENSITIVE_DATA_QUEUE, {
@@ -54,17 +59,37 @@ export function getSensitiveDataQueue(): Queue<SensitiveDataJobData> {
   return sensitiveDataQueue;
 }
 
-export async function enqueueSensitiveDataScan(scanId: string): Promise<string | null> {
+async function addUniqueSensitiveDataDispatchJob(
+  scanId: string,
+  opts: Omit<JobsOptions, 'jobId'> = {},
+) {
   const queue = getSensitiveDataQueue();
-  const job = await queue.add(
+  const stableJobId = getSensitiveDataDispatchJobId(scanId);
+  const existing = await queue.getJob(stableJobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      return existing;
+    }
+    await existing.remove().catch((error) => {
+      console.error(`[SensitiveDataJobs] Failed to remove stale job:`, error);
+    });
+  }
+
+  return queue.add(
     'dispatch-scan',
     { type: 'dispatch-scan', scanId },
     {
-      jobId: `sensitive-scan-${scanId}`,
       removeOnComplete: { count: 200 },
-      removeOnFail: { count: 500 }
+      removeOnFail: { count: 500 },
+      jobId: stableJobId,
+      ...opts,
     }
   );
+}
+
+export async function enqueueSensitiveDataScan(scanId: string): Promise<string | null> {
+  const job = await addUniqueSensitiveDataDispatchJob(scanId);
   return typeof job.id === 'string' ? job.id : job.id ? String(job.id) : null;
 }
 
@@ -203,16 +228,9 @@ async function getDevicePendingCommands(deviceId: string): Promise<number> {
 }
 
 async function requeueThrottledScan(scanId: string, reason: string): Promise<void> {
-  const queue = getSensitiveDataQueue();
-  await queue.add(
-    'dispatch-scan',
-    { type: 'dispatch-scan', scanId },
-    {
-      delay: SENSITIVE_DATA_THROTTLE_REQUEUE_SECONDS * 1000,
-      removeOnComplete: { count: 200 },
-      removeOnFail: { count: 500 },
-    }
-  );
+  await addUniqueSensitiveDataDispatchJob(scanId, {
+    delay: SENSITIVE_DATA_THROTTLE_REQUEUE_SECONDS * 1000,
+  });
   await db
     .update(sensitiveDataScans)
     .set({
@@ -518,4 +536,3 @@ export async function shutdownSensitiveDataWorkers(): Promise<void> {
     sensitiveDataQueue = null;
   }
 }
-

@@ -4,6 +4,9 @@ import { vmRestoreRoutes } from './vmrestore';
 
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const SNAPSHOT_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+const DEVICE_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+const RESTORE_JOB_ID = '99999999-9999-4999-8999-999999999999';
+const COMMAND_ID = '11111111-1111-4111-8111-111111111111';
 
 vi.mock('../../services', () => ({}));
 
@@ -11,7 +14,7 @@ const queueCommandForExecutionMock = vi.fn();
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set']) {
+  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'innerJoin']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   return Object.assign(Promise.resolve(resolvedValue), chain);
@@ -45,11 +48,20 @@ vi.mock('../../db/schema', () => ({
   },
   restoreJobs: {
     id: 'restore_jobs.id',
+    orgId: 'restore_jobs.org_id',
+    status: 'restore_jobs.status',
+    snapshotId: 'restore_jobs.snapshot_id',
+    deviceId: 'restore_jobs.device_id',
+    createdAt: 'restore_jobs.created_at',
+    startedAt: 'restore_jobs.started_at',
+    completedAt: 'restore_jobs.completed_at',
+    targetConfig: 'restore_jobs.target_config',
   },
   devices: {
     id: 'devices.id',
     orgId: 'devices.org_id',
     status: 'devices.status',
+    hostname: 'devices.hostname',
   },
 }));
 
@@ -71,6 +83,8 @@ vi.mock('../../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
+  requirePermission: vi.fn(() => (c: any, next: any) => next()),
+  requireMfa: vi.fn(() => (c: any, next: any) => next()),
 }));
 
 import { authMiddleware } from '../../middleware/auth';
@@ -123,6 +137,92 @@ describe('vm restore routes', () => {
     expect(res.status).toBe(400);
   });
 
+  it('creates a VM restore job and persists the queued command id', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([{ id: SNAPSHOT_ID, orgId: ORG_ID, snapshotId: 'snap-ext-001' }]))
+      .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, status: 'online' }]));
+    insertMock.mockReturnValueOnce(
+      chainMock([{
+        id: RESTORE_JOB_ID,
+        status: 'pending',
+        snapshotId: SNAPSHOT_ID,
+        deviceId: DEVICE_ID,
+        createdAt: new Date('2026-03-30T00:00:00.000Z'),
+      }])
+    );
+    updateMock.mockReturnValue(chainMock([]));
+    queueCommandForExecutionMock.mockResolvedValue({
+      command: { id: COMMAND_ID },
+    });
+
+    const res = await app.request('/backup/restore/as-vm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        snapshotId: SNAPSHOT_ID,
+        targetDeviceId: DEVICE_ID,
+        hypervisor: 'hyperv',
+        vmName: 'Recovered VM',
+        switchName: 'Default Switch',
+        vmSpecs: {
+          memoryMb: 8192,
+          cpuCount: 4,
+          diskSizeGb: 120,
+        },
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(queueCommandForExecutionMock).toHaveBeenCalledWith(
+      DEVICE_ID,
+      'VM_RESTORE_FROM_BACKUP',
+      {
+        restoreJobId: RESTORE_JOB_ID,
+        snapshotId: 'snap-ext-001',
+        vmName: 'Recovered VM',
+        memoryMb: 8192,
+        cpuCount: 4,
+        diskSizeGb: 120,
+        switchName: 'Default Switch',
+      },
+      { userId: 'user-123' }
+    );
+  });
+
+  it('fails the restore job immediately when the target device is offline', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([{ id: SNAPSHOT_ID, orgId: ORG_ID, snapshotId: 'snap-ext-001' }]))
+      .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, status: 'offline' }]));
+    insertMock.mockReturnValueOnce(
+      chainMock([{
+        id: RESTORE_JOB_ID,
+        status: 'pending',
+        snapshotId: SNAPSHOT_ID,
+        deviceId: DEVICE_ID,
+        createdAt: new Date('2026-03-30T00:00:00.000Z'),
+      }])
+    );
+    updateMock.mockReturnValue(chainMock([]));
+    queueCommandForExecutionMock.mockResolvedValue({
+      error: 'Device is offline, cannot execute command',
+    });
+
+    const res = await app.request('/backup/restore/as-vm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        snapshotId: SNAPSHOT_ID,
+        targetDeviceId: DEVICE_ID,
+        hypervisor: 'hyperv',
+        vmName: 'Recovered VM',
+      }),
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe('Device is offline, cannot execute command');
+  });
+
   it('returns a VM restore estimate', async () => {
     selectMock.mockReturnValueOnce(chainMock([{
       id: SNAPSHOT_ID,
@@ -146,9 +246,9 @@ describe('vm restore routes', () => {
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.recommendedMemoryMb).toBe(8192);
-    expect(body.recommendedCpu).toBe(4);
-    expect(body.requiredDiskGb).toBe(100);
+    expect(body.memoryMb).toBe(8192);
+    expect(body.cpuCount).toBe(4);
+    expect(body.diskSizeGb).toBe(100);
     expect(body.platform).toBe('hyperv');
   });
 });

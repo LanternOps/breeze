@@ -3,8 +3,6 @@
 package patching
 
 import (
-	"bufio"
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,6 +10,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const brewCaskPrefix = "cask:"
@@ -53,12 +52,15 @@ func brewBinaryPath() (string, error) {
 }
 
 func activeConsoleUser() (*user.User, error) {
-	output, err := exec.Command("/usr/bin/stat", "-f", "%Su", "/dev/console").Output()
+	output, err := commandOutputWithTimeout(patchListTimeout, "/usr/bin/stat", "-f", "%Su", "/dev/console")
 	if err != nil {
 		return nil, fmt.Errorf("resolve console user: %w", err)
 	}
 
 	username := strings.TrimSpace(string(output))
+	if err := validateConsoleUsername(username); err != nil {
+		return nil, err
+	}
 	if username == "" || username == "root" || username == "loginwindow" {
 		return nil, fmt.Errorf("no active non-root console user")
 	}
@@ -141,12 +143,7 @@ func (h *HomebrewProvider) brewCommand(args ...string) (*exec.Cmd, error) {
 
 // Scan returns available upgrades using brew.
 func (h *HomebrewProvider) Scan() ([]AvailablePatch, error) {
-	cmd, err := h.brewCommand("outdated", "--json=v2")
-	if err != nil {
-		return nil, err
-	}
-
-	output, err := cmd.Output()
+	output, err := h.brewOutput(patchScanTimeout, "outdated", "--json=v2")
 	if err != nil {
 		return nil, fmt.Errorf("brew outdated failed: %w", err)
 	}
@@ -158,21 +155,33 @@ func (h *HomebrewProvider) Scan() ([]AvailablePatch, error) {
 
 	patches := []AvailablePatch{}
 	for _, formula := range report.Formulae {
+		if err := validateBrewPackageName(formula.Name); err != nil {
+			continue
+		}
 		patches = append(patches, AvailablePatch{
-			ID:          formula.Name,
-			Title:       formula.Name,
-			Version:     formula.CurrentVersion,
-			Description: formula.description(),
+			ID:          truncatePatchField(formula.Name),
+			Title:       truncatePatchField(formula.Name),
+			Version:     truncatePatchField(formula.CurrentVersion),
+			Description: truncatePatchDescription(formula.description()),
 		})
+		if len(patches) >= patchResultItemLimit {
+			return patches, nil
+		}
 	}
 
 	for _, cask := range report.Casks {
+		if err := validateBrewPackageName(cask.Name); err != nil {
+			continue
+		}
 		patches = append(patches, AvailablePatch{
-			ID:          brewCaskPrefix + cask.Name,
-			Title:       cask.Name,
-			Version:     cask.CurrentVersion,
-			Description: cask.description(),
+			ID:          truncatePatchField(brewCaskPrefix + cask.Name),
+			Title:       truncatePatchField(cask.Name),
+			Version:     truncatePatchField(cask.CurrentVersion),
+			Description: truncatePatchDescription(cask.description()),
 		})
+		if len(patches) >= patchResultItemLimit {
+			break
+		}
 	}
 
 	return patches, nil
@@ -181,45 +190,41 @@ func (h *HomebrewProvider) Scan() ([]AvailablePatch, error) {
 // Install upgrades a Homebrew formula or cask.
 func (h *HomebrewProvider) Install(patchID string) (InstallResult, error) {
 	name, isCask := parseBrewID(patchID)
+	if err := validateBrewPackageName(name); err != nil {
+		return InstallResult{}, err
+	}
 	args := []string{"upgrade"}
 	if isCask {
 		args = append(args, "--cask")
 	}
 	args = append(args, name)
 
-	cmd, err := h.brewCommand(args...)
+	output, err := h.brewCombinedOutput(patchMutateTimeout, args...)
 	if err != nil {
-		return InstallResult{}, err
-	}
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return InstallResult{}, fmt.Errorf("brew upgrade failed: %w: %s", err, strings.TrimSpace(string(output)))
+		return InstallResult{}, fmt.Errorf("brew upgrade failed: %w: %s", err, truncatePatchOutput(output))
 	}
 
 	return InstallResult{
 		PatchID: patchID,
-		Message: strings.TrimSpace(string(output)),
+		Message: truncatePatchOutput(output),
 	}, nil
 }
 
 // Uninstall removes a Homebrew formula or cask.
 func (h *HomebrewProvider) Uninstall(patchID string) error {
 	name, isCask := parseBrewID(patchID)
+	if err := validateBrewPackageName(name); err != nil {
+		return err
+	}
 	args := []string{"uninstall"}
 	if isCask {
 		args = append(args, "--cask")
 	}
 	args = append(args, name)
 
-	cmd, err := h.brewCommand(args...)
+	output, err := h.brewCombinedOutput(patchMutateTimeout, args...)
 	if err != nil {
-		return err
-	}
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("brew uninstall failed: %w: %s", err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("brew uninstall failed: %w: %s", err, truncatePatchOutput(output))
 	}
 
 	return nil
@@ -282,17 +287,12 @@ func parseBrewID(patchID string) (string, bool) {
 func (h *HomebrewProvider) brewList(args ...string) ([]InstalledPatch, error) {
 	brewArgs := append([]string{"list"}, args...)
 
-	cmd, err := h.brewCommand(brewArgs...)
-	if err != nil {
-		return nil, err
-	}
-
-	output, err := cmd.Output()
+	output, err := h.brewOutput(patchListTimeout, brewArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("brew %s failed: %w", strings.Join(brewArgs, " "), err)
 	}
 
-	scanner := bufio.NewScanner(bytes.NewReader(output))
+	scanner := newPatchScanner(output)
 	installed := []InstalledPatch{}
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -305,17 +305,42 @@ func (h *HomebrewProvider) brewList(args ...string) ([]InstalledPatch, error) {
 		}
 		name := parts[0]
 		version := parts[1]
+		if err := validateBrewPackageName(name); err != nil {
+			continue
+		}
 		id := name
 		if strings.Contains(strings.Join(brewArgs, " "), "--cask") {
 			id = brewCaskPrefix + name
 		}
 
 		installed = append(installed, InstalledPatch{
-			ID:      id,
-			Title:   name,
-			Version: version,
+			ID:      truncatePatchField(id),
+			Title:   truncatePatchField(name),
+			Version: truncatePatchField(version),
 		})
+		if len(installed) >= patchResultItemLimit {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("brew %s parse failed: %w", strings.Join(brewArgs, " "), err)
 	}
 
 	return installed, nil
+}
+
+func (h *HomebrewProvider) brewOutput(timeout time.Duration, args ...string) ([]byte, error) {
+	cmd, err := h.brewCommand(args...)
+	if err != nil {
+		return nil, err
+	}
+	return runCmdOutputWithTimeout(cmd, timeout)
+}
+
+func (h *HomebrewProvider) brewCombinedOutput(timeout time.Duration, args ...string) ([]byte, error) {
+	cmd, err := h.brewCommand(args...)
+	if err != nil {
+		return nil, err
+	}
+	return runCmdCombinedOutputWithTimeout(cmd, timeout)
 }

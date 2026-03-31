@@ -172,6 +172,38 @@ describe('resolveBackupTargets', () => {
     });
   });
 
+  it('extracts database names from discovered MSSQL database objects', async () => {
+    mockDb.select.mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([
+          {
+            instanceName: 'MSSQLSERVER',
+            databases: [
+              { name: 'master' },
+              { name: 'AppDB' },
+            ],
+          },
+        ]),
+      }),
+    });
+
+    const result = await resolveBackupTargets(
+      'mssql',
+      { backupType: 'full' },
+      'device-id'
+    );
+
+    expect(result).toHaveLength(2);
+    expect(result[0]!.payload).toMatchObject({
+      instance: 'MSSQLSERVER',
+      database: 'master',
+    });
+    expect(result[1]!.payload).toMatchObject({
+      instance: 'MSSQLSERVER',
+      database: 'AppDB',
+    });
+  });
+
   it('defaults backupType to full for mssql when not specified', async () => {
     mockDb.select.mockReturnValue({
       from: vi.fn().mockReturnValue({

@@ -492,16 +492,6 @@ export function checkGuardrails(
     };
   }
 
-  // Check for action-based tier overrides
-  if (toolName === 'run_backup_verification' && input.verificationType === 'full_recovery') {
-    return {
-      tier: 3,
-      allowed: true,
-      requiresApproval: true,
-      description: buildApprovalDescription(toolName, undefined, input)
-    };
-  }
-
   // Check for action-based tier escalation
   const action = input.action as string | undefined;
 

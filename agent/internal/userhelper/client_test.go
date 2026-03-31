@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -126,5 +127,39 @@ func TestIsAllowedLaunchBinaryAllowsHelperInstallDir(t *testing.T) {
 	otherPath := filepath.Join(t.TempDir(), "other", "random-binary")
 	if isAllowedLaunchBinary(selfPath, otherPath) {
 		t.Fatal("expected unrelated binary path to be rejected")
+	}
+}
+
+func TestValidateLaunchProcessRequestRejectsOversizedAndControlChars(t *testing.T) {
+	req := &ipc.LaunchProcessRequest{
+		BinaryPath: "/usr/local/bin/breeze-agent",
+		Args:       []string{"ok"},
+	}
+	if err := validateLaunchProcessRequest(req); err != nil {
+		t.Fatalf("expected valid request, got %v", err)
+	}
+
+	if err := validateLaunchProcessRequest(&ipc.LaunchProcessRequest{
+		BinaryPath: strings.Repeat("a", maxLaunchBinaryPathBytes+1),
+	}); err == nil {
+		t.Fatal("expected oversized binaryPath to be rejected")
+	}
+
+	if err := validateLaunchProcessRequest(&ipc.LaunchProcessRequest{
+		BinaryPath: "/usr/local/bin/breeze-agent",
+		Args:       []string{"bad\narg"},
+	}); err == nil {
+		t.Fatal("expected control-char arg to be rejected")
+	}
+
+	tooManyArgs := make([]string, maxLaunchArgs+1)
+	for i := range tooManyArgs {
+		tooManyArgs[i] = "x"
+	}
+	if err := validateLaunchProcessRequest(&ipc.LaunchProcessRequest{
+		BinaryPath: "/usr/local/bin/breeze-agent",
+		Args:       tooManyArgs,
+	}); err == nil {
+		t.Fatal("expected too many args to be rejected")
 	}
 }

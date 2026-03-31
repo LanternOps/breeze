@@ -27,7 +27,8 @@ import {
 } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { getC2cQueue } from '../jobs/c2cBackupWorker';
+import { enqueueC2cRestore, enqueueC2cSync } from '../jobs/c2cEnqueue';
+import { createC2cSyncJobIfIdle } from './c2cJobCreation';
 
 type C2CHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -315,27 +316,20 @@ export function registerC2CTools(aiTools: Map<string, AiTool>): void {
 
       if (!config) return JSON.stringify({ error: 'Config not found or access denied' });
 
-      const now = new Date();
-      const [job] = await db
-        .insert(c2cBackupJobs)
-        .values({
-          orgId: config.orgId,
-          configId: config.id,
-          status: 'pending',
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning();
-
-      if (!job) return JSON.stringify({ error: 'Failed to create C2C sync job' });
-
-      const queue = getC2cQueue();
-      await queue.add('run-sync', {
-        type: 'run-sync' as const,
-        jobId: job.id,
-        configId: config.id,
+      const created = await createC2cSyncJobIfIdle({
         orgId: config.orgId,
+        configId: config.id,
       });
+      const job = created?.job;
+      if (!job) return JSON.stringify({ error: 'Failed to create C2C sync job' });
+      if (!created.created) {
+        return JSON.stringify({
+          error: 'A C2C sync job is already pending or running for this configuration',
+          jobId: job.id,
+        });
+      }
+
+      await enqueueC2cSync(job.id, config.id, config.orgId);
 
       return JSON.stringify({
         success: true,
@@ -419,14 +413,12 @@ export function registerC2CTools(aiTools: Map<string, AiTool>): void {
 
       if (!restoreJob) return JSON.stringify({ error: 'Failed to create C2C restore job' });
 
-      const queue = getC2cQueue();
-      await queue.add('process-restore', {
-        type: 'process-restore' as const,
-        restoreJobId: restoreJob.id,
-        orgId: items[0]!.orgId,
+      await enqueueC2cRestore(
+        restoreJob.id,
+        items[0]!.orgId,
         itemIds,
-        targetConnectionId: typeof input.targetConnectionId === 'string' ? input.targetConnectionId : null,
-      });
+        typeof input.targetConnectionId === 'string' ? input.targetConnectionId : null
+      );
 
       return JSON.stringify({
         success: true,

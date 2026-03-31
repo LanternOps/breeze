@@ -31,7 +31,7 @@ func (d *darwinDetectorNoCgo) ListSessions() ([]DetectedSession, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid console user: %w", err)
 	}
-	if username == "" || username == "root" || username == "loginwindow" {
+	if username == "" || username == "root" {
 		return nil, nil
 	}
 
@@ -88,14 +88,14 @@ func (d *darwinDetectorNoCgo) WatchSessions(ctx context.Context) <-chan SessionE
 				}
 
 				if currentUser != lastUser {
-					if lastUser != "" {
+					if lastUser != "" && lastUser != "loginwindow" {
 						ch <- SessionEvent{
 							Type:     SessionLogout,
 							Username: lastUser,
 							Session:  "console",
 						}
 					}
-					if currentUser != "" {
+					if currentUser != "" && currentUser != "loginwindow" {
 						ch <- SessionEvent{
 							Type:     SessionLogin,
 							Username: currentUser,

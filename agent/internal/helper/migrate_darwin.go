@@ -2,7 +2,6 @@ package helper
 
 import (
 	"os"
-	"os/exec"
 	"strconv"
 )
 
@@ -14,9 +13,9 @@ func migrateLegacyPlatform() {
 func stopHelperLegacy() {
 	uid := consoleUID()
 	if uid != "" && uid != "0" {
-		_ = exec.Command("launchctl", "bootout", "gui/"+uid, plistPath).Run()
+		_ = runHelperCommand("launchctl", "bootout", "gui/"+uid, plistPath)
 	}
-	_ = exec.Command("pkill", "-f", "breeze-helper").Run()
+	_ = runHelperCommand("pkill", "-f", "breeze-helper")
 }
 
 func migrationTargets() ([]string, error) {

@@ -226,6 +226,26 @@ export interface TCCPermissions {
   screenRecording: boolean;
   accessibility: boolean;
   fullDiskAccess: boolean;
+  remoteDesktop?: boolean | null;
+  checkedAt: string;
+}
+
+export type DesktopAccessMode = 'user_session' | 'login_window' | 'unavailable';
+
+export type DesktopAccessReason =
+  | 'missing_permission'
+  | 'missing_entitlement'
+  | 'helper_not_connected'
+  | 'virtual_display_unavailable'
+  | 'unsupported_os'
+  | 'manual_install';
+
+export interface DesktopAccessState {
+  mode: DesktopAccessMode;
+  loginUiReachable: boolean;
+  virtualDisplayReady: boolean;
+  reason?: DesktopAccessReason | null;
+  remoteDesktopPermission?: boolean | null;
   checkedAt: string;
 }
 

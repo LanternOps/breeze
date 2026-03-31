@@ -3,9 +3,7 @@
 package collectors
 
 import (
-	"context"
-	"fmt"
-	"os/exec"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -14,20 +12,17 @@ const wmicTimeout = 15 * time.Second
 
 // wmicGet runs a wmic query and returns the trimmed output value.
 func wmicGet(args []string, property string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), wmicTimeout)
-	defer cancel()
-
 	cmdArgs := append(args, "get", property, "/format:list")
-	out, err := exec.CommandContext(ctx, "wmic", cmdArgs...).Output()
+	out, err := runCollectorOutput(wmicTimeout, "wmic", cmdArgs...)
 	if err != nil {
-		fmt.Printf("Warning: wmic %s failed: %v\n", strings.Join(args, " "), err)
+		slog.Warn("wmic query failed", "args", strings.Join(args, " "), "error", err.Error())
 		return ""
 	}
 	// Output format: "Property=Value\r\n"
 	for _, line := range strings.Split(string(out), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, property+"=") {
-			return strings.TrimSpace(strings.TrimPrefix(line, property+"="))
+			return truncateCollectorString(strings.TrimSpace(strings.TrimPrefix(line, property+"=")))
 		}
 	}
 	return ""

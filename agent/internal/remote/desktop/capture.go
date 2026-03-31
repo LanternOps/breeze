@@ -25,6 +25,11 @@ type CaptureConfig struct {
 	// DisplayIndex specifies which display to capture (0 = primary)
 	DisplayIndex int
 
+	// DesktopContext selects the macOS capture strategy for the current helper.
+	// "user_session" uses the interactive logged-in desktop path, while
+	// "login_window" uses the login UI path.
+	DesktopContext string
+
 	// Quality specifies the JPEG quality (1-100) if encoding to JPEG
 	Quality int
 
@@ -35,15 +40,35 @@ type CaptureConfig struct {
 // DefaultConfig returns a default capture configuration
 func DefaultConfig() CaptureConfig {
 	return CaptureConfig{
-		DisplayIndex: 0,
-		Quality:      80,
-		ScaleFactor:  1.0,
+		DisplayIndex:   0,
+		DesktopContext: "user_session",
+		Quality:        80,
+		ScaleFactor:    1.0,
 	}
 }
 
 // NewScreenCapturer creates a new platform-specific screen capturer
 func NewScreenCapturer(config CaptureConfig) (ScreenCapturer, error) {
 	return newPlatformCapturer(config)
+}
+
+// ProbeCaptureAccess performs a single real capture attempt using the
+// platform backend selected by config.
+func ProbeCaptureAccess(config CaptureConfig) (bool, error) {
+	capturer, err := NewScreenCapturer(config)
+	if err != nil {
+		return false, err
+	}
+	defer capturer.Close()
+
+	img, err := capturer.Capture()
+	if err != nil {
+		return false, err
+	}
+	if img == nil || img.Rect.Empty() {
+		return false, fmt.Errorf("capture probe returned no frame")
+	}
+	return true, nil
 }
 
 // BGRAProvider is implemented by capturers that produce BGRA pixel data

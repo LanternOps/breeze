@@ -23,6 +23,16 @@ declare module 'hono' {
 const AGENT_RATE_LIMIT = 120;
 const AGENT_RATE_WINDOW_SECONDS = 60;
 
+function tokenHashMatches(storedHash: string, tokenHash: string): boolean {
+  const storedBuf = Buffer.from(storedHash, 'hex');
+  const computedBuf = Buffer.from(tokenHash, 'hex');
+  if (storedBuf.length !== computedBuf.length) {
+    return false;
+  }
+
+  return timingSafeEqual(storedBuf, computedBuf);
+}
+
 /**
  * Middleware to authenticate agent requests via Bearer token.
  * Hashes the token and compares against the stored agentTokenHash.
@@ -58,6 +68,8 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
         orgId: devices.orgId,
         siteId: devices.siteId,
         agentTokenHash: devices.agentTokenHash,
+        previousTokenHash: devices.previousTokenHash,
+        previousTokenExpiresAt: devices.previousTokenExpiresAt,
         status: devices.status,
       })
       .from(devices)
@@ -70,15 +82,19 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     throw new HTTPException(401, { message: 'Invalid agent credentials' });
   }
 
-  const storedBuf = Buffer.from(device.agentTokenHash, 'hex');
-  const computedBuf = Buffer.from(tokenHash, 'hex');
-  if (storedBuf.length !== computedBuf.length) {
-    // Hash format mismatch — treat as auth failure
-    throw new HTTPException(401, { message: 'Invalid agent credentials' });
-  }
-  const hashMatch = timingSafeEqual(storedBuf, computedBuf);
+  let tokenRotationRequired = false;
+  const hashMatch = tokenHashMatches(device.agentTokenHash, tokenHash);
   if (!hashMatch) {
-    throw new HTTPException(401, { message: 'Invalid agent credentials' });
+    if (
+      !device.previousTokenHash ||
+      !device.previousTokenExpiresAt ||
+      device.previousTokenExpiresAt <= new Date() ||
+      !tokenHashMatches(device.previousTokenHash, tokenHash)
+    ) {
+      throw new HTTPException(401, { message: 'Invalid agent credentials' });
+    }
+
+    tokenRotationRequired = true;
   }
 
   if (device.status === 'decommissioned') {
@@ -97,6 +113,10 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   if (!rateCheck.allowed) {
     c.header('Retry-After', String(Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)));
     throw new HTTPException(429, { message: 'Agent rate limit exceeded' });
+  }
+
+  if (tokenRotationRequired) {
+    c.header('x-token-rotation-required', 'true');
   }
 
   c.set('agent', {

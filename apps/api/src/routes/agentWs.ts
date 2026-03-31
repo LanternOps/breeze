@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
 import { z } from 'zod';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, inArray, sql } from 'drizzle-orm';
 import { createHash, timingSafeEqual } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, remoteSessions, backupJobs, restoreJobs } from '../db/schema';
@@ -15,6 +15,10 @@ import { isRedisAvailable } from '../services/redis';
 import { isIP } from 'node:net';
 import { processDeviceIPHistoryUpdate } from '../services/deviceIpHistory';
 import { processBackupVerificationResult } from './backup/verificationService';
+import { applyBackupCommandResultToJob } from '../services/backupResultPersistence';
+import { applyVaultSyncCommandResult } from '../services/vaultSyncPersistence';
+import { backupCommandResultSchema } from './backup/resultSchemas';
+import { claimPendingCommandsForDevice } from '../services/commandDispatch';
 
 declare module 'hono' {
   interface ContextVariableMap {
@@ -24,11 +28,443 @@ declare module 'hono' {
 
 const VALID_MONITOR_STATUSES = new Set(['online', 'offline', 'degraded']);
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const VM_RESTORE_COMMAND_TYPES = new Set(['vm_restore_from_backup', 'vm_instant_boot']);
+const PROVIDER_BACKED_BACKUP_COMMAND_TYPES = new Set(['hyperv_backup', 'mssql_backup']);
+const DR_COMMAND_TYPES = new Set([
+  'vm_restore_from_backup',
+  'vm_instant_boot',
+  'hyperv_restore',
+  'mssql_restore',
+  'bmr_recover',
+]);
+const MAX_DESKTOP_SESSION_ID_BYTES = 128;
+const ACCEPTED_COMMAND_RESULT_STATUSES = ['pending', 'sent'] as const;
 
 function normalizeMonitorStatus(raw: string | undefined): 'online' | 'offline' | 'degraded' {
   if (raw && VALID_MONITOR_STATUSES.has(raw)) return raw as 'online' | 'offline' | 'degraded';
   return 'offline';
 }
+
+function deriveRestoreStatus(
+  commandStatus: z.infer<typeof commandResultSchema>['status'],
+  payloadStatus?: unknown
+): 'completed' | 'failed' | 'partial' {
+  if (commandStatus !== 'completed') return 'failed';
+  if (payloadStatus === 'failed') return 'failed';
+  if (payloadStatus === 'partial' || payloadStatus === 'degraded') return 'partial';
+  return 'completed';
+}
+
+function normalizeTargetConfig(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? { ...(value as Record<string, unknown>) }
+    : {};
+}
+
+function extractDesktopSessionId(commandId: string, prefix: 'desk-start-' | 'desk-stop-' | 'desk-disconnect-'): string | null {
+  if (!commandId.startsWith(prefix)) return null;
+  const sessionId = commandId.slice(prefix.length);
+  if (!sessionId || sessionId.length > MAX_DESKTOP_SESSION_ID_BYTES) {
+    return null;
+  }
+  return sessionId;
+}
+
+function buildRestoreResultMetadata(
+  commandType: string,
+  result: z.infer<typeof commandResultSchema>,
+  restoreData: Record<string, unknown>
+): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {
+    commandType,
+    status: restoreData.status ?? result.status,
+  };
+
+  for (const key of [
+    'vmName',
+    'newVmId',
+    'vhdxPath',
+    'durationMs',
+    'bootTimeMs',
+    'warnings',
+    'error',
+    'backgroundSyncActive',
+    'syncProgress',
+  ]) {
+    if (restoreData[key] !== undefined) {
+      metadata[key] = restoreData[key];
+    }
+  }
+
+  if (result.error && metadata.error === undefined) {
+    metadata.error = result.error;
+  }
+  if (result.stderr && metadata.stderr === undefined) {
+    metadata.stderr = result.stderr;
+  }
+  if (result.durationMs !== undefined && metadata.durationMs === undefined) {
+    metadata.durationMs = result.durationMs;
+  }
+
+  return metadata;
+}
+
+/**
+ * Signature for per-command-type result handlers dispatched from processCommandResult.
+ */
+type CommandResultHandler = (params: {
+  agentId: string;
+  command: typeof deviceCommands.$inferSelect;
+  result: z.infer<typeof commandResultSchema>;
+  resolvedDeviceId: string;
+  stdout: string | undefined;
+}) => Promise<void>;
+
+async function updateRestoreJobFromResult(
+  restoreJob: {
+    id: string;
+    targetConfig?: unknown;
+  },
+  commandType: string,
+  result: z.infer<typeof commandResultSchema>
+): Promise<void> {
+  const restoreData =
+    result.result && typeof result.result === 'object' && !Array.isArray(result.result)
+      ? result.result as Record<string, unknown>
+      : {};
+  const nextTargetConfig = normalizeTargetConfig(restoreJob.targetConfig);
+  nextTargetConfig.result = buildRestoreResultMetadata(commandType, result, restoreData);
+
+  const restoredSize =
+    typeof restoreData.bytesRestored === 'number' ? restoreData.bytesRestored : null;
+  const restoredFiles =
+    typeof restoreData.filesRestored === 'number' ? restoreData.filesRestored : null;
+
+  await db
+    .update(restoreJobs)
+    .set({
+      status: deriveRestoreStatus(result.status, restoreData.status),
+      completedAt: new Date(),
+      restoredSize,
+      restoredFiles,
+      targetConfig: nextTargetConfig,
+      updatedAt: new Date(),
+    })
+    .where(eq(restoreJobs.id, restoreJob.id));
+}
+
+// ---------------------------------------------------------------------------
+// Per-command-type result handlers (used by the dispatch map in processCommandResult)
+// ---------------------------------------------------------------------------
+
+async function handleDiscoveryResult({ agentId, command, result }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  try {
+    const payload = command.payload as Record<string, unknown> | null;
+    const expectedJobId = typeof payload?.jobId === 'string' ? payload.jobId : null;
+    const discoveryData = result.result as {
+      jobId?: string;
+      hosts?: DiscoveredHostResult[];
+      hostsScanned?: number;
+      hostsDiscovered?: number;
+    } | undefined;
+
+    if (discoveryData?.hosts) {
+      if (!expectedJobId || discoveryData.jobId !== expectedJobId) {
+        console.warn(
+          `[AgentWs] Rejecting mismatched discovery result ${result.commandId} from agent ${agentId}: ` +
+          `sentJob=${discoveryData.jobId ?? 'none'} expected=${expectedJobId ?? 'none'}`
+        );
+        return;
+      }
+    }
+
+    if (expectedJobId && discoveryData?.hosts) {
+      // Look up the job to get orgId and siteId
+      const [job] = await db
+        .select({ orgId: discoveryJobs.orgId, siteId: discoveryJobs.siteId })
+        .from(discoveryJobs)
+        .where(eq(discoveryJobs.id, expectedJobId))
+        .limit(1);
+
+      if (job && isRedisAvailable()) {
+        await enqueueDiscoveryResults(
+          expectedJobId,
+          job.orgId,
+          job.siteId,
+          discoveryData.hosts,
+          discoveryData.hostsScanned ?? 0,
+          discoveryData.hostsDiscovered ?? 0
+        );
+      } else if (job) {
+        // Redis not available — mark job failed so user knows results weren't processed
+        console.warn(`[AgentWs] Redis unavailable, cannot process ${discoveryData.hosts.length} discovery hosts for job ${expectedJobId}`);
+        await db
+          .update(discoveryJobs)
+          .set({
+            status: 'failed',
+            completedAt: new Date(),
+            hostsDiscovered: discoveryData.hostsDiscovered ?? 0,
+            hostsScanned: discoveryData.hostsScanned ?? 0,
+            errors: { message: 'Results received but could not be processed: job queue unavailable' },
+            updatedAt: new Date()
+          })
+          .where(eq(discoveryJobs.id, expectedJobId));
+      }
+    }
+  } catch (err) {
+    console.error(`[AgentWs] Failed to process discovery results for ${agentId}:`, err);
+  }
+}
+
+async function handleBackupVerificationResult({ agentId, result, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  try {
+    await processBackupVerificationResult(result.commandId, {
+      status: result.status,
+      stdout,
+      error: result.error,
+    });
+  } catch (err) {
+    console.error(`[AgentWs] Failed to process backup verification result for ${agentId}:`, err);
+  }
+}
+
+async function handleVmRestoreResult({ agentId, command, result, resolvedDeviceId }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  try {
+    const [queuedRestoreJob] = await db
+      .select({
+        id: restoreJobs.id,
+        targetConfig: restoreJobs.targetConfig,
+      })
+      .from(restoreJobs)
+      .where(
+        and(
+          eq(restoreJobs.commandId, result.commandId),
+          eq(restoreJobs.deviceId, resolvedDeviceId)
+        )
+      )
+      .limit(1);
+
+    if (queuedRestoreJob) {
+      await updateRestoreJobFromResult(queuedRestoreJob, command.type, result);
+    }
+  } catch (err) {
+    console.error(`[AgentWs] Failed to process queued restore result for ${agentId}:`, err);
+  }
+}
+
+async function handleProviderBackedBackupResult({ agentId, command, result, resolvedDeviceId }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  try {
+    const payload =
+      command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload)
+        ? command.payload as Record<string, unknown>
+        : {};
+    const backupJobId =
+      typeof payload.backupJobId === 'string'
+        ? payload.backupJobId
+        : typeof payload.jobId === 'string' && UUID_REGEX.test(payload.jobId)
+          ? payload.jobId
+          : null;
+
+    if (backupJobId) {
+      const [backupJob] = await db
+        .select({
+          id: backupJobs.id,
+          orgId: backupJobs.orgId,
+          deviceId: backupJobs.deviceId,
+        })
+        .from(backupJobs)
+        .where(
+          and(
+            eq(backupJobs.id, backupJobId),
+            eq(backupJobs.deviceId, resolvedDeviceId)
+          )
+        )
+        .limit(1);
+
+      if (backupJob) {
+        const parsedBackup = backupCommandResultSchema.safeParse(result.result ?? {});
+        if (!parsedBackup.success) {
+          await applyBackupCommandResultToJob({
+            jobId: backupJob.id,
+            orgId: backupJob.orgId,
+            deviceId: backupJob.deviceId,
+            resultStatus: 'failed',
+            result: {
+              error: `Malformed backup result payload: ${parsedBackup.error.issues.map((issue) => issue.message).join(', ')}`,
+            },
+          });
+        } else {
+          await applyBackupCommandResultToJob({
+            jobId: backupJob.id,
+            orgId: backupJob.orgId,
+            deviceId: backupJob.deviceId,
+            resultStatus: result.status,
+            result: {
+              ...parsedBackup.data,
+              error: result.error || result.stderr,
+            },
+          });
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`[AgentWs] Failed to process ${command.type} backup result for ${agentId}:`, err);
+  }
+}
+
+async function handleVaultSyncResult({ agentId, command, result, resolvedDeviceId, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  try {
+    await applyVaultSyncCommandResult({
+      deviceId: resolvedDeviceId,
+      command,
+      resultStatus: result.status,
+      stdout,
+      stderr: result.stderr,
+      error: result.error,
+    });
+  } catch (err) {
+    console.error(`[AgentWs] Failed to process vault sync result for ${agentId}:`, err);
+  }
+}
+
+async function handleSnmpPollResult({ agentId, command, result }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  try {
+    const payload = command.payload as Record<string, unknown> | null;
+    const expectedDeviceId = typeof payload?.deviceId === 'string' ? payload.deviceId : null;
+    const snmpData = result.result as {
+      deviceId?: string;
+      metrics?: SnmpMetricResult[];
+    } | undefined;
+
+    if (snmpData?.deviceId && snmpData.metrics && snmpData.metrics.length > 0) {
+      if (!expectedDeviceId || snmpData.deviceId !== expectedDeviceId) {
+        console.warn(
+          `[AgentWs] Rejecting mismatched SNMP result ${result.commandId} from agent ${agentId}: ` +
+          `sentDevice=${snmpData.deviceId} expected=${expectedDeviceId ?? 'none'}`
+        );
+        return;
+      }
+      if (isRedisAvailable()) {
+        await enqueueSnmpPollResults(expectedDeviceId, snmpData.metrics);
+      } else {
+        // Redis not available — log warning about dropped metrics and mark status
+        console.warn(`[AgentWs] Redis unavailable, dropping ${snmpData.metrics.length} SNMP metrics for device ${expectedDeviceId}`);
+        const { snmpDevices } = await import('../db/schema');
+        await db
+          .update(snmpDevices)
+          .set({ lastPolled: new Date(), lastStatus: 'warning' })
+          .where(eq(snmpDevices.id, expectedDeviceId));
+      }
+    }
+  } catch (err) {
+    console.error(`[AgentWs] Failed to process SNMP poll results for ${agentId}:`, err);
+  }
+}
+
+async function handleScriptResult({ agentId, command, result, resolvedDeviceId, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  try {
+    const payload = command.payload as Record<string, unknown> | null;
+    const executionId = payload?.executionId as string | undefined;
+    if (executionId) {
+      let scriptStatus: 'completed' | 'failed' | 'timeout';
+      if (result.status === 'completed') {
+        scriptStatus = result.exitCode && result.exitCode !== 0 ? 'failed' : 'completed';
+      } else if (result.status === 'timeout') {
+        scriptStatus = 'timeout';
+      } else {
+        scriptStatus = 'failed';
+      }
+
+      const updatedExecutions = await db
+        .update(scriptExecutions)
+        .set({
+          status: scriptStatus,
+          completedAt: new Date(),
+          exitCode: result.exitCode ?? null,
+          stdout: stdout ?? null,
+          stderr: result.stderr ?? null,
+          errorMessage: result.error ?? null,
+        })
+        .where(and(
+          eq(scriptExecutions.id, executionId),
+          eq(scriptExecutions.deviceId, resolvedDeviceId),
+          inArray(scriptExecutions.status, ['pending', 'queued', 'running'])
+        ))
+        .returning({
+          id: scriptExecutions.id,
+          scriptId: scriptExecutions.scriptId,
+        });
+
+      // Update batch counters if this is part of a batch
+      const batchId = payload?.batchId as string | undefined;
+      if (batchId && updatedExecutions[0]) {
+        const counterField = scriptStatus === 'completed' ? 'devicesCompleted' : 'devicesFailed';
+        await db
+          .update(scriptExecutionBatches)
+          .set({
+            [counterField]: sql`${scriptExecutionBatches[counterField]} + 1`
+          })
+          .where(and(
+            eq(scriptExecutionBatches.id, batchId),
+            eq(scriptExecutionBatches.scriptId, updatedExecutions[0].scriptId)
+          ));
+      }
+    }
+  } catch (err) {
+    console.error(`[AgentWs] Failed to process script result for ${agentId}:`, err);
+  }
+}
+
+async function handleSensitiveDataResult({ agentId, command, result, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  try {
+    const { handleSensitiveDataCommandResult } = await import('./agents/helpers');
+    await handleSensitiveDataCommandResult(command, {
+      status: result.status,
+      exitCode: result.exitCode,
+      stdout,
+      stderr: result.stderr,
+      durationMs: result.durationMs,
+      error: result.error,
+    } as any);
+  } catch (err) {
+    console.error(`[AgentWs] Failed to process sensitive data result for ${agentId}:`, err);
+  }
+}
+
+async function handleCisResult({ agentId, command, result, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  try {
+    const { handleCisCommandResult } = await import('./agents/helpers');
+    await handleCisCommandResult(command, {
+      status: result.status,
+      exitCode: result.exitCode,
+      stdout,
+      stderr: result.stderr,
+      durationMs: result.durationMs,
+      error: result.error,
+    } as any);
+  } catch (err) {
+    console.error(`[AgentWs] Failed to process CIS result for ${agentId}:`, err);
+  }
+}
+
+const commandResultHandlers: Record<string, CommandResultHandler> = {
+  network_discovery: handleDiscoveryResult,
+  backup_verify: handleBackupVerificationResult,
+  backup_test_restore: handleBackupVerificationResult,
+  vm_restore_from_backup: handleVmRestoreResult,
+  vm_instant_boot: handleVmRestoreResult,
+  hyperv_backup: handleProviderBackedBackupResult,
+  mssql_backup: handleProviderBackedBackupResult,
+  vault_sync: handleVaultSyncResult,
+  snmp_poll: handleSnmpPollResult,
+  script: handleScriptResult,
+  sensitive_data_scan: handleSensitiveDataResult,
+  encrypt_file: handleSensitiveDataResult,
+  secure_delete_file: handleSensitiveDataResult,
+  quarantine_file: handleSensitiveDataResult,
+  cis_benchmark: handleCisResult,
+  apply_cis_remediation: handleCisResult,
+};
 
 // Store active WebSocket connections by agentId
 // Map<agentId, WSContext>
@@ -274,7 +710,7 @@ async function processOrphanedCommandResult(
     console.log(`[AgentWs] Processing SNMP poll result for device ${snmpData.deviceId} from agent ${agentId}`);
     try {
       if (isRedisAvailable()) {
-        await enqueueSnmpPollResults(snmpData.deviceId, snmpData.metrics);
+        await enqueueSnmpPollResults(snmpData.deviceId, snmpData.metrics, result.commandId);
       } else {
         console.warn(`[AgentWs] Redis unavailable, dropping ${snmpData.metrics.length} SNMP metrics for device ${snmpData.deviceId}`);
         const { snmpDevices } = await import('../db/schema');
@@ -313,6 +749,7 @@ async function processOrphanedCommandResult(
       if (isRedisAvailable()) {
         await enqueueMonitorCheckResult(monitorData.monitorId, {
           monitorId: monitorData.monitorId,
+          checkId: result.commandId,
           status,
           responseMs: monitorData.responseMs ?? 0,
           statusCode: monitorData.statusCode,
@@ -323,6 +760,7 @@ async function processOrphanedCommandResult(
         console.warn(`[AgentWs] Redis unavailable, recording monitor result directly for ${monitorData.monitorId}`);
         await recordMonitorCheckResult(monitorData.monitorId, {
           monitorId: monitorData.monitorId,
+          checkId: result.commandId,
           status,
           responseMs: monitorData.responseMs ?? 0,
           statusCode: monitorData.statusCode,
@@ -338,6 +776,23 @@ async function processOrphanedCommandResult(
 
   // Ignore non-persistent command IDs that are expected to have no DB row.
   if (result.commandId.startsWith('dev-push-')) {
+    return;
+  }
+
+  if (result.commandId.startsWith('vault-auto-sync-')) {
+    try {
+      await applyVaultSyncCommandResult({
+        deviceId: authenticatedDeviceId,
+        resultStatus: result.status,
+        stdout:
+          result.stdout ??
+          (result.result !== undefined ? JSON.stringify(result.result) : undefined),
+        stderr: result.stderr,
+        error: result.error,
+      });
+    } catch (err) {
+      console.error(`[AgentWs] Failed to process vault auto-sync result for ${agentId}:`, err);
+    }
     return;
   }
 
@@ -427,14 +882,11 @@ async function processOrphanedCommandResult(
     }
     console.log(`[AgentWs] Processing backup result for job ${backupJob.id} from agent ${agentId}`);
     try {
-      const backupData = result.result as {
-        jobId?: string;
-        snapshotId?: string;
-        filesBackedUp?: number;
-        bytesBackedUp?: number;
-        warning?: string;
-        status?: string;
-      } | undefined;
+      const parsedBackup = backupCommandResultSchema.safeParse(result.result ?? {});
+      const backupData = parsedBackup.success ? parsedBackup.data : undefined;
+      const malformedPayloadError = parsedBackup.success
+        ? null
+        : `Malformed backup result payload: ${parsedBackup.error.issues.map((issue) => issue.message).join(', ')}`;
 
       if (isRedisAvailable()) {
         await enqueueBackupResults(
@@ -447,24 +899,25 @@ async function processOrphanedCommandResult(
             filesBackedUp: backupData?.filesBackedUp,
             bytesBackedUp: backupData?.bytesBackedUp,
             warning: backupData?.warning,
-            error: result.error || result.stderr,
+            snapshot: backupData?.snapshot,
+            error: malformedPayloadError || result.error || result.stderr,
           }
         );
       } else {
         console.warn(`[AgentWs] Redis unavailable, marking backup job ${backupJob.id} with inline result`);
-        const now = new Date();
-        await db
-          .update(backupJobs)
-          .set({
-            status: result.status === 'completed' ? 'completed' : 'failed',
-            completedAt: now,
-            totalSize: backupData?.bytesBackedUp ?? null,
-            fileCount: backupData?.filesBackedUp ?? null,
-            snapshotId: backupData?.snapshotId ?? null,
-            errorLog: result.error || result.stderr || backupData?.warning || null,
-            updatedAt: now,
-          })
-          .where(eq(backupJobs.id, backupJob.id));
+        const persisted = await applyBackupCommandResultToJob({
+          jobId: backupJob.id,
+          orgId: backupJob.orgId,
+          deviceId: backupJob.deviceId,
+          resultStatus: result.status === 'completed' && parsedBackup.success ? 'completed' : 'failed',
+          result: {
+            ...(backupData ?? {}),
+            error: malformedPayloadError || result.error || result.stderr,
+          },
+        });
+        if (!persisted.applied) {
+          console.warn(`[AgentWs] Ignoring stale inline backup result for job ${backupJob.id} from agent ${agentId}`);
+        }
       }
     } catch (err) {
       console.error(`[AgentWs] Failed to process backup results for ${agentId}:`, err);
@@ -474,7 +927,12 @@ async function processOrphanedCommandResult(
 
   // Check if this is a restore job result
   const [restoreJob] = await db
-    .select({ id: restoreJobs.id, orgId: restoreJobs.orgId, agentId: devices.agentId })
+    .select({
+      id: restoreJobs.id,
+      orgId: restoreJobs.orgId,
+      agentId: devices.agentId,
+      targetConfig: restoreJobs.targetConfig,
+    })
     .from(restoreJobs)
     .innerJoin(devices, eq(restoreJobs.deviceId, devices.id))
     .where(eq(restoreJobs.id, result.commandId))
@@ -487,23 +945,7 @@ async function processOrphanedCommandResult(
     }
     console.log(`[AgentWs] Processing restore result for job ${restoreJob.id} from agent ${agentId}`);
     try {
-      const restoreData = result.result as {
-        filesRestored?: number;
-        bytesRestored?: number;
-        errors?: string[];
-      } | undefined;
-
-      const now = new Date();
-      await db
-        .update(restoreJobs)
-        .set({
-          status: result.status === 'completed' ? 'completed' : 'failed',
-          completedAt: now,
-          restoredSize: restoreData?.bytesRestored ?? null,
-          restoredFiles: restoreData?.filesRestored ?? null,
-          updatedAt: now,
-        })
-        .where(eq(restoreJobs.id, restoreJob.id));
+      await updateRestoreJobFromResult(restoreJob, 'backup_restore', result);
     } catch (err) {
       console.error(`[AgentWs] Failed to process restore results for ${agentId}:`, err);
     }
@@ -547,7 +989,8 @@ async function processCommandResult(
           .where(
             and(
               eq(deviceCommands.id, result.commandId),
-              eq(deviceCommands.deviceId, did)
+              eq(deviceCommands.deviceId, did),
+              inArray(deviceCommands.status, ACCEPTED_COMMAND_RESULT_STATUSES)
             )
           )
           .limit(1)
@@ -565,7 +1008,8 @@ async function processCommandResult(
         .where(
           and(
             eq(deviceCommands.id, result.commandId),
-            eq(devices.agentId, agentId)
+            eq(devices.agentId, agentId),
+            inArray(deviceCommands.status, ACCEPTED_COMMAND_RESULT_STATUSES)
           )
         )
         .limit(1);
@@ -586,13 +1030,13 @@ async function processCommandResult(
       (result.result !== undefined ? JSON.stringify(result.result) : undefined);
 
     // Update outside transaction for same visibility reasons as the lookup.
-    await runOutsideDbContext(() =>
+    const updatedCommands = await runOutsideDbContext(() =>
       db
         .update(deviceCommands)
         .set({
-          status: result.status === 'completed' ? 'completed' : 'failed',
-          completedAt: new Date(),
-          result: {
+            status: result.status === 'completed' ? 'completed' : 'failed',
+            completedAt: new Date(),
+            result: {
             status: result.status,
             exitCode: result.exitCode,
             stdout,
@@ -604,198 +1048,37 @@ async function processCommandResult(
         .where(
           and(
             eq(deviceCommands.id, result.commandId),
-            eq(deviceCommands.deviceId, resolvedDeviceId!)
+            eq(deviceCommands.deviceId, resolvedDeviceId!),
+            inArray(deviceCommands.status, ACCEPTED_COMMAND_RESULT_STATUSES)
           )
         )
+        .returning({ id: deviceCommands.id })
     );
+
+    if (updatedCommands.length === 0) {
+      console.warn(`[AgentWs] Ignoring stale or already-processed command result ${result.commandId} for agent ${agentId}`);
+      return;
+    }
 
     console.log(`Command ${result.commandId} ${result.status} for agent ${agentId}`);
 
-    // If this was a discovery command, process the results
-    if (command.type === 'network_discovery') {
+    const commandPayload =
+      command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload)
+        ? command.payload as Record<string, unknown>
+        : {};
+    if (DR_COMMAND_TYPES.has(command.type) && typeof commandPayload.drExecutionId === 'string') {
       try {
-        const payload = command.payload as Record<string, unknown> | null;
-        const expectedJobId = typeof payload?.jobId === 'string' ? payload.jobId : null;
-        const discoveryData = result.result as {
-          jobId?: string;
-          hosts?: DiscoveredHostResult[];
-          hostsScanned?: number;
-          hostsDiscovered?: number;
-        } | undefined;
-
-        if (discoveryData?.hosts) {
-          if (!expectedJobId || discoveryData.jobId !== expectedJobId) {
-            console.warn(
-              `[AgentWs] Rejecting mismatched discovery result ${result.commandId} from agent ${agentId}: ` +
-              `sentJob=${discoveryData.jobId ?? 'none'} expected=${expectedJobId ?? 'none'}`
-            );
-            return;
-          }
-        }
-
-        if (expectedJobId && discoveryData?.hosts) {
-          // Look up the job to get orgId and siteId
-          const [job] = await db
-            .select({ orgId: discoveryJobs.orgId, siteId: discoveryJobs.siteId })
-            .from(discoveryJobs)
-            .where(eq(discoveryJobs.id, expectedJobId))
-            .limit(1);
-
-          if (job && isRedisAvailable()) {
-            await enqueueDiscoveryResults(
-              expectedJobId,
-              job.orgId,
-              job.siteId,
-              discoveryData.hosts,
-              discoveryData.hostsScanned ?? 0,
-              discoveryData.hostsDiscovered ?? 0
-            );
-          } else if (job) {
-            // Redis not available — mark job failed so user knows results weren't processed
-            console.warn(`[AgentWs] Redis unavailable, cannot process ${discoveryData.hosts.length} discovery hosts for job ${expectedJobId}`);
-            await db
-              .update(discoveryJobs)
-              .set({
-                status: 'failed',
-                completedAt: new Date(),
-                hostsDiscovered: discoveryData.hostsDiscovered ?? 0,
-                hostsScanned: discoveryData.hostsScanned ?? 0,
-                errors: { message: 'Results received but could not be processed: job queue unavailable' },
-                updatedAt: new Date()
-              })
-              .where(eq(discoveryJobs.id, expectedJobId));
-          }
-        }
+        const { enqueueDrExecutionReconcile } = await import('../jobs/drExecutionWorker');
+        await enqueueDrExecutionReconcile(commandPayload.drExecutionId);
       } catch (err) {
-        console.error(`[AgentWs] Failed to process discovery results for ${agentId}:`, err);
+        console.error(`[AgentWs] Failed to enqueue DR reconciliation for ${result.commandId}:`, err);
       }
     }
 
-    // Handle backup verification results
-    if (command.type === 'backup_verify' || command.type === 'backup_test_restore') {
-      try {
-        await processBackupVerificationResult(result.commandId, {
-          status: result.status,
-          stdout,
-          error: result.error,
-        });
-      } catch (err) {
-        console.error(`[AgentWs] Failed to process backup verification result for ${agentId}:`, err);
-      }
-    }
-
-    // If this was an SNMP poll command, process the metric results
-    if (command.type === 'snmp_poll') {
-      try {
-        const payload = command.payload as Record<string, unknown> | null;
-        const expectedDeviceId = typeof payload?.deviceId === 'string' ? payload.deviceId : null;
-        const snmpData = result.result as {
-          deviceId?: string;
-          metrics?: SnmpMetricResult[];
-        } | undefined;
-
-        if (snmpData?.deviceId && snmpData.metrics && snmpData.metrics.length > 0) {
-          if (!expectedDeviceId || snmpData.deviceId !== expectedDeviceId) {
-            console.warn(
-              `[AgentWs] Rejecting mismatched SNMP result ${result.commandId} from agent ${agentId}: ` +
-              `sentDevice=${snmpData.deviceId} expected=${expectedDeviceId ?? 'none'}`
-            );
-            return;
-          }
-          if (isRedisAvailable()) {
-            await enqueueSnmpPollResults(expectedDeviceId, snmpData.metrics);
-          } else {
-            // Redis not available — log warning about dropped metrics and mark status
-            console.warn(`[AgentWs] Redis unavailable, dropping ${snmpData.metrics.length} SNMP metrics for device ${expectedDeviceId}`);
-            const { snmpDevices } = await import('../db/schema');
-            await db
-              .update(snmpDevices)
-              .set({ lastPolled: new Date(), lastStatus: 'warning' })
-              .where(eq(snmpDevices.id, expectedDeviceId));
-          }
-        }
-      } catch (err) {
-        console.error(`[AgentWs] Failed to process SNMP poll results for ${agentId}:`, err);
-      }
-    }
-
-    // If this was a script command, update the scriptExecutions record
-    if (command.type === 'script') {
-      try {
-        const payload = command.payload as Record<string, unknown> | null;
-        const executionId = payload?.executionId as string | undefined;
-        if (executionId) {
-          let scriptStatus: 'completed' | 'failed' | 'timeout';
-          if (result.status === 'completed') {
-            scriptStatus = result.exitCode && result.exitCode !== 0 ? 'failed' : 'completed';
-          } else if (result.status === 'timeout') {
-            scriptStatus = 'timeout';
-          } else {
-            scriptStatus = 'failed';
-          }
-
-          await db
-            .update(scriptExecutions)
-            .set({
-              status: scriptStatus,
-              completedAt: new Date(),
-              exitCode: result.exitCode ?? null,
-              stdout: stdout ?? null,
-              stderr: result.stderr ?? null,
-              errorMessage: result.error ?? null,
-            })
-            .where(eq(scriptExecutions.id, executionId));
-
-          // Update batch counters if this is part of a batch
-          const batchId = payload?.batchId as string | undefined;
-          if (batchId) {
-            const counterField = scriptStatus === 'completed' ? 'devicesCompleted' : 'devicesFailed';
-            await db
-              .update(scriptExecutionBatches)
-              .set({
-                [counterField]: sql`${scriptExecutionBatches[counterField]} + 1`
-              })
-              .where(eq(scriptExecutionBatches.id, batchId));
-          }
-        }
-      } catch (err) {
-        console.error(`[AgentWs] Failed to process script result for ${agentId}:`, err);
-      }
-    }
-
-    // Sensitive data scan / remediation post-processing
-    const sensitiveTypes = new Set(['sensitive_data_scan', 'encrypt_file', 'secure_delete_file', 'quarantine_file']);
-    if (sensitiveTypes.has(command.type)) {
-      try {
-        const { handleSensitiveDataCommandResult } = await import('./agents/helpers');
-        await handleSensitiveDataCommandResult(command, {
-          status: result.status,
-          exitCode: result.exitCode,
-          stdout,
-          stderr: result.stderr,
-          durationMs: result.durationMs,
-          error: result.error,
-        } as any);
-      } catch (err) {
-        console.error(`[AgentWs] Failed to process sensitive data result for ${agentId}:`, err);
-      }
-    }
-
-    // CIS benchmark / remediation post-processing
-    if (command.type === 'cis_benchmark' || command.type === 'apply_cis_remediation') {
-      try {
-        const { handleCisCommandResult } = await import('./agents/helpers');
-        await handleCisCommandResult(command, {
-          status: result.status,
-          exitCode: result.exitCode,
-          stdout,
-          stderr: result.stderr,
-          durationMs: result.durationMs,
-          error: result.error,
-        } as any);
-      } catch (err) {
-        console.error(`[AgentWs] Failed to process CIS result for ${agentId}:`, err);
-      }
+    // Dispatch to per-command-type handler if one is registered
+    const handler = commandResultHandlers[command.type];
+    if (handler) {
+      await handler({ agentId, command, result, resolvedDeviceId: resolvedDeviceId!, stdout });
     }
   } catch (error) {
     console.error(`[AgentWs] Failed to process command result for ${agentId}:`, error);
@@ -817,25 +1100,7 @@ async function getPendingCommands(agentId: string): Promise<AgentCommand[]> {
       return [];
     }
 
-    const commands = await db
-      .select()
-      .from(deviceCommands)
-      .where(
-        and(
-          eq(deviceCommands.deviceId, device.id),
-          eq(deviceCommands.status, 'pending')
-        )
-      )
-      .orderBy(deviceCommands.createdAt)
-      .limit(10);
-
-    // Mark commands as sent
-    for (const cmd of commands) {
-      await db
-        .update(deviceCommands)
-        .set({ status: 'sent', executedAt: new Date() })
-        .where(eq(deviceCommands.id, cmd.id));
-    }
+    const commands = await claimPendingCommandsForDevice(device.id, 10);
 
     return commands.map(cmd => ({
       id: cmd.id,
@@ -1026,8 +1291,14 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               message.status === 'completed' &&
               typeof message.result === 'object' && message.result !== null) {
             const disconnectResult = message.result as Record<string, unknown>;
-            const sessionId = typeof disconnectResult.sessionId === 'string' && disconnectResult.sessionId.length <= 128
-              ? disconnectResult.sessionId : null;
+            const expectedSessionId = extractDesktopSessionId(message.commandId, 'desk-disconnect-');
+            const resultSessionId = typeof disconnectResult.sessionId === 'string' && disconnectResult.sessionId.length <= MAX_DESKTOP_SESSION_ID_BYTES
+              ? disconnectResult.sessionId
+              : null;
+            const sessionId =
+              expectedSessionId && (!resultSessionId || resultSessionId === expectedSessionId)
+                ? expectedSessionId
+                : null;
             if (sessionId && disconnectResult.event === 'peer_disconnected') {
               try {
                 await runWithAgentDbAccess(async () => {
@@ -1053,12 +1324,18 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
           }
 
           // Store WebRTC answer from start_desktop command results
-          if (message.commandId.startsWith('desk-') &&
+          if (message.commandId.startsWith('desk-start-') &&
               message.status === 'completed' &&
               typeof message.result === 'object' && message.result !== null) {
             const desktopResult = message.result as Record<string, unknown>;
-            const sessionId = typeof desktopResult.sessionId === 'string' && desktopResult.sessionId.length <= 128
-              ? desktopResult.sessionId : null;
+            const expectedSessionId = extractDesktopSessionId(message.commandId, 'desk-start-');
+            const resultSessionId = typeof desktopResult.sessionId === 'string' && desktopResult.sessionId.length <= MAX_DESKTOP_SESSION_ID_BYTES
+              ? desktopResult.sessionId
+              : null;
+            const sessionId =
+              expectedSessionId && (!resultSessionId || resultSessionId === expectedSessionId)
+                ? expectedSessionId
+                : null;
             const answer = typeof desktopResult.answer === 'string' ? desktopResult.answer : null;
             if (sessionId && answer && answer.length < 65536) {
               try {
@@ -1093,20 +1370,18 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
 
           // Propagate start_desktop failures to the session so the viewer
           // sees the error immediately instead of polling until timeout.
-          if (message.commandId.startsWith('desk-') &&
-              !message.commandId.startsWith('desk-disconnect-') &&
+          if (message.commandId.startsWith('desk-start-') &&
               message.status === 'failed') {
             const failResult = typeof message.result === 'object' && message.result !== null
               ? message.result as Record<string, unknown>
               : {};
-            let candidateId = message.commandId.slice('desk-'.length);
-            if (candidateId.startsWith('start-')) candidateId = candidateId.slice('start-'.length);
-            if (candidateId.startsWith('stop-')) candidateId = candidateId.slice('stop-'.length);
-            const sessionId = typeof failResult.sessionId === 'string' && failResult.sessionId.length <= 128
+            const expectedSessionId = extractDesktopSessionId(message.commandId, 'desk-start-');
+            const resultSessionId = typeof failResult.sessionId === 'string' && failResult.sessionId.length <= MAX_DESKTOP_SESSION_ID_BYTES
               ? failResult.sessionId
-              // Fall back to extracting sessionId from commandId (desk-[start-|stop-]<sessionId>)
-              : candidateId.length <= 128
-                ? candidateId
+              : null;
+            const sessionId =
+              expectedSessionId && (!resultSessionId || resultSessionId === expectedSessionId)
+                ? expectedSessionId
                 : null;
             const errorMsg = typeof failResult.error === 'string'
               ? failResult.error.slice(0, 1024)

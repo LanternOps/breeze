@@ -87,7 +87,7 @@ func TestExecBackupRestoreWithProgressTreatsPartialRestoreAsFailure(t *testing.T
 		t.Fatalf("marshal payload: %v", err)
 	}
 
-	result := execBackupRestoreWithProgress("restore-cmd-1", payload, mgr, nil)
+	result := execBackupRestoreWithProgress("restore-cmd-1", payload, mgr, nil, nil)
 	if result.Success {
 		t.Fatal("expected partial restore to report command failure")
 	}

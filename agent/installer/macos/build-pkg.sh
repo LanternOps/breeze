@@ -3,19 +3,20 @@
 # Breeze Agent macOS .pkg Builder
 # ============================================
 # Usage:
-#   ./build-pkg.sh <agent-binary> <backup-binary> <version> <arch> <output-path>
+#   ./build-pkg.sh <agent-binary> <desktop-helper-binary> <backup-binary> <version> <arch> <output-path>
 #
 # Example:
-#   ./build-pkg.sh ./breeze-agent-darwin-amd64 ./breeze-backup-darwin-amd64 0.13.3 amd64 ./dist/breeze-agent-darwin-amd64.pkg
+#   ./build-pkg.sh ./breeze-agent-darwin-amd64 ./breeze-desktop-helper-darwin-amd64 ./breeze-backup-darwin-amd64 0.13.3 amd64 ./dist/breeze-agent-darwin-amd64.pkg
 # ============================================
 
 set -euo pipefail
 
 AGENT_BIN="$1"
-BACKUP_BIN="$2"
-VERSION="$3"
-ARCH="$4"
-OUTPUT="$5"
+DESKTOP_HELPER_BIN="$2"
+BACKUP_BIN="$3"
+VERSION="$4"
+ARCH="$5"
+OUTPUT="$6"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORK_DIR="$(mktemp -d)"
@@ -23,6 +24,7 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 
 echo "Building Breeze Agent .pkg"
 echo "  Agent:   $AGENT_BIN"
+echo "  Desktop: $DESKTOP_HELPER_BIN"
 echo "  Backup:  $BACKUP_BIN"
 echo "  Version: $VERSION"
 echo "  Arch:    $ARCH"
@@ -39,6 +41,9 @@ mkdir -p "$PAYLOAD/Library/LaunchAgents"
 cp "$AGENT_BIN" "$PAYLOAD/usr/local/bin/breeze-agent"
 chmod 755 "$PAYLOAD/usr/local/bin/breeze-agent"
 
+cp "$DESKTOP_HELPER_BIN" "$PAYLOAD/usr/local/bin/breeze-desktop-helper"
+chmod 755 "$PAYLOAD/usr/local/bin/breeze-desktop-helper"
+
 # Install backup binary
 cp "$BACKUP_BIN" "$PAYLOAD/usr/local/bin/breeze-backup"
 chmod 755 "$PAYLOAD/usr/local/bin/breeze-backup"
@@ -46,8 +51,11 @@ chmod 755 "$PAYLOAD/usr/local/bin/breeze-backup"
 cp "$SCRIPT_DIR/../../service/launchd/com.breeze.agent.plist" \
    "$PAYLOAD/Library/LaunchDaemons/com.breeze.agent.plist"
 
-cp "$SCRIPT_DIR/../../service/launchd/com.breeze.agent-user.plist" \
-   "$PAYLOAD/Library/LaunchAgents/com.breeze.agent-user.plist"
+cp "$SCRIPT_DIR/../../service/launchd/com.breeze.desktop-helper-user.plist" \
+   "$PAYLOAD/Library/LaunchAgents/com.breeze.desktop-helper-user.plist"
+
+cp "$SCRIPT_DIR/../../service/launchd/com.breeze.desktop-helper-loginwindow.plist" \
+   "$PAYLOAD/Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist"
 
 # ----- Prepare install scripts -----
 SCRIPTS="$WORK_DIR/scripts"

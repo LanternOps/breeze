@@ -5,6 +5,8 @@ import {
   mssqlTargetsSchema,
   systemImageTargetsSchema,
   backupInlineSettingsSchema,
+  backupScheduleSchema,
+  backupRetentionSchema,
 } from './backupTargets';
 
 describe('fileTargetsSchema', () => {
@@ -146,5 +148,58 @@ describe('backupInlineSettingsSchema', () => {
     });
     expect(result.success).toBe(true);
     expect(result.data?.backupMode).toBe('file');
+  });
+
+  it('validates backup windows and retention settings', () => {
+    const result = backupInlineSettingsSchema.safeParse({
+      backupMode: 'file',
+      targets: { paths: ['/data'], excludes: ['*.tmp'] },
+      paths: ['/data'],
+      schedule: {
+        frequency: 'weekly',
+        time: '02:00',
+        dayOfWeek: 1,
+        windowStart: '01:00',
+        windowEnd: '05:00',
+      },
+      retention: {
+        preset: 'custom',
+        retentionDays: 45,
+        maxVersions: 12,
+        keepDaily: 14,
+        keepWeekly: 8,
+        keepMonthly: 12,
+        keepYearly: 3,
+        weeklyDay: 1,
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe('backupScheduleSchema', () => {
+  it('rejects invalid backup window values', () => {
+    const result = backupScheduleSchema.safeParse({
+      frequency: 'daily',
+      time: '02:00',
+      windowStart: 'bad',
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('backupRetentionSchema', () => {
+  it('accepts derived retention values used by the config-policy tab', () => {
+    const result = backupRetentionSchema.safeParse({
+      preset: 'standard',
+      retentionDays: 30,
+      maxVersions: 5,
+      keepDaily: 7,
+      keepWeekly: 4,
+      keepMonthly: 12,
+      keepYearly: 3,
+      weeklyDay: 0,
+    });
+    expect(result.success).toBe(true);
   });
 });

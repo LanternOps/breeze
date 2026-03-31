@@ -1,7 +1,7 @@
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique } from 'drizzle-orm/pg-core';
 import { organizations, sites } from './orgs';
 import { users } from './users';
-import type { InterfaceBandwidth, TCCPermissions } from '@breeze/shared';
+import type { DesktopAccessState, InterfaceBandwidth, TCCPermissions } from '@breeze/shared';
 
 export const osTypeEnum = pgEnum('os_type', ['windows', 'macos', 'linux']);
 export const deviceStatusEnum = pgEnum('device_status', ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined']);
@@ -15,6 +15,9 @@ export const devices = pgTable('devices', {
   siteId: uuid('site_id').notNull().references(() => sites.id),
   agentId: varchar('agent_id', { length: 64 }).notNull().unique(),
   agentTokenHash: varchar('agent_token_hash', { length: 64 }),
+  tokenIssuedAt: timestamp('token_issued_at', { withTimezone: true }),
+  previousTokenHash: varchar('previous_token_hash', { length: 64 }),
+  previousTokenExpiresAt: timestamp('previous_token_expires_at', { withTimezone: true }),
   mtlsCertSerialNumber: varchar('mtls_cert_serial_number', { length: 128 }),
   mtlsCertExpiresAt: timestamp('mtls_cert_expires_at'),
   mtlsCertIssuedAt: timestamp('mtls_cert_issued_at'),
@@ -38,6 +41,7 @@ export const devices = pgTable('devices', {
   customFields: jsonb('custom_fields').default({}),
   managementPosture: jsonb('management_posture'),
   tccPermissions: jsonb('tcc_permissions').$type<TCCPermissions | null>(),
+  desktopAccess: jsonb('desktop_access').$type<DesktopAccessState | null>(),
   lastUser: varchar('last_user', { length: 255 }),
   uptimeSeconds: integer('uptime_seconds'),
   isHeadless: boolean('is_headless').notNull().default(false),
