@@ -4,7 +4,8 @@ import { z } from 'zod';
 import { and, desc, eq, gte, lt, lte, or, sql, SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { deviceChangeLog, devices } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
+import { PERMISSIONS } from '../services/permissions';
 
 const changeTypeValues = [
   'software',
@@ -33,12 +34,17 @@ const listChangesQuerySchema = z.object({
 });
 
 export const changesRoutes = new Hono();
+const requireChangeRead = requirePermission(
+  PERMISSIONS.DEVICES_READ.resource,
+  PERMISSIONS.DEVICES_READ.action,
+);
 
 changesRoutes.use('*', authMiddleware);
 
 changesRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requireChangeRead,
   zValidator('query', listChangesQuerySchema),
   async (c) => {
     const auth = c.get('auth');

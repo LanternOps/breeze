@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -17,10 +18,14 @@ import (
 // --- core backup ---
 
 func execBackupRestore(payload json.RawMessage, mgr *backup.BackupManager) backupipc.BackupCommandResult {
-	return execBackupRestoreWithProgress(payload, mgr, nil)
+	return execBackupRestoreWithProgress("", payload, mgr, nil)
 }
 
-func execBackupRestoreWithProgress(payload json.RawMessage, mgr *backup.BackupManager, conn *ipc.Conn) backupipc.BackupCommandResult {
+func execBackupRestoreWithProgress(commandID string, payload json.RawMessage, mgr *backup.BackupManager, conn *ipc.Conn) backupipc.BackupCommandResult {
+	if mgr == nil || mgr.GetProvider() == nil {
+		return fail("backup not configured on this device")
+	}
+
 	var p struct {
 		CommandID     string   `json:"commandId"`
 		SnapshotID    string   `json:"snapshotId"`
@@ -39,7 +44,10 @@ func execBackupRestoreWithProgress(payload json.RawMessage, mgr *backup.BackupMa
 
 	var progressFn backup.ProgressFunc
 	if conn != nil {
-		cmdID := p.CommandID
+		cmdID := commandID
+		if cmdID == "" {
+			cmdID = p.CommandID
+		}
 		progressFn = func(phase string, current, total int64, message string) {
 			progress := backupipc.BackupProgress{
 				CommandID: cmdID,
@@ -55,7 +63,7 @@ func execBackupRestoreWithProgress(payload json.RawMessage, mgr *backup.BackupMa
 	}
 
 	result, err := backup.RestoreFromSnapshot(mgr.GetProvider(), cfg, progressFn)
-	return marshalResult(result, err)
+	return marshalRestoreResult(result, err)
 }
 
 func execBackupVerify(payload json.RawMessage, mgr *backup.BackupManager) backupipc.BackupCommandResult {
@@ -91,6 +99,30 @@ func execBackupCleanup(payload json.RawMessage) backupipc.BackupCommandResult {
 		return fail(err.Error())
 	}
 	return ok(`{"cleaned":true}`)
+}
+
+func marshalRestoreResult(result *backup.RestoreResult, err error) backupipc.BackupCommandResult {
+	if err != nil {
+		return marshalResult(result, err)
+	}
+	if result == nil || result.Status == "completed" {
+		return marshalResult(result, nil)
+	}
+
+	data, marshalErr := json.Marshal(result)
+	if marshalErr != nil {
+		return fail(fmt.Sprintf("failed to marshal restore result: %v", marshalErr))
+	}
+
+	msg := "restore failed"
+	if result.Status == "partial" {
+		msg = "restore completed partially"
+	}
+	return backupipc.BackupCommandResult{
+		Success: false,
+		Stdout:  string(data),
+		Stderr:  msg,
+	}
 }
 
 // --- VSS ---

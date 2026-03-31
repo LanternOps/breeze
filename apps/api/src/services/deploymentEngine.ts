@@ -1,7 +1,9 @@
 import { db } from '../db';
-import { deployments, deploymentDevices, devices, deviceGroups, deviceGroupMemberships, maintenanceWindows, maintenanceOccurrences } from '../db/schema';
-import { eq, and, inArray, sql, desc, asc } from 'drizzle-orm';
-import { evaluateFilter, extractFieldsFromFilter, FilterConditionGroup } from './filterEngine';
+import { deployments, deploymentDevices, devices, deviceGroupMemberships, maintenanceWindows } from '../db/schema';
+import { eq, and, sql, asc } from 'drizzle-orm';
+import { resolveDeploymentTargets } from './deploymentTargetResolver';
+import type { DeploymentTargetConfig } from './deploymentTargetResolver';
+export { resolveDeploymentTargets } from './deploymentTargetResolver';
 
 // Types defined locally to avoid rootDir issues
 export interface Deployment {
@@ -59,88 +61,6 @@ export interface RolloutConfig {
     maxRetries: number;
     backoffMinutes: number[]; // e.g., [5, 15, 60]
   };
-}
-
-export interface DeploymentTargetConfig {
-  type: 'all' | 'devices' | 'groups' | 'filter';
-  deviceIds?: string[];
-  groupIds?: string[];
-  filter?: FilterConditionGroup;
-}
-
-// ============================================
-// Target Resolution
-// ============================================
-
-export interface ResolveTargetOptions {
-  orgId: string;
-  targetConfig: DeploymentTargetConfig;
-}
-
-/**
- * Resolve deployment targets to a list of device IDs
- */
-export async function resolveDeploymentTargets(
-  options: ResolveTargetOptions
-): Promise<string[]> {
-  const { orgId, targetConfig } = options;
-  let deviceIds: string[] = [];
-
-  switch (targetConfig.type) {
-    case 'devices':
-      // Direct device IDs
-      if (targetConfig.deviceIds?.length) {
-        // Verify devices exist and belong to org
-        const validDevices = await db
-          .select({ id: devices.id })
-          .from(devices)
-          .where(
-            and(
-              eq(devices.orgId, orgId),
-              inArray(devices.id, targetConfig.deviceIds)
-            )
-          );
-        deviceIds = validDevices.map(d => d.id);
-      }
-      break;
-
-    case 'groups':
-      // Get all devices from specified groups
-      if (targetConfig.groupIds?.length) {
-        const groupDevices = await db
-          .select({ deviceId: deviceGroupMemberships.deviceId })
-          .from(deviceGroupMemberships)
-          .innerJoin(deviceGroups, eq(deviceGroupMemberships.groupId, deviceGroups.id))
-          .innerJoin(devices, eq(deviceGroupMemberships.deviceId, devices.id))
-          .where(
-            and(
-              inArray(deviceGroupMemberships.groupId, targetConfig.groupIds),
-              eq(devices.orgId, orgId)
-            )
-          );
-        deviceIds = [...new Set(groupDevices.map(d => d.deviceId))];
-      }
-      break;
-
-    case 'filter':
-      // Evaluate filter to get matching devices
-      if (targetConfig.filter) {
-        const result = await evaluateFilter(targetConfig.filter, { orgId });
-        deviceIds = result.deviceIds;
-      }
-      break;
-
-    case 'all':
-      // All devices in the org
-      const allDevices = await db
-        .select({ id: devices.id })
-        .from(devices)
-        .where(eq(devices.orgId, orgId));
-      deviceIds = allDevices.map(d => d.id);
-      break;
-  }
-
-  return deviceIds;
 }
 
 // ============================================

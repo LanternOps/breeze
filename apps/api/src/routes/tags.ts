@@ -4,9 +4,11 @@ import { z } from 'zod';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { devices } from '../db/schema';
-import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { PERMISSIONS } from '../services/permissions';
 
 export const tagRoutes = new Hono();
+const requireTagRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
 
 type TagSummary = {
   id: string;
@@ -40,6 +42,7 @@ async function getOrgIdsForAuth(
 tagRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requireTagRead,
   zValidator('query', listTagsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -99,6 +102,7 @@ tagRoutes.get(
 tagRoutes.get(
   '/devices',
   requireScope('organization', 'partner', 'system'),
+  requireTagRead,
   zValidator('query', z.object({ tag: z.string().min(1) })),
   async (c) => {
     const auth = c.get('auth');

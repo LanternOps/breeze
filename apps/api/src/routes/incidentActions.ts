@@ -8,9 +8,10 @@ import {
   incidentEvidence,
   incidents,
 } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { publishEvent } from '../services/eventBus';
 import { writeRouteAudit } from '../services/auditEvents';
+import { PERMISSIONS } from '../services/permissions';
 import {
   uuidParamSchema,
   containIncidentSchema,
@@ -28,12 +29,15 @@ import {
 } from './incidents.helpers';
 
 export const incidentActionRoutes = new Hono();
+const requireIncidentActionWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
 
 incidentActionRoutes.use('*', authMiddleware);
 
 incidentActionRoutes.post(
   '/:id/contain',
   requireScope('organization', 'partner', 'system'),
+  requireIncidentActionWrite,
+  requireMfa(),
   zValidator('param', uuidParamSchema),
   zValidator('json', containIncidentSchema),
   async (c) => {
@@ -170,6 +174,8 @@ incidentActionRoutes.post(
 incidentActionRoutes.post(
   '/:id/evidence',
   requireScope('organization', 'partner', 'system'),
+  requireIncidentActionWrite,
+  requireMfa(),
   zValidator('param', uuidParamSchema),
   zValidator('json', addEvidenceSchema),
   async (c) => {

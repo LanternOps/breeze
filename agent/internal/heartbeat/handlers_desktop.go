@@ -35,7 +35,6 @@ func (h *Heartbeat) handleSASFromHelper(session *sessionbroker.Session, env *ipc
 	}
 }
 
-
 // serviceUnavailable returns a failed CommandResult for commands that cannot
 // operate from Session 0 (Windows service mode).
 func serviceUnavailable(command string, start time.Time) tools.CommandResult {
@@ -152,8 +151,6 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	}, time.Since(start).Milliseconds())
 }
 
-
-
 func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 	sessionID, errResult := tools.RequirePayloadString(cmd.Payload, "sessionId")
@@ -164,25 +161,20 @@ func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 
 	// Service/headless mode: relay stop to user helper
 	if (h.isService || h.isHeadless) && h.sessionBroker != nil {
-		targetSession := ""
-		if ts, ok := cmd.Payload["targetSessionId"].(float64); ok && ts > 0 {
-			targetSession = fmt.Sprintf("%d", int(ts))
-		}
-		session := h.sessionBroker.FindCapableSession("capture", targetSession)
-		if session != nil {
-			req := ipc.DesktopStopRequest{SessionID: sessionID}
-			_, err := session.SendCommand("desk-stop-"+sessionID, ipc.TypeDesktopStop, req, 10*time.Second)
-			if err != nil {
-				return tools.NewErrorResult(fmt.Errorf("IPC desktop_stop: %w", err), time.Since(start).Milliseconds())
-			}
-		} else {
-			// No helper available, can't stop
+		session := h.desktopOwnerSession(sessionID)
+		if session == nil {
 			return tools.CommandResult{
 				Status:     "failed",
-				Error:      "no user helper available to stop desktop session",
+				Error:      "desktop session owner unavailable; cannot safely stop session",
 				DurationMs: time.Since(start).Milliseconds(),
 			}
 		}
+		req := ipc.DesktopStopRequest{SessionID: sessionID}
+		_, err := session.SendCommand("desk-stop-"+sessionID, ipc.TypeDesktopStop, req, 10*time.Second)
+		if err != nil {
+			return tools.NewErrorResult(fmt.Errorf("IPC desktop_stop: %w", err), time.Since(start).Milliseconds())
+		}
+		h.forgetDesktopOwner(sessionID)
 	} else {
 		h.desktopMgr.StopSession(sessionID)
 	}
@@ -214,8 +206,10 @@ func handleListSessions(h *Heartbeat, cmd Command) tools.CommandResult {
 
 	items := make([]ipc.SessionInfoItem, 0, len(detected))
 	for _, ds := range detected {
-		var sessionNum uint32
-		fmt.Sscanf(ds.Session, "%d", &sessionNum)
+		sessionNum, err := sessionbroker.ParseWindowsSessionIDForHeartbeat(ds.Session)
+		if err != nil {
+			continue
+		}
 		items = append(items, ipc.SessionInfoItem{
 			SessionID:       sessionNum,
 			Username:        ds.Username,
@@ -255,8 +249,16 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 	if f, ok := cmd.Payload["maxFps"].(float64); ok && f >= 1 && f <= 30 {
 		config.MaxFPS = int(f)
 	}
+	displayIndex := 0
+	if di, ok := cmd.Payload["displayIndex"].(float64); ok && di >= 0 {
+		displayIndex = int(di)
+	}
 
-	w, h2, err := h.wsDesktopMgr.StartSession(sessionID, config, func(sid string, data []byte) error {
+	startSession := h.wsDesktopStart
+	if startSession == nil {
+		startSession = h.wsDesktopMgr.StartSession
+	}
+	w, h2, err := startSession(sessionID, displayIndex, config, func(sid string, data []byte) error {
 		if h.wsClient != nil {
 			return h.wsClient.SendDesktopFrame(sid, data)
 		}

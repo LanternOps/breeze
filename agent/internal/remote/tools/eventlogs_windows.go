@@ -28,12 +28,15 @@ func listEventLogsOS(startTime time.Time) CommandResult {
 	}
 
 	// Parse PowerShell output if available
+	truncated := false
 	if len(output) > 0 {
 		logs = parseEventLogList(string(output))
+		logs, truncated = sanitizeEventLogs(logs)
 	}
 
 	response := EventLogListResponse{
-		Logs: logs,
+		Logs:      logs,
+		Truncated: truncated,
 	}
 
 	return NewSuccessResult(response, time.Since(startTime).Milliseconds())
@@ -41,7 +44,7 @@ func listEventLogsOS(startTime time.Time) CommandResult {
 
 func queryEventLogsOS(logName, level, source string, eventID, page, limit int, startTime time.Time) CommandResult {
 	// Build PowerShell filter
-	filter := fmt.Sprintf("LogName='%s'", logName)
+	filter := fmt.Sprintf("LogName='%s'", escapePowerShellSingleQuoted(logName))
 	if level != "" {
 		levelNum := levelToNumber(level)
 		if levelNum > 0 {
@@ -49,7 +52,7 @@ func queryEventLogsOS(logName, level, source string, eventID, page, limit int, s
 		}
 	}
 	if source != "" {
-		filter += fmt.Sprintf(" and ProviderName='%s'", source)
+		filter += fmt.Sprintf(" and ProviderName='%s'", escapePowerShellSingleQuoted(source))
 	}
 	if eventID > 0 {
 		filter += fmt.Sprintf(" and Id=%d", eventID)
@@ -75,7 +78,7 @@ func queryEventLogsOS(logName, level, source string, eventID, page, limit int, s
 		return NewSuccessResult(response, time.Since(startTime).Milliseconds())
 	}
 
-	events := parseEventLogEntries(string(output))
+	events, truncated := sanitizeEventLogEntries(parseEventLogEntries(string(output)))
 
 	// Paginate
 	total := len(events)
@@ -96,6 +99,7 @@ func queryEventLogsOS(logName, level, source string, eventID, page, limit int, s
 		Page:       page,
 		Limit:      limit,
 		TotalPages: totalPages,
+		Truncated:  truncated,
 	}
 
 	return NewSuccessResult(response, time.Since(startTime).Milliseconds())
@@ -104,16 +108,16 @@ func queryEventLogsOS(logName, level, source string, eventID, page, limit int, s
 func getEventLogEntryOS(logName string, recordID int64, startTime time.Time) CommandResult {
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
 		fmt.Sprintf(`Get-WinEvent -FilterHashtable @{LogName='%s'} -ErrorAction SilentlyContinue | `+
-			`Where-Object { $_.RecordId -eq %d } | `+
+			`Where-Object { $_.RecordId -eq %d } | Select-Object -First 1 | `+
 			`Select-Object RecordId, LogName, LevelDisplayName, TimeCreated, ProviderName, Id, Message, UserId, MachineName | `+
-			`ConvertTo-Json -Depth 2`, logName, recordID))
+			`ConvertTo-Json -Depth 2`, escapePowerShellSingleQuoted(logName), recordID))
 
 	output, err := cmd.Output()
 	if err != nil {
 		return NewErrorResult(fmt.Errorf("event not found"), time.Since(startTime).Milliseconds())
 	}
 
-	entries := parseEventLogEntries(string(output))
+	entries, _ := sanitizeEventLogEntries(parseEventLogEntries(string(output)))
 	if len(entries) == 0 {
 		return NewErrorResult(fmt.Errorf("event not found"), time.Since(startTime).Milliseconds())
 	}

@@ -123,7 +123,7 @@ export function MainNavigator() {
         component={AlertsStackNavigator}
         options={{
           tabBarLabel: 'Alerts',
-          tabBarIcon: ({ color, size }) => (
+          tabBarIcon: ({ color, size }: { color: string; size: number }) => (
             <Icon source="bell-alert" color={color} size={size} />
           ),
         }}
@@ -133,7 +133,7 @@ export function MainNavigator() {
         component={DevicesStackNavigator}
         options={{
           tabBarLabel: 'Devices',
-          tabBarIcon: ({ color, size }) => (
+          tabBarIcon: ({ color, size }: { color: string; size: number }) => (
             <Icon source="laptop" color={color} size={size} />
           ),
         }}
@@ -143,7 +143,7 @@ export function MainNavigator() {
         component={SettingsStackNavigator}
         options={{
           tabBarLabel: 'Settings',
-          tabBarIcon: ({ color, size }) => (
+          tabBarIcon: ({ color, size }: { color: string; size: number }) => (
             <Icon source="cog" color={color} size={size} />
           ),
         }}

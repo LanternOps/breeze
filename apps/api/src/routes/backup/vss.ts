@@ -4,7 +4,9 @@ import { zValidator } from '@hono/zod-validator';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices } from '../../db/schema';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
+import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 
 const deviceIdParamSchema = z.object({
@@ -13,7 +15,13 @@ const deviceIdParamSchema = z.object({
 
 export const vssRoutes = new Hono();
 
-vssRoutes.get('/status/:deviceId', zValidator('param', deviceIdParamSchema), async (c) => {
+vssRoutes.get(
+  '/status/:deviceId',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
+  zValidator('param', deviceIdParamSchema),
+  async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {

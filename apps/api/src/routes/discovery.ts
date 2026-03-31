@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, desc, sql, inArray } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { db } from '../db';
 import {
   discoveryProfiles,
@@ -20,8 +20,21 @@ import { enqueueDiscoveryScan, getDiscoveryQueue } from '../jobs/discoveryWorker
 import { isRedisAvailable } from '../services/redis';
 import { writeRouteAudit } from '../services/auditEvents';
 import { isCronDue } from '../services/automationRuntime';
+import { PERMISSIONS } from '../services/permissions';
 
 export const discoveryRoutes = new Hono();
+const requireDiscoveryRead = requirePermission(
+  PERMISSIONS.DEVICES_READ.resource,
+  PERMISSIONS.DEVICES_READ.action,
+);
+const requireDiscoveryWrite = requirePermission(
+  PERMISSIONS.DEVICES_WRITE.resource,
+  PERMISSIONS.DEVICES_WRITE.action,
+);
+const requireDiscoveryExecute = requirePermission(
+  PERMISSIONS.DEVICES_EXECUTE.resource,
+  PERMISSIONS.DEVICES_EXECUTE.action,
+);
 
 // --- Helpers ---
 
@@ -83,6 +96,43 @@ async function resolveOrgIdForAsset(
   if (!auth.canAccessOrg(asset.orgId)) return { error: 'Access to this organization denied', status: 403 } as const;
 
   return { orgId: asset.orgId } as const;
+}
+
+async function validateRequestedDiscoveryAgent(
+  agentId: string | undefined,
+  profile: { orgId: string; siteId: string }
+) {
+  if (!agentId) return { ok: true } as const;
+
+  const [agentDevice] = await db
+    .select({
+      id: devices.id,
+      orgId: devices.orgId,
+      siteId: devices.siteId,
+      agentId: devices.agentId,
+      status: devices.status
+    })
+    .from(devices)
+    .where(eq(devices.agentId, agentId))
+    .limit(1);
+
+  if (!agentDevice) {
+    return { ok: false, error: 'Requested agent not found', status: 404 } as const;
+  }
+
+  if (agentDevice.orgId !== profile.orgId) {
+    return { ok: false, error: 'Requested agent does not belong to the same organization as this profile', status: 403 } as const;
+  }
+
+  if (agentDevice.siteId !== profile.siteId) {
+    return { ok: false, error: 'Requested agent does not belong to the same site as this profile', status: 403 } as const;
+  }
+
+  if (agentDevice.status !== 'online') {
+    return { ok: false, error: 'Requested agent is not online', status: 409 } as const;
+  }
+
+  return { ok: true } as const;
 }
 
 // --- Zod Schemas ---
@@ -229,6 +279,7 @@ discoveryRoutes.use('*', authMiddleware);
 discoveryRoutes.get(
   '/profiles',
   requireScope('organization', 'partner', 'system'),
+  requireDiscoveryRead,
   zValidator('query', listProfilesSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -276,6 +327,8 @@ discoveryRoutes.get(
 discoveryRoutes.post(
   '/profiles',
   requireScope('organization', 'partner', 'system'),
+  requireDiscoveryWrite,
+  requireMfa(),
   zValidator('json', createProfileSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -318,6 +371,7 @@ discoveryRoutes.post(
 discoveryRoutes.get(
   '/profiles/:id',
   requireScope('organization', 'partner', 'system'),
+  requireDiscoveryRead,
   async (c) => {
     const auth = c.get('auth');
     const profileId = c.req.param('id')!;
@@ -338,6 +392,8 @@ discoveryRoutes.get(
 discoveryRoutes.patch(
   '/profiles/:id',
   requireScope('organization', 'partner', 'system'),
+  requireDiscoveryWrite,
+  requireMfa(),
   zValidator('json', updateProfileSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -396,6 +452,8 @@ discoveryRoutes.patch(
 discoveryRoutes.delete(
   '/profiles/:id',
   requireScope('organization', 'partner', 'system'),
+  requireDiscoveryWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const profileId = c.req.param('id')!;
@@ -436,6 +494,8 @@ discoveryRoutes.delete(
 discoveryRoutes.post(
   '/scan',
   requireScope('organization', 'partner', 'system'),
+  requireDiscoveryExecute,
+  requireMfa(),
   zValidator('json', scanSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -449,6 +509,14 @@ discoveryRoutes.post(
     const [profile] = await db.select().from(discoveryProfiles)
       .where(and(...conditions)).limit(1);
     if (!profile) return c.json({ error: 'Profile not found' }, 404);
+
+    const requestedAgentValidation = await validateRequestedDiscoveryAgent(body.agentId, {
+      orgId: profile.orgId,
+      siteId: profile.siteId
+    });
+    if (!requestedAgentValidation.ok) {
+      return c.json({ error: requestedAgentValidation.error }, requestedAgentValidation.status);
+    }
 
     const rows = await db.insert(discoveryJobs).values({
       profileId: profile.id,
@@ -506,6 +574,7 @@ discoveryRoutes.post(
 discoveryRoutes.get(
   '/jobs',
   requireScope('organization', 'partner', 'system'),
+  requireDiscoveryRead,
   zValidator('query', listJobsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -633,6 +702,7 @@ discoveryRoutes.get(
 discoveryRoutes.get(
   '/jobs/:id',
   requireScope('organization', 'partner', 'system'),
+  requireDiscoveryRead,
   async (c) => {
     const auth = c.get('auth');
     const jobId = c.req.param('id')!;
@@ -664,6 +734,8 @@ discoveryRoutes.get(
 discoveryRoutes.post(
   '/jobs/:id/cancel',
   requireScope('organization', 'partner', 'system'),
+  requireDiscoveryExecute,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const jobId = c.req.param('id')!;
@@ -724,6 +796,7 @@ discoveryRoutes.post(
 discoveryRoutes.get(
   '/assets',
   requireScope('organization', 'partner', 'system'),
+  requireDiscoveryRead,
   zValidator('query', listAssetsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -801,6 +874,8 @@ discoveryRoutes.get(
 discoveryRoutes.post(
   '/assets/bulk-approve',
   requireScope('organization', 'partner', 'system'),
+  requireDiscoveryWrite,
+  requireMfa(),
   zValidator('json', bulkApproveSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -829,6 +904,8 @@ discoveryRoutes.post(
 discoveryRoutes.post(
   '/assets/bulk-dismiss',
   requireScope('organization', 'partner', 'system'),
+  requireDiscoveryWrite,
+  requireMfa(),
   zValidator('json', bulkDismissSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -857,6 +934,8 @@ discoveryRoutes.post(
 discoveryRoutes.patch(
   '/assets/:id',
   requireScope('organization', 'partner', 'system'),
+  requireDiscoveryWrite,
+  requireMfa(),
   zValidator('json', updateAssetSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -900,6 +979,8 @@ discoveryRoutes.patch(
 discoveryRoutes.post(
   '/assets/:id/link',
   requireScope('organization', 'partner', 'system'),
+  requireDiscoveryWrite,
+  requireMfa(),
   zValidator('json', linkAssetSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -911,9 +992,35 @@ discoveryRoutes.post(
     const conditions: ReturnType<typeof eq>[] = [eq(discoveredAssets.id, assetId)];
     if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
 
-    const [existing] = await db.select({ id: discoveredAssets.id }).from(discoveredAssets)
+    const [existing] = await db.select({
+      id: discoveredAssets.id,
+      orgId: discoveredAssets.orgId,
+      siteId: discoveredAssets.siteId
+    }).from(discoveredAssets)
       .where(and(...conditions)).limit(1);
     if (!existing) return c.json({ error: 'Asset not found' }, 404);
+
+    const [targetDevice] = await db
+      .select({
+        id: devices.id,
+        orgId: devices.orgId,
+        siteId: devices.siteId
+      })
+      .from(devices)
+      .where(eq(devices.id, body.deviceId))
+      .limit(1);
+
+    if (!targetDevice) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    if (targetDevice.orgId !== existing.orgId) {
+      return c.json({ error: 'Device does not belong to the same organization as this asset' }, 403);
+    }
+
+    if (targetDevice.siteId !== existing.siteId) {
+      return c.json({ error: 'Device does not belong to the same site as this asset' }, 403);
+    }
 
     const [updated] = await db.update(discoveredAssets)
       .set({
@@ -941,6 +1048,8 @@ discoveryRoutes.post(
 discoveryRoutes.patch(
   '/assets/:id/approve',
   requireScope('organization', 'partner', 'system'),
+  requireDiscoveryWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const id = c.req.param('id')!;
@@ -969,6 +1078,8 @@ discoveryRoutes.patch(
 discoveryRoutes.patch(
   '/assets/:id/dismiss',
   requireScope('organization', 'partner', 'system'),
+  requireDiscoveryWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const id = c.req.param('id')!;
@@ -996,6 +1107,8 @@ discoveryRoutes.patch(
 discoveryRoutes.delete(
   '/assets/:id',
   requireScope('organization', 'partner', 'system'),
+  requireDiscoveryWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const assetId = c.req.param('id')!;
@@ -1050,6 +1163,7 @@ discoveryRoutes.delete(
 discoveryRoutes.get(
   '/topology',
   requireScope('organization', 'partner', 'system'),
+  requireDiscoveryRead,
   zValidator('query', topologyQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -1085,7 +1199,12 @@ discoveryRoutes.get(
         sourceType: e.sourceType,
         targetType: e.targetType,
         bandwidth: e.bandwidth,
-        latency: e.latency
+        latency: e.latency,
+        observedAt: e.lastVerifiedAt?.toISOString() ?? null,
+        inferred:
+          e.sourceType === 'discovered_asset' &&
+          e.targetType === 'discovered_asset' &&
+          (e.connectionType === 'ethernet' || e.connectionType === 'routed')
       }))
     });
   }

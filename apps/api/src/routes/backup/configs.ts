@@ -4,7 +4,9 @@ import { z } from 'zod';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../../db';
 import { backupConfigs } from '../../db/schema';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import { configSchema, configUpdateSchema } from './schemas';
 
@@ -12,7 +14,7 @@ export const configsRoutes = new Hono();
 
 const configIdParamSchema = z.object({ id: z.string().uuid() });
 
-configsRoutes.get('/configs', async (c) => {
+configsRoutes.get('/configs', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -30,6 +32,9 @@ configsRoutes.get('/configs', async (c) => {
 
 configsRoutes.post(
   '/configs',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   zValidator('json', configSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -71,7 +76,7 @@ configsRoutes.post(
   }
 );
 
-configsRoutes.get('/configs/:id', zValidator('param', configIdParamSchema), async (c) => {
+configsRoutes.get('/configs/:id', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('param', configIdParamSchema), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -93,6 +98,9 @@ configsRoutes.get('/configs/:id', zValidator('param', configIdParamSchema), asyn
 
 configsRoutes.patch(
   '/configs/:id',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   zValidator('param', configIdParamSchema),
   zValidator('json', configUpdateSchema),
   async (c) => {
@@ -135,7 +143,13 @@ configsRoutes.patch(
   }
 );
 
-configsRoutes.delete('/configs/:id', zValidator('param', configIdParamSchema), async (c) => {
+configsRoutes.delete(
+  '/configs/:id',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
+  zValidator('param', configIdParamSchema),
+  async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -163,7 +177,13 @@ configsRoutes.delete('/configs/:id', zValidator('param', configIdParamSchema), a
   return c.json({ deleted: true });
 });
 
-configsRoutes.post('/configs/:id/test', zValidator('param', configIdParamSchema), async (c) => {
+configsRoutes.post(
+  '/configs/:id/test',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
+  zValidator('param', configIdParamSchema),
+  async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {

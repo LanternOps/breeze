@@ -19,8 +19,8 @@ func NewWsSessionManager() *WsSessionManager {
 	}
 }
 
-// StartSession creates and starts a new desktop streaming session
-func (m *WsSessionManager) StartSession(id string, config StreamConfig, sendFrame SendFrameFunc) (screenWidth, screenHeight int, err error) {
+// StartSession creates and starts a new desktop streaming session.
+func (m *WsSessionManager) StartSession(id string, displayIndex int, config StreamConfig, sendFrame SendFrameFunc) (screenWidth, screenHeight int, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -32,7 +32,7 @@ func (m *WsSessionManager) StartSession(id string, config StreamConfig, sendFram
 
 	// Create platform capturer
 	capturer, err := NewScreenCapturer(CaptureConfig{
-		DisplayIndex: 0,
+		DisplayIndex: displayIndex,
 		Quality:      config.Quality,
 		ScaleFactor:  config.ScaleFactor,
 	})
@@ -57,6 +57,7 @@ func (m *WsSessionManager) StartSession(id string, config StreamConfig, sendFram
 
 	slog.Info("Desktop WS stream session started",
 		"sessionId", id,
+		"displayIndex", displayIndex,
 		"width", w,
 		"height", h,
 		"quality", config.Quality,

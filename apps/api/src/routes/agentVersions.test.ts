@@ -17,6 +17,8 @@ vi.mock('../services/auditEvents', () => ({
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn(async (_c: any, next: any) => next()),
   requireScope: () => vi.fn(async (_c: any, next: any) => next()),
+  requirePermission: () => vi.fn(async (_c: any, next: any) => next()),
+  requireMfa: () => vi.fn(async (_c: any, next: any) => next()),
 }));
 
 import { agentVersionRoutes } from './agentVersions';

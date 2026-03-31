@@ -6,7 +6,8 @@ import { and, desc, eq, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { logCorrelations, logCorrelationRules } from '../db/schema';
 import { enqueueAdHocPatternCorrelationDetection, getLogCorrelationDetectionJob } from '../jobs/logCorrelation';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { PERMISSIONS } from '../services/permissions';
 import {
   createSavedLogSearchQuery,
   deleteSavedLogSearchQuery,
@@ -159,12 +160,16 @@ function mapCorrelationJobState(state: string): 'queued' | 'running' | 'complete
 }
 
 export const logsRoutes = new Hono();
+const requireLogRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
+const requireLogWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
+const requireLogExecute = requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action);
 
 logsRoutes.use('*', authMiddleware);
 
 logsRoutes.post(
   '/search',
   requireScope('organization', 'partner', 'system'),
+  requireLogRead,
   zValidator('json', logSearchSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -200,6 +205,7 @@ logsRoutes.post(
 logsRoutes.get(
   '/correlation/detect/:jobId',
   requireScope('organization', 'partner', 'system'),
+  requireLogRead,
   async (c) => {
     const auth = c.get('auth');
     const jobId = c.req.param('jobId')!;
@@ -242,6 +248,7 @@ logsRoutes.get(
 logsRoutes.get(
   '/aggregation',
   requireScope('organization', 'partner', 'system'),
+  requireLogRead,
   zValidator('query', aggregationQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -274,6 +281,7 @@ logsRoutes.get(
 logsRoutes.get(
   '/trends',
   requireScope('organization', 'partner', 'system'),
+  requireLogRead,
   zValidator('query', trendsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -303,6 +311,8 @@ logsRoutes.get(
 logsRoutes.post(
   '/correlation/detect',
   requireScope('organization', 'partner', 'system'),
+  requireLogExecute,
+  requireMfa(),
   zValidator('json', correlationDetectSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -380,6 +390,7 @@ logsRoutes.post(
 logsRoutes.get(
   '/correlation',
   requireScope('organization', 'partner', 'system'),
+  requireLogRead,
   zValidator('query', correlationListQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -447,6 +458,7 @@ logsRoutes.get(
 logsRoutes.get(
   '/queries',
   requireScope('organization', 'partner', 'system'),
+  requireLogRead,
   async (c) => {
     const auth = c.get('auth');
     const data = await listSavedLogSearchQueries(auth);
@@ -457,6 +469,8 @@ logsRoutes.get(
 logsRoutes.post(
   '/queries',
   requireScope('organization', 'partner', 'system'),
+  requireLogWrite,
+  requireMfa(),
   zValidator('json', savedSearchCreateSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -476,6 +490,7 @@ logsRoutes.post(
 logsRoutes.get(
   '/queries/:id',
   requireScope('organization', 'partner', 'system'),
+  requireLogRead,
   async (c) => {
     const auth = c.get('auth');
     const id = c.req.param('id')!;
@@ -492,6 +507,8 @@ logsRoutes.get(
 logsRoutes.delete(
   '/queries/:id',
   requireScope('organization', 'partner', 'system'),
+  requireLogWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const id = c.req.param('id')!;

@@ -1,0 +1,306 @@
+package sessionbroker
+
+import (
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/breeze-rmm/agent/internal/ipc"
+)
+
+func newTestUserSession(t *testing.T, sessionID, username string, lastSeen time.Time) (*Session, *ipc.Conn) {
+	t.Helper()
+
+	serverConn, clientConn := createSocketPair(t)
+	session := NewSession(ipc.NewConn(serverConn), 1000, "1000", username, "x11:0", sessionID, []string{"notify", "tray", "run_as_user"})
+	session.HelperRole = ipc.HelperRoleUser
+	session.ConnectedAt = lastSeen.Add(-time.Minute)
+	session.LastSeen = lastSeen
+
+	return session, ipc.NewConn(clientConn)
+}
+
+func TestSessionForUserPrefersMostRecentUserSession(t *testing.T) {
+	now := time.Now()
+
+	systemSession, systemClient := newTestUserSession(t, "system-helper", "alice", now.Add(-30*time.Minute))
+	defer systemClient.Close()
+	systemSession.HelperRole = ipc.HelperRoleSystem
+	userSessionOld, oldClient := newTestUserSession(t, "user-helper-old", "alice", now.Add(-20*time.Minute))
+	defer oldClient.Close()
+	userSessionNew, newClient := newTestUserSession(t, "user-helper-new", "alice", now.Add(-5*time.Minute))
+	defer newClient.Close()
+
+	b := &Broker{
+		sessions: map[string]*Session{
+			systemSession.SessionID:  systemSession,
+			userSessionOld.SessionID: userSessionOld,
+			userSessionNew.SessionID: userSessionNew,
+		},
+		byIdentity:   make(map[string][]*Session),
+		staleHelpers: make(map[string][]int),
+	}
+
+	got := b.SessionForUser("alice")
+	if got != userSessionNew {
+		t.Fatalf("SessionForUser returned %q, want %q", got.SessionID, userSessionNew.SessionID)
+	}
+}
+
+func TestLaunchProcessViaUserHelperBroadcastsToAllUserSessions(t *testing.T) {
+	now := time.Now()
+
+	olderSession, olderClient := newTestUserSession(t, "launch-helper-old", "alice", now.Add(-20*time.Minute))
+	newerSession, newerClient := newTestUserSession(t, "launch-helper-new", "alice", now.Add(-2*time.Minute))
+	defer olderSession.Close()
+	defer newerSession.Close()
+	defer olderClient.Close()
+	defer newerClient.Close()
+
+	go olderSession.RecvLoop(func(*Session, *ipc.Envelope) {})
+	go newerSession.RecvLoop(func(*Session, *ipc.Envelope) {})
+
+	b := &Broker{
+		sessions: map[string]*Session{
+			olderSession.SessionID: olderSession,
+			newerSession.SessionID: newerSession,
+		},
+		byIdentity:   make(map[string][]*Session),
+		staleHelpers: make(map[string][]int),
+	}
+
+	seen := make(chan string, 2)
+	startResponder := func(label string, client *ipc.Conn) {
+		t.Helper()
+		go func() {
+			client.SetReadDeadline(time.Now().Add(5 * time.Second))
+			env, err := client.Recv()
+			if err != nil {
+				return
+			}
+			seen <- label
+
+			var req ipc.LaunchProcessRequest
+			if err := json.Unmarshal(env.Payload, &req); err != nil {
+				t.Errorf("unmarshal launch request for %s: %v", label, err)
+			}
+			respPayload, _ := json.Marshal(ipc.LaunchProcessResult{OK: true, PID: 4242})
+			if err := client.Send(&ipc.Envelope{ID: env.ID, Type: ipc.TypeLaunchResult, Payload: respPayload}); err != nil {
+				t.Errorf("send launch response for %s: %v", label, err)
+			}
+		}()
+	}
+
+	startResponder("older", olderClient)
+	startResponder("newer", newerClient)
+
+	if err := b.LaunchProcessViaUserHelper("/usr/local/bin/breeze-agent"); err != nil {
+		t.Fatalf("LaunchProcessViaUserHelper: %v", err)
+	}
+
+	got := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		select {
+		case label := <-seen:
+			got[label] = true
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for helper launch commands")
+		}
+	}
+	if !got["older"] || !got["newer"] {
+		t.Fatalf("expected both helpers to receive launch command, got %+v", got)
+	}
+}
+
+func TestLaunchProcessViaUserHelperForSessionTargetsMatchingHelper(t *testing.T) {
+	now := time.Now()
+
+	sessionA, clientA := newTestUserSession(t, "helper-a", "alice", now.Add(-10*time.Minute))
+	sessionB, clientB := newTestUserSession(t, "helper-b", "bob", now.Add(-2*time.Minute))
+	sessionA.IdentityKey = "501"
+	sessionB.IdentityKey = "502"
+	defer sessionA.Close()
+	defer sessionB.Close()
+	defer clientA.Close()
+	defer clientB.Close()
+
+	go sessionA.RecvLoop(func(*Session, *ipc.Envelope) {})
+	go sessionB.RecvLoop(func(*Session, *ipc.Envelope) {})
+
+	b := &Broker{
+		sessions: map[string]*Session{
+			sessionA.SessionID: sessionA,
+			sessionB.SessionID: sessionB,
+		},
+		byIdentity:   make(map[string][]*Session),
+		staleHelpers: make(map[string][]int),
+	}
+
+	seen := make(chan string, 1)
+	go func() {
+		clientB.SetReadDeadline(time.Now().Add(5 * time.Second))
+		env, err := clientB.Recv()
+		if err != nil {
+			return
+		}
+		var req ipc.LaunchProcessRequest
+		if err := json.Unmarshal(env.Payload, &req); err != nil {
+			t.Errorf("unmarshal targeted launch request: %v", err)
+			return
+		}
+		if len(req.Args) != 2 || req.Args[0] != "--config" || req.Args[1] != "/tmp/helper.yaml" {
+			t.Errorf("launch args = %+v, want [--config /tmp/helper.yaml]", req.Args)
+		}
+		seen <- "b"
+		respPayload, _ := json.Marshal(ipc.LaunchProcessResult{OK: true, PID: 4242})
+		if err := clientB.Send(&ipc.Envelope{ID: env.ID, Type: ipc.TypeLaunchResult, Payload: respPayload}); err != nil {
+			t.Errorf("send launch response: %v", err)
+		}
+	}()
+
+	if err := b.LaunchProcessViaUserHelperForSession("502", "/usr/local/bin/breeze-helper", "--config", "/tmp/helper.yaml"); err != nil {
+		t.Fatalf("LaunchProcessViaUserHelperForSession: %v", err)
+	}
+
+	select {
+	case <-seen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for targeted helper launch")
+	}
+}
+
+func TestReapIdleSessionsSkipsCaptureSessions(t *testing.T) {
+	session, clientIPC := createTestSession(t)
+	defer session.Close()
+	defer clientIPC.Close()
+
+	session.Capabilities = &ipc.Capabilities{CanCapture: true}
+	session.LastSeen = time.Now().Add(-(IdleTimeout + time.Minute))
+
+	b := &Broker{
+		sessions: map[string]*Session{
+			session.SessionID: session,
+		},
+		byIdentity:   map[string][]*Session{session.IdentityKey: []*Session{session}},
+		staleHelpers: make(map[string][]int),
+	}
+
+	b.reapIdleSessions()
+
+	if got := b.SessionCount(); got != 1 {
+		t.Fatalf("SessionCount after reap = %d, want 1", got)
+	}
+	if b.SessionForIdentity(session.IdentityKey) != session {
+		t.Fatal("capture-capable session should not be reaped")
+	}
+}
+
+func TestBetterSession(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name      string
+		candidate *Session
+		current   *Session
+		want      bool
+	}{
+		{
+			name:      "nil candidate returns false",
+			candidate: nil,
+			current:   &Session{SessionID: "current", LastSeen: now, ConnectedAt: now},
+			want:      false,
+		},
+		{
+			name:      "nil current returns true",
+			candidate: &Session{SessionID: "candidate", LastSeen: now, ConnectedAt: now},
+			current:   nil,
+			want:      true,
+		},
+		{
+			name:      "both nil returns false",
+			candidate: nil,
+			current:   nil,
+			want:      false,
+		},
+		{
+			name:      "candidate with more recent LastSeen wins",
+			candidate: &Session{SessionID: "newer", LastSeen: now, ConnectedAt: now},
+			current:   &Session{SessionID: "older", LastSeen: now.Add(-5 * time.Minute), ConnectedAt: now},
+			want:      true,
+		},
+		{
+			name:      "current with more recent LastSeen wins",
+			candidate: &Session{SessionID: "older", LastSeen: now.Add(-5 * time.Minute), ConnectedAt: now},
+			current:   &Session{SessionID: "newer", LastSeen: now, ConnectedAt: now},
+			want:      false,
+		},
+		{
+			name:      "same LastSeen, candidate with more recent ConnectedAt wins",
+			candidate: &Session{SessionID: "newer-conn", LastSeen: now, ConnectedAt: now},
+			current:   &Session{SessionID: "older-conn", LastSeen: now, ConnectedAt: now.Add(-10 * time.Minute)},
+			want:      true,
+		},
+		{
+			name:      "same LastSeen, current with more recent ConnectedAt wins",
+			candidate: &Session{SessionID: "older-conn", LastSeen: now, ConnectedAt: now.Add(-10 * time.Minute)},
+			current:   &Session{SessionID: "newer-conn", LastSeen: now, ConnectedAt: now},
+			want:      false,
+		},
+		{
+			name:      "same LastSeen and ConnectedAt, lexicographically smaller SessionID wins",
+			candidate: &Session{SessionID: "aaa-session", LastSeen: now, ConnectedAt: now},
+			current:   &Session{SessionID: "zzz-session", LastSeen: now, ConnectedAt: now},
+			want:      true,
+		},
+		{
+			name:      "same LastSeen and ConnectedAt, lexicographically larger SessionID loses",
+			candidate: &Session{SessionID: "zzz-session", LastSeen: now, ConnectedAt: now},
+			current:   &Session{SessionID: "aaa-session", LastSeen: now, ConnectedAt: now},
+			want:      false,
+		},
+		{
+			name:      "identical sessions returns false (not strictly less)",
+			candidate: &Session{SessionID: "same-id", LastSeen: now, ConnectedAt: now},
+			current:   &Session{SessionID: "same-id", LastSeen: now, ConnectedAt: now},
+			want:      false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := betterSession(tc.candidate, tc.current)
+			if got != tc.want {
+				t.Errorf("betterSession() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPreferredSessionWithScopePrefersNewestUserHelper(t *testing.T) {
+	now := time.Now()
+
+	systemSession, systemClient := newTestUserSession(t, "scope-system", "alice", now.Add(-30*time.Minute))
+	defer systemClient.Close()
+	systemSession.HelperRole = ipc.HelperRoleSystem
+
+	olderUser, olderClient := newTestUserSession(t, "scope-user-old", "alice", now.Add(-20*time.Minute))
+	defer olderClient.Close()
+
+	newerUser, newerClient := newTestUserSession(t, "scope-user-new", "bob", now.Add(-5*time.Minute))
+	defer newerClient.Close()
+
+	b := &Broker{
+		sessions: map[string]*Session{
+			systemSession.SessionID: systemSession,
+			olderUser.SessionID:     olderUser,
+			newerUser.SessionID:     newerUser,
+		},
+		byIdentity:   make(map[string][]*Session),
+		staleHelpers: make(map[string][]int),
+	}
+
+	got := b.PreferredSessionWithScope("run_as_user")
+	if got != newerUser {
+		t.Fatalf("PreferredSessionWithScope returned %q, want %q", got.SessionID, newerUser.SessionID)
+	}
+}

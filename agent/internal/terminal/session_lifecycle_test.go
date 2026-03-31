@@ -125,6 +125,32 @@ func TestStartSessionCallbackReceivesOutput(t *testing.T) {
 	}
 }
 
+func TestSessionRemovedAfterShellExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PTY test requires Unix/macOS")
+	}
+
+	m := NewManager()
+	err := m.StartSession("auto-exit", 80, 24, "/bin/sh", func([]byte) {}, func(error) {})
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if err := m.WriteToSession("auto-exit", []byte("exit\n")); err != nil {
+		t.Fatalf("WriteToSession: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if m.GetSessionCount() == 0 {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	t.Fatalf("expected session to be removed after shell exit, still have %d sessions", m.GetSessionCount())
+}
+
 // ---------------------------------------------------------------------------
 // Concurrent access
 // ---------------------------------------------------------------------------

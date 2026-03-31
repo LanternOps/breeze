@@ -31,6 +31,7 @@ vi.mock('../../services/auditEvents', () => ({
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => next()),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
+  requirePermission: vi.fn(() => (c: any, next: any) => next()),
 }));
 
 import { crudRoutes } from './crud';

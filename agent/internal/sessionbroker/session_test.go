@@ -168,6 +168,28 @@ func TestSendCommandSessionClosed(t *testing.T) {
 	}
 }
 
+func TestCloseDoesNotClosePendingResponseChannel(t *testing.T) {
+	session, clientIPC := createTestSession(t)
+	defer clientIPC.Close()
+
+	ch := make(chan *ipc.Envelope, 1)
+	session.mu.Lock()
+	session.pending["cmd-close"] = pendingResponse{ch: ch}
+	session.mu.Unlock()
+
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("send on pending response channel panicked after Close: %v", r)
+		}
+	}()
+
+	ch <- &ipc.Envelope{ID: "cmd-close"}
+}
+
 func TestHandleResponseUnknownID(t *testing.T) {
 	session, clientIPC := createTestSession(t)
 	defer session.Close()
@@ -181,6 +203,34 @@ func TestHandleResponseUnknownID(t *testing.T) {
 	matched := session.HandleResponse(env)
 	if matched {
 		t.Error("HandleResponse should return false for unknown command ID")
+	}
+}
+
+func TestHandleResponseRejectsMismatchedType(t *testing.T) {
+	session, clientIPC := createTestSession(t)
+	defer session.Close()
+	defer clientIPC.Close()
+
+	ch := make(chan *ipc.Envelope, 1)
+	session.mu.Lock()
+	session.pending["cmd-1"] = pendingResponse{
+		ch:           ch,
+		expectedType: ipc.TypeCommandResult,
+	}
+	session.mu.Unlock()
+
+	matched := session.HandleResponse(&ipc.Envelope{
+		ID:   "cmd-1",
+		Type: ipc.TypeNotifyResult,
+	})
+	if !matched {
+		t.Fatal("expected pending command ID to be recognized")
+	}
+
+	select {
+	case <-ch:
+		t.Fatal("expected mismatched response type not to be delivered")
+	default:
 	}
 }
 

@@ -97,15 +97,13 @@ func (s *Session) start() error {
 	// Wait for process to exit in a goroutine
 	go func() {
 		err := s.waitCmd()
-		if s.onClose != nil {
-			s.onClose(err)
-		}
+		s.notifyClosed(err)
 	}()
 
 	return nil
 }
 
-// resize is a no-op on Windows without ConPTY
+// resize reports unsupported on Windows until ConPTY-backed resizing exists.
 func (s *Session) resize(cols, rows uint16) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -114,11 +112,5 @@ func (s *Session) resize(cols, rows uint16) error {
 		return fmt.Errorf("session is not active")
 	}
 
-	// Update stored dimensions
-	s.Cols = cols
-	s.Rows = rows
-
-	// Note: Without ConPTY, we cannot actually resize the terminal
-	// This would require implementing ConPTY support
-	return nil
+	return fmt.Errorf("terminal resize unsupported on windows without ConPTY")
 }

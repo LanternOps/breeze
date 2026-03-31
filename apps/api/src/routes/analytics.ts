@@ -13,10 +13,19 @@ import {
   slaDefinitions as slaDefinitionsTable,
   slaCompliance as slaComplianceTable
 } from '../db/schema';
-import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import { PERMISSIONS } from '../services/permissions';
 
 export const analyticsRoutes = new Hono();
+const requireAnalyticsRead = requirePermission(
+  PERMISSIONS.DEVICES_READ.resource,
+  PERMISSIONS.DEVICES_READ.action,
+);
+const requireAnalyticsWrite = requirePermission(
+  PERMISSIONS.ORGS_WRITE.resource,
+  PERMISSIONS.ORGS_WRITE.action,
+);
 
 function getPagination(query: { page?: string; limit?: string }) {
   const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
@@ -205,6 +214,7 @@ analyticsRoutes.use('*', authMiddleware);
 analyticsRoutes.post(
   '/query',
   requireScope('organization', 'partner', 'system'),
+  requireAnalyticsRead,
   zValidator('json', timeSeriesQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -313,6 +323,7 @@ analyticsRoutes.post(
 analyticsRoutes.get(
   '/dashboards',
   requireScope('organization', 'partner', 'system'),
+  requireAnalyticsRead,
   zValidator('query', listDashboardsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -390,6 +401,8 @@ analyticsRoutes.get(
 analyticsRoutes.post(
   '/dashboards',
   requireScope('organization', 'partner', 'system'),
+  requireAnalyticsWrite,
+  requireMfa(),
   zValidator('json', createDashboardSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -450,6 +463,7 @@ analyticsRoutes.post(
 analyticsRoutes.get(
   '/dashboards/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAnalyticsRead,
   async (c) => {
     const auth = c.get('auth');
     const dashboardId = c.req.param('id')!;
@@ -528,6 +542,8 @@ analyticsRoutes.get(
 analyticsRoutes.patch(
   '/dashboards/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAnalyticsWrite,
+  requireMfa(),
   zValidator('json', updateDashboardSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -601,6 +617,8 @@ analyticsRoutes.patch(
 analyticsRoutes.delete(
   '/dashboards/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAnalyticsWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const dashboardId = c.req.param('id')!;
@@ -637,6 +655,8 @@ analyticsRoutes.delete(
 analyticsRoutes.post(
   '/dashboards/:id/widgets',
   requireScope('organization', 'partner', 'system'),
+  requireAnalyticsWrite,
+  requireMfa(),
   zValidator('json', createWidgetSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -694,6 +714,8 @@ analyticsRoutes.post(
 analyticsRoutes.patch(
   '/widgets/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAnalyticsWrite,
+  requireMfa(),
   zValidator('json', updateWidgetSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -772,6 +794,8 @@ analyticsRoutes.patch(
 analyticsRoutes.delete(
   '/widgets/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAnalyticsWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const widgetId = c.req.param('id')!;
@@ -822,6 +846,7 @@ analyticsRoutes.delete(
 analyticsRoutes.get(
   '/capacity',
   requireScope('organization', 'partner', 'system'),
+  requireAnalyticsRead,
   zValidator('query', capacityQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -997,6 +1022,7 @@ analyticsRoutes.get(
 analyticsRoutes.get(
   '/sla',
   requireScope('organization', 'partner', 'system'),
+  requireAnalyticsRead,
   zValidator('query', listSlaSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -1053,6 +1079,8 @@ analyticsRoutes.get(
 analyticsRoutes.post(
   '/sla',
   requireScope('organization', 'partner', 'system'),
+  requireAnalyticsWrite,
+  requireMfa(),
   zValidator('json', createSlaSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -1120,6 +1148,7 @@ analyticsRoutes.post(
 analyticsRoutes.get(
   '/sla/:id/compliance',
   requireScope('organization', 'partner', 'system'),
+  requireAnalyticsRead,
   async (c) => {
     const auth = c.get('auth');
     const slaId = c.req.param('id')!;
@@ -1198,6 +1227,7 @@ analyticsRoutes.get(
 analyticsRoutes.get(
   '/executive-summary',
   requireScope('organization', 'partner', 'system'),
+  requireAnalyticsRead,
   zValidator('query', executiveSummarySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -1289,6 +1319,7 @@ analyticsRoutes.get(
 analyticsRoutes.get(
   '/os-distribution',
   requireScope('organization', 'partner', 'system'),
+  requireAnalyticsRead,
   async (c) => {
     const auth = c.get('auth');
     const orgCondition =

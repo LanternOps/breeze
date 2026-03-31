@@ -8,7 +8,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { streamSSE } from 'hono/streaming';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import {
   createScriptBuilderSession,
   getScriptBuilderSession,
@@ -31,8 +31,17 @@ import { captureException } from '../services/sentry';
 import { db } from '../db';
 import { aiSessions, aiMessages } from '../db/schema';
 import { eq } from 'drizzle-orm';
+import { PERMISSIONS } from '../services/permissions';
 
 export const scriptAiRoutes = new Hono();
+const requireScriptAiRead = requirePermission(
+  PERMISSIONS.SCRIPTS_READ.resource,
+  PERMISSIONS.SCRIPTS_READ.action,
+);
+const requireScriptAiWrite = requirePermission(
+  PERMISSIONS.SCRIPTS_WRITE.resource,
+  PERMISSIONS.SCRIPTS_WRITE.action,
+);
 
 scriptAiRoutes.use('*', authMiddleware);
 
@@ -56,6 +65,8 @@ function generateSessionTitle(content: string): string {
 scriptAiRoutes.post(
   '/sessions',
   requireScope('organization', 'partner', 'system'),
+  requireScriptAiWrite,
+  requireMfa(),
   zValidator('json', createScriptBuilderSessionSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -84,6 +95,7 @@ scriptAiRoutes.post(
 scriptAiRoutes.get(
   '/sessions/:id',
   requireScope('organization', 'partner', 'system'),
+  requireScriptAiRead,
   async (c) => {
     const auth = c.get('auth');
     try {
@@ -104,6 +116,8 @@ scriptAiRoutes.get(
 scriptAiRoutes.delete(
   '/sessions/:id',
   requireScope('organization', 'partner', 'system'),
+  requireScriptAiWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const sessionId = c.req.param('id')!;
@@ -137,6 +151,8 @@ scriptAiRoutes.delete(
 scriptAiRoutes.post(
   '/sessions/:id/messages',
   requireScope('organization', 'partner', 'system'),
+  requireScriptAiWrite,
+  requireMfa(),
   zValidator('json', sendAiMessageSchema.extend({
     editorContext: scriptBuilderContextSchema.optional(),
   })),
@@ -285,6 +301,8 @@ scriptAiRoutes.post(
 scriptAiRoutes.post(
   '/sessions/:id/interrupt',
   requireScope('organization', 'partner', 'system'),
+  requireScriptAiWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const sessionId = c.req.param('id')!;
@@ -328,6 +346,8 @@ scriptAiRoutes.post(
 scriptAiRoutes.post(
   '/sessions/:id/approve/:executionId',
   requireScope('organization', 'partner', 'system'),
+  requireScriptAiWrite,
+  requireMfa(),
   zValidator('json', approveToolSchema),
   async (c) => {
     const auth = c.get('auth');

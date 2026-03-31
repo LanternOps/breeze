@@ -4,11 +4,16 @@ import { z } from 'zod';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { partners, organizations, sites } from '../db/schema';
-import { authMiddleware, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
+import { PERMISSIONS } from '../services/permissions';
 
 export const orgRoutes = new Hono();
+const requireOrgRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
+const requireOrgWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
+const requireSiteRead = requirePermission(PERMISSIONS.SITES_READ.resource, PERMISSIONS.SITES_READ.action);
+const requireSiteWrite = requirePermission(PERMISSIONS.SITES_WRITE.resource, PERMISSIONS.SITES_WRITE.action);
 
 const paginationSchema = z.object({
   page: z.string().optional(),
@@ -111,7 +116,7 @@ async function resolveAuditOrgIdForPartner(partnerId: string | null): Promise<st
 orgRoutes.use('*', authMiddleware);
 
 // GET / - List organizations accessible to the current user
-orgRoutes.get('/', requireScope('organization', 'partner', 'system'), async (c) => {
+orgRoutes.get('/', requireScope('organization', 'partner', 'system'), requireOrgRead, async (c) => {
   const auth = c.get('auth') as AuthContext;
 
   const conditions = [isNull(organizations.deletedAt)];
@@ -138,7 +143,7 @@ orgRoutes.get('/', requireScope('organization', 'partner', 'system'), async (c) 
 
 // --- Partners (system admins) ---
 
-orgRoutes.get('/partners', requireScope('system'), zValidator('query', paginationSchema), async (c) => {
+orgRoutes.get('/partners', requireScope('system'), requireOrgRead, zValidator('query', paginationSchema), async (c) => {
   const { page, limit, offset } = getPagination(c.req.valid('query'));
 
   const conditions = isNull(partners.deletedAt);
@@ -162,7 +167,7 @@ orgRoutes.get('/partners', requireScope('system'), zValidator('query', paginatio
   });
 });
 
-orgRoutes.post('/partners', requireScope('system'), zValidator('json', createPartnerSchema), async (c) => {
+orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(), zValidator('json', createPartnerSchema), async (c) => {
   const auth = c.get('auth');
   const data = c.req.valid('json');
 
@@ -197,7 +202,7 @@ orgRoutes.post('/partners', requireScope('system'), zValidator('json', createPar
   return c.json(partner, 201);
 });
 
-orgRoutes.get('/partners/:id', requireScope('system'), async (c) => {
+orgRoutes.get('/partners/:id', requireScope('system'), requireOrgRead, async (c) => {
   const id = c.req.param('id')!;
 
   const [partner] = await db
@@ -213,7 +218,7 @@ orgRoutes.get('/partners/:id', requireScope('system'), async (c) => {
   return c.json(partner);
 });
 
-orgRoutes.patch('/partners/:id', requireScope('system', 'partner'), zValidator('json', updatePartnerSchema), async (c) => {
+orgRoutes.patch('/partners/:id', requireScope('system', 'partner'), requireOrgWrite, requireMfa(), zValidator('json', updatePartnerSchema), async (c) => {
   const auth = c.get('auth');
   const id = c.req.param('id')!;
 
@@ -256,7 +261,7 @@ orgRoutes.patch('/partners/:id', requireScope('system', 'partner'), zValidator('
   return c.json(partner);
 });
 
-orgRoutes.delete('/partners/:id', requireScope('system'), async (c) => {
+orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requireMfa(), async (c) => {
   const auth = c.get('auth');
   const id = c.req.param('id')!;
 
@@ -375,7 +380,7 @@ const updatePartnerSettingsSchema = z.object({
 });
 
 // Get own partner details (for partner-scoped users)
-orgRoutes.get('/partners/me', requireScope('partner'), requirePartner, async (c) => {
+orgRoutes.get('/partners/me', requireScope('partner'), requirePartner, requireOrgRead, async (c) => {
   const auth = c.get('auth');
 
   const [partner] = await db
@@ -392,7 +397,7 @@ orgRoutes.get('/partners/me', requireScope('partner'), requirePartner, async (c)
 });
 
 // Update own partner settings (for partner-scoped users)
-orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, zValidator('json', updatePartnerSettingsSchema), async (c) => {
+orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, requireOrgWrite, requireMfa(), zValidator('json', updatePartnerSettingsSchema), async (c) => {
   const auth = c.get('auth');
   const body = c.req.valid('json');
 
@@ -448,7 +453,7 @@ const listOrganizationsSchema = z.object({
   limit: z.string().optional()
 });
 
-orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'), zValidator('query', listOrganizationsSchema), async (c) => {
+orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'), requireOrgRead, zValidator('query', listOrganizationsSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const { partnerId: queryPartnerId, ...pagination } = c.req.valid('query');
   const { page, limit, offset } = getPagination(pagination);
@@ -495,7 +500,7 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
   });
 });
 
-orgRoutes.post('/organizations', requireScope('partner', 'system'), zValidator('json', createOrganizationSchema), async (c) => {
+orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), zValidator('json', createOrganizationSchema), async (c) => {
   const auth = c.get('auth');
   const data = c.req.valid('json');
 
@@ -545,7 +550,7 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), zValidator('
   return c.json(organization, 201);
 });
 
-orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), async (c) => {
+orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), requireOrgRead, async (c) => {
   const auth = c.get('auth') as AuthContext;
   const id = c.req.param('id')!;
 
@@ -570,6 +575,7 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), async (c)
 
 orgRoutes.get('/organizations/:id/effective-settings',
   requireScope('organization', 'partner', 'system'),
+  requireOrgRead,
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const id = c.req.param('id')!;
@@ -586,7 +592,7 @@ orgRoutes.get('/organizations/:id/effective-settings',
   }
 );
 
-const updateOrgHandler = [requireScope('partner', 'system'), zValidator('json', updateOrganizationSchema), async (c: any) => {
+const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, requireMfa(), zValidator('json', updateOrganizationSchema), async (c: any) => {
   const auth = c.get('auth') as AuthContext;
   const id = c.req.param('id')!;
   const data = c.req.valid('json');
@@ -652,7 +658,7 @@ const updateOrgHandler = [requireScope('partner', 'system'), zValidator('json', 
 orgRoutes.patch('/organizations/:id', ...updateOrgHandler);
 orgRoutes.put('/organizations/:id', ...updateOrgHandler);
 
-orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), async (c) => {
+orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const id = c.req.param('id')!;
 
@@ -685,7 +691,7 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), async 
 
 // --- Sites (organization-scoped) ---
 
-orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), zValidator('query', listSitesSchema), async (c) => {
+orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requireSiteRead, zValidator('query', listSitesSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const { orgId, organizationId, ...pagination } = c.req.valid('query');
 
@@ -743,7 +749,7 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), zVali
   });
 });
 
-orgRoutes.post('/sites', requireScope('organization', 'partner', 'system'), zValidator('json', createSiteSchema), async (c) => {
+orgRoutes.post('/sites', requireScope('organization', 'partner', 'system'), requireSiteWrite, requireMfa(), zValidator('json', createSiteSchema), async (c) => {
   const auth = c.get('auth');
   const data = c.req.valid('json');
 
@@ -775,7 +781,7 @@ orgRoutes.post('/sites', requireScope('organization', 'partner', 'system'), zVal
   return c.json(site, 201);
 });
 
-orgRoutes.get('/sites/:id', requireScope('organization', 'partner', 'system'), async (c) => {
+orgRoutes.get('/sites/:id', requireScope('organization', 'partner', 'system'), requireSiteRead, async (c) => {
   const auth = c.get('auth');
   const id = c.req.param('id')!;
 
@@ -797,7 +803,7 @@ orgRoutes.get('/sites/:id', requireScope('organization', 'partner', 'system'), a
   return c.json(site);
 });
 
-orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'), zValidator('json', updateSiteSchema), async (c) => {
+orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'), requireSiteWrite, requireMfa(), zValidator('json', updateSiteSchema), async (c) => {
   const auth = c.get('auth');
   const id = c.req.param('id')!;
   const data = c.req.valid('json');
@@ -839,7 +845,7 @@ orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'),
   return c.json(updated);
 });
 
-orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system'), async (c) => {
+orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system'), requireSiteWrite, requireMfa(), async (c) => {
   const auth = c.get('auth');
   const id = c.req.param('id')!;
 

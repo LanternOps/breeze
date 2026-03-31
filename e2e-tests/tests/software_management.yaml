@@ -4,8 +4,8 @@
 
 tests:
   - id: software_catalog_page_loads
-    name: "Software Catalog Page Loads"
-    description: "Verify the Software Catalog page renders with header and search controls"
+    name: "Software Library Page Loads"
+    description: "Verify the Software Library page renders with header and search controls"
     tags: [software, catalog, critical]
     nodes: [linux]
     timeout: 120000
@@ -25,10 +25,10 @@ tests:
 
       - id: navigate_software_catalog
         action: ui
-        description: "Navigate to Software Catalog (/software)"
+        description: "Navigate to Software Library (/software)"
         playwright:
           - goto: "/software"
-          - waitFor: "text=Software Catalog"
+          - waitFor: "text=Software Library"
             timeout: 15000
 
       - id: verify_catalog_controls
@@ -45,7 +45,7 @@ tests:
             timeout: 5000
 
   - id: software_catalog_search_filter
-    name: "Software Catalog Search and Category Filter"
+    name: "Software Library Search and Category Filter"
     description: "Verify search and category filtering narrow the software list"
     tags: [software, catalog, search]
     nodes: [linux]
@@ -66,10 +66,10 @@ tests:
 
       - id: navigate_catalog
         action: ui
-        description: "Navigate to Software Catalog"
+        description: "Navigate to Software Library"
         playwright:
           - goto: "/software"
-          - waitFor: "text=Software Catalog"
+          - waitFor: "text=Software Library"
             timeout: 15000
 
       - id: search_software
@@ -89,7 +89,7 @@ tests:
               "input[placeholder*='Search software']": ""
           - selectOption:
               "select": "browser"
-          - waitFor: "text=Software Catalog"
+          - waitFor: "text=Software Library"
             timeout: 5000
 
       - id: verify_via_api
@@ -197,14 +197,14 @@ tests:
         description: "Verify software policies API is reachable"
         request:
           method: GET
-          path: "/api/v1/software/policies"
+          path: "/api/v1/software-policies"
         assert:
           status: 200
         expect:
           pagination: {}
 
   - id: software_add_package_to_catalog
-    name: "Add Package to Software Catalog"
+    name: "Add Package to Software Library"
     description: "Open the Add Package form, fill details, and cancel (no destructive change)"
     tags: [software, catalog, forms]
     nodes: [linux]
@@ -225,10 +225,10 @@ tests:
 
       - id: navigate_catalog
         action: ui
-        description: "Navigate to Software Catalog"
+        description: "Navigate to Software Library"
         playwright:
           - goto: "/software"
-          - waitFor: "text=Software Catalog"
+          - waitFor: "text=Software Library"
             timeout: 15000
 
       - id: open_add_package_form

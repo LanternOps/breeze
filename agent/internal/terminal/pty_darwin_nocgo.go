@@ -106,9 +106,7 @@ func (s *Session) start() error {
 	// Wait for process to exit in a goroutine
 	go func() {
 		err := s.waitCmd()
-		if s.onClose != nil {
-			s.onClose(err)
-		}
+		s.notifyClosed(err)
 	}()
 
 	return nil

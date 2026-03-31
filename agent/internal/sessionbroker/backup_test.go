@@ -82,7 +82,7 @@ func TestGetOrSpawnBackupHelper_ExistingSession(t *testing.T) {
 	s := &Session{
 		SessionID: "backup-existing",
 		conn:      &ipc.Conn{},
-		pending:   make(map[string]chan *ipc.Envelope),
+		pending:   make(map[string]pendingResponse),
 	}
 	b.SetBackupSession(s)
 

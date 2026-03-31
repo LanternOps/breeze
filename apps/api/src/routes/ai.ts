@@ -9,7 +9,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { streamSSE } from 'hono/streaming';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import {
   createSession,
   getSession,
@@ -27,6 +27,7 @@ import { assertNotLocked } from '../services/effectiveSettings';
 import { db } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions, auditLogs } from '../db/schema';
 import { eq, and, desc, gte, lte, count, avg, sql as drizzleSql } from 'drizzle-orm';
+import { PERMISSIONS } from '../services/permissions';
 import {
   createAiSessionSchema as sharedCreateAiSessionSchema,
   sendAiMessageSchema,
@@ -58,6 +59,8 @@ function generateSessionTitle(content: string): string {
 }
 
 export const aiRoutes = new Hono();
+const requireAiRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
+const requireAiWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
 
 aiRoutes.use('*', authMiddleware);
 
@@ -69,6 +72,8 @@ aiRoutes.use('*', authMiddleware);
 aiRoutes.post(
   '/sessions',
   requireScope('organization', 'partner', 'system'),
+  requireAiWrite,
+  requireMfa(),
   zValidator('json', createAiSessionSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -97,6 +102,7 @@ aiRoutes.post(
 aiRoutes.get(
   '/sessions',
   requireScope('organization', 'partner', 'system'),
+  requireAiRead,
   zValidator('query', aiSessionQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -117,6 +123,7 @@ aiRoutes.get(
 aiRoutes.get(
   '/sessions/search',
   requireScope('organization', 'partner', 'system'),
+  requireAiRead,
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.query('q');
@@ -135,6 +142,7 @@ aiRoutes.get(
 aiRoutes.get(
   '/sessions/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAiRead,
   async (c) => {
     const auth = c.get('auth');
     const sessionId = c.req.param('id')!;
@@ -152,6 +160,8 @@ aiRoutes.get(
 aiRoutes.delete(
   '/sessions/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAiWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const sessionId = c.req.param('id')!;
@@ -178,6 +188,8 @@ aiRoutes.delete(
 aiRoutes.patch(
   '/sessions/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAiWrite,
+  requireMfa(),
   zValidator('json', z.object({ title: z.string().min(1).max(255) })),
   async (c) => {
     const auth = c.get('auth');
@@ -201,6 +213,8 @@ aiRoutes.patch(
 aiRoutes.post(
   '/sessions/:id/flag',
   requireScope('organization', 'partner', 'system'),
+  requireAiWrite,
+  requireMfa(),
   zValidator('json', z.object({ reason: z.string().max(1000).optional() }).optional()),
   async (c) => {
     const auth = c.get('auth');
@@ -237,6 +251,8 @@ aiRoutes.post(
 aiRoutes.delete(
   '/sessions/:id/flag',
   requireScope('partner', 'system'),
+  requireAiWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const sessionId = c.req.param('id')!;
@@ -274,6 +290,8 @@ aiRoutes.delete(
 aiRoutes.post(
   '/sessions/:id/messages',
   requireScope('organization', 'partner', 'system'),
+  requireAiWrite,
+  requireMfa(),
   zValidator('json', sendAiMessageSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -389,6 +407,8 @@ aiRoutes.post(
 aiRoutes.post(
   '/sessions/:id/interrupt',
   requireScope('organization', 'partner', 'system'),
+  requireAiWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const sessionId = c.req.param('id')!;
@@ -430,6 +450,8 @@ aiRoutes.post(
 aiRoutes.post(
   '/sessions/:id/approve/:executionId',
   requireScope('organization', 'partner', 'system'),
+  requireAiWrite,
+  requireMfa(),
   zValidator('json', approveToolSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -467,6 +489,8 @@ aiRoutes.post(
 aiRoutes.post(
   '/sessions/:id/pause',
   requireScope('organization', 'partner', 'system'),
+  requireAiWrite,
+  requireMfa(),
   zValidator('json', pauseAiSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -512,6 +536,8 @@ aiRoutes.post(
 aiRoutes.post(
   '/sessions/:id/approve-plan',
   requireScope('organization', 'partner', 'system'),
+  requireAiWrite,
+  requireMfa(),
   zValidator('json', approvePlanSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -575,6 +601,8 @@ aiRoutes.post(
 aiRoutes.post(
   '/sessions/:id/abort-plan',
   requireScope('organization', 'partner', 'system'),
+  requireAiWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const sessionId = c.req.param('id')!;
@@ -615,6 +643,7 @@ aiRoutes.post(
 aiRoutes.get(
   '/usage',
   requireScope('organization', 'partner', 'system'),
+  requireAiRead,
   async (c) => {
     const auth = c.get('auth');
     const orgId = c.req.query('orgId') || auth.orgId;
@@ -641,6 +670,8 @@ aiRoutes.get(
 aiRoutes.put(
   '/budget',
   requireScope('organization', 'partner', 'system'),
+  requireAiWrite,
+  requireMfa(),
   zValidator('json', z.object({
     enabled: z.boolean().optional(),
     monthlyBudgetCents: z.number().int().min(0).nullable().optional(),
@@ -683,6 +714,7 @@ aiRoutes.put(
 aiRoutes.get(
   '/admin/sessions',
   requireScope('organization', 'partner', 'system'),
+  requireAiRead,
   async (c) => {
     const auth = c.get('auth');
     const orgId = c.req.query('orgId') || auth.orgId;
@@ -708,6 +740,7 @@ aiRoutes.get(
 aiRoutes.get(
   '/admin/security-events',
   requireScope('organization', 'partner', 'system'),
+  requireAiRead,
   async (c) => {
     const auth = c.get('auth');
     const orgId = c.req.query('orgId') || auth.orgId;
@@ -764,6 +797,7 @@ aiRoutes.get(
 aiRoutes.get(
   '/admin/tool-executions',
   requireScope('organization', 'partner', 'system'),
+  requireAiRead,
   async (c) => {
     const auth = c.get('auth');
     const orgId = c.req.query('orgId') || auth.orgId;

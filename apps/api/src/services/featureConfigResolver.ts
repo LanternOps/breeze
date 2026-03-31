@@ -12,6 +12,7 @@ import {
   devices,
   organizations,
   deviceGroupMemberships,
+  sites,
   softwarePolicies,
 } from '../db/schema';
 import { and, eq, sql, inArray, asc, SQL } from 'drizzle-orm';
@@ -325,6 +326,45 @@ export async function resolveAutomationsForDevice(
 export async function resolvePatchConfigForDevice(
   deviceId: string
 ): Promise<typeof configPolicyPatchSettings.$inferSelect | null> {
+  const resolved = await resolvePatchConfigDetailsForDevice(deviceId);
+  return resolved?.settings ?? null;
+}
+
+export interface ResolvedPatchConfigDetails {
+  settings: typeof configPolicyPatchSettings.$inferSelect;
+  featureLinkId: string;
+  configPolicyId: string;
+  configPolicyName: string;
+  featurePolicyId: string | null;
+  assignmentLevel: string;
+  assignmentTargetId: string;
+  assignmentPriority: number;
+  resolvedTimezone: string;
+}
+
+export async function resolveDeviceTimezone(deviceId: string): Promise<string> {
+  const [row] = await db
+    .select({
+      timezone: sites.timezone,
+      orgSettings: organizations.settings,
+    })
+    .from(devices)
+    .innerJoin(organizations, eq(devices.orgId, organizations.id))
+    .leftJoin(sites, eq(devices.siteId, sites.id))
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+
+  const orgTimezone =
+    row?.orgSettings && typeof row.orgSettings === 'object'
+      ? (row.orgSettings as Record<string, unknown>).timezone
+      : null;
+
+  return row?.timezone || (typeof orgTimezone === 'string' && orgTimezone.length > 0 ? orgTimezone : 'UTC');
+}
+
+export async function resolvePatchConfigDetailsForDevice(
+  deviceId: string
+): Promise<ResolvedPatchConfigDetails | null> {
   const hierarchy = await loadDeviceHierarchy(deviceId);
   if (!hierarchy) return null;
 
@@ -334,6 +374,11 @@ export async function resolvePatchConfigForDevice(
   const rows = await db
     .select({
       patchSettings: configPolicyPatchSettings,
+      featureLinkId: configPolicyFeatureLinks.id,
+      configPolicyId: configurationPolicies.id,
+      configPolicyName: configurationPolicies.name,
+      featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
+      assignmentTargetId: configPolicyAssignments.targetId,
       assignmentLevel: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
       assignmentCreatedAt: configPolicyAssignments.createdAt,
@@ -368,7 +413,19 @@ export async function resolvePatchConfigForDevice(
   if (rows.length === 0) return null;
 
   const sorted = sortByHierarchy(rows);
-  return sorted[0]!.patchSettings;
+  const winner = sorted[0]!;
+
+  return {
+    settings: winner.patchSettings,
+    featureLinkId: winner.featureLinkId,
+    configPolicyId: winner.configPolicyId,
+    configPolicyName: winner.configPolicyName,
+    featurePolicyId: winner.featurePolicyId,
+    assignmentLevel: winner.assignmentLevel,
+    assignmentTargetId: winner.assignmentTargetId,
+    assignmentPriority: winner.assignmentPriority,
+    resolvedTimezone: await resolveDeviceTimezone(deviceId),
+  };
 }
 
 /**

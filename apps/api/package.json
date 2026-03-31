@@ -43,7 +43,7 @@
     "ioredis": "^5.10.1",
     "jose": "^6.1.3",
     "nanoid": "^5.0.9",
-    "nodemailer": "^8.0.1",
+    "nodemailer": "^8.0.4",
     "otplib": "^13.1.0",
     "pg": "^8.13.1",
     "postgres": "^3.4.5",

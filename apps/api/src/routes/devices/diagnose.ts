@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { db } from '../../db';
 import { devices, deviceHardware, deviceMetrics, alerts } from '../../db/schema';
 import { eq, and, desc, SQL } from 'drizzle-orm';
-import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
+import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { executeCommand } from '../../services/commandQueue';
 
@@ -14,6 +14,7 @@ diagnoseRoutes.post(
   '/:id/diagnose',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;

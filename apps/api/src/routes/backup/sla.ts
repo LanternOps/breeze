@@ -4,7 +4,9 @@ import { z } from 'zod';
 import { eq, and, sql, gte, lte, isNull, desc } from 'drizzle-orm';
 import { db } from '../../db';
 import { backupSlaConfigs, backupSlaEvents, backupJobs, recoveryReadiness } from '../../db/schema';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import {
   slaConfigCreateSchema,
@@ -20,6 +22,9 @@ const idParamSchema = z.object({ id: z.string().uuid() });
 
 slaRoutes.post(
   '/configs',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   zValidator('json', slaConfigCreateSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -65,7 +70,7 @@ slaRoutes.post(
 
 // ── GET /configs — list SLA configs ──────────────────────────────────────────
 
-slaRoutes.get('/configs', async (c) => {
+slaRoutes.get('/configs', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -85,6 +90,9 @@ slaRoutes.get('/configs', async (c) => {
 
 slaRoutes.patch(
   '/configs/:id',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   zValidator('param', idParamSchema),
   zValidator('json', slaConfigUpdateSchema),
   async (c) => {
@@ -138,6 +146,9 @@ slaRoutes.patch(
 
 slaRoutes.delete(
   '/configs/:id',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -182,6 +193,7 @@ slaRoutes.delete(
 
 slaRoutes.get(
   '/events',
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   zValidator('query', slaEventsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -230,7 +242,7 @@ slaRoutes.get(
 
 // ── GET /dashboard — compliance dashboard ────────────────────────────────────
 
-slaRoutes.get('/dashboard', async (c) => {
+slaRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {

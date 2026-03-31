@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -12,6 +13,13 @@ import (
 )
 
 const defaultPollInterval = 500 * time.Millisecond
+
+const (
+	maxClipboardMessageBytes = 2 * 1024 * 1024
+	maxClipboardTextBytes    = MaxTextBytes
+	maxClipboardRTFBytes     = MaxRTFBytes
+	maxClipboardImageBytes   = MaxImageBytes
+)
 
 var errClipboardSyncUnconfigured = errors.New("clipboard sync not configured")
 
@@ -107,6 +115,9 @@ func (c *ClipboardSync) Send(content Content) error {
 	if c.dc == nil {
 		return errClipboardSyncUnconfigured
 	}
+	if err := ValidateContent(content); err != nil {
+		return err
+	}
 
 	payload := clipboardPayload{Type: content.Type, Text: content.Text, ImageFormat: content.ImageFormat}
 	if len(content.RTF) > 0 {
@@ -136,9 +147,15 @@ func (c *ClipboardSync) Receive(msg webrtc.DataChannelMessage) error {
 	if c.provider == nil {
 		return errClipboardSyncUnconfigured
 	}
+	if len(msg.Data) > maxClipboardMessageBytes {
+		return fmt.Errorf("clipboard payload exceeds maximum %d bytes", maxClipboardMessageBytes)
+	}
 
 	payload, err := decodeClipboardPayload(msg)
 	if err != nil {
+		return err
+	}
+	if err := validateEncodedClipboardPayload(payload); err != nil {
 		return err
 	}
 
@@ -156,6 +173,9 @@ func (c *ClipboardSync) Receive(msg webrtc.DataChannelMessage) error {
 			return err
 		}
 		content.Image = data
+	}
+	if err := ValidateContent(content); err != nil {
+		return err
 	}
 
 	if err := c.provider.SetContent(content); err != nil {
@@ -200,4 +220,21 @@ func decodeClipboardPayload(msg webrtc.DataChannelMessage) (clipboardPayload, er
 		return payload, err
 	}
 	return payload, nil
+}
+
+func validateEncodedClipboardPayload(payload clipboardPayload) error {
+	if len(payload.Text) > maxClipboardTextBytes {
+		return fmt.Errorf("clipboard text exceeds maximum %d bytes", maxClipboardTextBytes)
+	}
+	if len(payload.RTF) > maxBase64EncodedLen(maxClipboardRTFBytes) {
+		return fmt.Errorf("clipboard RTF exceeds maximum %d bytes", maxClipboardRTFBytes)
+	}
+	if len(payload.Image) > maxBase64EncodedLen(maxClipboardImageBytes) {
+		return fmt.Errorf("clipboard image exceeds maximum %d bytes", maxClipboardImageBytes)
+	}
+	return nil
+}
+
+func maxBase64EncodedLen(decodedLen int) int {
+	return ((decodedLen + 2) / 3) * 4
 }

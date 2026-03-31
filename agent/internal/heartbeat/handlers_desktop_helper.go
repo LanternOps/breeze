@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -20,6 +21,8 @@ import (
 // string (or "" for auto-detect).
 var spawnGuards sync.Map
 
+const maxGUIUserUIDs = 64
+
 // sessionSpawnMu returns a mutex for the given session key, creating one if needed.
 func sessionSpawnMu(sessionKey string) *sync.Mutex {
 	val, _ := spawnGuards.LoadOrStore(sessionKey, &sync.Mutex{})
@@ -35,6 +38,63 @@ func isWinSessionDisconnected(winSessionID string) bool {
 		return false
 	}
 	return sessionbroker.IsSessionDisconnected(winSessionID)
+}
+
+func (h *Heartbeat) helperSessionForTarget(targetSession string) *sessionbroker.Session {
+	if h.helperFinder != nil {
+		return h.helperFinder(targetSession)
+	}
+	return h.findOrSpawnHelper(targetSession)
+}
+
+func (h *Heartbeat) spawnDesktopHelper(targetSession string) error {
+	if h.spawnHelper != nil {
+		return h.spawnHelper(targetSession)
+	}
+	return h.spawnHelperForDesktop(targetSession)
+}
+
+func (h *Heartbeat) killDesktopStaleHelpers(targetSession string) {
+	if targetSession == "" {
+		return
+	}
+	staleKey := targetSession + "-" + ipc.HelperRoleSystem
+	if h.killStaleHelpers != nil {
+		h.killStaleHelpers(staleKey)
+		return
+	}
+	if h.sessionBroker != nil {
+		h.sessionBroker.KillStaleHelpers(staleKey)
+	}
+}
+
+func (h *Heartbeat) rememberDesktopOwner(desktopSessionID, helperSessionID string) {
+	if desktopSessionID == "" || helperSessionID == "" {
+		return
+	}
+	h.desktopOwners.Store(desktopSessionID, helperSessionID)
+}
+
+func (h *Heartbeat) forgetDesktopOwner(desktopSessionID string) {
+	if desktopSessionID == "" {
+		return
+	}
+	h.desktopOwners.Delete(desktopSessionID)
+}
+
+func (h *Heartbeat) desktopOwnerSession(desktopSessionID string) *sessionbroker.Session {
+	if desktopSessionID == "" || h.sessionBroker == nil {
+		return nil
+	}
+	helperSessionID, ok := h.desktopOwners.Load(desktopSessionID)
+	if !ok {
+		return nil
+	}
+	helperSessionIDStr, ok := helperSessionID.(string)
+	if !ok || helperSessionIDStr == "" {
+		return nil
+	}
+	return h.sessionBroker.SessionByID(helperSessionIDStr)
 }
 
 // startDesktopViaHelper routes a desktop start request through the IPC user helper.
@@ -82,7 +142,7 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 	// 20-30s of round-trip delay).
 	const maxAttempts = 2
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		session := h.findOrSpawnHelper(targetSession)
+		session := h.helperSessionForTarget(targetSession)
 		if session == nil {
 			return tools.NewErrorResult(fmt.Errorf("no capable helper available after spawn attempt"), 0)
 		}
@@ -94,8 +154,6 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 				"error", err.Error(),
 				"session", session.SessionID,
 			)
-			// Helper likely crashed — clear target so next attempt auto-detects
-			targetSession = ""
 			continue
 		}
 		if resp.Error != "" {
@@ -109,6 +167,7 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 		if err := json.Unmarshal(resp.Payload, &dResp); err != nil {
 			return tools.NewErrorResult(fmt.Errorf("failed to unmarshal desktop start response: %w", err), 0)
 		}
+		h.rememberDesktopOwner(sessionID, session.SessionID)
 
 		return tools.NewSuccessResult(map[string]any{
 			"sessionId": sessionID,
@@ -122,6 +181,9 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 // findOrSpawnHelper locates a capable helper session, spawning one if needed.
 func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Session {
 	session := h.sessionBroker.FindCapableSession("capture", targetSession)
+	if targetSession != "" && session != nil && session.WinSessionID != targetSession {
+		session = nil
+	}
 
 	// Validate the helper's Windows session is still active.
 	if session != nil && isWinSessionDisconnected(session.WinSessionID) {
@@ -129,7 +191,6 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 			"helperSession", session.SessionID,
 			"winSession", session.WinSessionID)
 		session = nil
-		targetSession = ""
 	}
 
 	if session != nil {
@@ -143,15 +204,17 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 
 	// Re-check after lock
 	session = h.sessionBroker.FindCapableSession("capture", targetSession)
+	if targetSession != "" && session != nil && session.WinSessionID != targetSession {
+		session = nil
+	}
 	if session != nil && isWinSessionDisconnected(session.WinSessionID) {
 		session = nil
-		targetSession = ""
 	}
 	if session != nil {
 		return session
 	}
 
-	if err := h.spawnHelperForDesktop(targetSession); err != nil {
+	if err := h.spawnDesktopHelper(targetSession); err != nil {
 		log.Warn("helper spawn failed", "error", err.Error())
 		return nil
 	}
@@ -160,6 +223,9 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 	for i := 0; i < 100; i++ {
 		time.Sleep(100 * time.Millisecond)
 		session = h.sessionBroker.FindCapableSession("capture", targetSession)
+		if targetSession != "" && session != nil && session.WinSessionID != targetSession {
+			session = nil
+		}
 		if session != nil && !isWinSessionDisconnected(session.WinSessionID) {
 			return session
 		}
@@ -247,14 +313,14 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 		}
 	}
 
-	var sessionNum uint32
-	if _, err := fmt.Sscanf(targetSession, "%d", &sessionNum); err != nil {
+	sessionNum, err := sessionbroker.ParseWindowsSessionIDForHeartbeat(targetSession)
+	if err != nil {
 		return fmt.Errorf("invalid session ID %q: %w", targetSession, err)
 	}
 
 	// Kill any stale helpers from previous sessions in this Windows session
 	// to release DXGI Desktop Duplication locks before spawning a new one.
-	h.sessionBroker.KillStaleHelpers(targetSession)
+	h.killDesktopStaleHelpers(targetSession)
 
 	return sessionbroker.SpawnHelperInSession(sessionNum)
 }
@@ -270,18 +336,30 @@ func findGUIUserUIDs() []string {
 		log.Warn("failed to list processes for GUI user detection", "error", err.Error())
 		return nil
 	}
+	return parseGUIUserUIDs(string(out))
+}
+
+func parseGUIUserUIDs(output string) []string {
 	seen := map[string]bool{}
 	var uids []string
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
 		}
 		uid, comm := fields[0], fields[len(fields)-1]
+		if _, err := sessionbroker.ParseWindowsSessionIDForHeartbeat(uid); err != nil {
+			continue
+		}
 		if strings.HasSuffix(comm, "loginwindow") && !seen[uid] {
 			seen[uid] = true
 			uids = append(uids, uid)
+			if len(uids) >= maxGUIUserUIDs {
+				break
+			}
 		}
 	}
 	return uids

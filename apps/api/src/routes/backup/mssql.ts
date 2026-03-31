@@ -4,12 +4,14 @@ import { zValidator } from '@hono/zod-validator';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices } from '../../db/schema';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { sqlInstances, backupChains } from '../../db/schema/applicationBackup';
 import {
   executeCommand,
   queueCommandForExecution,
   CommandTypes,
 } from '../../services/commandQueue';
+import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 
 export const mssqlRoutes = new Hono();
@@ -47,7 +49,7 @@ const mssqlRestoreSchema = z.object({
 
 // ── GET /mssql/instances — list all discovered instances (org-wide) ──
 
-mssqlRoutes.get('/mssql/instances', async (c) => {
+mssqlRoutes.get('/mssql/instances', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -66,6 +68,7 @@ mssqlRoutes.get('/mssql/instances', async (c) => {
 
 mssqlRoutes.get(
   '/mssql/instances/:deviceId',
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   zValidator('param', deviceIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -104,6 +107,9 @@ mssqlRoutes.get(
 
 mssqlRoutes.post(
   '/mssql/discover/:deviceId',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('param', deviceIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -183,6 +189,9 @@ mssqlRoutes.post(
 
 mssqlRoutes.post(
   '/mssql/backup',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('json', mssqlBackupSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -225,7 +234,7 @@ mssqlRoutes.post(
 
 // ── GET /mssql/chains — list backup chains (org-wide) ──
 
-mssqlRoutes.get('/mssql/chains', async (c) => {
+mssqlRoutes.get('/mssql/chains', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -244,6 +253,9 @@ mssqlRoutes.get('/mssql/chains', async (c) => {
 
 mssqlRoutes.post(
   '/mssql/restore',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('json', mssqlRestoreSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -288,6 +300,9 @@ mssqlRoutes.post(
 
 mssqlRoutes.post(
   '/mssql/verify/:snapshotId',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('param', snapshotIdParamSchema),
   async (c) => {
     const auth = c.get('auth');

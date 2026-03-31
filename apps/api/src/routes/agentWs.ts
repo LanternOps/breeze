@@ -4,13 +4,13 @@ import { z } from 'zod';
 import { eq, and, sql } from 'drizzle-orm';
 import { createHash, timingSafeEqual } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
-import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, networkMonitors, networkMonitorResults, remoteSessions, backupJobs, restoreJobs } from '../db/schema';
+import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, remoteSessions, backupJobs, restoreJobs } from '../db/schema';
 import { handleTerminalOutput, getActiveTerminalSession, unregisterTerminalOutputCallback } from './terminalWs';
 import { handleDesktopFrame, isDesktopSessionOwnedByAgent } from './desktopWs';
 import { enqueueDiscoveryResults, type DiscoveredHostResult } from '../jobs/discoveryWorker';
 import { enqueueBackupResults } from '../jobs/backupWorker';
 import { enqueueSnmpPollResults, type SnmpMetricResult } from '../jobs/snmpWorker';
-import { enqueueMonitorCheckResult, type MonitorCheckResult } from '../jobs/monitorWorker';
+import { enqueueMonitorCheckResult, recordMonitorCheckResult, type MonitorCheckResult } from '../jobs/monitorWorker';
 import { isRedisAvailable } from '../services/redis';
 import { isIP } from 'node:net';
 import { processDeviceIPHistoryUpdate } from '../services/deviceIpHistory';
@@ -42,6 +42,70 @@ interface AgentPingState {
 const agentPingStates = new Map<string, AgentPingState>();
 const AGENT_PING_INTERVAL_MS = 30_000;
 const AGENT_PONG_TIMEOUT_MS = 10_000;
+const ORPHANED_RESULT_EXPECTATION_TTL_MS = 30 * 60 * 1000;
+const MONITOR_COMMAND_TYPES = new Set(['network_ping', 'network_tcp_check', 'network_http_check', 'network_dns_check']);
+
+type OrphanedResultExpectation =
+  | {
+      agentId: string;
+      kind: 'snmp';
+      targetId: string;
+      expiresAt: number;
+    }
+  | {
+      agentId: string;
+      kind: 'monitor';
+      targetId: string;
+      expiresAt: number;
+    };
+
+const orphanedResultExpectations = new Map<string, OrphanedResultExpectation>();
+
+function pruneOrphanedResultExpectations(now = Date.now()): void {
+  for (const [commandId, expectation] of orphanedResultExpectations.entries()) {
+    if (expectation.expiresAt <= now) {
+      orphanedResultExpectations.delete(commandId);
+    }
+  }
+}
+
+function recordOrphanedResultExpectation(agentId: string, command: AgentCommand): void {
+  const payload = command.payload ?? {};
+  const expiresAt = Date.now() + ORPHANED_RESULT_EXPECTATION_TTL_MS;
+
+  if (command.type === 'snmp_poll') {
+    const deviceId = typeof payload.deviceId === 'string' ? payload.deviceId : null;
+    if (!deviceId) return;
+    orphanedResultExpectations.set(command.id, {
+      agentId,
+      kind: 'snmp',
+      targetId: deviceId,
+      expiresAt,
+    });
+    return;
+  }
+
+  if (MONITOR_COMMAND_TYPES.has(command.type)) {
+    const monitorId = typeof payload.monitorId === 'string' ? payload.monitorId : null;
+    if (!monitorId) return;
+    orphanedResultExpectations.set(command.id, {
+      agentId,
+      kind: 'monitor',
+      targetId: monitorId,
+      expiresAt,
+    });
+  }
+}
+
+function consumeOrphanedResultExpectation(agentId: string, commandId: string): OrphanedResultExpectation | null {
+  pruneOrphanedResultExpectations();
+  const expectation = orphanedResultExpectations.get(commandId);
+  if (!expectation || expectation.agentId !== agentId) {
+    return null;
+  }
+  orphanedResultExpectations.delete(commandId);
+  return expectation;
+}
 
 // Message types from agent
 const commandResultSchema = z.object({
@@ -189,6 +253,7 @@ async function updateDeviceStatus(agentId: string, status: 'online' | 'offline')
  */
 async function processOrphanedCommandResult(
   agentId: string,
+  authenticatedDeviceId: string,
   result: z.infer<typeof commandResultSchema>
 ): Promise<void> {
   // Check if this is an SNMP poll result
@@ -198,6 +263,14 @@ async function processOrphanedCommandResult(
   } | undefined;
 
   if (snmpData?.deviceId && snmpData.metrics && snmpData.metrics.length > 0) {
+    const expectation = consumeOrphanedResultExpectation(agentId, result.commandId);
+    if (!expectation || expectation.kind !== 'snmp' || expectation.targetId !== snmpData.deviceId) {
+      console.warn(
+        `[AgentWs] Rejecting unexpected SNMP result ${result.commandId} from agent ${agentId}: ` +
+        `sentDevice=${snmpData.deviceId} expected=${expectation?.kind === 'snmp' ? expectation.targetId : 'none'} authDevice=${authenticatedDeviceId}`
+      );
+      return;
+    }
     console.log(`[AgentWs] Processing SNMP poll result for device ${snmpData.deviceId} from agent ${agentId}`);
     try {
       if (isRedisAvailable()) {
@@ -226,6 +299,14 @@ async function processOrphanedCommandResult(
   } | undefined;
 
   if (monitorData?.monitorId && monitorData.status) {
+    const expectation = consumeOrphanedResultExpectation(agentId, result.commandId);
+    if (!expectation || expectation.kind !== 'monitor' || expectation.targetId !== monitorData.monitorId) {
+      console.warn(
+        `[AgentWs] Rejecting unexpected monitor result ${result.commandId} from agent ${agentId}: ` +
+        `sentMonitor=${monitorData.monitorId} expected=${expectation?.kind === 'monitor' ? expectation.targetId : 'none'}`
+      );
+      return;
+    }
     console.log(`[AgentWs] Processing monitor check result for monitor ${monitorData.monitorId} from agent ${agentId}`);
     try {
       const status = normalizeMonitorStatus(monitorData.status);
@@ -239,27 +320,15 @@ async function processOrphanedCommandResult(
           details: monitorData as Record<string, unknown>
         });
       } else {
-        console.warn(`[AgentWs] Redis unavailable, writing monitor result directly for ${monitorData.monitorId}`);
-        const now = new Date();
-        await db.insert(networkMonitorResults).values({
+        console.warn(`[AgentWs] Redis unavailable, recording monitor result directly for ${monitorData.monitorId}`);
+        await recordMonitorCheckResult(monitorData.monitorId, {
           monitorId: monitorData.monitorId,
           status,
-          responseMs: monitorData.responseMs ?? null,
-          statusCode: monitorData.statusCode ?? null,
-          error: monitorData.error ?? null,
-          details: monitorData as Record<string, unknown>,
-          timestamp: now
+          responseMs: monitorData.responseMs ?? 0,
+          statusCode: monitorData.statusCode,
+          error: monitorData.error,
+          details: monitorData as Record<string, unknown>
         });
-        await db
-          .update(networkMonitors)
-          .set({
-            lastChecked: now,
-            lastStatus: status,
-            lastResponseMs: monitorData.responseMs ?? null,
-            lastError: monitorData.error ?? null,
-            updatedAt: now
-          })
-          .where(eq(networkMonitors.id, monitorData.monitorId));
       }
     } catch (err) {
       console.error(`[AgentWs] Failed to process monitor check result for ${agentId}:`, err);
@@ -280,12 +349,16 @@ async function processOrphanedCommandResult(
 
   // Check if this is a discovery job result
   const [discoveryJob] = await db
-    .select({ id: discoveryJobs.id, orgId: discoveryJobs.orgId, siteId: discoveryJobs.siteId })
+    .select({ id: discoveryJobs.id, orgId: discoveryJobs.orgId, siteId: discoveryJobs.siteId, agentId: discoveryJobs.agentId })
     .from(discoveryJobs)
     .where(eq(discoveryJobs.id, result.commandId))
     .limit(1);
 
   if (discoveryJob) {
+    if (!discoveryJob.agentId || discoveryJob.agentId !== agentId) {
+      console.warn(`[AgentWs] Rejecting discovery result for job ${discoveryJob.id} from unexpected agent ${agentId}`);
+      return;
+    }
     console.log(`[AgentWs] Processing discovery result for job ${discoveryJob.id} from agent ${agentId}`);
     try {
       const discoveryData = result.result as {
@@ -341,12 +414,17 @@ async function processOrphanedCommandResult(
 
   // Check if this is a backup job result
   const [backupJob] = await db
-    .select({ id: backupJobs.id, orgId: backupJobs.orgId, deviceId: backupJobs.deviceId })
+    .select({ id: backupJobs.id, orgId: backupJobs.orgId, deviceId: backupJobs.deviceId, agentId: devices.agentId })
     .from(backupJobs)
+    .innerJoin(devices, eq(backupJobs.deviceId, devices.id))
     .where(eq(backupJobs.id, result.commandId))
     .limit(1);
 
   if (backupJob) {
+    if (!backupJob.agentId || backupJob.agentId !== agentId) {
+      console.warn(`[AgentWs] Rejecting backup result for job ${backupJob.id} from unexpected agent ${agentId}`);
+      return;
+    }
     console.log(`[AgentWs] Processing backup result for job ${backupJob.id} from agent ${agentId}`);
     try {
       const backupData = result.result as {
@@ -396,12 +474,17 @@ async function processOrphanedCommandResult(
 
   // Check if this is a restore job result
   const [restoreJob] = await db
-    .select({ id: restoreJobs.id, orgId: restoreJobs.orgId })
+    .select({ id: restoreJobs.id, orgId: restoreJobs.orgId, agentId: devices.agentId })
     .from(restoreJobs)
+    .innerJoin(devices, eq(restoreJobs.deviceId, devices.id))
     .where(eq(restoreJobs.id, result.commandId))
     .limit(1);
 
   if (restoreJob) {
+    if (!restoreJob.agentId || restoreJob.agentId !== agentId) {
+      console.warn(`[AgentWs] Rejecting restore result for job ${restoreJob.id} from unexpected agent ${agentId}`);
+      return;
+    }
     console.log(`[AgentWs] Processing restore result for job ${restoreJob.id} from agent ${agentId}`);
     try {
       const restoreData = result.result as {
@@ -442,7 +525,7 @@ async function processCommandResult(
     // Non-UUID command IDs (for example mon-* and snmp-*) are dispatched directly
     // over WebSocket and do not have a device_commands row.
     if (!UUID_REGEX.test(result.commandId)) {
-      await processOrphanedCommandResult(agentId, result);
+      await processOrphanedCommandResult(agentId, deviceId ?? '', result);
       return;
     }
 
@@ -493,7 +576,7 @@ async function processCommandResult(
     if (!command || !resolvedDeviceId) {
       // Discovery and SNMP commands are dispatched directly via WebSocket
       // without creating a deviceCommands record. Handle them here.
-      await processOrphanedCommandResult(agentId, result);
+      await processOrphanedCommandResult(agentId, deviceId ?? '', result);
       return;
     }
 
@@ -531,6 +614,8 @@ async function processCommandResult(
     // If this was a discovery command, process the results
     if (command.type === 'network_discovery') {
       try {
+        const payload = command.payload as Record<string, unknown> | null;
+        const expectedJobId = typeof payload?.jobId === 'string' ? payload.jobId : null;
         const discoveryData = result.result as {
           jobId?: string;
           hosts?: DiscoveredHostResult[];
@@ -538,17 +623,27 @@ async function processCommandResult(
           hostsDiscovered?: number;
         } | undefined;
 
-        if (discoveryData?.jobId && discoveryData.hosts) {
+        if (discoveryData?.hosts) {
+          if (!expectedJobId || discoveryData.jobId !== expectedJobId) {
+            console.warn(
+              `[AgentWs] Rejecting mismatched discovery result ${result.commandId} from agent ${agentId}: ` +
+              `sentJob=${discoveryData.jobId ?? 'none'} expected=${expectedJobId ?? 'none'}`
+            );
+            return;
+          }
+        }
+
+        if (expectedJobId && discoveryData?.hosts) {
           // Look up the job to get orgId and siteId
           const [job] = await db
             .select({ orgId: discoveryJobs.orgId, siteId: discoveryJobs.siteId })
             .from(discoveryJobs)
-            .where(eq(discoveryJobs.id, discoveryData.jobId))
+            .where(eq(discoveryJobs.id, expectedJobId))
             .limit(1);
 
           if (job && isRedisAvailable()) {
             await enqueueDiscoveryResults(
-              discoveryData.jobId,
+              expectedJobId,
               job.orgId,
               job.siteId,
               discoveryData.hosts,
@@ -557,7 +652,7 @@ async function processCommandResult(
             );
           } else if (job) {
             // Redis not available — mark job failed so user knows results weren't processed
-            console.warn(`[AgentWs] Redis unavailable, cannot process ${discoveryData.hosts.length} discovery hosts for job ${discoveryData.jobId}`);
+            console.warn(`[AgentWs] Redis unavailable, cannot process ${discoveryData.hosts.length} discovery hosts for job ${expectedJobId}`);
             await db
               .update(discoveryJobs)
               .set({
@@ -568,7 +663,7 @@ async function processCommandResult(
                 errors: { message: 'Results received but could not be processed: job queue unavailable' },
                 updatedAt: new Date()
               })
-              .where(eq(discoveryJobs.id, discoveryData.jobId));
+              .where(eq(discoveryJobs.id, expectedJobId));
           }
         }
       } catch (err) {
@@ -592,22 +687,31 @@ async function processCommandResult(
     // If this was an SNMP poll command, process the metric results
     if (command.type === 'snmp_poll') {
       try {
+        const payload = command.payload as Record<string, unknown> | null;
+        const expectedDeviceId = typeof payload?.deviceId === 'string' ? payload.deviceId : null;
         const snmpData = result.result as {
           deviceId?: string;
           metrics?: SnmpMetricResult[];
         } | undefined;
 
         if (snmpData?.deviceId && snmpData.metrics && snmpData.metrics.length > 0) {
+          if (!expectedDeviceId || snmpData.deviceId !== expectedDeviceId) {
+            console.warn(
+              `[AgentWs] Rejecting mismatched SNMP result ${result.commandId} from agent ${agentId}: ` +
+              `sentDevice=${snmpData.deviceId} expected=${expectedDeviceId ?? 'none'}`
+            );
+            return;
+          }
           if (isRedisAvailable()) {
-            await enqueueSnmpPollResults(snmpData.deviceId, snmpData.metrics);
+            await enqueueSnmpPollResults(expectedDeviceId, snmpData.metrics);
           } else {
             // Redis not available — log warning about dropped metrics and mark status
-            console.warn(`[AgentWs] Redis unavailable, dropping ${snmpData.metrics.length} SNMP metrics for device ${snmpData.deviceId}`);
+            console.warn(`[AgentWs] Redis unavailable, dropping ${snmpData.metrics.length} SNMP metrics for device ${expectedDeviceId}`);
             const { snmpDevices } = await import('../db/schema');
             await db
               .update(snmpDevices)
               .set({ lastPolled: new Date(), lastStatus: 'warning' })
-              .where(eq(snmpDevices.id, snmpData.deviceId));
+              .where(eq(snmpDevices.id, expectedDeviceId));
           }
         }
       } catch (err) {
@@ -876,6 +980,11 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             console.warn(`[AgentWs] Dropping terminal_output with oversized sessionId from agent ${agentId}`);
             return;
           }
+          const termSession = getActiveTerminalSession(message.sessionId);
+          if (!termSession || termSession.agentId !== agentId) {
+            console.warn(`[AgentWs] Dropping terminal_output for unowned session ${message.sessionId} from agent ${agentId}`);
+            return;
+          }
           handleTerminalOutput(message.sessionId, message.data);
           return;
         }
@@ -895,7 +1004,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             const termSessionId = parts.length >= 3 ? parts.slice(2).join('-') : null;
             if (termSessionId) {
               const termSession = getActiveTerminalSession(termSessionId);
-              if (termSession) {
+              if (termSession && termSession.agentId === agentId) {
                 const errorDetail = typeof message.error === 'string' ? message.error : 'Unknown error';
                 try {
                   termSession.userWs.send(JSON.stringify({
@@ -1262,6 +1371,7 @@ export function sendCommandToAgent(agentId: string, command: AgentCommand): bool
     const json = JSON.stringify(command);
     // Send command directly - agent expects {id, type, payload} at top level
     ws.send(json);
+    recordOrphanedResultExpectation(agentId, command);
     return true;
   } catch (error) {
     console.error(`Failed to send command to agent ${agentId.slice(0,12)}:`, error);

@@ -42,6 +42,14 @@ func NewS3Provider(bucket, region, accessKeyID, secretAccessKey, sessionToken st
 
 // Upload sends a local file to S3.
 func (s *S3Provider) Upload(localPath, remotePath string) error {
+	return s.UploadContext(context.Background(), localPath, remotePath)
+}
+
+// UploadContext sends a local file to S3 with cancellation support.
+func (s *S3Provider) UploadContext(ctx context.Context, localPath, remotePath string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if s.Bucket == "" || s.Region == "" {
 		return errors.New("s3 bucket and region are required")
 	}
@@ -68,7 +76,6 @@ func (s *S3Provider) Upload(localPath, remotePath string) error {
 		return fmt.Errorf("failed to stat source file: %w", err)
 	}
 
-	ctx := context.Background()
 	input := &s3.PutObjectInput{
 		Bucket: aws.String(s.Bucket),
 		Key:    aws.String(remotePath),

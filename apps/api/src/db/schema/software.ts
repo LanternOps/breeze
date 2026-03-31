@@ -9,8 +9,10 @@ import {
   integer,
   bigint,
   date,
-  index
+  index,
+  uniqueIndex
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { organizations } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
@@ -57,7 +59,10 @@ export const softwareVersions = pgTable('software_versions', {
 }, (table) => ({
   catalogIdx: index('software_versions_catalog_id_idx').on(table.catalogId),
   catalogVersionIdx: index('software_versions_catalog_version_idx').on(table.catalogId, table.version),
-  latestIdx: index('software_versions_latest_idx').on(table.catalogId, table.isLatest)
+  latestIdx: index('software_versions_latest_idx').on(table.catalogId, table.isLatest),
+  latestUniqueIdx: uniqueIndex('software_versions_one_latest_per_catalog_idx')
+    .on(table.catalogId)
+    .where(sql`${table.isLatest} = true`)
 }));
 
 export const softwareDeployments = pgTable('software_deployments', {

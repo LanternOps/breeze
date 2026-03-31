@@ -5,11 +5,14 @@ import { eq, and, or, lte, gte, inArray, desc, asc, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { maintenanceWindows, maintenanceOccurrences } from '../db/schema/maintenance';
 import { devices } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { isDeviceInMaintenance } from '../services/maintenanceService';
+import { PERMISSIONS } from '../services/permissions';
 
 export const maintenanceRoutes = new Hono();
+const requireMaintenanceRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
+const requireMaintenanceWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
 
 // Helper functions
 async function canAccessOrg(
@@ -233,6 +236,7 @@ maintenanceRoutes.use('*', authMiddleware);
 maintenanceRoutes.get(
   '/device/:deviceId/status',
   requireScope('organization', 'partner', 'system'),
+  requireMaintenanceRead,
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('deviceId')!;
@@ -271,6 +275,7 @@ maintenanceRoutes.get(
 maintenanceRoutes.get(
   '/windows',
   requireScope('organization', 'partner', 'system'),
+  requireMaintenanceRead,
   zValidator('query', listWindowsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -311,6 +316,8 @@ maintenanceRoutes.get(
 maintenanceRoutes.post(
   '/windows',
   requireScope('organization', 'partner', 'system'),
+  requireMaintenanceWrite,
+  requireMfa(),
   zValidator('json', createWindowSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -389,6 +396,7 @@ maintenanceRoutes.post(
 maintenanceRoutes.get(
   '/windows/:id',
   requireScope('organization', 'partner', 'system'),
+  requireMaintenanceRead,
   async (c) => {
     const auth = c.get('auth');
     const windowId = c.req.param('id')!;
@@ -426,6 +434,8 @@ maintenanceRoutes.get(
 maintenanceRoutes.patch(
   '/windows/:id',
   requireScope('organization', 'partner', 'system'),
+  requireMaintenanceWrite,
+  requireMfa(),
   zValidator('json', updateWindowSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -499,6 +509,8 @@ maintenanceRoutes.patch(
 maintenanceRoutes.delete(
   '/windows/:id',
   requireScope('organization', 'partner', 'system'),
+  requireMaintenanceWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const windowId = c.req.param('id')!;
@@ -544,6 +556,8 @@ maintenanceRoutes.delete(
 maintenanceRoutes.post(
   '/windows/:id/cancel',
   requireScope('organization', 'partner', 'system'),
+  requireMaintenanceWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const windowId = c.req.param('id')!;
@@ -603,6 +617,7 @@ maintenanceRoutes.post(
 maintenanceRoutes.get(
   '/windows/:id/occurrences',
   requireScope('organization', 'partner', 'system'),
+  requireMaintenanceRead,
   async (c) => {
     const auth = c.get('auth');
     const windowId = c.req.param('id')!;
@@ -631,6 +646,7 @@ maintenanceRoutes.get(
 maintenanceRoutes.get(
   '/occurrences',
   requireScope('organization', 'partner', 'system'),
+  requireMaintenanceRead,
   zValidator('query', listOccurrencesSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -696,6 +712,8 @@ maintenanceRoutes.get(
 maintenanceRoutes.patch(
   '/occurrences/:id',
   requireScope('organization', 'partner', 'system'),
+  requireMaintenanceWrite,
+  requireMfa(),
   zValidator('json', updateOccurrenceSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -771,6 +789,8 @@ maintenanceRoutes.patch(
 maintenanceRoutes.post(
   '/occurrences/:id/start',
   requireScope('organization', 'partner', 'system'),
+  requireMaintenanceWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const occurrenceId = c.req.param('id')!;
@@ -827,6 +847,8 @@ maintenanceRoutes.post(
 maintenanceRoutes.post(
   '/occurrences/:id/end',
   requireScope('organization', 'partner', 'system'),
+  requireMaintenanceWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const occurrenceId = c.req.param('id')!;
@@ -881,6 +903,7 @@ maintenanceRoutes.post(
 maintenanceRoutes.get(
   '/active',
   requireScope('organization', 'partner', 'system'),
+  requireMaintenanceRead,
   zValidator('query', activeWindowsSchema),
   async (c) => {
     const auth = c.get('auth');

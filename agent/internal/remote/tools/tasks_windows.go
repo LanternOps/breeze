@@ -13,27 +13,29 @@ import (
 	"time"
 )
 
-// listTasksPS outputs one task per line. Each line has fields separated by
+// listTasksScript outputs one task per line. Each line has fields separated by
 // the unit separator character (0x1F). String fields that might contain
 // special characters (name, author, description) are base64-encoded.
 // This completely avoids PowerShell JSON serialization bugs (PS 5.1
 // fails to escape double quotes in certain CIM string properties).
 //
 // Fields per line (0x1F-separated):
-//   0: name (base64)
-//   1: full path = TaskPath+TaskName (base64)
-//   2: folder (base64)
-//   3: status (lowercase: ready/running/disabled/queued)
-//   4: author (base64)
-//   5: description (base64)
-//   6: lastRun (ISO 8601 or empty)
-//   7: nextRun (ISO 8601 or empty)
-//   8: lastResult (int or empty)
-//   9: triggers (pipe-separated base64 strings, may be empty)
-const listTasksPS = `$ErrorActionPreference='SilentlyContinue'
+//
+//	0: name (base64)
+//	1: full path = TaskPath+TaskName (base64)
+//	2: folder (base64)
+//	3: status (lowercase: ready/running/disabled/queued)
+//	4: author (base64)
+//	5: description (base64)
+//	6: lastRun (ISO 8601 or empty)
+//	7: nextRun (ISO 8601 or empty)
+//	8: lastResult (int or empty)
+//	9: triggers (pipe-separated base64 strings, may be empty)
+func listTasksScript(maxTasks int) string {
+	return fmt.Sprintf(`$ErrorActionPreference='SilentlyContinue'
 $U=[char]31
 function B($s){[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$s))}
-$tasks=@(Get-ScheduledTask)
+$tasks=@(Get-ScheduledTask | Select-Object -First %d)
 $im=@{}
 $tasks|Get-ScheduledTaskInfo|ForEach-Object{$im[$_.TaskPath+$_.TaskName]=$_}
 foreach($t in $tasks){
@@ -64,7 +66,8 @@ foreach($t in $tasks){
   })
   $trigB64=($trigs|ForEach-Object{B $_})-join'|'
   Write-Output ((B $t.TaskName)+$U+(B($t.TaskPath+$t.TaskName))+$U+(B $f)+$U+$t.State.ToString().ToLower()+$U+(B $t.Author)+$U+(B $t.Description)+$U+$lr+$U+$nr+$U+$res+$U+$trigB64)
-}`
+}`, maxTasks)
+}
 
 func decB64(s string) string {
 	if s == "" {
@@ -122,7 +125,7 @@ func parseTSVTasks(output string) []ScheduledTask {
 }
 
 func listTasksOS(folder, search string, page, limit int, startTime time.Time) CommandResult {
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", listTasksPS)
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", listTasksScript(maxTaskListEntries+1))
 	output, err := cmd.Output()
 	if err != nil {
 		errMsg := fmt.Sprintf("failed to list tasks: %v", err)
@@ -132,7 +135,7 @@ func listTasksOS(folder, search string, page, limit int, startTime time.Time) Co
 		return NewErrorResult(fmt.Errorf("%s", errMsg), time.Since(startTime).Milliseconds())
 	}
 
-	allTasks := parseTSVTasks(string(output))
+	allTasks, truncated := sanitizeScheduledTasks(parseTSVTasks(string(output)))
 	if len(allTasks) == 0 {
 		slog.Warn("scheduled tasks query returned zero results; possible permissions issue or PowerShell error")
 	}
@@ -182,6 +185,7 @@ func listTasksOS(folder, search string, page, limit int, startTime time.Time) Co
 		Page:       page,
 		Limit:      limit,
 		TotalPages: totalPages,
+		Truncated:  truncated,
 	}
 
 	return NewSuccessResult(response, time.Since(startTime).Milliseconds())
@@ -286,13 +290,20 @@ $t.Actions|ForEach-Object{
 
 	// Build detail as map[string]any so the API normalizer gets
 	// structured triggers/actions.
+	name, _ := truncateStringBytes(decB64(fields[0]), maxTaskFieldBytes)
+	taskPath, _ := truncateStringBytes(decB64(fields[1]), maxRegistryPathBytes)
+	folder, _ := truncateStringBytes(decB64(fields[2]), maxRegistryPathBytes)
+	status, _ := truncateStringBytes(fields[3], maxTaskFieldBytes)
+	author, _ := truncateStringBytes(decB64(fields[4]), maxTaskFieldBytes)
+	description, _ := truncateStringBytes(decB64(fields[5]), maxTaskDescriptionBytes)
+
 	detail := map[string]any{
-		"name":        decB64(fields[0]),
-		"path":        decB64(fields[1]),
-		"folder":      decB64(fields[2]),
-		"status":      fields[3],
-		"author":      decB64(fields[4]),
-		"description": decB64(fields[5]),
+		"name":        name,
+		"path":        taskPath,
+		"folder":      folder,
+		"status":      status,
+		"author":      author,
+		"description": description,
 	}
 	if fields[6] != "" {
 		detail["lastRun"] = fields[6]
@@ -346,6 +357,8 @@ $t.Actions|ForEach-Object{
 	if actions == nil {
 		actions = []map[string]any{}
 	}
+	triggers, _ = sanitizeTaskDetailItems(triggers)
+	actions, _ = sanitizeTaskDetailItems(actions)
 	detail["triggers"] = triggers
 	detail["actions"] = actions
 
@@ -479,9 +492,11 @@ $history | ConvertTo-Json -Depth 4 -Compress`, escapedPath, limit)
 		history = []TaskHistoryEntry{single}
 	}
 
+	history, truncated := sanitizeTaskHistory(history)
 	return NewSuccessResult(TaskHistoryResponse{
-		History: history,
-		Path:    path,
-		Total:   len(history),
+		History:   history,
+		Path:      path,
+		Total:     len(history),
+		Truncated: truncated,
 	}, time.Since(startTime).Milliseconds())
 }

@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { eq, and, desc, asc } from 'drizzle-orm';
 import { db } from '../db';
 import { drPlans, drPlanGroups, drExecutions } from '../db/schema';
-import { authMiddleware } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import {
   drPlanCreateSchema,
@@ -14,8 +14,21 @@ import {
   drExecutionTriggerSchema,
   drExecutionsQuerySchema,
 } from './backup/schemas';
+import { PERMISSIONS } from '../services/permissions';
 
 export const drRoutes = new Hono();
+const requireDrRead = requirePermission(
+  PERMISSIONS.DEVICES_READ.resource,
+  PERMISSIONS.DEVICES_READ.action,
+);
+const requireDrWrite = requirePermission(
+  PERMISSIONS.DEVICES_WRITE.resource,
+  PERMISSIONS.DEVICES_WRITE.action,
+);
+const requireDrExecute = requirePermission(
+  PERMISSIONS.DEVICES_EXECUTE.resource,
+  PERMISSIONS.DEVICES_EXECUTE.action,
+);
 
 drRoutes.use('*', authMiddleware);
 
@@ -34,6 +47,8 @@ function resolveOrgId(auth: { orgId?: string | null; scope: string; accessibleOr
 
 drRoutes.post(
   '/plans',
+  requireDrWrite,
+  requireMfa(),
   zValidator('json', drPlanCreateSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -71,7 +86,7 @@ drRoutes.post(
   }
 );
 
-drRoutes.get('/plans', async (c) => {
+drRoutes.get('/plans', requireDrRead, async (c) => {
   const auth = c.get('auth');
   const orgId = resolveOrgId(auth);
   if (!orgId) return c.json({ error: 'orgId is required' }, 400);
@@ -87,6 +102,7 @@ drRoutes.get('/plans', async (c) => {
 
 drRoutes.get(
   '/plans/:id',
+  requireDrRead,
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -114,6 +130,8 @@ drRoutes.get(
 
 drRoutes.patch(
   '/plans/:id',
+  requireDrWrite,
+  requireMfa(),
   zValidator('param', idParamSchema),
   zValidator('json', drPlanUpdateSchema),
   async (c) => {
@@ -159,6 +177,8 @@ drRoutes.patch(
 
 drRoutes.delete(
   '/plans/:id',
+  requireDrWrite,
+  requireMfa(),
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -196,6 +216,8 @@ drRoutes.delete(
 
 drRoutes.post(
   '/plans/:id/groups',
+  requireDrWrite,
+  requireMfa(),
   zValidator('param', idParamSchema),
   zValidator('json', drGroupCreateSchema),
   async (c) => {
@@ -237,6 +259,8 @@ drRoutes.post(
 
 drRoutes.patch(
   '/plans/:id/groups/:gid',
+  requireDrWrite,
+  requireMfa(),
   zValidator('param', groupParamSchema),
   zValidator('json', drGroupUpdateSchema),
   async (c) => {
@@ -287,6 +311,8 @@ drRoutes.patch(
 
 drRoutes.delete(
   '/plans/:id/groups/:gid',
+  requireDrWrite,
+  requireMfa(),
   zValidator('param', groupParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -327,6 +353,8 @@ drRoutes.delete(
 
 drRoutes.post(
   '/plans/:id/execute',
+  requireDrExecute,
+  requireMfa(),
   zValidator('param', idParamSchema),
   zValidator('json', drExecutionTriggerSchema),
   async (c) => {
@@ -379,6 +407,7 @@ drRoutes.post(
 
 drRoutes.get(
   '/executions',
+  requireDrRead,
   zValidator('query', drExecutionsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -410,6 +439,7 @@ drRoutes.get(
 
 drRoutes.get(
   '/executions/:id',
+  requireDrRead,
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -452,6 +482,8 @@ drRoutes.get(
 
 drRoutes.post(
   '/executions/:id/abort',
+  requireDrExecute,
+  requireMfa(),
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');

@@ -2,8 +2,26 @@ package tools
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
+
+func validateServiceName(name string) (string, error) {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return "", fmt.Errorf("service name is required")
+	}
+	if trimmed != name {
+		return "", fmt.Errorf("service name must not include leading or trailing whitespace")
+	}
+	if _, truncated := truncateStringBytes(trimmed, maxServiceFieldBytes); truncated {
+		return "", fmt.Errorf("service name exceeds maximum length of %d bytes", maxServiceFieldBytes)
+	}
+	if strings.Contains(trimmed, "..") || strings.ContainsAny(trimmed, "/\\\x00\r\n\t ") {
+		return "", fmt.Errorf("service name contains invalid characters")
+	}
+	return trimmed, nil
+}
 
 // ListServices returns a list of system services
 // Platform-specific implementations are in services_*.go files
@@ -14,6 +32,8 @@ func ListServices(payload map[string]any) CommandResult {
 	limit := GetPayloadInt(payload, "limit", 50)
 	search := GetPayloadString(payload, "search", "")
 	status := GetPayloadString(payload, "status", "")
+	search, _ = truncateStringBytes(search, maxServiceFieldBytes)
+	status, _ = truncateStringBytes(status, maxServiceFieldBytes)
 
 	if page < 1 {
 		page = 1
@@ -26,6 +46,7 @@ func ListServices(payload map[string]any) CommandResult {
 	if err != nil {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
+	services, truncated := sanitizeServiceList(services)
 
 	// Paginate
 	total := len(services)
@@ -46,6 +67,7 @@ func ListServices(payload map[string]any) CommandResult {
 		Page:       page,
 		Limit:      limit,
 		TotalPages: totalPages,
+		Truncated:  truncated,
 	}
 
 	return NewSuccessResult(response, time.Since(startTime).Milliseconds())
@@ -56,16 +78,19 @@ func GetService(payload map[string]any) CommandResult {
 	startTime := time.Now()
 
 	name := GetPayloadString(payload, "name", "")
-	if name == "" {
-		return NewErrorResult(fmt.Errorf("service name is required"), time.Since(startTime).Milliseconds())
+	var err error
+	name, err = validateServiceName(name)
+	if err != nil {
+		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
 
 	service, err := getServiceOS(name)
 	if err != nil {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
+	serviceValue, _ := sanitizeServiceInfo(*service)
 
-	return NewSuccessResult(service, time.Since(startTime).Milliseconds())
+	return NewSuccessResult(serviceValue, time.Since(startTime).Milliseconds())
 }
 
 // StartService starts a stopped service
@@ -73,11 +98,13 @@ func StartService(payload map[string]any) CommandResult {
 	startTime := time.Now()
 
 	name := GetPayloadString(payload, "name", "")
-	if name == "" {
-		return NewErrorResult(fmt.Errorf("service name is required"), time.Since(startTime).Milliseconds())
+	var err error
+	name, err = validateServiceName(name)
+	if err != nil {
+		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
 
-	err := startServiceOS(name)
+	err = startServiceOS(name)
 	if err != nil {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
@@ -96,8 +123,10 @@ func StopService(payload map[string]any) CommandResult {
 	startTime := time.Now()
 
 	name := GetPayloadString(payload, "name", "")
-	if name == "" {
-		return NewErrorResult(fmt.Errorf("service name is required"), time.Since(startTime).Milliseconds())
+	var err error
+	name, err = validateServiceName(name)
+	if err != nil {
+		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
 
 	if isAgentService(name) {
@@ -107,7 +136,7 @@ func StopService(payload map[string]any) CommandResult {
 		)
 	}
 
-	err := stopServiceOS(name)
+	err = stopServiceOS(name)
 	if err != nil {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
@@ -126,15 +155,17 @@ func RestartService(payload map[string]any) CommandResult {
 	startTime := time.Now()
 
 	name := GetPayloadString(payload, "name", "")
-	if name == "" {
-		return NewErrorResult(fmt.Errorf("service name is required"), time.Since(startTime).Milliseconds())
+	var err error
+	name, err = validateServiceName(name)
+	if err != nil {
+		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
 
 	if isAgentService(name) {
 		return RestartAgentService(startTime)
 	}
 
-	err := restartServiceOS(name)
+	err = restartServiceOS(name)
 	if err != nil {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}

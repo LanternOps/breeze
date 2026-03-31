@@ -10,12 +10,12 @@
     "clean": "rm -rf dist .astro"
   },
   "dependencies": {
-    "@astrojs/node": "^9.5.4",
+    "@astrojs/node": "^10.0.4",
     "@astrojs/react": "^4.1.0",
     "@astrojs/tailwind": "^6.0.0",
     "@hookform/resolvers": "^5.2.2",
     "@tanstack/react-query": "^5.95.2",
-    "astro": "^5.18.0",
+    "astro": "^6.1.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.6.0",

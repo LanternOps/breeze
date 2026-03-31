@@ -282,7 +282,7 @@ async function processExecuteDevice(data: ExecutePatchJobDeviceData): Promise<un
     const [ring] = await db
       .select({ deferralDays: patchPolicies.deferralDays })
       .from(patchPolicies)
-      .where(eq(patchPolicies.id, ringConfig.ringId))
+      .where(and(eq(patchPolicies.id, ringConfig.ringId), eq(patchPolicies.kind, 'ring')))
       .limit(1);
     if (ring) {
       ringConfig.deferralDays = ring.deferralDays;

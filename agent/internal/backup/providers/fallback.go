@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -21,8 +22,18 @@ func NewFallbackProvider(providers ...BackupProvider) *FallbackProvider {
 
 // Upload sends the file to the FIRST (primary) provider only.
 func (f *FallbackProvider) Upload(localPath, remotePath string) error {
+	return f.UploadContext(context.Background(), localPath, remotePath)
+}
+
+// UploadContext sends the file to the FIRST (primary) provider only.
+func (f *FallbackProvider) UploadContext(ctx context.Context, localPath, remotePath string) error {
 	if len(f.providers) == 0 {
 		return errors.New("fallback provider has no configured providers")
+	}
+	if uploader, ok := f.providers[0].(interface {
+		UploadContext(context.Context, string, string) error
+	}); ok {
+		return uploader.UploadContext(ctx, localPath, remotePath)
 	}
 	return f.providers[0].Upload(localPath, remotePath)
 }

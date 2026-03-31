@@ -9,9 +9,10 @@ import {
   incidents,
   type IncidentTimelineEntry,
 } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { publishEvent } from '../services/eventBus';
 import { writeRouteAudit } from '../services/auditEvents';
+import { PERMISSIONS } from '../services/permissions';
 import {
   createIncidentSchema,
   listIncidentsSchema,
@@ -29,12 +30,16 @@ import {
 import { incidentActionRoutes } from './incidentActions';
 
 export const incidentRoutes = new Hono();
+const requireIncidentRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
+const requireIncidentWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
 
 incidentRoutes.use('*', authMiddleware);
 
 incidentRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requireIncidentWrite,
+  requireMfa(),
   zValidator('json', createIncidentSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -129,6 +134,7 @@ incidentRoutes.post(
 incidentRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requireIncidentRead,
   zValidator('query', listIncidentsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -199,6 +205,7 @@ incidentRoutes.get(
 incidentRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireIncidentRead,
   zValidator('param', uuidParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -234,6 +241,8 @@ incidentRoutes.get(
 incidentRoutes.post(
   '/:id/close',
   requireScope('organization', 'partner', 'system'),
+  requireIncidentWrite,
+  requireMfa(),
   zValidator('param', uuidParamSchema),
   zValidator('json', closeIncidentSchema),
   async (c) => {
@@ -336,6 +345,7 @@ incidentRoutes.post(
 incidentRoutes.get(
   '/:id/report',
   requireScope('organization', 'partner', 'system'),
+  requireIncidentRead,
   zValidator('param', uuidParamSchema),
   async (c) => {
     const auth = c.get('auth');

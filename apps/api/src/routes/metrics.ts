@@ -11,14 +11,16 @@ import { createHash, timingSafeEqual } from 'crypto';
 
 import { db } from '../db';
 import { deviceMetrics, devices, remoteSessions } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
+import { PERMISSIONS } from '../services/permissions';
 import {
   getS1MetricsSnapshot,
   setS1MetricsRecorder
 } from '../services/sentinelOne/metrics';
 
 export const metricsRoutes = new Hono();
+const requireMetricsRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
 const rawMetricsScrapeToken = process.env.METRICS_SCRAPE_TOKEN?.trim();
 // Production hardening: refuse to run with obvious placeholder tokens.
 const METRICS_SCRAPE_TOKEN =
@@ -396,7 +398,7 @@ async function metricsResponse(c: any): Promise<Response> {
   });
 }
 
-metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', 'system'), async (c) => {
+metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', 'system'), requireMetricsRead, async (c) => {
   const auth = c.get('auth');
   const orgCondition =
     typeof auth?.orgCondition === 'function'
@@ -469,7 +471,7 @@ metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', '
   }
 });
 
-metricsRoutes.get('/trends', authMiddleware, requireScope('organization', 'partner', 'system'), async (c) => {
+metricsRoutes.get('/trends', authMiddleware, requireScope('organization', 'partner', 'system'), requireMetricsRead, async (c) => {
   const auth = c.get('auth');
   const orgCondition =
     typeof auth?.orgCondition === 'function'

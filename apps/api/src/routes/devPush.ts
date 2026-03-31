@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context, type Next } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { randomUUID, createHash } from 'crypto';
 import { createReadStream, createWriteStream } from 'fs';
@@ -8,10 +8,11 @@ import { tmpdir } from 'os';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { devices } from '../db/schema';
-import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
-import { apiKeyAuthMiddleware } from '../middleware/apiKeyAuth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
 import { getDeviceWithOrgCheck } from './devices/helpers';
 import { sendCommandToAgent, type AgentCommand } from './agentWs';
+import { PERMISSIONS } from '../services/permissions';
 
 const TEMP_DIR = join(tmpdir(), 'breeze-dev-push');
 const TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -57,13 +58,19 @@ devPushRoutes.use('*', async (c, next) => {
 const MAX_BINARY_SIZE = 100 * 1024 * 1024; // 100MB
 
 // Auth middleware that accepts JWT (Authorization: Bearer) or API key (X-API-Key)
-async function devPushAuth(c: any, next: any) {
+async function devPushAuth(c: Context, next: Next) {
   const apiKeyHeader = c.req.header('X-API-Key');
   if (apiKeyHeader) {
-    return apiKeyAuthMiddleware(c, next);
+    return apiKeyAuthMiddleware(c, async () => {
+      await requireApiKeyScope('devices:execute')(c, next);
+    });
   }
   return authMiddleware(c, async () => {
-    await requireScope('organization', 'partner', 'system')(c, next);
+    await requireScope('organization', 'partner', 'system')(c, async () => {
+      await requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action)(c, async () => {
+        await requireMfa()(c, next);
+      });
+    });
   });
 }
 

@@ -25,6 +25,7 @@ type Session struct {
 	mu       sync.Mutex
 	closed   bool
 	waitOnce sync.Once // ensures cmd.Wait() is called exactly once
+	endOnce  sync.Once // ensures terminal close callback runs once
 	onOutput func(data []byte)
 	onClose  func(err error)
 }
@@ -63,15 +64,21 @@ func (m *Manager) StartSession(id string, cols, rows uint16, shell string, onOut
 		Rows:     rows,
 		Shell:    shell,
 		onOutput: onOutput,
-		onClose:  onClose,
 	}
-
-	// Start the PTY (platform-specific)
-	if err := session.start(); err != nil {
-		return fmt.Errorf("failed to start PTY: %w", err)
+	session.onClose = func(err error) {
+		m.removeSessionIfCurrent(id, session)
+		if onClose != nil {
+			onClose(err)
+		}
 	}
 
 	m.sessions[id] = session
+
+	// Start the PTY (platform-specific)
+	if err := session.start(); err != nil {
+		delete(m.sessions, id)
+		return fmt.Errorf("failed to start PTY: %w", err)
+	}
 	log.Info("session started", "sessionId", id, "shell", shell, "cols", cols, "rows", rows)
 
 	return nil
@@ -147,6 +154,17 @@ func (m *Manager) CloseAll() {
 	for _, s := range sessions {
 		s.close()
 	}
+}
+
+func (m *Manager) removeSessionIfCurrent(id string, target *Session) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	current, exists := m.sessions[id]
+	if !exists || current != target {
+		return
+	}
+	delete(m.sessions, id)
 }
 
 // write writes data to the session's PTY or stdin pipe
@@ -228,6 +246,14 @@ func (s *Session) waitCmd() error {
 	return err
 }
 
+func (s *Session) notifyClosed(err error) {
+	s.endOnce.Do(func() {
+		if s.onClose != nil {
+			s.onClose(err)
+		}
+	})
+}
+
 // readLoop reads output from the PTY and sends it to the callback
 func (s *Session) readLoop() {
 	log.Info("readLoop started", "sessionId", s.ID)
@@ -242,9 +268,7 @@ func (s *Session) readLoop() {
 			} else {
 				log.Info("readLoop EOF", "sessionId", s.ID)
 			}
-			if s.onClose != nil {
-				s.onClose(err)
-			}
+			s.notifyClosed(err)
 			return
 		}
 

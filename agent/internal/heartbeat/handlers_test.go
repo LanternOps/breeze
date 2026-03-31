@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"testing"
 
+	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
 
@@ -138,5 +139,31 @@ func TestDispatchUnknownCommandReturnsFalse(t *testing.T) {
 	})
 	if handled {
 		t.Fatal("dispatchCommand should return false for unknown command type")
+	}
+}
+
+func TestHandleDesktopStreamStartPassesDisplayIndex(t *testing.T) {
+	var gotDisplayIndex int
+	h := &Heartbeat{
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error) {
+			gotDisplayIndex = displayIndex
+			return 1920, 1080, nil
+		},
+	}
+
+	result := handleDesktopStreamStart(h, Command{
+		ID:   "desktop-stream-1",
+		Type: tools.CmdDesktopStreamStart,
+		Payload: map[string]any{
+			"sessionId":    "ws-1",
+			"displayIndex": float64(2),
+		},
+	})
+
+	if result.Status != "completed" {
+		t.Fatalf("expected completed, got %s (%s)", result.Status, result.Error)
+	}
+	if gotDisplayIndex != 2 {
+		t.Fatalf("displayIndex = %d, want 2", gotDisplayIndex)
 	}
 }

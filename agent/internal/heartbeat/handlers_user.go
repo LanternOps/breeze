@@ -7,6 +7,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
 // Command type constants for user helper operations.
@@ -47,13 +48,11 @@ func handleNotifyUser(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 
 	// Find a connected user helper session
-	var session = h.sessionBroker.SessionForUser(username)
-	if session == nil {
-		// Try first available session if no username specified
-		sessions := h.sessionBroker.AllSessions()
-		if len(sessions) > 0 && username == "" {
-			session = h.sessionBroker.SessionForIdentity(sessions[0].IdentityKey)
-		}
+	var session *sessionbroker.Session
+	if username != "" {
+		session = h.sessionBroker.SessionForUser(username)
+	} else {
+		session = h.sessionBroker.PreferredSessionWithScope("notify")
 	}
 	if session == nil {
 		return tools.CommandResult{
@@ -146,20 +145,13 @@ func handleTrayUpdate(h *Heartbeat, cmd Command) tools.CommandResult {
 		MenuItems: menuItems,
 	}
 
-	sessions := h.sessionBroker.AllSessions()
+	sessions := h.sessionBroker.SessionsWithScope("tray")
 	sent := 0
-	for _, info := range sessions {
-		session := h.sessionBroker.SessionForIdentity(info.IdentityKey)
-		if session != nil {
-			if !session.HasScope("tray") {
-				log.Warn("session lacks tray scope, skipping", "identity", info.IdentityKey)
-				continue
-			}
-			if err := session.SendNotify(cmd.ID, ipc.TypeTrayUpdate, update); err != nil {
-				log.Warn("tray update failed for session", "uid", info.UID, "error", err.Error())
-			} else {
-				sent++
-			}
+	for _, session := range sessions {
+		if err := session.SendNotify(cmd.ID, ipc.TypeTrayUpdate, update); err != nil {
+			log.Warn("tray update failed for session", "uid", session.UID, "error", err.Error())
+		} else {
+			sent++
 		}
 	}
 

@@ -20,13 +20,15 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../services/remoteSessionAuth', () => ({
+  createWsTicket: vi.fn(),
   consumeWsTicket: vi.fn(),
   consumeDesktopConnectCode: vi.fn(),
   getViewerAccessTokenExpirySeconds: vi.fn(() => 900)
 }));
 
 vi.mock('../services/jwt', () => ({
-  createAccessToken: vi.fn(async () => 'mock-access-token-xyz')
+  createViewerAccessToken: vi.fn(async () => 'mock-access-token-xyz'),
+  verifyViewerAccessToken: vi.fn()
 }));
 
 vi.mock('./agentWs', () => ({
@@ -39,7 +41,7 @@ vi.mock('./agentWs', () => ({
 // -------------------------------------------------------------------
 import { db } from '../db';
 import { consumeWsTicket, consumeDesktopConnectCode, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
-import { createAccessToken } from '../services/jwt';
+import { createViewerAccessToken } from '../services/jwt';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import {
   handleDesktopFrame,
@@ -271,7 +273,7 @@ describe('desktopWs', () => {
       vi.mocked(consumeDesktopConnectCode).mockResolvedValue({
         sessionId: 'other-session',
         userId: 'user-1',
-        tokenPayload: { sub: 'user-1', email: 'test@example.com', roleId: 'r1', orgId: 'org-1', partnerId: null, scope: 'organization', mfa: true },
+        email: 'test@example.com',
         expiresAt: Date.now() + 60_000
       });
 
@@ -290,7 +292,7 @@ describe('desktopWs', () => {
       vi.mocked(consumeDesktopConnectCode).mockResolvedValue({
         sessionId: SESSION_ID,
         userId,
-        tokenPayload: { sub: userId, email: 'test@example.com', roleId: 'r1', orgId: 'org-1', partnerId: null, scope: 'organization', mfa: true },
+        email: 'test@example.com',
         expiresAt: Date.now() + 60_000
       });
 
@@ -316,7 +318,7 @@ describe('desktopWs', () => {
       vi.mocked(consumeDesktopConnectCode).mockResolvedValue({
         sessionId: SESSION_ID,
         userId,
-        tokenPayload: { sub: userId, email: 'test@example.com', roleId: 'r1', orgId: 'org-1', partnerId: null, scope: 'organization', mfa: true },
+        email: 'test@example.com',
         expiresAt: Date.now() + 60_000
       });
 
@@ -344,7 +346,7 @@ describe('desktopWs', () => {
       vi.mocked(consumeDesktopConnectCode).mockResolvedValue({
         sessionId: SESSION_ID,
         userId,
-        tokenPayload: { sub: userId, email: 'test@example.com', roleId: 'r1', orgId: 'org-1', partnerId: null, scope: 'organization', mfa: true },
+        email: 'test@example.com',
         expiresAt: Date.now() + 60_000
       });
 
@@ -355,7 +357,7 @@ describe('desktopWs', () => {
         status: 'pending'
       }]));
 
-      vi.mocked(createAccessToken).mockResolvedValue('mock-access-token-xyz');
+      vi.mocked(createViewerAccessToken).mockResolvedValue('mock-access-token-xyz');
       vi.mocked(getViewerAccessTokenExpirySeconds).mockReturnValue(900);
 
       const app = buildApp();
@@ -376,7 +378,7 @@ describe('desktopWs', () => {
       vi.mocked(consumeDesktopConnectCode).mockResolvedValue({
         sessionId: SESSION_ID,
         userId,
-        tokenPayload: { sub: userId, email: 'test@example.com', roleId: 'r1', orgId: 'org-1', partnerId: null, scope: 'organization', mfa: true },
+        email: 'test@example.com',
         expiresAt: Date.now() + 60_000
       });
 
@@ -387,7 +389,7 @@ describe('desktopWs', () => {
         status: 'pending'
       }]));
 
-      vi.mocked(createAccessToken).mockResolvedValue('first-token');
+      vi.mocked(createViewerAccessToken).mockResolvedValue('first-token');
       vi.mocked(getViewerAccessTokenExpirySeconds).mockReturnValue(900);
 
       const app = buildApp();

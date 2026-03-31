@@ -4,8 +4,10 @@ import { zValidator } from '@hono/zod-validator';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, hypervVms } from '../../db/schema';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import {
   hypervBackupSchema,
@@ -42,7 +44,7 @@ async function verifyDevice(deviceId: string, orgId: string) {
 
 // ── GET /hyperv/vms — List all Hyper-V VMs (org-wide) ──────────────
 
-hypervRoutes.get('/vms', async (c) => {
+hypervRoutes.get('/vms', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -74,6 +76,7 @@ hypervRoutes.get('/vms', async (c) => {
 
 hypervRoutes.get(
   '/vms/:deviceId',
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   zValidator('param', deviceIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -104,6 +107,9 @@ hypervRoutes.get(
 
 hypervRoutes.post(
   '/discover/:deviceId',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('param', deviceIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -201,6 +207,9 @@ hypervRoutes.post(
 
 hypervRoutes.post(
   '/backup',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('json', hypervBackupSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -258,6 +267,9 @@ hypervRoutes.post(
 
 hypervRoutes.post(
   '/restore',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('json', hypervRestoreSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -315,6 +327,9 @@ hypervRoutes.post(
 
 hypervRoutes.post(
   '/checkpoints/:deviceId/:vmId',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('param', vmIdParamSchema),
   zValidator('json', hypervCheckpointSchema),
   async (c) => {
@@ -393,6 +408,9 @@ hypervRoutes.post(
 
 hypervRoutes.post(
   '/vm-state/:deviceId/:vmId',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('param', vmIdParamSchema),
   zValidator('json', hypervVmStateSchema),
   async (c) => {

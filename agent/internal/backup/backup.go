@@ -24,7 +24,10 @@ const (
 	jobStatusCompleted = "completed"
 	jobStatusFailed    = "failed"
 	jobStatusSkipped   = "skipped"
+	jobStatusStopped   = "stopped"
 )
+
+var errBackupStopped = errors.New("backup stopped")
 
 // BackupConfig defines backup configuration settings.
 type BackupConfig struct {
@@ -39,16 +42,16 @@ type BackupConfig struct {
 
 // BackupJob tracks the state of a backup run.
 type BackupJob struct {
-	ID                   string
-	StartedAt            time.Time
-	CompletedAt          time.Time
-	Snapshot             *Snapshot
-	FilesBackedUp        int
-	BytesBackedUp        int64
-	Status               string
-	Error                error
-	VSSMetadata          *vss.VSSMetadata                  // nil when VSS was not used
-	SystemStateManifest  *systemstate.SystemStateManifest  // nil when system state was not collected
+	ID                  string
+	StartedAt           time.Time
+	CompletedAt         time.Time
+	Snapshot            *Snapshot
+	FilesBackedUp       int
+	BytesBackedUp       int64
+	Status              string
+	Error               error
+	VSSMetadata         *vss.VSSMetadata                 // nil when VSS was not used
+	SystemStateManifest *systemstate.SystemStateManifest // nil when system state was not collected
 }
 
 // BackupManager orchestrates scheduled and on-demand backups.
@@ -57,6 +60,8 @@ type BackupManager struct {
 
 	mu               sync.Mutex
 	jobRunning       bool
+	jobCancel        context.CancelFunc
+	jobDoneCh        chan struct{}
 	schedulerRunning bool
 	stopCh           chan struct{}
 	doneCh           chan struct{}
@@ -100,31 +105,57 @@ func (m *BackupManager) Start() error {
 	m.schedulerRunning = true
 	m.stopCh = make(chan struct{})
 	m.doneCh = make(chan struct{})
+	stopCh := m.stopCh
+	doneCh := m.doneCh
 	m.mu.Unlock()
 
 	log.Printf("[backup] starting backup manager (schedule=%v)", m.config.Schedule)
-	go m.runScheduler()
+	go m.runScheduler(stopCh, doneCh)
 	return nil
 }
 
 // Stop stops scheduled backups.
-func (m *BackupManager) Stop() {
+func (m *BackupManager) Stop() bool {
 	m.mu.Lock()
-	if !m.schedulerRunning {
+	if !m.schedulerRunning && !m.jobRunning {
 		m.mu.Unlock()
-		return
+		return false
 	}
+	stopScheduler := m.schedulerRunning
 	stopCh := m.stopCh
 	doneCh := m.doneCh
+	jobCancel := m.jobCancel
+	jobDoneCh := m.jobDoneCh
 	m.schedulerRunning = false
-	m.stopCh = nil
-	m.doneCh = nil
 	m.mu.Unlock()
 
 	log.Printf("[backup] stopping backup manager")
-	close(stopCh)
-	<-doneCh
+	if jobCancel != nil {
+		jobCancel()
+	}
+	if stopScheduler && stopCh != nil {
+		close(stopCh)
+	}
+	if stopScheduler && doneCh != nil {
+		<-doneCh
+	}
+	if jobDoneCh != nil {
+		<-jobDoneCh
+	}
+	m.mu.Lock()
+	if m.stopCh == stopCh {
+		m.stopCh = nil
+	}
+	if m.doneCh == doneCh {
+		m.doneCh = nil
+	}
+	if m.jobDoneCh == jobDoneCh {
+		m.jobCancel = nil
+		m.jobDoneCh = nil
+	}
+	m.mu.Unlock()
 	log.Printf("[backup] backup manager stopped")
+	return true
 }
 
 // RunBackup triggers an immediate backup run.
@@ -142,9 +173,19 @@ func (m *BackupManager) RunBackup() (*BackupJob, error) {
 		return nil, errors.New("backup already running")
 	}
 	m.jobRunning = true
+	ctx, cancel := context.WithCancel(context.Background())
+	jobDoneCh := make(chan struct{})
+	m.jobCancel = cancel
+	m.jobDoneCh = jobDoneCh
 	m.mu.Unlock()
 	defer func() {
+		cancel()
+		close(jobDoneCh)
 		m.mu.Lock()
+		if m.jobDoneCh == jobDoneCh {
+			m.jobCancel = nil
+			m.jobDoneCh = nil
+		}
 		m.jobRunning = false
 		m.mu.Unlock()
 	}()
@@ -154,14 +195,24 @@ func (m *BackupManager) RunBackup() (*BackupJob, error) {
 		StartedAt: time.Now().UTC(),
 		Status:    jobStatusRunning,
 	}
+	backupPaths := append([]string(nil), m.config.Paths...)
+	stopBackupRun := func() (*BackupJob, error) {
+		job.Status = jobStatusStopped
+		job.CompletedAt = time.Now().UTC()
+		job.Error = errBackupStopped
+		return job, errBackupStopped
+	}
 
 	// VSS: create shadow copy on Windows for application-consistent backup
 	var vssSession *vss.VSSSession
 	if m.config.VSSEnabled && runtime.GOOS == "windows" {
+		if err := ctx.Err(); err != nil {
+			return stopBackupRun()
+		}
 		vssStart := time.Now()
 		provider := vss.NewProvider(vss.DefaultConfig())
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		session, vssErr := provider.CreateShadowCopy(ctx, extractVolumes(m.config.Paths))
+		vssCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		session, vssErr := provider.CreateShadowCopy(vssCtx, extractVolumes(m.config.Paths))
 		cancel()
 		if vssErr != nil {
 			log.Printf("[backup] VSS shadow copy failed, proceeding without VSS: %v", vssErr)
@@ -188,13 +239,16 @@ func (m *BackupManager) RunBackup() (*BackupJob, error) {
 
 	// System state collection: gather OS config, hardware profile, etc.
 	if m.config.SystemStateEnabled {
+		if err := ctx.Err(); err != nil {
+			return stopBackupRun()
+		}
 		manifest, stagingDir, ssErr := systemstate.CollectSystemState()
 		if ssErr != nil {
 			log.Printf("[backup] system state collection failed, proceeding without: %v", ssErr)
 		} else {
 			job.SystemStateManifest = manifest
 			// Append staging dir to backup paths so artifacts are included in snapshot
-			m.config.Paths = append(m.config.Paths, stagingDir)
+			backupPaths = append(backupPaths, stagingDir)
 			defer func() {
 				if removeErr := os.RemoveAll(stagingDir); removeErr != nil {
 					log.Printf("[backup] failed to clean up system state staging dir: %v", removeErr)
@@ -204,24 +258,35 @@ func (m *BackupManager) RunBackup() (*BackupJob, error) {
 	}
 
 	// Rewrite paths to shadow copy device paths when VSS is active
-	backupPaths := m.config.Paths
 	if vssSession != nil {
-		backupPaths = rewritePathsForVSS(m.config.Paths, vssSession.ShadowPaths)
+		backupPaths = rewritePathsForVSS(backupPaths, vssSession.ShadowPaths)
 	}
 
+	if err := ctx.Err(); err != nil {
+		return stopBackupRun()
+	}
 	cutoff := m.lastSnapshotTime
-	files, scanErr := m.collectBackupFilesFromPaths(backupPaths, cutoff)
+	files, scanErr := m.collectBackupFilesFromPaths(ctx, backupPaths, cutoff)
 	if scanErr != nil {
+		if errors.Is(scanErr, errBackupStopped) {
+			return stopBackupRun()
+		}
 		log.Printf("[backup] backup file scan completed with errors: %v", scanErr)
 	}
 	if len(files) == 0 {
+		if err := ctx.Err(); err != nil {
+			return stopBackupRun()
+		}
 		job.Status = jobStatusSkipped
 		job.CompletedAt = time.Now().UTC()
 		job.Error = scanErr
 		return job, scanErr
 	}
 
-	snapshot, snapErr := CreateSnapshot(m.config.Provider, files)
+	snapshot, snapErr := CreateSnapshotContext(ctx, m.config.Provider, files)
+	if errors.Is(snapErr, errBackupStopped) {
+		return stopBackupRun()
+	}
 	job.CompletedAt = time.Now().UTC()
 	job.Snapshot = snapshot
 	if snapshot != nil {
@@ -230,9 +295,15 @@ func (m *BackupManager) RunBackup() (*BackupJob, error) {
 	}
 
 	retentionErr := error(nil)
+	if err := ctx.Err(); err != nil {
+		return stopBackupRun()
+	}
 	if snapshot != nil && m.config.Retention > 0 {
-		retentionErr = DeleteSnapshot(m.config.Provider, m.config.Retention)
+		retentionErr = DeleteSnapshotContext(ctx, m.config.Provider, m.config.Retention)
 		if retentionErr != nil {
+			if errors.Is(retentionErr, errBackupStopped) {
+				return stopBackupRun()
+			}
 			log.Printf("[backup] failed to enforce snapshot retention: %v", retentionErr)
 		}
 	}
@@ -241,6 +312,9 @@ func (m *BackupManager) RunBackup() (*BackupJob, error) {
 		m.lastSnapshotTime = snapshot.Timestamp
 	}
 	if snapErr != nil {
+		if errors.Is(snapErr, errBackupStopped) {
+			return stopBackupRun()
+		}
 		combinedErr := errors.Join(scanErr, snapErr)
 		job.Status = jobStatusFailed
 		job.Error = combinedErr
@@ -252,8 +326,8 @@ func (m *BackupManager) RunBackup() (*BackupJob, error) {
 	return job, nil
 }
 
-func (m *BackupManager) runScheduler() {
-	defer close(m.doneCh)
+func (m *BackupManager) runScheduler(stopCh, doneCh chan struct{}) {
+	defer close(doneCh)
 	if _, err := m.RunBackup(); err != nil {
 		log.Printf("[backup] initial scheduled backup failed: %v", err)
 	}
@@ -263,7 +337,7 @@ func (m *BackupManager) runScheduler() {
 
 	for {
 		select {
-		case <-m.stopCh:
+		case <-stopCh:
 			return
 		case <-ticker.C:
 			if _, err := m.RunBackup(); err != nil {
@@ -281,15 +355,18 @@ type backupFile struct {
 }
 
 func (m *BackupManager) collectBackupFiles(cutoff time.Time) ([]backupFile, error) {
-	return m.collectBackupFilesFromPaths(m.config.Paths, cutoff)
+	return m.collectBackupFilesFromPaths(context.Background(), m.config.Paths, cutoff)
 }
 
-func (m *BackupManager) collectBackupFilesFromPaths(paths []string, cutoff time.Time) ([]backupFile, error) {
+func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths []string, cutoff time.Time) ([]backupFile, error) {
 	var files []backupFile
 	var errs []error
 	seen := make(map[string]struct{})
 
 	for idx, root := range paths {
+		if err := ctx.Err(); err != nil {
+			return files, errBackupStopped
+		}
 		if root == "" {
 			errs = append(errs, fmt.Errorf("backup path at index %d is empty", idx))
 			continue
@@ -323,6 +400,9 @@ func (m *BackupManager) collectBackupFilesFromPaths(paths []string, cutoff time.
 		}
 
 		err = filepath.WalkDir(cleanRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+			if err := ctx.Err(); err != nil {
+				return errBackupStopped
+			}
 			if walkErr != nil {
 				errs = append(errs, fmt.Errorf("walk error for %s: %w", path, walkErr))
 				return nil
@@ -361,6 +441,9 @@ func (m *BackupManager) collectBackupFilesFromPaths(paths []string, cutoff time.
 			return nil
 		})
 		if err != nil {
+			if errors.Is(err, errBackupStopped) {
+				return files, errBackupStopped
+			}
 			errs = append(errs, fmt.Errorf("backup walk failed for %s: %w", cleanRoot, err))
 		}
 	}

@@ -43,6 +43,14 @@ func NewB2Provider(keyID, appKey, bucketName string) (*B2Provider, error) {
 
 // Upload sends a local file to Backblaze B2.
 func (p *B2Provider) Upload(localPath, remotePath string) error {
+	return p.UploadContext(context.Background(), localPath, remotePath)
+}
+
+// UploadContext sends a local file to Backblaze B2 with cancellation support.
+func (p *B2Provider) UploadContext(ctx context.Context, localPath, remotePath string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if localPath == "" {
 		return errors.New("local source path is required")
 	}
@@ -66,7 +74,6 @@ func (p *B2Provider) Upload(localPath, remotePath string) error {
 		"object", remotePath,
 	)
 
-	ctx := context.Background()
 	obj := bucket.Object(remotePath)
 	writer := obj.NewWriter(ctx)
 

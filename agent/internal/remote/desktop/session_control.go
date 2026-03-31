@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+const (
+	maxInputMessageBytes   = 8 * 1024
+	maxControlMessageBytes = 32 * 1024
+)
+
 // verifySecureDesktopTransition checks whether the session moved to a secure
 // desktop shortly after a SAS request. This is a best-effort verification
 // signal for diagnostics; SendSAS itself is a void API and cannot confirm
@@ -34,6 +39,11 @@ func (s *Session) verifySecureDesktopTransition(timeout time.Duration) (supporte
 
 // handleInputMessage processes input events from the data channel
 func (s *Session) handleInputMessage(data []byte) {
+	if len(data) > maxInputMessageBytes {
+		slog.Warn("Rejected oversized input event", "session", s.id, "size", len(data))
+		return
+	}
+
 	var event InputEvent
 	if err := json.Unmarshal(data, &event); err != nil {
 		slog.Warn("Failed to parse input event", "session", s.id, "error", err.Error())
@@ -57,6 +67,11 @@ func (s *Session) handleInputMessage(data []byte) {
 
 // handleControlMessage processes control messages (bitrate, quality changes)
 func (s *Session) handleControlMessage(data []byte) {
+	if len(data) > maxControlMessageBytes {
+		slog.Warn("Rejected oversized control message", "session", s.id, "size", len(data))
+		return
+	}
+
 	var msg struct {
 		Type  string `json:"type"`
 		Value int    `json:"value"`

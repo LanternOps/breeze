@@ -1,6 +1,8 @@
 package backup
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -65,9 +67,14 @@ func RestoreFromSnapshot(provider providers.BackupProvider, cfg RestoreConfig, p
 		return result, nil
 	}
 
-	// 3. Create staging directory
-	stagingDir, err := os.MkdirTemp("", "breeze-restore-*")
+	// 3. Create or reuse a deterministic staging directory so partial restores
+	// can resume on a subsequent attempt.
+	stagingDir, err := restoreStagingDir(cfg)
 	if err != nil {
+		result.Status = "failed"
+		return result, fmt.Errorf("resolve staging dir: %w", err)
+	}
+	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
 		result.Status = "failed"
 		return result, fmt.Errorf("create staging dir: %w", err)
 	}
@@ -93,16 +100,20 @@ func RestoreFromSnapshot(provider providers.BackupProvider, cfg RestoreConfig, p
 	// 5. Restore each file
 	for i, file := range files {
 		current := int64(i + 1)
+		targetPath := resolveTargetPath(cfg.TargetPath, file.SourcePath)
 
 		// Skip already-completed files (resume)
 		if resumeState.CompletedFiles[file.BackupPath] {
-			result.FilesRestored++
-			result.BytesRestored += file.Size
-			if progressFn != nil {
-				progressFn("restoring", current, total,
-					fmt.Sprintf("skipped (resumed): %s", file.SourcePath))
+			if info, statErr := os.Stat(targetPath); statErr == nil && info.Size() == file.Size {
+				result.FilesRestored++
+				result.BytesRestored += file.Size
+				if progressFn != nil {
+					progressFn("restoring", current, total,
+						fmt.Sprintf("skipped (resumed): %s", file.SourcePath))
+				}
+				continue
 			}
-			continue
+			delete(resumeState.CompletedFiles, file.BackupPath)
 		}
 
 		// Download to staging
@@ -123,9 +134,6 @@ func RestoreFromSnapshot(provider providers.BackupProvider, cfg RestoreConfig, p
 				"backupPath", file.BackupPath, "error", dlErr.Error())
 			continue
 		}
-
-		// Determine target path
-		targetPath := resolveTargetPath(cfg.TargetPath, file.SourcePath)
 
 		// Path containment check
 		{
@@ -261,6 +269,23 @@ func resolveTargetPath(targetBase, sourcePath string) string {
 	// e.g., targetBase="/restore", sourcePath="path_0/reports/config.json"
 	// → "/restore/path_0/reports/config.json"
 	return filepath.Join(targetBase, sourcePath)
+}
+
+func restoreStagingDir(cfg RestoreConfig) (string, error) {
+	keyData, err := json.Marshal(struct {
+		TargetPath    string   `json:"targetPath"`
+		SelectedPaths []string `json:"selectedPaths"`
+	}{
+		TargetPath:    cfg.TargetPath,
+		SelectedPaths: cfg.SelectedPaths,
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode staging key: %w", err)
+	}
+
+	sum := sha256.Sum256(keyData)
+	stagingKey := hex.EncodeToString(sum[:8])
+	return filepath.Join(os.TempDir(), "breeze-restore-staging", cfg.SnapshotID, stagingKey), nil
 }
 
 // moveFile attempts os.Rename first (fast, same filesystem), then falls back

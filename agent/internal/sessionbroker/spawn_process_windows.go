@@ -5,6 +5,7 @@ package sessionbroker
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"unsafe"
 
@@ -21,6 +22,11 @@ import (
 // Uses cmd.exe as a wrapper because CreateProcessAsUser returns
 // "Access is denied" for Tauri binaries — likely SmartScreen/WDAC.
 func SpawnProcessInSession(binaryPath string, sessionID uint32) error {
+	return SpawnProcessInSessionWithArgs(binaryPath, nil, sessionID)
+}
+
+// SpawnProcessInSessionWithArgs launches a binary plus args in the specified Windows session.
+func SpawnProcessInSessionWithArgs(binaryPath string, args []string, sessionID uint32) error {
 	dupToken, envBlock, identity, err := acquireUserToken(sessionID)
 	if err != nil {
 		return err
@@ -30,7 +36,10 @@ func SpawnProcessInSession(binaryPath string, sessionID uint32) error {
 		defer windows.DestroyEnvironmentBlock(envBlock)
 	}
 
-	// Build command: cmd.exe /c start "" "path\to\binary.exe"
+	quoted := append([]string{fmt.Sprintf(`"%s"`, binaryPath)}, quoteWindowsArgs(args)...)
+	command := strings.Join(quoted, " ")
+
+	// Build command: cmd.exe /c start "" "path\to\binary.exe" [args...]
 	sysRoot := os.Getenv("SystemRoot")
 	if sysRoot == "" {
 		sysRoot = `C:\Windows`
@@ -43,7 +52,7 @@ func SpawnProcessInSession(binaryPath string, sessionID uint32) error {
 	}
 
 	cmdLine, err := windows.UTF16PtrFromString(
-		fmt.Sprintf(`"%s" /c start "" "%s"`, cmdExe, binaryPath),
+		fmt.Sprintf(`"%s" /c start "" %s`, cmdExe, command),
 	)
 	if err != nil {
 		return fmt.Errorf("UTF16PtrFromString cmdLine: %w", err)
@@ -69,7 +78,7 @@ func SpawnProcessInSession(binaryPath string, sessionID uint32) error {
 		false,
 		windows.CREATE_NO_WINDOW|windows.CREATE_UNICODE_ENVIRONMENT,
 		envBlock,
-		nil,
+		windows.StringToUTF16Ptr(filepath.Dir(binaryPath)),
 		&si,
 		&pi,
 	)
@@ -87,6 +96,57 @@ func SpawnProcessInSession(binaryPath string, sessionID uint32) error {
 		"identity", identity,
 	)
 	return nil
+}
+
+func quoteWindowsArgs(args []string) []string {
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		// 1. Escape cmd.exe metacharacters with ^ (must come first so the ^
+		//    we insert isn't itself re-escaped).
+		var buf strings.Builder
+		for i := 0; i < len(arg); i++ {
+			switch arg[i] {
+			case '&', '|', '<', '>', '^', '(', ')', '%':
+				buf.WriteByte('^')
+			}
+			buf.WriteByte(arg[i])
+		}
+		escaped := buf.String()
+
+		// 2. MSVCRT convention: backslashes immediately before a double-quote
+		//    must be doubled, then the quote itself is escaped with a backslash.
+		var out strings.Builder
+		for i := 0; i < len(escaped); i++ {
+			if escaped[i] == '"' {
+				// Count preceding backslashes in the source string
+				nbs := 0
+				for j := i - 1; j >= 0 && escaped[j] == '\\'; j-- {
+					nbs++
+				}
+				// Double existing backslashes before the quote
+				for k := 0; k < nbs; k++ {
+					out.WriteByte('\\')
+				}
+				out.WriteString(`\"`)
+			} else {
+				out.WriteByte(escaped[i])
+			}
+		}
+
+		// 3. Double trailing backslashes before the wrapping close-quote,
+		//    otherwise they would escape the closing " (e.g. C:\path\ → "C:\path\\").
+		result := out.String()
+		nbs := 0
+		for i := len(result) - 1; i >= 0 && result[i] == '\\'; i-- {
+			nbs++
+		}
+		for k := 0; k < nbs; k++ {
+			out.WriteByte('\\')
+		}
+
+		quoted = append(quoted, fmt.Sprintf(`"%s"`, out.String()))
+	}
+	return quoted
 }
 
 // acquireUserToken tries to get a user-identity token for the session.

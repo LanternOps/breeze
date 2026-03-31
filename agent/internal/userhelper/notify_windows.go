@@ -13,6 +13,7 @@ import (
 // showNotificationOS uses PowerShell toast notifications on Windows.
 // A production implementation would use WinRT Toast API directly.
 func showNotificationOS(req ipc.NotifyRequest) bool {
+	req = sanitizeNotifyRequest(req)
 	// XML-escape title and body to prevent injection
 	title := xmlEscape(req.Title)
 	body := xmlEscape(req.Body)
@@ -32,7 +33,7 @@ $doc.LoadXml($xml)
 $toast = [Windows.UI.Notifications.ToastNotification]::new($doc)
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("Breeze Agent").Show($toast)`
 
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", script, "-xml", toastXML)
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script, "-xml", toastXML)
 	if err := cmd.Run(); err != nil {
 		log.Warn("notification failed", "error", err)
 		return false

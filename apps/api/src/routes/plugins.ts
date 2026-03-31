@@ -2,12 +2,15 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { eq, and, ilike, sql, desc } from 'drizzle-orm';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { db } from '../db';
 import { pluginCatalog, pluginInstallations, pluginLogs } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
+import { PERMISSIONS } from '../services/permissions';
 
 export const pluginRoutes = new Hono();
+const requirePluginRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
+const requirePluginWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
 
 // Helper functions for org access
 async function canAccessOrg(
@@ -101,6 +104,8 @@ pluginRoutes.use('*', authMiddleware);
 // GET /catalog - List available plugins with filters
 pluginRoutes.get(
   '/catalog',
+  requireScope('organization', 'partner', 'system'),
+  requirePluginRead,
   zValidator('query', catalogQuerySchema),
   async (c) => {
     const query = c.req.valid('query');
@@ -173,7 +178,7 @@ pluginRoutes.get(
 );
 
 // GET /catalog/:slug - Get plugin details by slug
-pluginRoutes.get('/catalog/:slug', async (c) => {
+pluginRoutes.get('/catalog/:slug', requireScope('organization', 'partner', 'system'), requirePluginRead, async (c) => {
   const slug = c.req.param('slug')!;
 
   const [plugin] = await db
@@ -197,6 +202,7 @@ pluginRoutes.get('/catalog/:slug', async (c) => {
 pluginRoutes.get(
   '/installations',
   requireScope('organization', 'partner', 'system'),
+  requirePluginRead,
   zValidator('query', installationQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -274,6 +280,8 @@ pluginRoutes.get(
 pluginRoutes.post(
   '/installations',
   requireScope('organization', 'partner', 'system'),
+  requirePluginWrite,
+  requireMfa(),
   zValidator('json', installPluginSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -376,6 +384,7 @@ pluginRoutes.post(
 pluginRoutes.get(
   '/installations/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePluginRead,
   async (c) => {
     const auth = c.get('auth');
     const installationId = c.req.param('id')!;
@@ -431,6 +440,8 @@ pluginRoutes.get(
 pluginRoutes.patch(
   '/installations/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePluginWrite,
+  requireMfa(),
   zValidator('json', updatePluginSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -502,6 +513,8 @@ pluginRoutes.patch(
 pluginRoutes.delete(
   '/installations/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePluginWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const installationId = c.req.param('id')!;
@@ -570,6 +583,8 @@ pluginRoutes.delete(
 pluginRoutes.post(
   '/installations/:id/enable',
   requireScope('organization', 'partner', 'system'),
+  requirePluginWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const installationId = c.req.param('id')!;
@@ -627,6 +642,8 @@ pluginRoutes.post(
 pluginRoutes.post(
   '/installations/:id/disable',
   requireScope('organization', 'partner', 'system'),
+  requirePluginWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const installationId = c.req.param('id')!;
@@ -688,6 +705,7 @@ pluginRoutes.post(
 pluginRoutes.get(
   '/installations/:id/logs',
   requireScope('organization', 'partner', 'system'),
+  requirePluginRead,
   zValidator('query', logsQuerySchema),
   async (c) => {
     const auth = c.get('auth');

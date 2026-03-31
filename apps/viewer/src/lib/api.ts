@@ -76,7 +76,7 @@ export async function createDesktopWsTicket(
 ): Promise<string | null> {
   const resp = await apiFetch(
     apiUrl,
-    `/api/v1/remote/sessions/${sessionId}/ws-ticket`,
+    `/api/v1/desktop-ws/${sessionId}/viewer/ws-ticket`,
     token,
     { method: 'POST' }
   );

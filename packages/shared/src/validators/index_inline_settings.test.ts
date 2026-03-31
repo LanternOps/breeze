@@ -1,9 +1,45 @@
 import { describe, it, expect } from 'vitest';
 import {
+  patchInlineSettingsSchema,
   eventLogInlineSettingsSchema,
   sensitiveDataInlineSettingsSchema,
   monitoringInlineSettingsSchema,
 } from './index';
+
+// ============================================
+// Patch Inline Settings
+// ============================================
+
+describe('patchInlineSettingsSchema', () => {
+  it('should accept defaults', () => {
+    const result = patchInlineSettingsSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.sources).toEqual(['os']);
+      expect(result.data.autoApprove).toBe(false);
+      expect(result.data.scheduleFrequency).toBe('weekly');
+      expect(result.data.scheduleTime).toBe('02:00');
+      expect(result.data.scheduleDayOfWeek).toBe('sun');
+      expect(result.data.scheduleDayOfMonth).toBe(1);
+      expect(result.data.rebootPolicy).toBe('if_required');
+    }
+  });
+
+  it('should reject invalid scheduleTime', () => {
+    expect(patchInlineSettingsSchema.safeParse({ scheduleTime: '25:00' }).success).toBe(false);
+  });
+
+  it('should reject autoApprove without severities', () => {
+    expect(patchInlineSettingsSchema.safeParse({ autoApprove: true, autoApproveSeverities: [] }).success).toBe(false);
+  });
+
+  it('should accept legacy source values', () => {
+    const result = patchInlineSettingsSchema.safeParse({
+      sources: ['microsoft', 'third_party', 'drivers'],
+    });
+    expect(result.success).toBe(true);
+  });
+});
 
 // ============================================
 // Event Log Inline Settings

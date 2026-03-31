@@ -19,9 +19,14 @@ func listRegistryKeysOS(hive, path string, startTime time.Time) CommandResult {
 	}
 	defer key.Close()
 
-	subkeys, err := key.ReadSubKeyNames(-1)
+	subkeys, err := key.ReadSubKeyNames(maxRegistryListEntries + 1)
 	if err != nil {
 		return NewErrorResult(fmt.Errorf("failed to read subkeys: %w", err), time.Since(startTime).Milliseconds())
+	}
+
+	truncated := len(subkeys) > maxRegistryListEntries
+	if truncated {
+		subkeys = subkeys[:maxRegistryListEntries]
 	}
 
 	var keys []RegistryKey
@@ -58,10 +63,12 @@ func listRegistryKeysOS(hive, path string, startTime time.Time) CommandResult {
 		subkey.Close()
 	}
 
+	keys, sanitizeTruncated := sanitizeRegistryKeys(keys)
 	response := RegistryKeysResponse{
-		Keys: keys,
-		Path: path,
-		Hive: hive,
+		Keys:      keys,
+		Path:      path,
+		Hive:      hive,
+		Truncated: truncated || sanitizeTruncated,
 	}
 
 	return NewSuccessResult(response, time.Since(startTime).Milliseconds())
@@ -74,9 +81,14 @@ func listRegistryValuesOS(hive, path string, startTime time.Time) CommandResult 
 	}
 	defer key.Close()
 
-	valueNames, err := key.ReadValueNames(-1)
+	valueNames, err := key.ReadValueNames(maxRegistryListEntries + 1)
 	if err != nil {
 		return NewErrorResult(fmt.Errorf("failed to read values: %w", err), time.Since(startTime).Milliseconds())
+	}
+
+	truncated := len(valueNames) > maxRegistryListEntries
+	if truncated {
+		valueNames = valueNames[:maxRegistryListEntries]
 	}
 
 	var values []RegistryValue
@@ -86,24 +98,33 @@ func listRegistryValuesOS(hive, path string, startTime time.Time) CommandResult 
 			continue
 		}
 
-		// Read the actual value
+		value := RegistryValue{
+			Name: name,
+			Type: typeToString(valType),
+		}
+		if val > maxRegistryValueReadBytes {
+			value.Data = oversizedRegistryValuePlaceholder(val)
+			truncated = true
+			values = append(values, value)
+			continue
+		}
+
 		buf := make([]byte, val)
 		_, _, err = key.GetValue(name, buf)
 		if err != nil {
 			continue
 		}
 
-		values = append(values, RegistryValue{
-			Name: name,
-			Type: typeToString(valType),
-			Data: formatValue(buf, valType),
-		})
+		value.Data = formatValue(buf, valType)
+		values = append(values, value)
 	}
 
+	values, sanitizeTruncated := sanitizeRegistryValues(values)
 	response := RegistryValuesResponse{
-		Values: values,
-		Path:   path,
-		Hive:   hive,
+		Values:    values,
+		Path:      path,
+		Hive:      hive,
+		Truncated: truncated || sanitizeTruncated,
 	}
 
 	return NewSuccessResult(response, time.Since(startTime).Milliseconds())
@@ -121,6 +142,10 @@ func getRegistryValueOS(hive, path, name string, startTime time.Time) CommandRes
 		return NewErrorResult(fmt.Errorf("value not found: %w", err), time.Since(startTime).Milliseconds())
 	}
 
+	if val > maxRegistryValueReadBytes {
+		return NewErrorResult(fmt.Errorf("registry value exceeds maximum readable size of %d bytes", maxRegistryValueReadBytes), time.Since(startTime).Milliseconds())
+	}
+
 	buf := make([]byte, val)
 	_, _, err = key.GetValue(name, buf)
 	if err != nil {
@@ -131,6 +156,9 @@ func getRegistryValueOS(hive, path, name string, startTime time.Time) CommandRes
 		Name: name,
 		Type: typeToString(valType),
 		Data: formatValue(buf, valType),
+	}
+	if sanitized, _ := sanitizeRegistryValues([]RegistryValue{value}); len(sanitized) == 1 {
+		value = sanitized[0]
 	}
 
 	return NewSuccessResult(value, time.Since(startTime).Milliseconds())

@@ -8,8 +8,10 @@ import {
   restoreJobs,
   devices,
 } from '../../db/schema';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { recoveryTokens } from '../../db/schema/recoveryTokens';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import {
   bmrCreateTokenSchema,
@@ -36,6 +38,9 @@ function generateToken(): string {
 
 bmrRoutes.post(
   '/bmr/token',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   zValidator('json', bmrCreateTokenSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -116,14 +121,14 @@ bmrRoutes.post(
 
 // ── GET /bmr/token/:id — Get token metadata ────────────────────────
 
-bmrRoutes.get('/bmr/token/:id', async (c) => {
+bmrRoutes.get('/bmr/token/:id', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
 
-  const tokenId = c.req.param('id');
+  const tokenId = c.req.param('id')!;
   const [row] = await db
     .select({
       id: recoveryTokens.id,
@@ -155,14 +160,19 @@ bmrRoutes.get('/bmr/token/:id', async (c) => {
 
 // ── DELETE /bmr/token/:id — Revoke token ────────────────────────────
 
-bmrRoutes.delete('/bmr/token/:id', async (c) => {
+bmrRoutes.delete(
+  '/bmr/token/:id',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
+  async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
 
-  const tokenId = c.req.param('id');
+  const tokenId = c.req.param('id')!;
   const [row] = await db
     .update(recoveryTokens)
     .set({ status: 'revoked' })

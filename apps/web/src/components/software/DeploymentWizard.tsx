@@ -8,11 +8,17 @@ import { DeviceTargetSelector } from '../filters/DeviceTargetSelector';
 
 type WizardStep = 'software' | 'targets' | 'configure' | 'review';
 
+type SoftwareVersionOption = {
+  id: string;
+  version: string;
+  isLatest: boolean;
+};
+
 type SoftwareOption = {
   id: string;
   name: string;
   vendor: string;
-  versions: string[];
+  versions: SoftwareVersionOption[];
   category: string;
 };
 
@@ -27,42 +33,80 @@ const steps: { id: WizardStep; label: string; icon: typeof CheckCircle }[] = [
   { id: 'software', label: 'Select Software', icon: CheckCircle },
   { id: 'targets', label: 'Select Targets', icon: CheckCircle },
   { id: 'configure', label: 'Configure', icon: CheckCircle },
-  { id: 'review', label: 'Review', icon: CheckCircle }
+  { id: 'review', label: 'Review', icon: CheckCircle },
 ];
 
 const scheduleOptions = [
   { id: 'immediate', label: 'Deploy immediately', description: 'Start rollout as soon as approved.' },
   { id: 'scheduled', label: 'Schedule for later', description: 'Pick a specific date and time.' },
-  { id: 'maintenance', label: 'Next maintenance window', description: 'Deploy during the next policy window.' }
+  { id: 'maintenance', label: 'Next maintenance window', description: 'Queue for the next maintenance window.' },
 ];
 
 function collectDeviceIds(node: TargetNode): string[] {
   if (node.type === 'device') return [node.id];
   if (!node.children) return [];
-  return node.children.flatMap(child => collectDeviceIds(child));
+  return node.children.flatMap((child) => collectDeviceIds(child));
 }
 
-function normalizeSoftware(raw: Record<string, unknown>, index: number): SoftwareOption {
-  const versionsRaw = raw.versions ?? raw.availableVersions ?? [];
-  let versions: string[] = [];
-  if (Array.isArray(versionsRaw)) {
-    versions = versionsRaw.map((v: unknown) => {
-      if (typeof v === 'string') return v;
-      if (typeof v === 'object' && v !== null) {
-        return String((v as Record<string, unknown>).version ?? (v as Record<string, unknown>).name ?? '');
-      }
-      return '';
-    }).filter(Boolean);
-  } else if (raw.latestVersion) {
-    versions = [String(raw.latestVersion)];
-  }
+function normalizeVersion(raw: Record<string, unknown>, index: number): SoftwareVersionOption {
+  return {
+    id: String(raw.id ?? `version-${index}`),
+    version: String(raw.version ?? raw.name ?? ''),
+    isLatest: Boolean(raw.isLatest ?? raw.is_latest ?? false),
+  };
+}
 
+function normalizeSoftware(raw: Record<string, unknown>, versions: SoftwareVersionOption[], index: number): SoftwareOption {
   return {
     id: String(raw.id ?? `sw-${index}`),
     name: String(raw.name ?? raw.softwareName ?? 'Unknown'),
     vendor: String(raw.vendor ?? raw.publisher ?? ''),
-    versions: versions.length > 0 ? versions : ['1.0.0'],
-    category: String(raw.category ?? raw.type ?? 'Software')
+    versions,
+    category: String(raw.category ?? raw.type ?? 'Software'),
+  };
+}
+
+function getSelectedTargetSummary(
+  targetMode: 'tree' | 'advanced',
+  selectedDevices: Set<string>,
+  targetConfig: DeploymentTargetConfig,
+): { headline: string; detail: string; progressTotal?: number } {
+  if (targetMode === 'tree') {
+    const count = selectedDevices.size;
+    return {
+      headline: `${count} device${count === 1 ? '' : 's'}`,
+      detail: 'Selected directly from the hierarchy.',
+      progressTotal: count,
+    };
+  }
+
+  if (targetConfig.type === 'all') {
+    return {
+      headline: 'All devices',
+      detail: 'Targets the full organization scope.',
+    };
+  }
+
+  if (targetConfig.type === 'groups') {
+    const count = targetConfig.groupIds?.length ?? 0;
+    return {
+      headline: `${count} group${count === 1 ? '' : 's'}`,
+      detail: 'Device membership is resolved when the deployment is created.',
+    };
+  }
+
+  if (targetConfig.type === 'filter') {
+    return {
+      headline: 'Dynamic filter',
+      detail: 'Targets devices matching the selected filter.',
+    };
+  }
+
+  const count = targetConfig.deviceIds?.length ?? 0;
+  return {
+    headline: `${count} device${count === 1 ? '' : 's'}`,
+    detail: 'Selected directly in advanced targeting.',
+    progressTotal: count,
   };
 }
 
@@ -78,11 +122,10 @@ export default function DeploymentWizard() {
   const [softwareOptions, setSoftwareOptions] = useState<SoftwareOption[]>([]);
   const [targetTree, setTargetTree] = useState<TargetNode[]>([]);
   const [selectedSoftwareId, setSelectedSoftwareId] = useState<string>('');
-  const [selectedVersion, setSelectedVersion] = useState<string>('');
+  const [selectedVersionId, setSelectedVersionId] = useState<string>('');
   const [selectedDevices, setSelectedDevices] = useState<Set<string>>(new Set());
   const [scheduleType, setScheduleType] = useState<'immediate' | 'scheduled' | 'maintenance'>('immediate');
   const [scheduledAt, setScheduledAt] = useState('');
-  const [maintenanceWindow, setMaintenanceWindow] = useState('Saturday 02:00 - 04:00');
   const [targetMode, setTargetMode] = useState<'tree' | 'advanced'>('tree');
   const [targetConfig, setTargetConfig] = useState<DeploymentTargetConfig>({ type: 'devices', deviceIds: [] });
 
@@ -95,25 +138,47 @@ export default function DeploymentWizard() {
         fetchWithAuth('/software/catalog'),
         fetchWithAuth('/devices'),
         fetchWithAuth('/orgs/sites'),
-        fetchWithAuth('/device-groups')
+        fetchWithAuth('/device-groups'),
       ]);
 
-      // Fetch software catalog
+      let normalizedCatalog: SoftwareOption[] = [];
+
       if (catalogResponse.ok) {
         const catalogPayload = await catalogResponse.json();
         const rawCatalog = catalogPayload.data ?? catalogPayload.catalog ?? catalogPayload ?? [];
-        const software = Array.isArray(rawCatalog)
-          ? rawCatalog.map((s: Record<string, unknown>, i: number) => normalizeSoftware(s, i))
-          : [];
-        setSoftwareOptions(software);
+        const catalogRows = Array.isArray(rawCatalog) ? rawCatalog : [];
+
+        const versionResults = await Promise.allSettled(
+          catalogRows.map(async (row) => {
+            const catalogId = String((row as Record<string, unknown>).id ?? '');
+            if (!catalogId) return [] as SoftwareVersionOption[];
+
+            const response = await fetchWithAuth(`/software/catalog/${catalogId}/versions`);
+            if (!response.ok) return [] as SoftwareVersionOption[];
+
+            const payload = await response.json();
+            const rawVersions = payload.data ?? payload.versions ?? payload ?? [];
+            if (!Array.isArray(rawVersions)) return [] as SoftwareVersionOption[];
+
+            return rawVersions
+              .map((version: Record<string, unknown>, index: number) => normalizeVersion(version, index))
+              .filter((version) => version.version);
+          }),
+        );
+
+        normalizedCatalog = catalogRows.map((row, index) => normalizeSoftware(
+          row as Record<string, unknown>,
+          versionResults[index]?.status === 'fulfilled' ? versionResults[index].value : [],
+          index,
+        ));
+
+        setSoftwareOptions(normalizedCatalog);
       }
 
-      // Build target tree from devices, sites, and groups
       const tree: TargetNode[] = [];
       const sitesMap = new Map<string, TargetNode>();
       const groupsMap = new Map<string, TargetNode>();
 
-      // Process sites
       if (sitesResponse.ok) {
         const sitesPayload = await sitesResponse.json();
         const rawSites = sitesPayload.data ?? sitesPayload.sites ?? sitesPayload ?? [];
@@ -124,7 +189,7 @@ export default function DeploymentWizard() {
               id: String(siteRecord.id),
               name: String(siteRecord.name ?? 'Unknown Site'),
               type: 'site',
-              children: []
+              children: [],
             };
             sitesMap.set(String(siteRecord.id), siteNode);
             tree.push(siteNode);
@@ -132,7 +197,6 @@ export default function DeploymentWizard() {
         }
       }
 
-      // Process device groups
       if (groupsResponse.ok) {
         const groupsPayload = await groupsResponse.json();
         const rawGroups = groupsPayload.data ?? groupsPayload.groups ?? groupsPayload ?? [];
@@ -143,37 +207,34 @@ export default function DeploymentWizard() {
               id: String(groupRecord.id),
               name: String(groupRecord.name ?? 'Unknown Group'),
               type: 'group',
-              children: []
+              children: [],
             };
             groupsMap.set(String(groupRecord.id), groupNode);
 
-            // Add group to its parent site if available
             const siteId = String(groupRecord.siteId ?? '');
             const parentSite = sitesMap.get(siteId);
             if (parentSite) {
               parentSite.children?.push(groupNode);
             } else {
-              // Add orphan group directly to tree
               tree.push(groupNode);
             }
           }
         }
       }
 
-      // Process devices
+      let deviceRows: Array<Record<string, unknown>> = [];
       if (devicesResponse.ok) {
         const devicesPayload = await devicesResponse.json();
         const rawDevices = devicesPayload.data ?? devicesPayload.devices ?? devicesPayload ?? [];
         if (Array.isArray(rawDevices)) {
-          for (const device of rawDevices) {
-            const deviceRecord = device as Record<string, unknown>;
+          deviceRows = rawDevices as Array<Record<string, unknown>>;
+          for (const deviceRecord of deviceRows) {
             const deviceNode: TargetNode = {
               id: String(deviceRecord.id),
               name: String(deviceRecord.hostname ?? deviceRecord.displayName ?? deviceRecord.name ?? 'Unknown'),
-              type: 'device'
+              type: 'device',
             };
 
-            // Try to add device to its group or site
             const groupId = String(deviceRecord.groupId ?? deviceRecord.deviceGroupId ?? '');
             const siteId = String(deviceRecord.siteId ?? '');
             const parentGroup = groupsMap.get(groupId);
@@ -184,33 +245,34 @@ export default function DeploymentWizard() {
             } else if (parentSite) {
               parentSite.children?.push(deviceNode);
             } else {
-              // Add orphan device directly to tree
               tree.push(deviceNode);
             }
           }
         }
       }
 
-      // If no hierarchy, create a flat "All Devices" container
-      if (tree.length === 0 && devicesResponse.ok) {
-        const devicesPayload = await devicesResponse.json();
-        const rawDevices = devicesPayload.data ?? devicesPayload.devices ?? devicesPayload ?? [];
-        if (Array.isArray(rawDevices) && rawDevices.length > 0) {
-          const allDevicesNode: TargetNode = {
-            id: 'all-devices',
-            name: 'All Devices',
-            type: 'org',
-            children: rawDevices.map((device: Record<string, unknown>) => ({
-              id: String(device.id),
-              name: String(device.hostname ?? device.displayName ?? device.name ?? 'Unknown'),
-              type: 'device' as const
-            }))
-          };
-          tree.push(allDevicesNode);
-        }
+      if (tree.length === 0 && deviceRows.length > 0) {
+        tree.push({
+          id: 'all-devices',
+          name: 'All Devices',
+          type: 'org',
+          children: deviceRows.map((device) => ({
+            id: String(device.id),
+            name: String(device.hostname ?? device.displayName ?? device.name ?? 'Unknown'),
+            type: 'device' as const,
+          })),
+        });
       }
 
       setTargetTree(tree);
+
+      if (normalizedCatalog.length > 0 && !selectedSoftwareId) {
+        const firstDeployable = normalizedCatalog.find((item) => item.versions.length > 0);
+        if (firstDeployable) {
+          setSelectedSoftwareId(firstDeployable.id);
+          setSelectedVersionId(firstDeployable.versions.find((version) => version.isLatest)?.id ?? firstDeployable.versions[0]?.id ?? '');
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load deployment data');
     } finally {
@@ -226,20 +288,41 @@ export default function DeploymentWizard() {
 
   const filteredSoftware = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    return softwareOptions.filter(item => {
+    return softwareOptions.filter((item) => {
       if (!normalized) return true;
       return item.name.toLowerCase().includes(normalized) || item.vendor.toLowerCase().includes(normalized);
     });
   }, [query, softwareOptions]);
 
   const selectedSoftware = useMemo(
-    () => softwareOptions.find(item => item.id === selectedSoftwareId),
-    [selectedSoftwareId, softwareOptions]
+    () => softwareOptions.find((item) => item.id === selectedSoftwareId),
+    [selectedSoftwareId, softwareOptions],
   );
 
-  const selectedDeviceCount = useMemo(() => selectedDevices.size, [selectedDevices]);
+  const selectedVersion = useMemo(
+    () => selectedSoftware?.versions.find((item) => item.id === selectedVersionId) ?? null,
+    [selectedSoftware, selectedVersionId],
+  );
 
-  // Sync selectedDevices when using advanced targeting
+  useEffect(() => {
+    if (!selectedSoftware) return;
+
+    if (selectedSoftware.versions.length === 0) {
+      if (selectedVersionId) setSelectedVersionId('');
+      return;
+    }
+
+    const hasSelectedVersion = selectedSoftware.versions.some((item) => item.id === selectedVersionId);
+    if (!hasSelectedVersion) {
+      setSelectedVersionId(selectedSoftware.versions.find((item) => item.isLatest)?.id ?? selectedSoftware.versions[0]?.id ?? '');
+    }
+  }, [selectedSoftware, selectedVersionId]);
+
+  const targetSummary = useMemo(
+    () => getSelectedTargetSummary(targetMode, selectedDevices, targetConfig),
+    [targetMode, selectedDevices, targetConfig],
+  );
+
   const handleTargetConfigChange = useCallback((config: DeploymentTargetConfig) => {
     setTargetConfig(config);
     if (config.type === 'devices' && config.deviceIds) {
@@ -248,25 +331,25 @@ export default function DeploymentWizard() {
   }, []);
 
   const canProceed = useMemo(() => {
-    if (activeStep === 'software') return Boolean(selectedSoftwareId && selectedVersion);
+    if (activeStep === 'software') return Boolean(selectedSoftwareId && selectedVersionId);
     if (activeStep === 'targets') {
       if (targetMode === 'advanced') {
         if (targetConfig.type === 'all') return true;
         if (targetConfig.type === 'devices') return (targetConfig.deviceIds?.length ?? 0) > 0;
         if (targetConfig.type === 'groups') return (targetConfig.groupIds?.length ?? 0) > 0;
-        if (targetConfig.type === 'filter') return !!targetConfig.filter;
+        if (targetConfig.type === 'filter') return Boolean(targetConfig.filter);
         return false;
       }
       return selectedDevices.size > 0;
     }
     if (activeStep === 'configure') return scheduleType !== 'scheduled' || Boolean(scheduledAt);
     return true;
-  }, [activeStep, selectedSoftwareId, selectedVersion, selectedDevices, scheduleType, scheduledAt, targetMode, targetConfig]);
+  }, [activeStep, scheduleType, scheduledAt, selectedDevices.size, selectedSoftwareId, selectedVersionId, targetConfig, targetMode]);
 
   const toggleDevices = (deviceIds: string[], select: boolean) => {
-    setSelectedDevices(prev => {
+    setSelectedDevices((prev) => {
       const next = new Set(prev);
-      deviceIds.forEach(id => {
+      deviceIds.forEach((id) => {
         if (select) {
           next.add(id);
         } else {
@@ -279,26 +362,42 @@ export default function DeploymentWizard() {
 
   const handleDeploy = async () => {
     try {
+      if (!selectedVersionId) {
+        throw new Error('Select a software version before deploying');
+      }
+
       setDeploying(true);
       setError(undefined);
 
-      const deploymentPayload = {
-        softwareId: selectedSoftwareId,
-        softwareName: selectedSoftware?.name,
-        version: selectedVersion,
-        targets: {
-          deviceIds: Array.from(selectedDevices)
-        },
-        configuration: {
-          scheduleType,
-          scheduledAt: scheduleType === 'scheduled' ? scheduledAt : null,
-          maintenanceWindow: scheduleType === 'maintenance' ? maintenanceWindow : null
-        }
-      };
+      const payload =
+        targetMode === 'advanced'
+          ? {
+              name: `${selectedSoftware?.name ?? 'Software'} ${selectedVersion?.version ?? ''}`.trim(),
+              softwareVersionId: selectedVersionId,
+              deploymentType: 'install',
+              targetType: targetConfig.type,
+              targetIds: targetConfig.type === 'devices'
+                ? targetConfig.deviceIds
+                : targetConfig.type === 'groups'
+                  ? targetConfig.groupIds
+                  : undefined,
+              targetFilter: targetConfig.type === 'filter' ? targetConfig.filter : undefined,
+              scheduleType,
+              scheduledAt: scheduleType === 'scheduled' ? new Date(scheduledAt).toISOString() : undefined,
+            }
+          : {
+              name: `${selectedSoftware?.name ?? 'Software'} ${selectedVersion?.version ?? ''}`.trim(),
+              softwareVersionId: selectedVersionId,
+              deploymentType: 'install',
+              targetType: 'devices' as const,
+              targetIds: Array.from(selectedDevices),
+              scheduleType,
+              scheduledAt: scheduleType === 'scheduled' ? new Date(scheduledAt).toISOString() : undefined,
+            };
 
-      const response = await fetchWithAuth('/software/deploy', {
+      const response = await fetchWithAuth('/software/deployments', {
         method: 'POST',
-        body: JSON.stringify(deploymentPayload)
+        body: JSON.stringify(payload),
       });
 
       if (!response.ok) {
@@ -307,7 +406,7 @@ export default function DeploymentWizard() {
       }
 
       const result = await response.json();
-      setDeploymentId(result.deploymentId ?? result.id ?? result.data?.id ?? 'deployment-created');
+      setDeploymentId(result.data?.id ?? result.id ?? 'deployment-created');
       setDeploymentComplete(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Deployment failed');
@@ -317,13 +416,16 @@ export default function DeploymentWizard() {
   };
 
   const resetWizard = () => {
+    const firstDeployable = softwareOptions.find((item) => item.versions.length > 0);
     setDeploymentComplete(false);
     setActiveStepIndex(0);
-    setSelectedSoftwareId('');
-    setSelectedVersion('');
+    setSelectedSoftwareId(firstDeployable?.id ?? '');
+    setSelectedVersionId(firstDeployable?.versions.find((version) => version.isLatest)?.id ?? firstDeployable?.versions[0]?.id ?? '');
     setSelectedDevices(new Set());
     setScheduleType('immediate');
     setScheduledAt('');
+    setTargetMode('tree');
+    setTargetConfig({ type: 'devices', deviceIds: [] });
   };
 
   if (loading) {
@@ -354,7 +456,7 @@ export default function DeploymentWizard() {
 
   if (deploymentComplete) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm text-center space-y-4">
+      <div className="rounded-lg border bg-card p-6 text-center shadow-sm space-y-4">
         <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/20">
           <CheckCircle className="h-8 w-8 text-emerald-500" />
         </div>
@@ -389,7 +491,7 @@ export default function DeploymentWizard() {
                 type="search"
                 placeholder="Search software..."
                 value={query}
-                onChange={event => setQuery(event.target.value)}
+                onChange={(event) => setQuery(event.target.value)}
                 className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
               />
             </div>
@@ -399,28 +501,38 @@ export default function DeploymentWizard() {
                   No software packages available.
                 </p>
               ) : (
-                filteredSoftware.map(item => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => {
-                      setSelectedSoftwareId(item.id);
-                      setSelectedVersion(item.versions[0]);
-                    }}
-                    className={cn(
-                      'flex w-full items-center justify-between rounded-lg border px-4 py-3 text-left transition hover:border-primary/50',
-                      selectedSoftwareId === item.id ? 'border-primary bg-primary/5' : 'bg-card'
-                    )}
-                  >
-                    <div>
-                      <p className="text-sm font-semibold">{item.name}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {item.vendor} · {item.category}
-                      </p>
-                    </div>
-                    <span className="text-xs text-muted-foreground">{item.versions[0]}</span>
-                  </button>
-                ))
+                filteredSoftware.map((item) => {
+                  const isDeployable = item.versions.length > 0;
+                  const defaultVersion = item.versions.find((version) => version.isLatest) ?? item.versions[0];
+
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      disabled={!isDeployable}
+                      onClick={() => {
+                        if (!isDeployable) return;
+                        setSelectedSoftwareId(item.id);
+                        setSelectedVersionId(defaultVersion?.id ?? '');
+                      }}
+                      className={cn(
+                        'flex w-full items-center justify-between rounded-lg border px-4 py-3 text-left transition',
+                        isDeployable ? 'hover:border-primary/50' : 'cursor-not-allowed opacity-60',
+                        selectedSoftwareId === item.id ? 'border-primary bg-primary/5' : 'bg-card',
+                      )}
+                    >
+                      <div>
+                        <p className="text-sm font-semibold">{item.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {item.vendor} · {item.category}
+                        </p>
+                      </div>
+                      <span className="text-xs text-muted-foreground">
+                        {isDeployable ? defaultVersion?.version : 'No versions'}
+                      </span>
+                    </button>
+                  );
+                })
               )}
             </div>
           </div>
@@ -436,23 +548,31 @@ export default function DeploymentWizard() {
                   <p className="text-base font-semibold">{selectedSoftware.name}</p>
                   <p className="text-xs text-muted-foreground">{selectedSoftware.vendor}</p>
                 </div>
-                <div>
-                  <label className="text-xs font-semibold uppercase text-muted-foreground">Version</label>
-                  <select
-                    value={selectedVersion}
-                    onChange={event => setSelectedVersion(event.target.value)}
-                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                  >
-                    {selectedSoftware.versions.map(version => (
-                      <option key={version} value={version}>
-                        {version}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
-                  Latest build is pre-selected. You can change to a previous release for rollback testing.
-                </div>
+                {selectedSoftware.versions.length > 0 ? (
+                  <>
+                    <div>
+                      <label className="text-xs font-semibold uppercase text-muted-foreground">Version</label>
+                      <select
+                        value={selectedVersionId}
+                        onChange={(event) => setSelectedVersionId(event.target.value)}
+                        className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      >
+                        {selectedSoftware.versions.map((version) => (
+                          <option key={version.id} value={version.id}>
+                            {version.version}{version.isLatest ? ' (latest)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+                      Latest build is pre-selected. You can change to an older release for rollback testing.
+                    </div>
+                  </>
+                ) : (
+                  <div className="rounded-md border border-amber-400/40 bg-amber-500/10 p-3 text-xs text-amber-700">
+                    This package cannot be deployed until at least one version is added.
+                  </div>
+                )}
               </div>
             ) : (
               <p className="mt-4 text-sm text-muted-foreground">Select a software package to continue.</p>
@@ -463,17 +583,16 @@ export default function DeploymentWizard() {
     }
 
     if (activeStep === 'targets') {
-      // Mode toggle between tree and advanced
       const targetModeToggle = (
-        <div className="flex items-center gap-2 mb-4">
+        <div className="mb-4 flex items-center gap-2">
           <span className="text-sm font-medium text-muted-foreground">Target by:</span>
           <div className="flex rounded-md border">
             <button
               type="button"
               onClick={() => setTargetMode('tree')}
               className={cn(
-                'px-3 py-1.5 text-xs font-medium transition rounded-l-md',
-                targetMode === 'tree' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+                'rounded-l-md px-3 py-1.5 text-xs font-medium transition',
+                targetMode === 'tree' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted',
               )}
             >
               Hierarchy
@@ -482,8 +601,8 @@ export default function DeploymentWizard() {
               type="button"
               onClick={() => setTargetMode('advanced')}
               className={cn(
-                'px-3 py-1.5 text-xs font-medium transition rounded-r-md',
-                targetMode === 'advanced' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+                'rounded-r-md px-3 py-1.5 text-xs font-medium transition',
+                targetMode === 'advanced' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted',
               )}
             >
               Advanced
@@ -499,7 +618,7 @@ export default function DeploymentWizard() {
             <DeviceTargetSelector
               value={targetConfig}
               onChange={handleTargetConfigChange}
-              modes={['manual', 'groups', 'filter']}
+              modes={['all', 'manual', 'groups', 'filter']}
               showPreview={true}
               showSavedFilters={true}
             />
@@ -510,8 +629,8 @@ export default function DeploymentWizard() {
       const TreeItem = ({ node, level }: { node: TargetNode; level: number }) => {
         const checkboxRef = useRef<HTMLInputElement | null>(null);
         const deviceIds = collectDeviceIds(node);
-        const allSelected = deviceIds.length > 0 && deviceIds.every(id => selectedDevices.has(id));
-        const someSelected = deviceIds.some(id => selectedDevices.has(id));
+        const allSelected = deviceIds.length > 0 && deviceIds.every((id) => selectedDevices.has(id));
+        const someSelected = deviceIds.some((id) => selectedDevices.has(id));
 
         useEffect(() => {
           if (checkboxRef.current) {
@@ -538,7 +657,7 @@ export default function DeploymentWizard() {
               <span className="font-medium">{node.name}</span>
               <span className="text-xs text-muted-foreground">{node.type}</span>
             </label>
-            {node.children?.map(child => (
+            {node.children?.map((child) => (
               <TreeItem key={child.id} node={child} level={level + 1} />
             ))}
           </div>
@@ -549,32 +668,32 @@ export default function DeploymentWizard() {
         <div>
           {targetModeToggle}
           <div className="grid gap-6 lg:grid-cols-[1.5fr_1fr]">
-          <div className="rounded-lg border bg-card p-5 shadow-sm">
-            <h3 className="text-sm font-semibold">Organization targets</h3>
-            <p className="text-xs text-muted-foreground">Select groups or devices for deployment.</p>
-            <div className="mt-4 space-y-4">
-              {targetTree.length === 0 ? (
-                <p className="py-8 text-center text-sm text-muted-foreground">
-                  No targets available.
-                </p>
-              ) : (
-                targetTree.map(node => (
-                  <TreeItem key={node.id} node={node} level={0} />
-                ))
-              )}
-            </div>
-          </div>
-          <div className="space-y-4">
             <div className="rounded-lg border bg-card p-5 shadow-sm">
-              <h3 className="text-sm font-semibold">Selected targets</h3>
-              <p className="mt-2 text-2xl font-semibold">{selectedDeviceCount}</p>
-              <p className="text-xs text-muted-foreground">devices included in this deployment.</p>
+              <h3 className="text-sm font-semibold">Organization targets</h3>
+              <p className="text-xs text-muted-foreground">Select groups or devices for deployment.</p>
+              <div className="mt-4 space-y-4">
+                {targetTree.length === 0 ? (
+                  <p className="py-8 text-center text-sm text-muted-foreground">
+                    No targets available.
+                  </p>
+                ) : (
+                  targetTree.map((node) => (
+                    <TreeItem key={node.id} node={node} level={0} />
+                  ))
+                )}
+              </div>
             </div>
-            <div className="rounded-lg border bg-muted/30 p-4 text-xs text-muted-foreground">
-              Tip: Selecting a group automatically includes all devices within it.
+            <div className="space-y-4">
+              <div className="rounded-lg border bg-card p-5 shadow-sm">
+                <h3 className="text-sm font-semibold">Selected targets</h3>
+                <p className="mt-2 text-2xl font-semibold">{targetSummary.headline}</p>
+                <p className="text-xs text-muted-foreground">{targetSummary.detail}</p>
+              </div>
+              <div className="rounded-lg border bg-muted/30 p-4 text-xs text-muted-foreground">
+                Tip: Selecting a group automatically includes all devices within it.
+              </div>
             </div>
           </div>
-        </div>
         </div>
       );
     }
@@ -587,7 +706,7 @@ export default function DeploymentWizard() {
             <h3 className="text-sm font-semibold">Deployment schedule</h3>
           </div>
           <div className="mt-4 space-y-4">
-            {scheduleOptions.map(option => (
+            {scheduleOptions.map((option) => (
               <label key={option.id} className="flex items-start gap-3 rounded-md border p-4 text-sm">
                 <input
                   type="radio"
@@ -610,23 +729,14 @@ export default function DeploymentWizard() {
               <input
                 type="datetime-local"
                 value={scheduledAt}
-                onChange={event => setScheduledAt(event.target.value)}
+                onChange={(event) => setScheduledAt(event.target.value)}
                 className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
               />
             </div>
           )}
           {scheduleType === 'maintenance' && (
-            <div className="mt-4">
-              <label className="text-xs font-semibold uppercase text-muted-foreground">Maintenance window</label>
-              <select
-                value={maintenanceWindow}
-                onChange={event => setMaintenanceWindow(event.target.value)}
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              >
-                <option value="Saturday 02:00 - 04:00">Saturday 02:00 - 04:00</option>
-                <option value="Sunday 01:00 - 03:00">Sunday 01:00 - 03:00</option>
-                <option value="Weekdays 21:00 - 23:00">Weekdays 21:00 - 23:00</option>
-              </select>
+            <div className="mt-4 rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+              Devices will be queued for the next available maintenance window.
             </div>
           )}
         </div>
@@ -644,12 +754,12 @@ export default function DeploymentWizard() {
             <div className="rounded-md border bg-muted/30 p-4">
               <p className="text-xs uppercase text-muted-foreground">Software</p>
               <p className="mt-2 text-sm font-semibold">{selectedSoftware?.name ?? '—'}</p>
-              <p className="text-xs text-muted-foreground">Version {selectedVersion || '—'}</p>
+              <p className="text-xs text-muted-foreground">Version {selectedVersion?.version ?? '—'}</p>
             </div>
             <div className="rounded-md border bg-muted/30 p-4">
               <p className="text-xs uppercase text-muted-foreground">Targets</p>
-              <p className="mt-2 text-sm font-semibold">{selectedDeviceCount} devices</p>
-              <p className="text-xs text-muted-foreground">Across selected orgs and groups</p>
+              <p className="mt-2 text-sm font-semibold">{targetSummary.headline}</p>
+              <p className="text-xs text-muted-foreground">{targetSummary.detail}</p>
             </div>
             <div className="rounded-md border bg-muted/30 p-4">
               <p className="text-xs uppercase text-muted-foreground">Schedule</p>
@@ -660,7 +770,7 @@ export default function DeploymentWizard() {
               </p>
               <p className="text-xs text-muted-foreground">
                 {scheduleType === 'scheduled' && scheduledAt ? scheduledAt : ''}
-                {scheduleType === 'maintenance' ? maintenanceWindow : ''}
+                {scheduleType === 'maintenance' ? 'Next available maintenance window' : ''}
                 {scheduleType === 'immediate' ? 'Starts after approval.' : ''}
               </p>
             </div>
@@ -682,8 +792,8 @@ export default function DeploymentWizard() {
           {deploying && (
             <ProgressBar
               current={0}
-              total={selectedDeviceCount}
-              label={`Creating deployment for ${selectedDeviceCount} device${selectedDeviceCount === 1 ? '' : 's'}...`}
+              total={targetSummary.progressTotal ?? 1}
+              label="Creating deployment..."
               showCount={false}
             />
           )}
@@ -733,7 +843,7 @@ export default function DeploymentWizard() {
                     'flex h-9 w-9 items-center justify-center rounded-full border text-sm font-semibold',
                     isCompleted && 'border-emerald-500 bg-emerald-500 text-white',
                     isActive && !isCompleted && 'border-primary text-primary',
-                    !isActive && !isCompleted && 'text-muted-foreground'
+                    !isActive && !isCompleted && 'text-muted-foreground',
                   )}
                 >
                   {isCompleted ? <CheckCircle className="h-4 w-4" /> : index + 1}
@@ -755,7 +865,7 @@ export default function DeploymentWizard() {
       <div className="flex items-center justify-between">
         <button
           type="button"
-          onClick={() => setActiveStepIndex(prev => Math.max(prev - 1, 0))}
+          onClick={() => setActiveStepIndex((prev) => Math.max(prev - 1, 0))}
           disabled={activeStepIndex === 0}
           className="inline-flex h-10 items-center justify-center rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
         >
@@ -764,7 +874,7 @@ export default function DeploymentWizard() {
         {activeStepIndex < steps.length - 1 && (
           <button
             type="button"
-            onClick={() => setActiveStepIndex(prev => Math.min(prev + 1, steps.length - 1))}
+            onClick={() => setActiveStepIndex((prev) => Math.min(prev + 1, steps.length - 1))}
             disabled={!canProceed}
             className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-5 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
