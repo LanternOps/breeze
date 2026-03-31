@@ -181,7 +181,16 @@ func TestRestore(provider providers.BackupProvider, snapshotID string, progressF
 	// Restore each file
 	total := len(snapshot.Files)
 	for i, file := range snapshot.Files {
-		destPath := filepath.Join(restoreDir, filepath.Base(file.SourcePath))
+		destPath := resolveTargetPath(restoreDir, file.SourcePath)
+		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+			result.FilesFailed++
+			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
+			log.Printf("[backup-restore] create target dir failed for %s: %v", destPath, err)
+			if progressFn != nil {
+				progressFn(i+1, total)
+			}
+			continue
+		}
 
 		dlErr := provider.Download(file.BackupPath, destPath)
 		if dlErr != nil {

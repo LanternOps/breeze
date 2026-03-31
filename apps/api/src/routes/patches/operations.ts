@@ -1,9 +1,10 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { and, eq, sql, inArray, desc } from 'drizzle-orm';
-import { requireScope } from '../../middleware/auth';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { db } from '../../db';
 import { queueCommand, queueCommandForExecution } from '../../services/commandQueue';
+import { PERMISSIONS } from '../../services/permissions';
 import {
   patches,
   devicePatches,
@@ -20,6 +21,8 @@ export const operationsRoutes = new Hono();
 operationsRoutes.post(
   '/scan',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('json', scanSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -156,6 +159,8 @@ operationsRoutes.get(
 operationsRoutes.post(
   '/:id/rollback',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('param', patchIdParamSchema),
   zValidator('json', rollbackSchema),
   async (c) => {

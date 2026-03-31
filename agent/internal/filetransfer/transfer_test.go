@@ -106,8 +106,8 @@ func TestHandleTransferUploadSuccess(t *testing.T) {
 	result := m.HandleTransfer(map[string]any{
 		"transferId": "t-upload-1",
 		"direction":  "upload",
-		"remotePath": srcFile, // upload reads from remotePath
-		"localPath":  "/remote/dest.txt",
+		"remotePath": "/remote/dest.txt",
+		"localPath":  srcFile,
 	})
 
 	if result["status"] != "completed" {
@@ -140,8 +140,8 @@ func TestHandleTransferUploadDirectoryTraversal(t *testing.T) {
 	result := m.HandleTransfer(map[string]any{
 		"transferId": "t-traversal",
 		"direction":  "upload",
-		"remotePath": "/safe/../../../etc/passwd",
-		"localPath":  "/tmp/out",
+		"remotePath": "dest.txt",
+		"localPath":  "/safe/../../../etc/passwd",
 	})
 
 	if result["status"] != "failed" {
@@ -165,8 +165,8 @@ func TestHandleTransferUploadNonexistentFile(t *testing.T) {
 	result := m.HandleTransfer(map[string]any{
 		"transferId": "t-nofile",
 		"direction":  "upload",
-		"remotePath": "/nonexistent/file/path.txt",
-		"localPath":  "/tmp/out",
+		"remotePath": "dest.txt",
+		"localPath":  "/nonexistent/file/path.txt",
 	})
 
 	if result["status"] != "failed" {
@@ -206,8 +206,8 @@ func TestHandleTransferUploadChunkServerError(t *testing.T) {
 	result := m.HandleTransfer(map[string]any{
 		"transferId": "t-upload-fail",
 		"direction":  "upload",
-		"remotePath": srcFile,
-		"localPath":  "/remote/dest.txt",
+		"remotePath": "/remote/dest.txt",
+		"localPath":  srcFile,
 	})
 
 	if result["status"] != "failed" {
@@ -249,8 +249,8 @@ func TestHandleTransferUploadMultipleChunks(t *testing.T) {
 	result := m.HandleTransfer(map[string]any{
 		"transferId": "t-multi-chunk",
 		"direction":  "upload",
-		"remotePath": srcFile,
-		"localPath":  "/remote/dest.dat",
+		"remotePath": "/remote/dest.dat",
+		"localPath":  srcFile,
 	})
 
 	if result["status"] != "completed" {

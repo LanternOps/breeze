@@ -48,6 +48,16 @@ func New(cfg *Config) *Updater {
 // Callers should treat this as a permanent failure and stop retrying.
 var ErrReadOnlyFS = fmt.Errorf("binary path is on a read-only filesystem")
 
+func normalizePreflightErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ErrFileLocked) {
+		return err
+	}
+	return fmt.Errorf("%w: %v", ErrReadOnlyFS, err)
+}
+
 // UpdateTo downloads and installs a new version
 func (u *Updater) UpdateTo(version string) error {
 	log.Info("starting update", "targetVersion", version)
@@ -56,8 +66,10 @@ func (u *Updater) UpdateTo(version string) error {
 	// ProtectSystem=strict in systemd or immutable filesystems (e.g. Ubuntu Core)
 	// make /usr/local/bin read-only, so detect this early instead of failing
 	// after download + checksum + backup.
-	if err := checkWritable(u.config.BinaryPath); err != nil {
-		return fmt.Errorf("%w: %v", ErrReadOnlyFS, err)
+	if runtime.GOOS != "windows" {
+		if err := checkWritable(u.config.BinaryPath); err != nil {
+			return normalizePreflightErr(err)
+		}
 	}
 
 	// 1. Download binary to temp file
@@ -350,7 +362,7 @@ func (u *Updater) UpdateFromURL(url, expectedChecksum string) error {
 	// before copying the new binary.
 	if runtime.GOOS != "windows" {
 		if err := checkWritable(u.config.BinaryPath); err != nil {
-			return fmt.Errorf("%w: %v", ErrReadOnlyFS, err)
+			return normalizePreflightErr(err)
 		}
 	}
 

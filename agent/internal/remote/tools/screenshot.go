@@ -11,6 +11,8 @@ import (
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 )
 
+const maxScreenshotBase64Bytes = 1_000_000
+
 // CaptureFunc captures a screenshot from an existing source (e.g. an active
 // WebRTC session's capturer). Returns the image and its dimensions.
 // Used to avoid creating a new ScreenCapturer that would conflict with the
@@ -109,13 +111,16 @@ func encodeScreenshotResponse(img *image.RGBA, width, height, monitor int) (*Scr
 
 	b64 := base64.StdEncoding.EncodeToString(jpegData)
 
-	// Re-encode at lower quality if base64 exceeds 1MB
-	if len(b64) > 1_000_000 {
+	// Re-encode at lower quality if base64 exceeds the transport budget.
+	if len(b64) > maxScreenshotBase64Bytes {
 		jpegData, err = desktop.EncodeJPEG(img, 60)
 		if err != nil {
 			return nil, fmt.Errorf("failed to re-encode screenshot: %w", err)
 		}
 		b64 = base64.StdEncoding.EncodeToString(jpegData)
+	}
+	if len(b64) > maxScreenshotBase64Bytes {
+		return nil, fmt.Errorf("screenshot exceeds maximum encoded size of %d bytes", maxScreenshotBase64Bytes)
 	}
 
 	return &ScreenshotResponse{

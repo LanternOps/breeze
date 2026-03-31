@@ -10,6 +10,17 @@ import (
 // OutputCallback is a function that receives terminal output
 type OutputCallback func(sessionId string, data []byte)
 
+const maxTerminalWriteBytes = 256 * 1024
+
+const (
+	defaultTerminalCols = 80
+	defaultTerminalRows = 24
+	minTerminalCols     = 20
+	maxTerminalCols     = 500
+	minTerminalRows     = 5
+	maxTerminalRows     = 200
+)
+
 // StartTerminal starts a new terminal session
 func StartTerminal(mgr *terminal.Manager, payload map[string]any, outputCallback OutputCallback) CommandResult {
 	start := time.Now()
@@ -19,8 +30,10 @@ func StartTerminal(mgr *terminal.Manager, payload map[string]any, outputCallback
 		return NewErrorResult(fmt.Errorf("sessionId is required"), time.Since(start).Milliseconds())
 	}
 
-	cols := uint16(GetPayloadInt(payload, "cols", 80))
-	rows := uint16(GetPayloadInt(payload, "rows", 24))
+	cols, rows := normalizeTerminalSize(
+		GetPayloadInt(payload, "cols", defaultTerminalCols),
+		GetPayloadInt(payload, "rows", defaultTerminalRows),
+	)
 	shell := GetPayloadString(payload, "shell", "")
 
 	// Create output handler that streams data back
@@ -64,6 +77,9 @@ func WriteTerminal(mgr *terminal.Manager, payload map[string]any) CommandResult 
 	}
 
 	data := []byte(dataStr)
+	if len(data) > maxTerminalWriteBytes {
+		return NewErrorResult(fmt.Errorf("terminal input too large: %d bytes (max %d bytes)", len(data), maxTerminalWriteBytes), time.Since(start).Milliseconds())
+	}
 	if err := mgr.WriteToSession(sessionId, data); err != nil {
 		return NewErrorResult(err, time.Since(start).Milliseconds())
 	}
@@ -83,8 +99,10 @@ func ResizeTerminal(mgr *terminal.Manager, payload map[string]any) CommandResult
 		return NewErrorResult(fmt.Errorf("sessionId is required"), time.Since(start).Milliseconds())
 	}
 
-	cols := uint16(GetPayloadInt(payload, "cols", 80))
-	rows := uint16(GetPayloadInt(payload, "rows", 24))
+	cols, rows := normalizeTerminalSize(
+		GetPayloadInt(payload, "cols", defaultTerminalCols),
+		GetPayloadInt(payload, "rows", defaultTerminalRows),
+	)
 
 	if err := mgr.ResizeSession(sessionId, cols, rows); err != nil {
 		return NewErrorResult(err, time.Since(start).Milliseconds())
@@ -115,4 +133,20 @@ func StopTerminal(mgr *terminal.Manager, payload map[string]any) CommandResult {
 		"sessionId": sessionId,
 		"stopped":   true,
 	}, time.Since(start).Milliseconds())
+}
+
+func normalizeTerminalSize(cols, rows int) (uint16, uint16) {
+	if cols < minTerminalCols {
+		cols = minTerminalCols
+	} else if cols > maxTerminalCols {
+		cols = maxTerminalCols
+	}
+
+	if rows < minTerminalRows {
+		rows = minTerminalRows
+	} else if rows > maxTerminalRows {
+		rows = maxTerminalRows
+	}
+
+	return uint16(cols), uint16(rows)
 }

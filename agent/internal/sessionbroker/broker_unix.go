@@ -15,8 +15,11 @@ func (b *Broker) setupSocket() error {
 
 	// Ensure directory exists
 	dir := filepath.Dir(b.socketPath)
-	if err := os.MkdirAll(dir, 0770); err != nil {
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	if err := os.Chmod(dir, 0755); err != nil {
+		return fmt.Errorf("chmod %s: %w", dir, err)
 	}
 
 	listener, err := net.Listen("unix", b.socketPath)
@@ -24,8 +27,9 @@ func (b *Broker) setupSocket() error {
 		return fmt.Errorf("listen %s: %w", b.socketPath, err)
 	}
 
-	// Set socket permissions: 0770 (owner + group can read/write)
-	if err := os.Chmod(b.socketPath, 0770); err != nil {
+	// Allow normal user helpers to traverse the directory and connect to the
+	// socket. Peer credential verification and binary checks remain the gate.
+	if err := os.Chmod(b.socketPath, 0660); err != nil {
 		listener.Close()
 		return fmt.Errorf("chmod %s: %w", b.socketPath, err)
 	}

@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import type { AuthContext } from '../../middleware/auth';
-import { requireScope } from '../../middleware/auth';
+import { requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { PERMISSIONS } from '../../services/permissions';
 import {
   getConfigPolicy,
   assignPolicy,
@@ -18,11 +19,14 @@ import {
 } from './schemas';
 
 export const assignmentRoutes = new Hono();
+const requireConfigPolicyRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
+const requireConfigPolicyWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
 
 // GET /:id/assignments — list assignments for a policy
 assignmentRoutes.get(
   '/:id/assignments',
   requireScope('organization', 'partner', 'system'),
+  requireConfigPolicyRead,
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -40,6 +44,7 @@ assignmentRoutes.get(
 assignmentRoutes.post(
   '/:id/assignments',
   requireScope('organization', 'partner', 'system'),
+  requireConfigPolicyWrite,
   zValidator('param', idParamSchema),
   zValidator('json', assignPolicySchema),
   async (c) => {
@@ -84,6 +89,7 @@ assignmentRoutes.post(
 assignmentRoutes.delete(
   '/:id/assignments/:aid',
   requireScope('organization', 'partner', 'system'),
+  requireConfigPolicyWrite,
   zValidator('param', assignmentIdParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -112,6 +118,7 @@ assignmentRoutes.delete(
 assignmentRoutes.get(
   '/assignments/target',
   requireScope('organization', 'partner', 'system'),
+  requireConfigPolicyRead,
   zValidator('query', targetQuerySchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;

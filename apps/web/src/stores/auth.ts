@@ -82,11 +82,17 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name: 'breeze-auth',
+      version: 2,
       partialize: (state) => ({
         user: state.user,
-        tokens: state.tokens,
         isAuthenticated: state.isAuthenticated,
       }),
+      migrate: (persistedState) => {
+        const nextState = (persistedState ?? {}) as Record<string, unknown>;
+        // Access tokens stay in memory only. Refresh cookies restore them after reload.
+        delete nextState.tokens;
+        return nextState as Partial<AuthState>;
+      },
       onRehydrateStorage: () => (state) => {
         // Set isLoading to false after rehydration completes.
         // When rehydration fails, state is null — fall back to the raw store API

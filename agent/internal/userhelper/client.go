@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"io"
 	"net"
 	"os"
 	osexec "os/exec"
@@ -20,8 +21,10 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/executor"
+	"github.com/breeze-rmm/agent/internal/helper"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/remote/clipboard"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
 
@@ -37,6 +40,7 @@ type Client struct {
 	scopes     []string
 	stopChan   chan struct{}
 	desktopMgr *helperDesktopManager
+	executor   *executor.Executor
 	pendingMu  sync.Mutex
 	pending    map[string]chan *ipc.Envelope
 	sasReqSeq  atomic.Uint64
@@ -53,6 +57,7 @@ func New(socketPath, role string) *Client {
 		role:       role,
 		stopChan:   make(chan struct{}),
 		desktopMgr: newHelperDesktopManager(),
+		executor:   executor.New(nil),
 		pending:    make(map[string]chan *ipc.Envelope),
 	}
 }
@@ -200,6 +205,35 @@ func (c *Client) sendCapabilities() error {
 		caps.CanCapture = false
 	}
 	return c.conn.SendTyped("caps", ipc.TypeCapabilities, caps)
+}
+
+func (c *Client) hasScope(scope string) bool {
+	for _, allowed := range c.scopes {
+		if allowed == scope || allowed == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) authorizeCommand(cmdType string) error {
+	switch cmdType {
+	case tools.CmdScript, tools.CmdRunScript, tools.CmdScriptCancel, tools.CmdScriptListRunning, "exec":
+		if !c.hasScope("run_as_user") {
+			return fmt.Errorf("command %s requires run_as_user scope", cmdType)
+		}
+	case tools.CmdTakeScreenshot, tools.CmdComputerAction:
+		if c.hasScope("desktop") {
+			return nil
+		}
+		if runtime.GOOS == "darwin" && c.hasScope("run_as_user") {
+			return nil
+		}
+		return fmt.Errorf("command %s requires desktop scope", cmdType)
+	default:
+		return fmt.Errorf("unsupported command type: %s", cmdType)
+	}
+	return nil
 }
 
 func (c *Client) commandLoop() error {
@@ -364,6 +398,17 @@ func (c *Client) handleCommand(env *ipc.Envelope) {
 		return
 	}
 
+	if err := c.authorizeCommand(cmd.Type); err != nil {
+		if sendErr := c.conn.SendTyped(env.ID, ipc.TypeCommandResult, ipc.IPCCommandResult{
+			CommandID: cmd.CommandID,
+			Status:    "failed",
+			Error:     err.Error(),
+		}); sendErr != nil {
+			log.Warn("failed to send unauthorized command response", "id", env.ID, "error", sendErr)
+		}
+		return
+	}
+
 	// Dispatch based on command type. Screenshot/computer_action need to run
 	// in the user session (this process) since the service runs in Session 0
 	// and has no display for DXGI/GDI/SendInput.
@@ -373,8 +418,14 @@ func (c *Client) handleCommand(env *ipc.Envelope) {
 		result = c.executeToolCommand(cmd)
 	case "exec":
 		result = c.executeProcess(cmd)
-	default:
+	case tools.CmdScript, tools.CmdRunScript, tools.CmdScriptCancel, tools.CmdScriptListRunning:
 		result = c.executeScript(cmd)
+	default:
+		result = ipc.IPCCommandResult{
+			CommandID: cmd.CommandID,
+			Status:    "failed",
+			Error:     fmt.Sprintf("unsupported command type: %s", cmd.Type),
+		}
 	}
 	if err := c.conn.SendTyped(env.ID, ipc.TypeCommandResult, result); err != nil {
 		log.Warn("failed to send command result", "id", env.ID, "error", err)
@@ -396,36 +447,38 @@ func (c *Client) handleLaunchProcess(env *ipc.Envelope) {
 		})
 		return
 	}
+	if !c.hasScope("run_as_user") {
+		c.conn.SendTyped(env.ID, ipc.TypeLaunchResult, ipc.LaunchProcessResult{
+			Error: "launch_process requires run_as_user scope",
+		})
+		return
+	}
 
 	// Security: only allow launching the agent's own binary (e.g., Breeze Helper).
 	// Prevents arbitrary code execution if the IPC channel is compromised.
 	selfPath, err := os.Executable()
 	if err == nil {
-		selfPath, _ = filepath.EvalSymlinks(selfPath)
-		candidate, _ := filepath.EvalSymlinks(req.BinaryPath)
-		selfDir := filepath.Dir(filepath.Clean(selfPath))
-		candidateDir := filepath.Dir(filepath.Clean(candidate))
-		if selfDir != candidateDir {
+		if !isAllowedLaunchBinary(selfPath, req.BinaryPath) {
 			log.Warn("launch_process rejected: binary not in agent directory",
-				"requested", req.BinaryPath, "agentDir", selfDir)
+				"requested", req.BinaryPath, "agentDir", filepath.Dir(filepath.Clean(selfPath)))
 			c.conn.SendTyped(env.ID, ipc.TypeLaunchResult, ipc.LaunchProcessResult{
-				Error: "binary path not in agent directory",
+				Error: "binary path not in allowed launch directory",
 			})
 			return
 		}
 	}
 
-	cmd := osexec.Command(req.BinaryPath)
+	cmd := osexec.Command(req.BinaryPath, req.Args...)
 	cmd.Dir = filepath.Dir(req.BinaryPath)
 	if err := cmd.Start(); err != nil {
-		log.Warn("failed to launch process", "binary", req.BinaryPath, "error", err.Error())
+		log.Warn("failed to launch process", "binary", req.BinaryPath, "args", req.Args, "error", err.Error())
 		c.conn.SendTyped(env.ID, ipc.TypeLaunchResult, ipc.LaunchProcessResult{
 			Error: err.Error(),
 		})
 		return
 	}
 
-	log.Info("launched process as user", "binary", req.BinaryPath, "pid", cmd.Process.Pid)
+	log.Info("launched process as user", "binary", req.BinaryPath, "args", req.Args, "pid", cmd.Process.Pid)
 	c.conn.SendTyped(env.ID, ipc.TypeLaunchResult, ipc.LaunchProcessResult{
 		OK:  true,
 		PID: cmd.Process.Pid,
@@ -433,6 +486,28 @@ func (c *Client) handleLaunchProcess(env *ipc.Envelope) {
 
 	// Don't wait for the process — release it so it runs independently.
 	cmd.Process.Release()
+}
+
+func isAllowedLaunchBinary(selfPath, requestedPath string) bool {
+	candidateDir := filepath.Dir(resolveLaunchPath(requestedPath))
+	allowedDirs := []string{
+		filepath.Dir(resolveLaunchPath(selfPath)),
+		filepath.Dir(resolveLaunchPath(helper.DefaultBinaryPath())),
+	}
+	for _, dir := range allowedDirs {
+		if candidateDir == dir {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveLaunchPath(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(path)
 }
 
 func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
@@ -445,7 +520,64 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 		}
 	}
 
-	exec := executor.New(nil)
+	switch cmd.Type {
+	case tools.CmdScriptCancel:
+		executionID := getStringOrDefault(payload, "executionId", "")
+		if executionID == "" {
+			return ipc.IPCCommandResult{
+				CommandID: cmd.CommandID,
+				Status:    "failed",
+				Error:     "executionId is required",
+			}
+		}
+
+		if err := c.executor.Cancel(executionID); err != nil {
+			return ipc.IPCCommandResult{
+				CommandID: cmd.CommandID,
+				Status:    "failed",
+				Error:     err.Error(),
+			}
+		}
+
+		resultJSON, err := json.Marshal(map[string]any{
+			"executionId": executionID,
+			"cancelled":   true,
+		})
+		if err != nil {
+			return ipc.IPCCommandResult{
+				CommandID: cmd.CommandID,
+				Status:    "failed",
+				Error:     fmt.Sprintf("marshal result: %v", err),
+			}
+		}
+
+		return ipc.IPCCommandResult{
+			CommandID: cmd.CommandID,
+			Status:    "completed",
+			Result:    resultJSON,
+		}
+
+	case tools.CmdScriptListRunning:
+		running := c.executor.ListRunning()
+		resultJSON, err := json.Marshal(map[string]any{
+			"running": running,
+			"count":   len(running),
+		})
+		if err != nil {
+			return ipc.IPCCommandResult{
+				CommandID: cmd.CommandID,
+				Status:    "failed",
+				Error:     fmt.Sprintf("marshal result: %v", err),
+			}
+		}
+
+		return ipc.IPCCommandResult{
+			CommandID: cmd.CommandID,
+			Status:    "completed",
+			Result:    resultJSON,
+		}
+	}
+
 	script := executor.ScriptExecution{
 		ID:         cmd.CommandID,
 		ScriptType: getStringOrDefault(payload, "language", "bash"),
@@ -453,7 +585,7 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 		Timeout:    getIntOrDefault(payload, "timeoutSeconds", 300),
 	}
 
-	result, err := exec.Execute(script)
+	result, err := c.executor.Execute(script)
 	if err != nil && result == nil {
 		return ipc.IPCCommandResult{
 			CommandID: cmd.CommandID,
@@ -469,8 +601,8 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 
 	resultJSON, err := json.Marshal(map[string]any{
 		"exitCode": result.ExitCode,
-		"stdout":   result.Stdout,
-		"stderr":   result.Stderr,
+		"stdout":   executor.SanitizeOutput(result.Stdout),
+		"stderr":   executor.SanitizeOutput(result.Stderr),
 	})
 	if err != nil {
 		return ipc.IPCCommandResult{
@@ -536,8 +668,8 @@ func (c *Client) executeProcess(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 		}
 		resultJSON, err := json.Marshal(map[string]any{
 			"exitCode": exitCode,
-			"stdout":   stdout.String(),
-			"stderr":   stderr.String(),
+			"stdout":   executor.SanitizeOutput(stdout.String()),
+			"stderr":   executor.SanitizeOutput(stderr.String()),
 		})
 		if err != nil {
 			return ipc.IPCCommandResult{CommandID: cmd.CommandID, Status: "failed", Error: fmt.Sprintf("marshal result: %v", err)}
@@ -691,12 +823,83 @@ func (c *Client) handleDesktopInput(env *ipc.Envelope) {
 }
 
 func (c *Client) handleClipboardGet(env *ipc.Envelope) {
-	// Phase 4: Clipboard delegation
-	log.Debug("clipboard_get received (not yet implemented)")
+	c.handleClipboardGetWithProvider(env, clipboard.NewSystemClipboard())
 }
 
 func (c *Client) handleClipboardSet(env *ipc.Envelope) {
-	log.Debug("clipboard_set received (not yet implemented)")
+	c.handleClipboardSetWithProvider(env, clipboard.NewSystemClipboard())
+}
+
+func (c *Client) handleClipboardGetWithProvider(env *ipc.Envelope, provider clipboard.Provider) {
+	content, err := provider.GetContent()
+	if err != nil {
+		log.Warn("clipboard_get failed", "error", err.Error())
+		if sendErr := c.conn.SendError(env.ID, ipc.TypeClipboardData, err.Error()); sendErr != nil {
+			log.Warn("failed to send clipboard_get error", "error", sendErr)
+		}
+		return
+	}
+	if err := clipboard.ValidateContent(content); err != nil {
+		log.Warn("clipboard_get rejected oversized content", "error", err.Error())
+		if sendErr := c.conn.SendError(env.ID, ipc.TypeClipboardData, err.Error()); sendErr != nil {
+			log.Warn("failed to send clipboard_get error", "error", sendErr)
+		}
+		return
+	}
+
+	payload := map[string]any{
+		"type":        string(content.Type),
+		"text":        content.Text,
+		"rtf":         content.RTF,
+		"image":       content.Image,
+		"imageFormat": content.ImageFormat,
+	}
+	if err := c.conn.SendTyped(env.ID, ipc.TypeClipboardData, payload); err != nil {
+		log.Warn("failed to send clipboard_get response", "error", err)
+	}
+}
+
+func (c *Client) handleClipboardSetWithProvider(env *ipc.Envelope, provider clipboard.Provider) {
+	var payload struct {
+		Type        string `json:"type"`
+		Text        string `json:"text,omitempty"`
+		RTF         []byte `json:"rtf,omitempty"`
+		Image       []byte `json:"image,omitempty"`
+		ImageFormat string `json:"imageFormat,omitempty"`
+	}
+	if err := json.Unmarshal(env.Payload, &payload); err != nil {
+		log.Warn("invalid clipboard_set payload", "error", err)
+		if sendErr := c.conn.SendError(env.ID, ipc.TypeClipboardSet, fmt.Sprintf("invalid payload: %v", err)); sendErr != nil {
+			log.Warn("failed to send clipboard_set error", "error", sendErr)
+		}
+		return
+	}
+
+	content := clipboard.Content{
+		Type:        clipboard.ContentType(payload.Type),
+		Text:        payload.Text,
+		RTF:         payload.RTF,
+		Image:       payload.Image,
+		ImageFormat: payload.ImageFormat,
+	}
+	if err := clipboard.ValidateContent(content); err != nil {
+		log.Warn("clipboard_set rejected oversized content", "error", err.Error())
+		if sendErr := c.conn.SendError(env.ID, ipc.TypeClipboardSet, err.Error()); sendErr != nil {
+			log.Warn("failed to send clipboard_set error", "error", sendErr)
+		}
+		return
+	}
+	if err := provider.SetContent(content); err != nil {
+		log.Warn("clipboard_set failed", "error", err.Error())
+		if sendErr := c.conn.SendError(env.ID, ipc.TypeClipboardSet, err.Error()); sendErr != nil {
+			log.Warn("failed to send clipboard_set error", "error", sendErr)
+		}
+		return
+	}
+
+	if err := c.conn.SendTyped(env.ID, ipc.TypeClipboardSet, map[string]any{"ok": true}); err != nil {
+		log.Warn("failed to send clipboard_set response", "error", err)
+	}
 }
 
 // requestSASViaIPC sends a sas_request to the service process via IPC.
@@ -753,12 +956,20 @@ func computeSelfHash() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(exePath)
+	file, err := os.Open(exePath)
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
+	defer file.Close()
+	return hashReaderSHA256(file)
+}
+
+func hashReaderSHA256(r io.Reader) (string, error) {
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, r); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 func detectDisplayEnv() string {
@@ -784,7 +995,7 @@ func detectCapabilities() ipc.Capabilities {
 		CanNotify:     hasDisplay,
 		CanTray:       hasDisplay,
 		CanCapture:    hasDisplay,
-		CanClipboard:  hasDisplay,
+		CanClipboard:  hasDisplay && clipboardSupported(),
 		DisplayServer: display,
 	}
 }

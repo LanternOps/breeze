@@ -1,8 +1,11 @@
 import { Hono } from 'hono';
-import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import { PERMISSIONS } from '../services/permissions';
 
 export const integrationRoutes = new Hono();
+const requireIntegrationRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
+const requireIntegrationWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
 
 const communicationSettings = new Map<string, Record<string, unknown>>();
 const monitoringSettings = new Map<string, Record<string, unknown>>();
@@ -67,7 +70,7 @@ function requestedOrgId(c: { req: { query: (key: string) => string | undefined }
 
 integrationRoutes.use('*', authMiddleware);
 
-integrationRoutes.get('/communication', requireScope('organization', 'partner', 'system'), async (c) => {
+integrationRoutes.get('/communication', requireScope('organization', 'partner', 'system'), requireIntegrationRead, async (c) => {
   const auth = c.get('auth');
   const orgResult = resolveOrgId(auth, requestedOrgId(c));
   if ('error' in orgResult) {
@@ -83,9 +86,10 @@ integrationRoutes.get('/communication', requireScope('organization', 'partner', 
 });
 
 for (const provider of ['slack', 'teams', 'discord'] as const) {
-  integrationRoutes.post(`/${provider}`, requireScope('organization', 'partner', 'system'), async (c) => {
+  integrationRoutes.post(`/${provider}`, requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
     const auth = c.get('auth');
-    const body = await c.req.json().catch(() => ({}));
+    const body = await c.req.json().catch(() => null);
+    if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
     const explicitOrgId = typeof body?.orgId === 'string' ? body.orgId : requestedOrgId(c);
     const orgResult = resolveOrgId(auth, explicitOrgId);
     if ('error' in orgResult) {
@@ -111,7 +115,7 @@ for (const provider of ['slack', 'teams', 'discord'] as const) {
   });
 }
 
-integrationRoutes.get('/monitoring', requireScope('organization', 'partner', 'system'), async (c) => {
+integrationRoutes.get('/monitoring', requireScope('organization', 'partner', 'system'), requireIntegrationRead, async (c) => {
   const auth = c.get('auth');
   const orgResult = resolveOrgId(auth, requestedOrgId(c));
   if ('error' in orgResult) {
@@ -121,9 +125,10 @@ integrationRoutes.get('/monitoring', requireScope('organization', 'partner', 'sy
   return c.json({ data: monitoringSettings.get(orgResult.orgId) ?? {} });
 });
 
-integrationRoutes.put('/monitoring', requireScope('organization', 'partner', 'system'), async (c) => {
+integrationRoutes.put('/monitoring', requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
   const auth = c.get('auth');
-  const body = await c.req.json().catch(() => ({}));
+  const body = await c.req.json().catch(() => null);
+  if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
   const explicitOrgId = typeof body?.orgId === 'string' ? body.orgId : requestedOrgId(c);
   const orgResult = resolveOrgId(auth, explicitOrgId);
   if ('error' in orgResult) {
@@ -134,11 +139,11 @@ integrationRoutes.put('/monitoring', requireScope('organization', 'partner', 'sy
   return c.json({ success: true, data: body });
 });
 
-integrationRoutes.post('/monitoring/test', requireScope('organization', 'partner', 'system'), async (c) => {
+integrationRoutes.post('/monitoring/test', requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
   return c.json({ success: true, message: 'Connection successful.' });
 });
 
-integrationRoutes.get('/ticketing', requireScope('organization', 'partner', 'system'), async (c) => {
+integrationRoutes.get('/ticketing', requireScope('organization', 'partner', 'system'), requireIntegrationRead, async (c) => {
   const auth = c.get('auth');
   const orgResult = resolveOrgId(auth, requestedOrgId(c));
   if ('error' in orgResult) {
@@ -148,9 +153,10 @@ integrationRoutes.get('/ticketing', requireScope('organization', 'partner', 'sys
   return c.json({ data: ticketingSettings.get(orgResult.orgId) ?? {} });
 });
 
-integrationRoutes.post('/ticketing', requireScope('organization', 'partner', 'system'), async (c) => {
+integrationRoutes.post('/ticketing', requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
   const auth = c.get('auth');
-  const body = await c.req.json().catch(() => ({}));
+  const body = await c.req.json().catch(() => null);
+  if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
   const explicitOrgId = typeof body?.orgId === 'string' ? body.orgId : requestedOrgId(c);
   const orgResult = resolveOrgId(auth, explicitOrgId);
   if ('error' in orgResult) {
@@ -161,11 +167,11 @@ integrationRoutes.post('/ticketing', requireScope('organization', 'partner', 'sy
   return c.json({ success: true, message: 'Ticketing settings saved.', data: body });
 });
 
-integrationRoutes.post('/ticketing/test', requireScope('organization', 'partner', 'system'), async (c) => {
+integrationRoutes.post('/ticketing/test', requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
   return c.json({ success: true, message: 'Connection successful. Credentials validated.' });
 });
 
-integrationRoutes.get('/psa', requireScope('organization', 'partner', 'system'), async (c) => {
+integrationRoutes.get('/psa', requireScope('organization', 'partner', 'system'), requireIntegrationRead, async (c) => {
   const auth = c.get('auth');
   const orgResult = resolveOrgId(auth, requestedOrgId(c));
   if ('error' in orgResult) {
@@ -180,9 +186,10 @@ integrationRoutes.get('/psa', requireScope('organization', 'partner', 'system'),
   return c.json({ data: existing });
 });
 
-integrationRoutes.post('/psa', requireScope('organization', 'partner', 'system'), async (c) => {
+integrationRoutes.post('/psa', requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
   const auth = c.get('auth');
-  const body = await c.req.json().catch(() => ({}));
+  const body = await c.req.json().catch(() => null);
+  if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
   const explicitOrgId = typeof body?.orgId === 'string' ? body.orgId : requestedOrgId(c);
   const orgResult = resolveOrgId(auth, explicitOrgId);
   if ('error' in orgResult) {
@@ -193,9 +200,10 @@ integrationRoutes.post('/psa', requireScope('organization', 'partner', 'system')
   return c.json({ success: true, data: body });
 });
 
-integrationRoutes.put('/psa', requireScope('organization', 'partner', 'system'), async (c) => {
+integrationRoutes.put('/psa', requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
   const auth = c.get('auth');
-  const body = await c.req.json().catch(() => ({}));
+  const body = await c.req.json().catch(() => null);
+  if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
   const explicitOrgId = typeof body?.orgId === 'string' ? body.orgId : requestedOrgId(c);
   const orgResult = resolveOrgId(auth, explicitOrgId);
   if ('error' in orgResult) {
@@ -206,8 +214,9 @@ integrationRoutes.put('/psa', requireScope('organization', 'partner', 'system'),
   return c.json({ success: true, data: body });
 });
 
-integrationRoutes.post('/psa/test', requireScope('organization', 'partner', 'system'), async (c) => {
-  const body = await c.req.json().catch(() => ({}));
+integrationRoutes.post('/psa/test', requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
   const provider = typeof body?.provider === 'string' ? body.provider : 'provider';
   return c.json({ success: true, message: `${provider} connection successful.` });
 });

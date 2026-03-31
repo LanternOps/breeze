@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
-import { softwareRoutes } from './software';
+import { softwareRoutes, computeSoftwareDeploymentAggregateStatus } from './software';
 
 vi.mock('../services', () => ({}));
 
@@ -36,6 +36,10 @@ vi.mock('../db', () => ({
     insert: vi.fn(() => chainMock([])),
     update: vi.fn(() => chainMock(undefined)),
     delete: vi.fn(() => chainMock(undefined)),
+    transaction: vi.fn(async (fn) => fn({
+      update: vi.fn(() => chainMock([])),
+      insert: vi.fn(() => chainMock([])),
+    })),
   }
 }));
 
@@ -59,11 +63,17 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn(() => async (_c: any, next: any) => next())
+  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
+}));
+
+vi.mock('../services/deploymentTargetResolver', () => ({
+  resolveDeploymentTargets: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../services/s3Storage', () => ({
@@ -110,5 +120,45 @@ describe('software routes', () => {
       const body = await res.json();
       expect(body).toHaveProperty('data');
     });
+  });
+
+});
+
+describe('computeSoftwareDeploymentAggregateStatus', () => {
+  it('returns pending when all results are pending', () => {
+    expect(computeSoftwareDeploymentAggregateStatus([{ status: 'pending', count: 4 }])).toBe('pending');
+  });
+
+  it('returns in_progress when running statuses are present', () => {
+    expect(computeSoftwareDeploymentAggregateStatus([
+      { status: 'pending', count: 2 },
+      { status: 'running', count: 1 },
+    ])).toBe('in_progress');
+  });
+
+  it('returns completed when all results completed', () => {
+    expect(computeSoftwareDeploymentAggregateStatus([{ status: 'completed', count: 3 }])).toBe('completed');
+  });
+
+  it('returns failed when failures exist without completed results', () => {
+    expect(computeSoftwareDeploymentAggregateStatus([{ status: 'failed', count: 2 }])).toBe('failed');
+  });
+
+  it('returns completed_with_errors when failures and completed results coexist', () => {
+    expect(computeSoftwareDeploymentAggregateStatus([
+      { status: 'completed', count: 2 },
+      { status: 'failed', count: 1 },
+    ])).toBe('completed_with_errors');
+  });
+
+  it('returns cancelled when all results are cancelled', () => {
+    expect(computeSoftwareDeploymentAggregateStatus([{ status: 'cancelled', count: 5 }])).toBe('cancelled');
+  });
+
+  it('returns in_progress for mixed pending and completed results', () => {
+    expect(computeSoftwareDeploymentAggregateStatus([
+      { status: 'pending', count: 1 },
+      { status: 'completed', count: 1 },
+    ])).toBe('in_progress');
   });
 });

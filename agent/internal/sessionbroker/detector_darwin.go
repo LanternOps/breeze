@@ -21,7 +21,6 @@ import "C"
 import (
 	"context"
 	"time"
-	"unsafe"
 )
 
 type darwinDetector struct{}
@@ -45,15 +44,19 @@ func (d *darwinDetector) ListSessions() ([]DetectedSession, error) {
 		return nil, nil
 	}
 
-	return []DetectedSession{
-		{
-			UID:      uint32(uid),
-			Username: username,
-			Session:  "console",
-			Display:  "quartz",
-			State:    "active",
-		},
-	}, nil
+	session, err := sanitizeDetectedSession(DetectedSession{
+		UID:      uint32(uid),
+		Username: username,
+		Session:  "console",
+		Display:  "quartz",
+		State:    "active",
+		Type:     "console",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return []DetectedSession{session}, nil
 }
 
 func (d *darwinDetector) WatchSessions(ctx context.Context) <-chan SessionEvent {
@@ -72,8 +75,17 @@ func (d *darwinDetector) WatchSessions(ctx context.Context) <-chan SessionEvent 
 
 		// Get initial state
 		if C.getConsoleUser(&buf[0], C.int(len(buf)), &uid) != 0 {
-			lastUser = C.GoString((*C.char)(unsafe.Pointer(&buf[0])))
-			lastUID = uint32(uid)
+			if session, err := sanitizeDetectedSession(DetectedSession{
+				UID:      uint32(uid),
+				Username: C.GoString(&buf[0]),
+				Session:  "console",
+				Display:  "quartz",
+				State:    "active",
+				Type:     "console",
+			}); err == nil {
+				lastUser = session.Username
+				lastUID = session.UID
+			}
 		}
 
 		for {
@@ -85,8 +97,17 @@ func (d *darwinDetector) WatchSessions(ctx context.Context) <-chan SessionEvent 
 				var currentUID uint32
 
 				if C.getConsoleUser(&buf[0], C.int(len(buf)), &uid) != 0 {
-					currentUser = C.GoString((*C.char)(unsafe.Pointer(&buf[0])))
-					currentUID = uint32(uid)
+					if session, err := sanitizeDetectedSession(DetectedSession{
+						UID:      uint32(uid),
+						Username: C.GoString(&buf[0]),
+						Session:  "console",
+						Display:  "quartz",
+						State:    "active",
+						Type:     "console",
+					}); err == nil {
+						currentUser = session.Username
+						currentUID = session.UID
+					}
 				}
 
 				if currentUser == "loginwindow" {

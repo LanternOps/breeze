@@ -88,7 +88,7 @@ export default function ComplianceDashboard({ prefill }: ComplianceDashboardProp
     setError(null);
     try {
       const [policiesRes, overviewRes, violationsRes] = await Promise.all([
-        fetchWithAuth('/software-policies?limit=100'),
+        fetchWithAuth('/software-policies?limit=100&isActive=true'),
         fetchWithAuth('/software-policies/compliance/overview'),
         fetchWithAuth('/software-policies/violations?limit=25'),
       ]);

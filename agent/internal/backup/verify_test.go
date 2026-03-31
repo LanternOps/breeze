@@ -10,6 +10,45 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
+type recordingTestRestoreProvider struct {
+	manifest  []byte
+	files     map[string][]byte
+	downloads map[string]string
+}
+
+func (p *recordingTestRestoreProvider) Upload(localPath, remotePath string) error {
+	return nil
+}
+
+func (p *recordingTestRestoreProvider) Download(remotePath, localPath string) error {
+	if remotePath == path.Join(snapshotRootDir, "dup-basenames", snapshotManifestKey) {
+		if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(localPath, p.manifest, 0o644)
+	}
+	data, ok := p.files[remotePath]
+	if !ok {
+		return os.ErrNotExist
+	}
+	if p.downloads == nil {
+		p.downloads = make(map[string]string)
+	}
+	p.downloads[remotePath] = localPath
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(localPath, data, 0o644)
+}
+
+func (p *recordingTestRestoreProvider) List(prefix string) ([]string, error) {
+	return nil, nil
+}
+
+func (p *recordingTestRestoreProvider) Delete(remotePath string) error {
+	return nil
+}
+
 func setupTestSnapshot(t *testing.T, basePath string) string {
 	t.Helper()
 	snapshotID := "snapshot-test-001"
@@ -224,5 +263,45 @@ func TestCleanupRestoreDir_PathTraversal(t *testing.T) {
 	err := CleanupRestoreDir("/etc/passwd")
 	if err == nil {
 		t.Error("expected error for path outside restore prefix")
+	}
+}
+
+func TestTestRestorePreservesDistinctPathsForDuplicateBasenames(t *testing.T) {
+	snapshot := Snapshot{
+		ID: "dup-basenames",
+		Files: []SnapshotFile{
+			{SourcePath: "/var/log/app/config.json", BackupPath: path.Join(snapshotRootDir, "dup-basenames", "files", "a-config.json.gz"), Size: 2},
+			{SourcePath: "/etc/app/config.json", BackupPath: path.Join(snapshotRootDir, "dup-basenames", "files", "b-config.json.gz"), Size: 2},
+		},
+		Size: 4,
+	}
+	manifest, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+
+	provider := &recordingTestRestoreProvider{
+		manifest: manifest,
+		files: map[string][]byte{
+			path.Join(snapshotRootDir, "dup-basenames", "files", "a-config.json.gz"): []byte("aa"),
+			path.Join(snapshotRootDir, "dup-basenames", "files", "b-config.json.gz"): []byte("bb"),
+		},
+	}
+
+	result, err := TestRestore(provider, "dup-basenames", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "passed" {
+		t.Fatalf("expected passed, got %s", result.Status)
+	}
+
+	pathA := provider.downloads[path.Join(snapshotRootDir, "dup-basenames", "files", "a-config.json.gz")]
+	pathB := provider.downloads[path.Join(snapshotRootDir, "dup-basenames", "files", "b-config.json.gz")]
+	if pathA == "" || pathB == "" {
+		t.Fatalf("expected both file downloads to be recorded, got %+v", provider.downloads)
+	}
+	if pathA == pathB {
+		t.Fatalf("duplicate basenames restored to the same path %q", pathA)
 	}
 }

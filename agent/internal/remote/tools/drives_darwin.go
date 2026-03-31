@@ -78,8 +78,8 @@ func listDrivesOS(startTime time.Time) CommandResult {
 	if len(drives) == 0 {
 		return fallbackRoot(startTime)
 	}
-
-	return NewSuccessResult(DriveListResponse{Drives: drives}, time.Since(startTime).Milliseconds())
+	drives, truncated := sanitizeDriveList(drives)
+	return NewSuccessResult(DriveListResponse{Drives: drives, Truncated: truncated}, time.Since(startTime).Milliseconds())
 }
 
 func fallbackRoot(startTime time.Time) CommandResult {
@@ -93,5 +93,6 @@ func fallbackRoot(startTime time.Time) CommandResult {
 			DriveType:  "fixed",
 		})
 	}
-	return NewSuccessResult(DriveListResponse{Drives: drives}, time.Since(startTime).Milliseconds())
+	drives, truncated := sanitizeDriveList(drives)
+	return NewSuccessResult(DriveListResponse{Drives: drives, Truncated: truncated}, time.Since(startTime).Milliseconds())
 }

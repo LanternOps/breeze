@@ -60,7 +60,8 @@ func TestEndToEnd_CommandRoundTrip(t *testing.T) {
 	}
 
 	pumpDone := make(chan struct{})
-	go c.writePump(pumpDone)
+	writerDone := make(chan struct{})
+	go c.writePump(pumpDone, writerDone)
 	go func() {
 		c.readPump()
 		close(pumpDone)
@@ -211,7 +212,8 @@ func TestMultipleConcurrentCommands(t *testing.T) {
 	}
 
 	pumpDone := make(chan struct{})
-	go c.writePump(pumpDone)
+	writerDone := make(chan struct{})
+	go c.writePump(pumpDone, writerDone)
 	go func() {
 		c.readPump()
 		close(pumpDone)

@@ -105,5 +105,6 @@ func listDrivesOS(startTime time.Time) CommandResult {
 		drives = append(drives, info)
 	}
 
-	return NewSuccessResult(DriveListResponse{Drives: drives}, time.Since(startTime).Milliseconds())
+	drives, truncated := sanitizeDriveList(drives)
+	return NewSuccessResult(DriveListResponse{Drives: drives, Truncated: truncated}, time.Since(startTime).Milliseconds())
 }

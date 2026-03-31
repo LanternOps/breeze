@@ -1,13 +1,50 @@
 package backup
 
 import (
+	"context"
 	"fmt"
 	"os"
 	pathpkg "path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+type blockingUploadProvider struct {
+	once    sync.Once
+	started chan struct{}
+}
+
+func newBlockingUploadProvider() *blockingUploadProvider {
+	return &blockingUploadProvider{
+		started: make(chan struct{}),
+	}
+}
+
+func (p *blockingUploadProvider) Upload(localPath, remotePath string) error {
+	return p.UploadContext(context.Background(), localPath, remotePath)
+}
+
+func (p *blockingUploadProvider) UploadContext(ctx context.Context, localPath, remotePath string) error {
+	p.once.Do(func() {
+		close(p.started)
+	})
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (p *blockingUploadProvider) Download(remotePath, localPath string) error {
+	return nil
+}
+
+func (p *blockingUploadProvider) List(prefix string) ([]string, error) {
+	return []string{}, nil
+}
+
+func (p *blockingUploadProvider) Delete(remotePath string) error {
+	return nil
+}
 
 func TestNewBackupManager(t *testing.T) {
 	provider := newMockProvider()
@@ -94,9 +131,7 @@ func TestStart_DoubleStart(t *testing.T) {
 		Schedule: time.Hour,
 	})
 
-	// Simulate the scheduler already running by setting the flag directly,
-	// avoiding the race in Stop() where m.stopCh is set to nil while
-	// the scheduler goroutine still references it.
+	// Simulate the scheduler already running by setting the flag directly.
 	mgr.mu.Lock()
 	mgr.schedulerRunning = true
 	mgr.mu.Unlock()
@@ -117,8 +152,9 @@ func TestStart_DoubleStart(t *testing.T) {
 
 func TestStop_NotStarted(t *testing.T) {
 	mgr := NewBackupManager(BackupConfig{})
-	// Should not panic
-	mgr.Stop()
+	if mgr.Stop() {
+		t.Error("Stop should report false when nothing is running")
+	}
 }
 
 func TestStartStop_SetsSchedulerRunning(t *testing.T) {
@@ -141,10 +177,49 @@ func TestStartStop_SetsSchedulerRunning(t *testing.T) {
 		t.Error("schedulerRunning should be true after Start")
 	}
 
-	// Note: We intentionally skip testing Stop() end-to-end here due to a
-	// known race in the production code where Stop() sets m.stopCh to nil
-	// before the scheduler goroutine reads it. We test the Stop logic
-	// through the TestStop_NotStarted test and by verifying the flags directly.
+	if !mgr.Stop() {
+		t.Error("Stop should report that the scheduler was stopped")
+	}
+
+	mgr.mu.Lock()
+	running = mgr.schedulerRunning
+	mgr.mu.Unlock()
+	if running {
+		t.Error("schedulerRunning should be false after Stop")
+	}
+}
+
+func TestStop_CancelsActiveBackup(t *testing.T) {
+	tmpDir := t.TempDir()
+	createTempFile(t, tmpDir, "data.txt", "cancel me")
+
+	provider := newBlockingUploadProvider()
+	mgr := NewBackupManager(BackupConfig{
+		Provider: provider,
+		Paths:    []string{tmpDir},
+		Schedule: time.Hour,
+	})
+
+	if err := mgr.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	select {
+	case <-provider.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for backup upload to start")
+	}
+
+	if !mgr.Stop() {
+		t.Fatal("Stop should report that an active backup was stopped")
+	}
+
+	mgr.mu.Lock()
+	running := mgr.schedulerRunning
+	mgr.mu.Unlock()
+	if running {
+		t.Error("schedulerRunning should be false after stopping an active backup")
+	}
 }
 
 func TestRunBackup_NilProvider(t *testing.T) {
@@ -255,6 +330,30 @@ func TestRunBackup_Directory(t *testing.T) {
 	}
 	if job.Status != jobStatusCompleted {
 		t.Errorf("job status = %q, want %q", job.Status, jobStatusCompleted)
+	}
+}
+
+func TestRunBackup_SystemStateDoesNotMutateConfiguredPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "single.txt", "single file backup")
+
+	provider := newMockProvider()
+	mgr := NewBackupManager(BackupConfig{
+		Provider:           provider,
+		Paths:              []string{file1},
+		SystemStateEnabled: true,
+	})
+
+	_, err := mgr.RunBackup()
+	if err != nil {
+		t.Fatalf("RunBackup failed: %v", err)
+	}
+
+	if got := len(mgr.config.Paths); got != 1 {
+		t.Fatalf("configured paths len = %d, want 1", got)
+	}
+	if mgr.config.Paths[0] != file1 {
+		t.Fatalf("configured path = %q, want %q", mgr.config.Paths[0], file1)
 	}
 }
 

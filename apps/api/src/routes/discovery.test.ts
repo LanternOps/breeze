@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { discoveryRoutes } from './discovery';
+import { db } from '../db';
 
 vi.mock('../services', () => ({}));
 
@@ -50,14 +51,27 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  discoveryProfiles: {},
-  discoveryJobs: {},
-  discoveredAssets: { orgId: 'orgId' },
+  discoveryProfiles: { id: 'discoveryProfiles.id', orgId: 'discoveryProfiles.orgId', siteId: 'discoveryProfiles.siteId' },
+  discoveryJobs: { id: 'discoveryJobs.id' },
+  discoveredAssets: { id: 'discoveredAssets.id', orgId: 'discoveredAssets.orgId', siteId: 'discoveredAssets.siteId' },
   networkTopology: { orgId: 'orgId' },
   networkMonitors: {},
   snmpDevices: {},
   snmpAlertThresholds: {},
-  snmpMetrics: {}
+  snmpMetrics: {},
+  discoveredAssetTypeEnum: {
+    enumValues: ['unknown', 'router', 'switch', 'firewall', 'access_point', 'workstation', 'server']
+  },
+  networkEventTypeEnum: {
+    enumValues: ['new_device', 'device_disappeared', 'device_changed', 'rogue_device']
+  },
+  devices: {
+    id: 'devices.id',
+    orgId: 'devices.orgId',
+    siteId: 'devices.siteId',
+    agentId: 'devices.agentId',
+    status: 'devices.status'
+  }
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -71,7 +85,9 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn(() => async (_c: any, next: any) => next())
+  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 describe('discovery routes', () => {
@@ -109,6 +125,85 @@ describe('discovery routes', () => {
 
       // Scan queuing may return 201 or fail depending on job queue mock
       expect([200, 201, 400, 500]).toContain(res.status);
+    });
+
+    it('rejects requested agents from a different site', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: '00000000-0000-0000-0000-000000000010',
+                orgId: '00000000-0000-0000-0000-000000000000',
+                siteId: '00000000-0000-0000-0000-000000000001',
+              }]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: '00000000-0000-0000-0000-000000000011',
+                orgId: '00000000-0000-0000-0000-000000000000',
+                siteId: '00000000-0000-0000-0000-000000000099',
+                agentId: '00000000-0000-0000-0000-000000000012',
+                status: 'online'
+              }]),
+            }),
+          }),
+        } as any);
+
+      const res = await app.request('/discovery/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          profileId: '00000000-0000-0000-0000-000000000010',
+          agentId: '00000000-0000-0000-0000-000000000012'
+        })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toContain('same site');
+    });
+  });
+
+  describe('POST /discovery/assets/:id/link', () => {
+    it('rejects linking an asset to a device from a different site', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: '00000000-0000-0000-0000-000000000020',
+                orgId: '00000000-0000-0000-0000-000000000000',
+                siteId: '00000000-0000-0000-0000-000000000001'
+              }]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: '00000000-0000-0000-0000-000000000021',
+                orgId: '00000000-0000-0000-0000-000000000000',
+                siteId: '00000000-0000-0000-0000-000000000099'
+              }]),
+            }),
+          }),
+        } as any);
+
+      const res = await app.request('/discovery/assets/00000000-0000-0000-0000-000000000020/link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ deviceId: '00000000-0000-0000-0000-000000000021' })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toContain('same site');
     });
   });
 

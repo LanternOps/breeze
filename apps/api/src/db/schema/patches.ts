@@ -84,6 +84,11 @@ export const patchComplianceReportFormatEnum = pgEnum('patch_compliance_report_f
   'pdf'
 ]);
 
+export const patchPolicyKindEnum = pgEnum('patch_policy_kind', [
+  'ring',
+  'legacy',
+]);
+
 export const patches = pgTable('patches', {
   id: uuid('id').primaryKey().defaultRandom(),
   source: patchSourceEnum('source').notNull(),
@@ -115,6 +120,7 @@ export const patches = pgTable('patches', {
 export const patchPolicies = pgTable('patch_policies', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
+  kind: patchPolicyKindEnum('kind').notNull().default('ring'),
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description'),
   enabled: boolean('enabled').notNull().default(true),

@@ -3,7 +3,6 @@
 package tools
 
 import (
-	"bufio"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -19,7 +18,7 @@ func listServicesOS(search, statusFilter string) ([]ServiceInfo, error) {
 
 	var services []ServiceInfo
 	searchLower := strings.ToLower(search)
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	scanner := newBoundedScanner(string(output))
 
 	// Skip header line
 	if scanner.Scan() {
@@ -63,6 +62,9 @@ func listServicesOS(search, statusFilter string) ([]ServiceInfo, error) {
 		}
 
 		services = append(services, info)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("failed to parse launchctl list output: %w", err)
 	}
 
 	return services, nil

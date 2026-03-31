@@ -90,6 +90,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         const oc = orgWhere(auth, patchPolicies.orgId);
         if (oc) conditions.push(oc);
         conditions.push(eq(patchPolicies.enabled, true));
+        conditions.push(eq(patchPolicies.kind, 'ring'));
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
         const rows = await db.select({
@@ -118,7 +119,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'get') {
         if (!input.ringId) return JSON.stringify({ error: 'ringId is required' });
-        const conditions: SQL[] = [eq(patchPolicies.id, input.ringId as string)];
+        const conditions: SQL[] = [eq(patchPolicies.id, input.ringId as string), eq(patchPolicies.kind, 'ring')];
         const oc = orgWhere(auth, patchPolicies.orgId);
         if (oc) conditions.push(oc);
 
@@ -133,6 +134,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
 
         const rows = await db.insert(patchPolicies).values({
           orgId,
+          kind: 'ring',
           name: input.name as string,
           description: (input.description as string) ?? null,
           deferralDays: Number(input.deferralDays) || 0,
@@ -157,7 +159,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'update') {
         if (!input.ringId) return JSON.stringify({ error: 'ringId is required' });
-        const conditions: SQL[] = [eq(patchPolicies.id, input.ringId as string)];
+        const conditions: SQL[] = [eq(patchPolicies.id, input.ringId as string), eq(patchPolicies.kind, 'ring')];
         const oc = orgWhere(auth, patchPolicies.orgId);
         if (oc) conditions.push(oc);
 
@@ -176,7 +178,10 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (input.autoApprove) updates.autoApprove = input.autoApprove;
         if (typeof input.enabled === 'boolean') updates.enabled = input.enabled;
 
-        await db.update(patchPolicies).set(updates).where(eq(patchPolicies.id, existing.id));
+        await db
+          .update(patchPolicies)
+          .set(updates)
+          .where(and(eq(patchPolicies.id, existing.id), eq(patchPolicies.kind, 'ring')));
         return JSON.stringify({ success: true, message: `Update ring "${existing.name}" updated` });
       }
 

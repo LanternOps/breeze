@@ -52,18 +52,24 @@ vi.mock('../db/schema', () => ({
   devices: {
     id: 'devices.id',
     orgId: 'devices.orgId',
+    siteId: 'devices.siteId',
     agentId: 'devices.agentId',
     status: 'devices.status',
+    lastSeenAt: 'devices.lastSeenAt',
+    enrolledAt: 'devices.enrolledAt',
   },
   discoveredAssets: {
     id: 'discoveredAssets.id',
     orgId: 'discoveredAssets.orgId',
+    siteId: 'discoveredAssets.siteId',
   },
 }));
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => next()),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
 vi.mock('../services/redis', () => ({
@@ -185,6 +191,51 @@ describe('monitors routes', () => {
 
   // ────────────────────── POST /:id/test ──────────────────────
   describe('POST /:id/test', () => {
+    it('prefers an online agent from the monitored asset site', async () => {
+      const monitor = {
+        id: MONITOR_ID,
+        orgId: ORG_ID,
+        assetId: ASSET_ID,
+        name: 'Ping',
+        monitorType: 'icmp_ping',
+        target: '8.8.8.8',
+        config: {},
+        timeout: 5,
+      };
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([monitor]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ siteId: 'site-001' }]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ agentId: 'site-agent-1' }]),
+            }),
+          }),
+        } as any);
+
+      const res = await app.request(`/monitors/${MONITOR_ID}/test`, {
+        method: 'POST',
+      });
+
+      expect(res.status).toBe(200);
+      expect(vi.mocked(sendCommandToAgent)).toHaveBeenCalledWith(
+        'site-agent-1',
+        expect.objectContaining({ payload: expect.objectContaining({ monitorId: MONITOR_ID }) })
+      );
+    });
+
     it('sends test command to an online agent', async () => {
       const monitor = {
         id: MONITOR_ID,
@@ -255,6 +306,35 @@ describe('monitors routes', () => {
       const body = await res.json();
       expect(body.data.status).toBe('failed');
       expect(body.data.error).toContain('No online agent');
+    });
+  });
+
+  describe('PATCH /:id', () => {
+    it('rejects invalid config updates for the monitor type', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: MONITOR_ID,
+              orgId: ORG_ID,
+              monitorType: 'tcp_port',
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/monitors/${MONITOR_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          config: { url: 'https://example.com' }
+        })
+      });
+
+      expect(res.status).toBe(400);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+      const body = await res.json();
+      expect(body.error).toBe('Invalid monitor config');
     });
   });
 

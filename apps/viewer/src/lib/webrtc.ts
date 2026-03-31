@@ -55,7 +55,7 @@ export async function createWebRTCSession(
   try {
     const iceResp = await apiFetch(
       params.apiUrl,
-      '/api/v1/remote/ice-servers',
+      `/api/v1/desktop-ws/${params.sessionId}/viewer/ice-servers`,
       params.accessToken,
     );
     if (iceResp.ok) {
@@ -118,7 +118,7 @@ export async function createWebRTCSession(
     // POST offer to API — this triggers the agent to create a pion session
     const offerResp = await apiFetch(
       params.apiUrl,
-      `/api/v1/remote/sessions/${params.sessionId}/offer`,
+      `/api/v1/desktop-ws/${params.sessionId}/viewer/offer`,
       params.accessToken,
       {
         method: 'POST',
@@ -185,7 +185,7 @@ async function pollForAnswer(params: AuthenticatedConnectionParams, timeoutMs: n
   while (Date.now() - start < timeoutMs) {
     const resp = await apiFetch(
       params.apiUrl,
-      `/api/v1/remote/sessions/${params.sessionId}`,
+      `/api/v1/desktop-ws/${params.sessionId}/viewer/session`,
       params.accessToken,
     );
 

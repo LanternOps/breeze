@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -87,28 +88,7 @@ func resolveRunAsSession(broker *sessionbroker.Broker, runAs string) *sessionbro
 	// runAs=user means "current interactive user". Prefer a user-role helper
 	// (runs as the logged-in user) over a SYSTEM helper.
 	if strings.EqualFold(target, "user") {
-		sessions := broker.AllSessions()
-		if len(sessions) == 0 {
-			return nil
-		}
-
-		// Find the most recently active session to determine the target Windows session.
-		selected := sessions[0]
-		for i := 1; i < len(sessions); i++ {
-			if sessions[i].LastSeen.After(selected.LastSeen) {
-				selected = sessions[i]
-			}
-		}
-
-		// Prefer the user-role helper in that Windows session.
-		if selected.WinSessionID != "" {
-			if userSession := broker.FindUserSession(selected.WinSessionID); userSession != nil {
-				return userSession
-			}
-		}
-
-		// Fall back to any helper for that user (backward compat / non-Windows).
-		return broker.SessionForUser(selected.Username)
+		return broker.PreferredSessionWithScope("run_as_user")
 	}
 
 	// Legacy path: explicit usernames still resolve directly.
@@ -122,7 +102,33 @@ func handleScriptCancel(h *Heartbeat, cmd Command) tools.CommandResult {
 		errResult.DurationMs = time.Since(start).Milliseconds()
 		return *errResult
 	}
+
 	if err := h.executor.Cancel(executionID); err != nil {
+		if h.sessionBroker == nil {
+			return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+		}
+
+		var helperErr error
+		for _, session := range h.runAsHelperSessions() {
+			resp, sendErr := h.sendCommandToUserHelper(session, cmd, 10)
+			if sendErr != nil {
+				helperErr = sendErr
+				continue
+			}
+			if resp.Status == "completed" {
+				return tools.NewSuccessResult(map[string]any{
+					"executionId": executionID,
+					"cancelled":   true,
+				}, time.Since(start).Milliseconds())
+			}
+			if resp.Error != "" {
+				helperErr = errors.New(resp.Error)
+			}
+		}
+
+		if helperErr != nil {
+			return tools.NewErrorResult(helperErr, time.Since(start).Milliseconds())
+		}
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 	return tools.NewSuccessResult(map[string]any{
@@ -133,11 +139,55 @@ func handleScriptCancel(h *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleScriptListRunning(h *Heartbeat, _ Command) tools.CommandResult {
 	start := time.Now()
-	running := h.executor.ListRunning()
-	return tools.NewSuccessResult(map[string]any{
+	running := append([]string(nil), h.executor.ListRunning()...)
+	seen := make(map[string]struct{}, len(running))
+	for _, id := range running {
+		seen[id] = struct{}{}
+	}
+
+	var helperErrors int
+	for _, session := range h.runAsHelperSessions() {
+		resp, err := h.sendCommandToUserHelper(session, Command{
+			ID:      fmt.Sprintf("list-running-%d", time.Now().UnixNano()),
+			Type:    tools.CmdScriptListRunning,
+			Payload: map[string]any{},
+		}, 10)
+		if err != nil {
+			helperErrors++
+			log.Warn("failed to list running user-helper scripts", "sessionId", session.SessionID, "error", err.Error())
+			continue
+		}
+
+		helperRunning, decodeErr := decodeHelperRunningScripts(resp)
+		if decodeErr != nil {
+			helperErrors++
+			log.Warn("failed to decode user-helper running scripts", "sessionId", session.SessionID, "error", decodeErr.Error())
+			continue
+		}
+		for _, id := range helperRunning {
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			running = append(running, id)
+		}
+	}
+
+	result := map[string]any{
 		"running": running,
 		"count":   len(running),
-	}, time.Since(start).Milliseconds())
+	}
+	if helperErrors > 0 {
+		result["helperErrors"] = helperErrors
+	}
+	return tools.NewSuccessResult(result, time.Since(start).Milliseconds())
+}
+
+func (h *Heartbeat) runAsHelperSessions() []*sessionbroker.Session {
+	if h.sessionBroker == nil {
+		return nil
+	}
+	return h.sessionBroker.SessionsWithScope("run_as_user")
 }
 
 // executeViaUserHelper forwards a script command to a user helper via IPC
@@ -153,40 +203,10 @@ func (h *Heartbeat) executeViaUserHelper(session *sessionbroker.Session, cmd Com
 		}
 	}
 
-	payloadBytes, err := json.Marshal(cmd.Payload)
-	if err != nil {
-		return tools.NewErrorResult(
-			fmt.Errorf("marshal command payload: %w", err),
-			time.Since(start).Milliseconds(),
-		)
-	}
-
-	ipcCmd := ipc.IPCCommand{
-		CommandID: cmd.ID,
-		Type:      cmd.Type,
-		Payload:   payloadBytes,
-	}
-
-	timeout := time.Duration(timeoutSeconds)*time.Second + 5*time.Second
-	resp, err := session.SendCommand(cmd.ID, ipc.TypeCommand, ipcCmd, timeout)
+	result, err := h.sendCommandToUserHelper(session, cmd, timeoutSeconds)
 	if err != nil {
 		return tools.NewErrorResult(
 			fmt.Errorf("user helper command: %w", err),
-			time.Since(start).Milliseconds(),
-		)
-	}
-
-	if resp == nil {
-		return tools.NewErrorResult(
-			fmt.Errorf("user helper session closed during command"),
-			time.Since(start).Milliseconds(),
-		)
-	}
-
-	var result ipc.IPCCommandResult
-	if err := json.Unmarshal(resp.Payload, &result); err != nil {
-		return tools.NewErrorResult(
-			fmt.Errorf("unmarshal user helper result: %w", err),
 			time.Since(start).Milliseconds(),
 		)
 	}
@@ -205,10 +225,10 @@ func (h *Heartbeat) executeViaUserHelper(session *sessionbroker.Session, cmd Com
 			log.Warn("failed to unmarshal nested result from user helper", "commandId", cmd.ID, "error", err.Error())
 		} else {
 			if stdout, ok := nested["stdout"].(string); ok {
-				cmdResult.Stdout = stdout
+				cmdResult.Stdout = executor.SanitizeOutput(stdout)
 			}
 			if stderr, ok := nested["stderr"].(string); ok {
-				cmdResult.Stderr = stderr
+				cmdResult.Stderr = executor.SanitizeOutput(stderr)
 			}
 			if exitCode, ok := nested["exitCode"].(float64); ok {
 				cmdResult.ExitCode = int(exitCode)
@@ -224,4 +244,52 @@ func (h *Heartbeat) executeViaUserHelper(session *sessionbroker.Session, cmd Com
 	)
 
 	return cmdResult
+}
+
+func (h *Heartbeat) sendCommandToUserHelper(session *sessionbroker.Session, cmd Command, timeoutSeconds int) (*ipc.IPCCommandResult, error) {
+	payloadBytes, err := json.Marshal(cmd.Payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal command payload: %w", err)
+	}
+
+	ipcCmd := ipc.IPCCommand{
+		CommandID: cmd.ID,
+		Type:      cmd.Type,
+		Payload:   payloadBytes,
+	}
+
+	timeout := time.Duration(timeoutSeconds)*time.Second + 5*time.Second
+	resp, err := session.SendCommand(cmd.ID, ipc.TypeCommand, ipcCmd, timeout)
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("user helper session closed during command")
+	}
+
+	var result ipc.IPCCommandResult
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return nil, fmt.Errorf("unmarshal user helper result: %w", err)
+	}
+	return &result, nil
+}
+
+func decodeHelperRunningScripts(result *ipc.IPCCommandResult) ([]string, error) {
+	if result == nil {
+		return nil, fmt.Errorf("missing helper result")
+	}
+	if result.Error != "" {
+		return nil, errors.New(result.Error)
+	}
+	if len(result.Result) == 0 {
+		return nil, nil
+	}
+
+	var payload struct {
+		Running []string `json:"running"`
+	}
+	if err := json.Unmarshal(result.Result, &payload); err != nil {
+		return nil, err
+	}
+	return payload.Running, nil
 }

@@ -3,14 +3,16 @@ import { zValidator } from '@hono/zod-validator';
 import { eq, and, desc, gte, lte, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { backupJobs, backupConfigs, devices } from '../../db/schema';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { resolveBackupConfigForDevice, resolveAllBackupAssignedDevices } from '../../services/featureConfigResolver';
+import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import { jobListSchema } from './schemas';
 
 export const jobsRoutes = new Hono();
 
-jobsRoutes.get('/jobs', zValidator('query', jobListSchema), async (c) => {
+jobsRoutes.get('/jobs', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('query', jobListSchema), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -73,14 +75,14 @@ jobsRoutes.get('/jobs', zValidator('query', jobListSchema), async (c) => {
   });
 });
 
-jobsRoutes.get('/jobs/:id', async (c) => {
+jobsRoutes.get('/jobs/:id', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
 
-  const jobId = c.req.param('id');
+  const jobId = c.req.param('id')!;
   const [row] = await db
     .select({
       job: backupJobs,
@@ -104,14 +106,19 @@ jobsRoutes.get('/jobs/:id', async (c) => {
   });
 });
 
-jobsRoutes.post('/jobs/run/:deviceId', async (c) => {
+jobsRoutes.post(
+  '/jobs/run/:deviceId',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
+  async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
 
-  const deviceId = c.req.param('deviceId');
+  const deviceId = c.req.param('deviceId')!;
 
   // Resolve backup config via configuration policy system
   const resolved = await resolveBackupConfigForDevice(deviceId);
@@ -176,7 +183,7 @@ jobsRoutes.post('/jobs/run/:deviceId', async (c) => {
   return c.json(toJobResponse(row), 201);
 });
 
-jobsRoutes.get('/jobs/run-all/preview', async (c) => {
+jobsRoutes.get('/jobs/run-all/preview', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -213,7 +220,12 @@ jobsRoutes.get('/jobs/run-all/preview', async (c) => {
   });
 });
 
-jobsRoutes.post('/jobs/run-all', async (c) => {
+jobsRoutes.post(
+  '/jobs/run-all',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
+  async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -293,14 +305,19 @@ jobsRoutes.post('/jobs/run-all', async (c) => {
   }, 201);
 });
 
-jobsRoutes.post('/jobs/:id/cancel', async (c) => {
+jobsRoutes.post(
+  '/jobs/:id/cancel',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
+  async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
 
-  const jobId = c.req.param('id');
+  const jobId = c.req.param('id')!;
   const [current] = await db
     .select()
     .from(backupJobs)

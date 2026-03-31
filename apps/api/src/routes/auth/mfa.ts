@@ -5,7 +5,6 @@ import * as dbModule from '../../db';
 import { users, organizations } from '../../db/schema';
 import {
   createTokenPair,
-  verifyToken,
   generateMFASecret,
   verifyMFAToken,
   generateOTPAuthURL,
@@ -26,7 +25,6 @@ import {
   decryptMfaSecret,
   hashRecoveryCodes,
   mfaDisabledResponse,
-  isTokenRevokedForUser,
   resolveCurrentUserTokenContext,
   resolveUserAuditOrgId,
   writeAuthAudit,
@@ -216,23 +214,10 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     });
   }
 
-  // Case 2: Confirming MFA setup (requires auth)
-  const authHeader = c.req.header('Authorization');
-  if (!authHeader) {
-    return c.json({ error: 'Authentication required' }, 401);
-  }
-
-  const token = authHeader.slice(7);
-  const payload = await verifyToken(token);
-  if (!payload) {
-    return c.json({ error: 'Invalid token' }, 401);
-  }
-
-  if (await isTokenRevokedForUser(payload.sub, payload.iat)) {
-    return c.json({ error: 'Invalid token' }, 401);
-  }
-
-  const setupData = await redis.get(`mfa:setup:${payload.sub}`);
+  // Case 2: confirming MFA setup for an already authenticated user.
+  await authMiddleware(c, async () => {});
+  const auth = c.get('auth');
+  const setupData = await redis.get(`mfa:setup:${auth.user.id}`);
   if (!setupData) {
     return c.json({ error: 'No pending MFA setup' }, 400);
   }
@@ -249,19 +234,19 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
   const valid = await verifyMFAToken(secret, code);
 
   if (!valid) {
-    const orgId = await resolveUserAuditOrgId(payload.sub);
+    const orgId = await resolveUserAuditOrgId(auth.user.id);
     writeAuthAudit(c, {
       orgId: orgId ?? undefined,
       action: 'auth.mfa.setup.failed',
       result: 'failure',
       reason: 'invalid_mfa_code',
-      userId: payload.sub,
+      userId: auth.user.id,
+      email: auth.user.email,
       details: { phase: 'setup_confirmation' }
     });
     return c.json({ error: 'Invalid MFA code' }, 401);
   }
 
-  // Enable MFA (TOTP)
   await db
     .update(users)
     .set({
@@ -271,19 +256,19 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
       updatedAt: new Date()
     })
-    .where(eq(users.id, payload.sub));
+    .where(eq(users.id, auth.user.id));
 
-  const setupOrgId = await resolveUserAuditOrgId(payload.sub);
+  const setupOrgId = await resolveUserAuditOrgId(auth.user.id);
   writeAuthAudit(c, {
     orgId: setupOrgId ?? undefined,
     action: 'auth.mfa.setup',
     result: 'success',
-    userId: payload.sub,
+    userId: auth.user.id,
+    email: auth.user.email,
     details: { method: 'totp' }
   });
 
-  // Clear setup data
-  await redis.del(`mfa:setup:${payload.sub}`);
+  await redis.del(`mfa:setup:${auth.user.id}`);
 
   return c.json({ success: true, message: 'MFA enabled successfully' });
 });

@@ -2,7 +2,8 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
+import { PERMISSIONS } from '../services/permissions';
 import {
   getDeviceReliability,
   getDeviceReliabilityHistory,
@@ -52,12 +53,14 @@ function parseScoreRange(value: string | undefined): ReliabilityScoreRange | und
 }
 
 export const reliabilityRoutes = new Hono();
+const requireReliabilityRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
 
 reliabilityRoutes.use('*', authMiddleware);
 
 reliabilityRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requireReliabilityRead,
   zValidator('query', listQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -114,6 +117,7 @@ reliabilityRoutes.get(
 reliabilityRoutes.get(
   '/org/:orgId/summary',
   requireScope('organization', 'partner', 'system'),
+  requireReliabilityRead,
   zValidator('param', orgIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -138,6 +142,7 @@ reliabilityRoutes.get(
 reliabilityRoutes.get(
   '/:deviceId/history',
   requireScope('organization', 'partner', 'system'),
+  requireReliabilityRead,
   zValidator('param', deviceIdParamSchema),
   zValidator('query', historyQuerySchema),
   async (c) => {
@@ -162,6 +167,7 @@ reliabilityRoutes.get(
 reliabilityRoutes.get(
   '/:deviceId',
   requireScope('organization', 'partner', 'system'),
+  requireReliabilityRead,
   zValidator('param', deviceIdParamSchema),
   async (c) => {
     const auth = c.get('auth');

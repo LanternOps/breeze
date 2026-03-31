@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -220,6 +221,42 @@ func TestConnect_ServerRefusesConnection(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "failed to connect") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestUpdateTLSConfig(t *testing.T) {
+	c := newTestClient("http://localhost", noopHandler)
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
+
+	c.UpdateTLSConfig(tlsCfg)
+
+	if got := c.currentTLSConfig(); got != tlsCfg {
+		t.Fatalf("TLS config pointer was not updated")
+	}
+}
+
+func TestForceReconnectClearsConnection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := testUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		time.Sleep(250 * time.Millisecond)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv.URL, noopHandler)
+	if err := c.connect(); err != nil {
+		t.Fatalf("connect error: %v", err)
+	}
+
+	c.ForceReconnect()
+
+	c.connMu.RLock()
+	defer c.connMu.RUnlock()
+	if c.conn != nil {
+		t.Fatal("expected ForceReconnect to clear the active connection")
 	}
 }
 

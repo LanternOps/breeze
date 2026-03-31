@@ -14,7 +14,13 @@ import (
 
 const (
 	// maxFileReadSize is the maximum file size for reading (1MB)
-	maxFileReadSize = 1024 * 1024
+	maxFileReadSize      = 1024 * 1024
+	maxFileWriteSize     = 4 * 1024 * 1024
+	defaultFileListLimit = 1000
+	maxFileListLimit     = 5000
+	maxTrashListItems    = 500
+	maxTrashMetadataSize = 64 * 1024
+	maxTrashPurgeErrors  = 32
 )
 
 // deniedSystemPaths are critical system paths that mutating file operations should never target directly.
@@ -22,6 +28,25 @@ var deniedSystemPaths = []string{"/", "/boot", "/proc", "/sys", "/dev", "/bin", 
 
 // getTrashDirFunc returns the trash directory path. Variable allows test injection.
 var getTrashDirFunc = getTrashDir
+
+func readTrashMetadata(metaPath string) (*TrashMetadata, error) {
+	info, err := os.Stat(metaPath)
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > maxTrashMetadataSize {
+		return nil, fmt.Errorf("trash metadata exceeds maximum size of %d bytes", maxTrashMetadataSize)
+	}
+	metaBytes, err := os.ReadFile(metaPath)
+	if err != nil {
+		return nil, err
+	}
+	var meta TrashMetadata
+	if err := json.Unmarshal(metaBytes, &meta); err != nil {
+		return nil, err
+	}
+	return &meta, nil
+}
 
 func getTrashDir() (string, error) {
 	home, err := os.UserHomeDir()
@@ -69,9 +94,29 @@ func ListFiles(payload map[string]any) CommandResult {
 	// Normalize path separators
 	cleanPath := filepath.Clean(path)
 
-	entries, err := os.ReadDir(cleanPath)
+	limit := GetPayloadInt(payload, "limit", defaultFileListLimit)
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > maxFileListLimit {
+		limit = maxFileListLimit
+	}
+
+	dir, err := os.Open(cleanPath)
 	if err != nil {
+		return NewErrorResult(fmt.Errorf("failed to open directory: %w", err), time.Since(start).Milliseconds())
+	}
+	defer dir.Close()
+
+	entries, err := dir.ReadDir(limit + 1)
+	if err != nil && err != io.EOF {
 		return NewErrorResult(fmt.Errorf("failed to read directory: %w", err), time.Since(start).Milliseconds())
+	}
+
+	truncated := false
+	if len(entries) > limit {
+		entries = entries[:limit]
+		truncated = true
 	}
 
 	fileEntries := make([]FileEntry, 0, len(entries))
@@ -97,8 +142,10 @@ func ListFiles(payload map[string]any) CommandResult {
 	}
 
 	return NewSuccessResult(FileListResponse{
-		Path:    cleanPath,
-		Entries: fileEntries,
+		Path:      cleanPath,
+		Entries:   fileEntries,
+		Limit:     limit,
+		Truncated: truncated,
 	}, time.Since(start).Milliseconds())
 }
 
@@ -182,6 +229,9 @@ func WriteFile(payload map[string]any) CommandResult {
 	// Decode content based on encoding
 	var data []byte
 	if encoding == "base64" {
+		if len(content) > base64.StdEncoding.EncodedLen(maxFileWriteSize) {
+			return NewErrorResult(fmt.Errorf("file write payload too large (max %d bytes decoded)", maxFileWriteSize), time.Since(start).Milliseconds())
+		}
 		var err error
 		data, err = base64.StdEncoding.DecodeString(content)
 		if err != nil {
@@ -189,6 +239,9 @@ func WriteFile(payload map[string]any) CommandResult {
 		}
 	} else {
 		data = []byte(content)
+	}
+	if len(data) > maxFileWriteSize {
+		return NewErrorResult(fmt.Errorf("file write payload too large: %d bytes (max %d bytes)", len(data), maxFileWriteSize), time.Since(start).Milliseconds())
 	}
 
 	// Write file
@@ -364,6 +417,11 @@ func TrashList(payload map[string]any) CommandResult {
 	if err != nil {
 		return NewErrorResult(fmt.Errorf("failed to read trash directory: %w", err), time.Since(start).Milliseconds())
 	}
+	truncated := false
+	if len(entries) > maxTrashListItems {
+		entries = entries[:maxTrashListItems]
+		truncated = true
+	}
 
 	items := make([]TrashMetadata, 0, len(entries))
 	for _, entry := range entries {
@@ -371,20 +429,17 @@ func TrashList(payload map[string]any) CommandResult {
 			continue
 		}
 		metaPath := filepath.Join(trashDir, entry.Name(), "metadata.json")
-		metaBytes, err := os.ReadFile(metaPath)
+		meta, err := readTrashMetadata(metaPath)
 		if err != nil {
 			continue // skip entries without valid metadata
 		}
-		var meta TrashMetadata
-		if err := json.Unmarshal(metaBytes, &meta); err != nil {
-			continue
-		}
-		items = append(items, meta)
+		items = append(items, *meta)
 	}
 
 	return NewSuccessResult(TrashListResponse{
-		Items: items,
-		Path:  trashDir,
+		Items:     items,
+		Path:      trashDir,
+		Truncated: truncated,
 	}, time.Since(start).Milliseconds())
 }
 
@@ -407,14 +462,9 @@ func TrashRestore(payload map[string]any) CommandResult {
 	trashItemDir := filepath.Join(trashDir, safeTrashID)
 	metaPath := filepath.Join(trashItemDir, "metadata.json")
 
-	metaBytes, err := os.ReadFile(metaPath)
+	meta, err := readTrashMetadata(metaPath)
 	if err != nil {
 		return NewErrorResult(fmt.Errorf("trash item not found: %s", safeTrashID), time.Since(start).Milliseconds())
-	}
-
-	var meta TrashMetadata
-	if err := json.Unmarshal(metaBytes, &meta); err != nil {
-		return NewErrorResult(fmt.Errorf("failed to parse trash metadata: %w", err), time.Since(start).Milliseconds())
 	}
 
 	contentPath := filepath.Join(trashItemDir, "content")
@@ -483,7 +533,9 @@ func TrashPurge(payload map[string]any) CommandResult {
 		for _, id := range trashIds {
 			itemDir := filepath.Join(trashDir, filepath.Base(id))
 			if err := os.RemoveAll(itemDir); err != nil {
-				errors = append(errors, fmt.Sprintf("%s: %v", id, err))
+				if len(errors) < maxTrashPurgeErrors {
+					errors = append(errors, fmt.Sprintf("%s: %v", id, err))
+				}
 			} else {
 				purged++
 			}
@@ -506,7 +558,9 @@ func TrashPurge(payload map[string]any) CommandResult {
 	for _, entry := range entries {
 		itemDir := filepath.Join(trashDir, entry.Name())
 		if err := os.RemoveAll(itemDir); err != nil {
-			errors = append(errors, fmt.Sprintf("%s: %v", entry.Name(), err))
+			if len(errors) < maxTrashPurgeErrors {
+				errors = append(errors, fmt.Sprintf("%s: %v", entry.Name(), err))
+			}
 		} else {
 			purged++
 		}
@@ -536,14 +590,9 @@ func lazyPurgeOldTrash(trashDir string) {
 			continue
 		}
 		metaPath := filepath.Join(trashDir, entry.Name(), "metadata.json")
-		metaBytes, err := os.ReadFile(metaPath)
+		meta, err := readTrashMetadata(metaPath)
 		if err != nil {
 			log.Printf("[WARN] lazyPurgeOldTrash: skipping %s, cannot read metadata: %v", entry.Name(), err)
-			continue
-		}
-		var meta TrashMetadata
-		if err := json.Unmarshal(metaBytes, &meta); err != nil {
-			log.Printf("[WARN] lazyPurgeOldTrash: skipping %s, corrupt metadata: %v", entry.Name(), err)
 			continue
 		}
 		deletedAt, err := time.Parse(time.RFC3339, meta.DeletedAt)

@@ -11,18 +11,22 @@ import {
   sensitiveDataPolicies,
   sensitiveDataScans
 } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { getPagination } from '../utils/pagination';
 import { CommandTypes, queueCommand } from '../services/commandQueue';
 import { enqueueSensitiveDataScan } from '../jobs/sensitiveDataJobs';
 import { publishEvent } from '../services/eventBus';
 import { resolveSensitiveDataKeySelection } from '../services/sensitiveDataKeys';
+import { PERMISSIONS } from '../services/permissions';
 import {
   recordSensitiveDataRemediationDecision,
   recordSensitiveDataScanQueued
 } from './metrics';
 
 export const sensitiveDataRoutes = new Hono();
+const requireSensitiveDataRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
+const requireSensitiveDataWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
+const requireSensitiveDataExecute = requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action);
 
 sensitiveDataRoutes.use('*', authMiddleware);
 
@@ -211,6 +215,8 @@ function isSecondApprovalValid(token: string | undefined): boolean {
 sensitiveDataRoutes.post(
   '/scan',
   requireScope('organization', 'partner', 'system'),
+  requireSensitiveDataExecute,
+  requireMfa(),
   zValidator('json', createScanSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -355,6 +361,7 @@ sensitiveDataRoutes.post(
 sensitiveDataRoutes.get(
   '/scans',
   requireScope('organization', 'partner', 'system'),
+  requireSensitiveDataRead,
   zValidator('query', z.object({ limit: z.coerce.number().int().min(1).max(200).optional() }).strict().optional()),
   async (c) => {
     const auth = c.get('auth');
@@ -404,6 +411,7 @@ sensitiveDataRoutes.get(
 sensitiveDataRoutes.get(
   '/scans/:id',
   requireScope('organization', 'partner', 'system'),
+  requireSensitiveDataRead,
   zValidator('param', scanIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -493,6 +501,7 @@ sensitiveDataRoutes.get(
 sensitiveDataRoutes.get(
   '/report',
   requireScope('organization', 'partner', 'system'),
+  requireSensitiveDataRead,
   zValidator('query', reportQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -572,6 +581,7 @@ sensitiveDataRoutes.get(
 sensitiveDataRoutes.get(
   '/dashboard',
   requireScope('organization', 'partner', 'system'),
+  requireSensitiveDataRead,
   async (c) => {
     const auth = c.get('auth');
     const conditions: SQL[] = [];
@@ -632,6 +642,8 @@ sensitiveDataRoutes.get(
 sensitiveDataRoutes.post(
   '/remediate',
   requireScope('organization', 'partner', 'system'),
+  requireSensitiveDataExecute,
+  requireMfa(),
   zValidator('json', remediationsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -810,6 +822,7 @@ sensitiveDataRoutes.post(
 sensitiveDataRoutes.get(
   '/policies',
   requireScope('organization', 'partner', 'system'),
+  requireSensitiveDataRead,
   async (c) => {
     const auth = c.get('auth');
     const conditions: SQL[] = [];
@@ -835,6 +848,8 @@ sensitiveDataRoutes.get(
 sensitiveDataRoutes.post(
   '/policies',
   requireScope('organization', 'partner', 'system'),
+  requireSensitiveDataWrite,
+  requireMfa(),
   zValidator('json', createPolicySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -872,6 +887,8 @@ sensitiveDataRoutes.post(
 sensitiveDataRoutes.put(
   '/policies/:id',
   requireScope('organization', 'partner', 'system'),
+  requireSensitiveDataWrite,
+  requireMfa(),
   zValidator('param', policyIdParamSchema),
   zValidator('json', updatePolicySchema),
   async (c) => {
@@ -919,6 +936,8 @@ sensitiveDataRoutes.put(
 sensitiveDataRoutes.delete(
   '/policies/:id',
   requireScope('organization', 'partner', 'system'),
+  requireSensitiveDataWrite,
+  requireMfa(),
   zValidator('param', policyIdParamSchema),
   async (c) => {
     const auth = c.get('auth');

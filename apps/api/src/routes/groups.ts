@@ -4,13 +4,16 @@ import { z } from 'zod';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { deviceGroups, deviceGroupMemberships, devices, groupMembershipLog } from '../db/schema';
-import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { evaluateFilterWithPreview, extractFieldsFromFilter, validateFilter } from '../services/filterEngine';
 import { evaluateGroupMembership, pinDeviceToGroup } from '../services/groupMembership';
 import { writeRouteAudit } from '../services/auditEvents';
 import type { FilterConditionGroup } from '../services/filterEngine';
+import { PERMISSIONS } from '../services/permissions';
 
 export const groupRoutes = new Hono();
+const requireGroupRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
+const requireGroupWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
 
 type DeviceGroup = {
   id: string;
@@ -176,6 +179,7 @@ function mapGroupRow(
 groupRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requireGroupRead,
   zValidator('query', listGroupsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -239,6 +243,7 @@ groupRoutes.get(
 groupRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireGroupRead,
   zValidator('param', groupIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -259,6 +264,8 @@ groupRoutes.get(
 groupRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requireGroupWrite,
+  requireMfa(),
   zValidator('json', createGroupSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -356,6 +363,8 @@ groupRoutes.post(
 groupRoutes.patch(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireGroupWrite,
+  requireMfa(),
   zValidator('param', groupIdParamSchema),
   zValidator('json', updateGroupSchema),
   async (c) => {
@@ -450,6 +459,8 @@ groupRoutes.patch(
 groupRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireGroupWrite,
+  requireMfa(),
   zValidator('param', groupIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -492,6 +503,7 @@ groupRoutes.delete(
 groupRoutes.get(
   '/:id/devices',
   requireScope('organization', 'partner', 'system'),
+  requireGroupRead,
   zValidator('param', groupIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -537,6 +549,8 @@ groupRoutes.get(
 groupRoutes.post(
   '/:id/devices',
   requireScope('organization', 'partner', 'system'),
+  requireGroupWrite,
+  requireMfa(),
   zValidator('param', groupIdParamSchema),
   zValidator('json', addDevicesSchema),
   async (c) => {
@@ -625,6 +639,8 @@ groupRoutes.post(
 groupRoutes.delete(
   '/:id/devices/:deviceId',
   requireScope('organization', 'partner', 'system'),
+  requireGroupWrite,
+  requireMfa(),
   zValidator('param', deviceIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -686,6 +702,7 @@ const previewQuerySchema = z.object({
 groupRoutes.post(
   '/:id/preview',
   requireScope('organization', 'partner', 'system'),
+  requireGroupRead,
   zValidator('param', groupIdParamSchema),
   zValidator('query', previewQuerySchema),
   async (c) => {
@@ -733,6 +750,8 @@ groupRoutes.post(
 groupRoutes.post(
   '/:id/devices/:deviceId/pin',
   requireScope('organization', 'partner', 'system'),
+  requireGroupWrite,
+  requireMfa(),
   zValidator('param', deviceIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -786,6 +805,8 @@ groupRoutes.post(
 groupRoutes.delete(
   '/:id/devices/:deviceId/pin',
   requireScope('organization', 'partner', 'system'),
+  requireGroupWrite,
+  requireMfa(),
   zValidator('param', deviceIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -855,6 +876,7 @@ const membershipLogQuerySchema = z.object({
 groupRoutes.get(
   '/:id/membership-log',
   requireScope('organization', 'partner', 'system'),
+  requireGroupRead,
   zValidator('param', groupIdParamSchema),
   zValidator('query', membershipLogQuerySchema),
   async (c) => {

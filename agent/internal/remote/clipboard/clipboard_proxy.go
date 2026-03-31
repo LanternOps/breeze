@@ -49,15 +49,23 @@ func (p *proxyProvider) GetContent() (Content, error) {
 		return Content{}, fmt.Errorf("proxy: unmarshal clipboard: %w", err)
 	}
 
-	return Content{
+	content := Content{
 		Type:        ContentType(data.Type),
 		Text:        data.Text,
 		Image:       data.Image,
 		ImageFormat: data.ImageFormat,
-	}, nil
+	}
+	if err := ValidateContent(content); err != nil {
+		return Content{}, fmt.Errorf("proxy: clipboard get rejected oversized content: %w", err)
+	}
+	return content, nil
 }
 
 func (p *proxyProvider) SetContent(content Content) error {
+	if err := ValidateContent(content); err != nil {
+		return fmt.Errorf("proxy: clipboard set rejected oversized content: %w", err)
+	}
+
 	payload := map[string]any{
 		"type":        string(content.Type),
 		"text":        content.Text,

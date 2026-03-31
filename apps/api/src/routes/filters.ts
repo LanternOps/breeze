@@ -4,9 +4,10 @@ import { z } from 'zod';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { savedFilters } from '../db/schema';
-import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { evaluateFilterWithPreview, FilterConditionGroup } from '../services/filterEngine';
 import { writeRouteAudit } from '../services/auditEvents';
+import { PERMISSIONS } from '../services/permissions';
 import {
   filterConditionGroupSchema,
   createSavedFilterSchema,
@@ -15,6 +16,8 @@ import {
 } from '@breeze/shared/validators/filters';
 
 export const filterRoutes = new Hono();
+const requireFilterRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
+const requireFilterWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
 
 type SavedFilterResponse = {
   id: string;
@@ -110,6 +113,7 @@ function mapFilterRow(filter: typeof savedFilters.$inferSelect): SavedFilterResp
 filterRoutes.post(
   '/preview',
   requireScope('organization', 'partner', 'system'),
+  requireFilterRead,
   zValidator('json', z.object({
     conditions: filterConditionGroupSchema,
     limit: z.number().int().positive().max(100).optional()
@@ -171,6 +175,7 @@ filterRoutes.post(
 filterRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requireFilterRead,
   zValidator('query', savedFilterQuerySchema.pick({ search: true })),
   async (c) => {
     const auth = c.get('auth');
@@ -214,6 +219,8 @@ filterRoutes.get(
 filterRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requireFilterWrite,
+  requireMfa(),
   zValidator('json', createFilterSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -273,6 +280,7 @@ filterRoutes.post(
 filterRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireFilterRead,
   zValidator('param', filterIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -291,6 +299,8 @@ filterRoutes.get(
 filterRoutes.patch(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireFilterWrite,
+  requireMfa(),
   zValidator('param', filterIdParamSchema),
   zValidator('json', updateSavedFilterSchema),
   async (c) => {
@@ -335,6 +345,8 @@ filterRoutes.patch(
 filterRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireFilterWrite,
+  requireMfa(),
   zValidator('param', filterIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -363,6 +375,7 @@ filterRoutes.delete(
 filterRoutes.post(
   '/:id/preview',
   requireScope('organization', 'partner', 'system'),
+  requireFilterRead,
   zValidator('param', filterIdParamSchema),
   zValidator('query', previewQuerySchema),
   async (c) => {

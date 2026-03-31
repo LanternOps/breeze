@@ -3,9 +3,10 @@
 package ipc
 
 import (
+	"bytes"
 	"fmt"
+	"log/slog"
 	"net"
-	"os"
 	"strconv"
 
 	"golang.org/x/sys/unix"
@@ -21,8 +22,8 @@ type PeerCredentials struct {
 }
 
 // GetPeerCredentials returns the kernel-verified PID/UID/GID of the peer
-// via LOCAL_PEERCRED (xucred) and resolves the binary path via lsof.
-// This is the pure-Go (no-cgo) implementation for macOS.
+// via LOCAL_PEERCRED (xucred) and resolves the peer executable path using
+// kern.procargs2. This is the pure-Go (no-cgo) implementation for macOS.
 func GetPeerCredentials(conn net.Conn) (*PeerCredentials, error) {
 	uc, ok := conn.(*net.UnixConn)
 	if !ok {
@@ -65,13 +66,10 @@ func GetPeerCredentials(conn net.Conn) (*PeerCredentials, error) {
 		return nil, credErr
 	}
 
-	// Resolve binary path: without cgo we cannot call proc_pidpath,
-	// so fall back to reading /proc/<pid>/exe (Linux) or use the
-	// sysctl KERN_PROCARGS2 approach. For simplicity, resolve our
-	// own executable path as the expected helper binary.
-	exePath, err := os.Executable()
+	exePath, err := peerExecutablePath(pid)
 	if err != nil {
-		exePath = ""
+		slog.Warn("ipc: failed to resolve peer executable path, continuing with empty ExePath",
+			"pid", pid, "error", err.Error())
 	}
 
 	return &PeerCredentials{
@@ -80,6 +78,26 @@ func GetPeerCredentials(conn net.Conn) (*PeerCredentials, error) {
 		GID:        gid,
 		BinaryPath: exePath,
 	}, nil
+}
+
+func peerExecutablePath(pid int) (string, error) {
+	data, err := unix.SysctlRaw("kern.procargs2", pid)
+	if err != nil {
+		return "", fmt.Errorf("ipc: sysctl kern.procargs2(%d): %w", pid, err)
+	}
+	if len(data) <= 4 {
+		return "", fmt.Errorf("ipc: kern.procargs2(%d) returned too little data", pid)
+	}
+
+	// The buffer begins with argc, followed by the executable path and argv
+	// strings. We only need argv[0], which is the first NUL-terminated string
+	// after argc.
+	args := data[4:]
+	if end := bytes.IndexByte(args, 0); end > 0 {
+		return string(args[:end]), nil
+	}
+
+	return "", fmt.Errorf("ipc: unable to parse executable path from kern.procargs2(%d)", pid)
 }
 
 // IdentityKey returns the platform identity key for this peer.

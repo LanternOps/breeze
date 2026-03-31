@@ -44,6 +44,14 @@ func NewAzureProvider(accountName, accountKey, containerName string) (*AzureProv
 
 // Upload sends a local file to Azure Blob Storage.
 func (a *AzureProvider) Upload(localPath, remotePath string) error {
+	return a.UploadContext(context.Background(), localPath, remotePath)
+}
+
+// UploadContext sends a local file to Azure Blob Storage with cancellation support.
+func (a *AzureProvider) UploadContext(ctx context.Context, localPath, remotePath string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if localPath == "" {
 		return errors.New("local source path is required")
 	}
@@ -67,7 +75,6 @@ func (a *AzureProvider) Upload(localPath, remotePath string) error {
 		"blob", remotePath,
 	)
 
-	ctx := context.Background()
 	if _, err := client.UploadFile(ctx, a.containerName, remotePath, file, nil); err != nil {
 		return fmt.Errorf("failed to upload file to azure: %w", err)
 	}

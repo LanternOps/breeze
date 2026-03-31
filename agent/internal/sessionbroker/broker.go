@@ -4,7 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -67,7 +69,7 @@ type Broker struct {
 // New creates a new session broker.
 func New(socketPath string, onMessage MessageHandler) *Broker {
 	b := &Broker{
-		socketPath:  socketPath,
+		socketPath:   socketPath,
 		rateLimiter:  ipc.NewRateLimiter(RateLimitAttempts, RateLimitWindow),
 		sessions:     make(map[string]*Session),
 		byIdentity:   make(map[string][]*Session),
@@ -146,12 +148,32 @@ func (b *Broker) Close() {
 func (b *Broker) SessionForUser(username string) *Session {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
+
+	var best *Session
 	for _, s := range b.sessions {
-		if s.Username == username {
-			return s
+		if s.Username == username && s.HelperRole == ipc.HelperRoleUser {
+			if betterSession(s, best) {
+				best = s
+			}
 		}
 	}
-	return nil
+	if best != nil {
+		return best
+	}
+
+	for _, s := range b.sessions {
+		if s.Username == username && betterSession(s, best) {
+			best = s
+		}
+	}
+	return best
+}
+
+// SessionByID returns the currently connected session with the given broker session ID.
+func (b *Broker) SessionByID(sessionID string) *Session {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.sessions[sessionID]
 }
 
 // SessionForIdentity returns the first active session for the given identity key.
@@ -160,7 +182,13 @@ func (b *Broker) SessionForIdentity(key string) *Session {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	if sessions, ok := b.byIdentity[key]; ok && len(sessions) > 0 {
-		return sessions[0]
+		var best *Session
+		for _, s := range sessions {
+			if betterSession(s, best) {
+				best = s
+			}
+		}
+		return best
 	}
 	return nil
 }
@@ -181,6 +209,50 @@ func (b *Broker) AllSessions() []SessionInfo {
 		infos = append(infos, s.Info())
 	}
 	return infos
+}
+
+// SessionsWithScope returns the currently connected sessions authorized for the given scope.
+func (b *Broker) SessionsWithScope(scope string) []*Session {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	sessions := make([]*Session, 0, len(b.sessions))
+	for _, s := range b.sessions {
+		if s.HasScope(scope) {
+			sessions = append(sessions, s)
+		}
+	}
+	return sessions
+}
+
+// PreferredSessionWithScope returns the most appropriate connected session
+// that is authorized for the given scope. User-role helpers are preferred
+// over system helpers, then the newest active session wins.
+func (b *Broker) PreferredSessionWithScope(scope string) *Session {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	var best *Session
+	for _, s := range b.sessions {
+		if !s.HasScope(scope) {
+			continue
+		}
+		if best == nil {
+			best = s
+			continue
+		}
+		if s.HelperRole == ipc.HelperRoleUser && best.HelperRole != ipc.HelperRoleUser {
+			best = s
+			continue
+		}
+		if s.HelperRole != ipc.HelperRoleUser && best.HelperRole == ipc.HelperRoleUser {
+			continue
+		}
+		if betterSession(s, best) {
+			best = s
+		}
+	}
+	return best
 }
 
 // TCCStatus returns the TCC permission status from the first connected helper
@@ -253,14 +325,21 @@ func (b *Broker) FindCapableSession(capability string, targetWinSession string) 
 		return false
 	}
 
+	var best *Session
+
 	// First pass: find a capable session in the target (console) session.
 	for _, s := range b.sessions {
 		if s.WinSessionID != targetWinSession {
 			continue
 		}
 		if hasCapability(s) {
-			return s
+			if betterSession(s, best) {
+				best = s
+			}
 		}
+	}
+	if best != nil {
+		return best
 	}
 
 	// Second pass: fall back to any capable session that isn't disconnected.
@@ -271,10 +350,12 @@ func (b *Broker) FindCapableSession(capability string, targetWinSession string) 
 		if IsSessionDisconnected(s.WinSessionID) {
 			continue
 		}
-		return s
+		if betterSession(s, best) {
+			best = s
+		}
 	}
 
-	return nil
+	return best
 }
 
 // HasHelperForWinSession returns true if any connected helper is in the
@@ -308,49 +389,134 @@ func (b *Broker) HasHelperForWinSessionRole(winSessionID, role string) bool {
 func (b *Broker) FindUserSession(winSessionID string) *Session {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
+
+	var best *Session
 	for _, s := range b.sessions {
-		if s.WinSessionID == winSessionID && s.HelperRole == ipc.HelperRoleUser {
-			return s
+		if s.WinSessionID == winSessionID && s.HelperRole == ipc.HelperRoleUser && betterSession(s, best) {
+			best = s
 		}
+	}
+	return best
+}
+
+func (b *Broker) userHelperSessions() []*Session {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	sessions := make([]*Session, 0, len(b.sessions))
+	for _, s := range b.sessions {
+		if s.HelperRole == ipc.HelperRoleUser {
+			sessions = append(sessions, s)
+		}
+	}
+	return sessions
+}
+
+func (b *Broker) userHelperSessionForKey(sessionKey string) *Session {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	var best *Session
+	for _, s := range b.sessions {
+		if s.HelperRole != ipc.HelperRoleUser {
+			continue
+		}
+		match := s.WinSessionID == sessionKey || s.IdentityKey == sessionKey
+		if !match && s.UID > 0 {
+			match = strconv.FormatUint(uint64(s.UID), 10) == sessionKey
+		}
+		if !match {
+			continue
+		}
+		if betterSession(s, best) {
+			best = s
+		}
+	}
+	return best
+}
+
+// LaunchProcessViaUserHelper asks all connected user-role helpers to launch a
+// binary. The helper is already running as the logged-in user, so the
+// launched process inherits the user's identity and environment.
+func (b *Broker) LaunchProcessViaUserHelper(binaryPath string) error {
+	return b.LaunchProcessViaUserHelperWithArgs(binaryPath)
+}
+
+// LaunchProcessViaUserHelperWithArgs asks all connected user-role helpers to launch a
+// binary with optional CLI args.
+func (b *Broker) LaunchProcessViaUserHelperWithArgs(binaryPath string, args ...string) error {
+	userSessions := b.userHelperSessions()
+	if len(userSessions) == 0 {
+		return fmt.Errorf("no user-role helper connected")
+	}
+
+	var launched int
+	var errs []error
+	for _, userSession := range userSessions {
+		id := fmt.Sprintf("launch-%s-%d", userSession.SessionID, time.Now().UnixMilli())
+		resp, err := userSession.SendCommand(id, ipc.TypeLaunchProcess,
+			ipc.LaunchProcessRequest{BinaryPath: binaryPath, Args: args}, 15*time.Second)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("session %s: launch_process IPC failed: %w", userSession.SessionID, err))
+			continue
+		}
+
+		var result ipc.LaunchProcessResult
+		if err := json.Unmarshal(resp.Payload, &result); err != nil {
+			errs = append(errs, fmt.Errorf("session %s: unmarshal launch result: %w", userSession.SessionID, err))
+			continue
+		}
+		if !result.OK {
+			errs = append(errs, fmt.Errorf("session %s: user helper launch failed: %s", userSession.SessionID, result.Error))
+			continue
+		}
+
+		launched++
+		log.Info("process launched via user helper",
+			"binary", binaryPath,
+			"pid", result.PID,
+			"sessionId", userSession.SessionID,
+			"username", userSession.Username,
+		)
+	}
+
+	if launched == 0 {
+		return errors.Join(errs...)
 	}
 	return nil
 }
 
-
-// LaunchProcessViaUserHelper asks a connected user-role helper to launch a
-// binary. The helper is already running as the logged-in user, so the
-// launched process inherits the user's identity and environment.
-func (b *Broker) LaunchProcessViaUserHelper(binaryPath string) error {
-	b.mu.RLock()
-	var userSession *Session
-	for _, s := range b.sessions {
-		if s.HelperRole == ipc.HelperRoleUser {
-			userSession = s
-			break
-		}
-	}
-	b.mu.RUnlock()
-
+// LaunchProcessViaUserHelperForSession asks the matching connected user-role helper
+// to launch a binary for a specific session key. On Windows the key is the
+// WinSessionID; on Unix it is the UID/identity key.
+func (b *Broker) LaunchProcessViaUserHelperForSession(sessionKey, binaryPath string, args ...string) error {
+	userSession := b.userHelperSessionForKey(sessionKey)
 	if userSession == nil {
-		return fmt.Errorf("no user-role helper connected")
+		return fmt.Errorf("no user-role helper connected for session %s", sessionKey)
 	}
 
-	id := fmt.Sprintf("launch-%d", time.Now().UnixMilli())
+	id := fmt.Sprintf("launch-%s-%d", userSession.SessionID, time.Now().UnixMilli())
 	resp, err := userSession.SendCommand(id, ipc.TypeLaunchProcess,
-		ipc.LaunchProcessRequest{BinaryPath: binaryPath}, 15*time.Second)
+		ipc.LaunchProcessRequest{BinaryPath: binaryPath, Args: args}, 15*time.Second)
 	if err != nil {
-		return fmt.Errorf("launch_process IPC failed: %w", err)
+		return fmt.Errorf("session %s: launch_process IPC failed: %w", userSession.SessionID, err)
 	}
 
 	var result ipc.LaunchProcessResult
 	if err := json.Unmarshal(resp.Payload, &result); err != nil {
-		return fmt.Errorf("unmarshal launch result: %w", err)
+		return fmt.Errorf("session %s: unmarshal launch result: %w", userSession.SessionID, err)
 	}
 	if !result.OK {
-		return fmt.Errorf("user helper launch failed: %s", result.Error)
+		return fmt.Errorf("session %s: user helper launch failed: %s", userSession.SessionID, result.Error)
 	}
 
-	log.Info("process launched via user helper", "binary", binaryPath, "pid", result.PID)
+	log.Info("process launched via user helper",
+		"binary", binaryPath,
+		"args", args,
+		"pid", result.PID,
+		"sessionId", userSession.SessionID,
+		"username", userSession.Username,
+	)
 	return nil
 }
 
@@ -663,10 +829,20 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 			log.Info("user helper disconnecting", "uid", s.UID, "sessionId", s.SessionID)
 			s.Close()
 		case backupipc.TypeBackupResult, backupipc.TypeBackupProgress, backupipc.TypeBackupReady:
+			if !shouldForwardUnsolicitedHelperMessage(s, env) {
+				log.Warn("dropping unauthorized backup helper message",
+					"type", env.Type, "sessionId", s.SessionID, "role", s.HelperRole)
+				return
+			}
 			if b.onMessage != nil {
 				b.onMessage(s, env)
 			}
 		case ipc.TypeTrayAction, ipc.TypeNotifyResult, ipc.TypeClipboardData, ipc.TypeCommandResult, ipc.TypeSASRequest, ipc.TypeDesktopPeerDisconnected:
+			if !shouldForwardUnsolicitedHelperMessage(s, env) {
+				log.Warn("dropping unsolicited or unauthorized helper message",
+					"type", env.Type, "sessionId", s.SessionID, "role", s.HelperRole)
+				return
+			}
 			if b.onMessage != nil {
 				b.onMessage(s, env)
 			}
@@ -770,13 +946,34 @@ func (b *Broker) computeSelfHash() string {
 	if err != nil {
 		return ""
 	}
-	data, err := os.ReadFile(exePath)
+	sum, err := hashFileSHA256(exePath)
 	if err != nil {
 		log.Warn("failed to read executable for hash", "error", err.Error())
 		return ""
 	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+	return sum
+}
+
+func hashFileSHA256(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("path is not a regular file")
+	}
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 func (b *Broker) idleReaper(stopChan <-chan struct{}) {
@@ -796,6 +993,9 @@ func (b *Broker) reapIdleSessions() {
 	b.mu.RLock()
 	var toClose []*Session
 	for _, s := range b.sessions {
+		if s.Capabilities != nil && s.Capabilities.CanCapture {
+			continue
+		}
 		if s.IdleDuration() > IdleTimeout {
 			toClose = append(toClose, s)
 		}
@@ -806,5 +1006,42 @@ func (b *Broker) reapIdleSessions() {
 		log.Info("disconnecting idle user helper", "uid", s.UID, "sessionId", s.SessionID, "idle", s.IdleDuration())
 		s.Close()
 		b.removeSession(s)
+	}
+}
+
+func betterSession(candidate, current *Session) bool {
+	if candidate == nil {
+		return false
+	}
+	if current == nil {
+		return true
+	}
+	if candidate.LastSeen.After(current.LastSeen) {
+		return true
+	}
+	if current.LastSeen.After(candidate.LastSeen) {
+		return false
+	}
+	if candidate.ConnectedAt.After(current.ConnectedAt) {
+		return true
+	}
+	if current.ConnectedAt.After(candidate.ConnectedAt) {
+		return false
+	}
+	return candidate.SessionID < current.SessionID
+}
+
+func shouldForwardUnsolicitedHelperMessage(session *Session, env *ipc.Envelope) bool {
+	switch env.Type {
+	case backupipc.TypeBackupResult, backupipc.TypeBackupProgress, backupipc.TypeBackupReady:
+		return session.HasScope("backup")
+	case ipc.TypeTrayAction:
+		return session.HasScope("tray")
+	case ipc.TypeSASRequest, ipc.TypeDesktopPeerDisconnected:
+		return session.HasScope("desktop")
+	case ipc.TypeNotifyResult, ipc.TypeClipboardData, ipc.TypeCommandResult:
+		return false
+	default:
+		return false
 	}
 }

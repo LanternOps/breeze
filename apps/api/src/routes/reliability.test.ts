@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 // Mock auth middleware so it doesn't try to read JWT tokens
 vi.mock('../middleware/auth', () => ({
   authMiddleware: async (c: any, next: any) => await next(),
+  requirePermission: () => async (c: any, next: any) => await next(),
   requireScope: () => async (c: any, next: any) => await next(),
 }));
 

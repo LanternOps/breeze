@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { eq, and, desc } from 'drizzle-orm';
 import { db } from '../../db';
 import { backupSnapshots } from '../../db/schema';
+import { requirePermission } from '../../middleware/auth';
+import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import { snapshotListSchema } from './schemas';
 import type { SnapshotTreeItem } from './types';
@@ -14,6 +16,7 @@ const snapshotIdParamSchema = z.object({ id: z.string().uuid() });
 
 snapshotsRoutes.get(
   '/snapshots',
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   zValidator('query', snapshotListSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -42,7 +45,7 @@ snapshotsRoutes.get(
   }
 );
 
-snapshotsRoutes.get('/snapshots/:id', zValidator('param', snapshotIdParamSchema), async (c) => {
+snapshotsRoutes.get('/snapshots/:id', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('param', snapshotIdParamSchema), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -67,7 +70,7 @@ snapshotsRoutes.get('/snapshots/:id', zValidator('param', snapshotIdParamSchema)
   return c.json(toSnapshotResponse(row));
 });
 
-snapshotsRoutes.get('/snapshots/:id/browse', zValidator('param', snapshotIdParamSchema), async (c) => {
+snapshotsRoutes.get('/snapshots/:id/browse', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('param', snapshotIdParamSchema), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {

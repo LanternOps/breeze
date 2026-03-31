@@ -139,9 +139,9 @@ const (
 	CmdScriptListRunning = "script_list_running"
 
 	// Backup management
-	CmdBackupRun     = "backup_run"
-	CmdBackupList    = "backup_list"
-	CmdBackupStop    = "backup_stop"
+	CmdBackupRun         = "backup_run"
+	CmdBackupList        = "backup_list"
+	CmdBackupStop        = "backup_stop"
 	CmdBackupRestore     = "backup_restore"
 	CmdBackupVerify      = "backup_verify"
 	CmdBackupTestRestore = "backup_test_restore"
@@ -260,6 +260,7 @@ type ProcessListResponse struct {
 	Page       int           `json:"page"`
 	Limit      int           `json:"limit"`
 	TotalPages int           `json:"totalPages"`
+	Truncated  bool          `json:"truncated,omitempty"`
 }
 
 // Service information types
@@ -279,6 +280,7 @@ type ServiceListResponse struct {
 	Page       int           `json:"page"`
 	Limit      int           `json:"limit"`
 	TotalPages int           `json:"totalPages"`
+	Truncated  bool          `json:"truncated,omitempty"`
 }
 
 // Event log types
@@ -303,7 +305,8 @@ type EventLogEntry struct {
 }
 
 type EventLogListResponse struct {
-	Logs []EventLog `json:"logs"`
+	Logs      []EventLog `json:"logs"`
+	Truncated bool       `json:"truncated,omitempty"`
 }
 
 type EventLogQueryResponse struct {
@@ -312,6 +315,7 @@ type EventLogQueryResponse struct {
 	Page       int             `json:"page"`
 	Limit      int             `json:"limit"`
 	TotalPages int             `json:"totalPages"`
+	Truncated  bool            `json:"truncated,omitempty"`
 }
 
 // Scheduled task types
@@ -334,6 +338,7 @@ type TaskListResponse struct {
 	Page       int             `json:"page"`
 	Limit      int             `json:"limit"`
 	TotalPages int             `json:"totalPages"`
+	Truncated  bool            `json:"truncated,omitempty"`
 }
 
 type TaskHistoryEntry struct {
@@ -346,9 +351,10 @@ type TaskHistoryEntry struct {
 }
 
 type TaskHistoryResponse struct {
-	History []TaskHistoryEntry `json:"history"`
-	Path    string             `json:"path"`
-	Total   int                `json:"total"`
+	History   []TaskHistoryEntry `json:"history"`
+	Path      string             `json:"path"`
+	Total     int                `json:"total"`
+	Truncated bool               `json:"truncated,omitempty"`
 }
 
 // Registry types
@@ -367,15 +373,17 @@ type RegistryValue struct {
 }
 
 type RegistryKeysResponse struct {
-	Keys []RegistryKey `json:"keys"`
-	Path string        `json:"path"`
-	Hive string        `json:"hive"`
+	Keys      []RegistryKey `json:"keys"`
+	Path      string        `json:"path"`
+	Hive      string        `json:"hive"`
+	Truncated bool          `json:"truncated,omitempty"`
 }
 
 type RegistryValuesResponse struct {
-	Values []RegistryValue `json:"values"`
-	Path   string          `json:"path"`
-	Hive   string          `json:"hive"`
+	Values    []RegistryValue `json:"values"`
+	Path      string          `json:"path"`
+	Hive      string          `json:"hive"`
+	Truncated bool            `json:"truncated,omitempty"`
 }
 
 // FileEntry represents a file or directory in file listing responses
@@ -390,8 +398,10 @@ type FileEntry struct {
 
 // FileListResponse represents the response for file listing
 type FileListResponse struct {
-	Path    string      `json:"path"`
-	Entries []FileEntry `json:"entries"`
+	Path      string      `json:"path"`
+	Entries   []FileEntry `json:"entries"`
+	Limit     int         `json:"limit"`
+	Truncated bool        `json:"truncated,omitempty"`
 }
 
 // TrashMetadata stores info about a trashed item for restore/audit purposes.
@@ -406,8 +416,9 @@ type TrashMetadata struct {
 
 // TrashListResponse is the response for listing trash contents.
 type TrashListResponse struct {
-	Items []TrashMetadata `json:"items"`
-	Path  string          `json:"path"`
+	Items     []TrashMetadata `json:"items"`
+	Path      string          `json:"path"`
+	Truncated bool            `json:"truncated,omitempty"`
 }
 
 // DriveInfo represents a logical drive (Windows) or mount point (Unix).
@@ -423,7 +434,8 @@ type DriveInfo struct {
 
 // DriveListResponse is the response for listing drives/mount points.
 type DriveListResponse struct {
-	Drives []DriveInfo `json:"drives"`
+	Drives    []DriveInfo `json:"drives"`
+	Truncated bool        `json:"truncated,omitempty"`
 }
 
 // FilesystemLargestFile captures one large file candidate.

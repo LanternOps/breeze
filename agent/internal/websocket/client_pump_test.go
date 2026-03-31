@@ -126,7 +126,8 @@ func TestReadPump_CommandDispatched(t *testing.T) {
 
 	// Run read and write pumps
 	pumpDone := make(chan struct{})
-	go c.writePump(pumpDone)
+	writerDone := make(chan struct{})
+	go c.writePump(pumpDone, writerDone)
 	go func() {
 		c.readPump()
 		close(pumpDone)
@@ -218,7 +219,8 @@ func TestReadPump_RespondsToServerPing(t *testing.T) {
 	}
 
 	pumpDone := make(chan struct{})
-	go c.writePump(pumpDone)
+	writerDone := make(chan struct{})
+	go c.writePump(pumpDone, writerDone)
 	go func() {
 		c.readPump()
 		close(pumpDone)
@@ -263,7 +265,8 @@ func TestReadPump_MalformedJSON(t *testing.T) {
 	}
 
 	pumpDone := make(chan struct{})
-	go c.writePump(pumpDone)
+	writerDone := make(chan struct{})
+	go c.writePump(pumpDone, writerDone)
 	go func() {
 		c.readPump()
 		close(pumpDone)
@@ -304,7 +307,8 @@ func TestWritePump_TextMessage(t *testing.T) {
 	}
 
 	pumpDone := make(chan struct{})
-	go c.writePump(pumpDone)
+	writerDone := make(chan struct{})
+	go c.writePump(pumpDone, writerDone)
 
 	// Send via sendChan
 	payload := []byte(`{"type":"test"}`)
@@ -347,7 +351,8 @@ func TestWritePump_BinaryFrame(t *testing.T) {
 	}
 
 	pumpDone := make(chan struct{})
-	go c.writePump(pumpDone)
+	writerDone := make(chan struct{})
+	go c.writePump(pumpDone, writerDone)
 
 	// Send via binaryFrameChan
 	frame := []byte{0x02, 0x01, 0x02, 0x03}
@@ -388,8 +393,9 @@ func TestWritePump_StopsOnDone(t *testing.T) {
 
 	pumpExited := make(chan struct{})
 	pumpDone := make(chan struct{})
+	writerDone := make(chan struct{})
 	go func() {
-		c.writePump(pumpDone)
+		c.writePump(pumpDone, writerDone)
 		close(pumpExited)
 	}()
 
@@ -414,8 +420,9 @@ func TestWritePump_NilConnSkipsWrite(t *testing.T) {
 
 	pumpDone := make(chan struct{})
 	exited := make(chan struct{})
+	writerDone := make(chan struct{})
 	go func() {
-		c.writePump(pumpDone)
+		c.writePump(pumpDone, writerDone)
 		close(exited)
 	}()
 
@@ -467,7 +474,8 @@ func TestProcessCommand_SetsTypeAndCommandID(t *testing.T) {
 	}
 
 	pumpDone := make(chan struct{})
-	go c.writePump(pumpDone)
+	writerDone := make(chan struct{})
+	go c.writePump(pumpDone, writerDone)
 	c.readPump()
 	close(pumpDone)
 
@@ -486,4 +494,3 @@ func TestProcessCommand_SetsTypeAndCommandID(t *testing.T) {
 		t.Fatal("timed out waiting for captured result")
 	}
 }
-

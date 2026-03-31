@@ -13,6 +13,7 @@ type VersionEntry = {
   fileType: string;
   originalFileName: string;
   notes: string[];
+  isLatest: boolean;
 };
 
 function formatDate(dateString: string, timezone?: string): string {
@@ -45,7 +46,8 @@ function normalizeVersion(raw: Record<string, unknown>, index: number): VersionE
     architecture,
     fileType: String(raw.fileType ?? ''),
     originalFileName: String(raw.originalFileName ?? ''),
-    notes
+    notes,
+    isLatest: Boolean(raw.isLatest ?? raw.is_latest ?? false),
   };
 }
 
@@ -62,6 +64,7 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [selectedVersionId, setSelectedVersionId] = useState<string>('');
   const [saving, setSaving] = useState(false);
+  const [promotingVersionId, setPromotingVersionId] = useState<string>('');
   const [uploadProgress, setUploadProgress] = useState(0);
   const [catalogId, setCatalogId] = useState(propCatalogId ?? '');
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -114,8 +117,9 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
         setVersions(normalizedVersions);
 
         if (normalizedVersions.length > 0) {
-          setLatestId(normalizedVersions[0].id);
-          setSelectedVersionId(normalizedVersions[0].id);
+          const latestVersion = normalizedVersions.find((version) => version.isLatest) ?? normalizedVersions[0];
+          setLatestId(latestVersion?.id ?? '');
+          setSelectedVersionId((current) => current || latestVersion?.id || '');
         }
       }
     } catch (err) {
@@ -157,6 +161,31 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
         : prev.silentUninstallArgs,
     }));
   };
+
+  const handlePromoteLatest = useCallback(async (versionId: string) => {
+    if (!catalogId || versionId === latestId) return;
+
+    try {
+      setPromotingVersionId(versionId);
+      setError(undefined);
+
+      const response = await fetchWithAuth(`/software/catalog/${catalogId}/versions/${versionId}/promote`, {
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error ?? 'Failed to promote version');
+      }
+
+      await fetchVersions();
+    } catch (err) {
+      console.error('Failed to promote version:', err);
+      setError(err instanceof Error ? err.message : 'Failed to promote version');
+    } finally {
+      setPromotingVersionId('');
+    }
+  }, [catalogId, fetchVersions, latestId]);
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -498,10 +527,13 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
                         <input
                           type="checkbox"
                           checked={entry.id === latestId}
-                          onChange={() => setLatestId(entry.id)}
+                          onChange={() => {
+                            void handlePromoteLatest(entry.id);
+                          }}
+                          disabled={promotingVersionId === entry.id || saving}
                           className="h-4 w-4 rounded border"
                         />
-                        Set as latest
+                        {promotingVersionId === entry.id ? 'Saving...' : 'Set as latest'}
                       </label>
                     </td>
                   </tr>

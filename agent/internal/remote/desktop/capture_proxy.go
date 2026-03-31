@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"math"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -113,11 +114,37 @@ func (p *proxyCapturer) captureViaIPC(x, y, width, height int) (*image.RGBA, err
 	if frameData.Width <= 0 || frameData.Height <= 0 {
 		return nil, fmt.Errorf("proxy: invalid frame dimensions %dx%d", frameData.Width, frameData.Height)
 	}
-	expected := frameData.Width * frameData.Height * 4
+	expected, err := expectedRGBAFrameSize(frameData.Width, frameData.Height)
+	if err != nil {
+		return nil, fmt.Errorf("proxy: invalid frame dimensions %dx%d: %w", frameData.Width, frameData.Height, err)
+	}
 	if len(frameData.Data) != expected {
 		return nil, fmt.Errorf("proxy: frame data size mismatch: got %d bytes, expected %d (%dx%dx4)", len(frameData.Data), expected, frameData.Width, frameData.Height)
 	}
 	img := image.NewRGBA(image.Rect(0, 0, frameData.Width, frameData.Height))
 	copy(img.Pix, frameData.Data)
 	return img, nil
+}
+
+func expectedRGBAFrameSize(width, height int) (int, error) {
+	if width <= 0 || height <= 0 {
+		return 0, fmt.Errorf("dimensions must be positive")
+	}
+
+	width64 := int64(width)
+	height64 := int64(height)
+	if width64 > math.MaxInt64/height64 {
+		return 0, fmt.Errorf("frame size overflows")
+	}
+	pixels := width64 * height64
+
+	if pixels > math.MaxInt64/4 {
+		return 0, fmt.Errorf("frame size overflows")
+	}
+	bytes := pixels * 4
+	if bytes > int64(math.MaxInt) {
+		return 0, fmt.Errorf("frame size exceeds platform int range")
+	}
+
+	return int(bytes), nil
 }

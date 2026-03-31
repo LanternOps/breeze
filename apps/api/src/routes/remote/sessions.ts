@@ -574,15 +574,7 @@ sessionRoutes.post(
       const code = await createDesktopConnectCode({
         sessionId: session.id,
         userId: auth.user.id,
-        tokenPayload: {
-          sub: auth.user.id,
-          email: auth.user.email,
-          roleId: auth.token.roleId,
-          orgId: auth.token.orgId,
-          partnerId: auth.token.partnerId,
-          scope: auth.token.scope,
-          mfa: auth.token.mfa
-        }
+        email: auth.user.email
       });
 
       return c.json(code);

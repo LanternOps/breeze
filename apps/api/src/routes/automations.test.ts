@@ -6,29 +6,29 @@ vi.mock('../jobs/automationWorker', () => ({
   enqueueAutomationRun: vi.fn(async () => ({ enqueued: true, jobId: 'job-1' }))
 }));
 
-vi.mock('../services/automationRuntime', async () => {
-  const actual = await vi.importActual<typeof import('../services/automationRuntime')>('../services/automationRuntime');
-
-  return {
-    ...actual,
-    createAutomationRunRecord: vi.fn(async () => ({
-      run: {
-        id: 'run-1',
-        automationId: 'auto-1',
-        triggeredBy: 'manual:user-123',
-        status: 'running',
-        devicesTargeted: 2,
-        devicesSucceeded: 0,
-        devicesFailed: 0,
-        startedAt: new Date(),
-        completedAt: null,
-        logs: [],
-        createdAt: new Date()
-      },
-      targetDeviceIds: ['device-1', 'device-2']
-    }))
-  };
-});
+vi.mock('../services/automationRuntime', () => ({
+  AutomationValidationError: class AutomationValidationError extends Error {},
+  createAutomationRunRecord: vi.fn(async () => ({
+    run: {
+      id: 'run-1',
+      automationId: 'auto-1',
+      triggeredBy: 'manual:user-123',
+      status: 'running',
+      devicesTargeted: 2,
+      devicesSucceeded: 0,
+      devicesFailed: 0,
+      startedAt: new Date(),
+      completedAt: null,
+      logs: [],
+      createdAt: new Date()
+    },
+    targetDeviceIds: ['device-1', 'device-2']
+  })),
+  normalizeAutomationActions: vi.fn((actions) => actions),
+  normalizeAutomationTrigger: vi.fn((trigger) => trigger),
+  normalizeNotificationTargets: vi.fn((targets) => targets ?? {}),
+  withWebhookDefaults: vi.fn((trigger) => trigger),
+}));
 
 vi.mock('../db', () => ({
   db: {
@@ -82,6 +82,8 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
   requireScope: vi.fn(() => async (_c: any, next: any) => next())
 }));
 

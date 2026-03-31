@@ -7,11 +7,13 @@
 
 import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
-import { networkMonitors, networkMonitorResults, devices } from '../db/schema';
-import { eq, and, sql } from 'drizzle-orm';
+import { networkMonitors, networkMonitorResults, devices, networkMonitorAlertRules, alerts, discoveredAssets } from '../db/schema';
+import { eq, and, sql, desc, inArray } from 'drizzle-orm';
 import { getRedisConnection } from '../services/redis';
 import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
 import { buildMonitorCommand } from '../routes/monitors';
+import { isCooldownActive, setCooldown } from '../services/alertCooldown';
+import { resolveAlert } from '../services/alertService';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -61,6 +63,8 @@ interface MonitorSchedulerJobData {
 
 type MonitorJobData = CheckMonitorJobData | ProcessCheckResultJobData | MonitorSchedulerJobData;
 
+const MONITOR_ALERT_COOLDOWN_MINUTES = 5;
+
 function createMonitorWorker(): Worker<MonitorJobData> {
   return new Worker<MonitorJobData>(
     MONITOR_QUEUE,
@@ -108,14 +112,7 @@ async function processCheckMonitor(data: CheckMonitorJobData): Promise<{
     return { dispatched: false, agentId: null };
   }
 
-  // Find an online agent for this org
-  const [onlineAgent] = await db
-    .select({ agentId: devices.agentId })
-    .from(devices)
-    .where(and(eq(devices.orgId, data.orgId), eq(devices.status, 'online')))
-    .limit(1);
-
-  const agentId = onlineAgent?.agentId ?? null;
+  const agentId = await selectExecutionAgentForMonitor(monitor);
 
   if (!agentId || !isAgentConnected(agentId)) {
     console.warn(`[MonitorWorker] No online agent for org ${data.orgId}`);
@@ -134,17 +131,231 @@ async function processCheckMonitor(data: CheckMonitorJobData): Promise<{
   return { dispatched: true, agentId };
 }
 
-async function processCheckResult(data: ProcessCheckResultJobData): Promise<{
-  resultWritten: boolean;
-}> {
+function parseNumericThreshold(threshold: string | null | undefined): number | null {
+  if (typeof threshold !== 'string' || threshold.trim().length === 0) return null;
+  const parsed = Number(threshold);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+async function selectExecutionAgentForMonitor(
+  monitor: {
+    orgId: string;
+    assetId: string | null;
+  }
+): Promise<string | null> {
+  let assetSiteId: string | null = null;
+
+  if (monitor.assetId) {
+    const [asset] = await db
+      .select({ siteId: discoveredAssets.siteId })
+      .from(discoveredAssets)
+      .where(and(eq(discoveredAssets.id, monitor.assetId), eq(discoveredAssets.orgId, monitor.orgId)))
+      .limit(1);
+    assetSiteId = asset?.siteId ?? null;
+  }
+
+  if (assetSiteId) {
+    const [siteAgent] = await db
+      .select({ agentId: devices.agentId })
+      .from(devices)
+      .where(and(
+        eq(devices.orgId, monitor.orgId),
+        eq(devices.siteId, assetSiteId),
+        eq(devices.status, 'online')
+      ))
+      .limit(1);
+
+    if (siteAgent?.agentId) {
+      return siteAgent.agentId;
+    }
+  }
+
+  const [onlineAgent] = await db
+    .select({ agentId: devices.agentId })
+    .from(devices)
+    .where(and(eq(devices.orgId, monitor.orgId), eq(devices.status, 'online')))
+    .limit(1);
+
+  return onlineAgent?.agentId ?? null;
+}
+
+async function resolveMonitorAlertDevice(
+  monitor: {
+    orgId: string;
+    assetId: string | null;
+  }
+): Promise<string | null> {
+  let preferredSiteId: string | null = null;
+
+  if (monitor.assetId) {
+    const [asset] = await db
+      .select({
+        linkedDeviceId: discoveredAssets.linkedDeviceId,
+        siteId: discoveredAssets.siteId
+      })
+      .from(discoveredAssets)
+      .where(and(eq(discoveredAssets.id, monitor.assetId), eq(discoveredAssets.orgId, monitor.orgId)))
+      .limit(1);
+
+    if (asset?.linkedDeviceId) {
+      return asset.linkedDeviceId;
+    }
+
+    preferredSiteId = asset?.siteId ?? null;
+  }
+
+  if (preferredSiteId) {
+    const [siteDevice] = await db
+      .select({ id: devices.id })
+      .from(devices)
+      .where(and(eq(devices.orgId, monitor.orgId), eq(devices.siteId, preferredSiteId)))
+      .orderBy(desc(devices.lastSeenAt), desc(devices.enrolledAt))
+      .limit(1);
+
+    if (siteDevice?.id) {
+      return siteDevice.id;
+    }
+  }
+
+  const [orgDevice] = await db
+    .select({ id: devices.id })
+    .from(devices)
+    .where(eq(devices.orgId, monitor.orgId))
+    .orderBy(desc(devices.lastSeenAt), desc(devices.enrolledAt))
+    .limit(1);
+
+  return orgDevice?.id ?? null;
+}
+
+function getMonitorAlertConditionState(
+  rule: typeof networkMonitorAlertRules.$inferSelect,
+  result: MonitorCheckResult,
+  monitor: { consecutiveFailures: number; name: string; target: string; monitorType: string }
+): { matched: boolean; detail: string } {
+  switch (rule.condition) {
+    case 'offline':
+      return {
+        matched: result.status === 'offline',
+        detail: `Monitor ${monitor.name} is offline`
+      };
+    case 'degraded':
+      return {
+        matched: result.status === 'degraded',
+        detail: `Monitor ${monitor.name} is degraded`
+      };
+    case 'response_time_gt': {
+      const threshold = parseNumericThreshold(rule.threshold);
+      return {
+        matched: threshold !== null && result.responseMs > threshold,
+        detail: `Response time ${result.responseMs}ms exceeded threshold ${threshold ?? 'n/a'}ms`
+      };
+    }
+    case 'consecutive_failures_gt': {
+      const threshold = parseNumericThreshold(rule.threshold);
+      return {
+        matched: threshold !== null && monitor.consecutiveFailures > threshold,
+        detail: `Consecutive failures ${monitor.consecutiveFailures} exceeded threshold ${threshold ?? 'n/a'}`
+      };
+    }
+    default:
+      return { matched: false, detail: `Unsupported monitor condition ${rule.condition}` };
+  }
+}
+
+async function evaluateMonitorAlertRules(
+  monitor: typeof networkMonitors.$inferSelect,
+  result: MonitorCheckResult
+): Promise<void> {
+  const rules = await db
+    .select()
+    .from(networkMonitorAlertRules)
+    .where(and(
+      eq(networkMonitorAlertRules.monitorId, monitor.id),
+      eq(networkMonitorAlertRules.isActive, true)
+    ));
+
+  if (rules.length === 0) return;
+
+  const alertDeviceId = await resolveMonitorAlertDevice(monitor);
+  if (!alertDeviceId) {
+    console.warn(`[MonitorWorker] Skipping alert evaluation for monitor ${monitor.id}: no device context available`);
+    return;
+  }
+
+  for (const rule of rules) {
+    const condition = getMonitorAlertConditionState(rule, result, monitor);
+    const matchingAlerts = await db
+      .select({ id: alerts.id })
+      .from(alerts)
+      .where(and(
+        eq(alerts.orgId, monitor.orgId),
+        eq(alerts.deviceId, alertDeviceId),
+        inArray(alerts.status, ['active', 'acknowledged']),
+        sql`${alerts.context}->>'source' = 'network_monitor'`,
+        sql`${alerts.context}->>'monitorId' = ${monitor.id}`,
+        sql`${alerts.context}->>'alertRuleId' = ${rule.id}`
+      ));
+
+    if (condition.matched && matchingAlerts.length > 0) {
+      continue;
+    }
+
+    if (!condition.matched) {
+      for (const existingAlert of matchingAlerts) {
+        await resolveAlert(
+          existingAlert.id,
+          `Auto-resolved after monitor ${monitor.name} recovered from ${rule.condition}`
+        );
+      }
+      continue;
+    }
+
+    if (await isCooldownActive(rule.id, alertDeviceId)) {
+      continue;
+    }
+
+    const title = `${monitor.name} ${rule.condition.replace(/_/g, ' ')}`;
+    const message = rule.message
+      ?? `${condition.detail}. Target: ${monitor.target}. Status: ${result.status}.`;
+
+    await db.insert(alerts).values({
+      ruleId: null,
+      deviceId: alertDeviceId,
+      orgId: monitor.orgId,
+      status: 'active',
+      severity: rule.severity,
+      title,
+      message,
+      context: {
+        source: 'network_monitor',
+        monitorId: monitor.id,
+        alertRuleId: rule.id,
+        monitorType: monitor.monitorType,
+        target: monitor.target,
+        status: result.status,
+        responseMs: result.responseMs,
+        statusCode: result.statusCode ?? null,
+        error: result.error ?? null,
+        threshold: rule.threshold ?? null
+      },
+      triggeredAt: new Date()
+    });
+
+    await setCooldown(rule.id, alertDeviceId, MONITOR_ALERT_COOLDOWN_MINUTES);
+  }
+}
+
+export async function recordMonitorCheckResult(
+  monitorId: string,
+  result: MonitorCheckResult
+): Promise<void> {
   const now = new Date();
-  const result = data.result;
 
   // Use a transaction to keep results table and monitor state in sync
   await db.transaction(async (tx) => {
     // Write to results table
     await tx.insert(networkMonitorResults).values({
-      monitorId: data.monitorId,
+      monitorId,
       status: result.status,
       responseMs: result.responseMs ?? null,
       statusCode: result.statusCode ?? null,
@@ -172,10 +383,26 @@ async function processCheckResult(data: ProcessCheckResultJobData): Promise<{
     await tx
       .update(networkMonitors)
       .set(updateSet)
-      .where(eq(networkMonitors.id, data.monitorId));
+      .where(eq(networkMonitors.id, monitorId));
   });
 
-  console.log(`[MonitorWorker] Result recorded for monitor ${data.monitorId}: ${result.status}`);
+  const [monitor] = await db
+    .select()
+    .from(networkMonitors)
+    .where(eq(networkMonitors.id, monitorId))
+    .limit(1);
+
+  if (monitor) {
+    await evaluateMonitorAlertRules(monitor, result);
+  }
+}
+
+async function processCheckResult(data: ProcessCheckResultJobData): Promise<{
+  resultWritten: boolean;
+}> {
+  await recordMonitorCheckResult(data.monitorId, data.result);
+
+  console.log(`[MonitorWorker] Result recorded for monitor ${data.monitorId}: ${data.result.status}`);
   return { resultWritten: true };
 }
 
@@ -220,10 +447,26 @@ export async function enqueueMonitorCheck(
   orgId: string
 ): Promise<string> {
   const queue = getMonitorQueue();
+  const stableJobId = `monitor-check:${monitorId}`;
+  const existing = await queue.getJob(stableJobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (state === 'waiting' || state === 'active' || state === 'delayed' || state === 'prioritized') {
+      return existing.id as string;
+    }
+    if (state === 'completed' || state === 'failed') {
+      await existing.remove();
+    }
+  }
+
   const job = await queue.add(
     'check-monitor',
     { type: 'check-monitor', monitorId, orgId },
-    { removeOnComplete: { count: 100 }, removeOnFail: { count: 200 } }
+    {
+      jobId: stableJobId,
+      removeOnComplete: { count: 100 },
+      removeOnFail: { count: 200 }
+    }
   );
   return job.id!;
 }

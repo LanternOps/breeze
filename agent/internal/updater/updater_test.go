@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -79,6 +80,23 @@ func TestVerifyChecksumFileNotFound(t *testing.T) {
 	err := u.verifyChecksum("/nonexistent/file", "abc")
 	if err == nil {
 		t.Fatal("nonexistent file should return error")
+	}
+}
+
+func TestNormalizePreflightErr_PreservesFileLocked(t *testing.T) {
+	err := normalizePreflightErr(ErrFileLocked)
+	if !errors.Is(err, ErrFileLocked) {
+		t.Fatalf("expected ErrFileLocked, got %v", err)
+	}
+	if errors.Is(err, ErrReadOnlyFS) {
+		t.Fatalf("did not expect ErrReadOnlyFS, got %v", err)
+	}
+}
+
+func TestNormalizePreflightErr_WrapsReadOnly(t *testing.T) {
+	err := normalizePreflightErr(os.ErrPermission)
+	if !errors.Is(err, ErrReadOnlyFS) {
+		t.Fatalf("expected ErrReadOnlyFS, got %v", err)
 	}
 }
 

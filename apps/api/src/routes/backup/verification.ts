@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId, toDateOrNull } from './helpers';
 import {
   backupHealthQuerySchema,
@@ -20,7 +22,7 @@ import {
 
 export const backupVerificationRoutes = new Hono();
 
-backupVerificationRoutes.get('/health', zValidator('query', backupHealthQuerySchema), async (c) => {
+backupVerificationRoutes.get('/health', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('query', backupHealthQuerySchema), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -45,7 +47,13 @@ backupVerificationRoutes.get('/health', zValidator('query', backupHealthQuerySch
   });
 });
 
-backupVerificationRoutes.post('/verify', zValidator('json', verificationRunSchema), async (c) => {
+backupVerificationRoutes.post(
+  '/verify',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
+  zValidator('json', verificationRunSchema),
+  async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -106,7 +114,7 @@ backupVerificationRoutes.post('/verify', zValidator('json', verificationRunSchem
   }
 });
 
-backupVerificationRoutes.get('/verifications', zValidator('query', verificationListSchema), async (c) => {
+backupVerificationRoutes.get('/verifications', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('query', verificationListSchema), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -129,7 +137,7 @@ backupVerificationRoutes.get('/verifications', zValidator('query', verificationL
   });
 });
 
-backupVerificationRoutes.get('/recovery-readiness', zValidator('query', recoveryReadinessQuerySchema), async (c) => {
+backupVerificationRoutes.get('/recovery-readiness', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('query', recoveryReadinessQuerySchema), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {

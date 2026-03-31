@@ -4,10 +4,19 @@ import { z } from 'zod';
 import { and, desc, eq, gte, lte, ilike, or, sql, SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { auditLogs as auditLogsTable, users } from '../db/schema';
-import { authMiddleware } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import { PERMISSIONS } from '../services/permissions';
 
 export const auditLogRoutes = new Hono();
+const requireAuditLogRead = requirePermission(
+  PERMISSIONS.AUDIT_READ.resource,
+  PERMISSIONS.AUDIT_READ.action,
+);
+const requireAuditLogExport = requirePermission(
+  PERMISSIONS.AUDIT_EXPORT.resource,
+  PERMISSIONS.AUDIT_EXPORT.action,
+);
 
 // Apply auth to all routes
 auditLogRoutes.use('*', authMiddleware);
@@ -401,6 +410,7 @@ function paginatedListHandler(
 // GET / — used by AuditLogViewer (returns flattenEntry shape)
 auditLogRoutes.get(
   '/',
+  requireAuditLogRead,
   zValidator('query', listLogsSchema),
   paginatedListHandler('entries', flattenEntry)
 );
@@ -408,6 +418,7 @@ auditLogRoutes.get(
 // GET /logs — used by RecentActivity, UserActivityReport (returns full entry shape)
 auditLogRoutes.get(
   '/logs',
+  requireAuditLogRead,
   zValidator('query', listLogsSchema),
   paginatedListHandler('data', toFullEntry)
 );
@@ -415,6 +426,7 @@ auditLogRoutes.get(
 // GET /logs/:id — single entry detail
 auditLogRoutes.get(
   '/logs/:id',
+  requireAuditLogRead,
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -441,6 +453,7 @@ auditLogRoutes.get(
 // GET /search
 auditLogRoutes.get(
   '/search',
+  requireAuditLogRead,
   zValidator('query', searchSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -473,6 +486,8 @@ auditLogRoutes.get(
 // POST /export — used by AuditExport component
 auditLogRoutes.post(
   '/export',
+  requireAuditLogExport,
+  requireMfa(),
   zValidator('json', exportSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -514,6 +529,8 @@ const exportGetSchema = z.object({
 
 auditLogRoutes.get(
   '/export',
+  requireAuditLogExport,
+  requireMfa(),
   zValidator('query', exportGetSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -536,6 +553,7 @@ auditLogRoutes.get(
 // GET /reports/user-activity
 auditLogRoutes.get(
   '/reports/user-activity',
+  requireAuditLogRead,
   zValidator('query', reportQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -559,6 +577,7 @@ auditLogRoutes.get(
 // GET /reports/security-events
 auditLogRoutes.get(
   '/reports/security-events',
+  requireAuditLogRead,
   zValidator('query', reportQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -586,6 +605,7 @@ auditLogRoutes.get(
 // GET /reports/compliance
 auditLogRoutes.get(
   '/reports/compliance',
+  requireAuditLogRead,
   zValidator('query', reportQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -615,6 +635,7 @@ auditLogRoutes.get(
 // GET /stats
 auditLogRoutes.get(
   '/stats',
+  requireAuditLogRead,
   zValidator('query', reportQuerySchema),
   async (c) => {
     const auth = c.get('auth');

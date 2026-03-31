@@ -7,14 +7,14 @@ import (
 
 // Message type constants for IPC communication.
 const (
-	TypeAuthRequest  = "auth_request"
-	TypeAuthResponse = "auth_response"
-	TypeCommand      = "command"
+	TypeAuthRequest   = "auth_request"
+	TypeAuthResponse  = "auth_response"
+	TypeCommand       = "command"
 	TypeCommandResult = "command_result"
-	TypePing         = "ping"
-	TypePong         = "pong"
-	TypeCapabilities = "capabilities"
-	TypeDisconnect   = "disconnect"
+	TypePing          = "ping"
+	TypePong          = "pong"
+	TypeCapabilities  = "capabilities"
+	TypeDisconnect    = "disconnect"
 
 	// Phase 2: Notifications + Tray
 	TypeNotify       = "notify"
@@ -39,8 +39,8 @@ const (
 	TypeDesktopPeerDisconnected = "desktop_peer_disconnected"
 
 	// Launch a process as the logged-in user (sent to user-role helper)
-	TypeLaunchProcess  = "launch_process"
-	TypeLaunchResult   = "launch_result"
+	TypeLaunchProcess = "launch_process"
+	TypeLaunchResult  = "launch_result"
 
 	// TCC (Transparency, Consent, Control) permission status from macOS helpers
 	TypeTCCStatus = "tcc_status"
@@ -199,8 +199,14 @@ type DesktopPeerDisconnectedNotice struct {
 // LaunchProcessRequest asks the user-role helper to launch a binary.
 // The helper is already running as the logged-in user, so no token
 // manipulation is needed.
+//
+// Security: handlers MUST validate BinaryPath against an allowlist of
+// permitted executables before launching. Args should be bounded to a
+// reasonable length to prevent resource exhaustion. Validation is the
+// responsibility of the handler, not this message type.
 type LaunchProcessRequest struct {
-	BinaryPath string `json:"binaryPath"`
+	BinaryPath string   `json:"binaryPath"`
+	Args       []string `json:"args,omitempty"`
 }
 
 // LaunchProcessResult is the response from the user helper.

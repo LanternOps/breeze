@@ -4,9 +4,22 @@ import { Hono } from 'hono';
 const {
   getConfigPolicyMock,
   checkDeviceMaintenanceWindowMock,
+  resolvePatchConfigDetailsForDeviceMock,
+  loadPolicyLocalPatchConfigMock,
+  listPatchInventoryMock,
+  summarizePatchInventoryMock,
 } = vi.hoisted(() => ({
   getConfigPolicyMock: vi.fn(),
   checkDeviceMaintenanceWindowMock: vi.fn(),
+  resolvePatchConfigDetailsForDeviceMock: vi.fn(),
+  loadPolicyLocalPatchConfigMock: vi.fn(),
+  listPatchInventoryMock: vi.fn(),
+  summarizePatchInventoryMock: vi.fn((rows: any[]) => ({
+    total: rows.length,
+    ok: rows.filter((row) => row.effectiveStatus === 'ok').length,
+    needsRepair: rows.filter((row) => row.effectiveStatus === 'needs_repair').length,
+    invalidReference: rows.filter((row) => row.effectiveStatus === 'invalid_reference').length,
+  })),
 }));
 
 vi.mock('../../services/configurationPolicy', () => ({
@@ -15,6 +28,13 @@ vi.mock('../../services/configurationPolicy', () => ({
 
 vi.mock('../../services/featureConfigResolver', () => ({
   checkDeviceMaintenanceWindow: checkDeviceMaintenanceWindowMock,
+  resolvePatchConfigDetailsForDevice: resolvePatchConfigDetailsForDeviceMock,
+}));
+
+vi.mock('../../services/configPolicyPatching', () => ({
+  loadPolicyLocalPatchConfig: loadPolicyLocalPatchConfigMock,
+  listPatchInventory: listPatchInventoryMock,
+  summarizePatchInventory: summarizePatchInventoryMock,
 }));
 
 vi.mock('../../services/auditEvents', () => ({
@@ -28,6 +48,8 @@ vi.mock('../../jobs/patchJobExecutor', () => ({
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => next()),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
+  requirePermission: vi.fn(() => (c: any, next: any) => next()),
+  requireMfa: vi.fn(() => (c: any, next: any) => next()),
 }));
 
 vi.mock('../../db', () => ({
@@ -41,19 +63,6 @@ vi.mock('../../db', () => ({
 }));
 
 vi.mock('../../db/schema', () => ({
-  configPolicyFeatureLinks: {
-    id: 'configPolicyFeatureLinks.id',
-    configPolicyId: 'configPolicyFeatureLinks.configPolicyId',
-    featureType: 'configPolicyFeatureLinks.featureType',
-    featurePolicyId: 'configPolicyFeatureLinks.featurePolicyId',
-    inlineSettings: 'configPolicyFeatureLinks.inlineSettings',
-  },
-  patchPolicies: {
-    id: 'patchPolicies.id',
-    name: 'patchPolicies.name',
-    categoryRules: 'patchPolicies.categoryRules',
-    autoApprove: 'patchPolicies.autoApprove',
-  },
   patchJobs: { id: 'patchJobs.id' },
   devices: {
     id: 'devices.id',
@@ -84,28 +93,58 @@ function makeAuth(overrides: Record<string, unknown> = {}): any {
   };
 }
 
-function makeFeatureLink(overrides: Record<string, unknown> = {}): any {
+function makePolicyLocal(overrides: Record<string, unknown> = {}): any {
   return {
-    id: 'fl-1',
     configPolicyId: POLICY_ID,
-    featureType: 'patch',
+    configPolicyName: 'P1',
+    featureLinkId: 'fl-1',
+    orgId: ORG_ID,
     featurePolicyId: null,
-    inlineSettings: {
+    settings: {
+      sources: ['os'],
+      autoApprove: false,
+      autoApproveSeverities: [],
       scheduleFrequency: 'daily',
       scheduleTime: '02:00',
       scheduleDayOfWeek: 'sun',
       scheduleDayOfMonth: 1,
       rebootPolicy: 'if_required',
     },
+    ring: {
+      classification: 'null',
+      valid: true,
+      ringId: null,
+      ringName: null,
+      categoryRules: [],
+      autoApprove: {},
+    },
     ...overrides,
   };
 }
 
-function selectWhereResult(rows: unknown[]) {
+function makeResolvedPatchConfig(overrides: Record<string, unknown> = {}): any {
   return {
-    from: vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue(rows),
-    }),
+    settings: {
+      id: 'ps-1',
+      featureLinkId: 'fl-1',
+      sources: ['os'],
+      autoApprove: false,
+      autoApproveSeverities: [],
+      scheduleFrequency: 'daily',
+      scheduleTime: '02:00',
+      scheduleDayOfWeek: 'sun',
+      scheduleDayOfMonth: 1,
+      rebootPolicy: 'if_required',
+    },
+    featureLinkId: 'fl-1',
+    configPolicyId: POLICY_ID,
+    configPolicyName: 'P1',
+    featurePolicyId: null,
+    assignmentLevel: 'organization',
+    assignmentTargetId: ORG_ID,
+    assignmentPriority: 0,
+    resolvedTimezone: 'UTC',
+    ...overrides,
   };
 }
 
@@ -175,7 +214,7 @@ describe('configurationPolicies patchJob routes', () => {
 
     it('returns 400 when no patch settings are configured', async () => {
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, status: 'active', orgId: ORG_ID, name: 'P1' });
-      vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([]) as any);
+      loadPolicyLocalPatchConfigMock.mockResolvedValue(null);
 
       const res = await app.request(`/${POLICY_ID}/patch-job`, {
         method: 'POST',
@@ -187,9 +226,13 @@ describe('configurationPolicies patchJob routes', () => {
 
     it('returns 409 when all devices are maintenance-suppressed', async () => {
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, status: 'active', orgId: ORG_ID, name: 'P1' });
+      loadPolicyLocalPatchConfigMock.mockResolvedValue(makePolicyLocal());
       vi.mocked(db.select)
-        .mockReturnValueOnce(selectWhereLimitResult([makeFeatureLink()]) as any)
-        .mockReturnValueOnce(selectWhereResult([{ id: DEVICE_ID, orgId: ORG_ID, hostname: 'host-1' }]) as any);
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ id: DEVICE_ID, orgId: ORG_ID, hostname: 'host-1' }]),
+          }),
+        } as any);
 
       checkDeviceMaintenanceWindowMock.mockResolvedValue({
         active: true,
@@ -209,9 +252,13 @@ describe('configurationPolicies patchJob routes', () => {
 
     it('creates patch job successfully when conditions are met', async () => {
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, status: 'active', orgId: ORG_ID, name: 'P1' });
+      loadPolicyLocalPatchConfigMock.mockResolvedValue(makePolicyLocal());
       vi.mocked(db.select)
-        .mockReturnValueOnce(selectWhereLimitResult([makeFeatureLink()]) as any)
-        .mockReturnValueOnce(selectWhereResult([{ id: DEVICE_ID, orgId: ORG_ID, hostname: 'host-1' }]) as any);
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ id: DEVICE_ID, orgId: ORG_ID, hostname: 'host-1' }]),
+          }),
+        } as any);
 
       checkDeviceMaintenanceWindowMock.mockResolvedValue(inactiveMaintenance);
 
@@ -235,9 +282,13 @@ describe('configurationPolicies patchJob routes', () => {
 
     it('returns 404 when no accessible devices found', async () => {
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, status: 'active', orgId: ORG_ID, name: 'P1' });
+      loadPolicyLocalPatchConfigMock.mockResolvedValue(makePolicyLocal());
       vi.mocked(db.select)
-        .mockReturnValueOnce(selectWhereLimitResult([makeFeatureLink()]) as any)
-        .mockReturnValueOnce(selectWhereResult([]) as any);
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([]),
+          }),
+        } as any);
 
       const res = await app.request(`/${POLICY_ID}/patch-job`, {
         method: 'POST',
@@ -250,9 +301,13 @@ describe('configurationPolicies patchJob routes', () => {
     it('skips devices with inaccessible org', async () => {
       const otherOrgId = '44444444-4444-4444-4444-444444444444';
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, status: 'active', orgId: ORG_ID, name: 'P1' });
+      loadPolicyLocalPatchConfigMock.mockResolvedValue(makePolicyLocal());
       vi.mocked(db.select)
-        .mockReturnValueOnce(selectWhereLimitResult([makeFeatureLink()]) as any)
-        .mockReturnValueOnce(selectWhereResult([{ id: DEVICE_ID, orgId: otherOrgId, hostname: 'host-1' }]) as any);
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ id: DEVICE_ID, orgId: otherOrgId, hostname: 'host-1' }]),
+          }),
+        } as any);
 
       const res = await app.request(`/${POLICY_ID}/patch-job`, {
         method: 'POST',
@@ -265,12 +320,16 @@ describe('configurationPolicies patchJob routes', () => {
     it('creates partial job when some devices are maintenance-suppressed', async () => {
       const device2 = '55555555-5555-5555-5555-555555555555';
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, status: 'active', orgId: ORG_ID, name: 'P1' });
+      loadPolicyLocalPatchConfigMock.mockResolvedValue(makePolicyLocal());
       vi.mocked(db.select)
-        .mockReturnValueOnce(selectWhereLimitResult([makeFeatureLink()]) as any)
-        .mockReturnValueOnce(selectWhereResult([
-          { id: DEVICE_ID, orgId: ORG_ID, hostname: 'host-1' },
-          { id: device2, orgId: ORG_ID, hostname: 'host-2' },
-        ]) as any);
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: DEVICE_ID, orgId: ORG_ID, hostname: 'host-1' },
+              { id: device2, orgId: ORG_ID, hostname: 'host-2' },
+            ]),
+          }),
+        } as any);
 
       // First device suppressed, second not
       let maintenanceCallCount = 0;
@@ -302,12 +361,16 @@ describe('configurationPolicies patchJob routes', () => {
     it('creates one job per org when multiple devices are selected', async () => {
       const device2 = '66666666-6666-6666-6666-666666666666';
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, status: 'active', orgId: ORG_ID, name: 'P1' });
+      loadPolicyLocalPatchConfigMock.mockResolvedValue(makePolicyLocal());
       vi.mocked(db.select)
-        .mockReturnValueOnce(selectWhereLimitResult([makeFeatureLink()]) as any)
-        .mockReturnValueOnce(selectWhereResult([
-          { id: DEVICE_ID, orgId: ORG_ID, hostname: 'host-1' },
-          { id: device2, orgId: ORG_ID, hostname: 'host-2' },
-        ]) as any);
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: DEVICE_ID, orgId: ORG_ID, hostname: 'host-1' },
+              { id: device2, orgId: ORG_ID, hostname: 'host-2' },
+            ]),
+          }),
+        } as any);
 
       checkDeviceMaintenanceWindowMock.mockResolvedValue(inactiveMaintenance);
 
@@ -331,12 +394,16 @@ describe('configurationPolicies patchJob routes', () => {
       const device2 = '66666666-6666-6666-6666-666666666666';
       const otherOrgId = '77777777-7777-7777-7777-777777777777';
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, status: 'active', orgId: ORG_ID, name: 'P1' });
+      loadPolicyLocalPatchConfigMock.mockResolvedValue(makePolicyLocal());
       vi.mocked(db.select)
-        .mockReturnValueOnce(selectWhereLimitResult([makeFeatureLink()]) as any)
-        .mockReturnValueOnce(selectWhereResult([
-          { id: DEVICE_ID, orgId: ORG_ID, hostname: 'host-1' },
-          { id: device2, orgId: otherOrgId, hostname: 'host-2' },
-        ]) as any);
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: DEVICE_ID, orgId: ORG_ID, hostname: 'host-1' },
+              { id: device2, orgId: otherOrgId, hostname: 'host-2' },
+            ]),
+          }),
+        } as any);
 
       checkDeviceMaintenanceWindowMock.mockResolvedValue(inactiveMaintenance);
 
@@ -370,15 +437,15 @@ describe('configurationPolicies patchJob routes', () => {
   describe('GET /:id/patch-settings', () => {
     it('returns patch settings when found', async () => {
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'P1', status: 'active' });
-      vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([makeFeatureLink()]) as any);
+      loadPolicyLocalPatchConfigMock.mockResolvedValue(makePolicyLocal());
 
       const res = await app.request(`/${POLICY_ID}/patch-settings`);
       expect(res.status).toBe(200);
       const json = await res.json();
       expect(json.configPolicyId).toBe(POLICY_ID);
-      expect(json.approvalRing.ringId).toBeNull();
-      expect(json.deployment.scheduleTime).toBe('02:00');
-      expect(json.deployment).toBeDefined();
+      expect(json.policyLocal.approvalRing.ringId).toBeNull();
+      expect(json.policyLocal.settings.scheduleTime).toBe('02:00');
+      expect(json.policyLocal.settings).toBeDefined();
     });
 
     it('returns 404 when policy not found', async () => {
@@ -390,7 +457,7 @@ describe('configurationPolicies patchJob routes', () => {
 
     it('returns 404 when no patch settings link exists', async () => {
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'P1', status: 'active' });
-      vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([]) as any);
+      loadPolicyLocalPatchConfigMock.mockResolvedValue(null);
 
       const res = await app.request(`/${POLICY_ID}/patch-settings`);
       expect(res.status).toBe(404);
@@ -400,18 +467,19 @@ describe('configurationPolicies patchJob routes', () => {
   describe('GET /:id/resolve-patch-config/:deviceId', () => {
     it('returns resolved patch config for a device', async () => {
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'P1', status: 'active' });
+      loadPolicyLocalPatchConfigMock.mockResolvedValue(makePolicyLocal());
+      resolvePatchConfigDetailsForDeviceMock.mockResolvedValue(makeResolvedPatchConfig());
       vi.mocked(db.select)
-        .mockReturnValueOnce(selectWhereLimitResult([{ orgId: ORG_ID }]) as any)
-        .mockReturnValueOnce(selectWhereLimitResult([makeFeatureLink()]) as any);
+        .mockReturnValueOnce(selectWhereLimitResult([{ orgId: ORG_ID }]) as any);
 
       const res = await app.request(`/${POLICY_ID}/resolve-patch-config/${DEVICE_ID}`);
       expect(res.status).toBe(200);
       const json = await res.json();
-      expect(json.resolved).not.toBeNull();
-      expect(json.resolved.approvalRing.ringId).toBeNull();
-      expect(json.resolved.deployment.scheduleTime).toBe('02:00');
-      expect(json.resolved.deployment).toBeDefined();
-      expect(json.resolved.approvalRing).toBeDefined();
+      expect(json.policyLocal).not.toBeNull();
+      expect(json.effective).not.toBeNull();
+      expect(json.policyLocal.approvalRing.ringId).toBeNull();
+      expect(json.effective.settings.scheduleTime).toBe('02:00');
+      expect(json.effective.approvalRing).toBeDefined();
     });
 
     it('returns 404 when policy not found', async () => {
@@ -440,14 +508,16 @@ describe('configurationPolicies patchJob routes', () => {
 
     it('returns null resolved when no patch config found for policy', async () => {
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'P1', status: 'active' });
+      loadPolicyLocalPatchConfigMock.mockResolvedValue(null);
+      resolvePatchConfigDetailsForDeviceMock.mockResolvedValue(null);
       vi.mocked(db.select)
-        .mockReturnValueOnce(selectWhereLimitResult([{ orgId: ORG_ID }]) as any)
-        .mockReturnValueOnce(selectWhereLimitResult([]) as any);
+        .mockReturnValueOnce(selectWhereLimitResult([{ orgId: ORG_ID }]) as any);
 
       const res = await app.request(`/${POLICY_ID}/resolve-patch-config/${DEVICE_ID}`);
       expect(res.status).toBe(200);
       const json = await res.json();
-      expect(json.resolved).toBeNull();
+      expect(json.policyLocal).toBeNull();
+      expect(json.effective).toBeNull();
     });
   });
 
@@ -465,9 +535,13 @@ describe('configurationPolicies patchJob routes', () => {
 
     it('returns 500 when checkDeviceMaintenanceWindow throws', async () => {
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, status: 'active', orgId: ORG_ID, name: 'P1' });
+      loadPolicyLocalPatchConfigMock.mockResolvedValue(makePolicyLocal());
       vi.mocked(db.select)
-        .mockReturnValueOnce(selectWhereLimitResult([makeFeatureLink()]) as any)
-        .mockReturnValueOnce(selectWhereResult([{ id: DEVICE_ID, orgId: ORG_ID, hostname: 'host-1' }]) as any);
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ id: DEVICE_ID, orgId: ORG_ID, hostname: 'host-1' }]),
+          }),
+        } as any);
 
       checkDeviceMaintenanceWindowMock.mockRejectedValue(new Error('DB timeout'));
 
@@ -488,9 +562,8 @@ describe('configurationPolicies patchJob routes', () => {
 
     it('returns 500 when loading patch settings throws', async () => {
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'P1', status: 'active' });
-      vi.mocked(db.select)
-        .mockReturnValueOnce(selectWhereLimitResult([{ orgId: ORG_ID }]) as any)
-        .mockReturnValueOnce(selectWhereLimitReject(new Error('query failed')) as any);
+      vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([{ orgId: ORG_ID }]) as any);
+      loadPolicyLocalPatchConfigMock.mockRejectedValue(new Error('query failed'));
 
       const res = await app.request(`/${POLICY_ID}/resolve-patch-config/${DEVICE_ID}`);
       expect(res.status).toBe(500);

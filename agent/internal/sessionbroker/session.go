@@ -6,11 +6,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
 )
 
 var log = logging.L("sessionbroker")
+
+type pendingResponse struct {
+	ch           chan *ipc.Envelope
+	expectedType string
+}
 
 // Session represents a connected user helper with verified identity.
 type Session struct {
@@ -19,7 +25,7 @@ type Session struct {
 	Username      string
 	DisplayEnv    string
 	SessionID     string
-	PID           int    // OS process ID of the helper process
+	PID           int // OS process ID of the helper process
 	Capabilities  *ipc.Capabilities
 	TCCStatus     *ipc.TCCStatus
 	AllowedScopes []string
@@ -30,7 +36,9 @@ type Session struct {
 
 	conn    *ipc.Conn
 	mu      sync.Mutex
-	pending map[string]chan *ipc.Envelope // command ID -> response channel
+	done    chan struct{}
+	closed  bool
+	pending map[string]pendingResponse // command ID -> response channel + expected response type
 }
 
 // NewSession creates a new session for a verified user helper connection.
@@ -45,7 +53,8 @@ func NewSession(conn *ipc.Conn, uid uint32, identityKey, username, displayEnv, s
 		ConnectedAt:   time.Now(),
 		LastSeen:      time.Now(),
 		conn:          conn,
-		pending:       make(map[string]chan *ipc.Envelope),
+		done:          make(chan struct{}),
+		pending:       make(map[string]pendingResponse),
 	}
 }
 
@@ -54,7 +63,15 @@ func NewSession(conn *ipc.Conn, uid uint32, identityKey, username, displayEnv, s
 func (s *Session) SendCommand(id, cmdType string, payload any, timeout time.Duration) (*ipc.Envelope, error) {
 	ch := make(chan *ipc.Envelope, 1)
 	s.mu.Lock()
-	s.pending[id] = ch
+	if s.closed {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("session closed")
+	}
+	s.pending[id] = pendingResponse{
+		ch:           ch,
+		expectedType: expectedResponseType(cmdType),
+	}
+	done := s.done
 	s.mu.Unlock()
 
 	defer func() {
@@ -73,6 +90,8 @@ func (s *Session) SendCommand(id, cmdType string, payload any, timeout time.Dura
 			return nil, fmt.Errorf("session closed while waiting for response")
 		}
 		return resp, nil
+	case <-done:
+		return nil, fmt.Errorf("session closed while waiting for response")
 	case <-time.After(timeout):
 		return nil, ErrCommandTimeout
 	}
@@ -87,12 +106,21 @@ func (s *Session) SendNotify(id, msgType string, payload any) error {
 // Returns true if the message was matched to a pending command.
 func (s *Session) HandleResponse(env *ipc.Envelope) bool {
 	s.mu.Lock()
-	ch, ok := s.pending[env.ID]
+	pending, ok := s.pending[env.ID]
 	s.mu.Unlock()
 
 	if ok {
+		if pending.expectedType != "" && env.Type != pending.expectedType {
+			log.Warn("response type mismatch, dropping",
+				"id", env.ID,
+				"expectedType", pending.expectedType,
+				"actualType", env.Type,
+				"sessionId", s.SessionID,
+			)
+			return true
+		}
 		select {
-		case ch <- env:
+		case pending.ch <- env:
 		default:
 			log.Warn("response channel full, dropping", "id", env.ID)
 		}
@@ -149,26 +177,36 @@ func (s *Session) HasScope(scope string) bool {
 // Close closes the underlying connection and cancels all pending commands.
 func (s *Session) Close() error {
 	s.mu.Lock()
-	for id, ch := range s.pending {
-		close(ch)
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closed = true
+	for id := range s.pending {
 		delete(s.pending, id)
 	}
+	done := s.done
 	s.mu.Unlock()
+
+	if done != nil {
+		close(done)
+	}
+
 	return s.conn.Close()
 }
 
 // SessionInfo is a serializable summary of a session for status reporting.
 type SessionInfo struct {
-	UID          uint32             `json:"uid"`
-	IdentityKey  string             `json:"identityKey"`
-	Username     string             `json:"username"`
-	DisplayEnv   string             `json:"displayEnv"`
-	SessionID    string             `json:"sessionId"`
-	Capabilities *ipc.Capabilities  `json:"capabilities,omitempty"`
-	ConnectedAt  time.Time          `json:"connectedAt"`
-	LastSeen     time.Time          `json:"lastSeen"`
-	WinSessionID string             `json:"winSessionId,omitempty"`
-	HelperRole   string             `json:"helperRole,omitempty"`
+	UID          uint32            `json:"uid"`
+	IdentityKey  string            `json:"identityKey"`
+	Username     string            `json:"username"`
+	DisplayEnv   string            `json:"displayEnv"`
+	SessionID    string            `json:"sessionId"`
+	Capabilities *ipc.Capabilities `json:"capabilities,omitempty"`
+	ConnectedAt  time.Time         `json:"connectedAt"`
+	LastSeen     time.Time         `json:"lastSeen"`
+	WinSessionID string            `json:"winSessionId,omitempty"`
+	HelperRole   string            `json:"helperRole,omitempty"`
 }
 
 // Info returns a serializable summary of this session.
@@ -218,4 +256,29 @@ func UnmarshalPayload[T any](env *ipc.Envelope) (T, error) {
 		return result, err
 	}
 	return result, nil
+}
+
+func expectedResponseType(cmdType string) string {
+	switch cmdType {
+	case ipc.TypeCommand:
+		return ipc.TypeCommandResult
+	case ipc.TypeNotify:
+		return ipc.TypeNotifyResult
+	case ipc.TypeClipboardGet:
+		return ipc.TypeClipboardData
+	case ipc.TypeClipboardSet:
+		return ipc.TypeClipboardSet
+	case ipc.TypeDesktopStart:
+		return ipc.TypeDesktopStart
+	case ipc.TypeDesktopStop:
+		return ipc.TypeDesktopStop
+	case ipc.TypeSASRequest:
+		return ipc.TypeSASResponse
+	case ipc.TypeLaunchProcess:
+		return ipc.TypeLaunchResult
+	case backupipc.TypeBackupCommand:
+		return backupipc.TypeBackupResult
+	default:
+		return ""
+	}
 }

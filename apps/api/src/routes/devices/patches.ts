@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { db } from '../../db';
 import { patches, devicePatches, deviceCommands, users } from '../../db/schema';
-import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
+import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { getDeviceWithOrgCheck } from './helpers';
 import { queueCommandForExecution } from '../../services/commandQueue';
@@ -300,6 +300,7 @@ patchesRoutes.post(
   '/:id/patches/install',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('json', installPatchesSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -375,6 +376,7 @@ patchesRoutes.post(
   '/:id/patches/:patchId/rollback',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('param', rollbackPatchParamsSchema),
   async (c) => {
     const auth = c.get('auth');

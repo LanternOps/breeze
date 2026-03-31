@@ -4,9 +4,11 @@ import { z } from 'zod';
 import { and, eq, sql, desc, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { patchPolicies } from '../db/schema';
-import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { PERMISSIONS } from '../services/permissions';
 
 export const patchPolicyRoutes = new Hono();
+const requirePatchPolicyRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
 
 // ============================================
 // Helper Functions
@@ -41,7 +43,7 @@ async function getPatchPolicyWithOrgCheck(
   const [policy] = await db
     .select()
     .from(patchPolicies)
-    .where(eq(patchPolicies.id, policyId))
+    .where(and(eq(patchPolicies.id, policyId), eq(patchPolicies.kind, 'legacy')))
     .limit(1);
 
   if (!policy) {
@@ -83,6 +85,7 @@ patchPolicyRoutes.use('*', authMiddleware);
 patchPolicyRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requirePatchPolicyRead,
   zValidator('query', listPatchPoliciesSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -123,6 +126,8 @@ patchPolicyRoutes.get(
       conditions.push(eq(patchPolicies.enabled, query.enabled === 'true'));
     }
 
+    conditions.push(eq(patchPolicies.kind, 'legacy'));
+
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
 
     const countResult = await db
@@ -154,6 +159,7 @@ patchPolicyRoutes.get(
 patchPolicyRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePatchPolicyRead,
   async (c) => {
     const auth = c.get('auth');
     const policyId = c.req.param('id')!;
@@ -166,4 +172,3 @@ patchPolicyRoutes.get(
     return c.json(policy);
   }
 );
-

@@ -11,6 +11,7 @@ import (
 // showNotificationOS uses notify-send for desktop notifications on Linux.
 // A production implementation would use D-Bus org.freedesktop.Notifications directly.
 func showNotificationOS(req ipc.NotifyRequest) bool {
+	req = sanitizeNotifyRequest(req)
 	args := []string{req.Title, req.Body}
 
 	if req.Urgency != "" {

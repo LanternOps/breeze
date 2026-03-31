@@ -2,9 +2,12 @@ import { Hono } from 'hono';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '../db';
 import { organizations, devices, partners, partnerUsers } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
+import { PERMISSIONS } from '../services/permissions';
 
 export const partnerRoutes = new Hono();
+const requirePartnerDashboardRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
+const requirePartnerDeviceRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
 
 partnerRoutes.use('*', authMiddleware);
 
@@ -49,7 +52,12 @@ partnerRoutes.get('/me', async (c) => {
   });
 });
 
-partnerRoutes.get('/dashboard', requireScope('partner', 'system'), async (c) => {
+partnerRoutes.get(
+  '/dashboard',
+  requireScope('partner', 'system'),
+  requirePartnerDashboardRead,
+  requirePartnerDeviceRead,
+  async (c) => {
   const auth = c.get('auth');
 
   let orgIds: string[] | null = null;

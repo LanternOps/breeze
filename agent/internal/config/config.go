@@ -169,7 +169,7 @@ func Load(cfgFile string) (*Config, error) {
 	// Merge secrets from the separate secrets file if it exists.
 	// Old-format configs with inline secrets still work via the unmarshal
 	// above; the secrets file values take precedence when present.
-	secretsPath := secretsFilePath()
+	secretsPath := secretsFilePathFor(viper.ConfigFileUsed())
 	if _, err := os.Stat(secretsPath); err == nil {
 		sv := viper.New()
 		sv.SetConfigFile(secretsPath)
@@ -212,6 +212,12 @@ func Load(cfgFile string) (*Config, error) {
 func SetAndPersist(key string, value any) error {
 	viper.Set(key, value)
 	return viper.WriteConfig()
+}
+
+// Reload reloads the currently bound config file, or the default config path
+// when no explicit file has been loaded yet.
+func Reload() (*Config, error) {
+	return Load(viper.ConfigFileUsed())
 }
 
 func Save(cfg *Config) error {
@@ -291,7 +297,7 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	}
 
 	// Write secrets to a separate root-only file.
-	secretsPath := secretsFilePath()
+	secretsPath := secretsFilePathFor(cfgPath)
 	sv := viper.New()
 	// Only overwrite auth_token if non-empty. At runtime the token may be
 	// cleared from the config struct for security; writing "" would wipe
@@ -376,6 +382,13 @@ func FixConfigPermissions() {
 }
 
 func secretsFilePath() string {
+	return secretsFilePathFor(viper.ConfigFileUsed())
+}
+
+func secretsFilePathFor(cfgFile string) string {
+	if cfgFile != "" {
+		return filepath.Join(filepath.Dir(cfgFile), "secrets.yaml")
+	}
 	return filepath.Join(configDir(), "secrets.yaml")
 }
 

@@ -15,6 +15,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -79,6 +81,8 @@ func runBackupHelper() {
 
 	// Initialize vault if configured
 	vaultMgr := initVaultManager(cfg, mgr)
+	vaultState := &vaultManagerRef{}
+	vaultState.Set(vaultMgr)
 
 	// Report capabilities
 	caps := detectCapabilities()
@@ -102,7 +106,7 @@ func runBackupHelper() {
 
 	// Enter command loop with idle timeout
 	idleTimeout := 30 * time.Minute
-	commandLoop(ctx, conn, mgr, vaultMgr, idleTimeout)
+	commandLoop(ctx, conn, mgr, vaultState, idleTimeout)
 
 	if mgr != nil {
 		mgr.Stop()
@@ -217,9 +221,29 @@ func initBackupManager(cfg *config.Config) *backup.BackupManager {
 	return mgr
 }
 
-func initVaultManager(cfg *config.Config, mgr *backup.BackupManager) *backup.VaultManager {
-	if cfg == nil || !cfg.VaultEnabled || cfg.VaultPath == "" {
-		return nil
+type vaultManagerRef struct {
+	mu  sync.RWMutex
+	mgr *backup.VaultManager
+}
+
+func (r *vaultManagerRef) Get() *backup.VaultManager {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.mgr
+}
+
+func (r *vaultManagerRef) Set(mgr *backup.VaultManager) {
+	r.mu.Lock()
+	r.mgr = mgr
+	r.mu.Unlock()
+}
+
+func buildVaultManager(cfg *config.Config, mgr *backup.BackupManager) (*backup.VaultManager, error) {
+	if cfg == nil || !cfg.VaultEnabled {
+		return nil, nil
+	}
+	if cfg.VaultPath == "" {
+		return nil, fmt.Errorf("vault path is required when vault is enabled")
 	}
 
 	var primary providers.BackupProvider
@@ -239,17 +263,24 @@ func initVaultManager(cfg *config.Config, mgr *backup.BackupManager) *backup.Vau
 		retention = 3
 	}
 
-	vm, err := backup.NewVaultManager(backup.VaultConfig{
+	return backup.NewVaultManager(backup.VaultConfig{
 		VaultPath:      cfg.VaultPath,
 		RetentionCount: retention,
 		Enabled:        cfg.VaultEnabled,
 	}, primary)
+}
+
+func initVaultManager(cfg *config.Config, mgr *backup.BackupManager) *backup.VaultManager {
+	vm, err := buildVaultManager(cfg, mgr)
 	if err != nil {
 		slog.Warn("failed to init vault manager", "error", err.Error())
 		return nil
 	}
+	if vm == nil {
+		return nil
+	}
 
-	slog.Info("vault manager initialized", "path", cfg.VaultPath, "retention", retention)
+	slog.Info("vault manager initialized", "path", cfg.VaultPath, "retention", cfg.VaultRetentionCount)
 	return vm
 }
 
@@ -266,15 +297,20 @@ func detectCapabilities() backupipc.BackupCapabilities {
 	return caps
 }
 
-func commandLoop(ctx context.Context, conn *ipc.Conn, mgr *backup.BackupManager, vaultMgr *backup.VaultManager, idleTimeout time.Duration) {
+func commandLoop(ctx context.Context, conn *ipc.Conn, mgr *backup.BackupManager, vaultState *vaultManagerRef, idleTimeout time.Duration) {
 	idleTimer := time.NewTimer(idleTimeout)
 	defer idleTimer.Stop()
+	var activeCommands atomic.Int64
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-idleTimer.C:
+			if activeCommands.Load() > 0 {
+				idleTimer.Reset(idleTimeout)
+				continue
+			}
 			slog.Info("idle timeout reached, shutting down")
 			return
 		default:
@@ -295,7 +331,11 @@ func commandLoop(ctx context.Context, conn *ipc.Conn, mgr *backup.BackupManager,
 
 		switch env.Type {
 		case backupipc.TypeBackupCommand:
-			go handleBackupCommand(conn, env, mgr, vaultMgr)
+			activeCommands.Add(1)
+			go func() {
+				defer activeCommands.Add(-1)
+				handleBackupCommand(conn, env, mgr, vaultState)
+			}()
 		case backupipc.TypeBackupShutdown:
 			slog.Info("received shutdown command")
 			return
@@ -308,7 +348,7 @@ func commandLoop(ctx context.Context, conn *ipc.Conn, mgr *backup.BackupManager,
 	}
 }
 
-func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupManager, vaultMgr *backup.VaultManager) {
+func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupManager, vaultState *vaultManagerRef) {
 	var req backupipc.BackupCommandRequest
 	if err := json.Unmarshal(env.Payload, &req); err != nil {
 		sendError(conn, env.ID, "invalid request payload: "+err.Error())
@@ -318,9 +358,9 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 	start := time.Now()
 	var result backupipc.BackupCommandResult
 	if req.CommandType == "backup_restore" {
-		result = execBackupRestoreWithProgress(req.Payload, mgr, conn)
+		result = execBackupRestoreWithProgress(req.CommandID, req.Payload, mgr, conn)
 	} else {
-		result = executeCommand(req, mgr, vaultMgr)
+		result = executeCommand(req, mgr, vaultState)
 	}
 	result.CommandID = req.CommandID
 	result.DurationMs = time.Since(start).Milliseconds()
@@ -330,7 +370,7 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 	}
 }
 
-func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManager, vaultMgr *backup.VaultManager) backupipc.BackupCommandResult {
+func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManager, vaultState *vaultManagerRef) backupipc.BackupCommandResult {
 	if mgr == nil {
 		// Some commands don't need the manager (e.g., discovery, hardware profile)
 		switch req.CommandType {
@@ -343,7 +383,7 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 		case "hyperv_discover":
 			return execHypervDiscover()
 		case "vault_status":
-			return execVaultStatus(vaultMgr)
+			return execVaultStatus(vaultState)
 		default:
 			return fail("backup not configured on this device")
 		}
@@ -354,15 +394,15 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 	case "backup_run":
 		result := marshalResult(mgr.RunBackup())
 		// Auto-sync to vault after successful backup (async — don't block command response)
-		if result.Success && vaultMgr != nil {
-			go autoSyncToVault(result.Stdout, vaultMgr)
+		if result.Success {
+			go autoSyncToVault(result.Stdout, vaultState)
 		}
 		return result
 	case "backup_list":
 		return marshalResult(backup.ListSnapshots(mgr.GetProvider()))
 	case "backup_stop":
-		mgr.Stop()
-		return ok(`{"stopped":true}`)
+		stopped := mgr.Stop()
+		return ok(fmt.Sprintf(`{"stopped":%t}`, stopped))
 	case "backup_restore":
 		return execBackupRestore(req.Payload, mgr)
 	case "backup_verify":
@@ -374,11 +414,11 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 
 	// Vault operations
 	case "vault_sync":
-		return execVaultSync(req.Payload, vaultMgr)
+		return execVaultSync(req.Payload, vaultState)
 	case "vault_status":
-		return execVaultStatus(vaultMgr)
+		return execVaultStatus(vaultState)
 	case "vault_configure":
-		return execVaultConfigure(req.Payload, vaultMgr)
+		return execVaultConfigure(req.Payload, mgr, vaultState)
 
 	// VSS
 	case "vss_status", "vss_writer_list":

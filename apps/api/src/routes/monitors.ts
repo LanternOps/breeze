@@ -2,13 +2,14 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, like, desc, sql, gte, lte, or } from 'drizzle-orm';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { db } from '../db';
 import { networkMonitors, networkMonitorResults, networkMonitorAlertRules, devices, discoveredAssets } from '../db/schema';
 import { isRedisAvailable } from '../services/redis';
 import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
 import { writeRouteAudit } from '../services/auditEvents';
 import { enqueueMonitorCheck } from '../jobs/monitorWorker';
+import { PERMISSIONS } from '../services/permissions';
 
 // --- Helpers ---
 
@@ -92,6 +93,62 @@ async function requireAlertRuleAccess(auth: AuthContext, ruleId: string) {
   return row;
 }
 
+function validateMonitorConfigForType(
+  monitorType: typeof monitorTypes[number],
+  config: Record<string, unknown>
+) {
+  switch (monitorType) {
+    case 'icmp_ping':
+      return icmpConfigSchema.safeParse(config);
+    case 'tcp_port':
+      return tcpConfigSchema.safeParse(config);
+    case 'http_check':
+      return httpConfigSchema.safeParse(config);
+    case 'dns_check':
+      return dnsConfigSchema.safeParse(config);
+  }
+}
+
+async function selectExecutionAgentForMonitor(monitor: {
+  orgId: string;
+  assetId: string | null;
+}): Promise<string | null> {
+  let assetSiteId: string | null = null;
+
+  if (monitor.assetId) {
+    const [asset] = await db
+      .select({ siteId: discoveredAssets.siteId })
+      .from(discoveredAssets)
+      .where(and(eq(discoveredAssets.id, monitor.assetId), eq(discoveredAssets.orgId, monitor.orgId)))
+      .limit(1);
+    assetSiteId = asset?.siteId ?? null;
+  }
+
+  if (assetSiteId) {
+    const [siteAgent] = await db
+      .select({ agentId: devices.agentId })
+      .from(devices)
+      .where(and(
+        eq(devices.orgId, monitor.orgId),
+        eq(devices.siteId, assetSiteId),
+        eq(devices.status, 'online')
+      ))
+      .limit(1);
+
+    if (siteAgent?.agentId) {
+      return siteAgent.agentId;
+    }
+  }
+
+  const [orgAgent] = await db
+    .select({ agentId: devices.agentId })
+    .from(devices)
+    .where(and(eq(devices.orgId, monitor.orgId), eq(devices.status, 'online')))
+    .limit(1);
+
+  return orgAgent?.agentId ?? null;
+}
+
 // --- Zod Schemas ---
 
 const monitorTypes = ['icmp_ping', 'tcp_port', 'http_check', 'dns_check'] as const;
@@ -134,21 +191,7 @@ const createMonitorSchema = z.object({
   timeout: z.number().int().min(1).max(300).optional()
 }).superRefine((data, ctx) => {
   if (!data.config) return;
-  let result;
-  switch (data.monitorType) {
-    case 'icmp_ping':
-      result = icmpConfigSchema.safeParse(data.config);
-      break;
-    case 'tcp_port':
-      result = tcpConfigSchema.safeParse(data.config);
-      break;
-    case 'http_check':
-      result = httpConfigSchema.safeParse(data.config);
-      break;
-    case 'dns_check':
-      result = dnsConfigSchema.safeParse(data.config);
-      break;
-  }
+  const result = validateMonitorConfigForType(data.monitorType, data.config);
   if (result && !result.success) {
     for (const issue of result.error.issues) {
       ctx.addIssue({ ...issue, path: ['config', ...issue.path] });
@@ -196,6 +239,18 @@ const monitorIdAltParamSchema = z.object({ monitorId: z.string().uuid() });
 // --- Router ---
 
 const monitorRoutes = new Hono();
+const requireMonitorRead = requirePermission(
+  PERMISSIONS.DEVICES_READ.resource,
+  PERMISSIONS.DEVICES_READ.action,
+);
+const requireMonitorWrite = requirePermission(
+  PERMISSIONS.DEVICES_WRITE.resource,
+  PERMISSIONS.DEVICES_WRITE.action,
+);
+const requireMonitorExecute = requirePermission(
+  PERMISSIONS.DEVICES_EXECUTE.resource,
+  PERMISSIONS.DEVICES_EXECUTE.action,
+);
 monitorRoutes.use('*', authMiddleware);
 
 // ==================== MONITOR CRUD ====================
@@ -203,6 +258,7 @@ monitorRoutes.use('*', authMiddleware);
 monitorRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requireMonitorRead,
   zValidator('query', listMonitorsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -278,6 +334,8 @@ monitorRoutes.get(
 monitorRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requireMonitorWrite,
+  requireMfa(),
   zValidator('json', createMonitorSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -333,6 +391,7 @@ monitorRoutes.post(
 monitorRoutes.get(
   '/dashboard',
   requireScope('organization', 'partner', 'system'),
+  requireMonitorRead,
   async (c) => {
     const auth = c.get('auth');
     const orgResult = resolveOrgId(auth);
@@ -386,6 +445,7 @@ monitorRoutes.get(
 monitorRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireMonitorRead,
   zValidator('param', monitorIdParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -421,6 +481,8 @@ monitorRoutes.get(
 monitorRoutes.patch(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireMonitorWrite,
+  requireMfa(),
   zValidator('param', monitorIdParamSchema),
   zValidator('json', updateMonitorSchema),
   async (c) => {
@@ -429,6 +491,22 @@ monitorRoutes.patch(
     const payload = c.req.valid('json');
     const monitorResult = await requireMonitorAccess(auth, monitorId);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
+
+    if (payload.config) {
+      const validation = validateMonitorConfigForType(
+        monitorResult.monitor.monitorType as typeof monitorTypes[number],
+        payload.config
+      );
+      if (validation && !validation.success) {
+        return c.json({
+          error: 'Invalid monitor config',
+          issues: validation.error.issues.map((issue) => ({
+            path: ['config', ...issue.path],
+            message: issue.message
+          }))
+        }, 400);
+      }
+    }
 
     const [updated] = await db.update(networkMonitors)
       .set({ ...payload, updatedAt: new Date() })
@@ -454,6 +532,8 @@ monitorRoutes.patch(
 monitorRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireMonitorWrite,
+  requireMfa(),
   zValidator('param', monitorIdParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -483,6 +563,8 @@ monitorRoutes.delete(
 monitorRoutes.post(
   '/:id/check',
   requireScope('organization', 'partner', 'system'),
+  requireMonitorExecute,
+  requireMfa(),
   zValidator('param', monitorIdParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -511,6 +593,8 @@ monitorRoutes.post(
 monitorRoutes.post(
   '/:id/test',
   requireScope('organization', 'partner', 'system'),
+  requireMonitorExecute,
+  requireMfa(),
   zValidator('param', monitorIdParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -519,13 +603,7 @@ monitorRoutes.post(
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
     const monitor = monitorResult.monitor;
 
-    const [onlineAgent] = await db
-      .select({ agentId: devices.agentId })
-      .from(devices)
-      .where(and(eq(devices.orgId, monitor.orgId), eq(devices.status, 'online')))
-      .limit(1);
-
-    const agentId = onlineAgent?.agentId ?? null;
+    const agentId = await selectExecutionAgentForMonitor(monitor);
     if (!agentId || !isAgentConnected(agentId)) {
       return c.json({
         data: { monitorId, status: 'failed', error: 'No online agent available', testedAt: new Date().toISOString() }
@@ -561,6 +639,7 @@ monitorRoutes.post(
 monitorRoutes.get(
   '/:id/results',
   requireScope('organization', 'partner', 'system'),
+  requireMonitorRead,
   zValidator('param', monitorIdParamSchema),
   zValidator('query', resultsQuerySchema),
   async (c) => {
@@ -593,6 +672,8 @@ monitorRoutes.get(
 monitorRoutes.post(
   '/alerts',
   requireScope('organization', 'partner', 'system'),
+  requireMonitorWrite,
+  requireMfa(),
   zValidator('json', createAlertRuleSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -628,6 +709,7 @@ monitorRoutes.post(
 monitorRoutes.get(
   '/:monitorId/alerts',
   requireScope('organization', 'partner', 'system'),
+  requireMonitorRead,
   zValidator('param', monitorIdAltParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -645,6 +727,8 @@ monitorRoutes.get(
 monitorRoutes.patch(
   '/alerts/:id',
   requireScope('organization', 'partner', 'system'),
+  requireMonitorWrite,
+  requireMfa(),
   zValidator('param', monitorIdParamSchema),
   zValidator('json', updateAlertRuleSchema),
   async (c) => {
@@ -677,6 +761,8 @@ monitorRoutes.patch(
 monitorRoutes.delete(
   '/alerts/:id',
   requireScope('organization', 'partner', 'system'),
+  requireMonitorWrite,
+  requireMfa(),
   zValidator('param', monitorIdParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;

@@ -2,13 +2,35 @@ package backup
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
+
+type flakyDownloadProvider struct {
+	*providers.LocalProvider
+	mu         sync.Mutex
+	failOnce   string
+	callCounts map[string]int
+}
+
+func (p *flakyDownloadProvider) Download(remotePath, localPath string) error {
+	p.mu.Lock()
+	p.callCounts[remotePath]++
+	callCount := p.callCounts[remotePath]
+	fail := remotePath == p.failOnce && callCount == 1
+	p.mu.Unlock()
+
+	if fail {
+		return errors.New("injected download failure")
+	}
+	return p.LocalProvider.Download(remotePath, localPath)
+}
 
 // setupRestoreTestSnapshot creates a local provider with a test snapshot containing
 // compressed files and a manifest. Returns the provider, snapshot ID, and
@@ -184,13 +206,23 @@ func TestRestoreFromSnapshot_Resume(t *testing.T) {
 	testFiles := map[string]string{
 		"file1.txt": "content1\n",
 		"file2.txt": "content2\n",
-		"file3.txt": "content3\n",
 	}
-	provider, snapID := setupRestoreTestSnapshot(t, testFiles)
+	baseProvider, snapID := setupRestoreTestSnapshot(t, testFiles)
+	snapshot, err := downloadManifest(baseProvider, snapID)
+	if err != nil {
+		t.Fatalf("download manifest: %v", err)
+	}
+	if len(snapshot.Files) != 2 {
+		t.Fatalf("expected 2 files in snapshot, got %d", len(snapshot.Files))
+	}
+
+	provider := &flakyDownloadProvider{
+		LocalProvider: baseProvider,
+		failOnce:      snapshot.Files[1].BackupPath,
+		callCounts:    make(map[string]int),
+	}
 
 	targetDir := t.TempDir()
-
-	// First pass: restore all files
 	cfg := RestoreConfig{
 		SnapshotID: snapID,
 		TargetPath: targetDir,
@@ -200,11 +232,84 @@ func TestRestoreFromSnapshot_Resume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first restore unexpected error: %v", err)
 	}
-	if result1.Status != "completed" {
-		t.Errorf("first restore: expected completed, got %s", result1.Status)
+	if result1.Status != "partial" {
+		t.Errorf("first restore: expected partial, got %s", result1.Status)
 	}
-	if result1.FilesRestored != 3 {
-		t.Errorf("first restore: expected 3 files, got %d", result1.FilesRestored)
+	if result1.FilesRestored != 1 {
+		t.Errorf("first restore: expected 1 file restored, got %d", result1.FilesRestored)
+	}
+	if result1.StagingDir == "" {
+		t.Fatal("first restore should retain staging dir for resume")
+	}
+
+	result2, err := RestoreFromSnapshot(provider, cfg, nil)
+	if err != nil {
+		t.Fatalf("second restore unexpected error: %v", err)
+	}
+	if result2.Status != "completed" {
+		t.Errorf("second restore: expected completed, got %s", result2.Status)
+	}
+	if result2.FilesRestored != 2 {
+		t.Errorf("second restore: expected 2 files restored, got %d", result2.FilesRestored)
+	}
+
+	if provider.callCounts[snapshot.Files[0].BackupPath] != 1 {
+		t.Errorf("first file downloaded %d times, want 1", provider.callCounts[snapshot.Files[0].BackupPath])
+	}
+	if provider.callCounts[snapshot.Files[1].BackupPath] != 2 {
+		t.Errorf("second file downloaded %d times, want 2", provider.callCounts[snapshot.Files[1].BackupPath])
+	}
+
+	if _, err := os.Stat(result1.StagingDir); !os.IsNotExist(err) {
+		t.Errorf("expected staging dir %q to be removed after successful resume", result1.StagingDir)
+	}
+}
+
+func TestRestoreFromSnapshot_ResumeRedownloadsMissingCompletedFile(t *testing.T) {
+	testFiles := map[string]string{
+		"file1.txt": "content1\n",
+		"file2.txt": "content2\n",
+	}
+	baseProvider, snapID := setupRestoreTestSnapshot(t, testFiles)
+	snapshot, err := downloadManifest(baseProvider, snapID)
+	if err != nil {
+		t.Fatalf("download manifest: %v", err)
+	}
+
+	provider := &flakyDownloadProvider{
+		LocalProvider: baseProvider,
+		failOnce:      snapshot.Files[1].BackupPath,
+		callCounts:    make(map[string]int),
+	}
+
+	targetDir := t.TempDir()
+	cfg := RestoreConfig{
+		SnapshotID: snapID,
+		TargetPath: targetDir,
+	}
+
+	result1, err := RestoreFromSnapshot(provider, cfg, nil)
+	if err != nil {
+		t.Fatalf("first restore unexpected error: %v", err)
+	}
+	if result1.Status != "partial" {
+		t.Fatalf("first restore: expected partial, got %s", result1.Status)
+	}
+
+	firstTarget := resolveTargetPath(targetDir, snapshot.Files[0].SourcePath)
+	if err := os.Remove(firstTarget); err != nil {
+		t.Fatalf("remove restored file: %v", err)
+	}
+
+	result2, err := RestoreFromSnapshot(provider, cfg, nil)
+	if err != nil {
+		t.Fatalf("second restore unexpected error: %v", err)
+	}
+	if result2.Status != "completed" {
+		t.Fatalf("second restore: expected completed, got %s", result2.Status)
+	}
+	if provider.callCounts[snapshot.Files[0].BackupPath] != 2 {
+		t.Fatalf("first file downloaded %d times, want 2", provider.callCounts[snapshot.Files[0].BackupPath])
 	}
 }
 

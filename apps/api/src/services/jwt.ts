@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 const e2eMode = process.env.E2E_MODE === '1' || process.env.E2E_MODE === 'true';
 const ACCESS_TOKEN_EXPIRY = e2eMode ? '24h' : '15m';
 const REFRESH_TOKEN_EXPIRY = e2eMode ? '30d' : '7d';
+const VIEWER_ACCESS_TOKEN_EXPIRY = e2eMode ? '24h' : '15m';
 
 function getSecretKey(): Uint8Array {
   const secret = process.env.JWT_SECRET;
@@ -26,6 +27,14 @@ export interface TokenPayload {
   mfa: boolean;
   iat?: number;
   jti?: string;
+}
+
+export interface ViewerTokenPayload {
+  sub: string;
+  email: string;
+  sessionId: string;
+  purpose: 'viewer';
+  iat?: number;
 }
 
 export async function createAccessToken(payload: Omit<TokenPayload, 'type'>): Promise<string> {
@@ -73,7 +82,47 @@ export async function verifyToken(token: string): Promise<TokenPayload | null> {
       iat: typeof payload.iat === 'number' ? payload.iat : undefined,
       jti: typeof payload.jti === 'string' ? payload.jti : undefined
     };
-  } catch {
+  } catch (error) {
+    console.debug('[jwt] Token verification failed:', error instanceof Error ? error.message : error);
+    return null;
+  }
+}
+
+export async function createViewerAccessToken(
+  payload: Omit<ViewerTokenPayload, 'purpose'>
+): Promise<string> {
+  const secret = getSecretKey();
+
+  return new SignJWT({ ...payload, purpose: 'viewer' })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime(VIEWER_ACCESS_TOKEN_EXPIRY)
+    .setIssuer('breeze')
+    .setAudience('breeze-viewer')
+    .sign(secret);
+}
+
+export async function verifyViewerAccessToken(token: string): Promise<ViewerTokenPayload | null> {
+  try {
+    const secret = getSecretKey();
+    const { payload } = await jwtVerify(token, secret, {
+      issuer: 'breeze',
+      audience: 'breeze-viewer'
+    });
+
+    if (payload.purpose !== 'viewer') {
+      return null;
+    }
+
+    return {
+      sub: payload.sub as string,
+      email: payload.email as string,
+      sessionId: payload.sessionId as string,
+      purpose: 'viewer',
+      iat: typeof payload.iat === 'number' ? payload.iat : undefined
+    };
+  } catch (error) {
+    console.debug('[jwt] Viewer token verification failed:', error instanceof Error ? error.message : error);
     return null;
   }
 }

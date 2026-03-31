@@ -80,6 +80,34 @@ func TestResolveRunAsSessionUserNoSessions(t *testing.T) {
 	}
 }
 
+func TestResolveRunAsSessionUserPrefersRunAsUserScope(t *testing.T) {
+	now := time.Now()
+
+	systemSession := &sessionbroker.Session{
+		SessionID:     "system-helper",
+		Username:      "alice",
+		HelperRole:    ipc.HelperRoleSystem,
+		AllowedScopes: []string{"notify", "desktop"},
+		ConnectedAt:   now.Add(-2 * time.Minute),
+		LastSeen:      now.Add(-1 * time.Minute),
+	}
+	userSession := &sessionbroker.Session{
+		SessionID:     "user-helper",
+		Username:      "bob",
+		HelperRole:    ipc.HelperRoleUser,
+		AllowedScopes: []string{"notify", "run_as_user"},
+		ConnectedAt:   now.Add(-3 * time.Minute),
+		LastSeen:      now.Add(-30 * time.Second),
+	}
+
+	broker := newTestBrokerWithSessions(t, systemSession, userSession)
+
+	session := resolveRunAsSession(broker, "user")
+	if session != userSession {
+		t.Fatalf("resolveRunAsSession(user) = %+v, want %+v", session, userSession)
+	}
+}
+
 func TestResolveRunAsSessionSpecificUserNotFound(t *testing.T) {
 	broker := sessionbroker.New("/tmp/test-broker.sock", nil)
 	session := resolveRunAsSession(broker, "nonexistent")
@@ -294,6 +322,41 @@ func TestHandleScriptListRunning(t *testing.T) {
 	}
 }
 
+func TestRunAsHelperSessionsIncludesDistinctSameIdentityHelpers(t *testing.T) {
+	serverConn1, clientConn1 := createTestSocketPair(t)
+	serverIPC1 := ipc.NewConn(serverConn1)
+	clientIPC1 := ipc.NewConn(clientConn1)
+	session1 := sessionbroker.NewSession(serverIPC1, 1000, "1000", "alice", "quartz", "run-as-1", []string{"run_as_user"})
+
+	serverConn2, clientConn2 := createTestSocketPair(t)
+	serverIPC2 := ipc.NewConn(serverConn2)
+	clientIPC2 := ipc.NewConn(clientConn2)
+	session2 := sessionbroker.NewSession(serverIPC2, 1000, "1000", "alice", "quartz", "run-as-2", []string{"run_as_user"})
+
+	h := &Heartbeat{
+		sessionBroker: newTestBrokerWithSessions(t, session1, session2),
+	}
+
+	helpers := h.runAsHelperSessions()
+
+	_ = session1.Close()
+	_ = session2.Close()
+	_ = clientIPC1.Close()
+	_ = clientIPC2.Close()
+
+	if len(helpers) != 2 {
+		t.Fatalf("runAsHelperSessions returned %d sessions, want 2", len(helpers))
+	}
+
+	got := map[string]bool{}
+	for _, session := range helpers {
+		got[session.SessionID] = true
+	}
+	if !got["run-as-1"] || !got["run-as-2"] {
+		t.Fatalf("runAsHelperSessions returned %+v, want both helper sessions", got)
+	}
+}
+
 // --- executeViaUserHelper integration test ---
 
 func TestExecuteViaUserHelperMissingScope(t *testing.T) {
@@ -341,7 +404,7 @@ func TestExecuteViaUserHelperSuccess(t *testing.T) {
 		// Build a mock result
 		resultPayload, _ := json.Marshal(map[string]any{
 			"exitCode": 0,
-			"stdout":   "hello from user helper",
+			"stdout":   "password=secret12345",
 			"stderr":   "",
 		})
 		ipcResult := ipc.IPCCommandResult{
@@ -383,7 +446,7 @@ func TestExecuteViaUserHelperSuccess(t *testing.T) {
 	if result.ExitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d", result.ExitCode)
 	}
-	if result.Stdout != "hello from user helper" {
+	if result.Stdout != "password=[REDACTED]" {
 		t.Fatalf("expected stdout from helper, got %q", result.Stdout)
 	}
 }
@@ -407,7 +470,7 @@ func TestExecuteViaUserHelperFailedScript(t *testing.T) {
 		resultPayload, _ := json.Marshal(map[string]any{
 			"exitCode": 127,
 			"stdout":   "",
-			"stderr":   "command not found",
+			"stderr":   "token=supersecretvalue",
 		})
 		ipcResult := ipc.IPCCommandResult{
 			CommandID: env.ID,
@@ -443,7 +506,7 @@ func TestExecuteViaUserHelperFailedScript(t *testing.T) {
 	if result.ExitCode != 127 {
 		t.Fatalf("expected exit code 127, got %d", result.ExitCode)
 	}
-	if result.Stderr != "command not found" {
+	if result.Stderr != "token=[REDACTED]" {
 		t.Fatalf("expected stderr, got %q", result.Stderr)
 	}
 }

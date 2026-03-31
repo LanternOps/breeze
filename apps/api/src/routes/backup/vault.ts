@@ -4,8 +4,10 @@ import { z } from 'zod';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../../db';
 import { localVaults } from '../../db/schema';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { queueCommandForExecution, CommandTypes } from '../../services/commandQueue';
+import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import {
   vaultCreateSchema,
@@ -19,7 +21,7 @@ export const vaultRoutes = new Hono();
 const vaultIdParam = z.object({ id: z.string().uuid() });
 
 // GET /vault — list vaults for org (optional ?deviceId filter)
-vaultRoutes.get('/', zValidator('query', vaultListSchema), async (c) => {
+vaultRoutes.get('/', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('query', vaultListSchema), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -42,7 +44,12 @@ vaultRoutes.get('/', zValidator('query', vaultListSchema), async (c) => {
 });
 
 // POST /vault — create vault config
-vaultRoutes.post('/', zValidator('json', vaultCreateSchema), async (c) => {
+vaultRoutes.post(
+  '/',
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
+  zValidator('json', vaultCreateSchema),
+  async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -87,6 +94,8 @@ vaultRoutes.post('/', zValidator('json', vaultCreateSchema), async (c) => {
 // PATCH /vault/:id — update vault config
 vaultRoutes.patch(
   '/:id',
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   zValidator('param', vaultIdParam),
   zValidator('json', vaultUpdateSchema),
   async (c) => {
@@ -128,7 +137,12 @@ vaultRoutes.patch(
 );
 
 // DELETE /vault/:id — soft delete (set isActive=false)
-vaultRoutes.delete('/:id', zValidator('param', vaultIdParam), async (c) => {
+vaultRoutes.delete(
+  '/:id',
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
+  zValidator('param', vaultIdParam),
+  async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -160,6 +174,9 @@ vaultRoutes.delete('/:id', zValidator('param', vaultIdParam), async (c) => {
 // POST /vault/:id/sync — trigger manual sync
 vaultRoutes.post(
   '/:id/sync',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('param', vaultIdParam),
   zValidator('json', vaultSyncSchema),
   async (c) => {
@@ -231,7 +248,7 @@ vaultRoutes.post(
 );
 
 // GET /vault/:id/status — get vault sync status
-vaultRoutes.get('/:id/status', zValidator('param', vaultIdParam), async (c) => {
+vaultRoutes.get('/:id/status', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('param', vaultIdParam), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {

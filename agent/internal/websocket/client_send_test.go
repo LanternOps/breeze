@@ -227,6 +227,76 @@ func TestSendPatchProgress_ChannelFull(t *testing.T) {
 	}
 }
 
+// ---------- SendBackupProgress ----------
+
+func TestSendBackupProgress_Success(t *testing.T) {
+	c := newTestClient("http://localhost", noopHandler)
+
+	event := map[string]any{
+		"phase":   "restoring",
+		"current": 3,
+	}
+	err := c.SendBackupProgress("cmd-backup-1", event)
+	if err != nil {
+		t.Fatalf("SendBackupProgress error: %v", err)
+	}
+
+	select {
+	case data := <-c.sendChan:
+		var parsed map[string]any
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+		if parsed["type"] != "backup_progress" {
+			t.Fatalf("type = %v, want backup_progress", parsed["type"])
+		}
+		if parsed["commandId"] != "cmd-backup-1" {
+			t.Fatalf("commandId = %v, want cmd-backup-1", parsed["commandId"])
+		}
+		progress, ok := parsed["progress"].(map[string]any)
+		if !ok {
+			t.Fatal("progress field missing or wrong type")
+		}
+		if progress["phase"] != "restoring" {
+			t.Fatalf("phase = %v, want restoring", progress["phase"])
+		}
+	default:
+		t.Fatal("expected data in sendChan")
+	}
+}
+
+func TestSendBackupProgress_ClientStopped(t *testing.T) {
+	c := newTestClient("http://localhost", noopHandler)
+	for i := 0; i < cap(c.sendChan); i++ {
+		c.sendChan <- []byte("filler")
+	}
+	close(c.done)
+
+	err := c.SendBackupProgress("cmd-1", map[string]any{"current": 0})
+	if err == nil {
+		t.Fatal("expected error when client is stopped")
+	}
+	if !strings.Contains(err.Error(), "client is stopped") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSendBackupProgress_ChannelFull(t *testing.T) {
+	c := newTestClient("http://localhost", noopHandler)
+
+	for i := 0; i < cap(c.sendChan); i++ {
+		c.sendChan <- []byte("filler")
+	}
+
+	err := c.SendBackupProgress("cmd-1", map[string]any{"current": 100})
+	if err == nil {
+		t.Fatal("expected error when send channel is full")
+	}
+	if !strings.Contains(err.Error(), "send channel full") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // ---------- SendTerminalOutput ----------
 
 func TestSendTerminalOutput_Success(t *testing.T) {
@@ -276,6 +346,9 @@ func TestSendTerminalOutput_ClientStopped(t *testing.T) {
 
 func TestSendTerminalOutput_ChannelFull(t *testing.T) {
 	c := newTestClient("http://localhost", noopHandler)
+	oldTimeout := terminalOutputEnqueueTimeout
+	terminalOutputEnqueueTimeout = 10 * time.Millisecond
+	defer func() { terminalOutputEnqueueTimeout = oldTimeout }()
 
 	for i := 0; i < cap(c.sendChan); i++ {
 		c.sendChan <- []byte("filler")
@@ -285,7 +358,7 @@ func TestSendTerminalOutput_ChannelFull(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when send channel is full")
 	}
-	if !strings.Contains(err.Error(), "send channel full") {
+	if !strings.Contains(err.Error(), "timed out waiting for terminal output queue") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

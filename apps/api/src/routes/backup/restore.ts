@@ -3,7 +3,9 @@ import { zValidator } from '@hono/zod-validator';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../../db';
 import { backupSnapshots, restoreJobs } from '../../db/schema';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import { restoreSchema } from './schemas';
 
@@ -11,6 +13,9 @@ export const restoreRoutes = new Hono();
 
 restoreRoutes.post(
   '/restore',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('json', restoreSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -88,14 +93,14 @@ restoreRoutes.post(
   }
 );
 
-restoreRoutes.get('/restore/:id', async (c) => {
+restoreRoutes.get('/restore/:id', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
 
-  const restoreId = c.req.param('id');
+  const restoreId = c.req.param('id')!;
   const [row] = await db
     .select()
     .from(restoreJobs)

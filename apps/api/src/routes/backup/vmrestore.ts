@@ -7,8 +7,10 @@ import {
   restoreJobs,
   devices,
 } from '../../db/schema';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { queueCommandForExecution, CommandTypes } from '../../services/commandQueue';
+import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import {
   bmrVmRestoreSchema,
@@ -21,6 +23,9 @@ export const vmRestoreRoutes = new Hono();
 
 vmRestoreRoutes.post(
   '/backup/restore/as-vm',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('json', bmrVmRestoreSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -139,6 +144,9 @@ vmRestoreRoutes.post(
 
 vmRestoreRoutes.post(
   '/backup/restore/instant-boot',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('json', instantBootSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -253,14 +261,14 @@ vmRestoreRoutes.post(
 
 // ── GET /backup/restore/as-vm/estimate/:snapshotId — VM estimate ────
 
-vmRestoreRoutes.get('/backup/restore/as-vm/estimate/:snapshotId', async (c) => {
+vmRestoreRoutes.get('/backup/restore/as-vm/estimate/:snapshotId', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
 
-  const snapshotId = c.req.param('snapshotId');
+  const snapshotId = c.req.param('snapshotId')!;
   const [snapshot] = await db
     .select()
     .from(backupSnapshots)

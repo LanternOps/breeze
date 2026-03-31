@@ -4,7 +4,9 @@ import { z } from 'zod';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../../db';
 import { storageEncryptionKeys } from '../../db/schema';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import { createEncryptionKeySchema, rotateEncryptionKeySchema } from './schemas';
 
@@ -14,7 +16,7 @@ const keyIdParamSchema = z.object({ id: z.string().uuid() });
 
 // ── List active keys for the org ─────────────────────────────────────────────
 
-encryptionRoutes.get('/keys', async (c) => {
+encryptionRoutes.get('/keys', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -39,6 +41,9 @@ encryptionRoutes.get('/keys', async (c) => {
 
 encryptionRoutes.post(
   '/keys',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   zValidator('json', createEncryptionKeySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -84,6 +89,7 @@ encryptionRoutes.post(
 
 encryptionRoutes.get(
   '/keys/:id',
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   zValidator('param', keyIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -116,6 +122,9 @@ encryptionRoutes.get(
 
 encryptionRoutes.delete(
   '/keys/:id',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   zValidator('param', keyIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -156,6 +165,9 @@ encryptionRoutes.delete(
 
 encryptionRoutes.post(
   '/keys/:id/rotate',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   zValidator('param', keyIdParamSchema),
   zValidator('json', rotateEncryptionKeySchema),
   async (c) => {

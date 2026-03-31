@@ -2,9 +2,11 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, ilike, or } from 'drizzle-orm';
+import type { PgColumn } from 'drizzle-orm/pg-core';
 import { db } from '../db';
 import { alerts, devices, scripts } from '../db/schema';
-import { authMiddleware } from '../middleware/auth';
+import { authMiddleware, type AuthContext } from '../middleware/auth';
+import { getUserPermissions, hasPermission, PERMISSIONS } from '../services/permissions';
 
 const searchQuerySchema = z.object({
   q: z.string().trim().min(1).max(100),
@@ -22,12 +24,29 @@ export const searchRoutes = new Hono();
 searchRoutes.use('*', authMiddleware);
 
 searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
-  const auth = c.get('auth') as { orgCondition?: ((column: unknown) => unknown) | undefined };
+  const auth = c.get('auth') as AuthContext;
   const { q, limit = 20 } = c.req.valid('query');
   const perCategoryLimit = Math.max(1, Math.min(8, Math.ceil(limit / 4)));
   const searchTerm = `%${q}%`;
+  const userPerms = await getUserPermissions(auth.user.id, {
+    partnerId: auth.partnerId || undefined,
+    orgId: auth.orgId || undefined,
+  });
 
-  const orgConditionFor = (column: unknown) => {
+  const canReadDevices = Boolean(
+    userPerms && hasPermission(userPerms, PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  );
+  const canReadScripts = Boolean(
+    userPerms && hasPermission(userPerms, PERMISSIONS.SCRIPTS_READ.resource, PERMISSIONS.SCRIPTS_READ.action),
+  );
+  const canReadAlerts = Boolean(
+    userPerms && hasPermission(userPerms, PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action),
+  );
+  const canReadUsers = Boolean(
+    userPerms && hasPermission(userPerms, PERMISSIONS.USERS_READ.resource, PERMISSIONS.USERS_READ.action),
+  );
+
+  const orgConditionFor = (column: PgColumn) => {
     if (typeof auth?.orgCondition !== 'function') {
       return undefined;
     }
@@ -49,36 +68,42 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
   );
 
   const [deviceRows, scriptRows, alertRows] = await Promise.all([
-    db
-      .select({
-        id: devices.id,
-        title: devices.displayName,
-        hostname: devices.hostname,
-        status: devices.status,
-        lastUser: devices.lastUser
-      })
-      .from(devices)
-      .where(orgConditionFor(devices.orgId) ? and(orgConditionFor(devices.orgId) as never, deviceQuery as never) : deviceQuery)
-      .limit(perCategoryLimit),
-    db
-      .select({
-        id: scripts.id,
-        title: scripts.name,
-        description: scripts.description
-      })
-      .from(scripts)
-      .where(orgConditionFor(scripts.orgId) ? and(orgConditionFor(scripts.orgId) as never, scriptQuery as never) : scriptQuery)
-      .limit(perCategoryLimit),
-    db
-      .select({
-        id: alerts.id,
-        title: alerts.title,
-        message: alerts.message,
-        severity: alerts.severity
-      })
-      .from(alerts)
-      .where(orgConditionFor(alerts.orgId) ? and(orgConditionFor(alerts.orgId) as never, alertQuery as never) : alertQuery)
-      .limit(perCategoryLimit)
+    canReadDevices
+      ? db
+          .select({
+            id: devices.id,
+            title: devices.displayName,
+            hostname: devices.hostname,
+            status: devices.status,
+            lastUser: devices.lastUser
+          })
+          .from(devices)
+          .where(orgConditionFor(devices.orgId) ? and(orgConditionFor(devices.orgId) as never, deviceQuery as never) : deviceQuery)
+          .limit(perCategoryLimit)
+      : Promise.resolve([]),
+    canReadScripts
+      ? db
+          .select({
+            id: scripts.id,
+            title: scripts.name,
+            description: scripts.description
+          })
+          .from(scripts)
+          .where(orgConditionFor(scripts.orgId) ? and(orgConditionFor(scripts.orgId) as never, scriptQuery as never) : scriptQuery)
+          .limit(perCategoryLimit)
+      : Promise.resolve([]),
+    canReadAlerts
+      ? db
+          .select({
+            id: alerts.id,
+            title: alerts.title,
+            message: alerts.message,
+            severity: alerts.severity
+          })
+          .from(alerts)
+          .where(orgConditionFor(alerts.orgId) ? and(orgConditionFor(alerts.orgId) as never, alertQuery as never) : alertQuery)
+          .limit(perCategoryLimit)
+      : Promise.resolve([])
   ]);
 
   const results: Array<Record<string, unknown>> = [
@@ -104,6 +129,9 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
 
   const loweredQuery = q.toLowerCase();
   for (const entry of SETTINGS_ENTRIES) {
+    if (entry.id === 'settings-users' && !canReadUsers) {
+      continue;
+    }
     const haystack = `${entry.title} ${entry.description}`.toLowerCase();
     if (haystack.includes(loweredQuery)) {
       results.push({
@@ -118,4 +146,3 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
 
   return c.json({ results: results.slice(0, limit) });
 });
-

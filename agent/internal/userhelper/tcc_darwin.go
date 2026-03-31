@@ -78,6 +78,7 @@ static bool checkAccessibilityNoPrompt(void) {
 import "C"
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -111,6 +112,8 @@ const tccFastCheckInterval = 2 * time.Minute
 
 // tccFastCheckDuration is how long to use the fast interval after startup.
 const tccFastCheckDuration = 30 * time.Minute
+
+const tccHelperCommandTimeout = 15 * time.Second
 
 // CheckTCCPermissions probes macOS TCC permissions. On the first call,
 // triggers the accessibility system prompt; subsequent calls check silently.
@@ -320,18 +323,20 @@ func showTCCDialog(missing []string) {
 		script = fmt.Sprintf(
 			`display dialog "%s" `+
 				`buttons {"Later", "Open Settings"} default button "Open Settings" with title "Breeze: Permissions Required" giving up after 60`,
-			msg,
+			escapeAppleScript(msg),
 		)
 	} else {
 		msg = "Screen Recording and Accessibility are being configured automatically.\\n\\nThis should resolve within a few minutes. If this persists, check agent logs or restart the agent."
 		script = fmt.Sprintf(
 			`display dialog "%s" `+
 				`buttons {"OK"} default button "OK" with title "Breeze: Permissions Configuring" giving up after 60`,
-			msg,
+			escapeAppleScript(msg),
 		)
 	}
 
-	cmd := exec.Command("osascript", "-e", script)
+	ctx, cancel := context.WithTimeout(context.Background(), tccHelperCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
 	output, err := cmd.Output()
 	if err != nil {
 		log.Debug("TCC dialog dismissed or timed out", "error", err.Error())
@@ -373,18 +378,14 @@ func showTCCNotification(missing []string) {
 // macOS Ventura+ redirects them to System Settings. If Apple drops the redirect,
 // update to the x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension format.
 func openSettingsForPermission(permission string) {
-	var url string
-	switch permission {
-	case "Screen Recording":
-		url = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
-	case "Accessibility":
-		url = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-	case "Full Disk Access":
-		url = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
-	default:
+	url, err := systemSettingsURLForPermission(permission)
+	if err != nil {
+		log.Warn("refusing to open unknown System Settings permission", "permission", permission)
 		return
 	}
-	cmd := exec.Command("open", url)
+	ctx, cancel := context.WithTimeout(context.Background(), tccHelperCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "open", url)
 	if err := cmd.Run(); err != nil {
 		log.Warn("failed to open System Settings", "permission", permission, "error", err.Error())
 	}

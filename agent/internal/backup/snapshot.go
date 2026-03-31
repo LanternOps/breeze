@@ -1,11 +1,13 @@
 package backup
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"path"
 	"sort"
@@ -37,8 +39,20 @@ type SnapshotFile struct {
 	ModTime    time.Time `json:"modTime"`
 }
 
+type contextUploader interface {
+	UploadContext(ctx context.Context, localPath, remotePath string) error
+}
+
 // CreateSnapshot creates a new snapshot and uploads files via the provider.
 func CreateSnapshot(provider providers.BackupProvider, files []backupFile) (*Snapshot, error) {
+	return CreateSnapshotContext(context.Background(), provider, files)
+}
+
+// CreateSnapshotContext creates a new snapshot using the provided context.
+func CreateSnapshotContext(ctx context.Context, provider providers.BackupProvider, files []backupFile) (*Snapshot, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if provider == nil {
 		return nil, errors.New("backup provider is required")
 	}
@@ -55,10 +69,18 @@ func CreateSnapshot(provider providers.BackupProvider, files []backupFile) (*Sna
 	var errs []error
 
 	for _, file := range files {
+		if err := ctx.Err(); err != nil {
+			cleanupSnapshotPrefix(provider, snapshot.ID)
+			return nil, errBackupStopped
+		}
 		backupPath := path.Join(prefix, snapshotFilesDir, file.snapshotPath)
 		backupPath = ensureGzipExtension(backupPath)
 
-		if err := provider.Upload(file.sourcePath, backupPath); err != nil {
+		if err := uploadSnapshotFile(ctx, provider, file.sourcePath, backupPath); err != nil {
+			if errors.Is(err, errBackupStopped) {
+				cleanupSnapshotPrefix(provider, snapshot.ID)
+				return nil, errBackupStopped
+			}
 			err = fmt.Errorf("failed to upload %s: %w", file.sourcePath, err)
 			errs = append(errs, err)
 			log.Printf("[backup] upload failed: %s: %v", file.sourcePath, err)
@@ -78,6 +100,11 @@ func CreateSnapshot(provider providers.BackupProvider, files []backupFile) (*Sna
 		return nil, errors.Join(errs...)
 	}
 
+	if err := ctx.Err(); err != nil {
+		cleanupSnapshotPrefix(provider, snapshot.ID)
+		return nil, errBackupStopped
+	}
+
 	manifestPath, manifestErr := writeSnapshotManifest(snapshot)
 	if manifestErr != nil {
 		return snapshot, manifestErr
@@ -85,11 +112,50 @@ func CreateSnapshot(provider providers.BackupProvider, files []backupFile) (*Sna
 	defer os.Remove(manifestPath)
 
 	manifestKey := path.Join(prefix, snapshotManifestKey)
-	if err := provider.Upload(manifestPath, manifestKey); err != nil {
+	if err := uploadSnapshotFile(ctx, provider, manifestPath, manifestKey); err != nil {
+		if errors.Is(err, errBackupStopped) {
+			cleanupSnapshotPrefix(provider, snapshot.ID)
+			return nil, errBackupStopped
+		}
 		return snapshot, fmt.Errorf("failed to upload snapshot manifest: %w", err)
 	}
 
 	return snapshot, nil
+}
+
+func uploadSnapshotFile(ctx context.Context, provider providers.BackupProvider, localPath, remotePath string) error {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return errBackupStopped
+		}
+	}
+	if uploader, ok := provider.(contextUploader); ok {
+		if err := uploader.UploadContext(ctx, localPath, remotePath); err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return errBackupStopped
+			}
+			return err
+		}
+		return nil
+	}
+	if err := provider.Upload(localPath, remotePath); err != nil {
+		return err
+	}
+	return nil
+}
+
+func cleanupSnapshotPrefix(provider providers.BackupProvider, snapshotID string) {
+	prefix := path.Join(snapshotRootDir, snapshotID)
+	items, err := provider.List(prefix)
+	if err != nil {
+		slog.Error("failed to list aborted snapshot for cleanup", "snapshotId", snapshotID, "error", err.Error())
+		return
+	}
+	for _, item := range items {
+		if err := provider.Delete(item); err != nil {
+			slog.Error("failed to clean up aborted snapshot file", "item", item, "error", err.Error())
+		}
+	}
 }
 
 // ListSnapshots returns snapshots available from the provider.
@@ -168,8 +234,19 @@ func ListSnapshots(provider providers.BackupProvider) ([]Snapshot, error) {
 
 // DeleteSnapshot prunes snapshots beyond the retention count.
 func DeleteSnapshot(provider providers.BackupProvider, retention int) error {
+	return DeleteSnapshotContext(context.Background(), provider, retention)
+}
+
+// DeleteSnapshotContext prunes snapshots beyond the retention count.
+func DeleteSnapshotContext(ctx context.Context, provider providers.BackupProvider, retention int) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if retention <= 0 {
 		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return errBackupStopped
 	}
 	snapshots, err := ListSnapshots(provider)
 	if err != nil && len(snapshots) == 0 {
@@ -183,6 +260,9 @@ func DeleteSnapshot(provider providers.BackupProvider, retention int) error {
 
 	toDelete := snapshots[:len(snapshots)-retention]
 	for _, snapshot := range toDelete {
+		if err := ctx.Err(); err != nil {
+			return errBackupStopped
+		}
 		prefix := path.Join(snapshotRootDir, snapshot.ID)
 		items, listErr := provider.List(prefix)
 		if listErr != nil {
@@ -193,6 +273,9 @@ func DeleteSnapshot(provider providers.BackupProvider, retention int) error {
 		}
 
 		for _, item := range items {
+			if err := ctx.Err(); err != nil {
+				return errBackupStopped
+			}
 			if delErr := provider.Delete(item); delErr != nil {
 				delErr = fmt.Errorf("failed to delete %s: %w", item, delErr)
 				errs = append(errs, delErr)

@@ -8,3 +8,8 @@ import "fmt"
 func SpawnProcessInSession(_ string, _ uint32) error {
 	return fmt.Errorf("SpawnProcessInSession not supported on this platform")
 }
+
+// SpawnProcessInSessionWithArgs is only implemented on Windows.
+func SpawnProcessInSessionWithArgs(_ string, _ []string, _ uint32) error {
+	return fmt.Errorf("SpawnProcessInSessionWithArgs not supported on this platform")
+}

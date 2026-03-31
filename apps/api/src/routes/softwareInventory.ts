@@ -11,9 +11,18 @@ import {
   softwareInventory,
   softwarePolicies,
 } from '../db/schema';
-import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { PERMISSIONS } from '../services/permissions';
 
 export const softwareInventoryRoutes = new Hono();
+const requireSoftwareInventoryRead = requirePermission(
+  PERMISSIONS.DEVICES_READ.resource,
+  PERMISSIONS.DEVICES_READ.action,
+);
+const requireSoftwareInventoryWrite = requirePermission(
+  PERMISSIONS.DEVICES_WRITE.resource,
+  PERMISSIONS.DEVICES_WRITE.action,
+);
 
 softwareInventoryRoutes.use('*', authMiddleware);
 softwareInventoryRoutes.use('*', requireScope('organization', 'partner', 'system'));
@@ -160,7 +169,7 @@ async function ensureDefaultConfigPolicyLink(
 // GET / — Aggregate inventory
 // ============================================
 
-softwareInventoryRoutes.get('/', zValidator('query', listQuerySchema), async (c) => {
+softwareInventoryRoutes.get('/', requireSoftwareInventoryRead, zValidator('query', listQuerySchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const { search, vendor, limit, offset, sortBy, sortOrder } = c.req.valid('query');
 
@@ -266,7 +275,7 @@ softwareInventoryRoutes.get('/', zValidator('query', listQuerySchema), async (c)
 // POST /approve — Quick approve
 // ============================================
 
-softwareInventoryRoutes.post('/approve', zValidator('json', approveSchema), async (c) => {
+softwareInventoryRoutes.post('/approve', requireSoftwareInventoryWrite, requireMfa(), zValidator('json', approveSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const { softwareName, vendor } = c.req.valid('json');
 
@@ -346,7 +355,7 @@ softwareInventoryRoutes.post('/approve', zValidator('json', approveSchema), asyn
 // POST /deny — Quick deny
 // ============================================
 
-softwareInventoryRoutes.post('/deny', zValidator('json', denySchema), async (c) => {
+softwareInventoryRoutes.post('/deny', requireSoftwareInventoryWrite, requireMfa(), zValidator('json', denySchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const { softwareName, vendor } = c.req.valid('json');
 
@@ -423,7 +432,7 @@ softwareInventoryRoutes.post('/deny', zValidator('json', denySchema), async (c) 
 // POST /clear — Remove from allowlist/blocklist
 // ============================================
 
-softwareInventoryRoutes.post('/clear', zValidator('json', approveSchema), async (c) => {
+softwareInventoryRoutes.post('/clear', requireSoftwareInventoryWrite, requireMfa(), zValidator('json', approveSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const { softwareName, vendor } = c.req.valid('json');
 
@@ -472,7 +481,7 @@ softwareInventoryRoutes.post('/clear', zValidator('json', approveSchema), async 
 // GET /:name/devices — Device drill-down
 // ============================================
 
-softwareInventoryRoutes.get('/:name/devices', zValidator('query', deviceDrilldownQuerySchema), async (c) => {
+softwareInventoryRoutes.get('/:name/devices', requireSoftwareInventoryRead, zValidator('query', deviceDrilldownQuerySchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const softwareName = decodeURIComponent(c.req.param('name'));
   const { vendor, limit, offset } = c.req.valid('query');

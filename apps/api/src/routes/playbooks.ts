@@ -11,8 +11,9 @@ import {
   type PlaybookExecutionStatus,
   type PlaybookStepResult,
 } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { checkPlaybookRequiredPermissions } from '../services/playbookPermissions';
+import { PERMISSIONS } from '../services/permissions';
 
 const executionStatusSchema = z.enum([
   'pending',
@@ -88,6 +89,8 @@ function canTransitionExecutionStatus(
 }
 
 export const playbookRoutes = new Hono();
+const requirePlaybookRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
+const requirePlaybookExecute = requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action);
 
 playbookRoutes.use('*', authMiddleware);
 
@@ -95,6 +98,7 @@ playbookRoutes.use('*', authMiddleware);
 playbookRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requirePlaybookRead,
   zValidator('query', listPlaybooksQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -124,6 +128,7 @@ playbookRoutes.get(
 playbookRoutes.get(
   '/executions',
   requireScope('organization', 'partner', 'system'),
+  requirePlaybookRead,
   zValidator('query', listExecutionsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -165,6 +170,7 @@ playbookRoutes.get(
 playbookRoutes.get(
   '/executions/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePlaybookRead,
   zValidator('param', uuidParamSchema),
   async (c) => {
     const { id } = c.req.valid('param');
@@ -198,6 +204,8 @@ playbookRoutes.get(
 playbookRoutes.post(
   '/:id/execute',
   requireScope('organization', 'partner', 'system'),
+  requirePlaybookExecute,
+  requireMfa(),
   zValidator('param', uuidParamSchema),
   zValidator('json', executePlaybookBodySchema),
   async (c) => {
@@ -309,6 +317,8 @@ playbookRoutes.post(
 playbookRoutes.patch(
   '/executions/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePlaybookExecute,
+  requireMfa(),
   zValidator('param', uuidParamSchema),
   zValidator('json', patchExecutionBodySchema),
   async (c) => {
@@ -385,6 +395,7 @@ playbookRoutes.patch(
 playbookRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePlaybookRead,
   zValidator('param', uuidParamSchema),
   async (c) => {
     const { id } = c.req.valid('param');

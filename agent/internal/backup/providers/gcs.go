@@ -37,6 +37,14 @@ func NewGCSProvider(bucketName string, credentialsJSON []byte) (*GCSProvider, er
 
 // Upload sends a local file to Google Cloud Storage.
 func (g *GCSProvider) Upload(localPath, remotePath string) error {
+	return g.UploadContext(context.Background(), localPath, remotePath)
+}
+
+// UploadContext sends a local file to Google Cloud Storage with cancellation support.
+func (g *GCSProvider) UploadContext(ctx context.Context, localPath, remotePath string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if localPath == "" {
 		return errors.New("local source path is required")
 	}
@@ -60,7 +68,6 @@ func (g *GCSProvider) Upload(localPath, remotePath string) error {
 		"object", remotePath,
 	)
 
-	ctx := context.Background()
 	writer := client.Bucket(g.bucketName).Object(remotePath).NewWriter(ctx)
 
 	if _, err := io.Copy(writer, file); err != nil {

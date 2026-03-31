@@ -2,12 +2,14 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { eq, and, sql, gte, desc } from 'drizzle-orm';
 import { db } from '../../db';
+import { requirePermission } from '../../middleware/auth';
 import {
   backupConfigs,
   backupJobs,
   backupSnapshots,
   devices,
 } from '../../db/schema';
+import { PERMISSIONS } from '../../services/permissions';
 import { resolveBackupConfigForDevice, resolveAllBackupAssignedDevices } from '../../services/featureConfigResolver';
 import { getNextRun, resolveScopedOrgId } from './helpers';
 import { usageHistoryQuerySchema } from './schemas';
@@ -16,6 +18,7 @@ export const dashboardRoutes = new Hono();
 
 dashboardRoutes.get(
   '/usage-history',
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   zValidator('query', usageHistoryQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -111,7 +114,7 @@ dashboardRoutes.get(
   }
 );
 
-dashboardRoutes.get('/dashboard', async (c) => {
+dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -223,14 +226,14 @@ dashboardRoutes.get('/dashboard', async (c) => {
   });
 });
 
-dashboardRoutes.get('/status/:deviceId', async (c) => {
+dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
 
-  const deviceId = c.req.param('deviceId');
+  const deviceId = c.req.param('deviceId')!;
 
   // Resolve backup config via configuration policy system
   const resolved = await resolveBackupConfigForDevice(deviceId);

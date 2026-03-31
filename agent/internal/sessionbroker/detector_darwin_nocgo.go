@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -20,34 +21,45 @@ func NewSessionDetector() SessionDetector {
 
 func (d *darwinDetectorNoCgo) ListSessions() ([]DetectedSession, error) {
 	// Use "stat -f %Su /dev/console" to get the console user without CGO
-	out, err := exec.Command("stat", "-f", "%Su", "/dev/console").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), detectorCommandTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "stat", "-f", "%Su", "/dev/console").Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to detect console user via stat: %w", err)
 	}
-	username := strings.TrimSpace(string(out))
+	username, err := sanitizeDetectedField(strings.TrimSpace(string(out)), true)
+	if err != nil {
+		return nil, fmt.Errorf("invalid console user: %w", err)
+	}
 	if username == "" || username == "root" || username == "loginwindow" {
 		return nil, nil
 	}
 
 	// Resolve UID for the console user (needed for launchctl domain targeting)
-	uidOut, err := exec.Command("id", "-u", username).Output()
+	uidCtx, uidCancel := context.WithTimeout(context.Background(), detectorCommandTimeout)
+	defer uidCancel()
+	uidOut, err := exec.CommandContext(uidCtx, "id", "-u", username).Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve UID for user %q: %w", username, err)
 	}
-	var uid uint32
-	if _, err := fmt.Sscanf(strings.TrimSpace(string(uidOut)), "%d", &uid); err != nil {
+	uid64, err := strconv.ParseUint(strings.TrimSpace(string(uidOut)), 10, 32)
+	if err != nil {
 		return nil, fmt.Errorf("failed to parse UID for user %q: %w", username, err)
 	}
 
-	return []DetectedSession{
-		{
-			UID:      uid,
-			Username: username,
-			Session:  "console",
-			Display:  "quartz",
-			State:    "active",
-		},
-	}, nil
+	session, err := sanitizeDetectedSession(DetectedSession{
+		UID:      uint32(uid64),
+		Username: username,
+		Session:  "console",
+		Display:  "quartz",
+		State:    "active",
+		Type:     "console",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return []DetectedSession{session}, nil
 }
 
 func (d *darwinDetectorNoCgo) WatchSessions(ctx context.Context) <-chan SessionEvent {

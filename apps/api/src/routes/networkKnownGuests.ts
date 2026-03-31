@@ -4,9 +4,12 @@ import { z } from 'zod';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../db';
 import { networkKnownGuests } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { PERMISSIONS } from '../services/permissions';
 
 export const networkKnownGuestsRoutes = new Hono();
+const requireKnownGuestRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
+const requireKnownGuestWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
 
 networkKnownGuestsRoutes.use('*', authMiddleware);
 
@@ -20,7 +23,7 @@ const createGuestSchema = z.object({
 });
 
 // GET /partner/known-guests
-networkKnownGuestsRoutes.get('/', requireScope('partner', 'system'), async (c) => {
+networkKnownGuestsRoutes.get('/', requireScope('partner', 'system'), requireKnownGuestRead, async (c) => {
   const auth = c.get('auth');
   if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
 
@@ -37,6 +40,8 @@ networkKnownGuestsRoutes.get('/', requireScope('partner', 'system'), async (c) =
 networkKnownGuestsRoutes.post(
   '/',
   requireScope('partner', 'system'),
+  requireKnownGuestWrite,
+  requireMfa(),
   zValidator('json', createGuestSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -68,7 +73,7 @@ networkKnownGuestsRoutes.post(
 );
 
 // DELETE /partner/known-guests/:id
-networkKnownGuestsRoutes.delete('/:id', requireScope('partner', 'system'), async (c) => {
+networkKnownGuestsRoutes.delete('/:id', requireScope('partner', 'system'), requireKnownGuestWrite, requireMfa(), async (c) => {
   const auth = c.get('auth');
   if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
 
