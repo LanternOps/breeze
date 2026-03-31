@@ -1,0 +1,118 @@
+---
+title: Backup Policies
+description: Schedule and target backups using configuration policies with hierarchical assignment.
+sidebar:
+  order: 3
+  label: "Backup Policies"
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Backup scheduling is managed through [Configuration Policies](/features/configuration-policies/). You create a policy, add a **Backup** feature link, configure the backup mode and targets, then assign it at any level of the hierarchy — organization, site, device group, or individual device. The policy system resolves which devices get which backup settings using the same precedence rules as other features.
+
+---
+
+## Creating a Backup Policy
+
+<Steps>
+1. Go to **Settings > Configuration Policies**.
+
+2. Click **Create Policy** (or edit an existing one).
+
+3. In the policy editor, click **Add Feature** and select **Backup**.
+
+4. Configure the backup settings:
+
+   **Backup Mode** — choose one per policy:
+
+   | Mode | What it backs up |
+   |------|-----------------|
+   | **File** (default) | Selected directories and files with include/exclude path rules |
+   | **Hyper-V** | Virtual machines on Hyper-V hosts |
+   | **MSSQL** | SQL Server databases |
+   | **System Image** | Full system state capture |
+
+   **Storage Configuration** — select which storage target to use (created in [Storage Configuration](/backup/storage/)).
+
+   **Schedule** — frequency (daily, weekly, monthly), time of day, timezone, and optionally day-of-week or day-of-month.
+
+   **Retention** — Grandfather-Father-Son (GFS) settings:
+   - Daily snapshots to keep
+   - Weekly snapshots to keep
+   - Monthly snapshots to keep
+   - Yearly snapshots to keep (for compliance)
+
+5. **Assign the policy** to organizations, sites, device groups, or individual devices.
+
+6. Click **Save**.
+</Steps>
+
+---
+
+## How Policy Assignment Works
+
+Backup policies follow the same hierarchical precedence as all configuration policies:
+
+```
+Device (most specific) > Device Group > Site > Organization (least specific)
+```
+
+A device-level assignment overrides a site-level one. If a device has no direct assignment, it inherits from its device group, then site, then organization.
+
+<Aside type="tip">
+  Assign backup policies at the site or organization level to protect new devices automatically as they enroll. Use device-level overrides only for exceptions (e.g., a server that needs more frequent backups than the site default).
+</Aside>
+
+---
+
+## Backup Modes in Detail
+
+### File Backup
+
+The default mode. Specify which paths to include and exclude:
+
+- **Include paths** — directories to back up (e.g., `C:\Users`, `/home`)
+- **Exclude paths** — skip specific subdirectories or patterns (e.g., `C:\Users\*\AppData\Local\Temp`)
+
+On Windows, file backups automatically use Volume Shadow Copy (VSS) to capture application-consistent snapshots of open files.
+
+### Hyper-V Backup
+
+Targets Hyper-V virtual machines. Uses **all-by-default targeting** — newly discovered VMs are automatically included on the next scheduled run. You can configure exclude lists to skip specific VMs.
+
+Two consistency modes:
+- **Application-consistent** (default) — uses Hyper-V's VSS integration for clean VM snapshots
+- **Crash-consistent** — saves VM state before export, faster but less clean
+
+### SQL Server Backup
+
+Targets SQL Server databases. Like Hyper-V, new databases are automatically included. Supports three backup types in a chain:
+- **Full** — complete database backup
+- **Differential** — changes since last full backup
+- **Log** — transaction log for point-in-time recovery
+
+### System Image
+
+Full system state capture including OS configuration, boot files, drivers, and registry (Windows). Used for bare metal recovery scenarios.
+
+---
+
+## Bandwidth and Scheduling Controls
+
+Policies support additional controls for managing backup impact:
+
+| Setting | Description |
+|---------|-------------|
+| **Backup window** | Time range during which backups are allowed to run |
+| **Bandwidth limit** | Maximum throughput in Mbps to avoid saturating the network |
+| **Priority** | Controls ordering when multiple devices are scheduled simultaneously |
+
+---
+
+## Monitoring Policy Coverage
+
+The Backup dashboard **Overview** tab shows:
+- **Devices Protected** — count of devices assigned to at least one backup policy
+- **Devices Needing Backup** — devices with overdue or missing backups
+
+Individual device status is visible on each device's **Backup** tab, showing the assigned policy, last successful backup, and next scheduled run.

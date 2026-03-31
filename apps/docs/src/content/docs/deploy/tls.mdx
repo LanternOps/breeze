@@ -14,7 +14,7 @@ Breeze ships with Caddy as the default reverse proxy. It automatically provision
 
 ### Production Caddyfile
 
-Located at `docker/Caddyfile.prod`:
+The Caddyfile is generated inline inside `docker-compose.yml` — there is no separate config file to manage. A reference copy also exists at `docker/Caddyfile.prod`, but the compose-generated version is what runs in production.
 
 ```caddy
 {
@@ -22,21 +22,20 @@ Located at `docker/Caddyfile.prod`:
 }
 
 {$BREEZE_DOMAIN} {
-  encode zstd gzip
-
   @api path /api/* /health /ready /metrics/*
   handle @api {
+    encode zstd gzip
     reverse_proxy api:3001
   }
 
   handle {
+    encode zstd gzip
     reverse_proxy web:4321
   }
 
   header {
     Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
     X-Content-Type-Options "nosniff"
-    X-Frame-Options "SAMEORIGIN"
     Referrer-Policy "strict-origin-when-cross-origin"
   }
 }
@@ -129,5 +128,4 @@ Both configurations include these security headers:
 |---|---|---|
 | `Strict-Transport-Security` | `max-age=31536000; includeSubDomains; preload` | Force HTTPS for 1 year |
 | `X-Content-Type-Options` | `nosniff` | Prevent MIME sniffing |
-| `X-Frame-Options` | `SAMEORIGIN` | Prevent clickjacking (allows same-origin framing) |
 | `Referrer-Policy` | `strict-origin-when-cross-origin` | Control referrer information |

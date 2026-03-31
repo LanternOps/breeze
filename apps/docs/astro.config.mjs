@@ -74,12 +74,18 @@ export default defineConfig({
                 { slug: 'features/user-risk' },
                 { slug: 'features/management-posture' },
                 { slug: 'features/user-sessions' },
-                { slug: 'features/device-backup' },
               ],
             },
             {
-              label: 'Monitoring & Network',
+              label: 'Backup & Recovery',
+              autogenerate: { directory: 'backup' },
+            },
+            {
+              label: 'Monitoring & Alerting',
               items: [
+                { slug: 'features/alerts' },
+                { slug: 'features/alert-templates' },
+                { slug: 'features/network-monitors' },
                 { slug: 'features/snmp' },
                 { slug: 'features/bandwidth-monitoring' },
                 { slug: 'features/network-baselines' },
@@ -132,9 +138,7 @@ export default defineConfig({
           label: 'Monitoring',
           items: [
             { slug: 'monitoring/alerts' },
-            { slug: 'monitoring/alert-templates' },
             { slug: 'monitoring/health' },
-            { slug: 'monitoring/network-monitors' },
             { slug: 'monitoring/stack' },
           ],
         },

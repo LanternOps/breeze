@@ -1,0 +1,75 @@
+---
+title: Encryption Key Management
+description: Create, rotate, and manage encryption keys for backup data protection.
+sidebar:
+  order: 11
+  label: "Encryption"
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Backup encryption protects your data at rest. Breeze manages encryption keys that are used when writing snapshots to storage. Each snapshot references the key it was encrypted with, so keys must be available for restore operations.
+
+---
+
+## Managing Keys
+
+Go to **Operations > Backup > Encryption** to see your encryption keys.
+
+The key list shows:
+- Key name
+- Key type (AES-256 or RSA-2048)
+- Status: **Active** (green), **Rotated** (gray), or **Deactivated** (red)
+- Created date
+- Expiry date (if set)
+
+---
+
+## Creating a Key
+
+<Steps>
+1. Click **Create New Key**.
+2. Enter a descriptive name (e.g., "Production AES Key 2026").
+3. Select the key type:
+   - **AES-256** — symmetric encryption, recommended for most use cases
+   - **RSA-2048** — asymmetric encryption, useful for scenarios where separate encrypt/decrypt permissions are needed
+4. Click **Create**.
+5. The key's fingerprint (SHA-256 hash) is displayed. Record this for your records.
+</Steps>
+
+<Aside type="danger">
+  The key fingerprint is shown only at creation time. Store it securely — you'll need it if you ever need to verify which key was used for a specific snapshot.
+</Aside>
+
+---
+
+## Rotating a Key
+
+Key rotation creates a new key version while keeping the old version available for decrypting existing snapshots. New backups use the rotated key.
+
+<Steps>
+1. Click the **Rotate** action on an active key.
+2. Confirm the rotation.
+3. The old key moves to **Rotated** status. A new active key is created.
+</Steps>
+
+You can configure automatic rotation (every 30, 60, or 90 days) in the [storage configuration](/backup/storage/) wizard.
+
+---
+
+## Deactivating a Key
+
+Click **Deactivate** on a key to prevent it from being used for new backups. Deactivated keys remain available for decrypting existing snapshots.
+
+<Aside type="caution">
+  Do not deactivate a key if you still have snapshots encrypted with it that you may need to restore. The key must be active or rotated (not deactivated) for restore operations to work.
+</Aside>
+
+---
+
+## How Encryption Works
+
+- **In transit** — all backup data is transferred over HTTPS (TLS 1.2+)
+- **At rest** — snapshots are encrypted using the assigned key before being written to storage
+- Each snapshot stores a reference to its encryption key ID, so the correct key is used automatically during restore
+- Keys themselves are stored encrypted in the Breeze database with access scoped to the organization

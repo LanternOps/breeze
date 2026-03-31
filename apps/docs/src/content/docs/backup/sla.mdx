@@ -1,0 +1,89 @@
+---
+title: SLA Management
+description: Set RPO/RTO targets, track compliance, and get alerts when backup SLAs are breached.
+sidebar:
+  order: 10
+  label: "SLA Management"
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+SLA Management lets you define recovery objectives for your backup-protected devices and automatically alerts you when those objectives aren't met. Set RPO (how much data loss you can tolerate) and RTO (how quickly you need to recover) targets, then let Breeze monitor compliance.
+
+---
+
+## Key Terms
+
+| Term | Definition |
+|------|-----------|
+| **RPO** (Recovery Point Objective) | Maximum acceptable time between the last backup and a failure. An RPO of 60 minutes means you can lose at most 60 minutes of data. |
+| **RTO** (Recovery Time Objective) | Maximum acceptable time to restore from backup. An RTO of 30 minutes means the restore must complete within 30 minutes. |
+
+---
+
+## Creating an SLA Policy
+
+<Steps>
+1. Go to **Operations > Backup > SLA**.
+2. Click **Add SLA Config**.
+3. Fill in the configuration:
+   - **Name** — descriptive label (e.g., "Tier 1 Servers — 1hr RPO")
+   - **RPO target** — maximum minutes between backups (minimum 1)
+   - **RTO target** — maximum minutes to restore (minimum 1)
+   - **Scope** — choose **Target Devices** or **Target Device Groups**, then select from the dropdown
+   - **Alert on breach** — enable to receive notifications when an SLA is violated
+   - **Active** — toggle on/off
+4. Click **Save**.
+</Steps>
+
+---
+
+## SLA Dashboard
+
+The SLA tab shows:
+
+### Compliance Metrics
+- **Overall compliance %** — percentage of SLA checks that passed
+- **Active breaches** — count of currently violated SLAs
+- **Average RPO/RTO** — actual recovery metrics across your fleet
+
+### SLA Configurations
+A table of your SLA policies showing:
+- Policy name
+- RPO and RTO targets (in minutes)
+- Number of devices affected
+- Active/inactive status
+- Edit and delete actions
+
+### SLA Events
+A chronological list of SLA events:
+- **Device name** — which device triggered the event
+- **Event type** — RPO Breach (red), RTO Breach (yellow), or Missed Backup (gray)
+- **Detected time** — when the breach was identified
+- **Resolved time** — when the breach was cleared (if applicable)
+
+---
+
+## How Breach Detection Works
+
+Breeze continuously monitors backup activity against your SLA policies:
+
+1. **RPO check** — compares the time since the last completed backup to the RPO target. If more time has passed than the target allows, an RPO breach event is created.
+2. **RTO check** — measures actual restore times from test restores and verification runs. If the measured time exceeds the RTO target, an RTO breach is recorded.
+3. **Missed backup** — if a scheduled backup didn't run at all (agent offline, policy misconfigured), a missed backup event is created.
+
+Breach detection runs automatically — no manual action needed.
+
+---
+
+## Recommended SLA Targets
+
+| Device tier | RPO | RTO | Rationale |
+|-------------|-----|-----|-----------|
+| **Tier 1** (domain controllers, databases) | 15–60 min | 15–30 min | Critical infrastructure — minimal data loss and fast recovery |
+| **Tier 2** (application servers, file servers) | 4–8 hours | 1–2 hours | Important but can tolerate some downtime |
+| **Tier 3** (workstations, dev machines) | 24 hours | 4–8 hours | Lower priority — daily backup is sufficient |
+
+<Aside type="tip">
+  Start with conservative (longer) targets and tighten them as you build confidence in your backup infrastructure. It's better to have achievable SLAs than to create constant breach noise.
+</Aside>

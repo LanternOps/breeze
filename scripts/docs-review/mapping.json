@@ -181,7 +181,7 @@
     {
       "pattern": "agent/internal/backup/**",
       "docs": [
-        "features/device-backup.mdx",
+        "backup/overview.mdx",
         "security/backup.mdx"
       ]
     },
@@ -208,7 +208,7 @@
       "pattern": "apps/api/src/services/aiToolsBackup.ts",
       "docs": [
         "features/ai.mdx",
-        "features/device-backup.mdx"
+        "backup/overview.mdx"
       ]
     },
     {
@@ -233,7 +233,7 @@
     {
       "pattern": "apps/api/src/routes/backup*.ts",
       "docs": [
-        "features/device-backup.mdx"
+        "backup/overview.mdx"
       ]
     },
     {
@@ -243,27 +243,21 @@
       ]
     },
     {
-      "pattern": "apps/api/src/routes/c2c*.ts",
+      "pattern": "apps/api/src/routes/c2c/**",
       "docs": [
-        "features/device-backup.mdx"
-      ]
-    },
-    {
-      "pattern": "apps/api/src/routes/m365Auth.ts",
-      "docs": [
-        "features/device-backup.mdx"
+        "backup/overview.mdx"
       ]
     },
     {
       "pattern": "apps/api/src/services/c2cM365.ts",
       "docs": [
-        "features/device-backup.mdx"
+        "backup/overview.mdx"
       ]
     },
     {
       "pattern": "apps/api/src/routes/dr*.ts",
       "docs": [
-        "features/device-backup.mdx"
+        "backup/overview.mdx"
       ]
     }
   ]

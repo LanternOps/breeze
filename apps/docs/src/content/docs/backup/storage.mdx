@@ -1,0 +1,110 @@
+---
+title: Storage Configuration
+description: Set up backup storage targets — S3, Azure Blob, Google Cloud, local NAS, or Backblaze B2.
+sidebar:
+  order: 2
+  label: "Storage Configuration"
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Before you can run backups, you need at least one storage configuration that tells Breeze where to send backup data. You can create multiple configurations — for example, an S3 bucket for off-site cloud storage and a local NAS for fast restores.
+
+---
+
+## Creating a Storage Configuration
+
+The storage configuration wizard walks you through four steps:
+
+<Steps>
+1. **Select a provider.** Choose from Amazon S3, Azure Blob Storage, Google Cloud Storage, or Local/NAS. Each option shows a brief description to help you decide.
+
+2. **Enter provider settings.** The fields change based on your provider:
+
+   <Tabs>
+     <TabItem label="Amazon S3">
+       - **Region** — AWS region (e.g., `us-east-1`)
+       - **Bucket Name** — the S3 bucket to store backups in
+       - **Base Path** — optional prefix within the bucket (e.g., `breeze-backups/`)
+       - **Access Key** and **Secret Key** — IAM credentials with `s3:PutObject`, `s3:GetObject`, `s3:ListBucket`, and `s3:DeleteObject` permissions
+
+       Also works with S3-compatible services like MinIO, Wasabi, and Backblaze B2 — just set the endpoint URL accordingly.
+     </TabItem>
+     <TabItem label="Azure Blob">
+       - **Storage Account** — your Azure Storage account name
+       - **Container** — blob container name
+       - **Access Key** and **Secret Key** — storage account credentials
+     </TabItem>
+     <TabItem label="Google Cloud">
+       - **Bucket Name** — GCS bucket
+       - **Base Path** — optional prefix
+       - **Access Key** and **Secret Key** — service account credentials
+     </TabItem>
+     <TabItem label="Local / NAS">
+       - **Local Path** — mount point or UNC path (e.g., `/mnt/backups` or `\\nas\breeze`)
+       - **Retention Tier** — storage tier classification
+     </TabItem>
+   </Tabs>
+
+3. **Set a schedule.** Choose how often backups run:
+   - **Daily** — pick a start time and backup window duration
+   - **Weekly** — pick days of the week, start time, and timezone
+   - **Cron** — enter a custom cron expression for advanced scheduling
+
+4. **Configure retention.** Choose a preset or customize:
+   - **Standard** — 30 days, 12 versions
+   - **Extended** — 90 days, 36 versions
+   - **Compliance** — 365 days, 120 versions
+   - **Custom** — set your own day count and version count
+
+   Optionally enable encryption and configure key rotation (every 30, 60, or 90 days).
+</Steps>
+
+Click **Publish Configuration** to make it active, or **Save as Draft** to finish later.
+
+---
+
+## Testing Connectivity
+
+After creating a configuration, test that Breeze can reach the storage target:
+
+<Steps>
+1. Find the configuration in your storage list.
+2. Click the **Refresh** (test) action on the configuration row.
+3. A success or failure message appears. The configuration's **Last Tested** timestamp updates on success.
+</Steps>
+
+<Aside type="tip">
+  Always test connectivity after creating or updating a configuration. This catches credential errors or network issues before your first scheduled backup fails.
+</Aside>
+
+---
+
+## Editing a Configuration
+
+Click the **Edit** action on any configuration to reopen the wizard. Changes are merged — updating a single field (like the bucket name) won't erase your other settings.
+
+---
+
+## Deleting a Configuration
+
+Click **Delete** on a configuration to remove it. Configurations that are actively referenced by a backup policy should have the policy reassigned first.
+
+<Aside type="caution">
+  Deleting a storage configuration does not delete the backup data already stored at that target. The data remains in S3, Azure, or your local path until you remove it manually.
+</Aside>
+
+---
+
+## Multiple Configurations
+
+You can create different configurations for different use cases:
+
+| Use case | Recommended setup |
+|----------|-------------------|
+| **Critical servers** | S3 (off-site) + local vault (fast restore) |
+| **Workstations** | Local NAS with 30-day retention |
+| **Compliance** | Azure Blob with 365-day retention and encryption |
+| **Development/test** | Local storage with minimal retention |
+
+Assign each configuration to the appropriate devices through [backup policies](/backup/policies/).

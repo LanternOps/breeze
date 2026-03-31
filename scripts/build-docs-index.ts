@@ -7,6 +7,7 @@ type DocsSection =
   | 'agents'
   | 'security'
   | 'features'
+  | 'backup'
   | 'monitoring'
   | 'reference';
 
@@ -26,6 +27,7 @@ const allowedSections = new Set<DocsSection>([
   'agents',
   'security',
   'features',
+  'backup',
   'monitoring',
   'reference'
 ]);

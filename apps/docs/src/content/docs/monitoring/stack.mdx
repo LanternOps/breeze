@@ -6,9 +6,9 @@ sidebar:
   label: Observability Stack
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Breeze includes an optional observability stack as a separate Docker Compose overlay (`docker-compose.monitoring.yml`). Enable it alongside the core stack to get full metrics, dashboards, and log aggregation.
+Breeze includes an optional observability stack as a separate Docker Compose overlay (`docker-compose.monitoring.yml`). Enable it alongside the core stack to get full metrics, dashboards, log aggregation, and infrastructure alerting.
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
@@ -18,16 +18,16 @@ docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
 
 | Component | Port | Purpose |
 |---|---|---|
-| **Prometheus** | 9090 (localhost) | Time-series metrics collection |
+| **Prometheus** | 9090 (localhost) | Time-series metrics collection and alerting rules |
 | **Grafana** | 3000 (localhost) | Dashboards and visualization |
 | **Alertmanager** | 9093 (localhost) | Alert routing and notifications |
-| **Loki** | 3100 (localhost) | Log aggregation |
-| **Promtail** | 9080 (localhost) | Log shipping from Docker containers |
-| **Redis Exporter** | 9121 (internal) | Redis metrics for Prometheus |
-| **Postgres Exporter** | 9187 (internal) | PostgreSQL metrics for Prometheus |
+| **Loki** | 3100 (localhost) | Log aggregation and querying |
+| **Promtail** | 9080 (localhost) | Log shipping from Docker containers to Loki |
+| **Redis Exporter** | 9121 (internal) | Exports Redis metrics for Prometheus |
+| **Postgres Exporter** | 9187 (internal) | Exports PostgreSQL metrics for Prometheus |
 
 <Aside>
-  All monitoring ports bind to `127.0.0.1`. Access Grafana via SSH tunnel or VPN.
+  All monitoring ports bind to `127.0.0.1` by default. Access Grafana and Prometheus via SSH tunnel or VPN -- they should not be exposed to the public internet.
 </Aside>
 
 ## Accessing Grafana
@@ -41,20 +41,39 @@ ssh -L 3000:127.0.0.1:3000 user@your-server
 # Password: (your GRAFANA_ADMIN_PASSWORD from .env.prod)
 ```
 
+<Aside type="tip">
+  You can override the Grafana port with the `GRAFANA_PORT` environment variable. Similarly, `PROMETHEUS_PORT`, `ALERTMANAGER_PORT`, and `LOKI_PORT` let you change the other monitoring ports.
+</Aside>
+
 ## Pre-Built Dashboards
 
-Breeze includes a Grafana dashboard (`monitoring/grafana/dashboards/breeze-overview.json`) with:
+Breeze ships with a Grafana dashboard (`monitoring/grafana/dashboards/breeze-overview.json`) that is automatically provisioned. It includes these panels:
 
-- **Service Status** — Up/down status of all services
-- **Request Rate** — HTTP requests per second
-- **Response Times** — P50, P95, P99 latency
-- **Error Rate** — 4xx and 5xx responses
-- **HTTP Status Distribution** — Breakdown by status code
-- **Top Endpoints** — Most-used API endpoints
-- **Active Devices** — Connected agent count
-- **Organizations** — Active tenant count
-- **Redis Memory** — Memory usage and evictions
-- **PostgreSQL Connections** — Connection pool utilization
+| Panel | What It Shows |
+|---|---|
+| **Service Status** | Up/down status of API, Redis, PostgreSQL, and other services |
+| **Request Rate** | HTTP requests per second with breakdown by method |
+| **Response Times** | P50, P95, and P99 latency over time |
+| **Error Rate** | 4xx and 5xx response rates as percentages |
+| **HTTP Status Distribution** | Breakdown of responses by status code |
+| **Top Endpoints** | Most-used API endpoints by request volume |
+| **Active Devices** | Count of agents with recent heartbeats |
+| **Organizations** | Number of active tenants |
+| **Redis Memory** | Memory usage, evictions, and hit rate |
+| **PostgreSQL Connections** | Active connection count vs. max pool size |
+
+### Adding Custom Dashboards
+
+To add your own dashboards:
+
+<Steps>
+
+1. Create or import a dashboard in the Grafana UI.
+2. Export it as JSON from the Grafana dashboard settings.
+3. Save the JSON file to `monitoring/grafana/dashboards/`.
+4. The dashboard provisioner (`monitoring/grafana/dashboards.yml`) automatically picks up new files in that directory on the next Grafana restart.
+
+</Steps>
 
 ## Data Sources
 
@@ -69,28 +88,55 @@ Configured automatically via `monitoring/grafana/datasources.yml`:
 
 ## Prometheus Configuration
 
-Located at `monitoring/prometheus.yml`:
+Located at `monitoring/prometheus.yml`. Key settings:
 
 ```yaml
-scrape_configs:
-  - job_name: breeze-api
-    scheme: http
-    metrics_path: /metrics/scrape
-    authorization:
-      credentials_file: /run/secrets/metrics_scrape_token
-    static_configs:
-      - targets: ['api:3001']
-
-  - job_name: redis-exporter
-    static_configs:
-      - targets: ['redis-exporter:9121']
-
-  - job_name: postgres-exporter
-    static_configs:
-      - targets: ['postgres-exporter:9187']
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    monitor: 'breeze-rmm'
+    environment: 'production'
 ```
 
-The API metrics endpoint is protected by a bearer token stored in `monitoring/secrets/metrics_scrape_token`.
+### Scrape Targets
+
+| Job | Target | Interval | Auth |
+|---|---|---|---|
+| `prometheus` | `localhost:9090` | 15s (default) | None |
+| `breeze-api` | `api:3001` at `/metrics/scrape` | 10s | Bearer token |
+| `redis` | `redis-exporter:9121` | 15s (default) | None |
+| `postgres` | `postgres-exporter:9187` | 15s (default) | None |
+| `node` | `node-exporter:9100` (optional) | 15s (default) | None |
+
+The API metrics endpoint is protected by a bearer token. Store the token in `monitoring/secrets/metrics_scrape_token` and reference it in `prometheus.yml`:
+
+```yaml
+- job_name: 'breeze-api'
+  metrics_path: /metrics/scrape
+  authorization:
+    type: Bearer
+    credentials_file: /run/secrets/metrics_scrape_token
+```
+
+### Rule Files
+
+Prometheus loads all `.yml` files from `monitoring/rules/`. Breeze ships with `breeze-rules.yml` containing API, infrastructure, and business alert rules plus recording rules for common aggregations. See [Infrastructure Alerts](/monitoring/alerts/) for the full list.
+
+Rules are evaluated every 30 seconds (API and infrastructure groups) or every 60 seconds (business alerts). Recording rules pre-compute expensive queries:
+
+| Recording Rule | Description |
+|---|---|
+| `breeze:http_requests:rate5m` | Request rate by status, method, and route |
+| `breeze:http_error_rate:ratio5m` | 5xx error rate as a ratio |
+| `breeze:http_request_duration:avg5m` | Average request duration by route |
+| `breeze:http_request_duration:p95_5m` | 95th percentile request duration |
+| `breeze:http_request_duration:p99_5m` | 99th percentile request duration |
+| `breeze:devices:active_count` | Total active device count |
+| `breeze:http_requests:rate5m_by_org` | Request rate per organization |
+| `breeze:redis_ops:rate5m` | Redis operations per second |
+| `breeze:postgres_query_duration:avg5m` | Average PostgreSQL query duration |
 
 ## Key Metrics
 
@@ -106,24 +152,195 @@ The API metrics endpoint is protected by a bearer token stored in `monitoring/se
 
 | Metric | Type | Description |
 |---|---|---|
-| `breeze_active_devices` | Gauge | Devices with recent heartbeat |
+| `breeze_active_devices` | Gauge | Devices with a recent heartbeat |
 | `breeze_active_organizations` | Gauge | Organizations with active devices |
-| `breeze_commands_total` | Counter | Commands executed by type |
-| `breeze_alerts_total` | Counter | Alerts fired by severity |
+| `breeze_commands_total` | Counter | Commands executed, labeled by type |
+| `breeze_alerts_total` | Counter | Alerts fired, labeled by severity |
 
 ### Infrastructure Metrics
 
 | Metric | Type | Description |
 |---|---|---|
 | `redis_memory_used_bytes` | Gauge | Redis memory consumption |
+| `redis_commands_processed_total` | Counter | Total Redis commands processed |
 | `pg_stat_activity_count` | Gauge | PostgreSQL active connections |
-| `pg_database_size_bytes` | Gauge | Database size |
+| `pg_database_size_bytes` | Gauge | Database size in bytes |
+| `pg_settings_max_connections` | Gauge | PostgreSQL max allowed connections |
 
-## Log Aggregation
+## Log Aggregation with Loki
 
-Promtail scrapes Docker container logs and ships them to Loki. Query logs in Grafana:
+Promtail scrapes Docker container logs and ships them to Loki. Loki stores logs for 14 days by default (configurable via `retention_period` in `monitoring/loki-config.yml`).
+
+### Querying Logs in Grafana
+
+Open the **Explore** page in Grafana, select the **Loki** data source, and enter LogQL queries.
+
+#### Basic Queries
 
 ```logql
+# All API logs
+{container="breeze-api"}
+
+# API errors only
 {container="breeze-api"} |= "error"
+
+# Structured JSON logs — filter by level
 {container="breeze-api"} | json | level = "error"
+
+# Logs from a specific container
+{container="breeze-web"}
 ```
+
+#### Filtering and Searching
+
+```logql
+# Search for a specific device ID
+{container="breeze-api"} |= "device_id=abc123"
+
+# Exclude health check noise
+{container="breeze-api"} != "/health"
+
+# Filter by HTTP status code in structured logs
+{container="breeze-api"} | json | status >= 500
+
+# Rate of errors over time (useful for dashboards)
+rate({container="breeze-api"} |= "error" [5m])
+```
+
+#### Time-Based Queries
+
+```logql
+# Logs from the last hour containing "timeout"
+{container="breeze-api"} |= "timeout"
+
+# Count log lines per minute
+sum(rate({container="breeze-api"} [1m])) by (container)
+```
+
+<Aside type="tip">
+  Use the **Live** toggle in Grafana Explore to tail logs in real time. This is useful when debugging agent connectivity or watching alert processing.
+</Aside>
+
+## Adding Custom Prometheus Alert Rules
+
+1. Create a new YAML file in `monitoring/rules/` (e.g., `monitoring/rules/custom-rules.yml`).
+
+2. Define your alert rules following the Prometheus format:
+
+   ```yaml
+   groups:
+     - name: custom-alerts
+       rules:
+         - alert: HighAgentChurn
+           expr: rate(breeze_device_enrollments_total[1h]) > 10
+           for: 30m
+           labels:
+             severity: warning
+           annotations:
+             summary: "High agent enrollment rate"
+             description: "More than 10 new enrollments per hour for 30 minutes"
+   ```
+
+3. Reload the Prometheus configuration (no restart required):
+
+   ```bash
+   curl -X POST http://localhost:9090/-/reload
+   ```
+
+4. Verify the rule loaded successfully by checking `http://localhost:9090/rules` in the Prometheus UI.
+
+## Data Retention
+
+| Component | Default Retention | Configuration |
+|---|---|---|
+| Prometheus | 15 days | `--storage.tsdb.retention.time=15d` in compose file |
+| Loki | 14 days (336h) | `retention_period` in `monitoring/loki-config.yml` |
+| Grafana | Unlimited (dashboards only) | N/A |
+| Alertmanager | Silences and notification log only | `--storage.path` in compose file |
+
+To change retention, edit the relevant configuration and restart the container.
+
+## Troubleshooting
+
+### Prometheus Is Not Scraping the API
+
+**Symptom:** The `breeze-api` target shows as `DOWN` in `http://localhost:9090/targets`.
+
+<Steps>
+
+1. Verify the API is running and healthy: `curl http://localhost:3001/health`
+2. Check the scrape token is correct. Compare `monitoring/secrets/metrics_scrape_token` with the `METRICS_SCRAPE_TOKEN` environment variable on the API container.
+3. Verify network connectivity. Both Prometheus and the API must be on the same Docker network (`breeze`).
+4. Check Prometheus logs: `docker compose -f docker-compose.yml -f docker-compose.monitoring.yml logs prometheus --tail 50`
+
+</Steps>
+
+### Grafana Shows "No Data"
+
+**Symptom:** Dashboard panels show "No data" instead of charts.
+
+<Steps>
+
+1. Confirm Prometheus is running and scraping: visit `http://localhost:9090/targets` and verify all targets are `UP`.
+2. In Grafana, go to **Configuration > Data Sources > Prometheus** and click **Test**. It should say "Data source is working."
+3. Check the time range selector in Grafana. If metrics collection just started, narrow the range to "Last 15 minutes."
+4. If using a custom dashboard, verify the metric names match what Prometheus is collecting. Test a simple query like `up` in Grafana Explore.
+
+</Steps>
+
+### Loki Queries Are Slow
+
+**Symptom:** Log queries in Grafana take more than 10 seconds or time out.
+
+<Steps>
+
+1. Narrow the time range. Loki performs best with shorter ranges (last 1 hour vs. last 7 days).
+2. Add label matchers. `{container="breeze-api"} |= "error"` is much faster than `{job="varlogs"} |= "error"` because the label narrows the search before the text filter runs.
+3. Check Loki's compactor. If it has fallen behind, compaction can slow queries: `docker compose -f docker-compose.yml -f docker-compose.monitoring.yml logs loki --tail 50`
+4. Increase Loki resources if needed. In the compose file, add memory limits and CPU limits that match your server capacity.
+
+</Steps>
+
+### Alertmanager Is Not Sending Notifications
+
+**Symptom:** Alerts fire in Prometheus but no notifications arrive.
+
+<Steps>
+
+1. Confirm Alertmanager is receiving alerts: visit `http://localhost:9093/#/alerts` and check for active alerts.
+2. If no alerts appear, verify Prometheus is configured to send to Alertmanager. Check `alerting.alertmanagers` in `monitoring/prometheus.yml`.
+3. If alerts appear but notifications are not sent, check the receiver configuration in `monitoring/alertmanager.yml`. Look for commented-out sections that need to be enabled.
+4. Check Alertmanager logs for delivery errors: `docker compose -f docker-compose.yml -f docker-compose.monitoring.yml logs alertmanager --tail 50`
+5. Verify webhook URLs, API keys, and SMTP credentials are correct. Test Slack webhooks with `curl` to rule out network issues.
+
+</Steps>
+
+### Containers Not Starting
+
+**Symptom:** One or more monitoring containers fail to start or keep restarting.
+
+<Steps>
+
+1. Check which containers are failing: `docker compose -f docker-compose.yml -f docker-compose.monitoring.yml ps`
+2. Read the logs: `docker compose -f docker-compose.yml -f docker-compose.monitoring.yml logs <container> --tail 100`
+3. Common causes:
+   - **Grafana:** `GRAFANA_ADMIN_PASSWORD` not set in `.env.prod`. The compose file requires this variable.
+   - **Postgres Exporter:** `POSTGRES_PASSWORD` not set or incorrect. The exporter needs the same credentials as the database.
+   - **Prometheus:** Invalid YAML in `prometheus.yml` or rule files. Validate with `promtool check config monitoring/prometheus.yml`.
+   - **Loki:** Permissions issue on the data volume. Loki runs as a non-root user and needs write access to `/loki`.
+
+</Steps>
+
+### Disk Space Growing
+
+Monitoring data can accumulate over time, especially on busy systems.
+
+<Steps>
+
+1. Check volume sizes: `docker system df -v | grep -E 'prometheus|grafana|loki'`
+2. Reduce Prometheus retention: lower `--storage.tsdb.retention.time` from `15d` to `7d` in the compose file.
+3. Reduce Loki retention: lower `retention_period` in `monitoring/loki-config.yml` (e.g., from `336h` to `168h`).
+4. Prune old Docker volumes if containers were previously removed without cleaning up: `docker volume prune`
+5. Restart the affected containers after configuration changes.
+
+</Steps>
