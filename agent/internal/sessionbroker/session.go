@@ -16,23 +16,26 @@ var log = logging.L("sessionbroker")
 type pendingResponse struct {
 	ch           chan *ipc.Envelope
 	expectedType string
+	validate     func(*ipc.Envelope) error
 }
 
 // Session represents a connected user helper with verified identity.
 type Session struct {
-	UID           uint32 // Numeric UID (0 on Windows; kept for logging/compat)
-	IdentityKey   string // Platform identity: UID string on Unix, SID on Windows
-	Username      string
-	DisplayEnv    string
-	SessionID     string
-	PID           int // OS process ID of the helper process
-	Capabilities  *ipc.Capabilities
-	TCCStatus     *ipc.TCCStatus
-	AllowedScopes []string
-	WinSessionID  string // Windows session ID string (e.g., "1", "2") for targeting
-	HelperRole    string // "system" or "user" — determines scopes and capabilities
-	ConnectedAt   time.Time
-	LastSeen      time.Time
+	UID            uint32 // Numeric UID (0 on Windows; kept for logging/compat)
+	IdentityKey    string // Platform identity: UID string on Unix, SID on Windows
+	Username       string
+	DisplayEnv     string
+	SessionID      string
+	PID            int // OS process ID of the helper process
+	Capabilities   *ipc.Capabilities
+	TCCStatus      *ipc.TCCStatus
+	AllowedScopes  []string
+	WinSessionID   string // Windows session ID string (e.g., "1", "2") for targeting
+	HelperRole     string // "system" or "user" — determines scopes and capabilities
+	BinaryKind     string
+	DesktopContext string
+	ConnectedAt    time.Time
+	LastSeen       time.Time
 
 	conn    *ipc.Conn
 	mu      sync.Mutex
@@ -70,6 +73,7 @@ func (s *Session) SendCommand(id, cmdType string, payload any, timeout time.Dura
 	s.pending[id] = pendingResponse{
 		ch:           ch,
 		expectedType: expectedResponseType(cmdType),
+		validate:     responseValidator(cmdType, payload),
 	}
 	done := s.done
 	s.mu.Unlock()
@@ -118,6 +122,17 @@ func (s *Session) HandleResponse(env *ipc.Envelope) bool {
 				"sessionId", s.SessionID,
 			)
 			return true
+		}
+		if pending.validate != nil && env.Error == "" {
+			if err := pending.validate(env); err != nil {
+				log.Warn("response payload validation failed, dropping",
+					"id", env.ID,
+					"type", env.Type,
+					"sessionId", s.SessionID,
+					"error", err.Error(),
+				)
+				return true
+			}
 		}
 		select {
 		case pending.ch <- env:
@@ -197,16 +212,18 @@ func (s *Session) Close() error {
 
 // SessionInfo is a serializable summary of a session for status reporting.
 type SessionInfo struct {
-	UID          uint32            `json:"uid"`
-	IdentityKey  string            `json:"identityKey"`
-	Username     string            `json:"username"`
-	DisplayEnv   string            `json:"displayEnv"`
-	SessionID    string            `json:"sessionId"`
-	Capabilities *ipc.Capabilities `json:"capabilities,omitempty"`
-	ConnectedAt  time.Time         `json:"connectedAt"`
-	LastSeen     time.Time         `json:"lastSeen"`
-	WinSessionID string            `json:"winSessionId,omitempty"`
-	HelperRole   string            `json:"helperRole,omitempty"`
+	UID            uint32            `json:"uid"`
+	IdentityKey    string            `json:"identityKey"`
+	Username       string            `json:"username"`
+	DisplayEnv     string            `json:"displayEnv"`
+	SessionID      string            `json:"sessionId"`
+	Capabilities   *ipc.Capabilities `json:"capabilities,omitempty"`
+	ConnectedAt    time.Time         `json:"connectedAt"`
+	LastSeen       time.Time         `json:"lastSeen"`
+	WinSessionID   string            `json:"winSessionId,omitempty"`
+	HelperRole     string            `json:"helperRole,omitempty"`
+	BinaryKind     string            `json:"binaryKind,omitempty"`
+	DesktopContext string            `json:"desktopContext,omitempty"`
 }
 
 // Info returns a serializable summary of this session.
@@ -214,16 +231,18 @@ func (s *Session) Info() SessionInfo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return SessionInfo{
-		UID:          s.UID,
-		IdentityKey:  s.IdentityKey,
-		Username:     s.Username,
-		DisplayEnv:   s.DisplayEnv,
-		SessionID:    s.SessionID,
-		Capabilities: s.Capabilities,
-		ConnectedAt:  s.ConnectedAt,
-		LastSeen:     s.LastSeen,
-		WinSessionID: s.WinSessionID,
-		HelperRole:   s.HelperRole,
+		UID:            s.UID,
+		IdentityKey:    s.IdentityKey,
+		Username:       s.Username,
+		DisplayEnv:     s.DisplayEnv,
+		SessionID:      s.SessionID,
+		Capabilities:   s.Capabilities,
+		ConnectedAt:    s.ConnectedAt,
+		LastSeen:       s.LastSeen,
+		WinSessionID:   s.WinSessionID,
+		HelperRole:     s.HelperRole,
+		BinaryKind:     s.BinaryKind,
+		DesktopContext: s.DesktopContext,
 	}
 }
 
@@ -280,5 +299,57 @@ func expectedResponseType(cmdType string) string {
 		return backupipc.TypeBackupResult
 	default:
 		return ""
+	}
+}
+
+func responseValidator(cmdType string, payload any) func(*ipc.Envelope) error {
+	switch cmdType {
+	case ipc.TypeCommand:
+		req, ok := payload.(ipc.IPCCommand)
+		if !ok || req.CommandID == "" {
+			return nil
+		}
+		return func(env *ipc.Envelope) error {
+			var result ipc.IPCCommandResult
+			if err := json.Unmarshal(env.Payload, &result); err != nil {
+				return fmt.Errorf("unmarshal command result: %w", err)
+			}
+			if result.CommandID != req.CommandID {
+				return fmt.Errorf("commandId mismatch: expected %q got %q", req.CommandID, result.CommandID)
+			}
+			return nil
+		}
+	case ipc.TypeDesktopStart:
+		req, ok := payload.(ipc.DesktopStartRequest)
+		if !ok || req.SessionID == "" {
+			return nil
+		}
+		return func(env *ipc.Envelope) error {
+			var result ipc.DesktopStartResponse
+			if err := json.Unmarshal(env.Payload, &result); err != nil {
+				return fmt.Errorf("unmarshal desktop start response: %w", err)
+			}
+			if result.SessionID != req.SessionID {
+				return fmt.Errorf("sessionId mismatch: expected %q got %q", req.SessionID, result.SessionID)
+			}
+			return nil
+		}
+	case backupipc.TypeBackupCommand:
+		req, ok := payload.(backupipc.BackupCommandRequest)
+		if !ok || req.CommandID == "" {
+			return nil
+		}
+		return func(env *ipc.Envelope) error {
+			var result backupipc.BackupCommandResult
+			if err := json.Unmarshal(env.Payload, &result); err != nil {
+				return fmt.Errorf("unmarshal backup command result: %w", err)
+			}
+			if result.CommandID != req.CommandID {
+				return fmt.Errorf("backup commandId mismatch: expected %q got %q", req.CommandID, result.CommandID)
+			}
+			return nil
+		}
+	default:
+		return nil
 	}
 }

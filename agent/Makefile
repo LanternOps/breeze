@@ -1,21 +1,28 @@
-.PHONY: build build-agent build-backup build-all build-all-agent build-all-backup build-winres build-windows-msi clean test install install-service uninstall-service dev-push
+.PHONY: build build-agent build-desktop-helper build-backup build-all build-all-agent build-all-desktop-helper build-all-backup build-winres build-windows-msi clean test install install-service uninstall-service dev-push
 
 VERSION ?= 0.5.0
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
 
 # Default build for current platform (agent + backup)
-build: build-agent build-backup
+build: build-agent build-desktop-helper build-backup
 
 build-agent:
 	go build $(LDFLAGS) -o bin/breeze-agent ./cmd/breeze-agent
+
+build-desktop-helper:
+	go build $(LDFLAGS) -o bin/breeze-desktop-helper ./cmd/breeze-desktop-helper
 
 build-backup:
 	go build $(LDFLAGS) -o bin/breeze-backup ./cmd/breeze-backup
 
 # Build for all platforms
-build-all: build-all-agent build-all-backup
+build-all: build-all-agent build-all-desktop-helper build-all-backup
 
 build-all-agent: build-linux build-darwin build-windows
+
+build-all-desktop-helper:
+	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-desktop-helper-darwin-amd64 ./cmd/breeze-desktop-helper
+	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o bin/breeze-desktop-helper-darwin-arm64 ./cmd/breeze-desktop-helper
 
 build-all-backup:
 	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-backup-linux-amd64 ./cmd/breeze-backup

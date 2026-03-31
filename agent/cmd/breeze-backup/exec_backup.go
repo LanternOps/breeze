@@ -9,6 +9,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/bmr"
+	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 	"github.com/breeze-rmm/agent/internal/backup/vss"
 	"github.com/breeze-rmm/agent/internal/backupipc"
@@ -17,12 +18,35 @@ import (
 
 // --- core backup ---
 
-func execBackupRestore(payload json.RawMessage, mgr *backup.BackupManager) backupipc.BackupCommandResult {
-	return execBackupRestoreWithProgress("", payload, mgr, nil)
+func resolveRestoreProvider(mgr *backup.BackupManager, vaultState *vaultManagerRef) providers.BackupProvider {
+	if mgr == nil {
+		return nil
+	}
+	primary := mgr.GetProvider()
+	if primary == nil {
+		return nil
+	}
+	if vaultState == nil {
+		return primary
+	}
+	vaultMgr := vaultState.Get()
+	if vaultMgr == nil {
+		return primary
+	}
+	vaultProvider := vaultMgr.GetProvider()
+	if vaultProvider == nil {
+		return primary
+	}
+	return providers.NewFallbackProvider(vaultProvider, primary)
 }
 
-func execBackupRestoreWithProgress(commandID string, payload json.RawMessage, mgr *backup.BackupManager, conn *ipc.Conn) backupipc.BackupCommandResult {
-	if mgr == nil || mgr.GetProvider() == nil {
+func execBackupRestore(payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef) backupipc.BackupCommandResult {
+	return execBackupRestoreWithProgress("", payload, mgr, vaultState, nil)
+}
+
+func execBackupRestoreWithProgress(commandID string, payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn) backupipc.BackupCommandResult {
+	restoreProvider := resolveRestoreProvider(mgr, vaultState)
+	if restoreProvider == nil {
 		return fail("backup not configured on this device")
 	}
 
@@ -62,29 +86,37 @@ func execBackupRestoreWithProgress(commandID string, payload json.RawMessage, mg
 		}
 	}
 
-	result, err := backup.RestoreFromSnapshot(mgr.GetProvider(), cfg, progressFn)
+	result, err := backup.RestoreFromSnapshot(restoreProvider, cfg, progressFn)
 	return marshalRestoreResult(result, err)
 }
 
-func execBackupVerify(payload json.RawMessage, mgr *backup.BackupManager) backupipc.BackupCommandResult {
+func execBackupVerify(payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef) backupipc.BackupCommandResult {
+	restoreProvider := resolveRestoreProvider(mgr, vaultState)
+	if restoreProvider == nil {
+		return fail("backup not configured on this device")
+	}
 	var p struct {
 		SnapshotID string `json:"snapshotId"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid verify payload: " + err.Error())
 	}
-	result, err := backup.VerifyIntegrity(mgr.GetProvider(), p.SnapshotID)
+	result, err := backup.VerifyIntegrity(restoreProvider, p.SnapshotID)
 	return marshalResult(result, err)
 }
 
-func execBackupTestRestore(payload json.RawMessage, mgr *backup.BackupManager) backupipc.BackupCommandResult {
+func execBackupTestRestore(payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef) backupipc.BackupCommandResult {
+	restoreProvider := resolveRestoreProvider(mgr, vaultState)
+	if restoreProvider == nil {
+		return fail("backup not configured on this device")
+	}
 	var p struct {
 		SnapshotID string `json:"snapshotId"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid test restore payload: " + err.Error())
 	}
-	result, err := backup.TestRestore(mgr.GetProvider(), p.SnapshotID, nil)
+	result, err := backup.TestRestore(restoreProvider, p.SnapshotID, nil)
 	return marshalResult(result, err)
 }
 
@@ -165,11 +197,14 @@ func execHardwareProfile() backupipc.BackupCommandResult {
 	return marshalResult(profile, err)
 }
 
-func execBMRRecover(payload json.RawMessage, mgr *backup.BackupManager) backupipc.BackupCommandResult {
+func execBMRRecover(payload json.RawMessage, _ *backup.BackupManager) backupipc.BackupCommandResult {
 	var cfg bmr.RecoveryConfig
 	if err := json.Unmarshal(payload, &cfg); err != nil {
 		return fail("invalid BMR config: " + err.Error())
 	}
-	result, err := bmr.RunRecovery(cfg, mgr.GetProvider())
+	if cfg.RecoveryToken == "" || cfg.ServerURL == "" {
+		return fail("bmr recovery requires recoveryToken and serverUrl")
+	}
+	result, err := runBMRRecovery(cfg)
 	return marshalResult(result, err)
 }

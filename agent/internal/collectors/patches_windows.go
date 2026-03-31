@@ -3,8 +3,7 @@
 package collectors
 
 import (
-	"encoding/json"
-	"os/exec"
+	"context"
 	"strings"
 )
 
@@ -56,22 +55,9 @@ try {
 }
 `
 
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
-	output, err := cmd.Output()
+	updates, err := runWindowsJSON[WindowsUpdate](context.Background(), psScript)
 	if err != nil {
 		return nil, err
-	}
-
-	// Parse JSON output
-	var updates []WindowsUpdate
-	if err := json.Unmarshal(output, &updates); err != nil {
-		// Try parsing as single object (when only one update)
-		var singleUpdate WindowsUpdate
-		if err := json.Unmarshal(output, &singleUpdate); err == nil && singleUpdate.Title != "" {
-			updates = []WindowsUpdate{singleUpdate}
-		} else {
-			return nil, err
-		}
 	}
 
 	// Convert to PatchInfo
@@ -89,7 +75,10 @@ try {
 			Description: u.Description,
 			Source:      "microsoft",
 		}
-		patches = append(patches, patch)
+		patches = append(patches, sanitizeWindowsPatchInfo(patch))
+		if len(patches) >= collectorResultLimit {
+			break
+		}
 	}
 
 	return patches, nil
@@ -138,4 +127,16 @@ func (c *PatchCollector) mapWindowsSeverity(msrcSeverity string) string {
 	default:
 		return ""
 	}
+}
+
+func sanitizeWindowsPatchInfo(patch PatchInfo) PatchInfo {
+	patch.Name = truncateCollectorString(patch.Name)
+	patch.Version = truncateCollectorString(patch.Version)
+	patch.KBNumber = truncateCollectorString(patch.KBNumber)
+	patch.Category = truncateCollectorString(patch.Category)
+	patch.Severity = truncateCollectorString(patch.Severity)
+	patch.ReleaseDate = truncateCollectorString(patch.ReleaseDate)
+	patch.Description = truncateCollectorString(patch.Description)
+	patch.Source = truncateCollectorString(patch.Source)
+	return patch
 }

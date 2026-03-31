@@ -17,6 +17,7 @@ import { bootPerformanceRoutes } from './bootPerformance';
 import { reliabilityRoutes } from './reliability';
 import { changesRoutes } from './changes';
 import { peripheralRoutes } from './peripherals';
+import { tokenRoutes } from './token';
 
 export const agentRoutes = new Hono();
 
@@ -56,6 +57,7 @@ agentRoutes.route('/', agentSecurityRoutes);
 agentRoutes.route('/', inventoryRoutes);
 agentRoutes.route('/', stateRoutes);
 agentRoutes.route('/', sessionsRoutes);
+agentRoutes.route('/', tokenRoutes);
 agentRoutes.route('/', patchesRoutes);
 agentRoutes.route('/', connectionsRoutes);
 agentRoutes.route('/', eventLogsRoutes);

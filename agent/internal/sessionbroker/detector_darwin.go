@@ -40,7 +40,7 @@ func (d *darwinDetector) ListSessions() ([]DetectedSession, error) {
 	}
 
 	username := C.GoString(&buf[0])
-	if username == "loginwindow" || username == "" {
+	if username == "" {
 		return nil, nil
 	}
 
@@ -110,12 +110,8 @@ func (d *darwinDetector) WatchSessions(ctx context.Context) <-chan SessionEvent 
 					}
 				}
 
-				if currentUser == "loginwindow" {
-					currentUser = ""
-				}
-
 				if currentUser != lastUser {
-					if lastUser != "" {
+					if lastUser != "" && lastUser != "loginwindow" {
 						ch <- SessionEvent{
 							Type:     SessionLogout,
 							UID:      lastUID,
@@ -123,7 +119,7 @@ func (d *darwinDetector) WatchSessions(ctx context.Context) <-chan SessionEvent 
 							Session:  "console",
 						}
 					}
-					if currentUser != "" {
+					if currentUser != "" && currentUser != "loginwindow" {
 						ch <- SessionEvent{
 							Type:     SessionLogin,
 							UID:      currentUID,

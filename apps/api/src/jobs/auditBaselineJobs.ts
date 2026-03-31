@@ -6,6 +6,7 @@ import { queueCommandForExecution } from '../services/commandQueue';
 import { getRedisConnection } from '../services/redis';
 import { evaluateAuditBaselineDrift } from '../services/auditBaselineService';
 import { captureException } from '../services/sentry';
+import { isReusableState } from '../services/bullmqUtils';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -16,6 +17,7 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 };
 
 const AUDIT_BASELINE_QUEUE = 'audit-baseline-jobs';
+const ON_DEMAND_AUDIT_BASELINE_DEDUPE_WINDOW_MS = 30 * 1000;
 
 type CollectAuditPolicyJobData = {
   type: 'audit-policy-collection';
@@ -171,6 +173,19 @@ export async function shutdownAuditBaselineJobs(): Promise<void> {
 
 export async function enqueueAuditPolicyCollection(orgId?: string): Promise<string> {
   const queue = getAuditBaselineQueue();
+  const slot = Math.floor(Date.now() / ON_DEMAND_AUDIT_BASELINE_DEDUPE_WINDOW_MS).toString(36);
+  const jobId = `audit-policy-collection:${orgId ?? 'all'}:${slot}`;
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      return String(existing.id);
+    }
+    await existing.remove().catch((error) => {
+      console.error(`[AuditBaselineJobs] Failed to remove stale audit policy collection job ${jobId}:`, error);
+    });
+  }
+
   const job = await queue.add(
     'audit-policy-collection',
     {
@@ -178,6 +193,7 @@ export async function enqueueAuditPolicyCollection(orgId?: string): Promise<stri
       orgId,
     },
     {
+      jobId,
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 },
     }
@@ -188,6 +204,19 @@ export async function enqueueAuditPolicyCollection(orgId?: string): Promise<stri
 
 export async function enqueueAuditDriftEvaluation(orgId?: string): Promise<string> {
   const queue = getAuditBaselineQueue();
+  const slot = Math.floor(Date.now() / ON_DEMAND_AUDIT_BASELINE_DEDUPE_WINDOW_MS).toString(36);
+  const jobId = `audit-drift-evaluator:${orgId ?? 'all'}:${slot}`;
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      return String(existing.id);
+    }
+    await existing.remove().catch((error) => {
+      console.error(`[AuditBaselineJobs] Failed to remove stale audit drift job ${jobId}:`, error);
+    });
+  }
+
   const job = await queue.add(
     'audit-drift-evaluator',
     {
@@ -195,6 +224,7 @@ export async function enqueueAuditDriftEvaluation(orgId?: string): Promise<strin
       orgId,
     },
     {
+      jobId,
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 },
     }

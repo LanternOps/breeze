@@ -1,51 +1,43 @@
 import { useCallback, useEffect, useState } from 'react';
-import { CheckCircle2, Loader2, Monitor, RefreshCw, Server, Zap, XCircle } from 'lucide-react';
+import { AlertCircle, Loader2, Monitor, RefreshCw, Zap } from 'lucide-react';
+
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 
-// ── Types ──────────────────────────────────────────────────────────
-
-type BootStatus = 'booting' | 'running' | 'migrating' | 'completed' | 'failed';
-
-type InstantBoot = {
+type InstantBootStatusRow = {
   id: string;
   vmName: string;
-  status: BootStatus;
+  status: 'booting' | 'running' | 'completed' | 'failed';
   hostDeviceId: string;
   hostDeviceName?: string | null;
-  snapshotId: string;
-  migrationProgress?: number | null;
+  syncProgress?: number | null;
   startedAt?: string | null;
-  completedAt?: string | null;
 };
 
-const statusConfig: Record<BootStatus, { icon: typeof CheckCircle2; className: string; label: string }> = {
-  booting: { icon: Loader2, className: 'text-primary bg-primary/10', label: 'Booting' },
-  running: { icon: Zap, className: 'text-success bg-success/10', label: 'Running' },
-  migrating: { icon: RefreshCw, className: 'text-warning bg-warning/10', label: 'Migrating' },
-  completed: { icon: CheckCircle2, className: 'text-success bg-success/10', label: 'Completed' },
-  failed: { icon: XCircle, className: 'text-destructive bg-destructive/10', label: 'Failed' },
+const statusConfig: Record<InstantBootStatusRow['status'], { label: string; className: string; icon: typeof Loader2 }> = {
+  booting: { label: 'Booting', className: 'text-primary bg-primary/10', icon: Loader2 },
+  running: { label: 'Running', className: 'text-success bg-success/10', icon: Zap },
+  completed: { label: 'Completed', className: 'text-success bg-success/10', icon: Zap },
+  failed: { label: 'Failed', className: 'text-destructive bg-destructive/10', icon: AlertCircle },
 };
-
-// ── Component ─────────────────────────────────────────────────────
 
 export default function InstantBootStatus() {
-  const [boots, setBoots] = useState<InstantBoot[]>([]);
+  const [boots, setBoots] = useState<InstantBootStatusRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-  const [migratingId, setMigratingId] = useState<string | null>(null);
 
   const fetchBoots = useCallback(async () => {
     try {
-      setError(undefined);
       const response = await fetchWithAuth('/backup/restore/instant-boot/active');
-      if (!response.ok) throw new Error('Failed to fetch instant boot status');
+      if (!response.ok) {
+        throw new Error('Failed to fetch instant boot status');
+      }
       const payload = await response.json();
       const data = payload?.data ?? payload ?? [];
       setBoots(Array.isArray(data) ? data : []);
+      setError(undefined);
     } catch (err) {
-      console.error('[InstantBootStatus] fetchBoots:', err);
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : 'Failed to fetch instant boot status');
     } finally {
       setLoading(false);
     }
@@ -55,34 +47,27 @@ export default function InstantBootStatus() {
     fetchBoots();
   }, [fetchBoots]);
 
-  // Auto-refresh while there are active boots
   useEffect(() => {
-    const hasActive = boots.some((b) => ['booting', 'running', 'migrating'].includes(b.status));
-    if (!hasActive) return;
+    if (!boots.some((boot) => boot.status === 'booting' || boot.status === 'running')) {
+      return;
+    }
     const interval = setInterval(fetchBoots, 10000);
     return () => clearInterval(interval);
   }, [boots, fetchBoots]);
 
-  const handleCompleteMigration = useCallback(async (bootId: string) => {
-    try {
-      setMigratingId(bootId);
-      const response = await fetchWithAuth(`/backup/restore/instant-boot/${bootId}/complete`, {
-        method: 'POST',
-      });
-      if (!response.ok) throw new Error('Failed to complete migration');
-      await fetchBoots();
-    } catch (err) {
-      console.error('[InstantBootStatus] handleCompleteMigration:', err);
-      setError(err instanceof Error ? err.message : 'Failed to complete migration');
-    } finally {
-      setMigratingId(null);
-    }
-  }, [fetchBoots]);
-
   if (loading) {
     return (
       <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" /> Loading instant boot status...
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Loading instant boot status...
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        {error}
       </div>
     );
   }
@@ -92,23 +77,18 @@ export default function InstantBootStatus() {
       <div className="rounded-lg border border-dashed bg-muted/20 p-6 text-center">
         <Zap className="mx-auto h-8 w-8 text-muted-foreground/40" />
         <p className="mt-2 text-sm text-muted-foreground">No active instant boots.</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Migration completion controls are hidden until the backend supports them end to end.
+        </p>
       </div>
     );
   }
 
   return (
     <div className="space-y-4">
-      {error && (
-        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
-        </div>
-      )}
-
       {boots.map((boot) => {
-        const sCfg = statusConfig[boot.status] ?? statusConfig.booting;
-        const StatusIcon = sCfg.icon;
-        const isActive = ['booting', 'running', 'migrating'].includes(boot.status);
-        const progress = boot.migrationProgress ?? 0;
+        const config = statusConfig[boot.status] ?? statusConfig.booting;
+        const StatusIcon = config.icon;
 
         return (
           <div key={boot.id} className="rounded-lg border bg-card p-4 shadow-sm">
@@ -118,55 +98,40 @@ export default function InstantBootStatus() {
                 <div>
                   <p className="text-sm font-semibold text-foreground">{boot.vmName}</p>
                   <p className="text-xs text-muted-foreground">
-                    Host: {boot.hostDeviceName ?? boot.hostDeviceId?.slice(0, 8) ?? '--'}
+                    Host: {boot.hostDeviceName ?? boot.hostDeviceId.slice(0, 8)}
                   </p>
                 </div>
               </div>
               <span
                 className={cn(
                   'inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium',
-                  sCfg.className
+                  config.className
                 )}
               >
-                <StatusIcon className={cn('h-3.5 w-3.5', isActive && 'animate-spin')} />
-                {sCfg.label}
+                <StatusIcon className={cn('h-3.5 w-3.5', boot.status === 'booting' && 'animate-spin')} />
+                {config.label}
               </span>
             </div>
 
-            {/* Migration progress bar */}
-            {boot.status === 'migrating' && (
+            {typeof boot.syncProgress === 'number' && (
               <div className="mt-3">
                 <div className="flex items-center justify-between text-xs text-muted-foreground">
                   <span>Background sync</span>
-                  <span>{progress}%</span>
+                  <span>{boot.syncProgress}%</span>
                 </div>
                 <div className="mt-1 h-2 w-full overflow-hidden rounded-full bg-muted">
                   <div
                     className="h-full rounded-full bg-primary transition-all"
-                    style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
+                    style={{ width: `${Math.max(0, Math.min(100, boot.syncProgress))}%` }}
                   />
                 </div>
               </div>
             )}
 
-            {/* Complete Migration button */}
-            {(boot.status === 'running' || boot.status === 'migrating') && (
-              <div className="mt-3 flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => handleCompleteMigration(boot.id)}
-                  disabled={migratingId === boot.id}
-                  className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
-                >
-                  {migratingId === boot.id ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <Server className="h-3 w-3" />
-                  )}
-                  Complete Migration
-                </button>
-              </div>
-            )}
+            <div className="mt-3 flex items-start gap-2 rounded-md border border-dashed bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+              <RefreshCw className="mt-0.5 h-3.5 w-3.5" />
+              Migration completion controls remain hidden until the backend supports a real completion command.
+            </div>
           </div>
         );
       })}

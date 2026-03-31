@@ -165,7 +165,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	}()
 
 	// Create screen capturer (optionally targeting a specific display)
-	capConfig := DefaultConfig()
+	capConfig := m.CaptureConfig()
 	if len(displayIndex) > 0 && displayIndex[0] > 0 {
 		capConfig.DisplayIndex = displayIndex[0]
 	}
@@ -175,6 +175,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	}
 	session.capturer = capturer
 	session.displayIndex = capConfig.DisplayIndex
+	session.captureConfig = capConfig
 
 	// Set display offset so input handler translates viewer-relative coords
 	// to virtual screen coords (required for multi-monitor setups).

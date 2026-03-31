@@ -5,6 +5,7 @@ import { db } from '../../db';
 import { backupJobs, backupConfigs, devices } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { createManualBackupJobIfIdle } from '../../services/backupJobCreation';
 import { resolveBackupConfigForDevice, resolveAllBackupAssignedDevices } from '../../services/featureConfigResolver';
 import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
@@ -143,24 +144,22 @@ jobsRoutes.post(
     return c.json({ error: 'No backup config available' }, 400);
   }
 
-  const now = new Date();
-  const [row] = await db
-    .insert(backupJobs)
-    .values({
-      orgId,
-      configId,
-      featureLinkId,
-      deviceId,
-      status: 'pending',
-      type: 'manual',
-      createdAt: now,
-      updatedAt: now,
-    })
-    .returning();
+  const result = await createManualBackupJobIfIdle({
+    orgId,
+    configId,
+    featureLinkId,
+    deviceId,
+  });
 
-  if (!row) {
-    return c.json({ error: 'Failed to create job' }, 500);
+  if (!result) {
+    return c.json({ error: 'Failed to create backup job' }, 500);
   }
+
+  if (!result.created) {
+    return c.json({ error: 'A backup job is already pending or running for this device' }, 409);
+  }
+
+  const row = result.job;
 
   // Enqueue BullMQ job to dispatch to agent
   try {
@@ -241,50 +240,27 @@ jobsRoutes.post(
     return c.json({ error: 'No devices have backup policies configured' }, 400);
   }
 
-  // Skip devices that already have a running/pending job
-  const activeJobs = await db
-    .select({ deviceId: backupJobs.deviceId })
-    .from(backupJobs)
-    .where(
-      and(
-        eq(backupJobs.orgId, orgId),
-        sql`${backupJobs.status} IN ('running', 'pending')`
-      )
-    );
-  const activeDeviceIds = new Set(activeJobs.map((j) => j.deviceId));
-
-  const now = new Date();
   const created: string[] = [];
   const skipped: string[] = [];
 
   for (const [deviceId, { configId, featureLinkId }] of deviceConfigMap) {
-    if (activeDeviceIds.has(deviceId)) {
-      skipped.push(deviceId);
-      continue;
-    }
+    const result = await createManualBackupJobIfIdle({
+      orgId,
+      configId,
+      featureLinkId,
+      deviceId,
+    });
 
-    const [row] = await db
-      .insert(backupJobs)
-      .values({
-        orgId,
-        configId,
-        featureLinkId,
-        deviceId,
-        status: 'pending',
-        type: 'manual',
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning();
-
-    if (row) {
-      created.push(row.id);
+    if (result?.created) {
+      created.push(result.job.id);
       try {
         const { enqueueBackupDispatch } = await import('../../jobs/backupWorker');
-        await enqueueBackupDispatch(row.id, configId, orgId, deviceId);
+        await enqueueBackupDispatch(result.job.id, configId, orgId, deviceId);
       } catch (err) {
         console.error('[BackupJobs] Failed to enqueue dispatch:', err);
       }
+    } else {
+      skipped.push(deviceId);
     }
   }
 

@@ -4,10 +4,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"regexp"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 )
+
+const (
+	maxDesktopDisplayIndex = 16
+	maxDesktopOfferBytes   = 256 * 1024
+	maxDesktopICEBytes     = 64 * 1024
+)
+
+var helperDesktopSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
 // helperDesktopManager manages remote desktop sessions within the user helper.
 // It wraps desktop.SessionManager and handles IPC-driven lifecycle.
@@ -15,10 +24,14 @@ type helperDesktopManager struct {
 	mgr *desktop.SessionManager
 }
 
-func newHelperDesktopManager() *helperDesktopManager {
-	return &helperDesktopManager{
-		mgr: desktop.NewSessionManager(),
+func newHelperDesktopManager(desktopContext string) *helperDesktopManager {
+	mgr := desktop.NewSessionManager()
+	cfg := mgr.CaptureConfig()
+	if desktopContext != "" {
+		cfg.DesktopContext = desktopContext
 	}
+	mgr.SetCaptureConfig(cfg)
+	return &helperDesktopManager{mgr: mgr}
 }
 
 // startSession parses the IPC request, creates the WebRTC session, and returns
@@ -43,6 +56,38 @@ func (h *helperDesktopManager) startSession(req *ipc.DesktopStartRequest) (*ipc.
 	}, nil
 }
 
+func validateDesktopStartRequest(req *ipc.DesktopStartRequest) error {
+	if req == nil {
+		return fmt.Errorf("desktop start request is required")
+	}
+	if !helperDesktopSessionIDPattern.MatchString(req.SessionID) {
+		return fmt.Errorf("invalid sessionId")
+	}
+	if req.Offer == "" {
+		return fmt.Errorf("offer is required")
+	}
+	if len(req.Offer) > maxDesktopOfferBytes {
+		return fmt.Errorf("offer too large")
+	}
+	if len(req.ICEServers) > maxDesktopICEBytes {
+		return fmt.Errorf("iceServers too large")
+	}
+	if req.DisplayIndex < 0 || req.DisplayIndex > maxDesktopDisplayIndex {
+		return fmt.Errorf("displayIndex out of range")
+	}
+	return nil
+}
+
+func validateDesktopStopRequest(req *ipc.DesktopStopRequest) error {
+	if req == nil {
+		return fmt.Errorf("desktop stop request is required")
+	}
+	if !helperDesktopSessionIDPattern.MatchString(req.SessionID) {
+		return fmt.Errorf("invalid sessionId")
+	}
+	return nil
+}
+
 // stopSession tears down the desktop session.
 func (h *helperDesktopManager) stopSession(sessionID string) {
 	h.mgr.StopSession(sessionID)
@@ -57,4 +102,8 @@ func (h *helperDesktopManager) captureScreenshot(displayIndex int) (*image.RGBA,
 // stopAll tears down all active sessions (for shutdown).
 func (h *helperDesktopManager) stopAll() {
 	h.mgr.StopAllSessions()
+}
+
+func (h *helperDesktopManager) hasActiveSessions() bool {
+	return h.mgr.HasActiveSessions()
 }

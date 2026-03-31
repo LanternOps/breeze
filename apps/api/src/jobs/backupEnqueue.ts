@@ -37,6 +37,17 @@ export interface ProcessResultsResult {
   filesBackedUp?: number;
   bytesBackedUp?: number;
   warning?: string;
+  snapshot?: {
+    id: string;
+    timestamp?: string;
+    size?: number;
+    files?: Array<{
+      sourcePath: string;
+      backupPath: string;
+      size?: number;
+      modTime?: string;
+    }>;
+  };
   error?: string;
 }
 
@@ -59,6 +70,7 @@ export async function enqueueBackupDispatch(
       deviceId,
     },
     {
+      jobId: `backup-dispatch-${jobId}`,
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 },
     }
@@ -83,6 +95,7 @@ export async function enqueueBackupResults(
       result,
     },
     {
+      jobId: `backup-result-${jobId}`,
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 },
     }
@@ -111,6 +124,7 @@ export async function enqueueRestoreDispatch(
       selectedPaths,
     },
     {
+      jobId: `backup-restore-${restoreJobId}`,
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 },
     }

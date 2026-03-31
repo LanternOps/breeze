@@ -358,9 +358,9 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 	start := time.Now()
 	var result backupipc.BackupCommandResult
 	if req.CommandType == "backup_restore" {
-		result = execBackupRestoreWithProgress(req.CommandID, req.Payload, mgr, conn)
+		result = execBackupRestoreWithProgress(req.CommandID, req.Payload, mgr, vaultState, conn)
 	} else {
-		result = executeCommand(req, mgr, vaultState)
+		result = executeCommand(req, mgr, vaultState, conn)
 	}
 	result.CommandID = req.CommandID
 	result.DurationMs = time.Since(start).Milliseconds()
@@ -370,7 +370,7 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 	}
 }
 
-func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManager, vaultState *vaultManagerRef) backupipc.BackupCommandResult {
+func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn) backupipc.BackupCommandResult {
 	if mgr == nil {
 		// Some commands don't need the manager (e.g., discovery, hardware profile)
 		switch req.CommandType {
@@ -384,6 +384,8 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 			return execHypervDiscover()
 		case "vault_status":
 			return execVaultStatus(vaultState)
+		case "bmr_recover":
+			return execBMRRecover(req.Payload, nil)
 		default:
 			return fail("backup not configured on this device")
 		}
@@ -395,7 +397,7 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 		result := marshalResult(mgr.RunBackup())
 		// Auto-sync to vault after successful backup (async — don't block command response)
 		if result.Success {
-			go autoSyncToVault(result.Stdout, vaultState)
+			go autoSyncToVault(result.Stdout, vaultState, conn)
 		}
 		return result
 	case "backup_list":
@@ -404,11 +406,11 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 		stopped := mgr.Stop()
 		return ok(fmt.Sprintf(`{"stopped":%t}`, stopped))
 	case "backup_restore":
-		return execBackupRestore(req.Payload, mgr)
+		return execBackupRestore(req.Payload, mgr, vaultState)
 	case "backup_verify":
-		return execBackupVerify(req.Payload, mgr)
+		return execBackupVerify(req.Payload, mgr, vaultState)
 	case "backup_test_restore":
-		return execBackupTestRestore(req.Payload, mgr)
+		return execBackupTestRestore(req.Payload, mgr, vaultState)
 	case "backup_cleanup":
 		return execBackupCleanup(req.Payload)
 
@@ -444,9 +446,9 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 	case "mssql_backup":
 		return execMSSQLBackup(req.Payload, mgr)
 	case "mssql_restore":
-		return execMSSQLRestore(req.Payload)
+		return execMSSQLRestore(req.Payload, mgr)
 	case "mssql_verify":
-		return execMSSQLVerify(req.Payload)
+		return execMSSQLVerify(req.Payload, mgr)
 
 	// Hyper-V
 	case "hyperv_discover":
@@ -454,7 +456,7 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 	case "hyperv_backup":
 		return execHypervBackup(req.Payload, mgr)
 	case "hyperv_restore":
-		return execHypervRestore(req.Payload)
+		return execHypervRestore(req.Payload, mgr)
 	case "hyperv_checkpoint":
 		return execHypervCheckpoint(req.Payload)
 	case "hyperv_vm_state":

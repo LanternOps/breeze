@@ -3,17 +3,24 @@
 package collectors
 
 import (
-	"os/exec"
+	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
 )
 
+var darwinInterfaceNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,32}$`)
+
 // getLinkSpeed returns the link speed in bits/sec for the named interface on macOS.
 // Uses networksetup to query the hardware port speed. Returns 0 if unavailable.
 func getLinkSpeed(ifaceName string) uint64 {
+	if !darwinInterfaceNamePattern.MatchString(ifaceName) {
+		return 0
+	}
 	// Map interface name (e.g. en0) to hardware port via networksetup
-	out, err := exec.Command("networksetup", "-listallhardwareports").Output()
+	out, err := runCollectorOutput(collectorShortCommandTimeout, "networksetup", "-listallhardwareports")
 	if err != nil {
+		slog.Debug("failed to get link speed: networksetup command failed", "iface", ifaceName, "error", err.Error())
 		return 0
 	}
 
@@ -40,8 +47,9 @@ func getLinkSpeed(ifaceName string) uint64 {
 	}
 
 	// For Ethernet, query media speed
-	out, err = exec.Command("ifconfig", ifaceName).Output()
+	out, err = runCollectorOutput(collectorShortCommandTimeout, "ifconfig", ifaceName)
 	if err != nil {
+		slog.Debug("failed to get link speed: ifconfig command failed", "iface", ifaceName, "error", err.Error())
 		return 0
 	}
 
@@ -58,8 +66,9 @@ func getLinkSpeed(ifaceName string) uint64 {
 
 func getWiFiSpeed() uint64 {
 	// Try the system_profiler approach
-	out, err := exec.Command("/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport", "-I").Output()
+	out, err := runCollectorOutput(collectorShortCommandTimeout, "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport", "-I")
 	if err != nil {
+		slog.Debug("failed to get wifi speed: airport command failed", "error", err.Error())
 		return 0
 	}
 

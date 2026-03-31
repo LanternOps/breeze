@@ -1,6 +1,10 @@
-import { and, desc, eq, gte, lte, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lte, sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../../db';
-import { backupVerifications as backupVerificationsTable } from '../../db/schema';
+import {
+  backupJobs as backupJobsTable,
+  backupSnapshots as backupSnapshotsTable,
+  backupVerifications as backupVerificationsTable,
+} from '../../db/schema';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { publishEvent } from '../../services/eventBus';
 import {
@@ -20,7 +24,9 @@ import type {
   BackupVerificationType,
   RecoveryReadiness
 } from './types';
+import { normalizeBackupVerificationType } from './types';
 import { recomputeRecoveryReadinessForDevice } from './readinessCalculator';
+import { isCriticalBackupDevice } from './criticality';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -45,6 +51,7 @@ type VerificationFilters = {
   from?: number | null;
   to?: number | null;
   limit?: number;
+  excludeSimulated?: boolean;
 };
 
 export type RunBackupVerificationInput = {
@@ -89,11 +96,6 @@ function supportsDbOrg(orgId: string): boolean {
   return isUuid(orgId);
 }
 
-function isCriticalDevice(_orgId: string, _deviceId: string): boolean {
-  // TODO: Determine criticality from config policy assignment level or device tags
-  return false;
-}
-
 export async function safePublish(
   type: 'backup.verification_failed' | 'backup.verification_passed' | 'backup.recovery_readiness_low',
   orgId: string,
@@ -130,7 +132,7 @@ function normalizeDbVerificationRow(row: {
     deviceId: row.deviceId,
     backupJobId: row.backupJobId,
     snapshotId: row.snapshotId,
-    verificationType: row.verificationType as BackupVerificationType,
+    verificationType: normalizeBackupVerificationType(row.verificationType),
     status: row.status as BackupVerificationStatus,
     startedAt: toIso(row.startedAt) ?? new Date().toISOString(),
     completedAt: toIso(row.completedAt),
@@ -143,6 +145,68 @@ function normalizeDbVerificationRow(row: {
   };
 }
 
+function normalizeDbBackupJobRow(row: {
+  id: string;
+  deviceId: string;
+  configId: string;
+  policyId: string | null;
+  snapshotId: string | null;
+  status: string;
+  type: string;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  totalSize: number | null;
+  fileCount: number | null;
+  errorCount: number | null;
+  errorLog: string | null;
+}): BackupJob {
+  return {
+    id: row.id,
+    type: row.type as BackupJob['type'],
+    deviceId: row.deviceId,
+    configId: row.configId,
+    policyId: row.policyId,
+    snapshotId: row.snapshotId,
+    status: row.status as BackupJob['status'],
+    startedAt: toIso(row.startedAt),
+    completedAt: toIso(row.completedAt),
+    createdAt: toIso(row.createdAt) ?? new Date().toISOString(),
+    updatedAt: toIso(row.updatedAt) ?? new Date().toISOString(),
+    totalSize: row.totalSize,
+    fileCount: row.fileCount,
+    errorCount: row.errorCount,
+    errorLog: row.errorLog,
+  };
+}
+
+function normalizeDbSnapshotRow(row: {
+  id: string;
+  deviceId: string;
+  configId: string | null;
+  jobId: string;
+  snapshotId: string;
+  timestamp: Date;
+  size: number | null;
+  fileCount: number | null;
+  label: string | null;
+  location: string | null;
+}): BackupSnapshot {
+  return {
+    id: row.id,
+    deviceId: row.deviceId,
+    configId: row.configId,
+    jobId: row.jobId,
+    providerSnapshotId: row.snapshotId,
+    createdAt: toIso(row.timestamp) ?? new Date().toISOString(),
+    sizeBytes: row.size,
+    fileCount: row.fileCount,
+    label: row.label,
+    location: row.location,
+  };
+}
+
 function listBackupVerificationsFromMemory(orgId: string, filters: VerificationFilters = {}): BackupVerification[] {
   const from = filters.from ?? null;
   const to = filters.to ?? null;
@@ -151,10 +215,17 @@ function listBackupVerificationsFromMemory(orgId: string, filters: VerificationF
 
   if (filters.deviceId) rows = rows.filter((item) => item.deviceId === filters.deviceId);
   if (filters.backupJobId) rows = rows.filter((item) => item.backupJobId === filters.backupJobId);
-  if (filters.verificationType) rows = rows.filter((item) => item.verificationType === filters.verificationType);
+  if (filters.verificationType === 'integrity') {
+    rows = rows.filter((item) => item.verificationType === 'integrity');
+  } else if (filters.verificationType === 'test_restore') {
+    rows = rows.filter((item) => item.verificationType === 'test_restore' || String(item.verificationType) === 'full_recovery');
+  }
   if (filters.status) rows = rows.filter((item) => item.status === filters.status);
   if (from) rows = rows.filter((item) => toEpoch(item.startedAt) >= from);
   if (to) rows = rows.filter((item) => toEpoch(item.startedAt) <= to);
+  if (filters.excludeSimulated) {
+    rows = rows.filter((item) => (item.details as Record<string, unknown> | null)?.simulated !== true);
+  }
 
   rows.sort((a, b) => toEpoch(b.completedAt ?? b.startedAt) - toEpoch(a.completedAt ?? a.startedAt));
   return typeof filters.limit === 'number' ? rows.slice(0, filters.limit) : rows;
@@ -171,10 +242,17 @@ async function listBackupVerificationsFromDb(
   const conditions: SQL[] = [eq(backupVerificationsTable.orgId, orgId)];
   if (filters.deviceId) conditions.push(eq(backupVerificationsTable.deviceId, filters.deviceId));
   if (filters.backupJobId) conditions.push(eq(backupVerificationsTable.backupJobId, filters.backupJobId));
-  if (filters.verificationType) conditions.push(eq(backupVerificationsTable.verificationType, filters.verificationType));
+  if (filters.verificationType === 'integrity') {
+    conditions.push(eq(backupVerificationsTable.verificationType, 'integrity'));
+  } else if (filters.verificationType === 'test_restore') {
+    conditions.push(inArray(backupVerificationsTable.verificationType, ['test_restore', 'full_recovery']));
+  }
   if (filters.status) conditions.push(eq(backupVerificationsTable.status, filters.status));
   if (filters.from) conditions.push(gte(backupVerificationsTable.startedAt, new Date(filters.from)));
   if (filters.to) conditions.push(lte(backupVerificationsTable.startedAt, new Date(filters.to)));
+  if (filters.excludeSimulated) {
+    conditions.push(sql`coalesce(${backupVerificationsTable.details}->>'simulated', 'false') <> 'true'`);
+  }
 
   try {
     const rows = await runWithSystemDbAccess(() => db
@@ -217,13 +295,46 @@ export async function persistVerificationToDb(row: BackupVerification): Promise<
       sizeBytes: row.sizeBytes ?? null,
       details: row.details ?? null,
       createdAt: new Date(row.createdAt)
+    }).onConflictDoUpdate({
+      target: backupVerificationsTable.id,
+      set: {
+        status: row.status,
+        completedAt: row.completedAt ? new Date(row.completedAt) : null,
+        restoreTimeSeconds: row.restoreTimeSeconds ?? null,
+        filesVerified: row.filesVerified,
+        filesFailed: row.filesFailed,
+        sizeBytes: row.sizeBytes ?? null,
+        details: row.details ?? null,
+      }
     }));
   } catch (error) {
     console.warn('[backupVerification] DB verification write failed; keeping memory record only:', error);
   }
 }
 
-function resolveSnapshot(orgId: string, snapshotId: string): BackupSnapshot {
+async function resolveSnapshot(orgId: string, snapshotId: string): Promise<BackupSnapshot> {
+  if (supportsDbOrg(orgId) && isUuid(snapshotId)) {
+    try {
+      const [row] = await runWithSystemDbAccess(() => db
+        .select()
+        .from(backupSnapshotsTable)
+        .where(and(
+          eq(backupSnapshotsTable.id, snapshotId),
+          eq(backupSnapshotsTable.orgId, orgId),
+        ))
+        .limit(1));
+      if (row) {
+        return normalizeDbSnapshotRow({
+          ...row,
+          size: row.size as number | null,
+          fileCount: row.fileCount as number | null,
+        });
+      }
+    } catch (error) {
+      console.warn('[backupVerification] DB snapshot lookup failed; falling back to memory:', error);
+    }
+  }
+
   const snapshot = backupSnapshots.find(
     (row) => row.id === snapshotId && snapshotOrgById.get(row.id) === orgId
   );
@@ -233,11 +344,61 @@ function resolveSnapshot(orgId: string, snapshotId: string): BackupSnapshot {
   return snapshot;
 }
 
-function resolveBackupJob(
+async function resolveBackupJob(
   orgId: string,
   deviceId: string,
   backupJobId?: string
-): BackupJob {
+): Promise<BackupJob> {
+  if (supportsDbOrg(orgId) && isUuid(deviceId) && (!backupJobId || isUuid(backupJobId))) {
+    try {
+      if (backupJobId) {
+        const [row] = await runWithSystemDbAccess(() => db
+          .select()
+          .from(backupJobsTable)
+          .where(and(
+            eq(backupJobsTable.id, backupJobId),
+            eq(backupJobsTable.orgId, orgId),
+          ))
+          .limit(1));
+        if (row) {
+          const normalized = normalizeDbBackupJobRow({
+            ...row,
+            totalSize: row.totalSize as number | null,
+            fileCount: row.fileCount as number | null,
+            errorCount: row.errorCount as number | null,
+          });
+          if (normalized.deviceId !== deviceId) {
+            throw new Error('backupJobId does not belong to requested device');
+          }
+          return normalized;
+        }
+      } else {
+        const [row] = await runWithSystemDbAccess(() => db
+          .select()
+          .from(backupJobsTable)
+          .where(and(
+            eq(backupJobsTable.orgId, orgId),
+            eq(backupJobsTable.deviceId, deviceId),
+          ))
+          .orderBy(desc(backupJobsTable.completedAt), desc(backupJobsTable.startedAt), desc(backupJobsTable.createdAt))
+          .limit(1));
+        if (row) {
+          return normalizeDbBackupJobRow({
+            ...row,
+            totalSize: row.totalSize as number | null,
+            fileCount: row.fileCount as number | null,
+            errorCount: row.errorCount as number | null,
+          });
+        }
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message === 'backupJobId does not belong to requested device') {
+        throw error;
+      }
+      console.warn('[backupVerification] DB backup job lookup failed; falling back to memory:', error);
+    }
+  }
+
   if (backupJobId) {
     const row = backupJobs.find((job) => job.id === backupJobId && jobOrgById.get(job.id) === orgId);
     if (!row) {
@@ -261,6 +422,40 @@ function resolveBackupJob(
   return row;
 }
 
+async function resolveSnapshotForBackupJob(
+  orgId: string,
+  backupJob: BackupJob,
+): Promise<BackupSnapshot | null> {
+  if (supportsDbOrg(orgId) && isUuid(backupJob.id)) {
+    try {
+      const rows = await runWithSystemDbAccess(() => db
+        .select()
+        .from(backupSnapshotsTable)
+        .where(and(
+          eq(backupSnapshotsTable.orgId, orgId),
+          eq(backupSnapshotsTable.jobId, backupJob.id),
+        ))
+        .orderBy(desc(backupSnapshotsTable.timestamp))
+        .limit(1));
+      const [row] = rows;
+      if (row) {
+        return normalizeDbSnapshotRow({
+          ...row,
+          size: row.size as number | null,
+          fileCount: row.fileCount as number | null,
+        });
+      }
+    } catch (error) {
+      console.warn('[backupVerification] DB snapshot lookup by job failed; falling back to memory:', error);
+    }
+  }
+
+  const resolved = backupSnapshots.find(
+    (row) => row.id === backupJob.snapshotId && snapshotOrgById.get(row.id) === orgId
+  ) ?? null;
+  return resolved;
+}
+
 // ---- Public API ----
 
 export async function listBackupVerifications(
@@ -278,18 +473,18 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
 }> {
   let snapshot: BackupSnapshot | null = null;
   if (input.snapshotId) {
-    snapshot = resolveSnapshot(input.orgId, input.snapshotId);
+    snapshot = await resolveSnapshot(input.orgId, input.snapshotId);
     if (snapshot.deviceId !== input.deviceId) {
       throw new Error('snapshotId does not belong to requested device');
     }
   }
 
   let backupJob = snapshot
-    ? resolveBackupJob(input.orgId, input.deviceId, snapshot.jobId)
-    : resolveBackupJob(input.orgId, input.deviceId, input.backupJobId);
+    ? await resolveBackupJob(input.orgId, input.deviceId, snapshot.jobId)
+    : await resolveBackupJob(input.orgId, input.deviceId, input.backupJobId);
 
   if (input.backupJobId) {
-    backupJob = resolveBackupJob(input.orgId, input.deviceId, input.backupJobId);
+    backupJob = await resolveBackupJob(input.orgId, input.deviceId, input.backupJobId);
   }
 
   if (snapshot && snapshot.jobId !== backupJob.id) {
@@ -297,9 +492,7 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
   }
 
   if (!snapshot && backupJob.snapshotId) {
-    const resolved = backupSnapshots.find(
-      (row) => row.id === backupJob.snapshotId && snapshotOrgById.get(row.id) === input.orgId
-    ) ?? null;
+    const resolved = await resolveSnapshotForBackupJob(input.orgId, backupJob);
     if (resolved && resolved.deviceId !== input.deviceId) {
       throw new Error('Backup job snapshot does not match requested device');
     }
@@ -309,12 +502,13 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
     snapshot = resolved;
   }
 
-  if ((input.verificationType === 'test_restore' || input.verificationType === 'full_recovery') && !snapshot) {
+  if (input.verificationType === 'test_restore' && !snapshot) {
     throw new Error('Snapshot is required for restore-based verification');
   }
 
   const snapshotId = snapshot?.id ?? null;
   const now = new Date().toISOString();
+  const agentSnapshotId = snapshot?.providerSnapshotId ?? backupJob.snapshotId ?? snapshot?.id ?? undefined;
 
   // --- Try to dispatch to agent ---
   const commandType = input.verificationType === 'integrity' ? 'backup_verify' : 'backup_test_restore';
@@ -322,7 +516,7 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
     const dispatchResult = await queueCommandForExecution(
       input.deviceId,
       commandType,
-      { snapshotId: snapshotId || undefined, verificationType: input.verificationType },
+      { snapshotId: agentSnapshotId, verificationType: input.verificationType },
       { userId: input.requestedBy || undefined }
     );
 
@@ -364,14 +558,10 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
   const expectedFailures = Math.max(1, Math.round(filesVerified * 0.01));
   const restoreTimeSeconds = input.verificationType === 'integrity'
     ? 20 + (seed % 120)
-    : input.verificationType === 'test_restore'
-      ? 180 + (seed % 900)
-      : 480 + (seed % 1800);
+    : 180 + (seed % 900);
 
   let status: BackupVerificationStatus = 'passed';
   if (backupJob.status === 'failed') {
-    status = 'failed';
-  } else if (input.verificationType === 'full_recovery' && seed % 6 === 0) {
     status = 'failed';
   } else if (input.verificationType === 'test_restore' && seed % 10 === 0) {
     status = 'partial';
@@ -419,6 +609,8 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
   await persistVerificationToDb(verification);
   const readiness = await recomputeRecoveryReadinessForDevice(input.orgId, input.deviceId);
 
+  const criticalAsset = await isCriticalBackupDevice(input.orgId, verification.deviceId);
+
   await safePublish(
     status === 'passed' ? 'backup.verification_passed' : 'backup.verification_failed',
     input.orgId,
@@ -433,7 +625,7 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
       filesFailed: verification.filesFailed,
       restoreTimeSeconds: verification.restoreTimeSeconds,
       readinessScore: readiness.readinessScore,
-      criticalAsset: isCriticalDevice(input.orgId, verification.deviceId)
+      criticalAsset
     },
     input.source
   );

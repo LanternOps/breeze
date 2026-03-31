@@ -62,9 +62,6 @@ backupVerificationRoutes.post(
 
   const payload = c.req.valid('json');
   const verificationType = payload.verificationType ?? 'integrity';
-  if (verificationType === 'full_recovery' && payload.highImpactApproved !== true) {
-    return c.json({ error: 'full_recovery verification requires explicit highImpactApproved=true' }, 403);
-  }
 
   try {
     const { verification, readiness } = await runBackupVerification({
@@ -104,8 +101,7 @@ backupVerificationRoutes.post(
     const isValidation = error instanceof Error && (
       message.includes('not found') ||
       message.includes('does not belong') ||
-      message.includes('required') ||
-      message.includes('highImpactApproved')
+      message.includes('required')
     );
     if (!isValidation) {
       console.error('[backupVerification] Unexpected error in POST /verify:', error);

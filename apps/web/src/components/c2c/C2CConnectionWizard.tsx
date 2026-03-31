@@ -8,12 +8,12 @@ interface C2CConnectionWizardProps {
   onComplete: () => void;
 }
 
-type Provider = 'microsoft365' | 'google_workspace';
+type Provider = 'microsoft_365' | 'google_workspace';
 type Step = 1 | 2 | 3 | 4;
 type AuthMode = 'platform' | 'manual';
 
 const SCOPES: Record<Provider, { id: string; label: string }[]> = {
-  microsoft365: [
+  microsoft_365: [
     { id: 'mailbox', label: 'Exchange Mailbox' },
     { id: 'onedrive', label: 'OneDrive' },
     { id: 'sharepoint', label: 'SharePoint' },
@@ -36,9 +36,6 @@ export default function C2CConnectionWizard({ onClose, onComplete }: C2CConnecti
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
   const [selectedScopes, setSelectedScopes] = useState<string[]>([]);
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<'success' | 'error' | null>(null);
-  const [testError, setTestError] = useState<string>();
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string>();
   const [showManualFallback, setShowManualFallback] = useState(false);
@@ -59,7 +56,7 @@ export default function C2CConnectionWizard({ onClose, onComplete }: C2CConnecti
 
   // When provider is selected and platform app is available, default to platform auth
   useEffect(() => {
-    if (provider === 'microsoft365' && platformAppAvailable) {
+    if (provider === 'microsoft_365' && platformAppAvailable) {
       setAuthMode('platform');
     } else {
       setAuthMode('manual');
@@ -97,34 +94,6 @@ export default function C2CConnectionWizard({ onClose, onComplete }: C2CConnecti
     }
   }, [displayName, selectedScopes]);
 
-  const handleTest = useCallback(async () => {
-    setTesting(true);
-    setTestResult(null);
-    setTestError(undefined);
-    try {
-      const res = await fetchWithAuth('/c2c/connections/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          provider,
-          tenantId: tenantId || undefined,
-          clientId,
-          clientSecret,
-        }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        throw new Error(body?.error ?? 'Connection test failed');
-      }
-      setTestResult('success');
-    } catch (err) {
-      setTestResult('error');
-      setTestError(err instanceof Error ? err.message : 'Connection test failed');
-    } finally {
-      setTesting(false);
-    }
-  }, [provider, tenantId, clientId, clientSecret]);
-
   const handleSave = useCallback(async () => {
     setSaving(true);
     setSaveError(undefined);
@@ -155,10 +124,10 @@ export default function C2CConnectionWizard({ onClose, onComplete }: C2CConnecti
   }, [provider, displayName, tenantId, clientId, clientSecret, selectedScopes, onComplete]);
 
   // For platform auth mode, steps 2+3 are merged: credentials/scopes in one step
-  const isPlatformMode = provider === 'microsoft365' && platformAppAvailable && authMode === 'platform';
+  const isPlatformMode = provider === 'microsoft_365' && platformAppAvailable && authMode === 'platform';
   const stepLabels = isPlatformMode
     ? ['Provider', 'Grant Access', 'Confirm']
-    : ['Provider', 'Credentials', 'Scope', 'Test & Save'];
+    : ['Provider', 'Credentials', 'Scope', 'Save'];
   const totalSteps = isPlatformMode ? 3 : 4;
 
   const canProceed = (): boolean => {
@@ -170,7 +139,7 @@ export default function C2CConnectionWizard({ onClose, onComplete }: C2CConnecti
     // Manual mode
     if (step === 2) return clientId.trim().length > 0 && clientSecret.trim().length > 0;
     if (step === 3) return selectedScopes.length > 0;
-    return testResult === 'success';
+    return true;
   };
 
   return (
@@ -218,10 +187,10 @@ export default function C2CConnectionWizard({ onClose, onComplete }: C2CConnecti
               <div className="grid grid-cols-2 gap-3">
                 <button
                   type="button"
-                  onClick={() => { setProvider('microsoft365'); setDisplayName('Microsoft 365'); }}
+                  onClick={() => { setProvider('microsoft_365'); setDisplayName('Microsoft 365'); }}
                   className={cn(
                     'flex flex-col items-center gap-2 rounded-lg border p-6 transition-colors',
-                    provider === 'microsoft365' ? 'border-primary bg-primary/5' : 'hover:bg-muted'
+                    provider === 'microsoft_365' ? 'border-primary bg-primary/5' : 'hover:bg-muted'
                   )}
                 >
                   <div className="flex h-12 w-12 items-center justify-center rounded bg-[#0078d4]/10 text-[#0078d4]">
@@ -323,7 +292,7 @@ export default function C2CConnectionWizard({ onClose, onComplete }: C2CConnecti
           {/* Step 2: Manual mode — Credentials */}
           {step === 2 && !isPlatformMode && (
             <div className="space-y-4">
-              {provider === 'microsoft365' && platformAppAvailable && authMode === 'manual' && (
+              {provider === 'microsoft_365' && platformAppAvailable && authMode === 'manual' && (
                 <button
                   type="button"
                   onClick={() => setAuthMode('platform')}
@@ -333,7 +302,7 @@ export default function C2CConnectionWizard({ onClose, onComplete }: C2CConnecti
                 </button>
               )}
               <p className="text-sm text-muted-foreground">
-                Enter your {provider === 'microsoft365' ? 'Azure AD' : 'Google Cloud'} app credentials.
+                Enter your {provider === 'microsoft_365' ? 'Azure AD' : 'Google Cloud'} app credentials.
               </p>
               <div>
                 <label className="mb-1 block text-sm font-medium">Display Name</label>
@@ -345,7 +314,7 @@ export default function C2CConnectionWizard({ onClose, onComplete }: C2CConnecti
                   placeholder="My M365 Connection"
                 />
               </div>
-              {provider === 'microsoft365' && (
+              {provider === 'microsoft_365' && (
                 <div>
                   <label className="mb-1 block text-sm font-medium">Tenant ID</label>
                   <input
@@ -437,36 +406,17 @@ export default function C2CConnectionWizard({ onClose, onComplete }: C2CConnecti
             </div>
           )}
 
-          {/* Step 4: Manual mode — Test & Save */}
+          {/* Step 4: Manual mode — Save */}
           {step === 4 && !isPlatformMode && (
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">
-                Test the connection before saving.
+                Connection validation is not yet available. Save the connection to finish setup.
               </p>
               <div className="rounded-lg border p-4 space-y-2 text-sm">
-                <p><span className="font-medium">Provider:</span> {provider === 'microsoft365' ? 'Microsoft 365' : 'Google Workspace'}</p>
+                <p><span className="font-medium">Provider:</span> {provider === 'microsoft_365' ? 'Microsoft 365' : 'Google Workspace'}</p>
                 <p><span className="font-medium">Display Name:</span> {displayName}</p>
                 {tenantId && <p><span className="font-medium">Tenant ID:</span> {tenantId.slice(0, 8)}...</p>}
                 <p><span className="font-medium">Scopes:</span> {selectedScopes.join(', ')}</p>
-              </div>
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={handleTest}
-                  disabled={testing}
-                  className="inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
-                >
-                  {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                  Test Connection
-                </button>
-                {testResult === 'success' && (
-                  <span className="inline-flex items-center gap-1 text-sm text-emerald-600 dark:text-emerald-400">
-                    <CheckCircle2 className="h-4 w-4" /> Connected successfully
-                  </span>
-                )}
-                {testResult === 'error' && (
-                  <span className="text-sm text-red-600 dark:text-red-400">{testError}</span>
-                )}
               </div>
               {saveError && (
                 <p className="text-sm text-red-600 dark:text-red-400">{saveError}</p>
@@ -497,7 +447,7 @@ export default function C2CConnectionWizard({ onClose, onComplete }: C2CConnecti
             <button
               type="button"
               onClick={handleSave}
-              disabled={saving || testResult !== 'success'}
+              disabled={saving}
               className="inline-flex items-center gap-1 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
             >
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}

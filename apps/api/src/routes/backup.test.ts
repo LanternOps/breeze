@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import os from 'node:os';
 import { backupRoutes } from './backup';
 
 // Valid UUID constants for tests
@@ -48,7 +49,10 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
 }));
 
-vi.mock('../db/schema', () => ({
+vi.mock('../db/schema', async () => {
+  const actual = await vi.importActual<typeof import('../db/schema')>('../db/schema');
+  return {
+    ...actual,
   backupConfigs: {
     id: 'backup_configs.id',
     orgId: 'backup_configs.org_id',
@@ -79,6 +83,23 @@ vi.mock('../db/schema', () => ({
   restoreJobs: {
     id: 'restore_jobs.id',
     orgId: 'restore_jobs.org_id',
+    snapshotId: 'restore_jobs.snapshot_id',
+    deviceId: 'restore_jobs.device_id',
+    restoreType: 'restore_jobs.restore_type',
+    targetPath: 'restore_jobs.target_path',
+    selectedPaths: 'restore_jobs.selected_paths',
+    status: 'restore_jobs.status',
+    createdAt: 'restore_jobs.created_at',
+    updatedAt: 'restore_jobs.updated_at',
+    startedAt: 'restore_jobs.started_at',
+    completedAt: 'restore_jobs.completed_at',
+    restoredSize: 'restore_jobs.restored_size',
+    restoredFiles: 'restore_jobs.restored_files',
+  },
+  backupSnapshotFiles: {
+    id: 'backup_snapshot_files.id',
+    snapshotDbId: 'backup_snapshot_files.snapshot_db_id',
+    sourcePath: 'backup_snapshot_files.source_path',
   },
   backupVerifications: {
     id: 'backup_verifications.id',
@@ -134,7 +155,8 @@ vi.mock('../db/schema', () => ({
     id: 'organizations.id',
     partnerId: 'organizations.partner_id',
   },
-}));
+  };
+});
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
@@ -148,6 +170,8 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
+  requirePermission: vi.fn(() => (c: any, next: any) => next()),
+  requireMfa: vi.fn(() => (c: any, next: any) => next()),
 }));
 
 describe('backup routes', () => {
@@ -161,13 +185,14 @@ describe('backup routes', () => {
 
   it('should create, update, and test backup configuration', async () => {
     const now = new Date();
+    const localProbePath = os.tmpdir();
     const configRecord = {
       id: CONFIG_ID,
       orgId: ORG_ID,
-      name: 'Archive S3',
+      name: 'Archive Local',
       type: 'file',
-      provider: 's3',
-      providerConfig: { bucket: 'archive-bucket', region: 'us-west-2' },
+      provider: 'local',
+      providerConfig: { path: localProbePath },
       isActive: true,
       createdAt: now,
       updatedAt: now,
@@ -177,21 +202,21 @@ describe('backup routes', () => {
     insertMock.mockReturnValueOnce(chainMock([configRecord]));
 
     const createRes = await app.request('/backup/configs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-      body: JSON.stringify({
-        name: 'Archive S3',
-        provider: 's3',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+        name: 'Archive Local',
+        provider: 'local',
         enabled: true,
-        details: { bucket: 'archive-bucket', region: 'us-west-2' }
+        details: { path: localProbePath }
       })
     });
 
     expect(createRes.status).toBe(201);
     const created = await createRes.json();
     expect(created.id).toBeDefined();
-    expect(created.name).toBe('Archive S3');
-    expect(created.details.bucket).toBe('archive-bucket');
+    expect(created.name).toBe('Archive Local');
+    expect(created.details.path).toBe(localProbePath);
 
     // Mock update for patch
     const updatedRecord = {
@@ -352,7 +377,7 @@ describe('backup routes', () => {
     expect(Array.isArray(listPayload.data)).toBe(true);
   });
 
-  it('should reject full recovery verification without explicit approval', async () => {
+  it('should reject unsupported legacy verification types', async () => {
     const res = await app.request('/backup/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
@@ -362,9 +387,9 @@ describe('backup routes', () => {
       })
     });
 
-    expect(res.status).toBe(403);
+    expect([400, 422]).toContain(res.status);
     const payload = await res.json();
-    expect(payload.error).toContain('highImpactApproved');
+    expect(JSON.stringify(payload)).toContain('verificationType');
   });
 
   it('should reject inconsistent backup job and device combinations', async () => {

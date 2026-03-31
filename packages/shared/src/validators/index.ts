@@ -579,7 +579,11 @@ export {
   mssqlTargetsSchema,
   systemImageTargetsSchema,
   backupModeSchema,
+  backupScheduleSchema,
+  backupRetentionSchema,
   backupInlineSettingsSchema,
   type BackupMode,
+  type BackupSchedule,
+  type BackupRetention,
   type BackupInlineSettings,
 } from './backupTargets';

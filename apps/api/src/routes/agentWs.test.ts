@@ -22,7 +22,8 @@ vi.mock('../db/schema', () => ({
   },
   deviceCommands: {
     id: 'deviceCommands.id',
-    deviceId: 'deviceCommands.deviceId'
+    deviceId: 'deviceCommands.deviceId',
+    status: 'deviceCommands.status',
   },
   discoveryJobs: {
     id: 'discoveryJobs.id',
@@ -30,8 +31,25 @@ vi.mock('../db/schema', () => ({
     siteId: 'discoveryJobs.siteId',
     agentId: 'discoveryJobs.agentId',
   },
-  scriptExecutions: {},
-  scriptExecutionBatches: {}
+  remoteSessions: {
+    id: 'remoteSessions.id',
+    deviceId: 'remoteSessions.deviceId',
+    status: 'remoteSessions.status',
+  },
+  scriptExecutions: {
+    id: 'scriptExecutions.id',
+    deviceId: 'scriptExecutions.deviceId',
+    status: 'scriptExecutions.status',
+    scriptId: 'scriptExecutions.scriptId',
+  },
+  scriptExecutionBatches: {
+    id: 'scriptExecutionBatches.id',
+    scriptId: 'scriptExecutionBatches.scriptId',
+    devicesCompleted: 'scriptExecutionBatches.devicesCompleted',
+    devicesFailed: 'scriptExecutionBatches.devicesFailed',
+  },
+  backupJobs: {},
+  restoreJobs: {},
 }));
 
 vi.mock('./terminalWs', () => ({
@@ -92,6 +110,15 @@ function selectAgentDevice(rows: unknown[]) {
       where: vi.fn().mockReturnValue({
         limit: vi.fn().mockResolvedValue(rows)
       })
+    })
+  };
+}
+
+function updateResult(rows: unknown[] = []) {
+  return {
+    set: vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(rows),
+      returning: vi.fn().mockResolvedValue(rows),
     })
   };
 }
@@ -166,6 +193,30 @@ describe('agent websocket command results', () => {
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 
+  it('ignores replayed command results when no in-flight command row exists', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+      .mockReturnValueOnce(selectAgentDevice([]) as any);
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        status: 'completed',
+        stdout: 'stale'
+      })
+    } as any, ws as any);
+
+    expect(db.update).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
   it('bypasses device_commands lookup for non-UUID command IDs', async () => {
     const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
 
@@ -235,6 +286,78 @@ describe('agent websocket command results', () => {
     expect(ws.send).not.toHaveBeenCalled();
   });
 
+  it('does not activate a desktop session from a desk-stop result', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'session-123' }]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'desk-stop-session-123',
+        status: 'completed',
+        result: {
+          sessionId: 'session-123',
+          answer: 'fake-answer'
+        }
+      })
+    } as any, ws as any);
+
+    expect(db.update).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('rejects desktop disconnect results with mismatched session IDs', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'session-123' }]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'desk-disconnect-session-123',
+        status: 'completed',
+        result: {
+          sessionId: 'session-other',
+          event: 'peer_disconnected'
+        }
+      })
+    } as any, ws as any);
+
+    expect(db.update).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('rejects desktop start failures with mismatched session IDs', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'session-123' }]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'desk-start-session-123',
+        status: 'failed',
+        result: {
+          sessionId: 'session-other',
+          error: 'bad session'
+        }
+      })
+    } as any, ws as any);
+
+    expect(db.update).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
   it('rejects mismatched discovery job IDs in command results', async () => {
     const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
 
@@ -248,11 +371,7 @@ describe('agent websocket command results', () => {
         }
       ]) as any);
 
-    vi.mocked(db.update).mockReturnValue({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined)
-      })
-    } as any);
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
 
     const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
     const ws = wsMock();
@@ -264,6 +383,40 @@ describe('agent websocket command results', () => {
         status: 'completed',
         result: {
           jobId: 'job-other',
+          hosts: [{ ip: '10.0.0.1', assetType: 'server', methods: ['ping'] }]
+        }
+      })
+    } as any, ws as any);
+
+    expect(vi.mocked(enqueueDiscoveryResults)).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('skips downstream processing when the command row was already completed by another result', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([
+        {
+          id: 'cmd-1',
+          type: 'network_discovery',
+          payload: { jobId: 'job-expected' },
+          deviceId: 'device-123'
+        }
+      ]) as any);
+
+    vi.mocked(db.update).mockReturnValue(updateResult([]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '55555555-5555-4555-8555-555555555555',
+        status: 'completed',
+        result: {
+          jobId: 'job-expected',
           hosts: [{ ip: '10.0.0.1', assetType: 'server', methods: ['ping'] }]
         }
       })
@@ -286,11 +439,7 @@ describe('agent websocket command results', () => {
         }
       ]) as any);
 
-    vi.mocked(db.update).mockReturnValue({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined)
-      })
-    } as any);
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
 
     const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
     const ws = wsMock();

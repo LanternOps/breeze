@@ -683,8 +683,7 @@ export function createBreezeMcpServer(
         deviceId: backupEntityId,
         backupJobId: backupEntityId.optional(),
         snapshotId: backupEntityId.optional(),
-        verificationType: z.enum(['integrity', 'test_restore', 'full_recovery']).optional(),
-        highImpactApproved: z.boolean().optional(),
+        verificationType: z.enum(['integrity', 'test_restore']).optional(),
       },
       makeHandler('run_backup_verification', getAuth, onPreToolUse, onPostToolUse)
     ),

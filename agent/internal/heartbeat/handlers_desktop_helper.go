@@ -181,6 +181,11 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 // findOrSpawnHelper locates a capable helper session, spawning one if needed.
 func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Session {
 	session := h.sessionBroker.FindCapableSession("capture", targetSession)
+	if runtime.GOOS == "darwin" {
+		if preferred := h.sessionBroker.PreferredDesktopSession(); preferred != nil {
+			session = preferred
+		}
+	}
 	if targetSession != "" && session != nil && session.WinSessionID != targetSession {
 		session = nil
 	}
@@ -204,6 +209,11 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 
 	// Re-check after lock
 	session = h.sessionBroker.FindCapableSession("capture", targetSession)
+	if runtime.GOOS == "darwin" {
+		if preferred := h.sessionBroker.PreferredDesktopSession(); preferred != nil {
+			session = preferred
+		}
+	}
 	if targetSession != "" && session != nil && session.WinSessionID != targetSession {
 		session = nil
 	}
@@ -223,6 +233,11 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 	for i := 0; i < 100; i++ {
 		time.Sleep(100 * time.Millisecond)
 		session = h.sessionBroker.FindCapableSession("capture", targetSession)
+		if runtime.GOOS == "darwin" {
+			if preferred := h.sessionBroker.PreferredDesktopSession(); preferred != nil {
+				session = preferred
+			}
+		}
 		if targetSession != "" && session != nil && session.WinSessionID != targetSession {
 			session = nil
 		}
@@ -239,15 +254,14 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 // If targetSession is empty, it auto-detects the first active non-services session.
 func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 	if runtime.GOOS != "windows" {
-		// Attempt to kickstart the LaunchAgent for logged-in GUI users.
 		if uids := findGUIUserUIDs(); len(uids) > 0 {
 			bootstrapped := false
 			for _, uid := range uids {
 				domain := "gui/" + uid
-				label := domain + "/com.breeze.agent-user"
+				label := domain + "/com.breeze.desktop-helper-user"
 				// kickstart -k kills any existing instance and restarts it.
 				if err := exec.Command("launchctl", "kickstart", "-k", label).Run(); err == nil {
-					log.Info("kickstarted helper LaunchAgent", "uid", uid)
+					log.Info("kickstarted desktop helper LaunchAgent", "uid", uid)
 					return nil // let the caller's poll loop wait for the connection
 				} else {
 					log.Warn("launchctl kickstart failed, trying bootstrap",
@@ -255,11 +269,11 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 				}
 				// Fallback: try bootstrap in case the plist was never loaded.
 				if err := exec.Command("launchctl", "bootstrap", domain,
-					"/Library/LaunchAgents/com.breeze.agent-user.plist").Run(); err != nil {
+					"/Library/LaunchAgents/com.breeze.desktop-helper-user.plist").Run(); err != nil {
 					log.Warn("launchctl bootstrap also failed",
 						"uid", uid, "domain", domain, "error", err.Error())
 				} else {
-					log.Info("bootstrapped helper LaunchAgent", "uid", uid, "domain", domain)
+					log.Info("bootstrapped desktop helper LaunchAgent", "uid", uid, "domain", domain)
 					bootstrapped = true
 				}
 			}
@@ -267,9 +281,11 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 				return nil // let the caller's poll loop wait for the connection
 			}
 		}
-		return fmt.Errorf(
-			"no user-helper connected; ensure the LaunchAgent is loaded: " +
-				"launchctl load /Library/LaunchAgents/com.breeze.agent-user.plist")
+		if err := exec.Command("launchctl", "kickstart", "-k", "loginwindow/com.breeze.desktop-helper-loginwindow").Run(); err == nil {
+			log.Info("kickstarted login-window desktop helper LaunchAgent")
+			return nil
+		}
+		return fmt.Errorf("no desktop-helper connected; ensure the LaunchAgents are loaded")
 	}
 
 	if targetSession == "" {

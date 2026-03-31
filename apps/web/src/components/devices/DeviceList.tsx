@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
 import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2 } from 'lucide-react';
-import type { FilterConditionGroup } from '@breeze/shared';
+import type { DesktopAccessState, FilterConditionGroup } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
 import { widthPercentClass } from '@/lib/utils';
@@ -31,6 +31,7 @@ export type Device = {
   deviceRoleSource?: string;
   displayName?: string;
   isHeadless?: boolean;
+  desktopAccess?: DesktopAccessState | null;
 };
 
 type DeviceListProps = {

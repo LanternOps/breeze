@@ -25,6 +25,7 @@ interface DeploymentPayload {
   policyId?: string;
 }
 import { getRedisConnection } from '../services/redis';
+import { isReusableState } from '../services/bullmqUtils';
 import { getUsersForAlert, sendPushToUser } from '../services/notifications';
 import { getEmailService } from '../services/email';
 
@@ -229,6 +230,52 @@ function escapeHtmlForEmail(value: string): string {
 let deploymentQueue: Queue | null = null;
 let deploymentDeviceQueue: Queue | null = null;
 
+function getDeploymentProcessJobId(deploymentId: string): string {
+  return `deployment-process:${deploymentId}`;
+}
+
+function getDeploymentNextBatchJobId(
+  deploymentId: string,
+  currentBatch: number
+): string {
+  return `deployment-next-batch:${deploymentId}:${currentBatch}`;
+}
+
+function getDeploymentDeviceJobId(
+  deploymentId: string,
+  deviceId: string
+): string {
+  return `deployment-device:${deploymentId}:${deviceId}`;
+}
+
+function getDeploymentDeferredDeviceJobId(
+  deploymentId: string,
+  deviceId: string
+): string {
+  return `deployment-device-deferred:${deploymentId}:${deviceId}`;
+}
+
+async function resolveActiveQueueJob(
+  queue: Queue,
+  candidateIds: string[]
+) {
+  for (const candidateId of candidateIds) {
+    const existing = await queue.getJob(candidateId);
+    if (!existing) continue;
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      return existing;
+    }
+    if (state === 'completed' || state === 'failed') {
+      await existing.remove().catch((error) => {
+        console.error(`[DeploymentWorker] Failed to remove stale job ${candidateId}:`, error);
+      });
+    }
+  }
+
+  return null;
+}
+
 export function getDeploymentQueue(): Queue {
   if (!deploymentQueue) {
     deploymentQueue = new Queue(DEPLOYMENT_QUEUE, {
@@ -356,19 +403,46 @@ export function createDeploymentWorker(): Worker {
           deploymentId,
           deviceId,
           batchNumber: currentBatch
-        } as ProcessDeploymentDeviceJob
+        } as ProcessDeploymentDeviceJob,
+        opts: {
+          jobId: getDeploymentDeviceJobId(deploymentId, deviceId),
+          removeOnComplete: { count: 100 },
+          removeOnFail: { count: 200 }
+        }
       }));
 
-      await deviceQueue.addBulk(jobs);
+      const jobsToQueue = [];
+      for (const queuedJob of jobs) {
+        const data = queuedJob.data as ProcessDeploymentDeviceJob;
+        const existing = await resolveActiveQueueJob(deviceQueue, [
+          getDeploymentDeviceJobId(data.deploymentId, data.deviceId),
+          getDeploymentDeferredDeviceJobId(data.deploymentId, data.deviceId)
+        ]);
+        if (!existing) {
+          jobsToQueue.push(queuedJob);
+        }
+      }
+
+      if (jobsToQueue.length > 0) {
+        await deviceQueue.addBulk(jobsToQueue);
+      }
 
       // Schedule check for next batch if staggered
       if (rolloutConfig.type === 'staggered' && rolloutConfig.staggered) {
         const delayMs = rolloutConfig.staggered.batchDelayMinutes * 60 * 1000;
-        await getDeploymentQueue().add(
-          'check-next-batch',
-          { deploymentId, currentBatch } as ScheduleNextBatchJob,
-          { delay: delayMs }
+        const queue = getDeploymentQueue();
+        const nextBatchJobId = getDeploymentNextBatchJobId(
+          deploymentId,
+          currentBatch
         );
+        const existing = await resolveActiveQueueJob(queue, [nextBatchJobId]);
+        if (!existing) {
+          await queue.add(
+            'check-next-batch',
+            { deploymentId, currentBatch } as ScheduleNextBatchJob,
+            { delay: delayMs, jobId: nextBatchJobId }
+          );
+        }
       }
 
       return {
@@ -423,11 +497,24 @@ export function createDeploymentDeviceWorker(): Worker {
         const inMaintenance = await isDeviceInMaintenanceWindow(deviceId);
         if (!inMaintenance) {
           // Re-queue for later
-          await getDeploymentDeviceQueue().add(
-            'process-device',
-            job.data,
-            { delay: 5 * 60 * 1000 } // Check again in 5 minutes
+          const queue = getDeploymentDeviceQueue();
+          const deferredJobId = getDeploymentDeferredDeviceJobId(
+            deploymentId,
+            deviceId
           );
+          const existing = await resolveActiveQueueJob(queue, [deferredJobId]);
+          if (!existing) {
+            await queue.add(
+              'process-device',
+              job.data,
+              {
+                delay: 5 * 60 * 1000,
+                jobId: deferredJobId,
+                removeOnComplete: { count: 100 },
+                removeOnFail: { count: 200 }
+              }
+            );
+          }
           return { delayed: true, reason: 'waiting for maintenance window' };
         }
       }
@@ -450,11 +537,24 @@ export function createDeploymentDeviceWorker(): Worker {
           const { canRetry, retryCount } = await incrementRetryCount(deploymentId, deviceId);
           if (canRetry) {
             const backoffMs = getRetryBackoffMs(retryCount, rolloutConfig);
-            await getDeploymentDeviceQueue().add(
-              'process-device',
-              job.data,
-              { delay: backoffMs }
+            const queue = getDeploymentDeviceQueue();
+            const deferredJobId = getDeploymentDeferredDeviceJobId(
+              deploymentId,
+              deviceId
             );
+            const existing = await resolveActiveQueueJob(queue, [deferredJobId]);
+            if (!existing) {
+              await queue.add(
+                'process-device',
+                job.data,
+                {
+                  delay: backoffMs,
+                  jobId: deferredJobId,
+                  removeOnComplete: { count: 100 },
+                  removeOnFail: { count: 200 }
+                }
+              );
+            }
             return { retrying: true, retryCount, backoffMs };
           } else {
             await updateDeploymentDeviceStatus(deploymentId, deviceId, 'failed', result);
@@ -488,11 +588,24 @@ export function createDeploymentDeviceWorker(): Worker {
         const { canRetry, retryCount } = await incrementRetryCount(deploymentId, deviceId);
         if (canRetry) {
           const backoffMs = getRetryBackoffMs(retryCount, rolloutConfig);
-          await getDeploymentDeviceQueue().add(
-            'process-device',
-            job.data,
-            { delay: backoffMs }
+          const queue = getDeploymentDeviceQueue();
+          const deferredJobId = getDeploymentDeferredDeviceJobId(
+            deploymentId,
+            deviceId
           );
+          const existing = await resolveActiveQueueJob(queue, [deferredJobId]);
+          if (!existing) {
+            await queue.add(
+              'process-device',
+              job.data,
+              {
+                delay: backoffMs,
+                jobId: deferredJobId,
+                removeOnComplete: { count: 100 },
+                removeOnFail: { count: 200 }
+              }
+            );
+          }
           return { retrying: true, retryCount, error: errorMessage };
         }
 
@@ -925,7 +1038,12 @@ async function executePolicyPayload(
  */
 export async function startDeployment(deploymentId: string): Promise<void> {
   const queue = getDeploymentQueue();
-  await queue.add('process-deployment', { deploymentId });
+  const jobId = getDeploymentProcessJobId(deploymentId);
+  const existing = await resolveActiveQueueJob(queue, [jobId]);
+  if (existing) {
+    return;
+  }
+  await queue.add('process-deployment', { deploymentId }, { jobId });
 }
 
 /**

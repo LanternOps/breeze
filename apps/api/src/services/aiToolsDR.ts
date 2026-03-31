@@ -11,7 +11,7 @@ import { drExecutions, drPlanGroups, drPlans } from '../db/schema';
 import { eq, and, asc, desc, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { CommandTypes, queueCommandForExecution } from './commandQueue';
+import { createDrExecutionAndEnqueue } from './drExecutionService';
 
 type DRHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -43,14 +43,6 @@ function safeHandler(toolName: string, fn: DRHandler): DRHandler {
 function clampLimit(value: unknown, fallback = 25, max = 100): number {
   return Math.min(Math.max(1, Number(value) || fallback), max);
 }
-
-const allowedDrCommandTypes = new Set<string>([
-  CommandTypes.VM_RESTORE_FROM_BACKUP,
-  CommandTypes.VM_INSTANT_BOOT,
-  CommandTypes.HYPERV_RESTORE,
-  CommandTypes.MSSQL_RESTORE,
-  CommandTypes.BMR_RECOVER,
-]);
 
 async function loadPlanWithAccess(planId: string, auth: AuthContext) {
   const conditions: SQL[] = [eq(drPlans.id, planId)];
@@ -305,168 +297,23 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
         .where(and(...groupConditions))
         .orderBy(asc(drPlanGroups.sequence));
 
-      const plannedGroups = groups.map((group) => ({
-        id: group.id,
-        name: group.name,
-        sequence: group.sequence,
-        deviceCount: Array.isArray(group.devices) ? group.devices.length : 0,
-        estimatedDurationMinutes: group.estimatedDurationMinutes,
-        restoreConfig: group.restoreConfig,
-      }));
-
-      const now = new Date();
-      const [execution] = await db
-        .insert(drExecutions)
-        .values({
-          planId: plan.id,
-          orgId: plan.orgId,
-          executionType,
-          status: 'pending',
-          startedAt: now,
-          initiatedBy: auth.user?.id ?? null,
-          results: {
-            dispatchStatus: 'queued',
-            queuedAt: now.toISOString(),
-            groupCount: plannedGroups.length,
-            deviceCount: plannedGroups.reduce((sum, group) => sum + group.deviceCount, 0),
-            plannedGroups,
-          },
-          createdAt: now,
-        })
-        .returning();
-
+      const execution = await createDrExecutionAndEnqueue({
+        planId: plan.id,
+        orgId: plan.orgId,
+        executionType: executionType as 'rehearsal' | 'failover' | 'failback',
+        initiatedBy: auth.user?.id ?? null,
+      });
       if (!execution) return JSON.stringify({ error: 'Failed to create DR execution record' });
 
-      const queuedCommands: Array<{
-        groupId: string;
-        groupName: string;
-        deviceId: string;
-        commandId: string;
-        commandType: string;
-        status: string;
-      }> = [];
-      const failedDispatches: Array<{
-        groupId: string;
-        groupName: string;
-        deviceId?: string;
-        commandType?: string;
-        error: string;
-      }> = [];
-
-      for (const group of groups) {
-        const restoreConfig = (group.restoreConfig ?? {}) as Record<string, unknown>;
-        const commandType =
-          typeof restoreConfig.commandType === 'string' ? restoreConfig.commandType : null;
-        const payload =
-          restoreConfig.payload && typeof restoreConfig.payload === 'object'
-            ? restoreConfig.payload as Record<string, unknown>
-            : {};
-        const deviceIds = Array.isArray(group.devices)
-          ? group.devices.filter((value): value is string => typeof value === 'string')
-          : [];
-
-        if (!commandType) {
-          failedDispatches.push({
-            groupId: group.id,
-            groupName: group.name,
-            error: 'restoreConfig.commandType is required to dispatch this DR group',
-          });
-          continue;
-        }
-
-        if (!allowedDrCommandTypes.has(commandType)) {
-          failedDispatches.push({
-            groupId: group.id,
-            groupName: group.name,
-            commandType,
-            error: `Unsupported DR command type: ${commandType}`,
-          });
-          continue;
-        }
-
-        if (deviceIds.length === 0) {
-          failedDispatches.push({
-            groupId: group.id,
-            groupName: group.name,
-            commandType,
-            error: 'No devices are assigned to this DR group',
-          });
-          continue;
-        }
-
-        for (const deviceId of deviceIds) {
-          const { command, error } = await queueCommandForExecution(
-            deviceId,
-            commandType,
-            {
-              drExecutionId: execution.id,
-              drPlanId: plan.id,
-              drGroupId: group.id,
-              executionType,
-              groupName: group.name,
-              ...payload,
-            },
-            { userId: auth.user?.id }
-          );
-
-          if (error || !command) {
-            failedDispatches.push({
-              groupId: group.id,
-              groupName: group.name,
-              deviceId,
-              commandType,
-              error: error ?? 'Failed to queue DR command',
-            });
-            continue;
-          }
-
-          queuedCommands.push({
-            groupId: group.id,
-            groupName: group.name,
-            deviceId,
-            commandId: command.id,
-            commandType,
-            status: command.status,
-          });
-        }
-      }
-
-      const dispatchStatus =
-        failedDispatches.length === 0
-          ? 'queued'
-          : queuedCommands.length > 0
-            ? 'partial'
-            : 'failed';
-
-      const [updatedExecution] = await db
-        .update(drExecutions)
-        .set({
-          status: dispatchStatus === 'failed' ? 'failed' : 'pending',
-          results: {
-            dispatchStatus,
-            queuedAt: now.toISOString(),
-            groupCount: plannedGroups.length,
-            deviceCount: plannedGroups.reduce((sum, group) => sum + group.deviceCount, 0),
-            plannedGroups,
-            queuedCommands,
-            failedDispatches,
-          },
-        })
-        .where(eq(drExecutions.id, execution.id))
-        .returning();
-
       return JSON.stringify({
-        success: dispatchStatus !== 'failed',
-        warning: dispatchStatus === 'partial' ? `${failedDispatches.length} group(s) failed to dispatch` : undefined,
+        success: true,
         executionId: execution.id,
-        dispatchStatus,
-        status: updatedExecution?.status ?? execution.status,
+        dispatchStatus: 'queued',
+        status: execution.status,
         planId: plan.id,
         planName: plan.name,
         executionType,
-        groupCount: plannedGroups.length,
-        queuedCommands: queuedCommands.length,
-        failedDispatches: failedDispatches.length,
+        groupCount: groups.length,
       });
     }),
   });

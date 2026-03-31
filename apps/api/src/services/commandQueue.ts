@@ -3,6 +3,10 @@ import { db, runOutsideDbContext } from '../db';
 import { deviceCommands, devices, auditLogs } from '../db/schema';
 import { sendCommandToAgent } from '../routes/agentWs';
 import { captureException } from './sentry';
+import {
+  claimPendingCommandForDelivery,
+  releaseClaimedCommandDelivery,
+} from './commandDispatch';
 
 // Command types for system tools
 export const CommandTypes = {
@@ -355,7 +359,10 @@ export async function waitForCommandResult(
         error: `Command timed out after ${timeoutMs}ms`
       }
     })
-    .where(eq(deviceCommands.id, commandId));
+    .where(and(
+      eq(deviceCommands.id, commandId),
+      eq(deviceCommands.status, 'sent'),
+    ));
 
   const [timedOutCommand] = await db
     .select()
@@ -397,25 +404,23 @@ export async function queueCommandForExecution(
   const command = await queueCommand(deviceId, type, payload, userId);
 
   if (device.agentId && !preferHeartbeat) {
-    const sent = sendCommandToAgent(device.agentId, {
-      id: command.id,
-      type,
-      payload
-    });
-    if (sent) {
-      const executedAt = new Date();
-      await db
-        .update(deviceCommands)
-        .set({ status: 'sent', executedAt })
-        .where(eq(deviceCommands.id, command.id));
-
-      return {
-        command: {
-          ...command,
-          status: 'sent',
-          executedAt
-        } as QueuedCommand
-      };
+    const claimed = await claimPendingCommandForDelivery(command.id);
+    if (claimed) {
+      const sent = sendCommandToAgent(device.agentId, {
+        id: command.id,
+        type,
+        payload
+      });
+      if (sent) {
+        return {
+          command: {
+            ...command,
+            status: 'sent',
+            executedAt: claimed.executedAt
+          } as QueuedCommand
+        };
+      }
+      await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
     }
   }
 
@@ -523,16 +528,16 @@ export async function executeCommand(
 
     // Dispatch via WebSocket
     if (device.agentId && !preferHeartbeat) {
-      const sent = sendCommandToAgent(device.agentId, {
-        id: command.id,
-        type,
-        payload,
-      });
-      if (sent) {
-        await db
-          .update(deviceCommands)
-          .set({ status: 'sent', executedAt: new Date() })
-          .where(eq(deviceCommands.id, command.id));
+      const claimed = await claimPendingCommandForDelivery(command.id);
+      if (claimed) {
+        const sent = sendCommandToAgent(device.agentId, {
+          id: command.id,
+          type,
+          payload,
+        });
+        if (!sent) {
+          await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
+        }
       }
     }
 
@@ -581,7 +586,10 @@ export async function markCommandsSent(commandIds: string[]): Promise<void> {
         status: 'sent',
         executedAt: new Date()
       })
-      .where(eq(deviceCommands.id, id));
+      .where(and(
+        eq(deviceCommands.id, id),
+        eq(deviceCommands.status, 'pending'),
+      ));
   }
 }
 
@@ -599,5 +607,8 @@ export async function submitCommandResult(
       completedAt: new Date(),
       result
     })
-    .where(eq(deviceCommands.id, commandId));
+    .where(and(
+      eq(deviceCommands.id, commandId),
+      eq(deviceCommands.status, 'sent'),
+    ));
 }

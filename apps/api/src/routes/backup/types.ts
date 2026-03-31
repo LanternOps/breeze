@@ -17,12 +17,19 @@ export type BackupPolicySchedule = {
   timezone: string;
   dayOfWeek?: number;
   dayOfMonth?: number;
+  windowStart?: string;
+  windowEnd?: string;
 };
 
 export type BackupPolicyRetention = {
-  keepDaily: number;
-  keepWeekly: number;
-  keepMonthly: number;
+  preset?: 'standard' | 'extended' | 'compliance' | 'custom';
+  retentionDays?: number;
+  maxVersions?: number;
+  keepDaily?: number;
+  keepWeekly?: number;
+  keepMonthly?: number;
+  keepYearly?: number;
+  weeklyDay?: number;
 };
 
 export type BackupPolicyTargets = {
@@ -76,6 +83,7 @@ export type BackupSnapshot = {
   deviceId: string;
   configId?: string | null;
   jobId: string;
+  providerSnapshotId?: string | null;
   createdAt: string;
   sizeBytes: number | null;
   fileCount: number | null;
@@ -96,6 +104,8 @@ export type RestoreJob = {
   id: string;
   snapshotId: string;
   deviceId: string;
+  restoreType?: 'full' | 'selective' | 'bare_metal' | null;
+  selectedPaths?: string[] | null;
   status: BackupJobStatus;
   targetPath?: string | null;
   createdAt: string;
@@ -106,8 +116,12 @@ export type RestoreJob = {
   restoredFiles?: number | null;
 };
 
-export type BackupVerificationType = 'integrity' | 'test_restore' | 'full_recovery';
+export type BackupVerificationType = 'integrity' | 'test_restore';
 export type BackupVerificationStatus = 'pending' | 'running' | 'passed' | 'failed' | 'partial';
+
+export function normalizeBackupVerificationType(value?: string | null): BackupVerificationType {
+  return value === 'integrity' ? 'integrity' : 'test_restore';
+}
 
 export type BackupVerification = {
   id: string;

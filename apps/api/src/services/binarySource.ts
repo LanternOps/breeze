@@ -18,6 +18,14 @@ export function getGithubReleaseVersion(): string {
   return process.env.BINARY_VERSION || process.env.BREEZE_VERSION || 'latest';
 }
 
+export function getGithubReleasePageUrl(): string {
+  const version = getGithubReleaseVersion();
+  if (version === 'latest') {
+    return `${GITHUB_RELEASE_BASE}/latest`;
+  }
+  return `${GITHUB_RELEASE_BASE}/tag/v${version}`;
+}
+
 function githubDownloadBase(): string {
   const version = getGithubReleaseVersion();
   if (version === 'latest') {
@@ -29,6 +37,12 @@ function githubDownloadBase(): string {
 export function getGithubAgentUrl(os: string, arch: string): string {
   const extension = os === 'windows' ? '.exe' : '';
   const filename = `breeze-agent-${os}-${arch}${extension}`;
+  return `${githubDownloadBase()}/${filename}`;
+}
+
+export function getGithubBackupUrl(os: string, arch: string): string {
+  const extension = os === 'windows' ? '.exe' : '';
+  const filename = `breeze-backup-${os}-${arch}${extension}`;
   return `${githubDownloadBase()}/${filename}`;
 }
 

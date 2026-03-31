@@ -12,6 +12,7 @@ import { seedDefaultCisCheckCatalog } from '../services/cisCatalog';
 import { publishEvent } from '../services/eventBus';
 import { getRedisConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
+import { isReusableState } from '../services/bullmqUtils';
 
 const { db } = dbModule;
 
@@ -27,6 +28,7 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 const CIS_QUEUE = 'cis-hardening';
 const CIS_SCAN_COMMAND = 'cis_benchmark';
 const CIS_REMEDIATION_COMMAND = 'apply_cis_remediation';
+const ON_DEMAND_CIS_SCAN_DEDUPE_WINDOW_MS = 30 * 1000;
 // Devices with score below this threshold are considered non-compliant for aggregation
 const CIS_COMPLIANCE_THRESHOLD = 80;
 
@@ -457,17 +459,38 @@ export async function scheduleCisScan(
   } = {}
 ): Promise<string> {
   const queue = getCisQueue();
+  const normalizedDeviceIds = Array.isArray(options.deviceIds)
+    ? Array.from(new Set(options.deviceIds.filter((id) => typeof id === 'string' && id.length > 0))).sort()
+    : undefined;
+  const slot = Math.floor(Date.now() / ON_DEMAND_CIS_SCAN_DEDUPE_WINDOW_MS).toString(36);
+  const jobId = [
+    'cis-manual-scan',
+    baselineId,
+    normalizedDeviceIds ? normalizedDeviceIds.join(',') : 'all',
+    slot,
+  ].join(':');
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      return String(existing.id);
+    }
+    await existing.remove().catch((error) => {
+      console.error(`[CisJobs] Failed to remove stale manual scan job ${jobId}:`, error);
+    });
+  }
+
   const job = await queue.add(
     'run-baseline-scan',
     {
       type: 'run-baseline-scan',
       baselineId,
       requestedBy: options.requestedBy ?? null,
-      deviceIds: options.deviceIds,
+      deviceIds: normalizedDeviceIds,
       origin: 'manual',
     },
     {
-      jobId: `cis-manual-scan-${baselineId}-${Date.now()}`,
+      jobId,
       removeOnComplete: { count: 100 },
       removeOnFail: { count: 200 },
       attempts: 2,

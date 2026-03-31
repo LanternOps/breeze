@@ -10,6 +10,15 @@ const DEVICE_ROLES = [
   'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'
 ] as const;
 
+const desktopAccessReasonSchema = z.enum([
+  'missing_permission',
+  'missing_entitlement',
+  'helper_not_connected',
+  'virtual_display_unavailable',
+  'unsupported_os',
+  'manual_install',
+]);
+
 export const enrollSchema = z.object({
   enrollmentKey: z.string().min(1),
   enrollmentSecret: z.string().min(1).optional(),
@@ -142,6 +151,15 @@ export const heartbeatSchema = z.object({
     screenRecording: z.boolean(),
     accessibility: z.boolean(),
     fullDiskAccess: z.boolean(),
+    remoteDesktop: z.boolean().nullable().optional(),
+    checkedAt: z.string().datetime({ offset: true }),
+  }).optional(),
+  desktopAccess: z.object({
+    mode: z.enum(['user_session', 'login_window', 'unavailable']),
+    loginUiReachable: z.boolean(),
+    virtualDisplayReady: z.boolean(),
+    reason: desktopAccessReasonSchema.nullable().optional(),
+    remoteDesktopPermission: z.boolean().nullable().optional(),
     checkedAt: z.string().datetime({ offset: true }),
   }).optional(),
   isHeadless: z.boolean().optional()

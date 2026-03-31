@@ -3,15 +3,10 @@
 package collectors
 
 import (
-	"context"
 	"encoding/json"
-	"fmt"
-	"os/exec"
+	"log/slog"
 	"strings"
-	"time"
 )
-
-const darwinCmdTimeout = 15 * time.Second
 
 // system_profiler JSON structures
 type spHardwareDataType struct {
@@ -38,58 +33,52 @@ type spDisplayEntry struct {
 func collectPlatformHardware(hw *HardwareInfo) {
 	hw.Manufacturer = "Apple"
 
-	ctx, cancel := context.WithTimeout(context.Background(), darwinCmdTimeout)
-	defer cancel()
-
 	// Get hardware details via system_profiler JSON output
-	out, err := exec.CommandContext(ctx, "system_profiler", "SPHardwareDataType", "-json").Output()
+	out, err := runCollectorOutput(collectorLongCommandTimeout, "system_profiler", "SPHardwareDataType", "-json")
 	if err != nil {
-		fmt.Printf("Warning: system_profiler SPHardwareDataType failed: %v\n", err)
+		slog.Warn("system_profiler SPHardwareDataType failed", "error", err.Error())
 	} else {
 		var data spHardwareDataType
 		if unmarshalErr := json.Unmarshal(out, &data); unmarshalErr != nil {
-			fmt.Printf("Warning: failed to parse SPHardwareDataType JSON: %v\n", unmarshalErr)
+			slog.Warn("failed to parse SPHardwareDataType JSON", "error", unmarshalErr.Error())
 		} else if len(data.SPHardwareDataType) > 0 {
 			entry := data.SPHardwareDataType[0]
-			hw.SerialNumber = entry.SerialNumber
+			hw.SerialNumber = truncateCollectorString(entry.SerialNumber)
 			if entry.ModelName != "" {
-				hw.Model = entry.ModelName
+				hw.Model = truncateCollectorString(entry.ModelName)
 			} else if entry.MachineName != "" {
-				hw.Model = entry.MachineName
+				hw.Model = truncateCollectorString(entry.MachineName)
 			}
-			hw.BIOSVersion = entry.BootROMVer
+			hw.BIOSVersion = truncateCollectorString(entry.BootROMVer)
 			if entry.ChipType != "" && hw.GPUModel == "" {
-				hw.GPUModel = entry.ChipType
+				hw.GPUModel = truncateCollectorString(entry.ChipType)
 			}
 		}
 	}
 
-	// Get GPU info from displays data (use separate timeout)
-	ctx2, cancel2 := context.WithTimeout(context.Background(), darwinCmdTimeout)
-	defer cancel2()
-
-	out, err = exec.CommandContext(ctx2, "system_profiler", "SPDisplaysDataType", "-json").Output()
+	// Get GPU info from displays data.
+	out, err = runCollectorOutput(collectorLongCommandTimeout, "system_profiler", "SPDisplaysDataType", "-json")
 	if err != nil {
-		fmt.Printf("Warning: system_profiler SPDisplaysDataType failed: %v\n", err)
+		slog.Warn("system_profiler SPDisplaysDataType failed", "error", err.Error())
 	} else {
 		var data spDisplaysDataType
 		if unmarshalErr := json.Unmarshal(out, &data); unmarshalErr != nil {
-			fmt.Printf("Warning: failed to parse SPDisplaysDataType JSON: %v\n", unmarshalErr)
+			slog.Warn("failed to parse SPDisplaysDataType JSON", "error", unmarshalErr.Error())
 		} else if len(data.SPDisplaysDataType) > 0 {
 			chipset := data.SPDisplaysDataType[0].ChipsetModel
 			if chipset != "" {
-				hw.GPUModel = chipset
+				hw.GPUModel = truncateCollectorString(chipset)
 			}
 		}
 	}
 
 	// Fallback: use sysctl for model identifier if not set
 	if hw.Model == "" {
-		out, err = exec.Command("sysctl", "-n", "hw.model").Output()
+		out, err = runCollectorOutput(collectorShortCommandTimeout, "sysctl", "-n", "hw.model")
 		if err != nil {
-			fmt.Printf("Warning: sysctl hw.model failed: %v\n", err)
+			slog.Warn("sysctl hw.model failed", "error", err.Error())
 		} else {
-			hw.Model = strings.TrimSpace(string(out))
+			hw.Model = truncateCollectorString(strings.TrimSpace(string(out)))
 		}
 	}
 }

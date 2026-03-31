@@ -54,6 +54,32 @@ describe('backup verification service', () => {
       .length;
     expect(lowEventsAfter).toBe(1);
   });
+
+  it('ignores simulated verifications when computing readiness', async () => {
+    const orgId = 'org-123';
+    const deviceId = `dev-sim-only-${Date.now()}`;
+
+    backupVerifications.push({
+      id: `verify-sim-${Date.now()}`,
+      orgId,
+      deviceId,
+      backupJobId: 'job-001',
+      snapshotId: 'snap-001',
+      verificationType: 'test_restore',
+      status: 'passed',
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      restoreTimeSeconds: 240,
+      filesVerified: 100,
+      filesFailed: 0,
+      details: { source: 'test', simulated: true },
+      createdAt: new Date().toISOString(),
+    });
+
+    const readiness = await recomputeRecoveryReadinessForDevice(orgId, deviceId);
+    expect(readiness.readinessScore).toBe(0);
+    expect(readiness.riskFactors.some((factor) => factor.code === 'no_verification_history')).toBe(true);
+  });
 });
 
 describe('processBackupVerificationResult', () => {

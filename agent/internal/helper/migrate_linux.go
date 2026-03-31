@@ -3,12 +3,9 @@
 package helper
 
 import (
-	"bytes"
 	"os"
-	"os/exec"
 	"os/user"
 	"strconv"
-	"strings"
 )
 
 func migrateLegacyPlatform() {
@@ -17,29 +14,13 @@ func migrateLegacyPlatform() {
 }
 
 func stopHelperLegacy() {
-	_ = exec.Command("pkill", "-f", "breeze-helper").Run()
+	_ = runHelperCommand("pkill", "-f", "breeze-helper")
 }
 
 func migrationTargets() ([]string, error) {
-	out, err := exec.Command("loginctl", "list-sessions", "--no-legend", "--no-pager").Output()
+	out, err := outputHelperCommand("loginctl", "list-sessions", "--no-legend", "--no-pager")
 	if err == nil {
-		seen := make(map[string]struct{})
-		var targets []string
-		for _, line := range bytes.Split(out, []byte{'\n'}) {
-			fields := strings.Fields(string(line))
-			if len(fields) < 2 {
-				continue
-			}
-			uid := fields[1]
-			if uid == "" || uid == "0" {
-				continue
-			}
-			if _, ok := seen[uid]; ok {
-				continue
-			}
-			seen[uid] = struct{}{}
-			targets = append(targets, uid)
-		}
+		targets := parseMigrationTargetsOutput(out)
 		if len(targets) > 0 {
 			return targets, nil
 		}

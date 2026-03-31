@@ -1,8 +1,6 @@
 package helper
 
 import (
-	"os/exec"
-
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 	"golang.org/x/sys/windows/registry"
 )
@@ -20,8 +18,8 @@ func migrateLegacyPlatform() {
 }
 
 func stopHelperLegacy() {
-	_ = exec.Command("taskkill", "/F", "/IM", "Breeze Helper.exe").Run()
-	_ = exec.Command("taskkill", "/F", "/IM", "breeze-helper.exe").Run()
+	_ = runHelperCommand("taskkill", "/F", "/IM", "Breeze Helper.exe")
+	_ = runHelperCommand("taskkill", "/F", "/IM", "breeze-helper.exe")
 }
 
 func migrationTargets() ([]string, error) {

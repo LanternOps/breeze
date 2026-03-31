@@ -13,10 +13,12 @@ import {
   backupSlaEvents,
   backupJobs,
   recoveryReadiness,
+  deviceGroupMemberships,
 } from '../db/schema';
-import { eq, and, sql, isNull, desc } from 'drizzle-orm';
+import { eq, and, sql, isNull, desc, inArray } from 'drizzle-orm';
 import { getRedisConnection } from '../services/redis';
 import { getEventBus } from '../services/eventBus';
+import { resolveAllBackupAssignedDevices } from '../services/featureConfigResolver';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -68,7 +70,42 @@ function createSlaWorker(): Worker<SlaJobData> {
 
 // ── check-compliance ─────────────────────────────────────────────────────────
 
-async function checkCompliance(): Promise<{ checked: number; breaches: number }> {
+async function resolveTargetDeviceIds(config: typeof backupSlaConfigs.$inferSelect): Promise<string[]> {
+  const directDeviceIds = Array.isArray(config.targetDevices)
+    ? config.targetDevices.filter((value): value is string => typeof value === 'string')
+    : [];
+  const groupIds = Array.isArray(config.targetGroups)
+    ? config.targetGroups.filter((value): value is string => typeof value === 'string')
+    : [];
+
+  if (groupIds.length === 0) {
+    return [...new Set(directDeviceIds)];
+  }
+
+  const memberships = await db
+    .select({ deviceId: deviceGroupMemberships.deviceId })
+    .from(deviceGroupMemberships)
+    .where(inArray(deviceGroupMemberships.groupId, groupIds));
+
+  return [...new Set([...directDeviceIds, ...memberships.map((row) => row.deviceId)])];
+}
+
+async function loadScheduledBackupCoverageByOrg(orgId: string): Promise<Set<string>> {
+  const assigned = await resolveAllBackupAssignedDevices(orgId);
+  return new Set(
+    assigned
+      .filter((entry) => {
+        const schedule = entry.settings?.schedule as Record<string, unknown> | null | undefined;
+        return !!entry.configId
+          && schedule
+          && typeof schedule.frequency === 'string'
+          && typeof schedule.time === 'string';
+      })
+      .map((entry) => entry.deviceId)
+  );
+}
+
+export async function checkCompliance(): Promise<{ checked: number; breaches: number }> {
   const configs = await db
     .select()
     .from(backupSlaConfigs)
@@ -76,10 +113,25 @@ async function checkCompliance(): Promise<{ checked: number; breaches: number }>
 
   let checked = 0;
   let breaches = 0;
+  const scheduledCoverageByOrg = new Map<string, Set<string>>();
 
   for (const config of configs) {
-    const targetDeviceIds = (config.targetDevices ?? []) as string[];
+    const targetDeviceIds = await resolveTargetDeviceIds(config);
     if (targetDeviceIds.length === 0) continue;
+
+    let scheduledCoverage = scheduledCoverageByOrg.get(config.orgId);
+    if (!scheduledCoverage) {
+      try {
+        scheduledCoverage = await loadScheduledBackupCoverageByOrg(config.orgId);
+      } catch (err) {
+        console.error(
+          `[SlaWorker] Failed to resolve scheduled backup coverage for org ${config.orgId}:`,
+          err instanceof Error ? err.message : err
+        );
+        continue;
+      }
+      scheduledCoverageByOrg.set(config.orgId, scheduledCoverage);
+    }
 
     for (const deviceId of targetDeviceIds) {
       checked++;
@@ -141,26 +193,29 @@ async function checkCompliance(): Promise<{ checked: number; breaches: number }>
           }
         }
 
-        // Missed backup check: no backup job created in the last rpo window
-        const windowStart = new Date(Date.now() - config.rpoTargetMinutes * 60_000);
-        const [recentJob] = await db
-          .select({ id: backupJobs.id })
-          .from(backupJobs)
-          .where(
-            and(
-              eq(backupJobs.orgId, config.orgId),
-              eq(backupJobs.deviceId, deviceId),
-              sql`${backupJobs.createdAt} >= ${windowStart.toISOString()}::timestamptz`
+        if (scheduledCoverage.has(deviceId)) {
+          // Missed backup check: no successful scheduled backup completed in the last RPO window
+          const windowStart = new Date(Date.now() - config.rpoTargetMinutes * 60_000);
+          const [recentJob] = await db
+            .select({ id: backupJobs.id })
+            .from(backupJobs)
+            .where(
+              and(
+                eq(backupJobs.orgId, config.orgId),
+                eq(backupJobs.deviceId, deviceId),
+                eq(backupJobs.status, 'completed'),
+                sql`${backupJobs.completedAt} >= ${windowStart.toISOString()}::timestamptz`
+              )
             )
-          )
-          .limit(1);
+            .limit(1);
 
-        if (!recentJob) {
-          await createBreachEvent(config, deviceId, 'missed_backup', {
-            rpoTargetMinutes: config.rpoTargetMinutes,
-            windowStart: windowStart.toISOString(),
-          });
-          breaches++;
+          if (!recentJob) {
+            await createBreachEvent(config, deviceId, 'missed_backup', {
+              rpoTargetMinutes: config.rpoTargetMinutes,
+              windowStart: windowStart.toISOString(),
+            });
+            breaches++;
+          }
         }
       } catch (err) {
         console.error(

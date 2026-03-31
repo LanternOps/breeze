@@ -308,6 +308,38 @@ func TestHandleStopDesktopUsesRecordedOwner(t *testing.T) {
 	}
 }
 
+func TestHandleUserHelperMessageClearsOwnerOnPeerDisconnect(t *testing.T) {
+	serverConn, clientConn := createTestSocketPair(t)
+	serverIPC := ipc.NewConn(serverConn)
+	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "alice", "quartz", "helper-owner", []string{"desktop"})
+	session.Capabilities = &ipc.Capabilities{CanCapture: true}
+	session.HelperRole = ipc.HelperRoleSystem
+
+	h := &Heartbeat{
+		sessionBroker: newTestBrokerWithSessions(t, session),
+		isHeadless:    true,
+	}
+	h.rememberDesktopOwner("desktop-peer-disconnect", session.SessionID)
+
+	payload, err := json.Marshal(ipc.DesktopPeerDisconnectedNotice{SessionID: "desktop-peer-disconnect"})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	h.handleUserHelperMessage(session, &ipc.Envelope{
+		ID:      "notice-1",
+		Type:    ipc.TypeDesktopPeerDisconnected,
+		Payload: payload,
+	})
+
+	if owner := h.desktopOwnerSession("desktop-peer-disconnect"); owner != nil {
+		t.Fatalf("desktop owner should be cleared after peer disconnect, got %+v", owner)
+	}
+
+	_ = session.Close()
+	_ = clientConn.Close()
+}
+
 func TestHandleStopDesktopFailsWhenOwnerUnavailable(t *testing.T) {
 	serverConn, clientConn := createTestSocketPair(t)
 	serverIPC := ipc.NewConn(serverConn)

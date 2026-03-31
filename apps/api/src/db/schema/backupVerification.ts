@@ -19,7 +19,7 @@ export const backupVerifications = pgTable('backup_verifications', {
   deviceId: uuid('device_id').notNull().references(() => devices.id),
   backupJobId: uuid('backup_job_id').notNull().references(() => backupJobs.id),
   snapshotId: uuid('snapshot_id').references(() => backupSnapshots.id),
-  verificationType: varchar('verification_type', { length: 30 }).notNull(), // integrity|test_restore|full_recovery
+  verificationType: varchar('verification_type', { length: 30 }).notNull(), // integrity|test_restore (legacy rows may still contain full_recovery)
   status: varchar('status', { length: 20 }).notNull(), // passed|failed|partial
   startedAt: timestamp('started_at').notNull(),
   completedAt: timestamp('completed_at'),

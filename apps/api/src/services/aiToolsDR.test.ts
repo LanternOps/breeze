@@ -10,23 +10,16 @@ vi.mock('../db', () => ({
   },
 }));
 
-vi.mock('./commandQueue', () => ({
-  CommandTypes: {
-    VM_RESTORE_FROM_BACKUP: 'vm_restore_from_backup',
-    VM_INSTANT_BOOT: 'vm_instant_boot',
-    HYPERV_RESTORE: 'hyperv_restore',
-    MSSQL_RESTORE: 'mssql_restore',
-    BMR_RECOVER: 'bmr_recover',
-  },
-  queueCommandForExecution: vi.fn(),
-}));
-
 import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { validateToolInput } from './aiToolSchemas';
-import { queueCommandForExecution } from './commandQueue';
 import { registerDRTools } from './aiToolsDR';
+import { createDrExecutionAndEnqueue } from './drExecutionService';
+
+vi.mock('./drExecutionService', () => ({
+  createDrExecutionAndEnqueue: vi.fn(),
+}));
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const PLAN_ID = '22222222-2222-2222-2222-222222222222';
@@ -95,9 +88,12 @@ function setDefaultDbMocks() {
   vi.mocked(db.insert).mockImplementation(() => createInsertChain([]) as any);
   vi.mocked(db.update).mockImplementation(() => createUpdateChain([]) as any);
   vi.mocked(db.delete).mockImplementation(() => createDeleteChain([]) as any);
-  vi.mocked(queueCommandForExecution).mockResolvedValue({
-    command: { id: 'cmd-1', status: 'queued' },
-    error: null,
+  vi.mocked(createDrExecutionAndEnqueue).mockResolvedValue({
+    id: EXECUTION_ID,
+    planId: PLAN_ID,
+    orgId: ORG_ID,
+    executionType: 'rehearsal',
+    status: 'pending',
   } as any);
 }
 
@@ -192,8 +188,13 @@ function prepareHandlerMocks(toolName: string) {
       break;
     case 'execute_dr_plan':
       mockSelectSequence([[planRow], [groupRow]]);
-      mockInsertSequence([[{ id: EXECUTION_ID, status: 'pending' }]]);
-      mockUpdateSequence([[{ id: EXECUTION_ID, status: 'pending' }]]);
+      vi.mocked(createDrExecutionAndEnqueue).mockResolvedValueOnce({
+        id: EXECUTION_ID,
+        planId: PLAN_ID,
+        orgId: ORG_ID,
+        executionType: 'rehearsal',
+        status: 'pending',
+      } as any);
       break;
     case 'manage_dr_plan':
       mockSelectSequence([[planRow]]);

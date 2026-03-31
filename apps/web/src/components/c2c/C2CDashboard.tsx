@@ -229,7 +229,7 @@ export default function C2CDashboard() {
 
   return (
     <div className="space-y-6">
-      <AlphaBadge variant="banner" disclaimer="Cloud-to-cloud backup for Microsoft 365 and Google Workspace is in early access. OAuth connections, incremental sync, and granular item restore are functional but API rate limits may affect large tenants." />
+      <AlphaBadge variant="banner" disclaimer="Cloud-to-cloud backup is in early access. Connection setup is available for evaluation, but sync and restore jobs are not yet implemented." />
 
       {consentSuccess && (
         <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300">
@@ -255,7 +255,7 @@ export default function C2CDashboard() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Cloud-to-Cloud Backup</h1>
           <p className="text-sm text-muted-foreground">
-            Protect Microsoft 365 and Google Workspace data
+            Set up cloud connections now; sync and restore execution is still in progress.
           </p>
         </div>
         <button
@@ -315,7 +315,7 @@ export default function C2CDashboard() {
                 connections.map((conn) => (
                   <tr key={conn.id} className="border-b last:border-0 hover:bg-muted/30">
                     <td className="px-4 py-3 font-medium">
-                      {conn.provider === 'microsoft365' ? 'Microsoft 365' : conn.provider === 'google_workspace' ? 'Google Workspace' : conn.provider}
+                      {conn.provider === 'microsoft365' || conn.provider === 'microsoft_365' ? 'Microsoft 365' : conn.provider === 'google_workspace' ? 'Google Workspace' : conn.provider}
                     </td>
                     <td className="px-4 py-3">{conn.displayName}</td>
                     <td className="px-4 py-3">{statusBadge(conn.status)}</td>
@@ -324,21 +324,9 @@ export default function C2CDashboard() {
                     <td className="px-4 py-3 text-right">
                       <button
                         type="button"
-                        className="rounded p-1 hover:bg-muted"
-                        title="Sync now"
-                        onClick={async () => {
-                          try {
-                            const res = await fetchWithAuth(`/c2c/connections/${conn.id}/sync`, { method: 'POST' });
-                            if (!res.ok) {
-                              const body = await res.json().catch(() => null);
-                              setError(body?.error ?? 'Sync failed');
-                              return;
-                            }
-                            await fetchConnections();
-                          } catch (err) {
-                            setError(err instanceof Error ? err.message : 'Sync request failed');
-                          }
-                        }}
+                        className="cursor-not-allowed rounded p-1 opacity-50"
+                        title="Sync jobs are not yet implemented"
+                        disabled
                       >
                         <RefreshCw className="h-4 w-4" />
                       </button>

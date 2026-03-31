@@ -3,12 +3,18 @@ import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../../db';
-import { devices, hypervVms } from '../../db/schema';
+import { backupJobs, backupSnapshots, devices, hypervVms } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
+import { resolveBackupConfigForDevice } from '../../services/featureConfigResolver';
+import { backupCommandResultSchema } from './resultSchemas';
+import {
+  applyBackupCommandResultToJob,
+  markBackupJobFailedIfInFlight,
+} from '../../services/backupResultPersistence';
 import {
   hypervBackupSchema,
   hypervRestoreSchema,
@@ -225,16 +231,73 @@ hypervRoutes.post(
       return c.json({ error: 'Device not found' }, 404);
     }
 
+    const resolvedConfig = await resolveBackupConfigForDevice(payload.deviceId);
+    if (!resolvedConfig?.configId) {
+      return c.json({ error: 'A provider-backed backup configuration is required on this device' }, 400);
+    }
+
+    const [backupJob] = await db
+      .insert(backupJobs)
+      .values({
+        orgId,
+        configId: resolvedConfig.configId,
+        featureLinkId: resolvedConfig.featureLinkId,
+        deviceId: payload.deviceId,
+        status: 'pending',
+        type: 'manual',
+        backupType: 'application',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .returning();
+
+    if (!backupJob) {
+      return c.json({ error: 'Failed to create backup job' }, 500);
+    }
+
     const result = await executeCommand(
       payload.deviceId,
       CommandTypes.HYPERV_BACKUP,
       {
         vmName: payload.vmName,
-        exportPath: payload.exportPath,
         consistencyType: payload.consistencyType,
       },
       { userId: auth?.user?.id, timeoutMs: 600000 } // 10 min for large VMs
     );
+
+    let snapshotDbId: string | null = null;
+    let providerSnapshotId: string | null = null;
+    let parsedData: unknown = null;
+    try {
+      parsedData = result.stdout ? JSON.parse(result.stdout) : {};
+      const parsedBackup = backupCommandResultSchema.safeParse(parsedData);
+      if (!parsedBackup.success) {
+        throw new Error(parsedBackup.error.issues.map((issue) => issue.message).join(', '));
+      }
+      const persisted = await applyBackupCommandResultToJob({
+        jobId: backupJob.id,
+        orgId,
+        deviceId: payload.deviceId,
+        resultStatus: result.status,
+        result: {
+          ...parsedBackup.data,
+          error: result.error,
+        },
+      });
+      snapshotDbId = persisted.snapshotDbId;
+      providerSnapshotId = persisted.providerSnapshotId;
+    } catch (error) {
+      await markBackupJobFailedIfInFlight(
+        backupJob.id,
+        error instanceof Error ? error.message : 'Failed to persist Hyper-V backup result',
+      );
+      if (result.status === 'completed') {
+        return c.json(
+          { error: error instanceof Error ? error.message : 'Failed to persist Hyper-V backup result' },
+          500
+        );
+      }
+    }
 
     if (result.status === 'failed') {
       return c.json(
@@ -254,12 +317,14 @@ hypervRoutes.post(
       },
     });
 
-    try {
-      const data = result.stdout ? JSON.parse(result.stdout) : null;
-      return c.json({ data });
-    } catch {
-      return c.json({ data: result.stdout });
-    }
+    return c.json({
+      data: {
+        ...(parsedData && typeof parsedData === 'object' ? parsedData : { raw: result.stdout ?? null }),
+        backupJobId: backupJob.id,
+        snapshotDbId,
+        snapshotId: providerSnapshotId,
+      },
+    });
   }
 );
 
@@ -285,11 +350,38 @@ hypervRoutes.post(
       return c.json({ error: 'Device not found' }, 404);
     }
 
+    const [snapshot] = await db
+      .select({
+        id: backupSnapshots.id,
+        providerSnapshotId: backupSnapshots.snapshotId,
+        metadata: backupSnapshots.metadata,
+      })
+      .from(backupSnapshots)
+      .where(
+        and(
+          eq(backupSnapshots.id, payload.snapshotId),
+          eq(backupSnapshots.orgId, orgId)
+        )
+      )
+      .limit(1);
+
+    if (!snapshot) {
+      return c.json({ error: 'Snapshot not found' }, 404);
+    }
+
+    const metadata =
+      snapshot.metadata && typeof snapshot.metadata === 'object' && !Array.isArray(snapshot.metadata)
+        ? snapshot.metadata as Record<string, unknown>
+        : {};
+    if (metadata.backupKind !== 'hyperv_export') {
+      return c.json({ error: 'Snapshot is not a Hyper-V export artifact' }, 400);
+    }
+
     const result = await executeCommand(
       payload.deviceId,
       CommandTypes.HYPERV_RESTORE,
       {
-        exportPath: payload.exportPath,
+        snapshotId: snapshot.providerSnapshotId,
         vmName: payload.vmName,
         generateNewId: payload.generateNewId,
       },
@@ -309,7 +401,7 @@ hypervRoutes.post(
       resourceType: 'device',
       resourceId: payload.deviceId,
       details: {
-        exportPath: payload.exportPath,
+        snapshotId: snapshot.id,
         vmName: payload.vmName,
       },
     });
@@ -450,7 +542,7 @@ hypervRoutes.post(
       CommandTypes.HYPERV_VM_STATE,
       {
         vmName: vm.vmName,
-        state: payload.state,
+        targetState: payload.state,
       },
       { userId: auth?.user?.id, timeoutMs: 60000 }
     );

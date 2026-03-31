@@ -11,6 +11,7 @@ const DEVICE_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 vi.mock('../services', () => ({}));
 
 const writeRouteAuditMock = vi.fn();
+const createDrExecutionAndEnqueueMock = vi.fn();
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
@@ -66,6 +67,10 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: (...args: unknown[]) => writeRouteAuditMock(...(args as [])),
+}));
+
+vi.mock('../services/drExecutionService', () => ({
+  createDrExecutionAndEnqueue: (...args: unknown[]) => createDrExecutionAndEnqueueMock(...(args as [])),
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -183,7 +188,7 @@ describe('dr routes', () => {
       name: 'Primary Site Failover',
       status: 'active',
     }]));
-    insertMock.mockReturnValueOnce(chainMock([{
+    createDrExecutionAndEnqueueMock.mockResolvedValueOnce({
       id: EXECUTION_ID,
       planId: PLAN_ID,
       orgId: ORG_ID,
@@ -192,7 +197,7 @@ describe('dr routes', () => {
       startedAt: new Date('2026-03-29T00:00:00.000Z'),
       initiatedBy: 'user-123',
       createdAt: new Date('2026-03-29T00:00:00.000Z'),
-    }]));
+    });
 
     const res = await app.request(`/dr/plans/${PLAN_ID}/execute`, {
       method: 'POST',
@@ -204,6 +209,12 @@ describe('dr routes', () => {
     const body = await res.json();
     expect(body.data.id).toBe(EXECUTION_ID);
     expect(body.data.executionType).toBe('rehearsal');
+    expect(createDrExecutionAndEnqueueMock).toHaveBeenCalledWith({
+      planId: PLAN_ID,
+      orgId: ORG_ID,
+      executionType: 'rehearsal',
+      initiatedBy: 'user-123',
+    });
   });
 
   it('should get single plan with groups', async () => {

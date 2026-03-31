@@ -10,6 +10,7 @@ import * as dbModule from '../db';
 import { snmpDevices, snmpMetrics, snmpTemplates, devices } from '../db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { getRedisConnection } from '../services/redis';
+import { isReusableState } from '../services/bullmqUtils';
 import { sendCommandToAgent, isAgentConnected, type AgentCommand } from '../routes/agentWs';
 
 const { db } = dbModule;
@@ -49,6 +50,7 @@ export interface SnmpMetricResult {
 interface ProcessPollResultsJobData {
   type: 'process-poll-results';
   deviceId: string;
+  pollId?: string;
   metrics: SnmpMetricResult[];
 }
 
@@ -243,6 +245,17 @@ export async function enqueueSnmpPoll(
   orgId: string
 ): Promise<string> {
   const queue = getSnmpQueue();
+  const stableJobId = `snmp-poll:${deviceId}`;
+  const existing = await queue.getJob(stableJobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      return existing.id as string;
+    }
+    if (state === 'completed' || state === 'failed') {
+      await existing.remove();
+    }
+  }
   const job = await queue.add(
     'poll-device',
     {
@@ -251,6 +264,7 @@ export async function enqueueSnmpPoll(
       orgId
     },
     {
+      jobId: stableJobId,
       removeOnComplete: { count: 100 },
       removeOnFail: { count: 200 }
     }
@@ -263,17 +277,33 @@ export async function enqueueSnmpPoll(
  */
 export async function enqueueSnmpPollResults(
   deviceId: string,
-  metrics: SnmpMetricResult[]
+  metrics: SnmpMetricResult[],
+  pollId?: string,
 ): Promise<string> {
   const queue = getSnmpQueue();
+  const stableJobId = pollId ? `snmp-result:${pollId}` : null;
+  if (stableJobId) {
+    const existing = await queue.getJob(stableJobId);
+    if (existing) {
+      const state = await existing.getState();
+      if (isReusableState(state)) {
+        return existing.id as string;
+      }
+      if (state === 'completed' || state === 'failed') {
+        await existing.remove();
+      }
+    }
+  }
   const job = await queue.add(
     'process-poll-results',
     {
       type: 'process-poll-results',
       deviceId,
+      pollId,
       metrics
     },
     {
+      ...(stableJobId ? { jobId: stableJobId } : {}),
       removeOnComplete: { count: 100 },
       removeOnFail: { count: 200 }
     }

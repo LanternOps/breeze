@@ -3,27 +3,24 @@
 package collectors
 
 import (
-	"context"
+	"bufio"
+	"bytes"
 	"fmt"
-	"os/exec"
 	"sort"
 	"strings"
-	"time"
 )
 
 func collectServices() ([]ServiceInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "launchctl", "list")
-	output, err := cmd.Output()
+	output, err := runCollectorOutput(collectorShortCommandTimeout, "launchctl", "list")
 	if err != nil {
 		return nil, fmt.Errorf("launchctl list failed: %w", err)
 	}
 
 	var services []ServiceInfo
-	for _, rawLine := range strings.Split(string(output), "\n") {
-		line := strings.TrimSpace(rawLine)
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	scanner.Buffer(make([]byte, 0, 64*1024), collectorScannerLimit)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
@@ -40,11 +37,17 @@ func collectServices() ([]ServiceInfo, error) {
 		}
 
 		services = append(services, ServiceInfo{
-			Name:        label,
-			DisplayName: label,
+			Name:        truncateCollectorString(label),
+			DisplayName: truncateCollectorString(label),
 			State:       state,
 			StartupType: "loaded",
 		})
+		if len(services) >= collectorResultLimit {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("launchctl list parse failed: %w", err)
 	}
 
 	sort.Slice(services, func(i, j int) bool {

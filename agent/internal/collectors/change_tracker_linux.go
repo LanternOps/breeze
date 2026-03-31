@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -19,8 +18,9 @@ func (c *ChangeTrackerCollector) collectStartupItems(ctx context.Context) ([]Tra
 	items := make([]TrackedStartupItem, 0)
 
 	// systemd services enabled at boot.
-	cmd := exec.CommandContext(
+	output, err := runCollectorOutputWithContext(
 		ctx,
+		collectorShortCommandTimeout,
 		"systemctl",
 		"list-unit-files",
 		"--type=service",
@@ -29,26 +29,32 @@ func (c *ChangeTrackerCollector) collectStartupItems(ctx context.Context) ([]Tra
 		"--no-pager",
 		"--plain",
 	)
-	output, err := cmd.Output()
 	if err != nil {
 		combinedErr = errors.Join(combinedErr, fmt.Errorf("systemctl startup query failed: %w", err))
 	} else {
-		for _, rawLine := range strings.Split(string(output), "\n") {
-			fields := strings.Fields(strings.TrimSpace(rawLine))
+		scanner := newCollectorScanner(output)
+		for scanner.Scan() {
+			fields := strings.Fields(strings.TrimSpace(scanner.Text()))
 			if len(fields) < 1 {
 				continue
 			}
 			unit := strings.TrimSpace(fields[0])
-			if unit == "" || !strings.HasSuffix(unit, ".service") {
+			if !isValidCollectorServiceUnit(unit) {
 				continue
 			}
 			name := strings.TrimSuffix(unit, ".service")
 			items = append(items, TrackedStartupItem{
-				Name:    name,
+				Name:    truncateCollectorString(name),
 				Type:    "systemd",
-				Path:    unit,
+				Path:    truncateCollectorString(unit),
 				Enabled: true,
 			})
+			if len(items) >= collectorResultLimit {
+				break
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			combinedErr = errors.Join(combinedErr, fmt.Errorf("systemctl startup parse failed: %w", err))
 		}
 	}
 
@@ -107,8 +113,9 @@ func (c *ChangeTrackerCollector) collectScheduledTasks(ctx context.Context) ([]T
 	}
 
 	// systemd timers.
-	timerCmd := exec.CommandContext(
+	timerOut, timerErr := runCollectorOutputWithContext(
 		ctx,
+		collectorShortCommandTimeout,
 		"systemctl",
 		"list-timers",
 		"--all",
@@ -116,18 +123,18 @@ func (c *ChangeTrackerCollector) collectScheduledTasks(ctx context.Context) ([]T
 		"--no-pager",
 		"--plain",
 	)
-	timerOut, timerErr := timerCmd.Output()
 	if timerErr != nil {
 		combinedErr = errors.Join(combinedErr, fmt.Errorf("systemctl timer query failed: %w", timerErr))
 	} else {
-		for _, rawLine := range strings.Split(string(timerOut), "\n") {
-			fields := strings.Fields(strings.TrimSpace(rawLine))
+		scanner := newCollectorScanner(timerOut)
+		for scanner.Scan() {
+			fields := strings.Fields(strings.TrimSpace(scanner.Text()))
 			if len(fields) < 2 {
 				continue
 			}
 			timerUnit := fields[len(fields)-2]
 			activates := fields[len(fields)-1]
-			if !strings.HasSuffix(timerUnit, ".timer") {
+			if !isValidCollectorTimerUnit(timerUnit) {
 				continue
 			}
 
@@ -136,12 +143,18 @@ func (c *ChangeTrackerCollector) collectScheduledTasks(ctx context.Context) ([]T
 				schedule = strings.Join(fields[0:2], " ")
 			}
 			tasks = append(tasks, TrackedScheduledTask{
-				Name:     strings.TrimSuffix(timerUnit, ".timer"),
-				Path:     timerUnit,
+				Name:     truncateCollectorString(strings.TrimSuffix(timerUnit, ".timer")),
+				Path:     truncateCollectorString(timerUnit),
 				Status:   "active",
-				Schedule: schedule,
-				Command:  activates,
+				Schedule: truncateCollectorString(schedule),
+				Command:  truncateCollectorString(activates),
 			})
+			if len(tasks) >= collectorResultLimit {
+				break
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			combinedErr = errors.Join(combinedErr, fmt.Errorf("systemctl timer parse failed: %w", err))
 		}
 	}
 
@@ -149,6 +162,22 @@ func (c *ChangeTrackerCollector) collectScheduledTasks(ctx context.Context) ([]T
 		return nil, combinedErr
 	}
 	return tasks, nil
+}
+
+func isValidCollectorServiceUnit(unit string) bool {
+	return unit != "" &&
+		len(unit) <= collectorStringLimit &&
+		strings.HasSuffix(unit, ".service") &&
+		!strings.ContainsAny(unit, " \t\r\n/\\") &&
+		!strings.Contains(unit, "..")
+}
+
+func isValidCollectorTimerUnit(unit string) bool {
+	return unit != "" &&
+		len(unit) <= collectorStringLimit &&
+		strings.HasSuffix(unit, ".timer") &&
+		!strings.ContainsAny(unit, " \t\r\n/\\") &&
+		!strings.Contains(unit, "..")
 }
 
 func (c *ChangeTrackerCollector) collectUserAccounts(_ context.Context) ([]TrackedUserAccount, error) {

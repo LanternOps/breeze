@@ -7,11 +7,12 @@
  */
 
 import { db } from '../db';
-import { devices, hypervVms } from '../db/schema';
+import { backupJobs, backupSnapshots, devices, hypervVms } from '../db/schema';
 import { eq, and, desc, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { CommandTypes, queueCommandForExecution } from './commandQueue';
+import { resolveBackupConfigForDevice } from './featureConfigResolver';
 
 type HypervHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -224,7 +225,7 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
       const { command, error } = await queueCommandForExecution(
         vm.deviceId,
         CommandTypes.HYPERV_VM_STATE,
-        { vmName: vm.vmName, state: action },
+        { vmName: vm.vmName, targetState: action },
         { userId: auth.user?.id }
       );
 
@@ -250,51 +251,82 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
     tier: 3,
     definition: {
       name: 'trigger_hyperv_backup',
-      description: 'Dispatch a Hyper-V VM backup command for a specific VM.',
+      description: 'Dispatch a Hyper-V VM backup command to provider-backed snapshot storage for a specific VM.',
       input_schema: {
         type: 'object' as const,
         properties: {
           vmId: { type: 'string', description: 'Hyper-V VM record UUID (required)' },
-          exportPath: { type: 'string', description: 'Export path for the VM backup (required)' },
           consistencyType: {
             type: 'string',
             enum: ['application', 'crash'],
             description: 'Consistency mode for the backup',
           },
         },
-        required: ['vmId', 'exportPath'],
+        required: ['vmId'],
       },
     },
     handler: safeHandler('trigger_hyperv_backup', async (input, auth) => {
       const vmId = input.vmId as string;
-      const exportPath = input.exportPath as string;
       const consistencyType = (input.consistencyType as string) ?? 'application';
-      if (!vmId || !exportPath) return JSON.stringify({ error: 'vmId and exportPath are required' });
+      if (!vmId) return JSON.stringify({ error: 'vmId is required' });
 
       const vm = await loadVmWithAccess(vmId, auth);
       if (!vm) return JSON.stringify({ error: 'VM not found or access denied' });
+
+      const resolvedConfig = await resolveBackupConfigForDevice(vm.deviceId);
+      if (!resolvedConfig?.configId) {
+        return JSON.stringify({ error: 'A provider-backed backup configuration is required on this device' });
+      }
+
+      const [backupJob] = await db
+        .insert(backupJobs)
+        .values({
+          orgId: vm.orgId,
+          configId: resolvedConfig.configId,
+          featureLinkId: resolvedConfig.featureLinkId,
+          deviceId: vm.deviceId,
+          status: 'pending',
+          type: 'manual',
+          backupType: 'application',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .returning({ id: backupJobs.id });
 
       const { command, error } = await queueCommandForExecution(
         vm.deviceId,
         CommandTypes.HYPERV_BACKUP,
         {
+          backupJobId: backupJob?.id,
           vmName: vm.vmName,
-          exportPath,
           consistencyType,
         },
         { userId: auth.user?.id }
       );
 
-      if (error) return JSON.stringify({ error });
+      if (error) {
+        if (backupJob?.id) {
+          await db
+            .update(backupJobs)
+            .set({
+              status: 'failed',
+              completedAt: new Date(),
+              updatedAt: new Date(),
+              errorLog: error,
+            })
+            .where(eq(backupJobs.id, backupJob.id));
+        }
+        return JSON.stringify({ error });
+      }
 
       return JSON.stringify({
         success: true,
         commandId: command?.id,
+        backupJobId: backupJob?.id,
         status: command?.status,
         vmId: vm.id,
         vmName: vm.vmName,
         deviceId: vm.deviceId,
-        exportPath,
         consistencyType,
       });
     }),
@@ -308,22 +340,22 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
     tier: 3,
     definition: {
       name: 'restore_hyperv_vm',
-      description: 'Dispatch a Hyper-V restore/import command to a host device.',
+      description: 'Dispatch a Hyper-V restore/import command from a provider-backed snapshot to a host device.',
       input_schema: {
         type: 'object' as const,
         properties: {
           deviceId: { type: 'string', description: 'Target Hyper-V host device UUID (required)' },
-          exportPath: { type: 'string', description: 'Export path to restore from (required)' },
+          snapshotId: { type: 'string', description: 'Provider-backed Hyper-V snapshot identifier (required)' },
           vmName: { type: 'string', description: 'Optional VM name override' },
           generateNewId: { type: 'boolean', description: 'Generate a new VM ID during import' },
         },
-        required: ['deviceId', 'exportPath'],
+        required: ['deviceId', 'snapshotId'],
       },
     },
     handler: safeHandler('restore_hyperv_vm', async (input, auth) => {
       const deviceId = input.deviceId as string;
-      const exportPath = input.exportPath as string;
-      if (!deviceId || !exportPath) return JSON.stringify({ error: 'deviceId and exportPath are required' });
+      const snapshotId = input.snapshotId as string;
+      if (!deviceId || !snapshotId) return JSON.stringify({ error: 'deviceId and snapshotId are required' });
 
       const deviceConditions: SQL[] = [eq(devices.id, deviceId)];
       const dc = orgWhere(auth, devices.orgId);
@@ -335,11 +367,32 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
         .limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
 
+      const snapshotConditions: SQL[] = [eq(backupSnapshots.id, snapshotId)];
+      const sc = orgWhere(auth, backupSnapshots.orgId);
+      if (sc) snapshotConditions.push(sc);
+      const [snapshot] = await db
+        .select({
+          id: backupSnapshots.id,
+          providerSnapshotId: backupSnapshots.snapshotId,
+          metadata: backupSnapshots.metadata,
+        })
+        .from(backupSnapshots)
+        .where(and(...snapshotConditions))
+        .limit(1);
+      if (!snapshot) return JSON.stringify({ error: 'Snapshot not found or access denied' });
+      const metadata =
+        snapshot.metadata && typeof snapshot.metadata === 'object' && !Array.isArray(snapshot.metadata)
+          ? snapshot.metadata as Record<string, unknown>
+          : {};
+      if (metadata.backupKind !== 'hyperv_export') {
+        return JSON.stringify({ error: 'Snapshot is not a Hyper-V export artifact' });
+      }
+
       const { command, error } = await queueCommandForExecution(
         deviceId,
         CommandTypes.HYPERV_RESTORE,
         {
-          exportPath,
+          snapshotId: snapshot.providerSnapshotId,
           vmName: typeof input.vmName === 'string' ? input.vmName : undefined,
           generateNewId:
             typeof input.generateNewId === 'boolean'
@@ -356,7 +409,8 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
         commandId: command?.id,
         status: command?.status,
         deviceId,
-        exportPath,
+        snapshotId: snapshot.id,
+        providerSnapshotId: snapshot.providerSnapshotId,
       });
     }),
   });

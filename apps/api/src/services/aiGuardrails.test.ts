@@ -196,13 +196,13 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
     expect(result.requiresApproval).toBe(false);
   });
 
-  it('escalates full recovery verification to Tier 3 approval', () => {
+  it('does not require a special full recovery approval path for backup verification', () => {
     const result = checkGuardrails('run_backup_verification', {
       deviceId: '11111111-1111-1111-1111-111111111111',
-      verificationType: 'full_recovery',
+      verificationType: 'test_restore',
     });
-    expect(result.tier).toBe(3);
-    expect(result.requiresApproval).toBe(true);
+    expect(result.allowed).toBe(true);
+    expect(result.requiresApproval).toBe(false);
   });
 });
 

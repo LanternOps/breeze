@@ -90,7 +90,7 @@ func installAutoStart(binaryPath string) error {
 func removeAutoStart() error {
 	uid := consoleUID()
 	if uid != "" {
-		if err := exec.Command("launchctl", "bootout", "gui/"+uid, plistPath).Run(); err != nil {
+		if err := runHelperCommand("launchctl", "bootout", "gui/"+uid, plistPath); err != nil {
 			log.Debug("launchctl bootout failed during autostart removal", "uid", uid, "error", err.Error())
 		}
 	}
@@ -150,7 +150,7 @@ func spawnWithConfig(binaryPath, sessionKey, configPath string) error {
 func isHelperRunning() bool {
 	// Check for running process directly — the agent starts the helper via
 	// exec.Command, not launchctl bootstrap, so launchctl list won't show it.
-	return exec.Command("pgrep", "-f", "breeze-helper").Run() == nil
+	return runHelperCommand("pgrep", "-f", "breeze-helper") == nil
 }
 
 func stopHelper() error {
@@ -158,19 +158,23 @@ func stopHelper() error {
 	if uid == "" {
 		return fmt.Errorf("could not determine console user ID")
 	}
-	return exec.Command("launchctl", "bootout", "gui/"+uid, plistPath).Run()
+	return runHelperCommand("launchctl", "bootout", "gui/"+uid, plistPath)
 }
 
 // consoleUID returns the UID of the user who owns the macOS console session.
 // When the agent runs as a root daemon, os.Getuid()/id -u returns 0, which
 // is wrong for launchctl bootout gui/<uid>. Use /dev/console ownership instead.
 func consoleUID() string {
-	out, err := exec.Command("stat", "-f", "%u", "/dev/console").Output()
+	out, err := outputHelperCommand("stat", "-f", "%u", "/dev/console")
 	if err != nil {
 		log.Warn("failed to get console user uid", "error", err.Error())
 		return ""
 	}
-	uid := strings.TrimSpace(string(out))
+	uid, err := parseConsoleUIDOutput(out)
+	if err != nil {
+		log.Warn("failed to parse console user uid", "error", err.Error())
+		return ""
+	}
 	if uid == "0" {
 		log.Warn("console owned by root — no user session logged in")
 		return ""

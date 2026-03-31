@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,15 +26,24 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/remote/clipboard"
+	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
 
 var log = logging.L("userhelper")
 
+const (
+	maxLaunchBinaryPathBytes = 4096
+	maxLaunchArgs            = 32
+	maxLaunchArgBytes        = 4096
+)
+
 // Client is the user-helper side of the IPC connection to the root daemon.
 type Client struct {
 	socketPath string
 	role       string // "system" or "user"
+	binaryKind string
+	context    string
 	conn       *ipc.Conn
 	sessionKey []byte
 	agentID    string
@@ -49,14 +59,23 @@ type Client struct {
 // New creates a new user helper client with the given role.
 // Role should be ipc.HelperRoleSystem or ipc.HelperRoleUser.
 func New(socketPath, role string) *Client {
+	return NewWithOptions(socketPath, role, "", "")
+}
+
+func NewWithOptions(socketPath, role, binaryKind, context string) *Client {
 	if role == "" {
 		role = ipc.HelperRoleSystem
+	}
+	if binaryKind == "" {
+		binaryKind = ipc.HelperBinaryUserHelper
 	}
 	return &Client{
 		socketPath: socketPath,
 		role:       role,
+		binaryKind: binaryKind,
+		context:    context,
 		stopChan:   make(chan struct{}),
-		desktopMgr: newHelperDesktopManager(),
+		desktopMgr: newHelperDesktopManager(context),
 		executor:   executor.New(nil),
 		pending:    make(map[string]chan *ipc.Envelope),
 	}
@@ -93,8 +112,14 @@ func (c *Client) Run() error {
 		}
 	}
 
-	// Start TCC permission check loop (macOS only; no-op on other platforms)
-	safeGo("tcc_check", func() { RunTCCCheckLoop(c.conn, c.stopChan) })
+	// Start TCC permission check loop (macOS only; no-op on other platforms).
+	// Skip capture probes while a live session is active to avoid contending
+	// with the streaming capturer in the same helper process.
+	safeGo("tcc_check", func() {
+		RunTCCCheckLoop(c.conn, c.stopChan, c.context, func() bool {
+			return !c.desktopMgr.hasActiveSessions()
+		})
+	})
 
 	log.Info("user helper connected and authenticated", "agentId", c.agentID)
 
@@ -158,6 +183,8 @@ func (c *Client) authenticate() error {
 		BinaryHash:      binaryHash,
 		WinSessionID:    currentWinSessionID(),
 		HelperRole:      c.role,
+		BinaryKind:      c.binaryKind,
+		DesktopContext:  c.context,
 	}
 
 	if err := c.conn.SendTyped("auth", ipc.TypeAuthRequest, authReq); err != nil {
@@ -197,7 +224,7 @@ func (c *Client) authenticate() error {
 }
 
 func (c *Client) sendCapabilities() error {
-	caps := detectCapabilities()
+	caps := detectCapabilities(c.binaryKind, c.context)
 	// On Windows, user-role helpers cannot capture desktop (no SYSTEM token
 	// for UAC/lock screen). On macOS, the user-role helper is the only process
 	// that CAN capture — the root daemon lacks GUI session access.
@@ -441,9 +468,9 @@ func (c *Client) handleLaunchProcess(env *ipc.Envelope) {
 		return
 	}
 
-	if req.BinaryPath == "" {
+	if err := validateLaunchProcessRequest(&req); err != nil {
 		c.conn.SendTyped(env.ID, ipc.TypeLaunchResult, ipc.LaunchProcessResult{
-			Error: "binaryPath is required",
+			Error: err.Error(),
 		})
 		return
 	}
@@ -486,6 +513,41 @@ func (c *Client) handleLaunchProcess(env *ipc.Envelope) {
 
 	// Don't wait for the process — release it so it runs independently.
 	cmd.Process.Release()
+}
+
+func validateLaunchProcessRequest(req *ipc.LaunchProcessRequest) error {
+	req.BinaryPath = strings.TrimSpace(req.BinaryPath)
+	if req.BinaryPath == "" {
+		return fmt.Errorf("binaryPath is required")
+	}
+	if len(req.BinaryPath) > maxLaunchBinaryPathBytes {
+		return fmt.Errorf("binaryPath too large")
+	}
+	if containsControlChar(req.BinaryPath) {
+		return fmt.Errorf("binaryPath contains invalid control characters")
+	}
+	if len(req.Args) > maxLaunchArgs {
+		return fmt.Errorf("too many launch arguments")
+	}
+	for i := range req.Args {
+		req.Args[i] = strings.TrimSpace(req.Args[i])
+		if len(req.Args[i]) > maxLaunchArgBytes {
+			return fmt.Errorf("launch argument too large")
+		}
+		if containsControlChar(req.Args[i]) {
+			return fmt.Errorf("launch argument contains invalid control characters")
+		}
+	}
+	return nil
+}
+
+func containsControlChar(value string) bool {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func isAllowedLaunchBinary(selfPath, requestedPath string) bool {
@@ -781,6 +843,13 @@ func (c *Client) handleDesktopStart(env *ipc.Envelope) {
 		}
 		return
 	}
+	if err := validateDesktopStartRequest(&req); err != nil {
+		log.Warn("invalid desktop_start request", "error", err.Error())
+		if sendErr := c.conn.SendError(env.ID, ipc.TypeDesktopStart, err.Error()); sendErr != nil {
+			log.Warn("failed to send desktop_start error", "error", sendErr)
+		}
+		return
+	}
 
 	log.Info("starting desktop session via IPC",
 		"sessionId", req.SessionID,
@@ -806,6 +875,10 @@ func (c *Client) handleDesktopStop(env *ipc.Envelope) {
 	var req ipc.DesktopStopRequest
 	if err := json.Unmarshal(env.Payload, &req); err != nil {
 		log.Warn("invalid desktop_stop payload", "error", err)
+		return
+	}
+	if err := validateDesktopStopRequest(&req); err != nil {
+		log.Warn("invalid desktop_stop request", "error", err.Error())
 		return
 	}
 
@@ -988,16 +1061,38 @@ func detectDisplayEnv() string {
 	return ""
 }
 
-func detectCapabilities() ipc.Capabilities {
+func detectCapabilities(binaryKind, desktopContext string) ipc.Capabilities {
 	display := detectDisplayEnv()
 	hasDisplay := display != ""
-	return ipc.Capabilities{
+
+	caps := ipc.Capabilities{
 		CanNotify:     hasDisplay,
 		CanTray:       hasDisplay,
 		CanCapture:    hasDisplay,
 		CanClipboard:  hasDisplay && clipboardSupported(),
 		DisplayServer: display,
 	}
+
+	if binaryKind == ipc.HelperBinaryDesktopHelper {
+		caps.CanNotify = false
+		caps.CanTray = false
+		caps.CanClipboard = false
+		if runtime.GOOS == "darwin" {
+			granted, err := desktop.ProbeCaptureAccess(desktop.CaptureConfig{
+				DesktopContext: desktopContext,
+			})
+			if err != nil {
+				log.Warn("desktop helper capability probe failed",
+					"context", desktopContext,
+					"error", err.Error())
+				caps.CanCapture = false
+			} else {
+				caps.CanCapture = granted
+			}
+		}
+	}
+
+	return caps
 }
 
 func isTimeout(err error) bool {

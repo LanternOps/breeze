@@ -37,6 +37,43 @@ type Snapshot = {
   files?: SnapshotFile[];
 };
 
+type SnapshotTreeItem = {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+  sizeBytes?: number;
+  modifiedAt?: string;
+  children?: SnapshotTreeItem[];
+};
+
+function toTreeNodes(items: SnapshotTreeItem[]): TreeNode[] {
+  return items.map((item) => ({
+    id: item.path,
+    name: item.name,
+    type: item.type === 'directory' ? 'folder' : 'file',
+    size: typeof item.sizeBytes === 'number' ? `${item.sizeBytes} B` : undefined,
+    modified: item.modifiedAt,
+    children: item.children ? toTreeNodes(item.children) : undefined,
+  }));
+}
+
+function flattenTree(items: SnapshotTreeItem[], parentPath = '/'): SnapshotFile[] {
+  return items.flatMap((item) => {
+    const itemPath = item.path || parentPath;
+    if (item.type === 'file') {
+      const folderPath = itemPath.split('/').slice(0, -1).join('/') || '/';
+      return [{
+        id: itemPath,
+        name: item.name,
+        size: typeof item.sizeBytes === 'number' ? `${item.sizeBytes} B` : undefined,
+        modified: item.modifiedAt,
+        path: folderPath,
+      }];
+    }
+    return item.children ? flattenTree(item.children, itemPath) : [];
+  });
+}
+
 export default function SnapshotBrowser() {
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [selectedSnapshotId, setSelectedSnapshotId] = useState('');
@@ -74,6 +111,46 @@ export default function SnapshotBrowser() {
       setSelectedSnapshotId(snapshots[0].id);
     }
   }, [selectedSnapshotId, snapshots]);
+
+  useEffect(() => {
+    if (!selectedSnapshotId) return;
+
+    let cancelled = false;
+    const loadSnapshotBrowse = async () => {
+      try {
+        const response = await fetchWithAuth(`/backup/snapshots/${selectedSnapshotId}/browse`);
+        if (!response.ok) {
+          throw new Error('Failed to browse snapshot');
+        }
+        const payload = await response.json();
+        const items = Array.isArray(payload?.data) ? payload.data as SnapshotTreeItem[] : [];
+        const treeNodes = toTreeNodes(items);
+        const files = flattenTree(items);
+
+        if (cancelled) return;
+        setSnapshots((prev) => prev.map((snapshot) => (
+          snapshot.id === selectedSnapshotId
+            ? {
+                ...snapshot,
+                tree: treeNodes.length > 0
+                  ? { id: '/', name: 'Root', type: 'folder', children: treeNodes }
+                  : undefined,
+                files,
+              }
+            : snapshot
+        )));
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Failed to browse snapshot');
+        }
+      }
+    };
+
+    void loadSnapshotBrowse();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSnapshotId]);
 
   const selectedSnapshot = useMemo(
     () => snapshots.find((snapshot) => snapshot.id === selectedSnapshotId),

@@ -10,15 +10,21 @@ vi.mock('../db', () => ({
   },
 }));
 
-vi.mock('../jobs/c2cBackupWorker', () => ({
-  getC2cQueue: vi.fn(),
+vi.mock('../jobs/c2cEnqueue', () => ({
+  enqueueC2cRestore: vi.fn(),
+  enqueueC2cSync: vi.fn(),
+}));
+
+vi.mock('./c2cJobCreation', () => ({
+  createC2cSyncJobIfIdle: vi.fn(),
 }));
 
 import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { getC2cQueue } from '../jobs/c2cBackupWorker';
+import { enqueueC2cRestore, enqueueC2cSync } from '../jobs/c2cEnqueue';
 import { validateToolInput } from './aiToolSchemas';
+import { createC2cSyncJobIfIdle } from './c2cJobCreation';
 import { registerC2CTools } from './aiToolsC2C';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
@@ -87,9 +93,12 @@ function setDefaultDbMocks() {
   vi.mocked(db.insert).mockImplementation(() => createInsertChain([]) as any);
   vi.mocked(db.update).mockImplementation(() => createUpdateChain([]) as any);
   vi.mocked(db.delete).mockImplementation(() => createDeleteChain([]) as any);
-  vi.mocked(getC2cQueue).mockReturnValue({
-    add: vi.fn().mockResolvedValue({}),
-  } as any);
+  vi.mocked(createC2cSyncJobIfIdle).mockResolvedValue({
+    job: { id: JOB_ID, status: 'pending' } as any,
+    created: true,
+  });
+  vi.mocked(enqueueC2cSync).mockResolvedValue('queue-job-1');
+  vi.mocked(enqueueC2cRestore).mockResolvedValue('queue-job-2');
 }
 
 function mockSelectSequence(rowsList: any[][]) {
@@ -194,7 +203,10 @@ function prepareHandlerMocks(toolName: string) {
       break;
     case 'trigger_c2c_sync':
       mockSelectSequence([[{ id: CONFIG_ID, orgId: ORG_ID, name: 'M365 Backup' }]]);
-      mockInsertSequence([[{ id: JOB_ID, status: 'pending' }]]);
+      vi.mocked(createC2cSyncJobIfIdle).mockResolvedValue({
+        job: { id: JOB_ID, status: 'pending' } as any,
+        created: true,
+      });
       break;
     case 'restore_c2c_items':
       mockSelectSequence([[{ id: ITEM_ID, orgId: ORG_ID, configId: CONFIG_ID }]]);

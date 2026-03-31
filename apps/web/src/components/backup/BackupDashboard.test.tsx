@@ -85,4 +85,24 @@ describe('BackupDashboard usage history chart', () => {
     expect(await screen.findByLabelText('Storage usage trend by provider over time')).not.toBeNull();
     expect(screen.queryByText('Chart placeholder: integrate provider usage history.')).toBeNull();
   });
+
+  it('shows the recovery bootstrap tab', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/backup/dashboard') {
+        return makeJsonResponse({ data: { stats: [], recentJobs: [], storageProviders: [], attentionItems: [] } });
+      }
+
+      if (url === '/backup/usage-history?days=14') {
+        return makeJsonResponse({ data: { points: [] } });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BackupDashboard />);
+
+    expect(await screen.findByRole('button', { name: /Recovery Bootstrap/i })).toBeTruthy();
+  });
 });

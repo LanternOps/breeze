@@ -21,6 +21,7 @@ type SnapshotFile = {
   id: string;
   name: string;
   size?: string;
+  path: string;
 };
 
 type Snapshot = {
@@ -30,6 +31,37 @@ type Snapshot = {
   status?: string;
   files?: SnapshotFile[];
 };
+
+type SnapshotTreeItem = {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+  sizeBytes?: number;
+  modifiedAt?: string;
+  children?: SnapshotTreeItem[];
+};
+
+function flattenSnapshotTree(nodes: SnapshotTreeItem[]): SnapshotFile[] {
+  const files: SnapshotFile[] = [];
+
+  const visit = (entries: SnapshotTreeItem[]) => {
+    for (const entry of entries) {
+      if (entry.type === 'file') {
+        files.push({
+          id: entry.path,
+          path: entry.path,
+          name: entry.name,
+          size: typeof entry.sizeBytes === 'number' ? `${entry.sizeBytes} B` : undefined,
+        });
+        continue;
+      }
+      if (entry.children) visit(entry.children);
+    }
+  };
+
+  visit(nodes);
+  return files;
+}
 
 export default function RestoreWizard() {
   const [step, setStep] = useState(0);
@@ -44,6 +76,7 @@ export default function RestoreWizard() {
   const [restoreError, setRestoreError] = useState<string>();
   const [restoreSuccess, setRestoreSuccess] = useState<string>();
   const [restoring, setRestoring] = useState(false);
+  const [filesLoading, setFilesLoading] = useState(false);
 
   const nextStep = () => setStep((prev) => Math.min(prev + 1, 4));
   const prevStep = () => setStep((prev) => Math.max(prev - 1, 0));
@@ -81,6 +114,41 @@ export default function RestoreWizard() {
     setSelectedFiles(new Set());
   }, [snapshotId]);
 
+  useEffect(() => {
+    if (!snapshotId) return;
+
+    let cancelled = false;
+    const loadSnapshotFiles = async () => {
+      try {
+        setFilesLoading(true);
+        const response = await fetchWithAuth(`/backup/snapshots/${snapshotId}/browse`);
+        if (!response.ok) {
+          throw new Error('Failed to browse snapshot contents');
+        }
+        const payload = await response.json();
+        const items = Array.isArray(payload?.data) ? payload.data as SnapshotTreeItem[] : [];
+        const files = flattenSnapshotTree(items);
+        if (cancelled) return;
+        setSnapshots((prev) => prev.map((snapshot) => (
+          snapshot.id === snapshotId
+            ? { ...snapshot, files }
+            : snapshot
+        )));
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Failed to load snapshot contents');
+        }
+      } finally {
+        if (!cancelled) setFilesLoading(false);
+      }
+    };
+
+    void loadSnapshotFiles();
+    return () => {
+      cancelled = true;
+    };
+  }, [snapshotId]);
+
   const toggleFile = (id: string) => {
     setSelectedFiles((prev) => {
       const next = new Set(prev);
@@ -107,7 +175,7 @@ export default function RestoreWizard() {
       const payload = {
         snapshotId,
         restoreType,
-        files: restoreType === 'selective' ? Array.from(selectedFiles) : [],
+        selectedPaths: restoreType === 'selective' ? Array.from(selectedFiles) : [],
         targetPath: destination === 'alternate' ? alternatePath : undefined
       };
 
@@ -300,7 +368,7 @@ export default function RestoreWizard() {
                 <div className="space-y-3">
                   {selectableFiles.length === 0 ? (
                     <div className="rounded-md border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground">
-                      No files available for this snapshot.
+                      {filesLoading ? 'Loading snapshot contents...' : 'No files available for this snapshot.'}
                     </div>
                   ) : (
                     selectableFiles.map((file) => (

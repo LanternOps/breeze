@@ -11,6 +11,11 @@ import { getRedisConnection } from '../services/redis';
 import { bulkIndexEvents, clearClientCache } from '../services/logForwarding';
 
 const QUEUE_NAME = 'log-forwarding';
+const MAX_LOG_FORWARDING_EVENTS = 500;
+const MAX_LOG_FORWARDING_HOSTNAME = 255;
+const MAX_LOG_FORWARDING_FIELD = 256;
+const MAX_LOG_FORWARDING_MESSAGE = 4096;
+const MAX_LOG_FORWARDING_RAW_DATA_BYTES = 16 * 1024;
 
 interface LogForwardingJobData {
   orgId: string;
@@ -29,6 +34,42 @@ interface LogForwardingJobData {
 let queue: Queue<LogForwardingJobData> | null = null;
 let worker: Worker<LogForwardingJobData> | null = null;
 
+function truncateLogString(value: string, max: number): string {
+  return value.length <= max ? value : value.slice(0, max);
+}
+
+function sanitizeRawData(value: unknown): unknown {
+  if (value === undefined) {
+    return undefined;
+  }
+  try {
+    const serialized = JSON.stringify(value);
+    if (!serialized || serialized.length <= MAX_LOG_FORWARDING_RAW_DATA_BYTES) {
+      return value;
+    }
+  } catch (err) {
+    console.warn('[LogForwarding] Failed to serialize rawData payload, dropping field:', err);
+    return undefined;
+  }
+  return undefined;
+}
+
+function sanitizeLogForwardingData(data: LogForwardingJobData): LogForwardingJobData {
+  return {
+    orgId: data.orgId,
+    deviceId: data.deviceId,
+    hostname: truncateLogString(data.hostname, MAX_LOG_FORWARDING_HOSTNAME),
+    events: data.events.slice(0, MAX_LOG_FORWARDING_EVENTS).map((event) => ({
+      category: truncateLogString(event.category, MAX_LOG_FORWARDING_FIELD),
+      level: truncateLogString(event.level, MAX_LOG_FORWARDING_FIELD),
+      source: truncateLogString(event.source, MAX_LOG_FORWARDING_FIELD),
+      message: truncateLogString(event.message, MAX_LOG_FORWARDING_MESSAGE),
+      timestamp: event.timestamp,
+      rawData: sanitizeRawData(event.rawData),
+    })),
+  };
+}
+
 export function getLogForwardingQueue(): Queue<LogForwardingJobData> {
   if (!queue) {
     queue = new Queue<LogForwardingJobData>(QUEUE_NAME, {
@@ -46,16 +87,20 @@ export function getLogForwardingQueue(): Queue<LogForwardingJobData> {
 
 export async function enqueueLogForwarding(data: LogForwardingJobData): Promise<void> {
   const q = getLogForwardingQueue();
+  const sanitized = sanitizeLogForwardingData(data);
+  if (sanitized.events.length === 0) {
+    return;
+  }
 
   // Backpressure: skip if queue is overwhelmed
   const waiting = await q.getWaitingCount();
   if (waiting > 10000) {
-    console.warn(`[logForwarding] Queue depth ${waiting} exceeds 10k, skipping enqueue for org ${data.orgId}`);
+    console.warn(`[logForwarding] Queue depth ${waiting} exceeds 10k, skipping enqueue for org ${sanitized.orgId}`);
     return;
   }
 
-  await q.add('forward-events', data, {
-    jobId: `fwd-${data.deviceId}-${Date.now()}`,
+  await q.add('forward-events', sanitized, {
+    jobId: `fwd-${sanitized.deviceId}-${Date.now()}`,
   });
 }
 

@@ -10,6 +10,7 @@ import {
   computeAndPersistOrgUserRisk,
   publishUserRiskScoreEvents
 } from '../services/userRiskScoring';
+import { isReusableState } from '../services/bullmqUtils';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -31,6 +32,10 @@ function parsePositiveIntEnv(name: string, defaultValue: number): number {
 
 const SCAN_INTERVAL_MS = parsePositiveIntEnv('USER_RISK_SCAN_INTERVAL_MS', 6 * 60 * 60 * 1000);
 const USER_RISK_WORKER_CONCURRENCY = parsePositiveIntEnv('USER_RISK_WORKER_CONCURRENCY', 3);
+const USER_RISK_ON_DEMAND_DEDUPE_WINDOW_MS = parsePositiveIntEnv('USER_RISK_ON_DEMAND_DEDUPE_WINDOW_MS', 30 * 1000);
+const USER_RISK_EVENT_TYPE_MAX_LEN = 128;
+const USER_RISK_DESCRIPTION_MAX_LEN = 1024;
+const USER_RISK_DETAILS_MAX_BYTES = 8 * 1024;
 
 type ScanOrgsJobData = {
   type: 'scan-orgs';
@@ -60,6 +65,37 @@ type UserRiskJobData = ScanOrgsJobData | ComputeOrgJobData | ProcessSignalEventJ
 
 let userRiskQueue: Queue<UserRiskJobData> | null = null;
 let userRiskWorker: Worker<UserRiskJobData> | null = null;
+
+function truncateUserRiskString(value: string, max: number): string {
+  return value.length <= max ? value : value.slice(0, max);
+}
+
+function sanitizeUserRiskDetails(details: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!details) {
+    return undefined;
+  }
+  try {
+    const serialized = JSON.stringify(details);
+    if (serialized && serialized.length <= USER_RISK_DETAILS_MAX_BYTES) {
+      return details;
+    }
+  } catch (err) {
+    console.warn('[UserRiskJobs] Failed to serialize details payload, dropping field:', err);
+    return undefined;
+  }
+  return undefined;
+}
+
+function sanitizeUserRiskSignalEventInput(
+  input: Omit<ProcessSignalEventJobData, 'type' | 'queuedAt'>
+): Omit<ProcessSignalEventJobData, 'type' | 'queuedAt'> {
+  return {
+    ...input,
+    eventType: truncateUserRiskString(input.eventType, USER_RISK_EVENT_TYPE_MAX_LEN),
+    description: truncateUserRiskString(input.description, USER_RISK_DESCRIPTION_MAX_LEN),
+    details: sanitizeUserRiskDetails(input.details),
+  };
+}
 
 export function getUserRiskQueue(): Queue<UserRiskJobData> {
   if (!userRiskQueue) {
@@ -241,6 +277,19 @@ export async function shutdownUserRiskJobs(): Promise<void> {
 
 export async function triggerUserRiskRecompute(orgId: string): Promise<string> {
   const queue = getUserRiskQueue();
+  const slot = Math.floor(Date.now() / USER_RISK_ON_DEMAND_DEDUPE_WINDOW_MS).toString(36);
+  const jobId = `user-risk-recompute:${orgId}:${slot}`;
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      return String(existing.id);
+    }
+    await existing.remove().catch((error) => {
+      console.error(`[UserRiskJobs] Failed to remove stale recompute job ${jobId}:`, error);
+    });
+  }
+
   const job = await queue.add(
     'compute-org',
     {
@@ -249,6 +298,7 @@ export async function triggerUserRiskRecompute(orgId: string): Promise<string> {
       queuedAt: new Date().toISOString()
     },
     {
+      jobId,
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 200 }
     }
@@ -258,11 +308,12 @@ export async function triggerUserRiskRecompute(orgId: string): Promise<string> {
 
 export async function enqueueUserRiskSignalEvent(input: Omit<ProcessSignalEventJobData, 'type' | 'queuedAt'>): Promise<string> {
   const queue = getUserRiskQueue();
+  const sanitized = sanitizeUserRiskSignalEventInput(input);
   const job = await queue.add(
     'process-signal-event',
     {
       type: 'process-signal-event',
-      ...input,
+      ...sanitized,
       queuedAt: new Date().toISOString()
     },
     {

@@ -5,6 +5,7 @@ import { db } from '../../db';
 import { c2cConnections, c2cConsentSessions } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { captureException } from '../../services/sentry';
+import { encryptSecret } from '../../services/secretCrypto';
 import {
   getPlatformConfig,
   buildAdminConsentUrl,
@@ -149,7 +150,7 @@ m365CallbackRoute.get('/c2c/m365/callback', async (c) => {
         tenantId,
         clientId: null,
         clientSecret: null,
-        accessToken: tokenResult.accessToken,
+        accessToken: encryptSecret(tokenResult.accessToken),
         tokenExpiresAt,
         scopes: session.scopes || null,
         status: 'active',

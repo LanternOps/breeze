@@ -1,11 +1,10 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '@hono/zod-validator';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   devices,
-  deviceCommands,
   deviceMetrics,
   agentVersions,
 } from '../../db/schema';
@@ -22,6 +21,7 @@ import {
   buildHelperConfigUpdate,
 } from './helpers';
 import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
+import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 
 export const heartbeatRoutes = new Hono();
 
@@ -65,6 +65,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   }
   if (data.tccPermissions) {
     deviceUpdates.tccPermissions = data.tccPermissions;
+  }
+  if (data.desktopAccess) {
+    deviceUpdates.desktopAccess = data.desktopAccess;
   }
   if (data.isHeadless !== undefined) {
     deviceUpdates.isHeadless = data.isHeadless;
@@ -146,26 +149,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     }
   }
 
-  const commands = await db
-    .select()
-    .from(deviceCommands)
-    .where(
-      and(
-        eq(deviceCommands.deviceId, device.id),
-        eq(deviceCommands.status, 'pending')
-      )
-    )
-    .orderBy(deviceCommands.createdAt)
-    .limit(10);
-
-  if (commands.length > 0) {
-    for (const cmd of commands) {
-      await db
-        .update(deviceCommands)
-        .set({ status: 'sent' })
-        .where(eq(deviceCommands.id, cmd.id));
-    }
-  }
+  const commands = await claimPendingCommandsForDevice(device.id, 10);
 
   let configUpdate: PolicyProbeConfigUpdate | null = null;
   try {

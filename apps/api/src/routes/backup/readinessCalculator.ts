@@ -1,6 +1,6 @@
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import * as dbModule from '../../db';
-import { recoveryReadiness as recoveryReadinessTable } from '../../db/schema';
+import { backupJobs as backupJobsTable, recoveryReadiness as recoveryReadinessTable } from '../../db/schema';
 import { publishEvent } from '../../services/eventBus';
 import {
   backupJobs,
@@ -20,6 +20,7 @@ import {
   BACKUP_RECENT_COVERAGE_DAYS,
   listBackupVerifications
 } from './verificationService';
+import { isCriticalBackupDevice } from './criticality';
 
 const MINUTE_MS = 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -62,11 +63,6 @@ function clamp(value: number, min: number, max: number): number {
 function average(values: number[]): number | null {
   if (values.length === 0) return null;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-function isCriticalDevice(_orgId: string, _deviceId: string): boolean {
-  // TODO: Determine criticality from config policy assignment level or device tags
-  return false;
 }
 
 // ---- Low readiness state tracking ----
@@ -129,6 +125,36 @@ function listRecoveryReadinessFromMemory(orgId: string): RecoveryReadiness[] {
   return recoveryReadinessRecords
     .filter((item) => recoveryReadinessOrgById.get(item.id) === orgId)
     .sort((a, b) => a.readinessScore - b.readinessScore);
+}
+
+async function getLatestCompletedBackup(
+  orgId: string,
+  deviceId: string
+): Promise<{ completedAt: Date | string | null } | null> {
+  if (supportsDbOrg(orgId) && isUuid(deviceId)) {
+    try {
+      const [row] = await runWithSystemDbAccess(() => db
+        .select({ completedAt: backupJobsTable.completedAt })
+        .from(backupJobsTable)
+        .where(and(
+          eq(backupJobsTable.orgId, orgId),
+          eq(backupJobsTable.deviceId, deviceId),
+          eq(backupJobsTable.status, 'completed'),
+        ))
+        .orderBy(desc(backupJobsTable.completedAt))
+        .limit(1));
+      if (row) return row;
+    } catch (error) {
+      console.warn('[backupVerification] DB latest backup lookup failed; falling back to memory:', error);
+    }
+  }
+
+  const latestBackup = backupJobs
+    .filter((job) => jobOrgById.get(job.id) === orgId)
+    .filter((job) => job.deviceId === deviceId && Boolean(job.completedAt))
+    .sort((a, b) => toEpoch(b.completedAt) - toEpoch(a.completedAt))[0];
+
+  return latestBackup ? { completedAt: latestBackup.completedAt ?? null } : null;
 }
 
 async function listRecoveryReadinessFromDb(orgId: string): Promise<RecoveryReadiness[] | null> {
@@ -244,7 +270,7 @@ export async function recomputeRecoveryReadinessForDevice(
   deviceId: string
 ): Promise<RecoveryReadiness> {
   const [recent, previous] = await Promise.all([
-    listBackupVerifications(orgId, { deviceId, limit: BACKUP_MAX_RECENT_VERIFICATIONS }),
+    listBackupVerifications(orgId, { deviceId, limit: BACKUP_MAX_RECENT_VERIFICATIONS, excludeSimulated: true }),
     getRecoveryReadinessForDevice(orgId, deviceId)
   ]);
   const previousScore = previous?.readinessScore ?? null;
@@ -284,14 +310,20 @@ export async function recomputeRecoveryReadinessForDevice(
     return readiness;
   }
 
-  const passUnits = recent.reduce((sum, row) => {
-    if (row.status === 'passed') return sum + 1;
-    if (row.status === 'partial') return sum + 0.5;
+  const weightedRows = recent.map((row) => ({
+    row,
+    weight: row.verificationType === 'integrity' ? 0.5 : 1,
+  }));
+  const maxUnits = weightedRows.reduce((sum, entry) => sum + entry.weight, 0);
+  const passUnits = weightedRows.reduce((sum, entry) => {
+    if (entry.row.status === 'passed') return sum + entry.weight;
+    if (entry.row.status === 'partial') return sum + (entry.weight * 0.5);
     return sum;
   }, 0);
-  const passRate = passUnits / recent.length;
+  const passRate = maxUnits > 0 ? passUnits / maxUnits : 0;
 
   const restoreSamples = recent
+    .filter((row) => row.verificationType === 'test_restore')
     .map((row) => row.restoreTimeSeconds ?? null)
     .filter((value): value is number => typeof value === 'number' && value > 0);
   const avgRestoreSeconds = average(restoreSamples);
@@ -329,7 +361,7 @@ export async function recomputeRecoveryReadinessForDevice(
   }
 
   const hasRecentRestoreTest = recent.some((row) => (
-    (row.verificationType === 'test_restore' || row.verificationType === 'full_recovery')
+    row.verificationType === 'test_restore'
     && (now - toEpoch(row.completedAt ?? row.startedAt)) <= (30 * DAY_MS)
   ));
   if (!hasRecentRestoreTest) {
@@ -340,10 +372,7 @@ export async function recomputeRecoveryReadinessForDevice(
     });
   }
 
-  const latestBackup = backupJobs
-    .filter((job) => jobOrgById.get(job.id) === orgId)
-    .filter((job) => job.deviceId === deviceId && Boolean(job.completedAt))
-    .sort((a, b) => toEpoch(b.completedAt) - toEpoch(a.completedAt))[0];
+  const latestBackup = await getLatestCompletedBackup(orgId, deviceId);
 
   const estimatedRpoMinutes = latestBackup?.completedAt
     ? Math.max(0, Math.round((now - toEpoch(latestBackup.completedAt)) / MINUTE_MS))
@@ -398,7 +427,7 @@ export async function getBackupHealthSummary(orgId: string): Promise<{
   };
 }> {
   const [rows, readiness, assigned] = await Promise.all([
-    listBackupVerifications(orgId),
+    listBackupVerifications(orgId, { excludeSimulated: true }),
     listRecoveryReadiness(orgId),
     resolveAllBackupAssignedDevices(orgId).catch((err) => {
       console.error(`[BackupReadiness] Failed to resolve assigned devices:`, err instanceof Error ? err.message : err);
@@ -417,9 +446,13 @@ export async function getBackupHealthSummary(orgId: string): Promise<{
       .map((row) => row.deviceId)
   );
   const failedLast24h = last24h.filter((row) => row.status === 'failed');
-  const criticalFailures = failedLast24h.filter((row) => isCriticalDevice(orgId, row.deviceId));
   const lowReadiness = readiness.filter((row) => row.readinessScore < BACKUP_LOW_READINESS_THRESHOLD);
-  const criticalReadinessRisk = lowReadiness.filter((row) => isCriticalDevice(orgId, row.deviceId));
+  const [criticalFailureFlags, criticalReadinessFlags] = await Promise.all([
+    Promise.all(failedLast24h.map((row) => isCriticalBackupDevice(orgId, row.deviceId))),
+    Promise.all(lowReadiness.map((row) => isCriticalBackupDevice(orgId, row.deviceId))),
+  ]);
+  const criticalFailures = failedLast24h.filter((_row, index) => criticalFailureFlags[index]);
+  const criticalReadinessRisk = lowReadiness.filter((_row, index) => criticalReadinessFlags[index]);
 
   const averageScore = readiness.length > 0
     ? Math.round((readiness.reduce((sum, row) => sum + row.readinessScore, 0) / readiness.length) * 10) / 10

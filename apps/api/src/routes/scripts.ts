@@ -16,6 +16,10 @@ import { PERMISSIONS } from '../services/permissions';
 import { sendCommandToAgent } from './agentWs';
 import { writeRouteAudit } from '../services/auditEvents';
 import { checkDeviceMaintenanceWindow } from '../services/featureConfigResolver';
+import {
+  claimPendingCommandForDelivery,
+  releaseClaimedCommandDelivery,
+} from '../services/commandDispatch';
 
 export const scriptRoutes = new Hono();
 
@@ -733,21 +737,21 @@ scriptRoutes.post(
 
       // Push command via WebSocket for immediate execution
       if (device.agentId) {
-        const sent = sendCommandToAgent(device.agentId, {
-          id: command.id,
-          type: 'script',
-          payload: command.payload as Record<string, unknown>
-        });
-        if (sent) {
-          await db
-            .update(deviceCommands)
-            .set({ status: 'sent', executedAt: new Date() })
-            .where(eq(deviceCommands.id, command.id));
-
-          await db
-            .update(scriptExecutions)
-            .set({ status: 'running', startedAt: new Date() })
-            .where(eq(scriptExecutions.id, execution.id));
+        const claimed = await claimPendingCommandForDelivery(command.id);
+        if (claimed) {
+          const sent = sendCommandToAgent(device.agentId, {
+            id: command.id,
+            type: 'script',
+            payload: command.payload as Record<string, unknown>
+          });
+          if (sent) {
+            await db
+              .update(scriptExecutions)
+              .set({ status: 'running', startedAt: claimed.executedAt })
+              .where(eq(scriptExecutions.id, execution.id));
+          } else {
+            await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
+          }
         }
       }
 

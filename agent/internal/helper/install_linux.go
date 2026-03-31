@@ -122,7 +122,7 @@ func spawnWithConfig(binaryPath, sessionKey, configPath string) error {
 }
 
 func isHelperRunning() bool {
-	out, err := exec.Command("pgrep", "-f", "breeze-helper").Output()
+	out, err := outputHelperCommand("pgrep", "-f", "breeze-helper")
 	if err != nil {
 		return false
 	}
@@ -130,5 +130,5 @@ func isHelperRunning() bool {
 }
 
 func stopHelper() error {
-	return exec.Command("pkill", "-f", "breeze-helper").Run()
+	return runHelperCommand("pkill", "-f", "breeze-helper")
 }

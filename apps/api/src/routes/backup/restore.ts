@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../../db';
-import { backupSnapshots, restoreJobs } from '../../db/schema';
+import { backupSnapshotFiles, backupSnapshots, restoreJobs } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
@@ -42,6 +42,23 @@ restoreRoutes.post(
       return c.json({ error: 'Snapshot not found' }, 404);
     }
 
+    if (payload.restoreType === 'selective') {
+      const snapshotFiles = await db
+        .select({ id: backupSnapshotFiles.id, sourcePath: backupSnapshotFiles.sourcePath })
+        .from(backupSnapshotFiles)
+        .where(eq(backupSnapshotFiles.snapshotDbId, snapshot.id));
+
+      if (snapshotFiles.length === 0) {
+        return c.json({ error: 'Selective restore is unavailable for snapshots without indexed files' }, 409);
+      }
+
+      const availablePaths = new Set(snapshotFiles.map((row) => row.sourcePath));
+      const invalidPath = payload.selectedPaths?.find((path) => !availablePaths.has(path));
+      if (invalidPath) {
+        return c.json({ error: `Selected path is not available in this snapshot: ${invalidPath}` }, 400);
+      }
+    }
+
     const now = new Date();
     const [row] = await db
       .insert(restoreJobs)
@@ -49,9 +66,11 @@ restoreRoutes.post(
         orgId,
         snapshotId: snapshot.id,
         deviceId: payload.deviceId ?? snapshot.deviceId,
-        restoreType: 'selective',
+        restoreType: payload.restoreType,
         targetPath: payload.targetPath ?? null,
+        selectedPaths: payload.restoreType === 'selective' ? (payload.selectedPaths ?? []) : [],
         status: 'pending',
+        initiatedBy: c.get('auth')?.user?.id ?? null,
         createdAt: now,
         updatedAt: now,
       })
@@ -72,7 +91,7 @@ restoreRoutes.post(
         row.deviceId,
         orgId,
         row.targetPath ?? undefined,
-        payload.selectedPaths
+        payload.restoreType === 'selective' ? payload.selectedPaths : []
       );
     } catch (err) {
       console.error('[BackupRestore] Failed to enqueue dispatch:', err);
@@ -86,6 +105,7 @@ restoreRoutes.post(
       details: {
         snapshotId: snapshot.id,
         deviceId: row.deviceId,
+        restoreType: row.restoreType,
       },
     });
 
@@ -118,6 +138,8 @@ function toRestoreResponse(row: typeof restoreJobs.$inferSelect) {
     id: row.id,
     snapshotId: row.snapshotId,
     deviceId: row.deviceId,
+    restoreType: row.restoreType,
+    selectedPaths: row.selectedPaths ?? [],
     status: row.status,
     targetPath: row.targetPath ?? null,
     createdAt: row.createdAt.toISOString(),

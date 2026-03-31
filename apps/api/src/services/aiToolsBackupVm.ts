@@ -38,6 +38,19 @@ function safeHandler(toolName: string, fn: BackupHandler): BackupHandler {
   };
 }
 
+async function markRestoreJobFailed(restoreJobId: string, error: string): Promise<void> {
+  const now = new Date();
+  await db
+    .update(restoreJobs)
+    .set({
+      status: 'failed',
+      completedAt: now,
+      updatedAt: now,
+      targetConfig: sql`coalesce(${restoreJobs.targetConfig}, '{}'::jsonb) || jsonb_build_object('error', ${error})`,
+    })
+    .where(eq(restoreJobs.id, restoreJobId));
+}
+
 export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
     aiTools.set(tool.definition.name, tool);
@@ -59,10 +72,11 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
           targetDeviceId: { type: 'string', description: 'Target device UUID (required)' },
           hypervisor: {
             type: 'string',
-            enum: ['hyperv', 'vmware'],
+            enum: ['hyperv'],
             description: 'Target hypervisor platform',
           },
           vmName: { type: 'string', description: 'Name of the restored VM (required)' },
+          switchName: { type: 'string', description: 'Optional Hyper-V switch name' },
           vmSpecs: {
             type: 'object',
             properties: {
@@ -81,8 +95,12 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
       const targetDeviceId = input.targetDeviceId as string;
       const hypervisor = input.hypervisor as string;
       const vmName = input.vmName as string;
+      const switchName = typeof input.switchName === 'string' ? input.switchName : undefined;
       if (!snapshotId || !targetDeviceId || !hypervisor || !vmName) {
         return JSON.stringify({ error: 'snapshotId, targetDeviceId, hypervisor, and vmName are required' });
+      }
+      if (hypervisor !== 'hyperv') {
+        return JSON.stringify({ error: 'Only Hyper-V VM restore is currently supported' });
       }
 
       const snapshotConditions: SQL[] = [eq(backupSnapshots.id, snapshotId)];
@@ -125,7 +143,8 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
           targetConfig: {
             hypervisor,
             vmName,
-            ...vmSpecs,
+            switchName: switchName ?? null,
+            vmSpecs,
           },
           initiatedBy: auth.user?.id ?? null,
           createdAt: new Date(),
@@ -139,24 +158,33 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
         {
           restoreJobId: restoreJob?.id,
           snapshotId: snapshot.snapshotId,
-          hypervisor,
           vmName,
-          ...vmSpecs,
+          memoryMb: vmSpecs.memoryMb,
+          cpuCount: vmSpecs.cpuCount,
+          diskSizeGb: vmSpecs.diskSizeGb,
+          switchName,
         },
         { userId: auth.user?.id }
       );
 
       if (error) {
-        await db
-          .update(restoreJobs)
-          .set({
-            status: 'failed',
-            completedAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(eq(restoreJobs.id, restoreJob!.id));
+        await markRestoreJobFailed(restoreJob!.id, error);
         return JSON.stringify({ error });
       }
+
+      if (!command?.id) {
+        const commandError = 'Restore command was queued without a command ID';
+        await markRestoreJobFailed(restoreJob!.id, commandError);
+        return JSON.stringify({ error: commandError });
+      }
+
+      await db
+        .update(restoreJobs)
+        .set({
+          commandId: command.id,
+          updatedAt: new Date(),
+        })
+        .where(eq(restoreJobs.id, restoreJob!.id));
 
       return JSON.stringify({
         success: true,
@@ -246,7 +274,7 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
           targetConfig: {
             mode: 'instant_boot',
             vmName,
-            ...vmSpecs,
+            vmSpecs,
           },
           initiatedBy: auth.user?.id ?? null,
           createdAt: new Date(),
@@ -261,22 +289,31 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
           restoreJobId: restoreJob?.id,
           snapshotId: snapshot.snapshotId,
           vmName,
-          ...vmSpecs,
+          memoryMb: vmSpecs.memoryMb,
+          cpuCount: vmSpecs.cpuCount,
+          diskSizeGb: vmSpecs.diskSizeGb,
         },
         { userId: auth.user?.id }
       );
 
       if (error) {
-        await db
-          .update(restoreJobs)
-          .set({
-            status: 'failed',
-            completedAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(eq(restoreJobs.id, restoreJob!.id));
+        await markRestoreJobFailed(restoreJob!.id, error);
         return JSON.stringify({ error });
       }
+
+      if (!command?.id) {
+        const commandError = 'Instant boot command was queued without a command ID';
+        await markRestoreJobFailed(restoreJob!.id, commandError);
+        return JSON.stringify({ error: commandError });
+      }
+
+      await db
+        .update(restoreJobs)
+        .set({
+          commandId: command.id,
+          updatedAt: new Date(),
+        })
+        .where(eq(restoreJobs.id, restoreJob!.id));
 
       return JSON.stringify({
         success: true,

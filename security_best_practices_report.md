@@ -1,5 +1,7 @@
 # Security Best Practices Review Report
 
+Split report index: [/Users/toddhebebrand/breeze/security_reports/README.md](/Users/toddhebebrand/breeze/security_reports/README.md)
+
 Date: 2026-03-30
 Repository: /Users/toddhebebrand/breeze
 Reviewer mode: `security-best-practices`
@@ -1153,8 +1155,921 @@ Summary:
 - The macOS `ps` output parser used for GUI-user discovery now uses a bounded scanner, de-duplicates results, caps the number of discovered UIDs, and rejects malformed numeric IDs.
 - This hardens the LaunchAgent kickstart/bootstrap helper path against oversized process listings and malformed UID tokens.
 
+### R-112: `start_desktop` now rejects malformed desktop session identifiers before opening a new session
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/heartbeat/handlers_desktop.go](/Users/toddhebebrand/breeze/agent/internal/heartbeat/handlers_desktop.go)
+
+Summary:
+- The heartbeat-side `start_desktop` handler now validates the caller-supplied session identifier against the same bounded desktop-session pattern already used on disconnect notifications.
+- This prevents malformed or path-like session IDs from entering desktop session creation and downstream owner-tracking state.
+
+### R-113: stop, stream, input, and config desktop commands now share the same fail-closed session-ID validation
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/heartbeat/handlers_desktop.go](/Users/toddhebebrand/breeze/agent/internal/heartbeat/handlers_desktop.go)
+
+Summary:
+- `stop_desktop`, `desktop_stream_start`, `desktop_stream_stop`, `desktop_input`, and `desktop_config` now all go through a shared validated-session-ID helper instead of accepting arbitrary caller strings.
+- This closes the remaining heartbeat-side command paths that still trusted raw desktop session identifiers after the earlier disconnect/owner hardening.
+
+### R-114: desktop start requests now bound `displayIndex` to a small integer range
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/heartbeat/handlers_desktop.go](/Users/toddhebebrand/breeze/agent/internal/heartbeat/handlers_desktop.go)
+
+Summary:
+- The desktop start path now requires `displayIndex` to be an integer between `0` and `16`.
+- This prevents malformed floating-point or extreme display indices from flowing into session creation and monitor-selection logic.
+
+### R-115: WebSocket desktop stream start now enforces the same bounded monitor index policy
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/heartbeat/handlers_desktop.go](/Users/toddhebebrand/breeze/agent/internal/heartbeat/handlers_desktop.go)
+
+Summary:
+- `desktop_stream_start` now applies the same integer-and-range validation to `displayIndex` before it reaches the WS desktop manager.
+- This keeps the stream-start path aligned with the direct desktop-start path rather than leaving one monitor-selection surface looser than the other.
+
+### R-116: desktop input events now use an explicit allowlist of supported event types
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/heartbeat/handlers_desktop.go](/Users/toddhebebrand/breeze/agent/internal/heartbeat/handlers_desktop.go)
+
+Summary:
+- Heartbeat-side desktop input parsing now rejects unknown `type` values instead of passing arbitrary strings into the platform-specific input handlers.
+- This removes another trust boundary where malformed or unexpected viewer event types still reached desktop control code.
+
+### R-117: mouse-button desktop input is now canonicalized to a strict left/right/middle allowlist
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/heartbeat/handlers_desktop.go](/Users/toddhebebrand/breeze/agent/internal/heartbeat/handlers_desktop.go)
+
+Summary:
+- Desktop input normalization now only accepts `left`, `right`, or `middle` mouse-button identifiers and defaults blank click/down/up events to `left`.
+- This prevents unexpected button tokens from flowing into platform-specific click injection code.
+
+### R-118: keyboard desktop input now normalizes and size-bounds key and modifier fields
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/heartbeat/handlers_desktop.go](/Users/toddhebebrand/breeze/agent/internal/heartbeat/handlers_desktop.go)
+
+Summary:
+- Keyboard events now require a bounded `key`, de-duplicate modifiers, cap modifier count, and canonicalize aliases like `control`, `cmd`, `super`, and `win`.
+- This reduces injection ambiguity and avoids unbounded or adversarial modifier payloads in the input path.
+
+### R-119: desktop input coordinates and scroll deltas now reject malformed or extreme numeric values
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/heartbeat/handlers_desktop.go](/Users/toddhebebrand/breeze/agent/internal/heartbeat/handlers_desktop.go)
+
+Summary:
+- Input normalization now requires integer coordinates, rejects `NaN`/`Inf`, and caps coordinate magnitude and scroll delta before the desktop manager sees the event.
+- This removes a simple agent-side denial-of-service path where oversized scroll counts or malformed numeric payloads could reach input-injection loops.
+
+### R-120: helper install and migration shell-outs now run under a shared timeout wrapper instead of unconstrained local process execution
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/helper/command_util.go](/Users/toddhebebrand/breeze/agent/internal/helper/command_util.go)
+- [/Users/toddhebebrand/breeze/agent/internal/helper/install_linux.go](/Users/toddhebebrand/breeze/agent/internal/helper/install_linux.go)
+- [/Users/toddhebebrand/breeze/agent/internal/helper/install_darwin.go](/Users/toddhebebrand/breeze/agent/internal/helper/install_darwin.go)
+- [/Users/toddhebebrand/breeze/agent/internal/helper/install_windows.go](/Users/toddhebebrand/breeze/agent/internal/helper/install_windows.go)
+- [/Users/toddhebebrand/breeze/agent/internal/helper/migrate_linux.go](/Users/toddhebebrand/breeze/agent/internal/helper/migrate_linux.go)
+- [/Users/toddhebebrand/breeze/agent/internal/helper/migrate_darwin.go](/Users/toddhebebrand/breeze/agent/internal/helper/migrate_darwin.go)
+- [/Users/toddhebebrand/breeze/agent/internal/helper/migrate_windows.go](/Users/toddhebebrand/breeze/agent/internal/helper/migrate_windows.go)
+
+Summary:
+- Helper lifecycle commands such as `pgrep`, `pkill`, `tasklist`, `taskkill`, `launchctl bootout`, `stat`, and `loginctl` now execute through a shared `CommandContext` timeout wrapper.
+- This hardens a remaining cluster of local helper-management shell-outs that could otherwise hang indefinitely and stall install, removal, or migration flows.
+
+### R-121: helper-side UID, process-path, and migration-target parsing now validates and bounds local command output before use
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/helper/command_util.go](/Users/toddhebebrand/breeze/agent/internal/helper/command_util.go)
+- [/Users/toddhebebrand/breeze/agent/internal/helper/install_darwin.go](/Users/toddhebebrand/breeze/agent/internal/helper/install_darwin.go)
+- [/Users/toddhebebrand/breeze/agent/internal/helper/process_check_darwin.go](/Users/toddhebebrand/breeze/agent/internal/helper/process_check_darwin.go)
+- [/Users/toddhebebrand/breeze/agent/internal/helper/migrate_linux.go](/Users/toddhebebrand/breeze/agent/internal/helper/migrate_linux.go)
+
+Summary:
+- The helper package now parses console UIDs, process paths, and Linux migration targets through explicit numeric/path validators with bounded scanner limits and deduped target caps.
+- This closes another local trust boundary where raw command output still flowed directly into helper-session selection or process-identity checks.
+
+### R-122: package-manager providers now share bounded command-execution helpers instead of issuing unconstrained local shell-outs directly
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/patching/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/patching/command_limits.go)
+
+Summary:
+- The patching module now has shared timeout wrappers for output and combined-output command execution, plus a reusable bounded scanner configuration.
+- This removes a broad class of hung local package-manager invocations from the patch scan/install/remove paths.
+
+### R-123: package-manager install and uninstall output is now truncated before entering logs, errors, and result payloads
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/patching/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/patching/command_limits.go)
+- [/Users/toddhebebrand/breeze/agent/internal/patching/chocolatey.go](/Users/toddhebebrand/breeze/agent/internal/patching/chocolatey.go)
+- [/Users/toddhebebrand/breeze/agent/internal/patching/homebrew.go](/Users/toddhebebrand/breeze/agent/internal/patching/homebrew.go)
+- [/Users/toddhebebrand/breeze/agent/internal/patching/apt.go](/Users/toddhebebrand/breeze/agent/internal/patching/apt.go)
+- [/Users/toddhebebrand/breeze/agent/internal/patching/yum.go](/Users/toddhebebrand/breeze/agent/internal/patching/yum.go)
+
+Summary:
+- Install/uninstall output returned from `brew`, `apt-get`, `dnf`/`yum`, and `choco` is now truncated to a bounded size before it is copied into errors or `InstallResult.Message`.
+- This reduces a remaining agent-side memory and log-amplification path on package-manager failures.
+
+### R-124: APT install and uninstall now validate package IDs before invoking `apt-get`
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/patching/apt.go](/Users/toddhebebrand/breeze/agent/internal/patching/apt.go)
+- [/Users/toddhebebrand/breeze/agent/internal/patching/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/patching/command_limits.go)
+
+Summary:
+- The APT provider now enforces an explicit allowlist for package names and rejects option-like or malformed identifiers before calling `apt-get`.
+- This closes a shell-wrapper input boundary where caller-controlled package IDs were still treated as implicitly safe.
+
+### R-125: YUM/DNF install and uninstall now enforce the same package-name validation before mutation
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/patching/yum.go](/Users/toddhebebrand/breeze/agent/internal/patching/yum.go)
+- [/Users/toddhebebrand/breeze/agent/internal/patching/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/patching/command_limits.go)
+
+Summary:
+- The YUM/DNF provider now validates patch identifiers before it calls `update` or `remove`.
+- This removes the remaining unchecked package-name input on the Linux RPM patching path.
+
+### R-126: Homebrew package IDs are now validated before formula or cask upgrade/removal commands are constructed
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/patching/homebrew.go](/Users/toddhebebrand/breeze/agent/internal/patching/homebrew.go)
+- [/Users/toddhebebrand/breeze/agent/internal/patching/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/patching/command_limits.go)
+
+Summary:
+- Homebrew install and uninstall now reject malformed names, option-like identifiers, path-like values, and traversal-style tokens before command construction.
+- This narrows the package-ID trust boundary on the macOS third-party patch path.
+
+### R-127: Chocolatey scan, install, uninstall, and installed-package enumeration now run under explicit timeouts
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/patching/chocolatey.go](/Users/toddhebebrand/breeze/agent/internal/patching/chocolatey.go)
+- [/Users/toddhebebrand/breeze/agent/internal/patching/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/patching/command_limits.go)
+
+Summary:
+- The Chocolatey provider no longer calls `choco` through unconstrained `Output`/`CombinedOutput` paths.
+- This hardens the Windows package-manager wrapper against indefinitely hung local command execution during scan or mutation.
+
+### R-128: APT scan and installed-package enumeration now use bounded scanning and timeout-wrapped command execution
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/patching/apt.go](/Users/toddhebebrand/breeze/agent/internal/patching/apt.go)
+- [/Users/toddhebebrand/breeze/agent/internal/patching/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/patching/command_limits.go)
+
+Summary:
+- The APT provider now parses `apt list --upgradable` and `dpkg-query` output through the shared bounded scanner and timeout wrapper.
+- This reduces oversized local package-list output and hung command risk in the Debian/Ubuntu scan path.
+
+### R-129: YUM/DNF scan and installed-package enumeration now use the same bounded scanner and timeout policy
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/patching/yum.go](/Users/toddhebebrand/breeze/agent/internal/patching/yum.go)
+- [/Users/toddhebebrand/breeze/agent/internal/patching/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/patching/command_limits.go)
+
+Summary:
+- The YUM/DNF provider now wraps `check-update` and `rpm -qa` with explicit timeouts and parses their output through a bounded scanner.
+- This closes the equivalent result-budget and local DoS gap on the RPM-based patching path.
+
+### R-130: Homebrew scan/list and console-user discovery now use validated, timeout-bounded execution helpers
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/patching/homebrew.go](/Users/toddhebebrand/breeze/agent/internal/patching/homebrew.go)
+- [/Users/toddhebebrand/breeze/agent/internal/patching/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/patching/command_limits.go)
+
+Summary:
+- Homebrew scan/list execution now runs through bounded wrappers, and console-user discovery validates the short username returned by `stat` before it is used for `sudo -u`.
+- This hardens both the brew command path and the user-targeting decision that underpins root-to-console-user execution.
+
+### R-131: package-manager scan/list results now skip malformed package names, truncate large fields, and cap result fan-out
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/patching/chocolatey.go](/Users/toddhebebrand/breeze/agent/internal/patching/chocolatey.go)
+- [/Users/toddhebebrand/breeze/agent/internal/patching/homebrew.go](/Users/toddhebebrand/breeze/agent/internal/patching/homebrew.go)
+- [/Users/toddhebebrand/breeze/agent/internal/patching/apt.go](/Users/toddhebebrand/breeze/agent/internal/patching/apt.go)
+- [/Users/toddhebebrand/breeze/agent/internal/patching/yum.go](/Users/toddhebebrand/breeze/agent/internal/patching/yum.go)
+- [/Users/toddhebebrand/breeze/agent/internal/patching/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/patching/command_limits.go)
+
+Summary:
+- All four local package-manager providers now drop malformed names parsed from command output, truncate large titles/versions/descriptions, and stop after a bounded number of results.
+- This removes another large structured-output trust boundary from the patch inventory and patch availability surfaces.
+
+### R-132: collector command execution now has shared timeout and output-budget helpers instead of ad hoc direct process reads
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- The collectors package now has shared helpers for timeout-bounded command execution, bounded scanner creation, and field truncation.
+- This establishes a common defensive baseline for the local command-heavy collectors that previously mixed direct `Output()` calls with unbounded parsing.
+
+### R-133: macOS boot-time discovery now runs under explicit command timeouts and bounded log scanning
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/boot_performance_darwin.go](/Users/toddhebebrand/breeze/agent/internal/collectors/boot_performance_darwin.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- `sysctl kern.boottime` and the `log show` desktop-ready probe now run through shared timeout helpers, and the unified-log parsing path now uses a bounded scanner.
+- This closes a local hang and oversized-log parsing gap in the macOS boot-metrics path.
+
+### R-134: macOS launchd plist and login-item enumeration now use bounded command output and truncated item names
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/boot_performance_darwin.go](/Users/toddhebebrand/breeze/agent/internal/collectors/boot_performance_darwin.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- `plutil` and `osascript` calls in startup-item enumeration now run under bounded execution helpers, and login-item names are truncated before they enter collector results.
+- This reduces the risk of oversized or hostile local startup metadata dominating the startup inventory path.
+
+### R-135: early-boot process enumeration now uses bounded scanning and caps the number of matched processes
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/boot_performance_darwin.go](/Users/toddhebebrand/breeze/agent/internal/collectors/boot_performance_darwin.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- The macOS `ps -eo etime,cputime,comm` reader now runs under a timeout helper, uses a bounded scanner, truncates command names, and stops after a capped number of process records.
+- This removes another result-size and local DoS edge from the boot-performance impact-scoring path.
+
+### R-136: launchctl and AppleScript startup-item mutation paths now fail closed on hung commands and oversized output
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/boot_performance_darwin.go](/Users/toddhebebrand/breeze/agent/internal/collectors/boot_performance_darwin.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- The macOS startup-item enable/disable helpers now run `launchctl`, `id`, and `osascript` through timeout-bounded wrappers and truncate fallback error output before surfacing it.
+- This hardens a small remaining mutation surface in the collectors module that still used unconstrained local command execution.
+
+### R-137: macOS bandwidth queries now reject malformed interface names before they reach `ifconfig`
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/bandwidth_darwin.go](/Users/toddhebebrand/breeze/agent/internal/collectors/bandwidth_darwin.go)
+
+Summary:
+- The darwin bandwidth collector now validates interface names against a short allowlist before using them in `ifconfig`.
+- This narrows the interface-name trust boundary on the local network-speed probe path.
+
+### R-138: macOS network-speed probes now run under bounded command wrappers instead of direct `Output()` calls
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/bandwidth_darwin.go](/Users/toddhebebrand/breeze/agent/internal/collectors/bandwidth_darwin.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- `networksetup`, `ifconfig`, and the private `airport` binary now run through shared timeout/output-budget helpers.
+- This removes another macOS collector path that could previously hang indefinitely or return oversized local command output unbounded.
+
+### R-139: macOS unified-log event collection now caps processed result fan-out and truncates event identity fields
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/eventlogs_darwin.go](/Users/toddhebebrand/breeze/agent/internal/collectors/eventlogs_darwin.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- The darwin unified-log reader now runs through bounded command helpers, caps the number of accepted entries, and truncates `Source`, `EventID`, `Subsystem`, and crash-report metadata fields before they enter result payloads.
+- This reduces large caller-influenced log messages and process metadata from spilling into unbounded collector output.
+
+### R-140: macOS crash-report parsing now rejects oversized `.ips` and `.crash` files before reading them into memory
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/eventlogs_darwin.go](/Users/toddhebebrand/breeze/agent/internal/collectors/eventlogs_darwin.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- Crash-report ingestion now checks the file size before `os.ReadFile` and rejects oversized crash artifacts.
+- This closes a straightforward memory-amplification path in the application-crash event collector.
+
+### R-141: Linux systemd service and timer enumeration now uses bounded execution, unit-name validation, and capped result sets
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/change_tracker_linux.go](/Users/toddhebebrand/breeze/agent/internal/collectors/change_tracker_linux.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/services_linux.go](/Users/toddhebebrand/breeze/agent/internal/collectors/services_linux.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- Linux `systemctl` readers in both the change tracker and service collector now use timeout-bounded helpers, bounded scanners, validated unit names, truncated fields, and explicit result caps.
+- This hardens the main Linux service/task inventory surfaces against oversized or malformed local command output.
+
+### R-142: Linux boot-phase timing now uses bounded `systemd-analyze` execution instead of unconstrained local process reads
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/boot_performance_linux.go](/Users/toddhebebrand/breeze/agent/internal/collectors/boot_performance_linux.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- The Linux boot-performance collector now runs `systemd-analyze` through the shared timeout/output-budget helper.
+- This removes another collector path that could previously hang indefinitely or return oversized local output.
+
+### R-143: Linux startup-unit and blame parsing now uses bounded scanners, validated unit names, and capped fan-out
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/boot_performance_linux.go](/Users/toddhebebrand/breeze/agent/internal/collectors/boot_performance_linux.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- `systemctl list-unit-files` and `systemd-analyze blame` now parse through bounded scanners, skip malformed unit names, truncate item names/paths, and stop after a capped number of results.
+- This hardens the Linux startup-item and blame-based impact-scoring paths against oversized or malformed local command output.
+
+### R-144: Linux cron startup parsing now rejects oversized crontab files before reading them
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/boot_performance_linux.go](/Users/toddhebebrand/breeze/agent/internal/collectors/boot_performance_linux.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- The Linux boot-performance cron parser now checks file size before `os.ReadFile` and skips oversized crontab files.
+- This closes another simple local memory-amplification edge in the collector path.
+
+### R-145: Linux startup-item mutation paths now truncate command output and bound `systemctl` and `update-rc.d` execution
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/boot_performance_linux.go](/Users/toddhebebrand/breeze/agent/internal/collectors/boot_performance_linux.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- The Linux startup-item mutators now execute `systemctl` and `update-rc.d` through bounded wrappers and truncate surfaced command output in fallback/error paths.
+- This reduces the blast radius of hung or noisy local service-management commands in the boot collector’s mutation surface.
+
+### R-146: macOS change-tracker `crontab` and `dscl` readers now run under bounded execution and result caps
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/change_tracker_darwin.go](/Users/toddhebebrand/breeze/agent/internal/collectors/change_tracker_darwin.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- The darwin change tracker now wraps `crontab -l` and `dscl` with the shared timeout helper, caps parsed user/task results, and truncates stored fields.
+- This hardens the remaining macOS change-tracker command readers against large or hung local output.
+
+### R-147: macOS change-tracker startup and crontab metadata is now truncated before entering snapshot state
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/change_tracker_darwin.go](/Users/toddhebebrand/breeze/agent/internal/collectors/change_tracker_darwin.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- Startup-item names/paths and parsed darwin crontab schedule/command fields now get truncated and capped before being added to change-tracker snapshots.
+- This closes another structured-output amplification path in the macOS drift-detection layer.
+
+### R-148: macOS service enumeration now uses bounded `launchctl` execution and capped parsing
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/services_darwin.go](/Users/toddhebebrand/breeze/agent/internal/collectors/services_darwin.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- The darwin service collector now runs `launchctl list` through a shared timeout helper, parses with a bounded scanner, truncates labels, and caps result fan-out.
+- This hardens the remaining service inventory path on macOS against oversized local command output.
+
+### R-149: macOS LocalHostName lookup now uses the shared collector timeout helper and truncates oversized hostnames
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/hardware.go](/Users/toddhebebrand/breeze/agent/internal/collectors/hardware.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- The macOS `scutil --get LocalHostName` override now runs through the shared collector timeout helper and truncates the resulting hostname before use.
+- This closes one more small but still-unbounded local command reader in the hardware/system-info path.
+
+### R-150: macOS warranty readers now use bounded `ioreg` and `plutil` execution
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/warranty_darwin.go](/Users/toddhebebrand/breeze/agent/internal/collectors/warranty_darwin.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- The warranty collector now runs both hardware-serial discovery and plist conversion through the shared timeout/output-budget helper instead of direct `exec.CommandContext(...).Output()` calls.
+- This removes two more unbounded local command readers from the darwin collector surface.
+
+### R-151: macOS warranty cache and plist parsing now rejects oversized files and truncates extracted fields
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/warranty_darwin.go](/Users/toddhebebrand/breeze/agent/internal/collectors/warranty_darwin.go)
+
+Summary:
+- Warranty JSON cache files and plist inputs are now size-checked before read/parse, and extracted coverage/device fields are truncated before entering agent state.
+- This closes a local memory-amplification path in the warranty collector and prevents oversized metadata from propagating downstream.
+
+### R-152: macOS hardware inventory now uses bounded `system_profiler` and `sysctl` execution
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/hardware_darwin.go](/Users/toddhebebrand/breeze/agent/internal/collectors/hardware_darwin.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- The darwin hardware collector now routes `system_profiler` and `sysctl` through the shared collector wrappers and truncates model, serial, BIOS, and GPU fields.
+- This hardens the remaining macOS hardware-inventory command readers against hung or oversized local output.
+
+### R-153: macOS fallback metrics now use bounded `top` and `ioreg` execution
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/metrics_fallback_darwin_nocgo.go](/Users/toddhebebrand/breeze/agent/internal/collectors/metrics_fallback_darwin_nocgo.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- The non-CGO darwin CPU and disk fallback paths now execute `top` and `ioreg` under the shared timeout/output budget.
+- This closes the last unbounded local command readers in the metrics fallback path used by stripped-down macOS builds.
+
+### R-154: macOS connection inventory now caps result fan-out and truncates reflected connection metadata
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/connections_darwin.go](/Users/toddhebebrand/breeze/agent/internal/collectors/connections_darwin.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- The darwin connections collector now limits both gopsutil-backed and `netstat`-backed results, parses fallback output with a bounded scanner, and truncates reflected address/state/process fields.
+- This reduces transport amplification risk when a host has a large connection table or unusually large reflected metadata.
+
+### R-155: macOS patch enumeration now uses bounded `softwareupdate`, `brew`, and `system_profiler` execution
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/patches_darwin.go](/Users/toddhebebrand/breeze/agent/internal/collectors/patches_darwin.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- The darwin patch collector now routes Apple update listing, Homebrew outdated checks, and install-history collection through the shared collector command wrappers.
+- This removes another cluster of direct local process reads from the collector surface.
+
+### R-156: macOS patch parsers now cap result counts and truncate update/install-history metadata
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/patches_darwin.go](/Users/toddhebebrand/breeze/agent/internal/collectors/patches_darwin.go)
+
+Summary:
+- Apple update entries, brew outdated lines, and installed patch history now parse with bounded scanners, cap list fan-out, and truncate reflected fields before returning them.
+- This closes several remaining structured-output amplification paths in the patch inventory layer.
+
+### R-157: macOS software inventory now uses bounded `system_profiler` execution and sanitized returned items
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/software_darwin.go](/Users/toddhebebrand/breeze/agent/internal/collectors/software_darwin.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- The darwin software collector now runs `system_profiler SPApplicationsDataType` under the shared timeout/output budget, caps result count, and truncates stored software fields.
+- This hardens the macOS application inventory path against oversized local inventory output.
+
+### R-158: Linux audit-policy collection now uses bounded `systemctl` and `auditctl` execution
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/audit_policy_linux.go](/Users/toddhebebrand/breeze/agent/internal/collectors/audit_policy_linux.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- The Linux audit-policy collector now routes `systemctl is-enabled auditd` and `auditctl -s` through the shared collector command wrappers and truncates reflected raw output and error text.
+- This removes another pair of unbounded local command readers from the compliance snapshot path.
+
+### R-159: Linux audit and distro config reads now use bounded scanners and size-limited file parsing
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/audit_policy_linux.go](/Users/toddhebebrand/breeze/agent/internal/collectors/audit_policy_linux.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/classify_linux.go](/Users/toddhebebrand/breeze/agent/internal/collectors/classify_linux.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- `auditd.conf`, `/etc/os-release`, and chassis-type reads now use explicit size budgets, while their parsers use bounded scanners and truncate captured values before storing them.
+- This closes several low-level local file-amplification edges in Linux compliance and host-classification collection.
+
+### R-160: Linux host classification and hardware inventory now use bounded `systemctl` and `lspci` execution
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/classify_linux.go](/Users/toddhebebrand/breeze/agent/internal/collectors/classify_linux.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/hardware_linux.go](/Users/toddhebebrand/breeze/agent/internal/collectors/hardware_linux.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- Linux server-role detection now runs `systemctl get-default` under the shared timeout wrapper, and Linux hardware inventory now routes `lspci` through the same bounded helper.
+- DMI-derived hardware fields and detected GPU strings are also truncated before entering the hardware snapshot.
+
+### R-161: Linux patch enumeration now uses bounded `apt`, `yum`, and `dnf` execution
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/patches_linux.go](/Users/toddhebebrand/breeze/agent/internal/collectors/patches_linux.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- The Linux patch collector now routes `apt list --upgradable` and `yum`/`dnf check-update` through the shared collector command wrappers.
+- This removes another package-inventory cluster of direct local process reads from the collector surface.
+
+### R-162: Linux patch parsers now cap fan-out and truncate reflected package metadata
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/patches_linux.go](/Users/toddhebebrand/breeze/agent/internal/collectors/patches_linux.go)
+
+Summary:
+- Parsed apt and yum/dnf update entries now use bounded scanners, explicit result caps, and truncated reflected package fields before they leave the collector.
+- This closes the remaining structured-output amplification path in the Linux patch inventory layer.
+
+### R-163: Linux software inventory now uses bounded package-manager execution and sanitized returned items
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/software_linux.go](/Users/toddhebebrand/breeze/agent/internal/collectors/software_linux.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- `dpkg-query` and `rpm -qa` now run under the shared collector timeout/output budget, parse through bounded scanners, cap result counts, and truncate returned software fields.
+- This hardens the Linux installed-software inventory path against oversized package-manager output.
+
+### R-164: Linux event-log collection now uses bounded `journalctl` execution
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/eventlogs_linux.go](/Users/toddhebebrand/breeze/agent/internal/collectors/eventlogs_linux.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- The Linux event-log collector now routes `journalctl` through the shared collector timeout/output-budget helper instead of direct process reads.
+- This removes the remaining unbounded command reader from the Linux event-log surface.
+
+### R-165: Linux journal JSONL parsing now uses bounded scanners, capped fan-out, and truncated reflected metadata
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/eventlogs_linux.go](/Users/toddhebebrand/breeze/agent/internal/collectors/eventlogs_linux.go)
+
+Summary:
+- Parsed journal entries now flow through a bounded JSONL scanner, cap result count, and truncate reflected identifiers, PIDs, boot IDs, and detail fields before they are returned.
+- This closes the remaining structured-output amplification path in Linux event-log collection.
+
+### R-166: Windows shared PowerShell JSON helper now uses the collector timeout/output budget
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/change_tracker_windows.go](/Users/toddhebebrand/breeze/agent/internal/collectors/change_tracker_windows.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- The shared Windows JSON helper now executes PowerShell through the collector timeout/output-budget wrapper rather than raw `exec.CommandContext(...).Output()`.
+- This hardens the common PowerShell boundary used by change-tracker, service, and update inventory on Windows.
+
+### R-167: Windows change-tracker snapshots now cap startup/task/user fan-out and truncate reflected fields
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/change_tracker_windows.go](/Users/toddhebebrand/breeze/agent/internal/collectors/change_tracker_windows.go)
+
+Summary:
+- Startup items, scheduled tasks, and local user accounts collected on Windows now use explicit result caps and truncation before entering snapshot state.
+- This reduces snapshot amplification risk from large local inventories or unexpectedly long reflected strings.
+
+### R-168: Windows event-log collection now uses bounded PowerShell execution and sanitized parsed events
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/eventlogs_windows.go](/Users/toddhebebrand/breeze/agent/internal/collectors/eventlogs_windows.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- Windows event-log queries now run through the shared collector command wrapper, parsed event rows are capped, and reflected provider/log/message fields are truncated before return.
+- This closes the remaining oversized-output and reflected-string amplification path in the Windows event-log layer.
+
+### R-169: Windows service inventory now reuses the bounded PowerShell JSON helper and sanitizes returned rows
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/services_windows.go](/Users/toddhebebrand/breeze/agent/internal/collectors/services_windows.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/change_tracker_windows.go](/Users/toddhebebrand/breeze/agent/internal/collectors/change_tracker_windows.go)
+
+Summary:
+- Windows service collection now reuses the shared bounded PowerShell JSON helper, caps returned rows, and truncates reflected service metadata.
+- This removes another raw PowerShell read from the service inventory surface.
+
+### R-170: Windows update inventory now reuses the bounded PowerShell JSON helper and truncates reflected update metadata
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/patches_windows.go](/Users/toddhebebrand/breeze/agent/internal/collectors/patches_windows.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/change_tracker_windows.go](/Users/toddhebebrand/breeze/agent/internal/collectors/change_tracker_windows.go)
+
+Summary:
+- Windows update enumeration now reuses the shared bounded PowerShell JSON helper, caps update count, and truncates reflected title/KB/category/severity/description fields.
+- This hardens the Windows patch inventory path against oversized update metadata.
+
+### R-171: Windows audit-policy collection now uses bounded `auditpol` and `wevtutil` execution
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/audit_policy_windows.go](/Users/toddhebebrand/breeze/agent/internal/collectors/audit_policy_windows.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- The Windows audit-policy collector now routes `auditpol` and `wevtutil` through the shared collector wrappers and truncates the raw output stored in snapshot state.
+- This removes another pair of direct unbounded command readers from the compliance collection path.
+
+### R-172: Windows audit-policy CSV parsing now streams records and caps fan-out
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/audit_policy_windows.go](/Users/toddhebebrand/breeze/agent/internal/collectors/audit_policy_windows.go)
+
+Summary:
+- The `auditpol /r` CSV parser now streams rows instead of `ReadAll`, caps parsed row count, and truncates normalized keys/values before they enter settings state.
+- This reduces memory pressure and reflected-string amplification in the Windows audit-policy parser.
+
+### R-173: Windows audit baseline apply now uses bounded command execution and truncates reflected errors
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/audit_policy_windows.go](/Users/toddhebebrand/breeze/agent/internal/collectors/audit_policy_windows.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- The Windows audit baseline apply path now executes `auditpol /set` under the shared combined-output budget and truncates reflected stderr/stdout when reporting failures.
+- This narrows the remaining command-output reflection path in the Windows compliance mutator.
+
+### R-174: Windows bandwidth and hardware inventory now use bounded PowerShell/WMIC execution and truncated returned values
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/bandwidth_windows.go](/Users/toddhebebrand/breeze/agent/internal/collectors/bandwidth_windows.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/hardware_windows.go](/Users/toddhebebrand/breeze/agent/internal/collectors/hardware_windows.go)
+- [/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go](/Users/toddhebebrand/breeze/agent/internal/collectors/command_limits.go)
+
+Summary:
+- Windows link-speed lookup now uses bounded non-interactive PowerShell execution, and WMIC-based hardware inventory now runs through the shared timeout helper and truncates returned values.
+- This removes the last small direct command readers from the Windows bandwidth and hardware inventory paths.
+
+### R-175: Helper-side launch-process requests now enforce path, argument-count, and control-character validation
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/userhelper/client.go](/Users/toddhebebrand/breeze/agent/internal/userhelper/client.go)
+
+Summary:
+- The helper now validates `launch_process` requests before execution, rejecting oversized binary paths, oversized or excessive arguments, and arguments containing control characters.
+- This tightens the helper IPC boundary so malformed or abuse-oriented launch requests fail closed before they reach OS process creation.
+
+### R-176: Helper-side desktop start and stop requests now validate session identity and SDP/ICE payload size
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/userhelper/client.go](/Users/toddhebebrand/breeze/agent/internal/userhelper/client.go)
+- [/Users/toddhebebrand/breeze/agent/internal/userhelper/desktop.go](/Users/toddhebebrand/breeze/agent/internal/userhelper/desktop.go)
+
+Summary:
+- Desktop helper requests now require a normalized session ID, cap SDP offer and ICE-server payload size, and bound allowed display indices before session startup or teardown.
+- This closes another malformed-message and oversized-payload path in the desktop helper boundary.
+
+### R-177: Broker now rebinds helper-reported capabilities to the authenticated helper session scopes
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/sessionbroker/broker.go](/Users/toddhebebrand/breeze/agent/internal/sessionbroker/broker.go)
+
+Summary:
+- When a helper reports its capabilities, the broker now trims reflected metadata and masks capability booleans back down to the scopes granted during helper authentication.
+- This prevents a compromised or buggy helper from self-advertising broader notify, tray, clipboard, or desktop authority than the broker session actually allows.
+
+### R-178: Desktop session state transitions in agent WebSocket handling now bind to the exact start or disconnect command ID
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/routes/agentWs.ts](/Users/toddhebebrand/breeze/apps/api/src/routes/agentWs.ts)
+
+Summary:
+- Desktop answer, disconnect, and start-failure handling now derive the session ID from the exact `desk-start-...` or `desk-disconnect-...` command ID and only accept a payload session ID when it matches that expected value.
+- This closes a cross-session trust gap where a crafted non-start desktop result or mismatched payload session ID could previously drive the state of another remote desktop session on the same device.
+
+### R-179: Session broker command waits now validate payload-level correlation for helper command and desktop-start responses
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/sessionbroker/session.go](/Users/toddhebebrand/breeze/agent/internal/sessionbroker/session.go)
+
+Summary:
+- After matching a pending helper response by envelope ID and type, the session broker now also validates payload-level identifiers for `command_result` and `desktop_start` responses before delivering them to callers.
+- This closes a remaining trust gap where a compromised helper could reuse the right envelope ID and type but smuggle a different command or desktop session identity inside the response payload.
+
+### R-180: Agent command-result ingestion now only accepts in-flight device commands
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/routes/agentWs.ts](/Users/toddhebebrand/breeze/apps/api/src/routes/agentWs.ts)
+
+Summary:
+- Agent command results now resolve and update `device_commands` rows only when the command is still in an in-flight state (`pending` or `sent`), rather than accepting any historical command row for the device.
+- This closes a replay/overwrite path where a connected agent could previously resubmit a result against an old command ID and mutate already-completed command state or its downstream post-processing records.
+
+### R-181: Agent command-result post-processing now aborts when the in-flight status transition was lost and rebinds script execution updates to the resolved device
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/routes/agentWs.ts](/Users/toddhebebrand/breeze/apps/api/src/routes/agentWs.ts)
+
+Summary:
+- After conditionally updating a `device_commands` row from `pending`/`sent` to its terminal state, the agent WebSocket handler now aborts all downstream post-processing if that update affected no rows, rather than continuing on stale or concurrently-processed results.
+- The script-result path now also updates `script_executions` only when the execution belongs to the resolved device and is still active, and only increments a batch counter when the batch matches the execution's script.
+- This closes a race where a replayed or duplicated result could lose the command status update but still mutate discovery, backup, script, or other downstream records.
+
+### R-182: Shared command delivery now claims `pending -> sent` before dispatch and releases failed claims
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/services/commandDispatch.ts](/Users/toddhebebrand/breeze/apps/api/src/services/commandDispatch.ts)
+- [/Users/toddhebebrand/breeze/apps/api/src/services/commandQueue.ts](/Users/toddhebebrand/breeze/apps/api/src/services/commandQueue.ts)
+- [/Users/toddhebebrand/breeze/apps/api/src/routes/agentWs.ts](/Users/toddhebebrand/breeze/apps/api/src/routes/agentWs.ts)
+- [/Users/toddhebebrand/breeze/apps/api/src/routes/agents/heartbeat.ts](/Users/toddhebebrand/breeze/apps/api/src/routes/agents/heartbeat.ts)
+- [/Users/toddhebebrand/breeze/apps/api/src/routes/scripts.ts](/Users/toddhebebrand/breeze/apps/api/src/routes/scripts.ts)
+
+Summary:
+- Row-backed commands are now conditionally claimed from `pending` to `sent` before WebSocket delivery or heartbeat handoff, and failed immediate deliveries release the claim back to `pending`.
+- The agent WebSocket and heartbeat fetch paths now return only successfully claimed commands, and the immediate script dispatch path uses the same claim/release flow.
+- This closes a duplicate-delivery race where concurrent WebSocket and heartbeat dispatch paths could otherwise hand the same pending command to an agent more than once.
+
+### R-183: Generic queue timeout and result-submission helpers now only transition in-flight commands
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/services/commandQueue.ts](/Users/toddhebebrand/breeze/apps/api/src/services/commandQueue.ts)
+
+Summary:
+- `waitForCommandResult`, `markCommandsSent`, and `submitCommandResult` now condition their updates on the command still being in the expected in-flight state, instead of unconditionally overwriting any row with the matching ID.
+- This closes the remaining stale-transition path in the generic command queue helpers and keeps replayed or late updates from mutating already-completed command rows.
+
+### R-184: Backup result persistence now only finalizes in-flight backup jobs before writing snapshots or chain metadata
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/services/backupResultPersistence.ts](/Users/toddhebebrand/breeze/apps/api/src/services/backupResultPersistence.ts)
+
+Summary:
+- Backup result application now conditionally updates `backup_jobs` only while the job is still `pending` or `running`, and it aborts snapshot-file, MSSQL-chain, and GFS-retention persistence when that conditional state transition does not succeed.
+- This closes a stale-result replay path where a duplicated or late backup result could previously overwrite an already-terminal job and still mutate secondary backup state such as snapshots and chains.
+
+### R-185: All backup result consumers now use the same in-flight finalization guard for malformed, queued, and inline agent results
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/routes/agentWs.ts](/Users/toddhebebrand/breeze/apps/api/src/routes/agentWs.ts)
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/backupWorker.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/backupWorker.ts)
+- [/Users/toddhebebrand/breeze/apps/api/src/routes/backup/mssql.ts](/Users/toddhebebrand/breeze/apps/api/src/routes/backup/mssql.ts)
+- [/Users/toddhebebrand/breeze/apps/api/src/routes/backup/hyperv.ts](/Users/toddhebebrand/breeze/apps/api/src/routes/backup/hyperv.ts)
+
+Summary:
+- The Redis-inline backup result path, the queued backup worker result path, and the manual Hyper-V and MSSQL execution paths now all finalize or fail jobs through the shared conditional helper instead of issuing unconditional `backup_jobs` updates.
+- This removes several inconsistent terminal-state writes and ensures malformed or replayed backup results fail closed once the job has already left its in-flight states.
+
+### R-186: Backup BullMQ enqueue helpers now use stable logical job IDs
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/backupEnqueue.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/backupEnqueue.ts)
+
+Summary:
+- Backup dispatch, backup result processing, and restore dispatch queue submissions now set stable BullMQ `jobId` values derived from the logical backup or restore job ID.
+- This closes a duplicate-enqueue path where repeated enqueue attempts for the same backup workflow could otherwise stack multiple identical queue jobs in Redis before the database-layer stale-result guards ran.
+
+### R-187: Manual backup job creation now acquires a transaction-scoped per-device lock and refuses duplicate active jobs
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/services/backupJobCreation.ts](/Users/toddhebebrand/breeze/apps/api/src/services/backupJobCreation.ts)
+- [/Users/toddhebebrand/breeze/apps/api/src/routes/backup/jobs.ts](/Users/toddhebebrand/breeze/apps/api/src/routes/backup/jobs.ts)
+
+Summary:
+- Manual backup job creation now runs under a transaction-scoped advisory lock keyed by organization and device, checks for existing `pending` or `running` jobs inside that locked transaction, and returns `409` instead of inserting a second active job.
+- This closes a race where concurrent manual backup requests could both pass the old check-then-insert flow and create duplicate active jobs for the same device.
+
+### R-188: Scheduled backup creation now uses occurrence-scoped locking before inserting minute-window jobs
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/services/backupJobCreation.ts](/Users/toddhebebrand/breeze/apps/api/src/services/backupJobCreation.ts)
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/backupWorker.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/backupWorker.ts)
+
+Summary:
+- Scheduled backup creation now acquires an advisory lock scoped to device, config/feature, and due occurrence key before checking the minute window and inserting the scheduled backup row.
+- This closes the parallel scheduler race where concurrent schedule processors could previously both miss the minute-window row and create duplicate scheduled backup jobs for the same occurrence.
+
+### R-189: Discovery job creation now acquires a transaction-scoped per-profile lock and reuses active jobs
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/services/discoveryJobCreation.ts](/Users/toddhebebrand/breeze/apps/api/src/services/discoveryJobCreation.ts)
+- [/Users/toddhebebrand/breeze/apps/api/src/routes/discovery.ts](/Users/toddhebebrand/breeze/apps/api/src/routes/discovery.ts)
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/discoveryWorker.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/discoveryWorker.ts)
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/networkBaselineWorker.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/networkBaselineWorker.ts)
+
+Summary:
+- Discovery job creation now runs under a transaction-scoped advisory lock keyed by organization and profile, checks for existing `scheduled` or `running` discovery jobs inside that lock, and reuses the active row instead of blindly inserting another one.
+- Manual `/discovery/scan` now returns `409` when a profile already has an active job, scheduled profile runs skip duplicate creation, and baseline-triggered discovery scans reuse the existing discovery job ID.
+- This closes a race where concurrent manual, scheduled, or baseline-triggered scans for the same profile could previously create duplicate active discovery jobs.
+
+### R-190: Discovery and network-baseline queue submissions now use stable logical BullMQ job IDs
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/discoveryWorker.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/discoveryWorker.ts)
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/networkBaselineWorker.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/networkBaselineWorker.ts)
+
+Summary:
+- Discovery dispatch and result-processing queue submissions now use stable BullMQ job IDs derived from the discovery job ID, and network-baseline execute/compare queue submissions now use stable IDs derived from the baseline and discovery job IDs.
+- This closes duplicate-enqueue paths where repeated submissions for the same discovery or baseline workflow could otherwise stack multiple identical queue jobs before the row-level state guards executed.
+
+### R-191: Monitor result processing now deduplicates per monitor check command ID
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/monitorWorker.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/monitorWorker.ts)
+- [/Users/toddhebebrand/breeze/apps/api/src/routes/agentWs.ts](/Users/toddhebebrand/breeze/apps/api/src/routes/agentWs.ts)
+
+Summary:
+- Monitor result ingestion now carries the originating `mon-...` command ID into the queued monitor result payload, and the monitor worker uses that command ID as a stable BullMQ `jobId` for `process-check-result`.
+- This closes a duplicate post-processing path where repeated deliveries of the same monitor check result could otherwise enqueue and record the same logical check more than once.
+
+### R-192: SNMP poll dispatch and result processing now use stable logical BullMQ job IDs
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/snmpWorker.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/snmpWorker.ts)
+- [/Users/toddhebebrand/breeze/apps/api/src/routes/agentWs.ts](/Users/toddhebebrand/breeze/apps/api/src/routes/agentWs.ts)
+
+Summary:
+- SNMP per-device poll jobs now use a stable queue `jobId` derived from the SNMP device ID, and queued SNMP result processing now uses the originating `snmp-...` command ID as a stable `jobId`.
+- This closes duplicate dispatch and duplicate post-processing paths where repeated scheduler ticks or repeated agent deliveries for the same SNMP poll could otherwise queue the same logical work more than once.
+
+### R-193: C2C sync job creation now acquires a transaction-scoped per-config lock and reuses active jobs
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/services/c2cJobCreation.ts](/Users/toddhebebrand/breeze/apps/api/src/services/c2cJobCreation.ts)
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/c2cBackupWorker.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/c2cBackupWorker.ts)
+- [/Users/toddhebebrand/breeze/apps/api/src/routes/c2c/jobs.ts](/Users/toddhebebrand/breeze/apps/api/src/routes/c2c/jobs.ts)
+- [/Users/toddhebebrand/breeze/apps/api/src/services/aiToolsC2C.ts](/Users/toddhebebrand/breeze/apps/api/src/services/aiToolsC2C.ts)
+
+Summary:
+- C2C sync creation now runs under a transaction-scoped advisory lock keyed by organization and backup configuration, checks for existing `pending` or `running` sync jobs inside that locked transaction, and reuses the active row instead of blindly inserting another one.
+- Scheduled sync generation, manual `/c2c/configs/:id/run`, and the AI-triggered sync path now all share that helper, and the manual/API entrypoints now refuse duplicate active syncs instead of stacking them.
+- This closes the same check-then-insert race that previously existed in backup and discovery, where concurrent schedule ticks or manual sync triggers for the same C2C configuration could create duplicate active jobs.
+
+### R-194: C2C sync and restore queue submissions now use stable logical BullMQ job IDs
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/c2cEnqueue.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/c2cEnqueue.ts)
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/c2cBackupWorker.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/c2cBackupWorker.ts)
+- [/Users/toddhebebrand/breeze/apps/api/src/routes/c2c/items.ts](/Users/toddhebebrand/breeze/apps/api/src/routes/c2c/items.ts)
+- [/Users/toddhebebrand/breeze/apps/api/src/services/aiToolsC2C.ts](/Users/toddhebebrand/breeze/apps/api/src/services/aiToolsC2C.ts)
+
+Summary:
+- C2C sync dispatch and restore processing now flow through shared enqueue helpers that assign stable BullMQ `jobId` values derived from the logical C2C job ID and reuse still-active queue entries instead of submitting another copy.
+- This closes duplicate-enqueue paths where repeated sync or restore submissions for the same C2C job could otherwise stack multiple identical BullMQ jobs and re-run the same logical work.
+
+### R-195: Sensitive-data throttling requeues now preserve stable scan queue identity
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/sensitiveDataJobs.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/sensitiveDataJobs.ts)
+
+Summary:
+- Sensitive-data scan dispatch now goes through a shared helper that reuses the stable BullMQ `jobId` derived from the logical scan ID and reuses an already active or delayed queue entry instead of blindly adding another dispatch job.
+- The throttle/backpressure requeue path now uses that same helper, so repeated org-cap or device-cap throttling for the same scan cannot silently stack duplicate delayed dispatch jobs in Redis.
+
+### R-196: Deployment-level queue jobs now use stable logical BullMQ identities
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/deploymentWorker.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/deploymentWorker.ts)
+
+Summary:
+- Deployment start and staggered next-batch scheduling now use stable BullMQ `jobId` values derived from the logical deployment and batch, and they reuse still-active queue entries instead of blindly adding another copy.
+- This closes duplicate-enqueue paths where repeated deployment starts or repeated batch scheduling for the same rollout phase could otherwise stack multiple identical deployment queue jobs.
+
+### R-197: Deployment device dispatch and deferred requeues now deduplicate per deployment/device pair
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/deploymentWorker.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/deploymentWorker.ts)
+
+Summary:
+- Deployment device dispatch now assigns stable queue identities per deployment/device pair, skips devices that already have an active or delayed queue entry, and uses a separate stable deferred identity for maintenance-window waits and retry backoff.
+- This prevents repeated batch processing, retry scheduling, or maintenance-window deferrals from stacking duplicate device-execution jobs while still preserving the one future delayed run that the active worker intends to schedule.
+
+### R-198: Patch job orchestration now uses stable logical BullMQ identities
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/patchJobExecutor.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/patchJobExecutor.ts)
+
+Summary:
+- Patch job enqueue, per-device execution fanout, and completion-check scheduling now use stable BullMQ `jobId` values derived from the logical patch job and device identities, and they reuse still-active queue entries instead of blindly adding another copy.
+- This closes duplicate-enqueue paths where repeated scheduler or route submissions for the same patch job could otherwise stack duplicate orchestration, completion, or per-device execution jobs.
+
+### R-199: Patch job execution now fail-closes on the `scheduled -> running` claim boundary
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/patchJobExecutor.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/patchJobExecutor.ts)
+
+Summary:
+- Patch job orchestration now transitions a job from `scheduled` to `running` with a conditional update that only succeeds while the row is still unclaimed, and the worker aborts fanout if that claim affected no rows.
+- This closes the race where duplicate `execute-patch-job` queue entries could both observe a `scheduled` job and both fan out duplicate per-device patch installs before one of them noticed the state change.
+
+### R-200: DR execution reconciliation now uses stable logical BullMQ identities
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/drExecutionWorker.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/drExecutionWorker.ts)
+
+Summary:
+- DR execution reconciliation now uses a stable BullMQ `jobId` derived from the logical execution ID and reuses still-active or delayed queue entries instead of blindly adding another reconcile job.
+- This closes duplicate-enqueue paths where repeated DR execution updates for the same failover, failback, or rehearsal record could otherwise stack redundant reconcile jobs in Redis.
+
+### R-201: Browser policy evaluation requests now deduplicate by org and policy within a short queue window
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/browserSecurityJobs.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/browserSecurityJobs.ts)
+
+Summary:
+- On-demand browser policy evaluation now assigns a stable BullMQ `jobId` derived from the organization, policy, and current short dedupe slot, and it reuses an already active or delayed queue entry instead of blindly adding another evaluation job.
+- This closes a queue-amplification path where repeated route retries or policy edits for the same org/policy pair could otherwise stack duplicate full-extension evaluation work in Redis.
+
+### R-202: Manual log correlation requests now deduplicate by logical detection parameters
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/logCorrelation.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/logCorrelation.ts)
+
+Summary:
+- Manual rules-based and ad hoc pattern-based log correlation requests now derive stable BullMQ `jobId` values from the normalized request parameters plus a short dedupe slot, and they reuse active queue entries instead of scheduling another copy.
+- This closes a resource-amplification path where repeated correlation requests with the same parameters could otherwise stack duplicate expensive log-search jobs before the prior copy completed.
+
+### R-203: User-risk recompute requests now deduplicate per organization within a short queue window
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/userRiskJobs.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/userRiskJobs.ts)
+
+Summary:
+- On-demand user-risk recompute now assigns a stable BullMQ `jobId` derived from the target organization and the current short dedupe slot, and it reuses an already active queue entry instead of enqueueing another org-wide recomputation.
+- This closes a queue-amplification path where repeated retries of the same recompute request could otherwise stack duplicate full-org risk scoring jobs.
+
+### R-204: Manual alert evaluation requests now deduplicate by target and queue window
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/alertWorker.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/alertWorker.ts)
+
+Summary:
+- On-demand device evaluation and full alert evaluation now assign stable BullMQ `jobId` values derived from the logical target plus a short dedupe slot, and they reuse already active queue entries instead of blindly enqueueing another scan.
+- This closes a route-retry amplification path where repeated alert evaluation requests could otherwise stack duplicate alert-rule scans for the same device set.
+
+### R-205: Security-posture recompute requests now deduplicate per organization within a short queue window
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/securityPostureWorker.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/securityPostureWorker.ts)
+
+Summary:
+- On-demand security posture recompute now assigns a stable BullMQ `jobId` per organization and short dedupe slot, and it reuses an already active queue entry instead of scheduling another org-wide posture run.
+- This closes a queue-amplification path where repeated retries could otherwise stack duplicate security posture recomputations for the same organization.
+
+### R-206: Device reliability recompute requests now deduplicate per device within a short queue window
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/reliabilityWorker.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/reliabilityWorker.ts)
+
+Summary:
+- On-demand device reliability recompute now assigns a stable BullMQ `jobId` derived from the device and short dedupe slot, and it reuses an already active queue entry instead of scheduling another copy.
+- This closes a duplicate-enqueue path where repeated device reliability refreshes for the same device could otherwise stack redundant scoring work.
+
+### R-207: Audit-baseline collection and drift-evaluation requests now deduplicate per organization within a short queue window
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/auditBaselineJobs.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/auditBaselineJobs.ts)
+
+Summary:
+- Manual audit policy collection and drift evaluation now assign stable BullMQ `jobId` values derived from the target organization and short dedupe slot, and they reuse already active queue entries instead of blindly adding another scan.
+- This closes duplicate-enqueue paths where repeated audit-baseline requests could otherwise stack redundant collection and evaluation jobs for the same org.
+
+### R-208: Manual CIS scans now deduplicate by baseline, normalized device set, and queue window
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/cisJobs.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/cisJobs.ts)
+
+Summary:
+- Manual CIS scan requests now normalize and sort the requested device set, derive a stable BullMQ `jobId` from the baseline, normalized target set, and short dedupe slot, and reuse already active queue entries instead of enqueueing another copy.
+- This closes a route-retry amplification path where repeated CIS scan submissions for the same baseline and device set could otherwise stack duplicate benchmark runs.
+
+### R-209: Manual offline detection requests now deduplicate by threshold and queue window
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/offlineDetector.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/offlineDetector.ts)
+
+Summary:
+- On-demand offline detection now assigns a stable BullMQ `jobId` derived from the threshold parameter and a short dedupe slot, and it reuses already active queue entries instead of scheduling another identical detection pass.
+- This closes a duplicate-enqueue path where repeated test or retry calls could otherwise stack redundant full-device offline scans.
+
+### R-210: Automation run execution now claims queue identity from the logical run ID
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/automationWorker.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/automationWorker.ts)
+
+Summary:
+- `enqueueAutomationRun(runId)` now uses a stable BullMQ `jobId` derived from the logical automation run ID and reuses an already active queue entry instead of blindly adding another execution job for the same run row.
+- This closes a duplicate-execution path where route retries, schedule retries, or concurrent callers could otherwise execute the same automation run more than once.
+
+### R-211: Session-broker backup IPC responses now validate payload `commandId`
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/sessionbroker/session.go](/Users/toddhebebrand/breeze/agent/internal/sessionbroker/session.go)
+
+Summary:
+- Pending backup helper responses now validate the payload-level `commandId` from `backup_result` messages against the original `backup_command` request before delivering the envelope to the waiting caller.
+- This closes the same payload-correlation gap previously fixed for generic command results and desktop-start replies, where a helper could reuse the right envelope ID but smuggle a different logical backup command identity in the payload.
+
+### R-212: Only desktop-authorized helpers may update broker TCC permission state
+Location:
+- [/Users/toddhebebrand/breeze/agent/internal/sessionbroker/broker.go](/Users/toddhebebrand/breeze/agent/internal/sessionbroker/broker.go)
+
+Summary:
+- The broker now rejects unsolicited `tcc_status` messages from helpers that do not hold desktop scope, instead of accepting and storing that permission state on the session.
+- This closes a trust-boundary gap where a non-desktop helper, including non-capture roles, could previously poison the broker’s macOS permission view and influence later desktop/TCC decisions.
+
+### R-213: Log-forwarding jobs now cap queued event count and drop oversized raw payloads
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/logForwardingWorker.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/logForwardingWorker.ts)
+
+Summary:
+- Log-forwarding enqueue now trims hostname and per-event string fields, caps each queued batch to a bounded number of events, and drops `rawData` blobs whose serialized size exceeds a fixed budget.
+- This closes a queue-memory amplification path where a caller could previously submit arbitrarily large event arrays or oversized raw payloads and push that unbounded body directly into Redis.
+
+### R-214: User-risk signal-event jobs now cap string fields and reject oversized detail payloads
+Location:
+- [/Users/toddhebebrand/breeze/apps/api/src/jobs/userRiskJobs.ts](/Users/toddhebebrand/breeze/apps/api/src/jobs/userRiskJobs.ts)
+
+Summary:
+- User-risk signal-event enqueue now truncates oversized `eventType` and `description` fields and drops `details` objects whose serialized size exceeds a fixed budget before queueing the job.
+- This closes a queue-memory amplification path where an attacker who could reach that enqueue path could otherwise stuff oversized free-form metadata into BullMQ and downstream persistence.
+
 ## Suggested Next Audit Targets
 
-1. Continue the heartbeat-side trust-boundary pass in [`/Users/toddhebebrand/breeze/agent/internal/heartbeat/handlers_desktop.go`](/Users/toddhebebrand/breeze/agent/internal/heartbeat/handlers_desktop.go) and related desktop stream/input paths, where more identifier normalization and owner/session correlation may still be possible.
-2. Revisit the remaining OS-wrapper and local command enumeration paths, especially any `exec.Command(...).Output()` readers that still parse large local command output without explicit timeouts or result budgeting.
-3. If you want the audit to move back up-stack, the remaining natural target is another pass over API-to-agent correlation in [`/Users/toddhebebrand/breeze/apps/api/src/routes/agentWs.ts`](/Users/toddhebebrand/breeze/apps/api/src/routes/agentWs.ts) to match the stronger local helper/session binding now in the agent.
+1. The remaining API queue surface is now mostly event-carrying or data-carrying jobs where naive dedupe could drop legitimate work, especially [`/Users/toddhebebrand/breeze/apps/api/src/jobs/logForwardingWorker.ts`](/Users/toddhebebrand/breeze/apps/api/src/jobs/logForwardingWorker.ts) and [`/Users/toddhebebrand/breeze/apps/api/src/jobs/userRiskJobs.ts`](/Users/toddhebebrand/breeze/apps/api/src/jobs/userRiskJobs.ts) for `process-signal-event`. Those need a semantics-aware pass rather than the mechanical stable-`jobId` pattern used above.
+2. The next non-queue trust-boundary target remains the agent/session layer, but it is now down to any remaining helper response families beyond generic command, desktop-start, and backup-result payload correlation. The likely yield is another pass across unsolicited helper message handling in [`/Users/toddhebebrand/breeze/agent/internal/sessionbroker/broker.go`](/Users/toddhebebrand/breeze/agent/internal/sessionbroker/broker.go) and any other typed helper replies outside [`/Users/toddhebebrand/breeze/agent/internal/sessionbroker/session.go`](/Users/toddhebebrand/breeze/agent/internal/sessionbroker/session.go).
+3. If the audit stays on the API side, the next likely yield is another pass through automation/config-policy execution in [`/Users/toddhebebrand/breeze/apps/api/src/jobs/automationWorker.ts`](/Users/toddhebebrand/breeze/apps/api/src/jobs/automationWorker.ts) for any remaining secondary queue hops that still lack stable logical identity.

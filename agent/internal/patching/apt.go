@@ -3,10 +3,7 @@
 package patching
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
-	"os/exec"
 	"strings"
 )
 
@@ -30,12 +27,12 @@ func (a *AptProvider) Name() string {
 
 // Scan returns available upgrades using apt.
 func (a *AptProvider) Scan() ([]AvailablePatch, error) {
-	output, err := exec.Command("apt", "list", "--upgradable").Output()
+	output, err := commandOutputWithTimeout(patchScanTimeout, "apt", "list", "--upgradable")
 	if err != nil {
 		return nil, fmt.Errorf("apt list failed: %w", err)
 	}
 
-	scanner := bufio.NewScanner(bytes.NewReader(output))
+	scanner := newPatchScanner(output)
 	patches := []AvailablePatch{}
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -47,12 +44,21 @@ func (a *AptProvider) Scan() ([]AvailablePatch, error) {
 		if name == "" {
 			continue
 		}
+		if err := validateAptPackageName(name); err != nil {
+			continue
+		}
 
 		patches = append(patches, AvailablePatch{
-			ID:      name,
-			Title:   name,
-			Version: version,
+			ID:      truncatePatchField(name),
+			Title:   truncatePatchField(name),
+			Version: truncatePatchField(version),
 		})
+		if len(patches) >= patchResultItemLimit {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("apt list parse failed: %w", err)
 	}
 
 	return patches, nil
@@ -60,24 +66,28 @@ func (a *AptProvider) Scan() ([]AvailablePatch, error) {
 
 // Install upgrades a package using apt-get.
 func (a *AptProvider) Install(patchID string) (InstallResult, error) {
-	cmd := exec.Command("apt-get", "-y", "install", "--only-upgrade", patchID)
-	output, err := cmd.CombinedOutput()
+	if err := validateAptPackageName(patchID); err != nil {
+		return InstallResult{}, err
+	}
+	output, err := commandCombinedOutputWithTimeout(patchMutateTimeout, "apt-get", "-y", "install", "--only-upgrade", patchID)
 	if err != nil {
-		return InstallResult{}, fmt.Errorf("apt-get install failed: %w: %s", err, strings.TrimSpace(string(output)))
+		return InstallResult{}, fmt.Errorf("apt-get install failed: %w: %s", err, truncatePatchOutput(output))
 	}
 
 	return InstallResult{
 		PatchID: patchID,
-		Message: strings.TrimSpace(string(output)),
+		Message: truncatePatchOutput(output),
 	}, nil
 }
 
 // Uninstall removes a package using apt-get.
 func (a *AptProvider) Uninstall(patchID string) error {
-	cmd := exec.Command("apt-get", "-y", "remove", patchID)
-	output, err := cmd.CombinedOutput()
+	if err := validateAptPackageName(patchID); err != nil {
+		return err
+	}
+	output, err := commandCombinedOutputWithTimeout(patchMutateTimeout, "apt-get", "-y", "remove", patchID)
 	if err != nil {
-		return fmt.Errorf("apt-get remove failed: %w: %s", err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("apt-get remove failed: %w: %s", err, truncatePatchOutput(output))
 	}
 
 	return nil
@@ -85,12 +95,12 @@ func (a *AptProvider) Uninstall(patchID string) error {
 
 // GetInstalled returns installed packages using dpkg-query.
 func (a *AptProvider) GetInstalled() ([]InstalledPatch, error) {
-	output, err := exec.Command("dpkg-query", "-W", "-f=${Package}\t${Version}\n").Output()
+	output, err := commandOutputWithTimeout(patchListTimeout, "dpkg-query", "-W", "-f=${Package}\t${Version}\n")
 	if err != nil {
 		return nil, fmt.Errorf("dpkg-query failed: %w", err)
 	}
 
-	scanner := bufio.NewScanner(bytes.NewReader(output))
+	scanner := newPatchScanner(output)
 	installed := []InstalledPatch{}
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -101,11 +111,20 @@ func (a *AptProvider) GetInstalled() ([]InstalledPatch, error) {
 		if len(parts) != 2 {
 			continue
 		}
+		if err := validateAptPackageName(parts[0]); err != nil {
+			continue
+		}
 		installed = append(installed, InstalledPatch{
-			ID:      parts[0],
-			Title:   parts[0],
-			Version: parts[1],
+			ID:      truncatePatchField(parts[0]),
+			Title:   truncatePatchField(parts[0]),
+			Version: truncatePatchField(parts[1]),
 		})
+		if len(installed) >= patchResultItemLimit {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("dpkg-query parse failed: %w", err)
 	}
 
 	return installed, nil

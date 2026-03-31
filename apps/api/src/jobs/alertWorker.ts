@@ -16,6 +16,7 @@ import {
   evaluateDeviceAlertsFromPolicy,
   checkAutoResolveFromConfigPolicy,
 } from '../services/alertService';
+import { isReusableState } from '../services/bullmqUtils';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -34,6 +35,7 @@ let _configPolicyTableWarningLogged = false;
 
 // Queue name
 const ALERT_QUEUE = 'alert-evaluation';
+const ON_DEMAND_ALERT_DEDUPE_WINDOW_MS = 30 * 1000;
 
 // Singleton queue instance
 let alertQueue: Queue | null = null;
@@ -325,6 +327,18 @@ async function scheduleAlertJobs(): Promise<void> {
  */
 export async function triggerDeviceEvaluation(deviceId: string, orgId: string): Promise<string> {
   const queue = getAlertQueue();
+  const slot = Math.floor(Date.now() / ON_DEMAND_ALERT_DEDUPE_WINDOW_MS).toString(36);
+  const jobId = `alert-evaluate-device:${deviceId}:${slot}`;
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      return String(existing.id);
+    }
+    await existing.remove().catch((error) => {
+      console.error(`[AlertWorker] Failed to remove stale device evaluation job ${jobId}:`, error);
+    });
+  }
 
   const job = await queue.add(
     'evaluate-device',
@@ -334,6 +348,7 @@ export async function triggerDeviceEvaluation(deviceId: string, orgId: string): 
       orgId
     },
     {
+      jobId,
       removeOnComplete: true,
       removeOnFail: false
     }
@@ -348,11 +363,24 @@ export async function triggerDeviceEvaluation(deviceId: string, orgId: string): 
  */
 export async function triggerFullEvaluation(): Promise<string> {
   const queue = getAlertQueue();
+  const slot = Math.floor(Date.now() / ON_DEMAND_ALERT_DEDUPE_WINDOW_MS).toString(36);
+  const jobId = `alert-evaluate-all:${slot}`;
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      return String(existing.id);
+    }
+    await existing.remove().catch((error) => {
+      console.error(`[AlertWorker] Failed to remove stale full evaluation job ${jobId}:`, error);
+    });
+  }
 
   const job = await queue.add(
     'evaluate-all',
     { type: 'evaluate-all' },
     {
+      jobId,
       removeOnComplete: true,
       removeOnFail: false
     }

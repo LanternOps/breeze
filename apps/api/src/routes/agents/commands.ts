@@ -22,6 +22,7 @@ import {
 import { captureException } from '../../services/sentry';
 import { processCollectedAuditPolicyCommandResult } from '../../services/auditBaselineService';
 import { CommandTypes, queueCommandForExecution } from '../../services/commandQueue';
+import { applyVaultSyncCommandResult } from '../../services/vaultSyncPersistence';
 
 export const commandsRoutes = new Hono();
 
@@ -181,6 +182,22 @@ commandsRoutes.post(
         await handleCisCommandResult(command, data);
       } catch (err) {
         console.error(`[agents] CIS command post-processing failed for ${commandId}:`, err);
+        captureException(err);
+      }
+    }
+
+    if (command.type === CommandTypes.VAULT_SYNC) {
+      try {
+        await applyVaultSyncCommandResult({
+          deviceId: command.deviceId,
+          command,
+          resultStatus: data.status,
+          stdout: data.stdout,
+          stderr: data.stderr,
+          error: data.error,
+        });
+      } catch (err) {
+        console.error(`[agents] vault sync post-processing failed for ${commandId}:`, err);
         captureException(err);
       }
     }

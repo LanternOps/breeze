@@ -3,6 +3,7 @@ import { Job, Queue, Worker } from 'bullmq';
 import { getRedisConnection } from '../services/redis';
 import { detectPatternCorrelation, runCorrelationRules } from '../services/logSearch';
 import { captureException } from '../services/sentry';
+import { isReusableState } from '../services/bullmqUtils';
 import * as dbModule from '../db';
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -14,6 +15,7 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 
 const LOG_CORRELATION_QUEUE = 'log-correlation';
 const DETECTION_INTERVAL_MS = 5 * 60 * 1000;
+const ON_DEMAND_DEDUPE_WINDOW_MS = 30 * 1000;
 
 type DetectRulesJobData = {
   type: 'rules';
@@ -50,6 +52,15 @@ export interface LogCorrelationDetectionJobSnapshot {
 
 let correlationQueue: Queue<CorrelationJobData> | null = null;
 let correlationWorker: Worker<CorrelationJobData> | null = null;
+
+function stableShortHash(value: string): string {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash) + value.charCodeAt(index);
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(36);
+}
 
 export function getLogCorrelationQueue(): Queue<CorrelationJobData> {
   if (!correlationQueue) {
@@ -157,15 +168,40 @@ export async function enqueueLogCorrelationDetection(options?: {
   ruleIds?: string[];
 }): Promise<string> {
   const queue = getLogCorrelationQueue();
+  const normalizedRuleIds = options?.ruleIds
+    ? Array.from(new Set(options.ruleIds.filter((ruleId) => typeof ruleId === 'string' && ruleId.length > 0))).sort()
+    : undefined;
+  const slot = Math.floor(Date.now() / ON_DEMAND_DEDUPE_WINDOW_MS).toString(36);
+  const jobId = [
+    'log-correlation-rules',
+    options?.orgId ?? 'all',
+    stableShortHash(JSON.stringify(normalizedRuleIds ?? [])),
+    slot,
+  ].join(':');
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      return String(existing.id);
+    }
+    await existing.remove().catch((error) => {
+      console.error(
+        `[LogCorrelationWorker] Failed to remove stale rules detection job ${jobId}:`,
+        error
+      );
+    });
+  }
+
   const job = await queue.add(
     'rules-detect',
     {
       type: 'rules',
       orgId: options?.orgId,
-      ruleIds: options?.ruleIds,
+      ruleIds: normalizedRuleIds,
       queuedAt: new Date().toISOString(),
     },
     {
+      jobId,
       removeOnComplete: true,
       removeOnFail: { count: 50 },
     }
@@ -184,6 +220,34 @@ export async function enqueueAdHocPatternCorrelationDetection(options: {
   sampleLimit?: number;
 }): Promise<string> {
   const queue = getLogCorrelationQueue();
+  const slot = Math.floor(Date.now() / ON_DEMAND_DEDUPE_WINDOW_MS).toString(36);
+  const jobId = [
+    'log-correlation-pattern',
+    stableShortHash(JSON.stringify({
+      orgId: options.orgId,
+      pattern: options.pattern,
+      isRegex: Boolean(options.isRegex),
+      timeWindowSeconds: options.timeWindowSeconds,
+      minDevices: options.minDevices,
+      minOccurrences: options.minOccurrences,
+      sampleLimit: options.sampleLimit,
+    })),
+    slot,
+  ].join(':');
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      return String(existing.id);
+    }
+    await existing.remove().catch((error) => {
+      console.error(
+        `[LogCorrelationWorker] Failed to remove stale pattern detection job ${jobId}:`,
+        error
+      );
+    });
+  }
+
   const job = await queue.add(
     'pattern-detect',
     {
@@ -198,6 +262,7 @@ export async function enqueueAdHocPatternCorrelationDetection(options: {
       queuedAt: new Date().toISOString(),
     },
     {
+      jobId,
       removeOnComplete: { count: 200 },
       removeOnFail: { count: 100 },
     }

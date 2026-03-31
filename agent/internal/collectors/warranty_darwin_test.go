@@ -14,13 +14,13 @@ func TestParseAppleWarrantyPlist(t *testing.T) {
 	dir := t.TempDir()
 
 	tests := []struct {
-		name          string
-		plistContent  string
-		wantEnd       string
-		wantStart     string
-		wantType      string
-		wantNil       bool
-		wantErr       bool
+		name         string
+		plistContent string
+		wantEnd      string
+		wantStart    string
+		wantType     string
+		wantNil      bool
+		wantErr      bool
 	}{
 		{
 			name: "valid plist with coverageEndDate",
@@ -167,14 +167,14 @@ func TestParseCoverageDetailsJSON(t *testing.T) {
 		wantErr  bool
 	}{
 		{
-			name: "AppleCare+ with unix timestamp",
-			json: `{"serialNumber":"ABC123","coverageLabel":"AppleCare+","settingsCoverageSection":{"coverageExpirationLabel":"Renews April 17, 2026","offer":{"expiration":"1776495599"}}}`,
+			name:     "AppleCare+ with unix timestamp",
+			json:     `{"serialNumber":"ABC123","coverageLabel":"AppleCare+","settingsCoverageSection":{"coverageExpirationLabel":"Renews April 17, 2026","offer":{"expiration":"1776495599"}}}`,
 			wantEnd:  "2026-04-18",
 			wantType: "AppleCare+",
 		},
 		{
-			name: "Limited Warranty with label only",
-			json: `{"serialNumber":"XYZ789","coverageLabel":"Limited Warranty","settingsCoverageSection":{"coverageExpirationLabel":"Expires October 20, 2026","offer":{"expiration":"0"}}}`,
+			name:     "Limited Warranty with label only",
+			json:     `{"serialNumber":"XYZ789","coverageLabel":"Limited Warranty","settingsCoverageSection":{"coverageExpirationLabel":"Expires October 20, 2026","offer":{"expiration":"0"}}}`,
 			wantEnd:  "2026-10-20",
 			wantType: "Limited Warranty",
 		},
@@ -224,6 +224,32 @@ func TestParseCoverageDetailsJSON(t *testing.T) {
 				t.Errorf("CoverageType: got %q, want %q", info.CoverageType, tt.wantType)
 			}
 		})
+	}
+}
+
+func TestParseCoverageDetailsJSONRejectsOversizedFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "oversized.json")
+	if err := os.WriteFile(path, make([]byte, collectorFileReadLimit+1), 0644); err != nil {
+		t.Fatalf("failed to write oversized json: %v", err)
+	}
+
+	_, err := parseCoverageDetailsJSON(path)
+	if err == nil {
+		t.Fatal("expected error for oversized coverage cache, got nil")
+	}
+}
+
+func TestParseAppleWarrantyPlistRejectsOversizedFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "oversized.plist")
+	if err := os.WriteFile(path, make([]byte, collectorFileReadLimit+1), 0644); err != nil {
+		t.Fatalf("failed to write oversized plist: %v", err)
+	}
+
+	_, err := parseAppleWarrantyPlist(path)
+	if err == nil {
+		t.Fatal("expected error for oversized plist, got nil")
 	}
 }
 

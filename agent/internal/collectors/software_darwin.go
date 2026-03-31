@@ -4,7 +4,6 @@ package collectors
 
 import (
 	"encoding/json"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -25,8 +24,7 @@ type applicationInfo struct {
 
 // Collect retrieves installed software from macOS using system_profiler
 func (c *SoftwareCollector) Collect() ([]SoftwareItem, error) {
-	cmd := exec.Command("system_profiler", "SPApplicationsDataType", "-json")
-	output, err := cmd.Output()
+	output, err := runCollectorOutput(collectorLongCommandTimeout, "system_profiler", "SPApplicationsDataType", "-json")
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +58,10 @@ func (c *SoftwareCollector) Collect() ([]SoftwareItem, error) {
 			InstallDate:     parseInstallDate(app.LastModified),
 		}
 
-		software = append(software, item)
+		software = append(software, sanitizeSoftwareItem(item))
+		if len(software) >= collectorResultLimit {
+			break
+		}
 	}
 
 	return software, nil
@@ -116,4 +117,14 @@ func parseInstallDate(dateStr string) string {
 
 	// Unparseable — return empty so the API inserts NULL rather than crashing
 	return ""
+}
+
+func sanitizeSoftwareItem(item SoftwareItem) SoftwareItem {
+	item.Name = truncateCollectorString(item.Name)
+	item.Version = truncateCollectorString(item.Version)
+	item.Vendor = truncateCollectorString(item.Vendor)
+	item.InstallDate = truncateCollectorString(item.InstallDate)
+	item.InstallLocation = truncateCollectorString(item.InstallLocation)
+	item.UninstallString = truncateCollectorString(item.UninstallString)
+	return item
 }

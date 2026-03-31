@@ -10,6 +10,7 @@ import {
   s1Threats
 } from '../db/schema';
 import { getRedisConnection } from '../services/redis';
+import { isReusableState } from '../services/bullmqUtils';
 import { decryptSecret } from '../services/secretCrypto';
 import { S1_THREAT_ACTIONS, SentinelOneClient, type S1ThreatAction, type S1ActionStatus } from '../services/sentinelOne/client';
 import { captureException } from '../services/sentry';
@@ -176,13 +177,7 @@ async function addUniqueJob(
   const existing = await queue.getJob(jobId);
   if (existing) {
     const state = await existing.getState();
-    if (
-      state === 'active'
-      || state === 'waiting'
-      || state === 'delayed'
-      || state === 'waiting-children'
-      || state === 'prioritized'
-    ) {
+    if (isReusableState(state)) {
       return String(existing.id);
     }
     await existing.remove().catch((err) => {

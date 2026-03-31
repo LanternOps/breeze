@@ -87,8 +87,15 @@ func TestVaultSync(t *testing.T) {
 		t.Fatalf("failed to create vault manager: %v", err)
 	}
 
-	if err := vm.SyncSnapshot(snapID); err != nil {
+	syncResult, err := vm.SyncSnapshot(snapID)
+	if err != nil {
 		t.Fatalf("sync failed: %v", err)
+	}
+	if syncResult == nil || syncResult.SnapshotID != snapID {
+		t.Fatalf("unexpected sync result: %+v", syncResult)
+	}
+	if !syncResult.ManifestVerified {
+		t.Fatal("expected manifest verification to be true")
 	}
 
 	// Verify files exist in vault
@@ -125,10 +132,10 @@ func TestVaultSync_Idempotent(t *testing.T) {
 	}
 
 	// Sync twice; second should be a no-op
-	if err := vm.SyncSnapshot(snapID); err != nil {
+	if _, err := vm.SyncSnapshot(snapID); err != nil {
 		t.Fatal(err)
 	}
-	if err := vm.SyncSnapshot(snapID); err != nil {
+	if _, err := vm.SyncSnapshot(snapID); err != nil {
 		t.Fatalf("idempotent sync failed: %v", err)
 	}
 }
@@ -154,7 +161,7 @@ func TestVaultRetention(t *testing.T) {
 		ts := baseTime.Add(time.Duration(i) * time.Hour)
 		snapID := createTestSnapshot(t, primaryDir, ts)
 		snapIDs = append(snapIDs, snapID)
-		if err := vm.SyncSnapshot(snapID); err != nil {
+		if _, err := vm.SyncSnapshot(snapID); err != nil {
 			t.Fatalf("sync %d failed: %v", i, err)
 		}
 	}
@@ -202,7 +209,7 @@ func TestVaultStatus(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		ts := time.Now().UTC().Add(time.Duration(i) * time.Hour)
 		snapID := createTestSnapshot(t, primaryDir, ts)
-		if err := vm.SyncSnapshot(snapID); err != nil {
+		if _, err := vm.SyncSnapshot(snapID); err != nil {
 			t.Fatal(err)
 		}
 	}

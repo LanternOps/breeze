@@ -10,6 +10,7 @@ import * as dbModule from '../db';
 import { networkMonitors, networkMonitorResults, devices, networkMonitorAlertRules, alerts, discoveredAssets } from '../db/schema';
 import { eq, and, sql, desc, inArray } from 'drizzle-orm';
 import { getRedisConnection } from '../services/redis';
+import { isReusableState } from '../services/bullmqUtils';
 import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
 import { buildMonitorCommand } from '../routes/monitors';
 import { isCooldownActive, setCooldown } from '../services/alertCooldown';
@@ -44,6 +45,7 @@ interface CheckMonitorJobData {
 
 export interface MonitorCheckResult {
   monitorId: string;
+  checkId?: string;
   status: 'online' | 'offline' | 'degraded';
   responseMs: number;
   statusCode?: number;
@@ -451,7 +453,7 @@ export async function enqueueMonitorCheck(
   const existing = await queue.getJob(stableJobId);
   if (existing) {
     const state = await existing.getState();
-    if (state === 'waiting' || state === 'active' || state === 'delayed' || state === 'prioritized') {
+    if (isReusableState(state)) {
       return existing.id as string;
     }
     if (state === 'completed' || state === 'failed') {
@@ -476,10 +478,27 @@ export async function enqueueMonitorCheckResult(
   result: MonitorCheckResult
 ): Promise<string> {
   const queue = getMonitorQueue();
+  const stableJobId = result.checkId ? `monitor-result:${result.checkId}` : null;
+  if (stableJobId) {
+    const existing = await queue.getJob(stableJobId);
+    if (existing) {
+      const state = await existing.getState();
+      if (isReusableState(state)) {
+        return existing.id as string;
+      }
+      if (state === 'completed' || state === 'failed') {
+        await existing.remove();
+      }
+    }
+  }
   const job = await queue.add(
     'process-check-result',
     { type: 'process-check-result', monitorId, result },
-    { removeOnComplete: { count: 100 }, removeOnFail: { count: 200 } }
+    {
+      ...(stableJobId ? { jobId: stableJobId } : {}),
+      removeOnComplete: { count: 100 },
+      removeOnFail: { count: 200 }
+    }
   );
   return job.id!;
 }

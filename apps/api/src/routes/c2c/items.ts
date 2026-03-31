@@ -8,7 +8,7 @@ import {
   c2cConnections,
 } from '../../db/schema';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { getC2cQueue } from '../../jobs/c2cBackupWorker';
+import { enqueueC2cRestore } from '../../jobs/c2cEnqueue';
 import { c2cItemSearchSchema, c2cRestoreSchema, idParamSchema } from './schemas';
 import { resolveScopedOrgId } from './helpers';
 
@@ -90,8 +90,8 @@ c2cItemsRoutes.post(
     // Create a restore job record (reuse c2c_backup_jobs with restore status)
     const now = new Date();
     // Pick the configId from the first item for the restore job grouping
-    const [firstItem] = await db
-      .select({ configId: c2cBackupItems.configId })
+    const matchedItems = await db
+      .select({ id: c2cBackupItems.id, configId: c2cBackupItems.configId })
       .from(c2cBackupItems)
       .where(
         and(
@@ -99,9 +99,18 @@ c2cItemsRoutes.post(
           sql`${c2cBackupItems.id} = ANY(${payload.itemIds}::uuid[])`
         )
       )
-      .limit(1);
+      .limit(payload.itemIds.length);
 
-    if (!firstItem) return c.json({ error: 'No matching items found' }, 404);
+    if (matchedItems.length === 0) return c.json({ error: 'No matching items found' }, 404);
+    if (matchedItems.length !== payload.itemIds.length) {
+      return c.json({ error: 'One or more requested items were not found' }, 404);
+    }
+
+    const configIds = new Set(matchedItems.map((item) => item.configId));
+    if (configIds.size > 1) {
+      return c.json({ error: 'All restore items must belong to the same backup configuration' }, 400);
+    }
+    const firstItem = matchedItems[0]!;
 
     const [restoreJob] = await db
       .insert(c2cBackupJobs)
@@ -117,14 +126,12 @@ c2cItemsRoutes.post(
     if (!restoreJob) return c.json({ error: 'Failed to create restore job' }, 500);
 
     // Enqueue restore processing
-    const queue = getC2cQueue();
-    await queue.add('process-restore', {
-      type: 'process-restore' as const,
-      restoreJobId: restoreJob.id,
+    await enqueueC2cRestore(
+      restoreJob.id,
       orgId,
-      itemIds: payload.itemIds,
-      targetConnectionId: payload.targetConnectionId ?? null,
-    });
+      payload.itemIds,
+      payload.targetConnectionId ?? null
+    );
 
     writeRouteAudit(c, {
       orgId,

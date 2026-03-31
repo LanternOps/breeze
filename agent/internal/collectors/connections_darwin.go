@@ -3,8 +3,6 @@
 package collectors
 
 import (
-	"bufio"
-	"os/exec"
 	"strconv"
 	"strings"
 
@@ -69,6 +67,10 @@ func (c *ConnectionsCollector) collectWithGopsutil() ([]ConnectionInfo, error) {
 			Pid:         int(conn.Pid),
 			ProcessName: processName,
 		})
+		connections[len(connections)-1] = sanitizeConnectionInfo(connections[len(connections)-1])
+		if len(connections) >= collectorResultLimit {
+			break
+		}
 	}
 
 	return connections, nil
@@ -99,28 +101,31 @@ func (c *ConnectionsCollector) getProtocolString(connType uint32, family uint32)
 // collectWithNetstat parses netstat output as fallback
 func (c *ConnectionsCollector) collectWithNetstat() ([]ConnectionInfo, error) {
 	// Run netstat -anv to get all connections with process info
-	cmd := exec.Command("netstat", "-anv", "-p", "tcp")
-	output, err := cmd.Output()
+	output, err := runCollectorOutput(collectorShortCommandTimeout, "netstat", "-anv", "-p", "tcp")
 	if err != nil {
 		return nil, err
 	}
 
-	connections := c.parseNetstatOutput(string(output), "tcp")
+	connections := c.parseNetstatOutput(output, "tcp")
 
 	// Also get UDP connections
-	cmd = exec.Command("netstat", "-anv", "-p", "udp")
-	output, err = cmd.Output()
+	output, err = runCollectorOutput(collectorShortCommandTimeout, "netstat", "-anv", "-p", "udp")
 	if err == nil {
-		connections = append(connections, c.parseNetstatOutput(string(output), "udp")...)
+		for _, conn := range c.parseNetstatOutput(output, "udp") {
+			if len(connections) >= collectorResultLimit {
+				break
+			}
+			connections = append(connections, conn)
+		}
 	}
 
 	return connections, nil
 }
 
 // parseNetstatOutput parses netstat -anv output
-func (c *ConnectionsCollector) parseNetstatOutput(output string, protocol string) []ConnectionInfo {
+func (c *ConnectionsCollector) parseNetstatOutput(output []byte, protocol string) []ConnectionInfo {
 	var connections []ConnectionInfo
-	scanner := bufio.NewScanner(strings.NewReader(output))
+	scanner := newCollectorScanner(output)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -131,7 +136,10 @@ func (c *ConnectionsCollector) parseNetstatOutput(output string, protocol string
 
 		conn := c.parseNetstatLine(line, protocol)
 		if conn != nil {
-			connections = append(connections, *conn)
+			connections = append(connections, sanitizeConnectionInfo(*conn))
+			if len(connections) >= collectorResultLimit {
+				break
+			}
 		}
 	}
 
@@ -212,4 +220,13 @@ func (c *ConnectionsCollector) parseAddress(addr string) (string, int) {
 	}
 
 	return addr, 0
+}
+
+func sanitizeConnectionInfo(conn ConnectionInfo) ConnectionInfo {
+	conn.Protocol = truncateCollectorString(conn.Protocol)
+	conn.LocalAddr = truncateCollectorString(conn.LocalAddr)
+	conn.RemoteAddr = truncateCollectorString(conn.RemoteAddr)
+	conn.State = truncateCollectorString(conn.State)
+	conn.ProcessName = truncateCollectorString(conn.ProcessName)
+	return conn
 }

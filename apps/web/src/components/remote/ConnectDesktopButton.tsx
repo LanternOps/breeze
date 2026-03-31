@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Monitor, MonitorOff, ExternalLink, Download, X } from 'lucide-react';
+import type { DesktopAccessState } from '@breeze/shared';
 import { fetchWithAuth } from '@/stores/auth';
 import { getViewerDownloadInfo, getAllViewerDownloads } from '@/lib/viewerDownload';
 
@@ -10,6 +11,7 @@ interface Props {
   iconOnly?: boolean;
   disabled?: boolean;
   isHeadless?: boolean;
+  desktopAccess?: DesktopAccessState | null;
 }
 
 /**
@@ -25,7 +27,30 @@ function tryDeepLink(url: string) {
   setTimeout(() => a.remove(), 100);
 }
 
-export default function ConnectDesktopButton({ deviceId, className = '', compact = false, iconOnly = false, disabled = false, isHeadless = false }: Props) {
+function desktopAccessUnavailableReason(desktopAccess: DesktopAccessState | null | undefined): string | null {
+  if (!desktopAccess || desktopAccess.mode !== 'unavailable') {
+    return null;
+  }
+
+  switch (desktopAccess.reason) {
+    case 'unsupported_os':
+      return 'This Mac is below the macOS 14+ floor for the native login-window desktop path';
+    case 'missing_entitlement':
+      return 'Login-window desktop is blocked until the required Apple entitlement is approved';
+    case 'manual_install':
+      return 'Login-window desktop is only supported for managed installs';
+    case 'missing_permission':
+      return 'macOS permissions required for unattended desktop access are still missing';
+    case 'virtual_display_unavailable':
+      return 'No capturable display is available for this Mac';
+    case 'helper_not_connected':
+      return 'The macOS desktop helper is not connected yet';
+    default:
+      return 'Desktop is unavailable on this device';
+  }
+}
+
+export default function ConnectDesktopButton({ deviceId, className = '', compact = false, iconOnly = false, disabled = false, isHeadless = false, desktopAccess = null }: Props) {
   const [status, setStatus] = useState<'idle' | 'creating' | 'launching' | 'fallback'>('idle');
   const [error, setError] = useState<string | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -228,15 +253,17 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
   ) : null;
 
   const headlessTitle = 'This device has no display \u2014 remote desktop is unavailable';
+  const desktopAccessUnavailable = desktopAccessUnavailableReason(desktopAccess);
+  const unavailableTitle = desktopAccessUnavailable ?? headlessTitle;
 
-  if (isHeadless) {
+  if (isHeadless || desktopAccessUnavailable) {
     if (iconOnly) {
       return (
         <div className={`relative ${className}`}>
           <button
             type="button"
             disabled
-            title={headlessTitle}
+            title={unavailableTitle}
             className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground cursor-not-allowed opacity-50"
           >
             <MonitorOff className="h-4 w-4" />
@@ -251,7 +278,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           <button
             type="button"
             disabled
-            title={headlessTitle}
+            title={unavailableTitle}
             className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-muted-foreground cursor-not-allowed opacity-50"
           >
             <MonitorOff className="h-4 w-4" />
@@ -266,7 +293,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
         <button
           type="button"
           disabled
-          title={headlessTitle}
+          title={unavailableTitle}
           className="flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground cursor-not-allowed opacity-50"
         >
           <MonitorOff className="h-4 w-4" />

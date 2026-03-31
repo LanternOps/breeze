@@ -32,9 +32,10 @@ func (m *WsSessionManager) StartSession(id string, displayIndex int, config Stre
 
 	// Create platform capturer
 	capturer, err := NewScreenCapturer(CaptureConfig{
-		DisplayIndex: displayIndex,
-		Quality:      config.Quality,
-		ScaleFactor:  config.ScaleFactor,
+		DisplayIndex:   displayIndex,
+		DesktopContext: "user_session",
+		Quality:        config.Quality,
+		ScaleFactor:    config.ScaleFactor,
 	})
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to create screen capturer: %w", err)

@@ -37,9 +37,12 @@ type Device = {
 };
 
 type VMEstimate = {
-  memoryMB: number;
-  cpuCount: number;
-  diskGB: number;
+  memoryMb?: number;
+  cpuCount?: number;
+  diskSizeGb?: number;
+  recommendedMemoryMb?: number;
+  recommendedCpu?: number;
+  requiredDiskGb?: number;
 };
 
 type RestoreMode = 'full' | 'instant';
@@ -108,9 +111,12 @@ export default function VMRestoreWizard() {
         if (response.ok) {
           const payload = await response.json();
           const est: VMEstimate = payload?.data ?? payload ?? {};
-          if (est.memoryMB) setMemoryMB(est.memoryMB);
-          if (est.cpuCount) setCpuCount(est.cpuCount);
-          if (est.diskGB) setDiskGB(est.diskGB);
+          const nextMemory = est.memoryMb ?? est.recommendedMemoryMb;
+          const nextCpu = est.cpuCount ?? est.recommendedCpu;
+          const nextDisk = est.diskSizeGb ?? est.requiredDiskGb;
+          if (typeof nextMemory === 'number') setMemoryMB(nextMemory);
+          if (typeof nextCpu === 'number') setCpuCount(nextCpu);
+          if (typeof nextDisk === 'number') setDiskGB(nextDisk);
         }
       } catch {
         // Use defaults
@@ -129,14 +135,24 @@ export default function VMRestoreWizard() {
       setRestoreSuccess(undefined);
 
       const endpoint = mode === 'full' ? '/backup/restore/as-vm' : '/backup/restore/instant-boot';
+      const vmSpecs = {
+        memoryMb: memoryMB,
+        cpuCount,
+        diskSizeGb: diskGB,
+      };
       const payload = {
         snapshotId,
         targetDeviceId,
-        memoryMB,
-        cpuCount,
-        diskGB,
         vmName,
-        virtualSwitch: virtualSwitch || undefined,
+        ...(mode === 'full'
+          ? {
+              hypervisor: 'hyperv' as const,
+              vmSpecs,
+              switchName: virtualSwitch.trim() || undefined,
+            }
+          : {
+              vmSpecs,
+            }),
       };
 
       const response = await fetchWithAuth(endpoint, {

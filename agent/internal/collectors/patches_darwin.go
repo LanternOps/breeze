@@ -3,8 +3,6 @@
 package collectors
 
 import (
-	"bufio"
-	"bytes"
 	"encoding/json"
 	"os/exec"
 	"regexp"
@@ -34,8 +32,7 @@ func (c *PatchCollector) Collect() ([]PatchInfo, error) {
 // collectSystemUpdates checks for macOS system updates using softwareupdate
 func (c *PatchCollector) collectSystemUpdates() ([]PatchInfo, error) {
 	// Run softwareupdate -l to list available updates
-	cmd := exec.Command("softwareupdate", "-l")
-	output, err := cmd.CombinedOutput()
+	output, err := runCollectorCombinedOutput(collectorLongCommandTimeout, "softwareupdate", "-l")
 	if err != nil {
 		// softwareupdate returns exit code 2 when no updates available
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 2 {
@@ -55,7 +52,7 @@ func (c *PatchCollector) collectSystemUpdates() ([]PatchInfo, error) {
 func (c *PatchCollector) parseSoftwareUpdateOutput(output []byte) []PatchInfo {
 	var patches []PatchInfo
 
-	scanner := bufio.NewScanner(bytes.NewReader(output))
+	scanner := newCollectorScanner(output)
 
 	// Regex patterns for parsing softwareupdate output
 	// Format: "* Label: macOS Sonoma 14.3"
@@ -77,12 +74,15 @@ func (c *PatchCollector) parseSoftwareUpdateOutput(output []byte) []PatchInfo {
 		if matches := labelPattern.FindStringSubmatch(line); len(matches) > 1 {
 			// Save previous patch if exists
 			if currentPatch != nil && currentPatch.Name != "" {
-				patches = append(patches, *currentPatch)
+				patches = append(patches, sanitizePatchInfo(*currentPatch))
+				if len(patches) >= collectorResultLimit {
+					return patches
+				}
 			}
 
 			label := strings.TrimSpace(matches[1])
 			currentPatch = &PatchInfo{
-				Name:     label,
+				Name:     truncateCollectorString(label),
 				Source:   "apple",
 				Category: c.categorizeAppleUpdate(label),
 			}
@@ -92,13 +92,13 @@ func (c *PatchCollector) parseSoftwareUpdateOutput(output []byte) []PatchInfo {
 		// If we have a current patch, look for details
 		if currentPatch != nil {
 			if matches := titlePattern.FindStringSubmatch(line); len(matches) > 1 {
-				currentPatch.Name = strings.TrimSpace(matches[1])
+				currentPatch.Name = truncateCollectorString(strings.TrimSpace(matches[1]))
 			}
 			if matches := versionPattern.FindStringSubmatch(line); len(matches) > 1 {
-				currentPatch.Version = strings.TrimSpace(matches[1])
+				currentPatch.Version = truncateCollectorString(strings.TrimSpace(matches[1]))
 			}
 			if matches := sizePattern.FindStringSubmatch(line); len(matches) > 1 {
-				currentPatch.Description = "Size: " + strings.TrimSpace(matches[1])
+				currentPatch.Description = truncateCollectorString("Size: " + strings.TrimSpace(matches[1]))
 			}
 			if matches := recommendedPattern.FindStringSubmatch(line); len(matches) > 1 {
 				if matches[1] == "YES" {
@@ -113,7 +113,7 @@ func (c *PatchCollector) parseSoftwareUpdateOutput(output []byte) []PatchInfo {
 
 	// Don't forget the last patch
 	if currentPatch != nil && currentPatch.Name != "" {
-		patches = append(patches, *currentPatch)
+		patches = append(patches, sanitizePatchInfo(*currentPatch))
 	}
 
 	return patches
@@ -152,8 +152,7 @@ func (c *PatchCollector) collectHomebrewUpdates() ([]PatchInfo, error) {
 	// exec.Command(brewPath, "update").Run()
 
 	// Get outdated packages
-	cmd := exec.Command(brewPath, "outdated", "--verbose")
-	output, err := cmd.Output()
+	output, err := runCollectorOutput(collectorLongCommandTimeout, brewPath, "outdated", "--verbose")
 	if err != nil {
 		// No outdated packages or error
 		return nil, nil
@@ -168,7 +167,7 @@ func (c *PatchCollector) collectHomebrewUpdates() ([]PatchInfo, error) {
 func (c *PatchCollector) parseBrewOutdatedOutput(output []byte) []PatchInfo {
 	var patches []PatchInfo
 
-	scanner := bufio.NewScanner(bytes.NewReader(output))
+	scanner := newCollectorScanner(output)
 
 	// Pattern: "package (1.2.3) < 1.2.4" or "package (1.2.3) != 1.2.4"
 	pattern := regexp.MustCompile(`^(\S+)\s+\(([^)]+)\)\s+[<!=]+\s+(.+)$`)
@@ -179,6 +178,7 @@ func (c *PatchCollector) parseBrewOutdatedOutput(output []byte) []PatchInfo {
 			continue
 		}
 
+		appended := false
 		if matches := pattern.FindStringSubmatch(line); len(matches) == 4 {
 			patches = append(patches, PatchInfo{
 				Name:       matches[1],
@@ -187,6 +187,7 @@ func (c *PatchCollector) parseBrewOutdatedOutput(output []byte) []PatchInfo {
 				Category:   "homebrew",
 				Source:     "homebrew",
 			})
+			appended = true
 		} else {
 			// Simple format: just package name
 			parts := strings.Fields(line)
@@ -196,7 +197,15 @@ func (c *PatchCollector) parseBrewOutdatedOutput(output []byte) []PatchInfo {
 					Category: "homebrew",
 					Source:   "homebrew",
 				})
+				appended = true
 			}
+		}
+		if !appended {
+			continue
+		}
+		patches[len(patches)-1] = sanitizePatchInfo(patches[len(patches)-1])
+		if len(patches) >= collectorResultLimit {
+			break
 		}
 	}
 
@@ -216,15 +225,14 @@ func (c *PatchCollector) CollectWithCasks() ([]PatchInfo, error) {
 		return patches, nil
 	}
 
-	cmd := exec.Command(brewPath, "outdated", "--cask", "--verbose")
-	output, err := cmd.Output()
+	output, err := runCollectorOutput(collectorLongCommandTimeout, brewPath, "outdated", "--cask", "--verbose")
 	if err != nil {
 		return patches, nil
 	}
 
 	caskPatches := c.parseBrewOutdatedOutput(output)
 	for i := range caskPatches {
-		caskPatches[i].Category = "homebrew-cask"
+		caskPatches[i].Category = truncateCollectorString("homebrew-cask")
 	}
 
 	patches = append(patches, caskPatches...)
@@ -235,8 +243,7 @@ func (c *PatchCollector) CollectWithCasks() ([]PatchInfo, error) {
 // Uses system_profiler which is efficient and returns structured JSON
 func (c *PatchCollector) CollectInstalled(maxAge time.Duration) ([]InstalledPatchInfo, error) {
 	// Run system_profiler to get install history (JSON output is faster to parse)
-	cmd := exec.Command("system_profiler", "SPInstallHistoryDataType", "-json")
-	output, err := cmd.Output()
+	output, err := runCollectorOutput(collectorLongCommandTimeout, "system_profiler", "SPInstallHistoryDataType", "-json")
 	if err != nil {
 		return nil, err
 	}
@@ -303,7 +310,34 @@ func (c *PatchCollector) parseInstallHistory(output []byte, maxAge time.Duration
 			Source:      source,
 			InstalledAt: installTime.Format(time.RFC3339),
 		})
+		patches[len(patches)-1] = sanitizeInstalledPatchInfo(patches[len(patches)-1])
+		if len(patches) >= collectorResultLimit {
+			break
+		}
 	}
 
 	return patches
+}
+
+func sanitizePatchInfo(patch PatchInfo) PatchInfo {
+	patch.Name = truncateCollectorString(patch.Name)
+	patch.Version = truncateCollectorString(patch.Version)
+	patch.CurrentVer = truncateCollectorString(patch.CurrentVer)
+	patch.Category = truncateCollectorString(patch.Category)
+	patch.Severity = truncateCollectorString(patch.Severity)
+	patch.KBNumber = truncateCollectorString(patch.KBNumber)
+	patch.ReleaseDate = truncateCollectorString(patch.ReleaseDate)
+	patch.Description = truncateCollectorString(patch.Description)
+	patch.Source = truncateCollectorString(patch.Source)
+	return patch
+}
+
+func sanitizeInstalledPatchInfo(patch InstalledPatchInfo) InstalledPatchInfo {
+	patch.Name = truncateCollectorString(patch.Name)
+	patch.Version = truncateCollectorString(patch.Version)
+	patch.KBNumber = truncateCollectorString(patch.KBNumber)
+	patch.Category = truncateCollectorString(patch.Category)
+	patch.Source = truncateCollectorString(patch.Source)
+	patch.InstalledAt = truncateCollectorString(patch.InstalledAt)
+	return patch
 }

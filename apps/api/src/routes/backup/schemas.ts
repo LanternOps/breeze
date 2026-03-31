@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import {
+  backupRetentionSchema as sharedBackupRetentionSchema,
+  backupScheduleSchema as sharedBackupScheduleSchema,
+} from '@breeze/shared/validators';
 
 const queryBoolean = z.preprocess((value) => {
   if (typeof value === 'boolean') return value;
@@ -34,19 +38,9 @@ export const policyTargetsSchema = z.object({
   groupIds: z.array(z.string()).optional()
 });
 
-export const policyScheduleSchema = z.object({
-  frequency: z.enum(['daily', 'weekly', 'monthly']),
-  time: z.string().regex(/^\d{2}:\d{2}$/),
-  timezone: z.string().optional(),
-  dayOfWeek: z.number().int().min(0).max(6).optional(),
-  dayOfMonth: z.number().int().min(1).max(28).optional()
-});
+export const policyScheduleSchema = sharedBackupScheduleSchema;
 
-export const policyRetentionSchema = z.object({
-  keepDaily: z.number().int().min(1).optional(),
-  keepWeekly: z.number().int().min(1).optional(),
-  keepMonthly: z.number().int().min(1).optional()
-});
+export const policyRetentionSchema = sharedBackupRetentionSchema;
 
 export const policySchema = z.object({
   name: z.string().min(1),
@@ -89,20 +83,28 @@ export const restoreSchema = z.object({
   deviceId: z.string().min(1).optional(),
   targetPath: z.string().optional(),
   selectedPaths: z.array(z.string()).optional(),
+  restoreType: z.enum(['full', 'selective']).default('full'),
+}).superRefine((value, ctx) => {
+  if (value.restoreType === 'selective' && (!value.selectedPaths || value.selectedPaths.length === 0)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'selectedPaths is required for selective restores',
+      path: ['selectedPaths'],
+    });
+  }
 });
 
 export const verificationRunSchema = z.object({
   deviceId: z.string().min(1),
   backupJobId: z.string().min(1).optional(),
   snapshotId: z.string().min(1).optional(),
-  verificationType: z.enum(['integrity', 'test_restore', 'full_recovery']).optional(),
-  highImpactApproved: z.boolean().optional()
+  verificationType: z.enum(['integrity', 'test_restore']).optional(),
 });
 
 export const verificationListSchema = z.object({
   deviceId: z.string().optional(),
   backupJobId: z.string().optional(),
-  verificationType: z.enum(['integrity', 'test_restore', 'full_recovery']).optional(),
+  verificationType: z.enum(['integrity', 'test_restore']).optional(),
   status: z.enum(['pending', 'running', 'passed', 'failed', 'partial']).optional(),
   from: z.string().optional(),
   to: z.string().optional(),
@@ -180,6 +182,19 @@ export const bmrAuthenticateSchema = z.object({
   token: z.string().min(1),
 });
 
+export const bmrRecoveryDownloadSchema = z.object({
+  token: z.string().min(1),
+  path: z.string().min(1).max(4096),
+});
+
+export const bmrTokenListSchema = z.object({
+  status: z.enum(['active', 'used', 'expired', 'revoked']).optional(),
+  deviceId: z.string().uuid().optional(),
+  snapshotId: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
 export const bmrCompleteSchema = z.object({
   token: z.string().min(1),
   result: z.object({
@@ -194,11 +209,42 @@ export const bmrCompleteSchema = z.object({
   }),
 });
 
+export const bmrMediaCreateSchema = z.object({
+  tokenId: z.string().uuid(),
+  platform: z.enum(['linux', 'darwin', 'windows']),
+  architecture: z.enum(['amd64', 'arm64']),
+});
+
+export const bmrMediaListSchema = z.object({
+  tokenId: z.string().uuid().optional(),
+  snapshotId: z.string().uuid().optional(),
+  status: z.enum(['pending', 'building', 'ready', 'ready_signed', 'legacy_unsigned', 'failed', 'expired']).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+export const bmrBootMediaCreateSchema = z.object({
+  tokenId: z.string().uuid(),
+  bundleArtifactId: z.string().uuid().optional(),
+  platform: z.literal('linux').default('linux'),
+  architecture: z.literal('amd64').default('amd64'),
+  mediaType: z.literal('iso').default('iso'),
+});
+
+export const bmrBootMediaListSchema = z.object({
+  tokenId: z.string().uuid().optional(),
+  snapshotId: z.string().uuid().optional(),
+  status: z.enum(['pending', 'building', 'ready_signed', 'failed', 'expired']).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
 export const bmrVmRestoreSchema = z.object({
   snapshotId: z.string().uuid(),
   targetDeviceId: z.string().uuid(),
-  hypervisor: z.enum(['hyperv', 'vmware']),
+  hypervisor: z.literal('hyperv'),
   vmName: z.string().min(1).max(200),
+  switchName: z.string().min(1).max(200).optional(),
   vmSpecs: z
     .object({
       memoryMb: z.number().int().min(512).optional(),
@@ -226,13 +272,12 @@ export const instantBootSchema = z.object({
 export const hypervBackupSchema = z.object({
   deviceId: z.string().uuid(),
   vmName: z.string().min(1).max(256),
-  exportPath: z.string().min(1).max(1024),
   consistencyType: z.enum(['application', 'crash']).default('application'),
 });
 
 export const hypervRestoreSchema = z.object({
   deviceId: z.string().uuid(),
-  exportPath: z.string().min(1).max(1024),
+  snapshotId: z.string().uuid(),
   vmName: z.string().min(1).max(256).optional(),
   generateNewId: z.boolean().default(true),
 });

@@ -36,6 +36,14 @@ type VaultStatus struct {
 	LastSyncAt     string `json:"lastSyncAt,omitempty"`
 }
 
+type VaultSyncResult struct {
+	SnapshotID       string `json:"snapshotId"`
+	VaultPath        string `json:"vaultPath,omitempty"`
+	FileCount        int    `json:"fileCount"`
+	TotalBytes       int64  `json:"totalBytes"`
+	ManifestVerified bool   `json:"manifestVerified"`
+}
+
 // NewVaultManager creates a VaultManager. It creates the vault directory if
 // needed and initializes a LocalProvider for it.
 func NewVaultManager(cfg VaultConfig, primary providers.BackupProvider) (*VaultManager, error) {
@@ -65,28 +73,33 @@ func NewVaultManager(cfg VaultConfig, primary providers.BackupProvider) (*VaultM
 //  2. List files in vault for this snapshot
 //  3. Download missing files from primary -> vault
 //  4. Copy manifest to vault
-func (v *VaultManager) SyncSnapshot(snapshotID string) error {
+func (v *VaultManager) SyncSnapshot(snapshotID string) (*VaultSyncResult, error) {
 	prefix := path.Join(snapshotRootDir, snapshotID)
 	manifestKey := path.Join(prefix, snapshotManifestKey)
+	syncResult := &VaultSyncResult{
+		SnapshotID: snapshotID,
+		VaultPath:  v.config.VaultPath,
+	}
 
 	// 1. Download manifest from primary to a temp file
 	manifestTmp, err := os.CreateTemp("", "vault-manifest-*.json")
 	if err != nil {
-		return fmt.Errorf("failed to create temp manifest: %w", err)
+		return nil, fmt.Errorf("failed to create temp manifest: %w", err)
 	}
 	manifestTmpPath := manifestTmp.Name()
 	_ = manifestTmp.Close()
 	defer os.Remove(manifestTmpPath)
 
 	if err := v.primary.Download(manifestKey, manifestTmpPath); err != nil {
-		return fmt.Errorf("failed to download manifest from primary: %w", err)
+		return nil, fmt.Errorf("failed to download manifest from primary: %w", err)
 	}
 
 	// 2. List all files in the primary snapshot
 	primaryFiles, err := v.primary.List(prefix)
 	if err != nil {
-		return fmt.Errorf("failed to list primary snapshot files: %w", err)
+		return nil, fmt.Errorf("failed to list primary snapshot files: %w", err)
 	}
+	syncResult.FileCount = len(primaryFiles)
 
 	// 3. Build set of files already in vault
 	vaultFiles, vaultListErr := v.vault.List(prefix)
@@ -120,7 +133,6 @@ func (v *VaultManager) SyncSnapshot(snapshotID string) error {
 			slog.Warn("vault sync: failed to download from primary", "file", file, "error", dlErr.Error())
 			continue
 		}
-
 		if ulErr := v.vault.Upload(tmpPath, file); ulErr != nil {
 			os.Remove(tmpPath)
 			errs = append(errs, fmt.Errorf("upload %s to vault: %w", file, ulErr))
@@ -139,15 +151,26 @@ func (v *VaultManager) SyncSnapshot(snapshotID string) error {
 		for _, f := range primaryFiles {
 			_ = v.vault.Delete(f)
 		}
-		return fmt.Errorf("vault sync failed at manifest upload: %w", manifestErr)
+		return nil, fmt.Errorf("vault sync failed at manifest upload: %w", manifestErr)
+	}
+	syncResult.ManifestVerified = true
+	if syncedFiles, listErr := v.vault.List(prefix); listErr == nil {
+		var totalSize int64
+		for _, syncedFile := range syncedFiles {
+			filePath := path.Join(v.config.VaultPath, syncedFile)
+			if info, statErr := os.Stat(filePath); statErr == nil {
+				totalSize += info.Size()
+			}
+		}
+		syncResult.TotalBytes = totalSize
 	}
 
 	if len(errs) > 0 {
-		return fmt.Errorf("vault sync completed with errors: %w", errors.Join(errs...))
+		return syncResult, fmt.Errorf("vault sync completed with errors: %w", errors.Join(errs...))
 	}
 
 	slog.Info("vault sync completed", "snapshotId", snapshotID)
-	return nil
+	return syncResult, nil
 }
 
 // EnforceRetention deletes the oldest snapshots from the vault beyond the
@@ -186,11 +209,15 @@ func (v *VaultManager) EnforceRetention() error {
 }
 
 // SyncAfterBackup syncs a snapshot to vault and enforces retention.
-func (v *VaultManager) SyncAfterBackup(snapshotID string) error {
-	if err := v.SyncSnapshot(snapshotID); err != nil {
-		return err
+func (v *VaultManager) SyncAfterBackup(snapshotID string) (*VaultSyncResult, error) {
+	result, err := v.SyncSnapshot(snapshotID)
+	if err != nil {
+		return result, err
 	}
-	return v.EnforceRetention()
+	if err := v.EnforceRetention(); err != nil {
+		return result, err
+	}
+	return result, nil
 }
 
 // GetStatus returns the current vault status including snapshot count and
