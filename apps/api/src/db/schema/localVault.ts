@@ -32,6 +32,7 @@ export const localVaults = pgTable(
     lastSyncStatus: varchar('last_sync_status', { length: 30 }),
     lastSyncSnapshotId: varchar('last_sync_snapshot_id', { length: 200 }),
     syncSizeBytes: bigint('sync_size_bytes', { mode: 'number' }),
+    lastSyncError: text('last_sync_error'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },

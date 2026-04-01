@@ -1,8 +1,26 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { createHash } from 'crypto';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { agentRoutes } from './agents';
 
 vi.mock('../services', () => ({}));
+vi.mock('../services/redis', () => ({
+  getRedis: vi.fn(() => ({
+    multi: vi.fn(),
+    get: vi.fn(async () => null),
+    set: vi.fn(async () => 'OK'),
+    del: vi.fn(async () => 1),
+    incr: vi.fn(async () => 1),
+    expire: vi.fn(async () => 1),
+  })),
+}));
+vi.mock('../services/rate-limit', () => ({
+  rateLimiter: vi.fn(async () => ({
+    allowed: true,
+    remaining: 9,
+    resetAt: new Date(Date.now() + 60_000),
+  })),
+}));
 vi.mock('../services/auditEvents', () => ({
   writeAuditEvent: vi.fn()
 }));
@@ -132,7 +150,8 @@ vi.mock('../middleware/agentAuth', () => ({
       siteId: 'site-123'
     });
     return next();
-  })
+  }),
+  isAgentTokenRotationDue: vi.fn(() => false),
 }));
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -153,10 +172,25 @@ describe('agent routes', () => {
     app.route('/agents', agentRoutes);
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   describe('POST /agents/enroll', () => {
     it('should enroll an agent with a valid enrollment key', async () => {
-      // Enrollment now does: db.update(enrollmentKeys).set(...).where(...).returning()
-      // to atomically validate and increment key usage
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'key-123',
+              orgId: 'org-123',
+              siteId: 'site-123',
+              keySecretHash: null,
+            }])
+          })
+        })
+      } as any);
+
       vi.mocked(db.update).mockReturnValueOnce({
         set: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -231,11 +265,10 @@ describe('agent routes', () => {
     });
 
     it('should reject invalid enrollment keys', async () => {
-      // db.update().set().where().returning() returns empty = invalid key
-      vi.mocked(db.update).mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([])
+            limit: vi.fn().mockResolvedValue([])
           })
         })
       } as any);
@@ -254,6 +287,133 @@ describe('agent routes', () => {
       });
 
       expect(res.status).toBe(401);
+    });
+
+    it('accepts a matching per-key enrollment secret', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'key-123',
+              orgId: 'org-123',
+              siteId: 'site-123',
+              keySecretHash: createHash('sha256').update('per-key-secret').digest('hex'),
+            }])
+          })
+        })
+      } as any);
+
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              id: 'key-123',
+              key: 'hashed-enroll-key',
+              orgId: 'org-123',
+              siteId: 'site-123',
+              usageCount: 1,
+            }])
+          })
+        })
+      } as any);
+
+      const tx = {
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              id: 'device-123',
+              orgId: 'org-123',
+              siteId: 'site-123',
+              agentId: 'agent-new',
+              hostname: 'agent-host',
+              osType: 'linux',
+              osVersion: '1.0',
+              architecture: 'x86_64',
+              agentVersion: '2.0',
+              status: 'online'
+            }])
+          })
+        }),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([])
+            })
+          })
+        })
+      };
+      vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as any));
+
+      const res = await app.request('/agents/enroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enrollmentKey: 'enroll-key',
+          enrollmentSecret: 'per-key-secret',
+          hostname: 'agent-host',
+          osType: 'linux',
+          osVersion: '1.0',
+          architecture: 'x86_64',
+          agentVersion: '2.0'
+        })
+      });
+
+      expect(res.status).toBe(201);
+    });
+
+    it('rejects a mismatched per-key enrollment secret', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+
+      const incrementReturning = vi.fn().mockResolvedValue([{
+        id: 'key-123',
+        key: 'hashed-enroll-key',
+        orgId: 'org-123',
+        siteId: 'site-123',
+        usageCount: 1,
+      }]);
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'key-123',
+              orgId: 'org-123',
+              siteId: 'site-123',
+              keySecretHash: createHash('sha256').update('per-key-secret').digest('hex'),
+            }])
+          })
+        })
+      } as any);
+
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: incrementReturning
+          })
+        })
+      } as any);
+
+      const res = await app.request('/agents/enroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enrollmentKey: 'enroll-key',
+          enrollmentSecret: 'wrong-secret',
+          hostname: 'agent-host',
+          osType: 'linux',
+          osVersion: '1.0',
+          architecture: 'x86_64',
+          agentVersion: '2.0'
+        })
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Invalid enrollment secret' });
+      expect(incrementReturning).not.toHaveBeenCalled();
     });
   });
 

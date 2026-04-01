@@ -199,7 +199,25 @@ describe('backupRetentionSchema', () => {
       keepMonthly: 12,
       keepYearly: 3,
       weeklyDay: 0,
+      legalHold: true,
+      legalHoldReason: 'Regulatory matter',
+      immutabilityMode: 'application',
+      immutableDays: 90,
     });
     expect(result.success).toBe(true);
+  });
+
+  it('requires a reason when legal hold is enabled', () => {
+    const result = backupRetentionSchema.safeParse({
+      legalHold: true,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('requires immutableDays when application immutability is enabled', () => {
+    const result = backupRetentionSchema.safeParse({
+      immutabilityMode: 'application',
+    });
+    expect(result.success).toBe(false);
   });
 });

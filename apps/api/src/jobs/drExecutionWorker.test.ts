@@ -14,6 +14,7 @@ vi.mock('bullmq', () => ({
   },
   Worker: class {},
   Job: class {},
+  UnrecoverableError: class extends Error {},
 }));
 
 vi.mock('../services/redis', () => ({
@@ -42,8 +43,16 @@ describe('dr execution queueing', () => {
 
     expect(shared.addMock).toHaveBeenCalledWith(
       'reconcile-execution',
-      { type: 'reconcile-execution', executionId: 'exec-1' },
-      expect.objectContaining({ jobId: 'dr-execution:exec-1', delay: 1234 }),
+      expect.objectContaining({
+        type: 'reconcile-execution',
+        executionId: 'exec-1',
+        meta: expect.objectContaining({ actorType: 'system' }),
+      }),
+      expect.objectContaining({
+        jobId: 'dr-execution:exec-1',
+        delay: 1234,
+        attempts: 3,
+      }),
     );
   });
 
@@ -57,5 +66,10 @@ describe('dr execution queueing', () => {
 
     expect(shared.addMock).not.toHaveBeenCalled();
     expect(jobId).toBe('existing-job');
+  });
+
+  it('rejects malformed DR execution jobs before enqueueing', async () => {
+    await expect(enqueueDrExecutionReconcile('')).rejects.toThrow();
+    expect(shared.addMock).not.toHaveBeenCalled();
   });
 });

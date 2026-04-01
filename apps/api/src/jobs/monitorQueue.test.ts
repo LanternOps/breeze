@@ -14,6 +14,7 @@ vi.mock('bullmq', () => ({
   },
   Worker: class {},
   Job: class {},
+  UnrecoverableError: class extends Error {},
 }));
 
 vi.mock('../db', () => ({
@@ -136,5 +137,20 @@ describe('monitor queue helpers', () => {
 
     expect(addMock).not.toHaveBeenCalled();
     expect(jobId).toBe('existing-job');
+  });
+
+  it('rejects malformed monitor result payloads before enqueueing', async () => {
+    getJobMock.mockResolvedValue(null);
+
+    await expect(
+      enqueueMonitorCheckResult('monitor-1', {
+        monitorId: 'monitor-1',
+        checkId: 'mon-monitor-1-123',
+        status: 'online',
+        responseMs: -1,
+      } as any),
+    ).rejects.toThrow();
+
+    expect(addMock).not.toHaveBeenCalled();
   });
 });

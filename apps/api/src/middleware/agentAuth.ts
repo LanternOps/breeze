@@ -16,12 +16,14 @@ export interface AgentAuthContext {
 declare module 'hono' {
   interface ContextVariableMap {
     agent: AgentAuthContext;
+    agentTokenRotationRequired: boolean;
   }
 }
 
 // 120 requests per 60-second window per agent
 const AGENT_RATE_LIMIT = 120;
 const AGENT_RATE_WINDOW_SECONDS = 60;
+const DEFAULT_AGENT_TOKEN_ROTATION_MAX_AGE_DAYS = 30;
 
 function tokenHashMatches(storedHash: string, tokenHash: string): boolean {
   const storedBuf = Buffer.from(storedHash, 'hex');
@@ -31,6 +33,54 @@ function tokenHashMatches(storedHash: string, tokenHash: string): boolean {
   }
 
   return timingSafeEqual(storedBuf, computedBuf);
+}
+
+export function matchAgentTokenHash(params: {
+  agentTokenHash: string | null | undefined;
+  previousTokenHash: string | null | undefined;
+  previousTokenExpiresAt: Date | null | undefined;
+  tokenHash: string;
+  now?: Date;
+}): { tokenRotationRequired: boolean } | null {
+  const {
+    agentTokenHash,
+    previousTokenHash,
+    previousTokenExpiresAt,
+    tokenHash,
+    now = new Date(),
+  } = params;
+
+  if (agentTokenHash && tokenHashMatches(agentTokenHash, tokenHash)) {
+    return { tokenRotationRequired: false };
+  }
+
+  if (
+    previousTokenHash &&
+    previousTokenExpiresAt &&
+    previousTokenExpiresAt > now &&
+    tokenHashMatches(previousTokenHash, tokenHash)
+  ) {
+    return { tokenRotationRequired: true };
+  }
+
+  return null;
+}
+
+function getAgentTokenRotationMaxAgeDays(): number {
+  const raw = Number.parseInt(process.env.AGENT_TOKEN_ROTATION_MAX_AGE_DAYS ?? '', 10);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return DEFAULT_AGENT_TOKEN_ROTATION_MAX_AGE_DAYS;
+  }
+  return Math.min(raw, 365);
+}
+
+export function isAgentTokenRotationDue(tokenIssuedAt: Date | null | undefined, now = new Date()): boolean {
+  if (!tokenIssuedAt) {
+    return true;
+  }
+
+  const maxAgeMs = getAgentTokenRotationMaxAgeDays() * 24 * 60 * 60 * 1000;
+  return now.getTime() - tokenIssuedAt.getTime() >= maxAgeMs;
 }
 
 /**
@@ -82,19 +132,14 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     throw new HTTPException(401, { message: 'Invalid agent credentials' });
   }
 
-  let tokenRotationRequired = false;
-  const hashMatch = tokenHashMatches(device.agentTokenHash, tokenHash);
-  if (!hashMatch) {
-    if (
-      !device.previousTokenHash ||
-      !device.previousTokenExpiresAt ||
-      device.previousTokenExpiresAt <= new Date() ||
-      !tokenHashMatches(device.previousTokenHash, tokenHash)
-    ) {
-      throw new HTTPException(401, { message: 'Invalid agent credentials' });
-    }
-
-    tokenRotationRequired = true;
+  const match = matchAgentTokenHash({
+    agentTokenHash: device.agentTokenHash,
+    previousTokenHash: device.previousTokenHash,
+    previousTokenExpiresAt: device.previousTokenExpiresAt,
+    tokenHash,
+  });
+  if (!match) {
+    throw new HTTPException(401, { message: 'Invalid agent credentials' });
   }
 
   if (device.status === 'decommissioned') {
@@ -115,9 +160,10 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     throw new HTTPException(429, { message: 'Agent rate limit exceeded' });
   }
 
-  if (tokenRotationRequired) {
+  if (match.tokenRotationRequired) {
     c.header('x-token-rotation-required', 'true');
   }
+  c.set('agentTokenRotationRequired', match.tokenRotationRequired);
 
   c.set('agent', {
     deviceId: device.id,

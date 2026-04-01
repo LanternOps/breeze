@@ -14,57 +14,199 @@ import {
 } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
+import { getTrustedClientIp } from '../../services/clientIp';
+import { getRedis } from '../../services/redis';
+import { rateLimiter } from '../../services/rate-limit';
 import { enrollSchema } from './schemas';
 import { generateAgentId, generateApiKey, issueMtlsCertForDevice } from './helpers';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
 import { dispatchHook } from '../../services/partnerHooks';
 
 export const enrollmentRoutes = new Hono();
+const ENROLLMENT_RATE_LIMIT = 10;
+const ENROLLMENT_RATE_WINDOW_SECONDS = 60;
+
+function isProductionEnv(): boolean {
+  return (process.env.NODE_ENV ?? 'development') === 'production';
+}
+
+function getProvidedEnrollmentSecret(c: any, data: { enrollmentSecret?: string }): string {
+  return (data.enrollmentSecret ?? c.req.header('x-agent-enrollment-secret') ?? '').trim();
+}
+
+function timingSafeStringEqual(left: string, right: string): boolean {
+  const leftBuf = Buffer.from(left);
+  const rightBuf = Buffer.from(right);
+  return leftBuf.length === rightBuf.length && timingSafeEqual(leftBuf, rightBuf);
+}
+
+function hashEnrollmentSecret(secret: string): string {
+  return createHash('sha256').update(secret).digest('hex');
+}
 
 enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => {
   const data = c.req.valid('json');
-  const configuredSecret = process.env.AGENT_ENROLLMENT_SECRET;
-  const requireSecret = (process.env.NODE_ENV ?? 'development') === 'production'
-    && typeof configuredSecret === 'string'
-    && configuredSecret.length > 0;
-
-  if (requireSecret) {
-    const provided = (data.enrollmentSecret ?? c.req.header('x-agent-enrollment-secret') ?? '').trim();
-    if (!provided) {
-      return c.json({ error: 'Enrollment secret required' }, 403);
-    }
-
-    const providedBuf = Buffer.from(provided);
-    const configuredBuf = Buffer.from(configuredSecret);
-    if (providedBuf.length !== configuredBuf.length || !timingSafeEqual(providedBuf, configuredBuf)) {
-      return c.json({ error: 'Invalid enrollment secret' }, 403);
-    }
+  const clientIp = getTrustedClientIp(c, 'unknown');
+  const rateCheck = await rateLimiter(
+    getRedis(),
+    `agent-enroll:${clientIp}`,
+    ENROLLMENT_RATE_LIMIT,
+    ENROLLMENT_RATE_WINDOW_SECONDS
+  );
+  if (!rateCheck.allowed) {
+    c.header('Retry-After', String(Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)));
+    writeAuditEvent(c, {
+      orgId: null,
+      actorType: 'system',
+      action: 'agent.enroll',
+      resourceType: 'device',
+      resourceName: data.hostname,
+      details: { reason: 'rate_limit' },
+      result: 'denied',
+      errorMessage: 'Agent enrollment rate limit exceeded',
+    });
+    return c.json({ error: 'Enrollment rate limit exceeded' }, 429);
   }
 
   const hashedEnrollmentKey = hashEnrollmentKey(data.enrollmentKey);
 
   return withSystemDbAccessContext(async () => {
+    const validEnrollmentKeyConditions = [
+      eq(enrollmentKeys.key, hashedEnrollmentKey),
+      sql`(${enrollmentKeys.expiresAt} IS NULL OR ${enrollmentKeys.expiresAt} > NOW())`,
+      sql`(${enrollmentKeys.maxUsage} IS NULL OR ${enrollmentKeys.usageCount} < ${enrollmentKeys.maxUsage})`,
+    ] as const;
+
+    const [matchingKey] = await db
+      .select({
+        id: enrollmentKeys.id,
+        orgId: enrollmentKeys.orgId,
+        siteId: enrollmentKeys.siteId,
+        keySecretHash: enrollmentKeys.keySecretHash,
+      })
+      .from(enrollmentKeys)
+      .where(and(...validEnrollmentKeyConditions))
+      .limit(1);
+
+    if (!matchingKey) {
+      writeAuditEvent(c, {
+        orgId: null,
+        actorType: 'system',
+        action: 'agent.enroll',
+        resourceType: 'device',
+        resourceName: data.hostname,
+        details: { reason: 'invalid_or_expired_enrollment_key' },
+        result: 'denied',
+        errorMessage: 'Invalid or expired enrollment key',
+      });
+      return c.json({ error: 'Invalid or expired enrollment key' }, 401);
+    }
+
+    const providedSecret = getProvidedEnrollmentSecret(c, data);
+    const configuredSecret = process.env.AGENT_ENROLLMENT_SECRET;
+    const hasGlobalSecret = typeof configuredSecret === 'string' && configuredSecret.length > 0;
+
+    if (matchingKey.keySecretHash) {
+      if (!providedSecret) {
+        writeAuditEvent(c, {
+          orgId: null,
+          actorType: 'system',
+          action: 'agent.enroll',
+          resourceType: 'device',
+          resourceName: data.hostname,
+          details: { reason: 'missing_enrollment_secret' },
+          result: 'denied',
+          errorMessage: 'Enrollment secret required',
+        });
+        return c.json({ error: 'Enrollment secret required' }, 403);
+      }
+
+      const providedSecretHash = hashEnrollmentSecret(providedSecret);
+      if (!timingSafeStringEqual(providedSecretHash, matchingKey.keySecretHash)) {
+        writeAuditEvent(c, {
+          orgId: null,
+          actorType: 'system',
+          action: 'agent.enroll',
+          resourceType: 'device',
+          resourceName: data.hostname,
+          details: { reason: 'invalid_enrollment_secret' },
+          result: 'denied',
+          errorMessage: 'Invalid enrollment secret',
+        });
+        return c.json({ error: 'Invalid enrollment secret' }, 403);
+      }
+    } else if (hasGlobalSecret) {
+      if (!providedSecret) {
+        writeAuditEvent(c, {
+          orgId: null,
+          actorType: 'system',
+          action: 'agent.enroll',
+          resourceType: 'device',
+          resourceName: data.hostname,
+          details: { reason: 'missing_enrollment_secret' },
+          result: 'denied',
+          errorMessage: 'Enrollment secret required',
+        });
+        return c.json({ error: 'Enrollment secret required' }, 403);
+      }
+
+      if (!timingSafeStringEqual(hashEnrollmentSecret(providedSecret), hashEnrollmentSecret(configuredSecret))) {
+        writeAuditEvent(c, {
+          orgId: null,
+          actorType: 'system',
+          action: 'agent.enroll',
+          resourceType: 'device',
+          resourceName: data.hostname,
+          details: { reason: 'invalid_enrollment_secret' },
+          result: 'denied',
+          errorMessage: 'Invalid enrollment secret',
+        });
+        return c.json({ error: 'Invalid enrollment secret' }, 403);
+      }
+    } else if (isProductionEnv()) {
+      writeAuditEvent(c, {
+        orgId: null,
+        actorType: 'system',
+        action: 'agent.enroll',
+        resourceType: 'device',
+        resourceName: data.hostname,
+        details: { reason: 'missing_enrollment_secret' },
+        result: 'denied',
+        errorMessage: 'Enrollment secret required',
+      });
+      return c.json({ error: 'Enrollment secret required' }, 403);
+    }
+
+    if (!matchingKey.siteId) {
+      throw new HTTPException(400, { message: 'Enrollment key must be associated with a site' });
+    }
+
     const [key] = await db
       .update(enrollmentKeys)
       .set({ usageCount: sql`${enrollmentKeys.usageCount} + 1` })
       .where(
         and(
-          eq(enrollmentKeys.key, hashedEnrollmentKey),
-          sql`(${enrollmentKeys.expiresAt} IS NULL OR ${enrollmentKeys.expiresAt} > NOW())`,
-          sql`(${enrollmentKeys.maxUsage} IS NULL OR ${enrollmentKeys.usageCount} < ${enrollmentKeys.maxUsage})`
+          eq(enrollmentKeys.id, matchingKey.id),
+          ...validEnrollmentKeyConditions
         )
       )
       .returning();
 
     if (!key) {
+      writeAuditEvent(c, {
+        orgId: null,
+        actorType: 'system',
+        action: 'agent.enroll',
+        resourceType: 'device',
+        resourceName: data.hostname,
+        details: { reason: 'invalid_or_expired_enrollment_key' },
+        result: 'denied',
+        errorMessage: 'Invalid or expired enrollment key',
+      });
       return c.json({ error: 'Invalid or expired enrollment key' }, 401);
     }
 
-    const siteId = key.siteId;
-    if (!siteId) {
-      await db.update(enrollmentKeys).set({ usageCount: sql`${enrollmentKeys.usageCount} - 1` }).where(eq(enrollmentKeys.id, key.id));
-      throw new HTTPException(400, { message: 'Enrollment key must be associated with a site' });
-    }
+    const siteId = key.siteId!; // non-null asserted: matchingKey.siteId guard at line 180
 
     // Fetch partner device limit (used inside transaction below)
     let deviceLimitPartnerId: string | null = null;
@@ -90,6 +232,7 @@ deviceLimitPartnerId = org.partnerId;
 
     const agentId = generateAgentId();
     const apiKey = generateApiKey();
+    const tokenIssuedAt = new Date();
     // Agent bearer tokens are high-entropy random values; we store only a SHA-256 hash and never persist
     // the plaintext token.
     // lgtm[js/insufficient-password-hash]
@@ -161,6 +304,9 @@ deviceLimitPartnerId = org.partnerId;
             osVersion: data.osVersion,
             architecture: data.architecture,
             agentVersion: data.agentVersion,
+            tokenIssuedAt,
+            previousTokenHash: null,
+            previousTokenExpiresAt: null,
             deviceRole: data.deviceRole || 'unknown',
             deviceRoleSource: 'auto',
             status: 'online',
@@ -182,6 +328,7 @@ deviceLimitPartnerId = org.partnerId;
             osVersion: data.osVersion,
             architecture: data.architecture,
             agentVersion: data.agentVersion,
+            tokenIssuedAt,
             deviceRole: data.deviceRole || 'unknown',
             deviceRoleSource: 'auto',
             status: 'online',

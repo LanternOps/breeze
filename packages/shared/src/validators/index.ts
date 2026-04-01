@@ -581,6 +581,7 @@ export {
   backupModeSchema,
   backupScheduleSchema,
   backupRetentionSchema,
+  backupRetentionUpdateSchema,
   backupInlineSettingsSchema,
   type BackupMode,
   type BackupSchedule,

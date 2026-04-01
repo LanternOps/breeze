@@ -1,13 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   CheckCircle2,
+  Clock3,
   ClipboardList,
   FolderOpen,
+  Loader2,
   MapPin,
+  RefreshCw,
   RotateCcw,
-  Server
+  Server,
+  XCircle
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -30,6 +35,35 @@ type Snapshot = {
   size?: string;
   status?: string;
   files?: SnapshotFile[];
+};
+
+type RestoreResultDetails = {
+  status?: string;
+  commandType?: string;
+  error?: string;
+  stderr?: string;
+  warnings?: string[];
+  durationMs?: number;
+  [key: string]: unknown;
+};
+
+type RestoreJob = {
+  id: string;
+  snapshotId: string;
+  deviceId: string;
+  restoreType: RestoreType | string;
+  selectedPaths?: string[];
+  status: string;
+  targetPath?: string | null;
+  createdAt: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  updatedAt: string;
+  restoredSize?: number | null;
+  restoredFiles?: number | null;
+  commandId?: string | null;
+  errorSummary?: string | null;
+  resultDetails?: RestoreResultDetails | null;
 };
 
 type SnapshotTreeItem = {
@@ -63,6 +97,35 @@ function flattenSnapshotTree(nodes: SnapshotTreeItem[]): SnapshotFile[] {
   return files;
 }
 
+function formatBytes(bytes?: number | null): string {
+  if (!Number.isFinite(bytes) || !bytes || bytes <= 0) return '--';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const precision = value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+function formatTimestamp(value?: string | null): string {
+  if (!value) return '--';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '--';
+  return date.toLocaleString();
+}
+
+function renderJson(value: unknown): string {
+  if (value == null) return '-';
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 export default function RestoreWizard() {
   const [step, setStep] = useState(0);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
@@ -77,6 +140,9 @@ export default function RestoreWizard() {
   const [restoreSuccess, setRestoreSuccess] = useState<string>();
   const [restoring, setRestoring] = useState(false);
   const [filesLoading, setFilesLoading] = useState(false);
+  const [restoreJob, setRestoreJob] = useState<RestoreJob | null>(null);
+  const [restoreHistory, setRestoreHistory] = useState<RestoreJob[]>([]);
+  const [restoreHistoryLoading, setRestoreHistoryLoading] = useState(false);
 
   const nextStep = () => setStep((prev) => Math.min(prev + 1, 4));
   const prevStep = () => setStep((prev) => Math.max(prev - 1, 0));
@@ -100,9 +166,38 @@ export default function RestoreWizard() {
     }
   }, []);
 
+  const fetchRestoreHistory = useCallback(async () => {
+    try {
+      setRestoreHistoryLoading(true);
+      const response = await fetchWithAuth('/backup/restore?limit=6');
+      if (!response.ok) {
+        throw new Error('Failed to fetch restore history');
+      }
+      const payload = await response.json();
+      const data = payload?.data ?? payload ?? [];
+      setRestoreHistory(Array.isArray(data) ? data as RestoreJob[] : []);
+    } catch (err) {
+      setRestoreError((prev) => prev ?? (err instanceof Error ? err.message : 'Failed to fetch restore history'));
+    } finally {
+      setRestoreHistoryLoading(false);
+    }
+  }, []);
+
+  const fetchRestoreJob = useCallback(async (restoreId: string) => {
+    const response = await fetchWithAuth(`/backup/restore/${restoreId}`);
+    if (!response.ok) {
+      throw new Error('Failed to fetch restore job status');
+    }
+    const payload = await response.json();
+    const data = payload?.data ?? payload;
+    setRestoreJob(data as RestoreJob);
+    return data as RestoreJob;
+  }, []);
+
   useEffect(() => {
     fetchSnapshots();
-  }, [fetchSnapshots]);
+    void fetchRestoreHistory();
+  }, [fetchRestoreHistory, fetchSnapshots]);
 
   useEffect(() => {
     if (!snapshotId && snapshots.length > 0) {
@@ -166,13 +261,30 @@ export default function RestoreWizard() {
     [snapshotId, snapshots]
   );
   const selectableFiles = selectedSnapshot?.files ?? [];
+  const activeRestore = restoreJob && ['pending', 'running'].includes(`${restoreJob.status}`.toLowerCase()) ? restoreJob : null;
+
+  useEffect(() => {
+    if (!activeRestore?.id) return;
+    const timer = window.setInterval(() => {
+      void fetchRestoreJob(activeRestore.id)
+        .then((nextJob) => {
+          if (!['pending', 'running'].includes(`${nextJob.status}`.toLowerCase())) {
+            void fetchRestoreHistory();
+          }
+        })
+        .catch((err) => {
+          setRestoreError(err instanceof Error ? err.message : 'Failed to refresh restore job');
+        });
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [activeRestore?.id, fetchRestoreHistory, fetchRestoreJob]);
 
   const handleRestore = useCallback(async () => {
     try {
       setRestoring(true);
       setRestoreError(undefined);
       setRestoreSuccess(undefined);
-      const payload = {
+      const requestBody = {
         snapshotId,
         restoreType,
         selectedPaths: restoreType === 'selective' ? Array.from(selectedFiles) : [],
@@ -181,20 +293,23 @@ export default function RestoreWizard() {
 
       const response = await fetchWithAuth('/backup/restore', {
         method: 'POST',
-        body: JSON.stringify(payload)
+        body: JSON.stringify(requestBody)
       });
 
       if (!response.ok) {
         throw new Error('Failed to start restore');
       }
-
-      setRestoreSuccess('Restore started successfully.');
+      const payload = await response.json();
+      const created = (payload?.data ?? payload) as RestoreJob;
+      setRestoreJob(created);
+      setRestoreSuccess(`Restore job ${created.id} queued successfully.`);
+      await fetchRestoreHistory();
     } catch (err) {
       setRestoreError(err instanceof Error ? err.message : 'Failed to start restore');
     } finally {
       setRestoring(false);
     }
-  }, [alternatePath, destination, restoreType, selectedFiles, snapshotId]);
+  }, [alternatePath, destination, fetchRestoreHistory, restoreType, selectedFiles, snapshotId]);
 
   if (loading) {
     return (
@@ -537,6 +652,151 @@ export default function RestoreWizard() {
           </div>
         </div>
       </div>
+
+      {(restoreJob || restoreHistoryLoading || restoreHistory.length > 0) ? (
+        <div className="grid gap-6 xl:grid-cols-[1.2fr,0.8fr]">
+          <div className="rounded-lg border bg-card p-5 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base font-semibold text-foreground">Latest restore job</h3>
+                <p className="text-sm text-muted-foreground">
+                  Status and result details for the most recently started restore.
+                </p>
+              </div>
+              {restoreJob?.id ? (
+                <button
+                  type="button"
+                  onClick={() => void fetchRestoreJob(restoreJob.id)}
+                  className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  Refresh
+                </button>
+              ) : null}
+            </div>
+
+            {restoreJob ? (
+              <div className="mt-4 space-y-4">
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <div className="rounded-md border bg-muted/20 p-4">
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Status</p>
+                    <p className="mt-2 text-sm font-semibold capitalize text-foreground">{restoreJob.status}</p>
+                  </div>
+                  <div className="rounded-md border bg-muted/20 p-4">
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Created</p>
+                    <p className="mt-2 text-sm font-semibold text-foreground">{formatTimestamp(restoreJob.createdAt)}</p>
+                  </div>
+                  <div className="rounded-md border bg-muted/20 p-4">
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Restored files</p>
+                    <p className="mt-2 text-sm font-semibold text-foreground">{restoreJob.restoredFiles ?? '--'}</p>
+                  </div>
+                  <div className="rounded-md border bg-muted/20 p-4">
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Restored size</p>
+                    <p className="mt-2 text-sm font-semibold text-foreground">{formatBytes(restoreJob.restoredSize)}</p>
+                  </div>
+                </div>
+
+                {restoreJob.errorSummary ? (
+                  <div className="rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                      <span>{restoreJob.errorSummary}</span>
+                    </div>
+                  </div>
+                ) : null}
+
+                {Array.isArray(restoreJob.resultDetails?.warnings) && restoreJob.resultDetails.warnings.length > 0 ? (
+                  <div className="rounded-md border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-warning">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                      <div>
+                        <p className="font-medium">Warnings</p>
+                        <ul className="mt-1 space-y-1 text-xs">
+                          {restoreJob.resultDetails.warnings.map((warning) => (
+                            <li key={warning}>{warning}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="rounded-md border border-dashed bg-muted/20 p-4">
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Command / target</p>
+                    <p className="mt-2 text-xs text-foreground">Command: {restoreJob.commandId ?? '--'}</p>
+                    <p className="mt-1 text-xs text-foreground">Target path: {restoreJob.targetPath ?? 'Original location'}</p>
+                    <p className="mt-1 text-xs text-foreground">Completed: {formatTimestamp(restoreJob.completedAt)}</p>
+                  </div>
+                  <div className="rounded-md border border-dashed bg-muted/20 p-4">
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Result payload</p>
+                    <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words text-[11px] text-foreground">
+                      {renderJson(restoreJob.resultDetails)}
+                    </pre>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-4 rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+                Start a restore to load live result details here.
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-lg border bg-card p-5 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base font-semibold text-foreground">Recent restore history</h3>
+                <p className="text-sm text-muted-foreground">
+                  Most recent restore jobs for this organization.
+                </p>
+              </div>
+              {restoreHistoryLoading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
+            </div>
+
+            <div className="mt-4 space-y-3">
+              {restoreHistory.length === 0 ? (
+                <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+                  No restore history yet.
+                </div>
+              ) : (
+                restoreHistory.map((job) => {
+                  const isFailed = `${job.status}`.toLowerCase().includes('fail');
+                  const isRunning = ['pending', 'running'].includes(`${job.status}`.toLowerCase());
+                  return (
+                    <div key={job.id} className="rounded-md border px-4 py-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-foreground">{job.id}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {job.restoreType} restore · {formatTimestamp(job.createdAt)}
+                          </p>
+                        </div>
+                        <span className={cn(
+                          'inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium capitalize',
+                          isFailed && 'bg-destructive/10 text-destructive',
+                          isRunning && 'bg-primary/10 text-primary',
+                          !isFailed && !isRunning && 'bg-success/10 text-success'
+                        )}>
+                          {isFailed ? <XCircle className="h-3.5 w-3.5" /> : isRunning ? <Clock3 className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                          {job.status}
+                        </span>
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+                        <span>Files: {job.restoredFiles ?? '--'}</span>
+                        <span>Size: {formatBytes(job.restoredSize)}</span>
+                      </div>
+                      {job.errorSummary ? (
+                        <p className="mt-2 line-clamp-2 text-xs text-destructive">{job.errorSummary}</p>
+                      ) : null}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

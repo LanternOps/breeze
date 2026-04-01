@@ -45,6 +45,7 @@ m365AuthRoutes.get('/m365/consent-url', async (c) => {
 
   await db.insert(c2cConsentSessions).values({
     orgId,
+    userId: auth.user?.id ?? null,
     state,
     provider: 'microsoft_365',
     displayName,
@@ -104,6 +105,15 @@ m365CallbackRoute.get('/c2c/m365/callback', async (c) => {
 
   if (!session) {
     return c.redirect(`${frontendBase}/c2c?c2c_error=${encodeURIComponent('Invalid or expired consent session')}`);
+  }
+
+  if (session.userId) {
+    console.warn('[c2c/m365/callback] Consent session user binding is advisory only on public callback', {
+      orgId: session.orgId,
+      userId: session.userId,
+      provider: session.provider,
+      reason: 'jwt_unavailable_on_public_callback',
+    });
   }
 
   const tenantId = c.req.query('tenant');
@@ -173,7 +183,12 @@ m365CallbackRoute.get('/c2c/m365/callback', async (c) => {
       resourceType: 'c2c_connection',
       resourceId: connection.id,
       resourceName: connection.displayName,
-      details: { provider: 'microsoft_365', authMethod: 'platform_app', tenantId },
+      details: {
+        provider: 'microsoft_365',
+        authMethod: 'platform_app',
+        tenantId,
+        userId: session.userId ?? null,
+      },
     });
 
     return c.redirect(

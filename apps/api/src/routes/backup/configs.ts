@@ -10,6 +10,7 @@ import { db } from '../../db';
 import { backupConfigs } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { checkBackupProviderCapabilities, type ProviderCapabilityStatus } from '../../services/backupSnapshotStorage';
 import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import { configSchema, configUpdateSchema } from './schemas';
@@ -17,6 +18,23 @@ import { configSchema, configUpdateSchema } from './schemas';
 export const configsRoutes = new Hono();
 
 const configIdParamSchema = z.object({ id: z.string().uuid() });
+
+function buildCapabilityState(
+  checkedAt: string | null,
+  capability?: ProviderCapabilityStatus | null,
+) {
+  if (!checkedAt || !capability) {
+    return null;
+  }
+
+  return {
+    objectLock: {
+      supported: capability.objectLock.supported,
+      checkedAt,
+      error: capability.objectLock.error,
+    },
+  };
+}
 
 async function probeLocalConfig(details: Record<string, unknown>): Promise<void> {
   const rootPath = typeof details.path === 'string' ? details.path : '';
@@ -103,6 +121,8 @@ configsRoutes.post(
         type: 'file',
         provider: payload.provider,
         providerConfig: payload.details ?? {},
+        providerCapabilities: null,
+        providerCapabilitiesCheckedAt: null,
         isActive: payload.enabled ?? true,
         createdAt: now,
         updatedAt: now,
@@ -166,7 +186,11 @@ configsRoutes.patch(
     const updateData: Record<string, unknown> = { updatedAt: new Date() };
     if (payload.name !== undefined) updateData.name = payload.name;
     if (payload.enabled !== undefined) updateData.isActive = payload.enabled;
-    if (payload.details !== undefined) updateData.providerConfig = payload.details;
+    if (payload.details !== undefined) {
+      updateData.providerConfig = payload.details;
+      updateData.providerCapabilities = null;
+      updateData.providerCapabilitiesCheckedAt = null;
+    }
 
     const [row] = await db
       .update(backupConfigs)
@@ -252,6 +276,7 @@ configsRoutes.post(
   }
 
   const checkedAt = new Date().toISOString();
+  const checkedAtDate = new Date(checkedAt);
   writeRouteAudit(c, {
     orgId,
     action: 'backup.config.test',
@@ -260,46 +285,82 @@ configsRoutes.post(
     resourceName: row.name,
   });
 
+  const details = (row.providerConfig ?? {}) as Record<string, unknown>;
+  let status: 'success' | 'failed' | 'unsupported' = 'success';
+  let errorMessage: string | null = null;
+  let capability: ProviderCapabilityStatus | null = null;
+
   try {
-    const details = (row.providerConfig ?? {}) as Record<string, unknown>;
     if (row.provider === 'local') {
       await probeLocalConfig(details);
+      capability = await checkBackupProviderCapabilities({
+        provider: row.provider,
+        providerConfig: details,
+      });
     } else if (row.provider === 's3') {
       await probeS3Config(details);
-    } else {
-      return c.json({
-        id: row.id,
+      capability = await checkBackupProviderCapabilities({
         provider: row.provider,
-        status: 'unsupported',
-        checkedAt,
-        error: `Connection testing is not implemented for provider ${row.provider}`,
-      }, 400);
+        providerConfig: details,
+      });
+    } else {
+      status = 'unsupported';
+      errorMessage = `Connection testing is not implemented for provider ${row.provider}`;
+      capability = await checkBackupProviderCapabilities({
+        provider: row.provider,
+        providerConfig: details,
+      });
     }
   } catch (error) {
-    return c.json({
-      id: row.id,
-      provider: row.provider,
-      status: 'failed',
-      checkedAt,
-      error: error instanceof Error ? error.message : 'Connection test failed',
-    }, 400);
+    status = 'failed';
+    errorMessage = error instanceof Error ? error.message : 'Connection test failed';
+    capability = {
+      objectLock: {
+        supported: false,
+        error: errorMessage,
+      },
+    };
   }
 
-  return c.json({
+  const [updated] = await db
+    .update(backupConfigs)
+    .set({
+      providerCapabilities: capability,
+      providerCapabilitiesCheckedAt: checkedAtDate,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(backupConfigs.id, configId), eq(backupConfigs.orgId, orgId)))
+    .returning();
+
+  const response = {
     id: row.id,
     provider: row.provider,
-    status: 'success',
+    status,
     checkedAt,
-  });
+    error: errorMessage,
+    providerCapabilities: buildCapabilityState(checkedAt, capability),
+    config: updated ? toConfigResponse(updated) : undefined,
+  };
+
+  if (status === 'failed' || status === 'unsupported') {
+    return c.json(response, 400);
+  }
+
+  return c.json(response);
 });
 
 function toConfigResponse(row: typeof backupConfigs.$inferSelect) {
+  const checkedAt = row.providerCapabilitiesCheckedAt?.toISOString() ?? null;
   return {
     id: row.id,
     name: row.name,
     provider: row.provider,
     enabled: row.isActive,
     details: row.providerConfig as Record<string, unknown>,
+    providerCapabilities: buildCapabilityState(
+      checkedAt,
+      (row.providerCapabilities as ProviderCapabilityStatus | null | undefined) ?? null,
+    ),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };

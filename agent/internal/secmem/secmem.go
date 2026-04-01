@@ -102,6 +102,25 @@ func (s *SecureString) Zero() {
 	s.zeroed.Store(true)
 }
 
+// Replace atomically swaps the stored plaintext, best-effort zeroing the
+// previous backing buffer first.
+func (s *SecureString) Replace(next string) {
+	if s == nil {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data {
+		s.data[i] = 0
+	}
+	s.data = make([]byte, len(next))
+	copy(s.data, next)
+	s.zeroed.Store(false)
+	s.warnedOnce.Store(false)
+}
+
 // UnmarshalJSON rejects deserialization to prevent accidentally populating a
 // SecureString from untrusted JSON input.
 func (s *SecureString) UnmarshalJSON(data []byte) error {

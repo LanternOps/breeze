@@ -7,8 +7,20 @@
 
 import { Queue } from 'bullmq';
 import { getRedisConnection } from '../services/redis';
+import {
+  backupQueueJobDataSchema,
+  type QueueActorMeta,
+  withQueueMeta,
+} from './queueSchemas';
 
 const BACKUP_QUEUE = 'backup';
+const PRIVILEGED_JOB_OPTIONS = {
+  attempts: 3,
+  backoff: {
+    type: 'exponential' as const,
+    delay: 1_000,
+  },
+};
 
 let backupQueue: Queue | null = null;
 
@@ -51,26 +63,47 @@ export interface ProcessResultsResult {
   error?: string;
 }
 
+const SYSTEM_DISPATCH_META: QueueActorMeta = {
+  actorType: 'system',
+  actorId: null,
+  source: 'worker:backup:dispatch',
+};
+
+const AGENT_RESULT_META: QueueActorMeta = {
+  actorType: 'agent',
+  actorId: null,
+  source: 'route:agentWs:backup-result',
+};
+
+const SYSTEM_RESTORE_META: QueueActorMeta = {
+  actorType: 'system',
+  actorId: null,
+  source: 'service:backup:restore-dispatch',
+};
+
 // ── Public enqueue functions ─────────────────────────────────────────────────
 
 export async function enqueueBackupDispatch(
   jobId: string,
   configId: string,
   orgId: string,
-  deviceId: string
+  deviceId: string,
+  meta: QueueActorMeta = SYSTEM_DISPATCH_META,
 ): Promise<string> {
   const queue = getBackupQueue();
+  const payload = backupQueueJobDataSchema.parse(withQueueMeta({
+    type: 'dispatch-backup' as const,
+    jobId,
+    configId,
+    orgId,
+    deviceId,
+  }, meta));
   const job = await queue.add(
     'dispatch-backup',
-    {
-      type: 'dispatch-backup' as const,
-      jobId,
-      configId,
-      orgId,
-      deviceId,
-    },
+    payload,
     {
       jobId: `backup-dispatch-${jobId}`,
+      ...PRIVILEGED_JOB_OPTIONS,
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 },
     }
@@ -82,20 +115,23 @@ export async function enqueueBackupResults(
   jobId: string,
   orgId: string,
   deviceId: string,
-  result: ProcessResultsResult
+  result: ProcessResultsResult,
+  meta: QueueActorMeta = AGENT_RESULT_META,
 ): Promise<string> {
   const queue = getBackupQueue();
+  const payload = backupQueueJobDataSchema.parse(withQueueMeta({
+    type: 'process-results' as const,
+    jobId,
+    orgId,
+    deviceId,
+    result,
+  }, meta));
   const job = await queue.add(
     'process-results',
-    {
-      type: 'process-results' as const,
-      jobId,
-      orgId,
-      deviceId,
-      result,
-    },
+    payload,
     {
       jobId: `backup-result-${jobId}`,
+      ...PRIVILEGED_JOB_OPTIONS,
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 },
     }
@@ -109,22 +145,25 @@ export async function enqueueRestoreDispatch(
   deviceId: string,
   orgId: string,
   targetPath?: string,
-  selectedPaths?: string[]
+  selectedPaths?: string[],
+  meta: QueueActorMeta = SYSTEM_RESTORE_META,
 ): Promise<string> {
   const queue = getBackupQueue();
+  const payload = backupQueueJobDataSchema.parse(withQueueMeta({
+    type: 'dispatch-restore' as const,
+    restoreJobId,
+    snapshotId,
+    deviceId,
+    orgId,
+    targetPath,
+    selectedPaths,
+  }, meta));
   const job = await queue.add(
     'dispatch-restore',
-    {
-      type: 'dispatch-restore' as const,
-      restoreJobId,
-      snapshotId,
-      deviceId,
-      orgId,
-      targetPath,
-      selectedPaths,
-    },
+    payload,
     {
       jobId: `backup-restore-${restoreJobId}`,
+      ...PRIVILEGED_JOB_OPTIONS,
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 },
     }

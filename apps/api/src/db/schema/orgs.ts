@@ -59,6 +59,7 @@ export const enrollmentKeys = pgTable('enrollment_keys', {
   siteId: uuid('site_id').references(() => sites.id),
   name: varchar('name', { length: 255 }).notNull(),
   key: varchar('key', { length: 64 }).notNull().unique(),
+  keySecretHash: varchar('key_secret_hash', { length: 64 }),
   usageCount: integer('usage_count').notNull().default(0),
   maxUsage: integer('max_usage'),
   expiresAt: timestamp('expires_at'),

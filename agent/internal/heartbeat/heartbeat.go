@@ -90,6 +90,7 @@ type HeartbeatResponse struct {
 	ConfigUpdate    map[string]any  `json:"configUpdate,omitempty"`
 	UpgradeTo       string          `json:"upgradeTo,omitempty"`
 	RenewCert       bool            `json:"renewCert,omitempty"`
+	RotateToken     bool            `json:"rotateToken,omitempty"`
 	HelperEnabled   bool            `json:"helperEnabled,omitempty"`
 	HelperSettings  *HelperSettings `json:"helperSettings,omitempty"`
 	HelperUpgradeTo string          `json:"helperUpgradeTo,omitempty"`
@@ -174,6 +175,7 @@ type Heartbeat struct {
 
 	// Guard against concurrent cert renewals from successive heartbeats
 	certRenewing      atomic.Bool
+	tokenRotating     atomic.Bool
 	upgradeInProgress atomic.Bool
 
 	// Helper chat enabled flag from org settings
@@ -1936,6 +1938,11 @@ func (h *Heartbeat) sendHeartbeat() {
 		go h.handleCertRenewal()
 	}
 
+	// Handle proactive bearer-token rotation before the token becomes stale.
+	if response.RotateToken {
+		go h.handleTokenRotation()
+	}
+
 	// Handle helper upgrade if requested
 	if response.HelperUpgradeTo != "" {
 		h.helperMgr.CheckUpdate(response.HelperUpgradeTo)
@@ -2047,6 +2054,50 @@ func (h *Heartbeat) handleCertRenewal() {
 
 	log.Info("mTLS certificate renewed", "expires", renewResp.Mtls.ExpiresAt)
 	log.Info("mTLS clients refreshed with renewed certificate")
+}
+
+func (h *Heartbeat) handleTokenRotation() {
+	if !h.tokenRotating.CompareAndSwap(false, true) {
+		return
+	}
+	defer h.tokenRotating.Store(false)
+
+	if h.secureToken == nil || h.secureToken.IsZeroed() {
+		log.Error("token rotation requested but no active auth token is available")
+		return
+	}
+
+	log.Info("agent token rotation requested by server")
+
+	currentToken := h.secureToken.Reveal()
+	rotateClient := api.NewClient(h.config.ServerURL, currentToken, h.config.AgentID)
+	rotateResp, err := rotateClient.RotateToken()
+	if err != nil {
+		log.Error("agent token rotation failed", "error", err.Error())
+		return
+	}
+
+	if rotateResp.AuthToken == "" {
+		log.Error("agent token rotation response missing auth token")
+		return
+	}
+
+	h.mu.Lock()
+	h.secureToken.Replace(rotateResp.AuthToken)
+	h.config.AuthToken = rotateResp.AuthToken
+	saveErr := config.Save(h.config)
+	h.config.AuthToken = ""
+	h.mu.Unlock()
+
+	if saveErr != nil {
+		log.Error("agent token rotated in memory but failed to persist new token", "error", saveErr.Error())
+	} else {
+		log.Info("agent token rotated", "rotatedAt", rotateResp.RotatedAt)
+	}
+
+	if h.wsClient != nil {
+		h.wsClient.ForceReconnect()
+	}
 }
 
 func (h *Heartbeat) processCommand(cmd Command) {

@@ -263,27 +263,35 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
                 return (
                   <div
                     key={job.id}
-                    className="flex flex-wrap items-center justify-between gap-3 rounded-md border px-4 py-3"
+                    className="rounded-md border px-4 py-3"
                   >
-                    <div className="flex items-center gap-3">
-                      <span
-                        className={cn('flex h-9 w-9 items-center justify-center rounded-full', status.className)}
-                      >
-                        <StatusIcon className="h-4 w-4" />
-                      </span>
-                      <div>
-                        <p className="text-sm font-semibold text-foreground">{resolveJobDevice(job)}</p>
-                        <p className="text-xs text-muted-foreground">{resolveJobConfig(job)}</p>
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        <span
+                          className={cn('flex h-9 w-9 items-center justify-center rounded-full', status.className)}
+                        >
+                          <StatusIcon className="h-4 w-4" />
+                        </span>
+                        <div>
+                          <p className="text-sm font-semibold text-foreground">{resolveJobDevice(job)}</p>
+                          <p className="text-xs text-muted-foreground">{resolveJobConfig(job)}</p>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+                        <span className="inline-flex items-center gap-1">
+                          <Clock className="h-3.5 w-3.5" /> {resolveJobStarted(job)}
+                        </span>
+                        <span>Duration: {resolveJobDuration(job)}</span>
+                        <span>Size: {resolveJobSize(job)}</span>
+                        <span className="text-foreground">{status.label}</span>
                       </div>
                     </div>
-                    <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
-                      <span className="inline-flex items-center gap-1">
-                        <Clock className="h-3.5 w-3.5" /> {resolveJobStarted(job)}
-                      </span>
-                      <span>Duration: {resolveJobDuration(job)}</span>
-                      <span>Size: {resolveJobSize(job)}</span>
-                      <span className="text-foreground">{status.label}</span>
-                    </div>
+                    {job.errorLog ? (
+                      <div className="mt-3 flex items-start gap-2 rounded-md border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <span className="line-clamp-2">{job.errorLog}</span>
+                      </div>
+                    ) : null}
                   </div>
                 );
               })

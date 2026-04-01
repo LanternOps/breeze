@@ -47,7 +47,7 @@ import {
   normalizeRecoveryMediaStatus,
   toRecoveryMediaSigningDetails,
 } from '../../services/recoveryMediaService';
-import { getRecoverySigningKey, getRecoverySigningKeys } from '../../services/recoverySigning';
+import { getCurrentRecoverySigningKey, getRecoverySigningKey, getRecoverySigningKeys } from '../../services/recoverySigning';
 import { getTrustedClientIp } from '../../services/clientIp';
 import { rateLimiter } from '../../services/rate-limit';
 import { getRedis } from '../../services/redis';
@@ -452,6 +452,18 @@ bmrRoutes.delete(
     });
 
     return c.json({ id: row.id, status: 'revoked' });
+  }
+);
+
+bmrRoutes.get(
+  '/bmr/signing-key',
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
+  async (c) => {
+    const key = getCurrentRecoverySigningKey();
+    if (!key) {
+      return c.json({ error: 'Recovery signing key not found' }, 404);
+    }
+    return c.json(key);
   }
 );
 

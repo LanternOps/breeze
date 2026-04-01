@@ -12,7 +12,8 @@ const { mockDb } = vi.hoisted(() => ({
 vi.mock('bullmq', () => ({
   Queue: class {},
   Worker: class {},
-  Job: class {}
+  Job: class {},
+  UnrecoverableError: class extends Error {},
 }));
 
 vi.mock('../db', () => ({

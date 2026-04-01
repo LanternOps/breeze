@@ -45,6 +45,12 @@ type DRExecutionViewProps = {
 
 type GroupStatus = 'pending' | 'running' | 'completed' | 'failed';
 
+type GroupFailure = {
+  groupId: string;
+  error: string;
+  deviceId?: string;
+};
+
 function formatDate(value: string | null): string {
   if (!value) return '-';
   return new Date(value).toLocaleString();
@@ -187,13 +193,41 @@ export default function DRExecutionView({
         status: groupStatus,
         startedAt: (detail?.startedAt as string | undefined) ?? null,
         completedAt: (detail?.completedAt as string | undefined) ?? null,
+        groupError:
+          typeof detail?.error === 'string'
+            ? detail.error
+            : undefined,
         devices: group.devices.map((deviceId) => ({
           id: deviceId,
           status: normalizeStatus((deviceMap.get(deviceId)?.status as string | undefined) ?? groupStatus),
+          error:
+            typeof deviceMap.get(deviceId)?.error === 'string'
+              ? deviceMap.get(deviceId)?.error as string
+              : undefined,
         })),
       };
     });
   }, [devices, execution]);
+
+  const executionFailures = useMemo(() => {
+    const resultBag = (execution?.results ?? {}) as Record<string, unknown>;
+    const rawFailures = Array.isArray(resultBag.failedDispatches) ? resultBag.failedDispatches : [];
+    return rawFailures
+      .filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object' && !Array.isArray(entry))
+      .map((entry) => ({
+        groupId: typeof entry.groupId === 'string' ? entry.groupId : '',
+        deviceId: typeof entry.deviceId === 'string' ? entry.deviceId : undefined,
+        error: typeof entry.error === 'string' ? entry.error : 'Dispatch failed',
+      } satisfies GroupFailure))
+      .filter((entry) => entry.groupId && entry.error);
+  }, [execution]);
+
+  const haltReason =
+    execution?.results && typeof execution.results === 'object' && !Array.isArray(execution.results)
+      ? typeof (execution.results as Record<string, unknown>).haltReason === 'string'
+        ? (execution.results as Record<string, unknown>).haltReason as string
+        : null
+      : null;
 
   const canAbort = execution && !['completed', 'failed', 'aborted'].includes(execution.status);
 
@@ -238,6 +272,11 @@ export default function DRExecutionView({
               {error}
             </div>
           )}
+          {haltReason ? (
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              {haltReason}
+            </div>
+          ) : null}
 
           {loading && !execution ? (
             <div className="py-12 text-center">
@@ -326,6 +365,18 @@ export default function DRExecutionView({
                         </span>
                       </div>
                       <div className="space-y-4 p-4">
+                        {group.groupError ? (
+                          <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                            {group.groupError}
+                          </div>
+                        ) : null}
+                        {executionFailures
+                          .filter((failure) => failure.groupId === group.id && !failure.deviceId)
+                          .map((failure) => (
+                            <div key={`${group.id}-${failure.error}`} className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                              {failure.error}
+                            </div>
+                          ))}
                         <div>
                           <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
                             <span>Device progress</span>
@@ -348,9 +399,12 @@ export default function DRExecutionView({
                             const DeviceIcon = deviceMeta.icon;
                             return (
                               <div key={device.id} className="flex items-center justify-between rounded-md border bg-muted/20 px-3 py-2">
-                                <div>
+                                <div className="min-w-0">
                                   <p className="text-sm font-medium text-foreground">{deviceName(devices[device.id], device.id)}</p>
                                   <p className="text-xs text-muted-foreground">{device.id.slice(0, 8)}</p>
+                                  {device.error ? (
+                                    <p className="mt-1 text-xs text-destructive">{device.error}</p>
+                                  ) : null}
                                 </div>
                                 <span className={cn('inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium capitalize', deviceMeta.className)}>
                                   <DeviceIcon className={cn('h-3.5 w-3.5', device.status === 'running' && 'animate-spin')} />

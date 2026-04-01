@@ -12,6 +12,7 @@ const vaultSyncResultSchema = z.object({
   totalBytes: z.number().int().nonnegative().optional(),
   manifestVerified: z.boolean().optional(),
   auto: z.boolean().optional(),
+  error: z.string().optional(),
 });
 
 type VaultSyncCommandLike = {
@@ -103,6 +104,9 @@ export async function applyVaultSyncCommandResult(input: ApplyVaultSyncCommandRe
 
   const completedAt = new Date();
   const status = input.resultStatus === 'completed' ? 'completed' : 'failed';
+  const lastSyncError = status === 'completed'
+    ? null
+    : structured.error ?? input.error ?? input.stderr ?? input.stdout ?? 'Vault sync failed';
 
   await db
     .update(localVaults)
@@ -111,6 +115,7 @@ export async function applyVaultSyncCommandResult(input: ApplyVaultSyncCommandRe
       lastSyncStatus: status,
       lastSyncSnapshotId: snapshotId,
       syncSizeBytes: typeof structured.totalBytes === 'number' ? structured.totalBytes : null,
+      lastSyncError,
       updatedAt: completedAt,
     })
     .where(eq(localVaults.id, vault.id));

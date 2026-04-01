@@ -2,6 +2,29 @@ import Redis from 'ioredis';
 
 let redisClient: Redis | null = null;
 let redisAvailable = true;
+let warnedAboutInsecureProdRedis = false;
+
+function resolveRedisUrl(): string {
+  const explicitUrl = process.env.REDIS_URL?.trim();
+  if (explicitUrl) {
+    return explicitUrl;
+  }
+
+  const host = process.env.REDIS_HOST?.trim() || 'localhost';
+  const port = process.env.REDIS_PORT?.trim() || '6379';
+  const password = process.env.REDIS_PASSWORD?.trim();
+
+  if (password) {
+    return `redis://:${encodeURIComponent(password)}@${host}:${port}`;
+  }
+
+  if ((process.env.NODE_ENV ?? 'development') === 'production' && !warnedAboutInsecureProdRedis) {
+    warnedAboutInsecureProdRedis = true;
+    console.warn('[Redis] REDIS_URL/REDIS_PASSWORD not configured in production; falling back to unauthenticated Redis');
+  }
+
+  return `redis://${host}:${port}`;
+}
 
 export function getRedis(): Redis | null {
   if (!redisAvailable) {
@@ -9,7 +32,7 @@ export function getRedis(): Redis | null {
   }
 
   if (!redisClient) {
-    const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
+    const url = resolveRedisUrl();
     redisClient = new Redis(url, {
       maxRetriesPerRequest: 3,
       retryStrategy(times) {
@@ -75,7 +98,7 @@ export function getRedisConnection(): Redis {
   }
 
   if (!bullmqConnection) {
-    const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
+    const url = resolveRedisUrl();
 
     bullmqConnection = new Redis(url, {
       maxRetriesPerRequest: null,

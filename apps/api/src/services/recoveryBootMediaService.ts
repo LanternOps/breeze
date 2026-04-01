@@ -20,6 +20,7 @@ import {
   uploadRecoveryArtifactFile,
 } from './recoveryMediaService';
 import { isRecoverySigningConfigured, signRecoveryArtifact } from './recoverySigning';
+import { verifyTemplateDirectory } from './recoveryBootMediaTemplateManifest';
 
 const execFileAsync = promisify(execFile);
 
@@ -124,6 +125,7 @@ export async function buildRecoveryBootMediaArtifact(artifactId: string) {
   const workingDir = await mkdtemp(join(tmpdir(), 'recovery-boot-media-'));
   try {
     const imageRoot = join(workingDir, 'iso-root');
+    const verifiedTemplate = await verifyTemplateDirectory(baseTemplateDir);
     await cp(baseTemplateDir, imageRoot, { recursive: true });
     const payloadDir = join(imageRoot, 'breeze-recovery');
     await mkdir(payloadDir, { recursive: true });
@@ -219,6 +221,11 @@ export async function buildRecoveryBootMediaArtifact(artifactId: string) {
           ...asRecord(artifact.metadata),
           sourceBundleArtifactId: bundleArtifact.id,
           isoFileName,
+          bootTemplateId: verifiedTemplate.templateId,
+          bootTemplateVersion: verifiedTemplate.version,
+          bootTemplateSourceRef: verifiedTemplate.sourceRef,
+          bootTemplateSha256: verifiedTemplate.sha256,
+          bootTemplateManifestVersion: verifiedTemplate.manifestVersion,
         },
         completedAt: new Date(),
       })

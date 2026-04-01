@@ -12,6 +12,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { organizations } from './orgs';
 import { backupConfigs } from './backup';
+import { users } from './users';
 
 // ── C2C Connections ─────────────────────────────────────────────────────────
 
@@ -110,6 +111,7 @@ export const c2cConsentSessions = pgTable('c2c_consent_sessions', {
   orgId: uuid('org_id')
     .notNull()
     .references(() => organizations.id),
+  userId: uuid('user_id').references(() => users.id),
   state: varchar('state', { length: 64 }).notNull().unique(),
   provider: varchar('provider', { length: 30 }).notNull().default('microsoft_365'),
   displayName: varchar('display_name', { length: 200 }),

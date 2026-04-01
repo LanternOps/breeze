@@ -12,6 +12,8 @@ export type RecoverySigningKey = {
   format: 'minisign';
   publicKey: string;
   isCurrent: boolean;
+  activatedAt?: string | null;
+  deprecatedAt?: string | null;
 };
 
 type ActiveRecoverySigningKey = RecoverySigningKey & {
@@ -22,22 +24,61 @@ function derivedKeyId(publicKey: string) {
   return createHash('sha256').update(publicKey).digest('hex').slice(0, 16);
 }
 
-export function getRecoverySigningKeys(): RecoverySigningKey[] {
-  const publicKey = process.env.RECOVERY_SIGNING_PUBLIC_KEY?.trim();
-  if (!publicKey) return [];
+function parseConfiguredRecoverySigningKeys(): RecoverySigningKey[] {
+  const raw = process.env.RECOVERY_SIGNING_KEYS_JSON?.trim();
+  if (!raw) return [];
 
-  return [
-    {
-      keyId: (process.env.RECOVERY_SIGNING_KEY_ID || derivedKeyId(publicKey)).trim(),
-      format: 'minisign',
-      publicKey,
-      isCurrent: true,
-    },
-  ];
+  try {
+    const parsed = JSON.parse(raw) as Array<Record<string, unknown>>;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item) => {
+        const publicKey = typeof item.publicKey === 'string' ? item.publicKey.trim() : '';
+        if (!publicKey) return null;
+        return {
+          keyId:
+            (typeof item.keyId === 'string' && item.keyId.trim()) || derivedKeyId(publicKey),
+          format: 'minisign' as const,
+          publicKey,
+          isCurrent: Boolean(item.isCurrent),
+          activatedAt: typeof item.activatedAt === 'string' ? item.activatedAt : null,
+          deprecatedAt: typeof item.deprecatedAt === 'string' ? item.deprecatedAt : null,
+        } satisfies RecoverySigningKey;
+      })
+      .filter(Boolean) as RecoverySigningKey[];
+  } catch (error) {
+    throw new Error(
+      `Invalid RECOVERY_SIGNING_KEYS_JSON: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+export function getRecoverySigningKeys(): RecoverySigningKey[] {
+  const configuredKeys = parseConfiguredRecoverySigningKeys();
+  const publicKey = process.env.RECOVERY_SIGNING_PUBLIC_KEY?.trim();
+  if (!publicKey) {
+    return configuredKeys;
+  }
+
+  const currentKeyId = (process.env.RECOVERY_SIGNING_KEY_ID || derivedKeyId(publicKey)).trim();
+  const merged = configuredKeys.filter((key) => key.keyId !== currentKeyId);
+  merged.unshift({
+    keyId: currentKeyId,
+    format: 'minisign',
+    publicKey,
+    isCurrent: true,
+    activatedAt: null,
+    deprecatedAt: null,
+  });
+  return merged.map((key, index) => ({ ...key, isCurrent: index === 0 ? true : key.isCurrent }));
 }
 
 export function getRecoverySigningKey(keyId: string) {
   return getRecoverySigningKeys().find((key) => key.keyId === keyId) ?? null;
+}
+
+export function getCurrentRecoverySigningKey() {
+  return getRecoverySigningKeys().find((key) => key.isCurrent) ?? null;
 }
 
 export function isRecoverySigningConfigured(): boolean {

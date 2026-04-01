@@ -64,6 +64,11 @@ type RenewCertResponse struct {
 	Error       string        `json:"error,omitempty"`
 }
 
+type RotateTokenResponse struct {
+	AuthToken string `json:"authToken"`
+	RotatedAt string `json:"rotatedAt"`
+}
+
 type AgentConfig struct {
 	HeartbeatIntervalSeconds         int      `json:"heartbeatIntervalSeconds"`
 	MetricsCollectionIntervalSeconds int      `json:"metricsCollectionIntervalSeconds"`
@@ -192,6 +197,38 @@ func (c *Client) RenewCert() (*RenewCertResponse, error) {
 
 	if resp.StatusCode == http.StatusForbidden {
 		return &result, nil // caller checks Quarantined or Error
+	}
+
+	return &result, nil
+}
+
+func (c *Client) RotateToken() (*RotateTokenResponse, error) {
+	url := fmt.Sprintf("%s/api/v1/agents/%s/rotate-token", c.baseURL, c.agentID)
+	req, err := http.NewRequest("POST", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create rotate-token request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.authToken)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send rotate-token request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read rotate-token response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("rotate-token failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var result RotateTokenResponse
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return nil, fmt.Errorf("failed to decode rotate-token response: %w", err)
 	}
 
 	return &result, nil

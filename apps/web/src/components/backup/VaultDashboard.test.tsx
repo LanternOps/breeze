@@ -45,4 +45,29 @@ describe('VaultDashboard', () => {
     await screen.findByText('Local Vaults');
     expect(screen.getByText(/Local vault \(SMB\/USB\) caching is in early access/i)).toBeTruthy();
   });
+
+  it('renders last sync error details for failed vaults', async () => {
+    fetchMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        data: [
+          {
+            id: 'vault-1',
+            deviceId: 'device-1',
+            vaultPath: '/vault/path',
+            vaultType: 'local',
+            isActive: true,
+            lastSyncStatus: 'failed',
+            lastSyncAt: '2026-03-31T10:00:00.000Z',
+            syncSizeBytes: 1024,
+            lastSyncError: 'Vault sync failed: share unavailable',
+          },
+        ],
+      })
+    );
+
+    render(<VaultDashboard />);
+
+    expect(await screen.findByText(/Vault sync failed: share unavailable/i)).toBeTruthy();
+    expect(screen.getByText('Failed')).toBeTruthy();
+  });
 });

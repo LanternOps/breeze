@@ -39,7 +39,8 @@ describe('BackupDashboard usage history chart', () => {
                 status: 'completed',
                 started: '10m ago',
                 duration: '2m',
-                size: '1.2 GB'
+                size: '1.2 GB',
+                errorLog: 'Chunk retry exceeded threshold'
               }
             ],
             storageProviders: [
@@ -83,6 +84,7 @@ describe('BackupDashboard usage history chart', () => {
 
     await screen.findByText('Storage by Provider');
     expect(await screen.findByLabelText('Storage usage trend by provider over time')).not.toBeNull();
+    expect(screen.getByText(/Chunk retry exceeded threshold/i)).toBeTruthy();
     expect(screen.queryByText('Chart placeholder: integrate provider usage history.')).toBeNull();
   });
 

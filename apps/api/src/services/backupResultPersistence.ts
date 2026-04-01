@@ -4,6 +4,9 @@ import {
   backupJobs,
   backupSnapshotFiles,
   backupSnapshots,
+  backupPolicies,
+  configPolicyBackupSettings,
+  backupConfigs,
 } from '../db/schema';
 import { backupChains } from '../db/schema/applicationBackup';
 import {
@@ -12,8 +15,22 @@ import {
   resolveGfsConfigForJob,
 } from '../jobs/backupRetention';
 import type { ParsedBackupCommandResult } from '../routes/backup/resultSchemas';
+import {
+  applyBackupSnapshotImmutability,
+  checkBackupProviderCapabilities,
+} from './backupSnapshotStorage';
 
 export const IN_FLIGHT_BACKUP_JOB_STATUSES = ['pending', 'running'] as const;
+type SnapshotImmutabilityEnforcement = 'application' | 'provider';
+
+type SnapshotProtectionSettings = {
+  legalHold: boolean;
+  legalHoldReason: string | null;
+  isImmutable: boolean;
+  immutableUntil: Date | null;
+  immutabilityEnforcement: SnapshotImmutabilityEnforcement | null;
+  requestedImmutabilityEnforcement: SnapshotImmutabilityEnforcement | null;
+};
 
 function normalizeMetadata(
   metadata: ParsedBackupCommandResult['metadata']
@@ -61,6 +78,130 @@ function buildSnapshotLabel(
   }
 
   return `Backup ${timestamp.toISOString().slice(0, 10)}`;
+}
+
+function computeImmutableUntil(
+  timestamp: Date,
+  immutableDays: number | null,
+): Date | null {
+  if (!immutableDays || immutableDays < 1) {
+    return null;
+  }
+
+  const immutableUntil = new Date(timestamp);
+  immutableUntil.setUTCDate(immutableUntil.getUTCDate() + immutableDays);
+  return immutableUntil;
+}
+
+async function resolveSnapshotProtectionSettingsForJob(
+  jobId: string,
+  timestamp: Date,
+): Promise<SnapshotProtectionSettings> {
+  const defaults: SnapshotProtectionSettings = {
+    legalHold: false,
+    legalHoldReason: null,
+    isImmutable: false,
+    immutableUntil: null,
+    immutabilityEnforcement: null,
+    requestedImmutabilityEnforcement: null,
+  };
+
+  const [job] = await db
+    .select({
+      featureLinkId: backupJobs.featureLinkId,
+      policyId: backupJobs.policyId,
+    })
+    .from(backupJobs)
+    .where(eq(backupJobs.id, jobId))
+    .limit(1);
+
+  if (!job) {
+    return defaults;
+  }
+
+  if (job.featureLinkId) {
+    const [settings] = await db
+      .select({
+        retention: configPolicyBackupSettings.retention,
+      })
+      .from(configPolicyBackupSettings)
+      .where(eq(configPolicyBackupSettings.featureLinkId, job.featureLinkId))
+      .limit(1);
+
+    const retention =
+      settings?.retention && typeof settings.retention === 'object' && !Array.isArray(settings.retention)
+        ? settings.retention as Record<string, unknown>
+        : null;
+
+    const legalHold = retention?.legalHold === true;
+    const legalHoldReason =
+      typeof retention?.legalHoldReason === 'string' && retention.legalHoldReason.trim().length > 0
+        ? retention.legalHoldReason.trim()
+        : null;
+    const immutabilityMode =
+      retention?.immutabilityMode === 'application' || retention?.immutabilityMode === 'provider'
+        ? retention.immutabilityMode
+        : null;
+    const immutableDays =
+      typeof retention?.immutableDays === 'number' && retention.immutableDays > 0
+        ? retention.immutableDays
+        : null;
+
+    const immutableUntil =
+      immutabilityMode === 'application' || immutabilityMode === 'provider'
+        ? computeImmutableUntil(timestamp, immutableDays)
+        : null;
+
+    return {
+      legalHold,
+      legalHoldReason,
+      isImmutable:
+        (immutabilityMode === 'application' || immutabilityMode === 'provider') &&
+        immutableUntil !== null,
+      immutableUntil,
+      immutabilityEnforcement: immutabilityMode,
+      requestedImmutabilityEnforcement: immutabilityMode,
+    };
+  }
+
+  if (job.policyId) {
+    const [policy] = await db
+      .select({
+        legalHold: backupPolicies.legalHold,
+        legalHoldReason: backupPolicies.legalHoldReason,
+      })
+      .from(backupPolicies)
+      .where(eq(backupPolicies.id, job.policyId))
+      .limit(1);
+
+    return {
+      ...defaults,
+      legalHold: policy?.legalHold === true,
+      legalHoldReason:
+        typeof policy?.legalHoldReason === 'string' && policy.legalHoldReason.trim().length > 0
+          ? policy.legalHoldReason.trim()
+          : null,
+    };
+  }
+
+  return defaults;
+}
+
+async function resolveBackupConfigStorage(
+  configId: string | null,
+): Promise<{ provider: string | null; providerConfig: unknown } | null> {
+  if (!configId) return null;
+
+  const [config] = await db
+    .select({
+      provider: backupConfigs.provider,
+      providerConfig: backupConfigs.providerConfig,
+    })
+    .from(backupConfigs)
+    .where(eq(backupConfigs.id, configId))
+    .limit(1);
+
+  return config ?? null;
 }
 
 async function reconcileMssqlBackupChain(params: {
@@ -330,6 +471,70 @@ export async function applyBackupCommandResultToJob(params: {
   }
 
   if (snapshot) {
+    try {
+      const protection = await resolveSnapshotProtectionSettingsForJob(jobId, timestamp);
+      let protectionUpdate = {
+        legalHold: protection.legalHold,
+        legalHoldReason: protection.legalHoldReason,
+        isImmutable: protection.isImmutable,
+        immutableUntil: protection.immutableUntil,
+        immutabilityEnforcement: protection.immutabilityEnforcement,
+        requestedImmutabilityEnforcement: protection.requestedImmutabilityEnforcement,
+        immutabilityFallbackReason: null as string | null,
+      };
+
+      if (
+        protection.immutabilityEnforcement === 'provider' &&
+        protection.isImmutable &&
+        protection.immutableUntil
+      ) {
+        try {
+          const storage = await resolveBackupConfigStorage(updatedJob.configId ?? null);
+          if (!storage) {
+            throw new Error('Backup config storage details unavailable');
+          }
+
+          const capability = await checkBackupProviderCapabilities({
+            provider: storage.provider,
+            providerConfig: storage.providerConfig,
+          });
+          if (!capability.objectLock.supported) {
+            throw new Error(capability.objectLock.error ?? 'Bucket object lock is not enabled');
+          }
+
+          await applyBackupSnapshotImmutability({
+            provider: storage.provider,
+            providerConfig: storage.providerConfig,
+            snapshotId: providerSnapshotId,
+            metadata: snapshotMetadata,
+            retainUntil: protection.immutableUntil,
+          });
+        } catch (err) {
+          console.warn(
+            `[BackupPersistence] Provider immutability unavailable for snapshot ${snapshot.id}; falling back to application enforcement:`,
+            err instanceof Error ? err.message : err
+          );
+          protectionUpdate = {
+            ...protectionUpdate,
+            immutabilityEnforcement: 'application',
+            immutabilityFallbackReason: err instanceof Error
+              ? err.message
+              : 'Provider-enforced immutability unavailable',
+          };
+        }
+      }
+
+      await db
+        .update(backupSnapshots)
+        .set(protectionUpdate)
+        .where(eq(backupSnapshots.id, snapshot.id));
+    } catch (err) {
+      console.error(
+        `[BackupPersistence] Failed to apply protection settings to snapshot ${snapshot.id}:`,
+        err instanceof Error ? err.message : err
+      );
+    }
+
     try {
       await reconcileMssqlBackupChain({
         orgId,

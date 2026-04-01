@@ -1,11 +1,12 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, or } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db, withSystemDbAccessContext } from '../../db';
 import { devices, organizations } from '../../db/schema';
 import { authMiddleware, requirePermission } from '../../middleware/auth';
+import { matchAgentTokenHash } from '../../middleware/agentAuth';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
 import { orgMtlsSettingsSchema, orgHelperSettingsSchema, orgLogForwardingSettingsSchema } from '@breeze/shared';
@@ -41,16 +42,28 @@ mtlsRoutes.post('/renew-cert', async (c) => {
         agentId: devices.agentId,
         hostname: devices.hostname,
         status: devices.status,
+        agentTokenHash: devices.agentTokenHash,
+        previousTokenHash: devices.previousTokenHash,
+        previousTokenExpiresAt: devices.previousTokenExpiresAt,
         mtlsCertExpiresAt: devices.mtlsCertExpiresAt,
         mtlsCertCfId: devices.mtlsCertCfId,
       })
       .from(devices)
-      .where(eq(devices.agentTokenHash, tokenHash))
+      .where(or(eq(devices.agentTokenHash, tokenHash), eq(devices.previousTokenHash, tokenHash)))
       .limit(1);
     return row ?? null;
   });
 
-  if (!device) {
+  const match = device
+    ? matchAgentTokenHash({
+        agentTokenHash: device.agentTokenHash,
+        previousTokenHash: device.previousTokenHash,
+        previousTokenExpiresAt: device.previousTokenExpiresAt,
+        tokenHash,
+      })
+    : null;
+
+  if (!device || !match) {
     return c.json({ error: 'Invalid agent credentials' }, 401);
   }
 
