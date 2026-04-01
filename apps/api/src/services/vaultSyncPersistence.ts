@@ -1,19 +1,8 @@
 import { and, desc, eq } from 'drizzle-orm';
-import { z } from 'zod';
 
 import { db } from '../db';
 import { backupSnapshots, localVaults, vaultSnapshotInventory } from '../db/schema';
-
-const vaultSyncResultSchema = z.object({
-  vaultId: z.string().uuid().optional(),
-  snapshotId: z.string().min(1).optional(),
-  vaultPath: z.string().min(1).optional(),
-  fileCount: z.number().int().nonnegative().optional(),
-  totalBytes: z.number().int().nonnegative().optional(),
-  manifestVerified: z.boolean().optional(),
-  auto: z.boolean().optional(),
-  error: z.string().optional(),
-});
+import { vaultSyncStructuredResultSchema } from './agentCommandResultValidation';
 
 type VaultSyncCommandLike = {
   payload?: unknown;
@@ -28,11 +17,12 @@ export interface ApplyVaultSyncCommandResultInput {
   error?: string;
 }
 
-function parseStructuredStdout(stdout?: string): z.infer<typeof vaultSyncResultSchema> {
+function parseStructuredStdout(stdout?: string): Record<string, unknown> {
   if (!stdout) return {};
   try {
-    return vaultSyncResultSchema.parse(JSON.parse(stdout));
-  } catch {
+    return vaultSyncStructuredResultSchema.parse(JSON.parse(stdout));
+  } catch (err) {
+    console.warn('[VaultSyncPersistence] Failed to parse structured stdout:', err instanceof Error ? err.message : err);
     return {};
   }
 }
@@ -48,14 +38,14 @@ function parsePayload(command?: VaultSyncCommandLike | null): { vaultId?: string
   };
 }
 
-async function resolveVaultRecord(deviceId: string, structured: z.infer<typeof vaultSyncResultSchema>, payload: { vaultId?: string }): Promise<{ id: string; orgId: string } | null> {
+async function resolveVaultRecord(deviceId: string, structured: Record<string, unknown>, payload: { vaultId?: string }): Promise<{ id: string; orgId: string } | null> {
   if (payload.vaultId || structured.vaultId) {
     const [vault] = await db
       .select({ id: localVaults.id, orgId: localVaults.orgId })
       .from(localVaults)
       .where(
         and(
-          eq(localVaults.id, payload.vaultId ?? structured.vaultId!),
+          eq(localVaults.id, payload.vaultId ?? String(structured.vaultId)),
           eq(localVaults.deviceId, deviceId)
         )
       )
@@ -70,7 +60,7 @@ async function resolveVaultRecord(deviceId: string, structured: z.infer<typeof v
       .where(
         and(
           eq(localVaults.deviceId, deviceId),
-          eq(localVaults.vaultPath, structured.vaultPath),
+          eq(localVaults.vaultPath, String(structured.vaultPath)),
           eq(localVaults.isActive, true)
         )
       )
@@ -90,14 +80,14 @@ async function resolveVaultRecord(deviceId: string, structured: z.infer<typeof v
 export async function applyVaultSyncCommandResult(input: ApplyVaultSyncCommandResultInput): Promise<void> {
   const structured = parseStructuredStdout(input.stdout);
   const payload = parsePayload(input.command);
-  const snapshotId = structured.snapshotId ?? payload.snapshotId ?? null;
+  const snapshotId = typeof structured.snapshotId === 'string' ? structured.snapshotId : payload.snapshotId ?? null;
   const vault = await resolveVaultRecord(input.deviceId, structured, payload);
 
   if (!vault) {
     console.warn(
       `[VaultSyncPersistence] No matching vault found for device ${input.deviceId}; ` +
-      `dropping vault sync result (vaultId=${structured.vaultId ?? payload.vaultId ?? 'none'}, ` +
-      `vaultPath=${structured.vaultPath ?? 'none'})`
+      `dropping vault sync result (vaultId=${String(structured.vaultId ?? payload.vaultId ?? 'none')}, ` +
+      `vaultPath=${String(structured.vaultPath ?? 'none')})`
     );
     return;
   }
@@ -106,7 +96,11 @@ export async function applyVaultSyncCommandResult(input: ApplyVaultSyncCommandRe
   const status = input.resultStatus === 'completed' ? 'completed' : 'failed';
   const lastSyncError = status === 'completed'
     ? null
-    : structured.error ?? input.error ?? input.stderr ?? input.stdout ?? 'Vault sync failed';
+    : (typeof structured.error === 'string' ? structured.error : undefined) ??
+      input.error ??
+      input.stderr ??
+      input.stdout ??
+      'Vault sync failed';
 
   await db
     .update(localVaults)
@@ -153,8 +147,8 @@ export async function applyVaultSyncCommandResult(input: ApplyVaultSyncCommandRe
       externalSnapshotId: snapshotId,
       syncedAt: completedAt,
       sizeBytes: typeof structured.totalBytes === 'number' ? structured.totalBytes : snapshot.size,
-      fileCount: structured.fileCount,
-      manifestVerified: structured.manifestVerified ?? false,
+      fileCount: typeof structured.fileCount === 'number' ? structured.fileCount : undefined,
+      manifestVerified: typeof structured.manifestVerified === 'boolean' ? structured.manifestVerified : false,
       createdAt: completedAt,
       updatedAt: completedAt,
     })
@@ -167,8 +161,8 @@ export async function applyVaultSyncCommandResult(input: ApplyVaultSyncCommandRe
         externalSnapshotId: snapshotId,
         syncedAt: completedAt,
         sizeBytes: typeof structured.totalBytes === 'number' ? structured.totalBytes : snapshot.size,
-        fileCount: structured.fileCount,
-        manifestVerified: structured.manifestVerified ?? false,
+        fileCount: typeof structured.fileCount === 'number' ? structured.fileCount : undefined,
+        manifestVerified: typeof structured.manifestVerified === 'boolean' ? structured.manifestVerified : false,
         updatedAt: completedAt,
       },
     });

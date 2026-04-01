@@ -17,6 +17,7 @@ vi.mock('../db/schema', () => ({
     backupType: 'backupJobs.backupType',
     featureLinkId: 'backupJobs.featureLinkId',
     policyId: 'backupJobs.policyId',
+    deviceId: 'backupJobs.deviceId',
   },
   backupSnapshots: {
     id: 'backupSnapshots.id',
@@ -74,6 +75,12 @@ vi.mock('./backupSnapshotStorage', () => ({
   checkBackupProviderCapabilities: vi.fn(),
 }));
 
+const resolveBackupProtectionForDeviceMock = vi.fn();
+vi.mock('./featureConfigResolver', () => ({
+  resolveBackupProtectionForDevice: (...args: unknown[]) =>
+    resolveBackupProtectionForDeviceMock(...(args as [])),
+}));
+
 import { db } from '../db';
 import {
   applyBackupCommandResultToJob,
@@ -98,6 +105,7 @@ function chainMock(resolvedValue: unknown = []) {
 describe('backup result persistence', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    resolveBackupProtectionForDeviceMock.mockReset();
   });
 
   it('ignores stale backup job results when the job is no longer in flight', async () => {
@@ -144,21 +152,20 @@ describe('backup result persistence', () => {
   });
 
   it('stamps snapshot protection settings from the winning backup feature link', async () => {
+    resolveBackupProtectionForDeviceMock.mockResolvedValueOnce({
+      legalHold: true,
+      legalHoldReason: 'Regulatory hold',
+      immutabilityMode: 'application',
+      immutableDays: 45,
+      sourceFeatureLinkIds: ['feature-1'],
+    });
     vi.mocked(db.update)
       .mockReturnValueOnce(chainMock([{ id: 'job-1', configId: 'config-1', backupType: 'file' }]) as any)
       .mockReturnValueOnce(chainMock([]) as any)
       .mockReturnValueOnce(chainMock([]) as any);
     vi.mocked(db.select)
       .mockReturnValueOnce(chainMock([]) as any)
-      .mockReturnValueOnce(chainMock([{ featureLinkId: 'feature-1', policyId: null }]) as any)
-      .mockReturnValueOnce(chainMock([{
-        retention: {
-          legalHold: true,
-          legalHoldReason: 'Regulatory hold',
-          immutabilityMode: 'application',
-          immutableDays: 45,
-        },
-      }]) as any);
+      .mockReturnValueOnce(chainMock([{ featureLinkId: 'feature-1', policyId: null, deviceId: 'device-1' }]) as any);
     vi.mocked(db.insert).mockReturnValueOnce(chainMock([{
       id: 'snapshot-db-1',
       jobId: 'job-1',
@@ -195,23 +202,29 @@ describe('backup result persistence', () => {
       requestedImmutabilityEnforcement: 'application',
       immutabilityFallbackReason: null,
       immutableUntil: expect.any(Date),
+      metadata: expect.objectContaining({
+        snapshotProtection: expect.objectContaining({
+          legalHoldSource: 'policy',
+        }),
+      }),
     }));
   });
 
   it('applies provider immutability when the winning feature link requests it', async () => {
+    resolveBackupProtectionForDeviceMock.mockResolvedValueOnce({
+      legalHold: false,
+      legalHoldReason: null,
+      immutabilityMode: 'provider',
+      immutableDays: 14,
+      sourceFeatureLinkIds: ['feature-1'],
+    });
     vi.mocked(db.update)
       .mockReturnValueOnce(chainMock([{ id: 'job-1', configId: 'config-1', backupType: 'file' }]) as any)
       .mockReturnValueOnce(chainMock([]) as any)
       .mockReturnValueOnce(chainMock([]) as any);
     vi.mocked(db.select)
       .mockReturnValueOnce(chainMock([]) as any)
-      .mockReturnValueOnce(chainMock([{ featureLinkId: 'feature-1', policyId: null }]) as any)
-      .mockReturnValueOnce(chainMock([{
-        retention: {
-          immutabilityMode: 'provider',
-          immutableDays: 14,
-        },
-      }]) as any)
+      .mockReturnValueOnce(chainMock([{ featureLinkId: 'feature-1', policyId: null, deviceId: 'device-1' }]) as any)
       .mockReturnValueOnce(chainMock([{
         provider: 's3',
         providerConfig: { bucket: 'backups', region: 'us-east-1' },
@@ -262,19 +275,20 @@ describe('backup result persistence', () => {
   });
 
   it('falls back to application immutability when provider locking fails', async () => {
+    resolveBackupProtectionForDeviceMock.mockResolvedValueOnce({
+      legalHold: false,
+      legalHoldReason: null,
+      immutabilityMode: 'provider',
+      immutableDays: 30,
+      sourceFeatureLinkIds: ['feature-1'],
+    });
     vi.mocked(db.update)
       .mockReturnValueOnce(chainMock([{ id: 'job-1', configId: 'config-1', backupType: 'file' }]) as any)
       .mockReturnValueOnce(chainMock([]) as any)
       .mockReturnValueOnce(chainMock([]) as any);
     vi.mocked(db.select)
       .mockReturnValueOnce(chainMock([]) as any)
-      .mockReturnValueOnce(chainMock([{ featureLinkId: 'feature-1', policyId: null }]) as any)
-      .mockReturnValueOnce(chainMock([{
-        retention: {
-          immutabilityMode: 'provider',
-          immutableDays: 30,
-        },
-      }]) as any)
+      .mockReturnValueOnce(chainMock([{ featureLinkId: 'feature-1', policyId: null, deviceId: 'device-1' }]) as any)
       .mockReturnValueOnce(chainMock([{
         provider: 's3',
         providerConfig: { bucket: 'backups', region: 'us-east-1' },
@@ -317,19 +331,20 @@ describe('backup result persistence', () => {
   });
 
   it('falls back immediately when the runtime capability re-check fails', async () => {
+    resolveBackupProtectionForDeviceMock.mockResolvedValueOnce({
+      legalHold: false,
+      legalHoldReason: null,
+      immutabilityMode: 'provider',
+      immutableDays: 30,
+      sourceFeatureLinkIds: ['feature-1'],
+    });
     vi.mocked(db.update)
       .mockReturnValueOnce(chainMock([{ id: 'job-1', configId: 'config-1', backupType: 'file' }]) as any)
       .mockReturnValueOnce(chainMock([]) as any)
       .mockReturnValueOnce(chainMock([]) as any);
     vi.mocked(db.select)
       .mockReturnValueOnce(chainMock([]) as any)
-      .mockReturnValueOnce(chainMock([{ featureLinkId: 'feature-1', policyId: null }]) as any)
-      .mockReturnValueOnce(chainMock([{
-        retention: {
-          immutabilityMode: 'provider',
-          immutableDays: 30,
-        },
-      }]) as any)
+      .mockReturnValueOnce(chainMock([{ featureLinkId: 'feature-1', policyId: null, deviceId: 'device-1' }]) as any)
       .mockReturnValueOnce(chainMock([{
         provider: 's3',
         providerConfig: { bucket: 'backups', region: 'us-east-1' },

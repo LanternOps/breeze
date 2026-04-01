@@ -26,10 +26,6 @@ export const enrollmentRoutes = new Hono();
 const ENROLLMENT_RATE_LIMIT = 10;
 const ENROLLMENT_RATE_WINDOW_SECONDS = 60;
 
-function isProductionEnv(): boolean {
-  return (process.env.NODE_ENV ?? 'development') === 'production';
-}
-
 function getProvidedEnrollmentSecret(c: any, data: { enrollmentSecret?: string }): string {
   return (data.enrollmentSecret ?? c.req.header('x-agent-enrollment-secret') ?? '').trim();
 }
@@ -42,6 +38,11 @@ function timingSafeStringEqual(left: string, right: string): boolean {
 
 function hashEnrollmentSecret(secret: string): string {
   return createHash('sha256').update(secret).digest('hex');
+}
+
+export function getGlobalEnrollmentSecret(): string | null {
+  const configuredSecret = process.env.AGENT_ENROLLMENT_SECRET?.trim() ?? '';
+  return configuredSecret.length > 0 ? configuredSecret : null;
 }
 
 enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => {
@@ -103,8 +104,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     }
 
     const providedSecret = getProvidedEnrollmentSecret(c, data);
-    const configuredSecret = process.env.AGENT_ENROLLMENT_SECRET;
-    const hasGlobalSecret = typeof configuredSecret === 'string' && configuredSecret.length > 0;
+    const configuredSecret = getGlobalEnrollmentSecret();
 
     if (matchingKey.keySecretHash) {
       if (!providedSecret) {
@@ -135,7 +135,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         });
         return c.json({ error: 'Invalid enrollment secret' }, 403);
       }
-    } else if (hasGlobalSecret) {
+    } else if (configuredSecret) {
       if (!providedSecret) {
         writeAuditEvent(c, {
           orgId: null,
@@ -163,16 +163,22 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         });
         return c.json({ error: 'Invalid enrollment secret' }, 403);
       }
-    } else if (isProductionEnv()) {
+    } else if (process.env.NODE_ENV === 'production') {
+      // In production, require at least one form of enrollment secret (global
+      // or per-key) to prevent open enrollment if AGENT_ENROLLMENT_SECRET is
+      // accidentally omitted from the deployment.
+      console.error(
+        '[enrollment] Production enrollment blocked: neither AGENT_ENROLLMENT_SECRET nor per-key secret is configured'
+      );
       writeAuditEvent(c, {
         orgId: null,
         actorType: 'system',
         action: 'agent.enroll',
         resourceType: 'device',
         resourceName: data.hostname,
-        details: { reason: 'missing_enrollment_secret' },
+        details: { reason: 'no_enrollment_secret_configured' },
         result: 'denied',
-        errorMessage: 'Enrollment secret required',
+        errorMessage: 'Enrollment secret required in production',
       });
       return c.json({ error: 'Enrollment secret required' }, 403);
     }
@@ -281,7 +287,9 @@ deviceLimitPartnerId = org.partnerId;
           dispatchHook('device-limit', deviceLimitPartnerId, {
             currentDevices: activeCount,
             maxDevices,
-          }).catch(() => {});
+          }).catch((err) => {
+            console.error('[Enrollment] Failed to dispatch device-limit hook:', err instanceof Error ? err.message : err);
+          });
           throw new HTTPException(403, {
             message: JSON.stringify({
               error: 'Device limit reached',

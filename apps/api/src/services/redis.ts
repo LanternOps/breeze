@@ -4,9 +4,36 @@ let redisClient: Redis | null = null;
 let redisAvailable = true;
 let warnedAboutInsecureProdRedis = false;
 
+function isProductionEnv(): boolean {
+  return (process.env.NODE_ENV ?? 'development') === 'production';
+}
+
+function hasPasswordInRedisUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.password.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function warnAboutInsecureRedis(message: string): void {
+  if (!isProductionEnv() || warnedAboutInsecureProdRedis) {
+    return;
+  }
+
+  warnedAboutInsecureProdRedis = true;
+  console.warn(`[Redis] ${message}`);
+}
+
 function resolveRedisUrl(): string {
   const explicitUrl = process.env.REDIS_URL?.trim();
   if (explicitUrl) {
+    if (!hasPasswordInRedisUrl(explicitUrl)) {
+      warnAboutInsecureRedis(
+        'REDIS_URL in production does not include authentication; security-sensitive features may fail closed during Redis outages'
+      );
+    }
     return explicitUrl;
   }
 
@@ -18,10 +45,9 @@ function resolveRedisUrl(): string {
     return `redis://:${encodeURIComponent(password)}@${host}:${port}`;
   }
 
-  if ((process.env.NODE_ENV ?? 'development') === 'production' && !warnedAboutInsecureProdRedis) {
-    warnedAboutInsecureProdRedis = true;
-    console.warn('[Redis] REDIS_URL/REDIS_PASSWORD not configured in production; falling back to unauthenticated Redis');
-  }
+  warnAboutInsecureRedis(
+    'REDIS_URL/REDIS_PASSWORD not configured in production; falling back to unauthenticated Redis'
+  );
 
   return `redis://${host}:${port}`;
 }

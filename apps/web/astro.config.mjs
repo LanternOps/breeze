@@ -58,6 +58,9 @@ export default defineConfig({
     allowedHosts: ['2breeze.app']
   },
   vite: {
+    optimizeDeps: {
+      include: ['react-dom/client']
+    },
     ssr: {
       noExternal: ['@tanstack/react-query']
     },

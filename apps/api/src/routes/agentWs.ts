@@ -20,6 +20,9 @@ import { applyVaultSyncCommandResult } from '../services/vaultSyncPersistence';
 import { backupCommandResultSchema } from './backup/resultSchemas';
 import { claimPendingCommandsForDevice } from '../services/commandDispatch';
 import { matchAgentTokenHash } from '../middleware/agentAuth';
+import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES } from '../services/agentCommandResultValidation';
+import { updateRestoreJobByCommandId, updateRestoreJobFromResult } from '../services/restoreResultPersistence';
+import { captureException } from '../services/sentry';
 
 declare module 'hono' {
   interface ContextVariableMap {
@@ -29,37 +32,13 @@ declare module 'hono' {
 
 const VALID_MONITOR_STATUSES = new Set(['online', 'offline', 'degraded']);
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const VM_RESTORE_COMMAND_TYPES = new Set(['vm_restore_from_backup', 'vm_instant_boot']);
 const PROVIDER_BACKED_BACKUP_COMMAND_TYPES = new Set(['hyperv_backup', 'mssql_backup']);
-const DR_COMMAND_TYPES = new Set([
-  'vm_restore_from_backup',
-  'vm_instant_boot',
-  'hyperv_restore',
-  'mssql_restore',
-  'bmr_recover',
-]);
 const MAX_DESKTOP_SESSION_ID_BYTES = 128;
 const ACCEPTED_COMMAND_RESULT_STATUSES = ['pending', 'sent'] as const;
 
 function normalizeMonitorStatus(raw: string | undefined): 'online' | 'offline' | 'degraded' {
   if (raw && VALID_MONITOR_STATUSES.has(raw)) return raw as 'online' | 'offline' | 'degraded';
   return 'offline';
-}
-
-function deriveRestoreStatus(
-  commandStatus: z.infer<typeof commandResultSchema>['status'],
-  payloadStatus?: unknown
-): 'completed' | 'failed' | 'partial' {
-  if (commandStatus !== 'completed') return 'failed';
-  if (payloadStatus === 'failed') return 'failed';
-  if (payloadStatus === 'partial' || payloadStatus === 'degraded') return 'partial';
-  return 'completed';
-}
-
-function normalizeTargetConfig(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? { ...(value as Record<string, unknown>) }
-    : {};
 }
 
 function extractDesktopSessionId(commandId: string, prefix: 'desk-start-' | 'desk-stop-' | 'desk-disconnect-'): string | null {
@@ -69,45 +48,6 @@ function extractDesktopSessionId(commandId: string, prefix: 'desk-start-' | 'des
     return null;
   }
   return sessionId;
-}
-
-function buildRestoreResultMetadata(
-  commandType: string,
-  result: z.infer<typeof commandResultSchema>,
-  restoreData: Record<string, unknown>
-): Record<string, unknown> {
-  const metadata: Record<string, unknown> = {
-    commandType,
-    status: restoreData.status ?? result.status,
-  };
-
-  for (const key of [
-    'vmName',
-    'newVmId',
-    'vhdxPath',
-    'durationMs',
-    'bootTimeMs',
-    'warnings',
-    'error',
-    'backgroundSyncActive',
-    'syncProgress',
-  ]) {
-    if (restoreData[key] !== undefined) {
-      metadata[key] = restoreData[key];
-    }
-  }
-
-  if (result.error && metadata.error === undefined) {
-    metadata.error = result.error;
-  }
-  if (result.stderr && metadata.stderr === undefined) {
-    metadata.stderr = result.stderr;
-  }
-  if (result.durationMs !== undefined && metadata.durationMs === undefined) {
-    metadata.durationMs = result.durationMs;
-  }
-
-  return metadata;
 }
 
 /**
@@ -120,39 +60,6 @@ type CommandResultHandler = (params: {
   resolvedDeviceId: string;
   stdout: string | undefined;
 }) => Promise<void>;
-
-async function updateRestoreJobFromResult(
-  restoreJob: {
-    id: string;
-    targetConfig?: unknown;
-  },
-  commandType: string,
-  result: z.infer<typeof commandResultSchema>
-): Promise<void> {
-  const restoreData =
-    result.result && typeof result.result === 'object' && !Array.isArray(result.result)
-      ? result.result as Record<string, unknown>
-      : {};
-  const nextTargetConfig = normalizeTargetConfig(restoreJob.targetConfig);
-  nextTargetConfig.result = buildRestoreResultMetadata(commandType, result, restoreData);
-
-  const restoredSize =
-    typeof restoreData.bytesRestored === 'number' ? restoreData.bytesRestored : null;
-  const restoredFiles =
-    typeof restoreData.filesRestored === 'number' ? restoreData.filesRestored : null;
-
-  await db
-    .update(restoreJobs)
-    .set({
-      status: deriveRestoreStatus(result.status, restoreData.status),
-      completedAt: new Date(),
-      restoredSize,
-      restoredFiles,
-      targetConfig: nextTargetConfig,
-      updatedAt: new Date(),
-    })
-    .where(eq(restoreJobs.id, restoreJob.id));
-}
 
 // ---------------------------------------------------------------------------
 // Per-command-type result handlers (used by the dispatch map in processCommandResult)
@@ -220,6 +127,7 @@ async function handleDiscoveryResult({ agentId, command, result }: Parameters<Co
     }
   } catch (err) {
     console.error(`[AgentWs] Failed to process discovery results for ${agentId}:`, err);
+    captureException(err);
   }
 }
 
@@ -232,30 +140,21 @@ async function handleBackupVerificationResult({ agentId, result, stdout }: Param
     });
   } catch (err) {
     console.error(`[AgentWs] Failed to process backup verification result for ${agentId}:`, err);
+    captureException(err);
   }
 }
 
 async function handleVmRestoreResult({ agentId, command, result, resolvedDeviceId }: Parameters<CommandResultHandler>[0]): Promise<void> {
   try {
-    const [queuedRestoreJob] = await db
-      .select({
-        id: restoreJobs.id,
-        targetConfig: restoreJobs.targetConfig,
-      })
-      .from(restoreJobs)
-      .where(
-        and(
-          eq(restoreJobs.commandId, result.commandId),
-          eq(restoreJobs.deviceId, resolvedDeviceId)
-        )
-      )
-      .limit(1);
-
-    if (queuedRestoreJob) {
-      await updateRestoreJobFromResult(queuedRestoreJob, command.type, result);
-    }
+    await updateRestoreJobByCommandId({
+      commandId: result.commandId,
+      deviceId: resolvedDeviceId,
+      commandType: command.type,
+      result,
+    });
   } catch (err) {
     console.error(`[AgentWs] Failed to process queued restore result for ${agentId}:`, err);
+    captureException(err);
   }
 }
 
@@ -316,6 +215,7 @@ async function handleProviderBackedBackupResult({ agentId, command, result, reso
     }
   } catch (err) {
     console.error(`[AgentWs] Failed to process ${command.type} backup result for ${agentId}:`, err);
+    captureException(err);
   }
 }
 
@@ -331,6 +231,7 @@ async function handleVaultSyncResult({ agentId, command, result, resolvedDeviceI
     });
   } catch (err) {
     console.error(`[AgentWs] Failed to process vault sync result for ${agentId}:`, err);
+    captureException(err);
   }
 }
 
@@ -458,8 +359,10 @@ const commandResultHandlers: Record<string, CommandResultHandler> = {
   network_discovery: handleDiscoveryResult,
   backup_verify: handleBackupVerificationResult,
   backup_test_restore: handleBackupVerificationResult,
+  backup_restore: handleVmRestoreResult,
   vm_restore_from_backup: handleVmRestoreResult,
   vm_instant_boot: handleVmRestoreResult,
+  bmr_recover: handleVmRestoreResult,
   hyperv_backup: handleProviderBackedBackupResult,
   mssql_backup: handleProviderBackedBackupResult,
   vault_sync: handleVaultSyncResult,
@@ -568,6 +471,93 @@ const commandResultSchema = z.object({
     { message: 'Command result payload exceeds 1 MB limit' }
   )
 });
+
+type AgentCommandResult = z.infer<typeof commandResultSchema>;
+
+function commandResultToStdout(result: AgentCommandResult): string | undefined {
+  return result.stdout ??
+    (result.result !== undefined ? JSON.stringify(result.result) : undefined);
+}
+
+function buildStoredCommandResult(result: AgentCommandResult, stdout: string | undefined) {
+  return {
+    status: result.status,
+    exitCode: result.exitCode,
+    stdout,
+    stderr: result.stderr,
+    durationMs: result.durationMs,
+    error: result.error,
+  };
+}
+
+function rejectMalformedCriticalResult(
+  commandType: string,
+  result: AgentCommandResult,
+  error: unknown
+): { normalizedResult: AgentCommandResult; stdout: string | undefined; message: string } {
+  const message = error instanceof Error ? error.message : 'unknown validation error';
+  const reason = `Rejected malformed ${commandType} result: ${message}`;
+  return {
+    normalizedResult: {
+      ...result,
+      status: 'failed',
+      error: reason,
+    },
+    stdout: commandResultToStdout(result),
+    message: reason,
+  };
+}
+
+function normalizeCriticalResultIfNeeded(
+  commandType: string,
+  result: AgentCommandResult
+): { normalizedResult: AgentCommandResult; stdout: string | undefined; validationError: string | null } {
+  if (!detectResultValidationFamily(commandType)) {
+    return {
+      normalizedResult: result,
+      stdout: commandResultToStdout(result),
+      validationError: null,
+    };
+  }
+
+  try {
+    const validated = validateCriticalCommandResult(commandType, {
+      commandId: result.commandId,
+      status: result.status,
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      durationMs: result.durationMs,
+      error: result.error,
+      result: result.result,
+    });
+    if (!validated) {
+      return {
+        normalizedResult: result,
+        stdout: commandResultToStdout(result),
+        validationError: null,
+      };
+    }
+
+    const stdout = validated.normalizedStdout ?? result.stdout;
+    return {
+      normalizedResult: {
+        ...result,
+        stdout,
+        result: validated.structuredResult,
+      },
+      stdout,
+      validationError: null,
+    };
+  } catch (error) {
+    const rejected = rejectMalformedCriticalResult(commandType, result, error);
+    return {
+      normalizedResult: rejected.normalizedResult,
+      stdout: rejected.stdout,
+      validationError: rejected.message,
+    };
+  }
+}
 
 const ipHistoryEntrySchema = z.object({
   interfaceName: z.string().min(1).max(100),
@@ -799,17 +789,27 @@ async function processOrphanedCommandResult(
 
   if (result.commandId.startsWith('vault-auto-sync-')) {
     try {
+      const { normalizedResult, stdout, validationError } = normalizeCriticalResultIfNeeded('vault_sync', result);
+      if (validationError) {
+        console.warn(`[AgentWs] ${validationError} for orphaned auto-sync ${result.commandId}`);
+        // Update vault state to reflect the validation failure so it's visible to operators
+        await applyVaultSyncCommandResult({
+          deviceId: authenticatedDeviceId,
+          resultStatus: 'failed',
+          error: validationError,
+        });
+        return;
+      }
       await applyVaultSyncCommandResult({
         deviceId: authenticatedDeviceId,
-        resultStatus: result.status,
-        stdout:
-          result.stdout ??
-          (result.result !== undefined ? JSON.stringify(result.result) : undefined),
-        stderr: result.stderr,
-        error: result.error,
+        resultStatus: normalizedResult.status,
+        stdout,
+        stderr: normalizedResult.stderr,
+        error: normalizedResult.error,
       });
     } catch (err) {
       console.error(`[AgentWs] Failed to process vault auto-sync result for ${agentId}:`, err);
+      captureException(err);
     }
     return;
   }
@@ -887,6 +887,7 @@ async function processOrphanedCommandResult(
       }
     } catch (err) {
       console.error(`[AgentWs] Failed to process discovery results for ${agentId}:`, err);
+      captureException(err);
     }
     return;
   }
@@ -950,6 +951,7 @@ async function processOrphanedCommandResult(
       }
     } catch (err) {
       console.error(`[AgentWs] Failed to process backup results for ${agentId}:`, err);
+      captureException(err);
     }
     return;
   }
@@ -960,6 +962,7 @@ async function processOrphanedCommandResult(
       id: restoreJobs.id,
       orgId: restoreJobs.orgId,
       agentId: devices.agentId,
+      status: restoreJobs.status,
       targetConfig: restoreJobs.targetConfig,
     })
     .from(restoreJobs)
@@ -974,9 +977,21 @@ async function processOrphanedCommandResult(
     }
     console.log(`[AgentWs] Processing restore result for job ${restoreJob.id} from agent ${agentId}`);
     try {
-      await updateRestoreJobFromResult(restoreJob, 'backup_restore', result);
+      const { normalizedResult, validationError } = normalizeCriticalResultIfNeeded('backup_restore', result);
+      if (validationError) {
+        console.warn(`[AgentWs] ${validationError} for restore job ${restoreJob.id}`);
+        // Mark restore job as failed so it doesn't stay stuck in pending/running
+        await updateRestoreJobFromResult(restoreJob, 'backup_restore', {
+          ...normalizedResult,
+          status: 'failed',
+          error: validationError,
+        });
+        return;
+      }
+      await updateRestoreJobFromResult(restoreJob, 'backup_restore', normalizedResult);
     } catch (err) {
       console.error(`[AgentWs] Failed to process restore results for ${agentId}:`, err);
+      captureException(err);
     }
     return;
   }
@@ -1053,26 +1068,20 @@ async function processCommandResult(
       return;
     }
 
-    // Agent sends structured data in `result` field (parsed JSON) rather than
-    // `stdout` (raw string). Convert it back to a JSON string for storage.
-    const stdout = result.stdout ??
-      (result.result !== undefined ? JSON.stringify(result.result) : undefined);
+    const {
+      normalizedResult,
+      stdout,
+      validationError,
+    } = normalizeCriticalResultIfNeeded(command.type, result);
 
     // Update outside transaction for same visibility reasons as the lookup.
     const updatedCommands = await runOutsideDbContext(() =>
       db
         .update(deviceCommands)
         .set({
-            status: result.status === 'completed' ? 'completed' : 'failed',
+            status: normalizedResult.status === 'completed' ? 'completed' : 'failed',
             completedAt: new Date(),
-            result: {
-            status: result.status,
-            exitCode: result.exitCode,
-            stdout,
-            stderr: result.stderr,
-            durationMs: result.durationMs,
-            error: result.error
-          }
+            result: buildStoredCommandResult(normalizedResult, stdout)
         })
         .where(
           and(
@@ -1089,7 +1098,12 @@ async function processCommandResult(
       return;
     }
 
-    console.log(`Command ${result.commandId} ${result.status} for agent ${agentId}`);
+    if (validationError) {
+      console.warn(`[AgentWs] ${validationError} — command ${result.commandId} rejected for agent ${agentId}`);
+      return;
+    }
+
+    console.log(`Command ${result.commandId} ${normalizedResult.status} for agent ${agentId}`);
 
     const commandPayload =
       command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload)
@@ -1102,12 +1116,13 @@ async function processCommandResult(
           commandId: result.commandId,
           commandType: command.type,
           deviceId: resolvedDeviceId,
-          status: result.status,
-          result: result.result,
+          status: normalizedResult.status,
+          result: normalizedResult.result,
           payload: commandPayload,
         });
       } catch (err) {
         console.error(`[AgentWs] Failed to persist DR result state for ${result.commandId}:`, err);
+        captureException(err);
       }
 
       try {
@@ -1115,16 +1130,18 @@ async function processCommandResult(
         await enqueueDrExecutionReconcile(commandPayload.drExecutionId);
       } catch (err) {
         console.error(`[AgentWs] Failed to enqueue DR reconciliation for ${result.commandId}:`, err);
+        captureException(err);
       }
     }
 
     // Dispatch to per-command-type handler if one is registered
     const handler = commandResultHandlers[command.type];
     if (handler) {
-      await handler({ agentId, command, result, resolvedDeviceId: resolvedDeviceId!, stdout });
+      await handler({ agentId, command, result: normalizedResult, resolvedDeviceId: resolvedDeviceId!, stdout });
     }
   } catch (error) {
     console.error(`[AgentWs] Failed to process command result for ${agentId}:`, error);
+    captureException(error);
   }
 }
 

@@ -30,6 +30,10 @@ export type BackupPolicyRetention = {
   keepMonthly?: number;
   keepYearly?: number;
   weeklyDay?: number;
+  legalHold?: boolean;
+  legalHoldReason?: string;
+  immutabilityMode?: 'none' | 'application' | 'provider';
+  immutableDays?: number;
 };
 
 export type BackupPolicyTargets = {
@@ -89,6 +93,16 @@ export type BackupSnapshot = {
   fileCount: number | null;
   label: string | null;
   location: string | null;
+  expiresAt?: string | null;
+  legalHold?: boolean;
+  legalHoldReason?: string | null;
+  legalHoldSource?: 'policy' | 'manual' | null;
+  isImmutable?: boolean;
+  immutableUntil?: string | null;
+  immutabilityEnforcement?: 'application' | 'provider' | null;
+  requestedImmutabilityEnforcement?: 'application' | 'provider' | null;
+  immutabilityFallbackReason?: string | null;
+  retentionBlockedReason?: 'legal_hold' | 'immutable_until' | null;
 };
 
 export type SnapshotTreeItem = {

@@ -20,7 +20,6 @@ import {
   closeBackupQueue,
   enqueueBackupDispatch,
   enqueueBackupResults,
-  enqueueRestoreDispatch,
 } from './backupEnqueue';
 
 describe('backup enqueue helpers', () => {
@@ -48,16 +47,6 @@ describe('backup enqueue helpers', () => {
       'process-results',
       expect.objectContaining({ jobId: 'job-123' }),
       expect.objectContaining({ jobId: 'backup-result-job-123' }),
-    );
-  });
-
-  it('uses a stable BullMQ job id for restore dispatch', async () => {
-    await enqueueRestoreDispatch('restore-123', 'snap-1', 'dev-1', 'org-1');
-
-    expect(addMock).toHaveBeenCalledWith(
-      'dispatch-restore',
-      expect.objectContaining({ restoreJobId: 'restore-123' }),
-      expect.objectContaining({ jobId: 'backup-restore-restore-123' }),
     );
   });
 

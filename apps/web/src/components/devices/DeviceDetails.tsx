@@ -351,7 +351,11 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
       )}
 
       {activeTab === 'backup' && (
-        <DeviceBackupTab deviceId={device.id} timezone={effectiveTimezone} />
+        <DeviceBackupTab
+          deviceId={device.id}
+          deviceStatus={device.status}
+          timezone={effectiveTimezone}
+        />
       )}
     </div>
   );

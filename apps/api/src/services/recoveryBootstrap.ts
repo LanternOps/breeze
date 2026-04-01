@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { and, desc, eq, inArray, isNull, lt } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt } from 'drizzle-orm';
 import { db } from '../db';
 import {
   backupConfigs,
@@ -18,6 +18,7 @@ export const BMR_MIN_HELPER_VERSION =
   process.env.BINARY_VERSION ||
   '0.5.0';
 export const RECOVERY_DOWNLOAD_SESSION_TTL_MS = 60 * 60 * 1000;
+export const RECOVERY_TOKEN_REGEX = /^brz_rec_[a-f0-9]{64}$/;
 
 export function hashRecoveryToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
@@ -25,6 +26,10 @@ export function hashRecoveryToken(token: string): string {
 
 export function generateRecoveryToken(): string {
   return `brz_rec_${randomBytes(32).toString('hex')}`;
+}
+
+export function isValidRecoveryTokenFormat(token: string): boolean {
+  return RECOVERY_TOKEN_REGEX.test(token);
 }
 
 export function asRecord(value: unknown): Record<string, unknown> {
@@ -104,8 +109,7 @@ export async function expireUnusedRecoveryTokens(): Promise<void> {
     .set({ status: 'expired' })
     .where(
       and(
-        eq(recoveryTokens.status, 'active'),
-        isNull(recoveryTokens.authenticatedAt),
+        inArray(recoveryTokens.status, ['active', 'authenticated']),
         lt(recoveryTokens.expiresAt, new Date())
       )
     );
@@ -269,7 +273,7 @@ export async function resolveRecoveryTokenPresentation(orgId: string, tokenId: s
       ? row.status
       : row.completedAt || row.status === 'used'
         ? 'completed'
-        : row.authenticatedAt || row.usedAt
+        : row.status === 'authenticated' || row.authenticatedAt || row.usedAt
           ? 'authenticated'
           : 'pending';
 

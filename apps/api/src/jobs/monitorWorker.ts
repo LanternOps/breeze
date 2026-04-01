@@ -486,7 +486,7 @@ export async function enqueueMonitorCheck(
   meta: QueueActorMeta = MONITOR_DISPATCH_META,
 ): Promise<string> {
   const queue = getMonitorQueue();
-  const stableJobId = `monitor-check:${monitorId}`;
+  const stableJobId = `monitor-check-${monitorId}`;
   const existing = await queue.getJob(stableJobId);
   if (existing) {
     const state = await existing.getState();
@@ -517,7 +517,7 @@ export async function enqueueMonitorCheckResult(
   meta: QueueActorMeta = MONITOR_RESULT_META,
 ): Promise<string> {
   const queue = getMonitorQueue();
-  const stableJobId = result.checkId ? `monitor-result:${result.checkId}` : null;
+  const stableJobId = result.checkId ? `monitor-result-${result.checkId}` : null;
   if (stableJobId) {
     const existing = await queue.getJob(stableJobId);
     if (existing) {

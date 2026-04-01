@@ -110,6 +110,40 @@ describe('BackupVerificationTab', () => {
     });
 
     render(<BackupVerificationTab deviceId={deviceId} />);
-    await screen.findByText('No verifications yet.');
+    expect(
+      await screen.findAllByText('No verification history. Run a verification to check backup integrity.')
+    ).toHaveLength(2);
+  });
+
+  it('disables verification actions and shows an offline message when the device is offline', async () => {
+    render(<BackupVerificationTab deviceId={deviceId} deviceStatus="offline" />);
+
+    await screen.findByText('Device is offline. Verification requires a connected agent.');
+    expect(screen.getByRole('button', { name: /integrity check/i }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: /test restore/i }).hasAttribute('disabled')).toBe(true);
+  });
+
+  it('shows an explicit dispatch failure message and keeps retry actions available', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/backup/verifications')) {
+        return makeJsonResponse({ data: mockVerifications });
+      }
+      if (url.includes('/backup/recovery-readiness')) {
+        return makeJsonResponse(mockReadiness);
+      }
+      if (url.includes('/backup/verify')) {
+        return makeJsonResponse({ error: 'Queue unavailable' }, false, 502);
+      }
+      return makeJsonResponse({});
+    });
+
+    render(<BackupVerificationTab deviceId={deviceId} deviceStatus="online" />);
+
+    await screen.findByText('88');
+    fireEvent.click(screen.getByRole('button', { name: /integrity check/i }));
+
+    await screen.findByText('Verification could not be started: Queue unavailable');
+    expect(screen.getByRole('button', { name: /integrity check/i }).hasAttribute('disabled')).toBe(false);
   });
 });

@@ -10,6 +10,8 @@ const POLICY_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const SNAPSHOT_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const DEVICE_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 const RESTORE_ID = '11111111-1111-4111-8111-111111111111';
+const RESTORE_COMMAND_ID = '22222222-2222-4222-8222-222222222222';
+const queueCommandForExecutionMock = vi.fn();
 
 // Mock all services
 vi.mock('../services', () => ({}));
@@ -18,8 +20,11 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
 }));
 
-vi.mock('../jobs/backupWorker', () => ({
-  enqueueRestoreDispatch: vi.fn().mockResolvedValue(undefined),
+vi.mock('../services/commandQueue', () => ({
+  CommandTypes: {
+    BACKUP_RESTORE: 'backup_restore',
+  },
+  queueCommandForExecution: (...args: unknown[]) => queueCommandForExecutionMock(...(args as [])),
 }));
 
 // Build a fully chainable db mock
@@ -149,6 +154,7 @@ vi.mock('../db/schema', async () => {
   devices: {
     id: 'devices.id',
     orgId: 'devices.org_id',
+    status: 'devices.status',
     siteId: 'devices.site_id',
     displayName: 'devices.display_name',
     hostname: 'devices.hostname',
@@ -181,6 +187,9 @@ describe('backup routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    queueCommandForExecutionMock.mockResolvedValue({
+      command: { id: RESTORE_COMMAND_ID, status: 'pending' },
+    });
     app = new Hono();
     app.route('/backup', backupRoutes);
   });
@@ -282,8 +291,9 @@ describe('backup routes', () => {
       snapshotId: 'snap-ext-001',
     };
 
-    // Select snapshot for verification
-    selectMock.mockReturnValueOnce(chainMock([snapshot]));
+    selectMock
+      .mockReturnValueOnce(chainMock([snapshot]))
+      .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, status: 'online' }]));
 
     const restoreRecord = {
       id: RESTORE_ID,
@@ -299,7 +309,7 @@ describe('backup routes', () => {
       completedAt: null,
       restoredSize: null,
       restoredFiles: null,
-      commandId: '22222222-2222-4222-8222-222222222222',
+      commandId: RESTORE_COMMAND_ID,
       targetConfig: {
         result: {
           status: 'failed',
@@ -309,7 +319,8 @@ describe('backup routes', () => {
       },
     };
 
-    insertMock.mockReturnValueOnce(chainMock([restoreRecord]));
+    insertMock.mockReturnValueOnce(chainMock([{ ...restoreRecord, commandId: null }]));
+    updateMock.mockReturnValueOnce(chainMock([restoreRecord]));
 
     const restoreRes = await app.request('/backup/restore', {
       method: 'POST',
@@ -337,7 +348,7 @@ describe('backup routes', () => {
     const fetched = await fetchRes.json();
     expect(fetched.id).toBe(restore.id);
     expect(fetched.snapshotId).toBe(SNAPSHOT_ID);
-    expect(fetched.commandId).toBe('22222222-2222-4222-8222-222222222222');
+    expect(fetched.commandId).toBe(RESTORE_COMMAND_ID);
     expect(fetched.errorSummary).toBe('Restore target path is unavailable');
     expect(fetched.resultDetails.status).toBe('failed');
   });

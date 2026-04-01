@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { eq, and, desc, gte, lte, sql } from 'drizzle-orm';
+import { eq, and, desc, gte, lte, sql, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import { backupJobs, backupConfigs, devices } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
@@ -12,6 +12,19 @@ import { resolveScopedOrgId } from './helpers';
 import { jobListSchema } from './schemas';
 
 export const jobsRoutes = new Hono();
+
+async function markBackupJobDispatchFailed(jobId: string, error: string) {
+  const now = new Date();
+  await db
+    .update(backupJobs)
+    .set({
+      status: 'failed',
+      completedAt: now,
+      updatedAt: now,
+      errorLog: error,
+    })
+    .where(eq(backupJobs.id, jobId));
+}
 
 jobsRoutes.get('/jobs', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('query', jobListSchema), async (c) => {
   const auth = c.get('auth');
@@ -120,6 +133,19 @@ jobsRoutes.post(
   }
 
   const deviceId = c.req.param('deviceId')!;
+  const [targetDevice] = await db
+    .select({ id: devices.id, status: devices.status })
+    .from(devices)
+    .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
+    .limit(1);
+
+  if (!targetDevice) {
+    return c.json({ error: 'Device not found' }, 404);
+  }
+
+  if (targetDevice.status !== 'online') {
+    return c.json({ error: `Device is ${targetDevice.status}, cannot execute backup` }, 409);
+  }
 
   // Resolve backup config via configuration policy system
   const resolved = await resolveBackupConfigForDevice(deviceId);
@@ -168,7 +194,18 @@ jobsRoutes.post(
     );
     await enqueueBackupDispatch(row.id, row.configId, orgId, deviceId);
   } catch (err) {
+    const error = err instanceof Error ? err.message : 'Failed to enqueue backup dispatch';
     console.error('[BackupJobs] Failed to enqueue dispatch:', err);
+    await markBackupJobDispatchFailed(row.id, error);
+    writeRouteAudit(c, {
+      orgId,
+      action: 'backup.job.run',
+      resourceType: 'backup_job',
+      resourceId: row.id,
+      details: { deviceId, configId, featureLinkId, error },
+      result: 'failure',
+    });
+    return c.json({ error }, 502);
   }
 
   writeRouteAudit(c, {
@@ -196,6 +233,18 @@ jobsRoutes.get('/jobs/run-all/preview', requirePermission(PERMISSIONS.ORGS_READ.
     return c.json({ data: { deviceCount: 0, deviceIds: [], alreadyRunning: 0 } });
   }
 
+  const onlineDevices = await db
+    .select({ id: devices.id })
+    .from(devices)
+    .where(
+      and(
+        eq(devices.orgId, orgId),
+        inArray(devices.id, Array.from(deviceIds)),
+        eq(devices.status, 'online')
+      )
+    );
+  const onlineDeviceIds = new Set(onlineDevices.map((device) => device.id));
+
   // Check which devices already have a running/pending job
   const activeJobs = await db
     .select({ deviceId: backupJobs.deviceId })
@@ -208,7 +257,7 @@ jobsRoutes.get('/jobs/run-all/preview', requirePermission(PERMISSIONS.ORGS_READ.
     );
   const activeDeviceIds = new Set(activeJobs.map((j) => j.deviceId));
 
-  const eligibleIds = Array.from(deviceIds).filter((id) => !activeDeviceIds.has(id));
+  const eligibleIds = Array.from(deviceIds).filter((id) => onlineDeviceIds.has(id) && !activeDeviceIds.has(id));
 
   return c.json({
     data: {
@@ -242,8 +291,26 @@ jobsRoutes.post(
 
   const created: string[] = [];
   const skipped: string[] = [];
+  const failed: string[] = [];
+  const deviceIds = Array.from(deviceConfigMap.keys());
+  const onlineDevices = await db
+    .select({ id: devices.id })
+    .from(devices)
+    .where(
+      and(
+        eq(devices.orgId, orgId),
+        inArray(devices.id, deviceIds),
+        eq(devices.status, 'online')
+      )
+    );
+  const onlineDeviceIds = new Set(onlineDevices.map((device) => device.id));
 
   for (const [deviceId, { configId, featureLinkId }] of deviceConfigMap) {
+    if (!onlineDeviceIds.has(deviceId)) {
+      skipped.push(deviceId);
+      continue;
+    }
+
     const result = await createManualBackupJobIfIdle({
       orgId,
       configId,
@@ -252,12 +319,15 @@ jobsRoutes.post(
     });
 
     if (result?.created) {
-      created.push(result.job.id);
       try {
         const { enqueueBackupDispatch } = await import('../../jobs/backupWorker');
         await enqueueBackupDispatch(result.job.id, configId, orgId, deviceId);
+        created.push(result.job.id);
       } catch (err) {
+        const error = err instanceof Error ? err.message : 'Failed to enqueue backup dispatch';
         console.error('[BackupJobs] Failed to enqueue dispatch:', err);
+        await markBackupJobDispatchFailed(result.job.id, error);
+        failed.push(result.job.id);
       }
     } else {
       skipped.push(deviceId);
@@ -269,14 +339,17 @@ jobsRoutes.post(
     action: 'backup.job.run_all',
     resourceType: 'backup_job',
     resourceId: null,
-    details: { created: created.length, skipped: skipped.length },
+    details: { created: created.length, skipped: skipped.length, failed: failed.length },
+    result: failed.length > 0 && created.length === 0 ? 'failure' : 'success',
   });
 
   return c.json({
     data: {
       created: created.length,
       skipped: skipped.length,
+      failed: failed.length,
       jobIds: created,
+      failedJobIds: failed,
     },
   }, 201);
 });

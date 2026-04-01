@@ -188,12 +188,13 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
       });
     }
 
-    // Warn loudly if agent enrollment is open without secret verification
+    // Warn if agent enrollment relies only on enrollment keys. This is valid,
+    // but operators should know they are not using the optional shared-secret gate.
     if (!env.AGENT_ENROLLMENT_SECRET || env.AGENT_ENROLLMENT_SECRET.trim() === '') {
       warnings.push({
         key: 'AGENT_ENROLLMENT_SECRET',
         message:
-          '[SECURITY WARNING] AGENT_ENROLLMENT_SECRET is not configured. Agent enrollment is open without secret verification. Any valid enrollment key can enroll devices without an additional secret check.',
+          '[SECURITY WARNING] AGENT_ENROLLMENT_SECRET is not configured. In production, enrollment will be blocked unless a per-key secret hash is set. Set AGENT_ENROLLMENT_SECRET to add a deployment-wide second factor.',
       });
     }
   }

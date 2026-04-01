@@ -11,6 +11,7 @@ import {
   deployments,
   deploymentDevices,
   remoteSessions,
+  restoreJobs,
 } from '../db/schema';
 import { getRedisConnection } from '../services/redis';
 import { getCommandTimeoutMs, EXCLUDED_COMMAND_TYPES } from '../services/commandTimeouts';
@@ -46,6 +47,49 @@ function getQueue(): Queue<ReaperJobData> {
     });
   }
   return reaperQueue;
+}
+
+async function propagateTimedOutDeviceCommand(params: {
+  commandId: string;
+  payload: Record<string, unknown> | null;
+  errorMsg: string;
+  completedAt: Date;
+}): Promise<void> {
+  const { commandId, payload, errorMsg, completedAt } = params;
+
+  await db
+    .update(restoreJobs)
+    .set({
+      status: 'failed',
+      completedAt,
+      updatedAt: completedAt,
+      targetConfig: sql`coalesce(${restoreJobs.targetConfig}, '{}'::jsonb) || jsonb_build_object(
+        'error', ${errorMsg},
+        'result', jsonb_build_object(
+          'status', 'failed',
+          'error', ${errorMsg},
+          'timedOutBy', 'server'
+        )
+      )`,
+    })
+    .where(
+      and(
+        eq(restoreJobs.commandId, commandId),
+        inArray(restoreJobs.status, ['pending', 'running']),
+      ),
+    );
+
+  const drExecutionId =
+    payload && typeof payload.drExecutionId === 'string' && payload.drExecutionId.trim().length > 0
+      ? payload.drExecutionId
+      : null;
+
+  if (!drExecutionId) {
+    return;
+  }
+
+  const { enqueueDrExecutionReconcile } = await import('./drExecutionWorker');
+  await enqueueDrExecutionReconcile(drExecutionId, 0);
 }
 
 // ── Reap functions ────────────────────────────────────────────────
@@ -99,11 +143,13 @@ async function reapStaleDeviceCommands(): Promise<number> {
       ? `Server-side timeout: no response from agent after ${Math.round(timeoutMs / 60000)} minutes`
       : `Command expired: agent never received the command (${Math.round(timeoutMs / 60000)} min timeout)`;
 
+    const completedAt = new Date();
+
     const updated = await db
       .update(deviceCommands)
       .set({
         status: 'failed',
-        completedAt: new Date(),
+        completedAt,
         result: { status: 'timeout', error: errorMsg, timedOutBy: 'server' },
       })
       .where(
@@ -114,7 +160,21 @@ async function reapStaleDeviceCommands(): Promise<number> {
       )
       .returning({ id: deviceCommands.id });
 
-    if (updated.length > 0) reaped++;
+    if (updated.length === 0) continue;
+
+    reaped++;
+
+    try {
+      await propagateTimedOutDeviceCommand({
+        commandId: cmd.id,
+        payload: (cmd.payload as Record<string, unknown> | null) ?? null,
+        errorMsg,
+        completedAt,
+      });
+    } catch (error) {
+      console.error(`[StaleCommandReaper] Failed to propagate stale command ${cmd.id}:`, error);
+      captureException(error instanceof Error ? error : new Error(String(error)));
+    }
   }
 
   if (staleCommands.length === MAX_REAP_PER_RUN) {
@@ -327,7 +387,7 @@ async function reapStaleDeploymentDevices(): Promise<number> {
     .where(
       and(
         inArray(deploymentDevices.status, ['pending', 'running']),
-        sql`COALESCE(${deploymentDevices.startedAt}, ${deployments.createdAt}) < ${cutoff}`,
+        sql`COALESCE(${deploymentDevices.startedAt}, ${deployments.createdAt}) < ${cutoff.toISOString()}`,
       ),
     )
     .limit(MAX_REAP_PER_RUN);

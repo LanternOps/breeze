@@ -25,6 +25,7 @@ import {
   expireUnusedRecoveryTokens,
   generateRecoveryToken,
   hashRecoveryToken,
+  isValidRecoveryTokenFormat,
   resolveRecoveryTokenPresentation,
   resolveServerUrl,
   resolveSnapshotProviderConfig,
@@ -69,6 +70,10 @@ export const bmrPublicRoutes = new Hono();
 
 const idParamSchema = z.object({ id: z.string().uuid() });
 const signingKeyParamSchema = z.object({ id: z.string().min(1) });
+const BMR_AUTHENTICATE_TOKEN_LIMIT = 3;
+const BMR_AUTHENTICATE_TOKEN_WINDOW_SECONDS = 60 * 60;
+const BMR_DOWNLOAD_TOKEN_LIMIT = 100;
+const BMR_DOWNLOAD_TOKEN_WINDOW_SECONDS = 60;
 
 function getSessionStatus(row: {
   status: string;
@@ -78,7 +83,7 @@ function getSessionStatus(row: {
 }) {
   if (row.status === 'revoked' || row.status === 'expired') return row.status;
   if (row.completedAt || row.status === 'used') return 'completed';
-  if (row.authenticatedAt || row.usedAt) return 'authenticated';
+  if (row.status === 'authenticated' || row.authenticatedAt || row.usedAt) return 'authenticated';
   return 'pending';
 }
 
@@ -250,6 +255,25 @@ async function enforcePublicRateLimit(
   const retryAfter = Math.max(1, Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000));
   c.header('Retry-After', String(retryAfter));
   return c.json({ error: 'Rate limit exceeded. Please wait before retrying.' }, 429);
+}
+
+async function enforceTokenRateLimit(
+  c: Parameters<typeof bmrPublicRoutes.post>[1] extends never ? never : any,
+  action: 'authenticate' | 'download',
+  tokenHash: string,
+  limit: number,
+  windowSeconds: number
+) {
+  const rateCheck = await rateLimiter(getRedis(), `bmr:${action}:token:${tokenHash}`, limit, windowSeconds);
+  if (rateCheck.allowed) return null;
+
+  const retryAfter = Math.max(1, Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000));
+  c.header('Retry-After', String(retryAfter));
+  return c.json({ error: 'Rate limit exceeded. Please wait before retrying.' }, 429);
+}
+
+function isDownloadableRecoveryTokenStatus(status: string, authenticatedAt?: Date | null): boolean {
+  return status === 'authenticated' || (status === 'active' && Boolean(authenticatedAt));
 }
 
 bmrRoutes.get(
@@ -928,7 +952,37 @@ bmrPublicRoutes.post(
     await expireUnusedRecoveryTokens();
 
     const { token } = c.req.valid('json');
+    if (!isValidRecoveryTokenFormat(token)) {
+      writeAuditEvent(c, {
+        orgId: null,
+        action: 'bmr.recovery.authenticate',
+        resourceType: 'recovery_token',
+        details: { reason: 'invalid_token_format' },
+        result: 'failure',
+        errorMessage: 'Invalid recovery token',
+      });
+      return c.json({ error: 'Invalid recovery token' }, 401);
+    }
+
     const tokenHash = hashRecoveryToken(token);
+    const tokenRateLimited = await enforceTokenRateLimit(
+      c,
+      'authenticate',
+      tokenHash,
+      BMR_AUTHENTICATE_TOKEN_LIMIT,
+      BMR_AUTHENTICATE_TOKEN_WINDOW_SECONDS
+    );
+    if (tokenRateLimited) {
+      writeAuditEvent(c, {
+        orgId: null,
+        action: 'bmr.recovery.authenticate',
+        resourceType: 'recovery_token',
+        details: { reason: 'rate_limited_token' },
+        result: 'denied',
+        errorMessage: 'rate_limited_token',
+      });
+      return tokenRateLimited;
+    }
 
     const [row] = await db
       .select()
@@ -948,38 +1002,6 @@ bmrPublicRoutes.post(
       return c.json({ error: 'Invalid recovery token' }, 401);
     }
 
-    if (row.status === 'used' && !row.completedAt) {
-      const [existingRestoreJob] = await db
-        .select({ id: restoreJobs.id })
-        .from(restoreJobs)
-        .where(eq(restoreJobs.recoveryTokenId, row.id))
-        .limit(1);
-
-      if (!existingRestoreJob) {
-        await db
-          .update(recoveryTokens)
-          .set({
-            status: 'active',
-            authenticatedAt: row.authenticatedAt ?? row.usedAt ?? new Date(),
-          })
-          .where(eq(recoveryTokens.id, row.id));
-        row.status = 'active';
-      }
-    }
-
-    if (row.status !== 'active') {
-      writeAuditEvent(c, {
-        orgId: row.orgId,
-        action: 'bmr.recovery.authenticate',
-        resourceType: 'recovery_token',
-        resourceId: row.id,
-        details: { snapshotId: row.snapshotId, reason: row.status },
-        result: 'failure',
-        errorMessage: `Token is ${row.status}`,
-      });
-      return c.json({ error: `Token is ${row.status}` }, 401);
-    }
-
     if (row.expiresAt < new Date()) {
       await db
         .update(recoveryTokens)
@@ -997,22 +1019,60 @@ bmrPublicRoutes.post(
       return c.json({ error: 'Token has expired' }, 401);
     }
 
-    const authenticatedAt = new Date();
-    const resolvedSnapshot = await resolveSnapshotProviderConfig(row.snapshotId);
-    const snapshot = resolvedSnapshot?.snapshot ?? null;
-    const config = resolvedSnapshot?.config ?? null;
-
-    if (!snapshot) {
+    if (row.status === 'revoked' || row.status === 'expired') {
       writeAuditEvent(c, {
         orgId: row.orgId,
         action: 'bmr.recovery.authenticate',
         resourceType: 'recovery_token',
         resourceId: row.id,
-        details: { snapshotId: row.snapshotId, reason: 'snapshot_missing' },
+        details: { snapshotId: row.snapshotId, reason: row.status },
+        result: 'failure',
+        errorMessage: `Token is ${row.status}`,
+      });
+      return c.json({ error: `Token is ${row.status}` }, 401);
+    }
+
+    if (row.status === 'used' && row.completedAt) {
+      writeAuditEvent(c, {
+        orgId: row.orgId,
+        action: 'bmr.recovery.authenticate',
+        resourceType: 'recovery_token',
+        resourceId: row.id,
+        details: { snapshotId: row.snapshotId, reason: 'used' },
+        result: 'failure',
+        errorMessage: 'Token is used',
+      });
+      return c.json({ error: 'Token is used' }, 401);
+    }
+
+    const resolvedSnapshot = await resolveSnapshotProviderConfig(row.snapshotId);
+    const snapshot = resolvedSnapshot?.snapshot ?? null;
+    const config = resolvedSnapshot?.config ?? null;
+
+    if (!snapshot || snapshot.orgId !== row.orgId || snapshot.deviceId !== row.deviceId) {
+      writeAuditEvent(c, {
+        orgId: row.orgId,
+        action: 'bmr.recovery.authenticate',
+        resourceType: 'recovery_token',
+        resourceId: row.id,
+        details: { snapshotId: row.snapshotId, reason: 'snapshot_missing_or_mismatched' },
         result: 'failure',
         errorMessage: 'Recovery snapshot not found',
       });
       return c.json({ error: 'Recovery snapshot not found' }, 404);
+    }
+
+    if (!['active', 'authenticated', 'used'].includes(row.status)) {
+      writeAuditEvent(c, {
+        orgId: row.orgId,
+        action: 'bmr.recovery.authenticate',
+        resourceType: 'recovery_token',
+        resourceId: row.id,
+        details: { snapshotId: row.snapshotId, reason: row.status },
+        result: 'failure',
+        errorMessage: `Token is ${row.status}`,
+      });
+      return c.json({ error: `Token is ${row.status}` }, 401);
     }
 
     const [device] = await db
@@ -1027,10 +1087,48 @@ bmrPublicRoutes.post(
       .where(eq(devices.id, row.deviceId))
       .limit(1);
 
-    await db
-      .update(recoveryTokens)
-      .set({ authenticatedAt })
-      .where(eq(recoveryTokens.id, row.id));
+    const authenticatedAt = row.authenticatedAt ?? row.usedAt ?? new Date();
+    const nextStatus = row.status === 'active' || (row.status === 'used' && !row.completedAt)
+      ? 'authenticated'
+      : row.status;
+
+    if (row.status !== nextStatus || !row.authenticatedAt) {
+      await db
+        .update(recoveryTokens)
+        .set({
+          status: nextStatus,
+          authenticatedAt,
+        })
+        .where(eq(recoveryTokens.id, row.id));
+    }
+
+    const clientIp = getTrustedClientIp(c, 'unknown');
+    const redis = getRedis();
+    if (redis) {
+      try {
+        const authIpKey = `bmr:authenticate:last-ip:${row.id}`;
+        const previousIp = await redis.get(authIpKey);
+        if (previousIp && previousIp !== clientIp) {
+          writeAuditEvent(c, {
+            orgId: row.orgId,
+            action: 'bmr.recovery.authenticate.anomaly',
+            resourceType: 'recovery_token',
+            resourceId: row.id,
+            details: {
+              snapshotId: row.snapshotId,
+              previousIp,
+              currentIp: clientIp,
+              reason: 'reauthenticated_from_new_ip',
+            },
+            result: 'success',
+          });
+        }
+        const ttlSeconds = Math.max(60, Math.ceil((row.expiresAt.getTime() - Date.now()) / 1000));
+        await redis.set(authIpKey, clientIp, 'EX', ttlSeconds);
+      } catch (error) {
+        console.warn(`[bmr] Failed to update recovery authenticate IP tracking for token ${row.id}:`, error);
+      }
+    }
 
     writeAuditEvent(c, {
       orgId: row.orgId,
@@ -1041,6 +1139,7 @@ bmrPublicRoutes.post(
         snapshotId: row.snapshotId,
         deviceId: row.deviceId,
         restoreType: row.restoreType,
+        authenticatedAt: authenticatedAt.toISOString(),
       },
       result: 'success',
     });
@@ -1108,7 +1207,21 @@ bmrPublicRoutes.get(
     await expireUnusedRecoveryTokens();
 
     const { token, path } = c.req.valid('query');
+    if (!isValidRecoveryTokenFormat(token)) {
+      return c.json({ error: 'Invalid recovery token' }, 401);
+    }
     const tokenHash = hashRecoveryToken(token);
+    const tokenRateLimited = await enforceTokenRateLimit(
+      c,
+      'download',
+      tokenHash,
+      BMR_DOWNLOAD_TOKEN_LIMIT,
+      BMR_DOWNLOAD_TOKEN_WINDOW_SECONDS
+    );
+    if (tokenRateLimited) {
+      return tokenRateLimited;
+    }
+
     const [row] = await db
       .select({
         id: recoveryTokens.id,
@@ -1123,6 +1236,14 @@ bmrPublicRoutes.get(
 
     if (!row) {
       return c.json({ error: 'Invalid recovery token' }, 401);
+    }
+
+    if (!isDownloadableRecoveryTokenStatus(row.status, row.authenticatedAt)) {
+      const status =
+        row.status === 'revoked' || row.status === 'expired' || row.status === 'used'
+          ? 401
+          : 409;
+      return c.json({ error: row.status === 'active' ? 'Recovery token has not been authenticated' : `Token is ${row.status}` }, status);
     }
 
     let target;
@@ -1194,6 +1315,17 @@ bmrPublicRoutes.post(
     await expireUnusedRecoveryTokens();
 
     const { token, result } = c.req.valid('json');
+    if (!isValidRecoveryTokenFormat(token)) {
+      writeAuditEvent(c, {
+        orgId: null,
+        action: 'bmr.recovery.complete',
+        resourceType: 'recovery_token',
+        details: { reason: 'invalid_token_format' },
+        result: 'failure',
+        errorMessage: 'Invalid recovery token',
+      });
+      return c.json({ error: 'Invalid recovery token' }, 401);
+    }
     const tokenHash = hashRecoveryToken(token);
 
     const [row] = await db
@@ -1225,6 +1357,23 @@ bmrPublicRoutes.post(
       });
       return c.json({ error: `Token is ${row.status}` }, 401);
     }
+
+    if (row.status === 'used' && row.completedAt) {
+      const [existingRestoreJob] = await db
+        .select({
+          id: restoreJobs.id,
+          status: restoreJobs.status,
+        })
+        .from(restoreJobs)
+        .where(eq(restoreJobs.recoveryTokenId, row.id))
+        .limit(1);
+
+      return c.json({
+        restoreJobId: existingRestoreJob?.id ?? null,
+        status: existingRestoreJob?.status ?? 'completed',
+      });
+    }
+
     if (!row.authenticatedAt && !row.usedAt) {
       writeAuditEvent(c, {
         orgId: row.orgId,
@@ -1236,6 +1385,19 @@ bmrPublicRoutes.post(
         errorMessage: 'Recovery token has not been authenticated',
       });
       return c.json({ error: 'Recovery token has not been authenticated' }, 409);
+    }
+
+    if (!(row.status === 'authenticated' || (row.status === 'active' && row.authenticatedAt) || (row.status === 'used' && !row.completedAt))) {
+      writeAuditEvent(c, {
+        orgId: row.orgId,
+        action: 'bmr.recovery.complete',
+        resourceType: 'recovery_token',
+        resourceId: row.id,
+        details: { snapshotId: row.snapshotId, status: result.status, reason: row.status },
+        result: 'failure',
+        errorMessage: `Token is ${row.status}`,
+      });
+      return c.json({ error: `Token is ${row.status}` }, 401);
     }
 
     const restoreStatus =

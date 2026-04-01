@@ -3,6 +3,7 @@ import { CommandTypes } from './commandQueue';
 // ── Timeout tiers (milliseconds) ──────────────────────────────────
 const FIVE_MINUTES = 5 * 60 * 1000;
 const THIRTY_MINUTES = 30 * 60 * 1000;
+const SIXTY_MINUTES = 60 * 60 * 1000;
 const TWO_HOURS = 2 * 60 * 60 * 1000;
 const DEFAULT_TIMEOUT_MS = THIRTY_MINUTES;
 const SCRIPT_GRACE_BUFFER_MS = 5 * 60 * 1000; // extra buffer on top of per-script timeout
@@ -79,6 +80,13 @@ const MEDIUM_TIMEOUT_TYPES = new Set<string>([
   CommandTypes.SECURITY_THREAT_QUARANTINE,
   CommandTypes.SECURITY_THREAT_REMOVE,
   CommandTypes.SECURITY_THREAT_RESTORE,
+  CommandTypes.BACKUP_RESTORE,
+]);
+
+const RESTORE_TIMEOUT_TYPES = new Set<string>([
+  CommandTypes.VM_RESTORE_FROM_BACKUP,
+  CommandTypes.VM_INSTANT_BOOT,
+  CommandTypes.BMR_RECOVER,
 ]);
 
 const LONG_TIMEOUT_TYPES = new Set<string>([
@@ -111,6 +119,7 @@ export function getCommandTimeoutMs(
   }
   if (SHORT_TIMEOUT_TYPES.has(commandType)) return FIVE_MINUTES;
   if (MEDIUM_TIMEOUT_TYPES.has(commandType)) return THIRTY_MINUTES;
+  if (RESTORE_TIMEOUT_TYPES.has(commandType)) return SIXTY_MINUTES;
   if (LONG_TIMEOUT_TYPES.has(commandType)) return TWO_HOURS;
   if (!EXCLUDED_COMMAND_TYPES.has(commandType)) {
     console.warn(`[commandTimeouts] Unknown command type "${commandType}" using default ${DEFAULT_TIMEOUT_MS / 60000}min timeout`);

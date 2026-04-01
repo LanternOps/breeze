@@ -1,15 +1,39 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { eq, and, desc, gte, lte } from 'drizzle-orm';
+import { eq, and, desc, gte, lte, sql } from 'drizzle-orm';
 import { db } from '../../db';
-import { backupSnapshotFiles, backupSnapshots, restoreJobs } from '../../db/schema';
+import { backupSnapshotFiles, backupSnapshots, restoreJobs, devices } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { CommandTypes, queueCommandForExecution } from '../../services/commandQueue';
 import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import { restoreListSchema, restoreSchema } from './schemas';
 
 export const restoreRoutes = new Hono();
+
+function mapDispatchErrorStatus(error: string): number {
+  return error.startsWith('Device is ') ? 409 : 502;
+}
+
+async function markRestoreJobFailed(restoreJobId: string, error: string): Promise<void> {
+  const now = new Date();
+  await db
+    .update(restoreJobs)
+    .set({
+      status: 'failed',
+      completedAt: now,
+      updatedAt: now,
+      targetConfig: sql`coalesce(${restoreJobs.targetConfig}, '{}'::jsonb) || jsonb_build_object(
+        'error', ${error},
+        'result', jsonb_build_object(
+          'status', 'failed',
+          'error', ${error}
+        )
+      )`,
+    })
+    .where(eq(restoreJobs.id, restoreJobId));
+}
 
 restoreRoutes.get(
   '/restore',
@@ -107,12 +131,27 @@ restoreRoutes.post(
     }
 
     const now = new Date();
+    const targetDeviceId = payload.deviceId ?? snapshot.deviceId;
+    const [targetDevice] = await db
+      .select({ id: devices.id, status: devices.status })
+      .from(devices)
+      .where(and(eq(devices.id, targetDeviceId), eq(devices.orgId, orgId)))
+      .limit(1);
+
+    if (!targetDevice) {
+      return c.json({ error: 'Target device not found' }, 404);
+    }
+
+    if (targetDevice.status !== 'online') {
+      return c.json({ error: `Device is ${targetDevice.status}, cannot execute command` }, 409);
+    }
+
     const [row] = await db
       .insert(restoreJobs)
       .values({
         orgId,
         snapshotId: snapshot.id,
-        deviceId: payload.deviceId ?? snapshot.deviceId,
+        deviceId: targetDeviceId,
         restoreType: payload.restoreType,
         targetPath: payload.targetPath ?? null,
         selectedPaths: payload.restoreType === 'selective' ? (payload.selectedPaths ?? []) : [],
@@ -127,21 +166,90 @@ restoreRoutes.post(
       return c.json({ error: 'Failed to create restore job' }, 500);
     }
 
-    // Enqueue BullMQ job to dispatch restore to agent
+    let responseRow = row;
+
     try {
-      const { enqueueRestoreDispatch } = await import(
-        '../../jobs/backupWorker'
-      );
-      await enqueueRestoreDispatch(
-        row.id,
-        snapshot.snapshotId,
+      const { command, error } = await queueCommandForExecution(
         row.deviceId,
-        orgId,
-        row.targetPath ?? undefined,
-        payload.restoreType === 'selective' ? payload.selectedPaths : []
+        CommandTypes.BACKUP_RESTORE,
+        {
+          restoreJobId: row.id,
+          snapshotId: snapshot.snapshotId,
+          targetPath: row.targetPath ?? '',
+          selectedPaths: payload.restoreType === 'selective' ? (payload.selectedPaths ?? []) : [],
+        },
+        { userId: auth?.user?.id ?? undefined }
       );
+
+      if (error) {
+        await markRestoreJobFailed(row.id, error);
+        writeRouteAudit(c, {
+          orgId,
+          action: 'backup.restore.create',
+          resourceType: 'restore_job',
+          resourceId: row.id,
+          details: {
+            snapshotId: snapshot.id,
+            deviceId: row.deviceId,
+            restoreType: row.restoreType,
+            error,
+          },
+          result: 'failure',
+        });
+        return c.json({ error }, mapDispatchErrorStatus(error));
+      }
+
+      if (!command?.id) {
+        const fallbackError = 'Restore command was queued without a command ID';
+        await markRestoreJobFailed(row.id, fallbackError);
+        writeRouteAudit(c, {
+          orgId,
+          action: 'backup.restore.create',
+          resourceType: 'restore_job',
+          resourceId: row.id,
+          details: {
+            snapshotId: snapshot.id,
+            deviceId: row.deviceId,
+            restoreType: row.restoreType,
+            error: fallbackError,
+          },
+          result: 'failure',
+        });
+        return c.json({ error: fallbackError }, 502);
+      }
+
+      const [updatedRestoreJob] = await db
+        .update(restoreJobs)
+        .set({
+          commandId: command.id,
+          status: command.status === 'sent' ? 'running' : row.status,
+          startedAt: command.status === 'sent' ? now : row.startedAt,
+          updatedAt: new Date(),
+        })
+        .where(eq(restoreJobs.id, row.id))
+        .returning();
+
+      if (updatedRestoreJob) {
+        responseRow = updatedRestoreJob;
+      }
     } catch (err) {
-      console.error('[BackupRestore] Failed to enqueue dispatch:', err);
+      const error = err instanceof Error ? err.message : 'Failed to dispatch restore command to agent';
+      console.error('[BackupRestore] Failed to dispatch restore:', err);
+      await markRestoreJobFailed(row.id, error);
+      writeRouteAudit(c, {
+        orgId,
+        action: 'backup.restore.create',
+        resourceType: 'restore_job',
+        resourceId: row.id,
+        details: {
+          snapshotId: snapshot.id,
+          deviceId: row.deviceId,
+          restoreType: row.restoreType,
+          error,
+        },
+        result: 'failure',
+      });
+      return c.json({ error }, 502);
     }
 
     writeRouteAudit(c, {
@@ -156,7 +264,7 @@ restoreRoutes.post(
       },
     });
 
-    return c.json(toRestoreResponse(row), 201);
+    return c.json(toRestoreResponse(responseRow), 201);
   }
 );
 

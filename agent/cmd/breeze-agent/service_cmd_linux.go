@@ -29,6 +29,8 @@ Description=Breeze RMM Agent
 Documentation=https://github.com/breeze-rmm/breeze
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -36,8 +38,6 @@ ExecStart=/usr/local/bin/breeze-agent run
 WorkingDirectory=/etc/breeze
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 # Security hardening
 ProtectSystem=strict

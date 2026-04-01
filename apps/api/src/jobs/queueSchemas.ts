@@ -64,16 +64,6 @@ export const backupQueueJobDataSchema = z.discriminatedUnion('type', [
     result: backupProcessResultSchema,
     meta: queueActorMetaSchema.optional(),
   }).strict(),
-  z.object({
-    type: z.literal('dispatch-restore'),
-    restoreJobId: z.string().min(1),
-    snapshotId: z.string().min(1),
-    deviceId: z.string().min(1),
-    orgId: z.string().min(1),
-    targetPath: z.string().optional(),
-    selectedPaths: z.array(z.string().min(1)).optional(),
-    meta: queueActorMetaSchema.optional(),
-  }).strict(),
 ]);
 
 const discoveredOpenPortSchema = z.object({

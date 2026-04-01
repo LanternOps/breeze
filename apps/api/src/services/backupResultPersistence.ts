@@ -19,6 +19,7 @@ import {
   applyBackupSnapshotImmutability,
   checkBackupProviderCapabilities,
 } from './backupSnapshotStorage';
+import { resolveBackupProtectionForDevice } from './featureConfigResolver';
 
 export const IN_FLIGHT_BACKUP_JOB_STATUSES = ['pending', 'running'] as const;
 type SnapshotImmutabilityEnforcement = 'application' | 'provider';
@@ -30,6 +31,7 @@ type SnapshotProtectionSettings = {
   immutableUntil: Date | null;
   immutabilityEnforcement: SnapshotImmutabilityEnforcement | null;
   requestedImmutabilityEnforcement: SnapshotImmutabilityEnforcement | null;
+  legalHoldSource: 'policy' | 'manual' | null;
 };
 
 function normalizeMetadata(
@@ -93,6 +95,30 @@ function computeImmutableUntil(
   return immutableUntil;
 }
 
+function mergeSnapshotProtectionMetadata(
+  metadata: Record<string, unknown>,
+  updates: { legalHoldSource?: 'policy' | 'manual' | null },
+): Record<string, unknown> {
+  const currentProtection =
+    metadata.snapshotProtection && typeof metadata.snapshotProtection === 'object' && !Array.isArray(metadata.snapshotProtection)
+      ? { ...(metadata.snapshotProtection as Record<string, unknown>) }
+      : {};
+
+  const nextProtection = {
+    ...currentProtection,
+    ...(updates.legalHoldSource === undefined
+      ? {}
+      : updates.legalHoldSource === null
+        ? { legalHoldSource: null }
+        : { legalHoldSource: updates.legalHoldSource }),
+  };
+
+  return {
+    ...metadata,
+    snapshotProtection: nextProtection,
+  };
+}
+
 async function resolveSnapshotProtectionSettingsForJob(
   jobId: string,
   timestamp: Date,
@@ -104,12 +130,14 @@ async function resolveSnapshotProtectionSettingsForJob(
     immutableUntil: null,
     immutabilityEnforcement: null,
     requestedImmutabilityEnforcement: null,
+    legalHoldSource: null,
   };
 
   const [job] = await db
     .select({
       featureLinkId: backupJobs.featureLinkId,
       policyId: backupJobs.policyId,
+      deviceId: backupJobs.deviceId,
     })
     .from(backupJobs)
     .where(eq(backupJobs.id, jobId))
@@ -117,6 +145,22 @@ async function resolveSnapshotProtectionSettingsForJob(
 
   if (!job) {
     return defaults;
+  }
+
+  if (job.deviceId && job.featureLinkId) {
+    const resolved = await resolveBackupProtectionForDevice(job.deviceId);
+    if (resolved) {
+      const immutableUntil = computeImmutableUntil(timestamp, resolved.immutableDays);
+      return {
+        legalHold: resolved.legalHold,
+        legalHoldReason: resolved.legalHoldReason,
+        isImmutable: resolved.immutabilityMode !== null && immutableUntil !== null,
+        immutableUntil,
+        immutabilityEnforcement: resolved.immutabilityMode,
+        requestedImmutabilityEnforcement: resolved.immutabilityMode,
+        legalHoldSource: resolved.legalHold ? 'policy' : null,
+      };
+    }
   }
 
   if (job.featureLinkId) {
@@ -161,6 +205,7 @@ async function resolveSnapshotProtectionSettingsForJob(
       immutableUntil,
       immutabilityEnforcement: immutabilityMode,
       requestedImmutabilityEnforcement: immutabilityMode,
+      legalHoldSource: legalHold ? 'policy' : null,
     };
   }
 
@@ -181,6 +226,7 @@ async function resolveSnapshotProtectionSettingsForJob(
         typeof policy?.legalHoldReason === 'string' && policy.legalHoldReason.trim().length > 0
           ? policy.legalHoldReason.trim()
           : null,
+      legalHoldSource: policy?.legalHold === true ? 'policy' : null,
     };
   }
 
@@ -481,6 +527,9 @@ export async function applyBackupCommandResultToJob(params: {
         immutabilityEnforcement: protection.immutabilityEnforcement,
         requestedImmutabilityEnforcement: protection.requestedImmutabilityEnforcement,
         immutabilityFallbackReason: null as string | null,
+        metadata: mergeSnapshotProtectionMetadata(snapshotMetadata, {
+          legalHoldSource: protection.legalHoldSource,
+        }),
       };
 
       if (

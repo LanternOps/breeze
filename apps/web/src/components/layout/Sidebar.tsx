@@ -297,10 +297,13 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const activeSectionId = activeHref ? sectionForHref(activeHref) : null;
 
   // --- Expanded sections state (with auto-expand for active page) ----------
-  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() => {
+  // Start empty to match server render; hydrate from localStorage in effect
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
     const saved = readExpandedSections();
-    return saved;
-  });
+    if (Object.keys(saved).length > 0) setExpandedSections(saved);
+  }, []);
 
   const toggleSection = useCallback((sectionId: string) => {
     setExpandedSections((prev) => {

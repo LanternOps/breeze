@@ -175,7 +175,14 @@ export const commandResultSchema = z.object({
   stdout: z.string().max(5_000_000).optional(),
   stderr: z.string().max(5_000_000).optional(),
   durationMs: z.number().int().optional(),
-  error: z.string().max(10_000).optional()
+  error: z.string().max(10_000).optional(),
+  result: z.any().optional().refine(
+    (val) => {
+      if (val === undefined || val === null) return true;
+      try { return Buffer.byteLength(JSON.stringify(val), 'utf8') <= 1_048_576; } catch { return false; }
+    },
+    { message: 'Command result payload exceeds 1 MB limit' }
+  )
 });
 
 // ============================================

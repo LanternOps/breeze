@@ -7,6 +7,11 @@ const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const DEVICE_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 const SNAPSHOT_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const TOKEN_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const VALID_RECOVERY_TOKEN = `brz_rec_${'a'.repeat(64)}`;
+const EXPIRED_RECOVERY_TOKEN = `brz_rec_${'b'.repeat(64)}`;
+const REVOKED_RECOVERY_TOKEN = `brz_rec_${'c'.repeat(64)}`;
+const USED_RECOVERY_TOKEN = `brz_rec_${'d'.repeat(64)}`;
+const LIMITED_RECOVERY_TOKEN = `brz_rec_${'e'.repeat(64)}`;
 
 vi.mock('../../services', () => ({}));
 
@@ -441,6 +446,8 @@ describe('bmr routes', () => {
       }]))
       .mockReturnValueOnce(chainMock([{
         id: SNAPSHOT_ID,
+        orgId: ORG_ID,
+        deviceId: DEVICE_ID,
         jobId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
         configId: null,
         snapshotId: 'snap-ext-001',
@@ -484,7 +491,7 @@ describe('bmr routes', () => {
     const res = await app.request('/backup/bmr/recover/authenticate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: 'brz_rec_valid_token' }),
+      body: JSON.stringify({ token: VALID_RECOVERY_TOKEN }),
     });
 
     expect(res.status).toBe(200);
@@ -537,12 +544,23 @@ describe('bmr routes', () => {
     const res = await app.request('/backup/bmr/recover/authenticate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: 'brz_rec_expired_token' }),
+      body: JSON.stringify({ token: EXPIRED_RECOVERY_TOKEN }),
     });
 
     expect(res.status).toBe(401);
     const body = await res.json();
     expect(body.error).toBe('Token has expired');
+  });
+
+  it('rejects malformed recovery tokens before lookup', async () => {
+    const res = await app.request('/backup/bmr/recover/authenticate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: 'not-a-valid-token' }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(selectMock).not.toHaveBeenCalled();
   });
 
   it('should reject authentication with revoked token', async () => {
@@ -555,7 +573,7 @@ describe('bmr routes', () => {
       targetConfig: null,
       status: 'revoked',
       createdAt: new Date('2026-03-29T00:00:00.000Z'),
-      expiresAt: new Date('2026-04-01T00:00:00.000Z'),
+      expiresAt: new Date('2099-04-01T00:00:00.000Z'),
       authenticatedAt: null,
       completedAt: null,
     }]));
@@ -563,7 +581,7 @@ describe('bmr routes', () => {
     const res = await app.request('/backup/bmr/recover/authenticate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: 'brz_rec_revoked_token' }),
+      body: JSON.stringify({ token: REVOKED_RECOVERY_TOKEN }),
     });
 
     expect(res.status).toBe(401);
@@ -581,7 +599,7 @@ describe('bmr routes', () => {
       targetConfig: null,
       status: 'used',
       createdAt: new Date('2026-03-29T00:00:00.000Z'),
-      expiresAt: new Date('2026-04-01T00:00:00.000Z'),
+      expiresAt: new Date('2099-04-01T00:00:00.000Z'),
       authenticatedAt: new Date('2026-03-29T12:00:00.000Z'),
       completedAt: new Date('2026-03-29T13:00:00.000Z'),
       usedAt: new Date('2026-03-29T12:00:00.000Z'),
@@ -590,12 +608,68 @@ describe('bmr routes', () => {
     const res = await app.request('/backup/bmr/recover/authenticate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: 'brz_rec_used_token' }),
+      body: JSON.stringify({ token: USED_RECOVERY_TOKEN }),
     });
 
     expect(res.status).toBe(401);
     const body = await res.json();
     expect(body.error).toBe('Token is used');
+  });
+
+  it('normalizes legacy used tokens without completion into authenticated state', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([{
+        id: TOKEN_ID,
+        orgId: ORG_ID,
+        deviceId: DEVICE_ID,
+        snapshotId: SNAPSHOT_ID,
+        restoreType: 'bare_metal',
+        targetConfig: null,
+        status: 'used',
+        createdAt: new Date('2026-03-29T00:00:00.000Z'),
+        expiresAt: new Date('2099-04-01T00:00:00.000Z'),
+        authenticatedAt: new Date('2026-03-29T12:00:00.000Z'),
+        completedAt: null,
+        usedAt: new Date('2026-03-29T12:00:00.000Z'),
+      }]))
+      .mockReturnValueOnce(chainMock([{
+        id: SNAPSHOT_ID,
+        orgId: ORG_ID,
+        deviceId: DEVICE_ID,
+        jobId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        configId: null,
+        snapshotId: 'snap-ext-001',
+        label: 'Backup 2026-03-29',
+        location: 's3://breeze-backups/org-001/dev-001/2026-03-29',
+        timestamp: new Date('2026-03-29T12:34:56.000Z'),
+        size: 1234,
+        fileCount: 12,
+        metadata: { providerType: 's3', storagePrefix: 's3://breeze-backups/org-001/dev-001/2026-03-29' },
+        backupType: 'file',
+        isIncremental: false,
+        hardwareProfile: null,
+        systemStateManifest: null,
+      }]))
+      .mockReturnValueOnce(chainMock([]))
+      .mockReturnValueOnce(chainMock([{
+        id: DEVICE_ID,
+        hostname: 'srv-01',
+        osType: 'windows',
+      }]));
+
+    updateMock.mockReturnValueOnce(chainMock([]));
+
+    const res = await app.request('/backup/bmr/recover/authenticate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: USED_RECOVERY_TOKEN }),
+    });
+
+    expect(res.status).toBe(200);
+    const updateSetArgs = updateMock.mock.results
+      .map((entry) => entry.value?.set?.mock?.calls?.[0]?.[0])
+      .filter(Boolean);
+    expect(updateSetArgs).toContainEqual(expect.objectContaining({ status: 'authenticated' }));
   });
 
   it('rate limits public authenticate requests', async () => {
@@ -608,7 +682,7 @@ describe('bmr routes', () => {
     const res = await app.request('/backup/bmr/recover/authenticate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: 'brz_rec_limited' }),
+      body: JSON.stringify({ token: LIMITED_RECOVERY_TOKEN }),
     });
 
     expect(res.status).toBe(429);
@@ -621,6 +695,28 @@ describe('bmr routes', () => {
     );
   });
 
+  it('rate limits repeated authenticate attempts for the same token', async () => {
+    rateLimiterMock
+      .mockResolvedValueOnce({
+        allowed: true,
+        remaining: 9,
+        resetAt: new Date(Date.now() + 60_000),
+      })
+      .mockResolvedValueOnce({
+        allowed: false,
+        remaining: 0,
+        resetAt: new Date(Date.now() + 60_000),
+      });
+
+    const res = await app.request('/backup/bmr/recover/authenticate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: LIMITED_RECOVERY_TOKEN }),
+    });
+
+    expect(res.status).toBe(429);
+  });
+
   it('records recovery completion for an authenticated token', async () => {
     selectMock.mockReturnValueOnce(chainMock([{
       id: TOKEN_ID,
@@ -629,7 +725,7 @@ describe('bmr routes', () => {
       snapshotId: SNAPSHOT_ID,
       restoreType: 'bare_metal',
       targetConfig: { diskLayout: 'auto' },
-      status: 'active',
+      status: 'authenticated',
       createdAt: new Date('2026-03-29T00:00:00.000Z'),
       expiresAt: new Date('2026-04-01T00:00:00.000Z'),
       authenticatedAt: new Date('2026-03-29T12:00:00.000Z'),
@@ -657,7 +753,7 @@ describe('bmr routes', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        token: 'brz_rec_valid_token',
+        token: VALID_RECOVERY_TOKEN,
         result: {
           status: 'completed',
           filesRestored: 500,
@@ -718,7 +814,7 @@ describe('bmr routes', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        token: 'brz_rec_valid_token',
+        token: VALID_RECOVERY_TOKEN,
         result: { status: 'completed' },
       }),
     });
@@ -734,7 +830,7 @@ describe('bmr routes', () => {
     selectMock.mockReturnValueOnce(chainMock([{
       id: TOKEN_ID,
       snapshotId: SNAPSHOT_ID,
-      status: 'active',
+      status: 'authenticated',
       authenticatedAt: new Date('2026-03-31T13:00:00.000Z'),
       expiresAt: new Date('2026-04-01T00:00:00.000Z'),
     }]));
@@ -747,7 +843,7 @@ describe('bmr routes', () => {
     });
 
     const res = await app.request(
-      '/backup/bmr/recover/download?token=brz_rec_valid_token&path=snapshots/snap-ext-001/manifest.json'
+      `/backup/bmr/recover/download?token=${VALID_RECOVERY_TOKEN}&path=snapshots/snap-ext-001/manifest.json`
     );
 
     expect(res.status).toBe(200);
@@ -756,6 +852,21 @@ describe('bmr routes', () => {
       expect.objectContaining({ id: TOKEN_ID }),
       'snapshots/snap-ext-001/manifest.json'
     );
+  });
+
+  it('rate limits repeated recovery downloads for the same token', async () => {
+    rateLimiterMock.mockResolvedValueOnce({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+
+    const res = await app.request(
+      `/backup/bmr/recover/download?token=${VALID_RECOVERY_TOKEN}&path=snapshots/snap-ext-001/manifest.json`
+    );
+
+    expect(res.status).toBe(429);
+    expect(getAuthenticatedRecoveryDownloadTargetMock).not.toHaveBeenCalled();
   });
 
   it('creates a recovery media build job', async () => {

@@ -1285,6 +1285,9 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
 
       <div className="mt-6 space-y-4">
         <h3 className="text-sm font-semibold">Snapshot Protection</h3>
+        <p className="text-xs text-muted-foreground">
+          These settings stamp future snapshots at creation time. Legal hold merges conservatively across applicable backup policies, and the longest immutability window wins. Application protection is enforced by Breeze cleanup jobs unless provider-enforced WORM is explicitly verified.
+        </p>
         {invalidSavedProviderMode && (
           <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-3 text-sm text-amber-800">
             <p>

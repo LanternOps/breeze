@@ -13,6 +13,7 @@ import {
 import {
   BACKUP_HIGH_READINESS_THRESHOLD,
   BACKUP_LOW_READINESS_THRESHOLD,
+  BackupVerificationDispatchError,
   getBackupHealthSummary,
   listBackupVerifications,
   listRecoveryReadiness,
@@ -88,16 +89,17 @@ backupVerificationRoutes.post(
       }
     });
 
-    const simulated = !!(verification.details as Record<string, unknown>)?.simulated;
     return c.json({
       data: {
         verification,
         readiness,
-        simulated,
       }
     }, 201);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Verification failed to start';
+    if (error instanceof BackupVerificationDispatchError) {
+      return c.json({ error: message }, error.statusCode);
+    }
     const isValidation = error instanceof Error && (
       message.includes('not found') ||
       message.includes('does not belong') ||

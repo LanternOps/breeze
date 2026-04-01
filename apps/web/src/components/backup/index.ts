@@ -2,7 +2,6 @@ export { default as BackupConfigEditor } from './BackupConfigEditor';
 export { default as BackupConfigList } from './BackupConfigList';
 export { default as BackupDashboard } from './BackupDashboard';
 export { default as BackupJobList } from './BackupJobList';
-export { default as BackupJobProgress } from './BackupJobProgress';
 export { default as DeviceBackupStatus } from './DeviceBackupStatus';
 export { default as DeviceVaultStatus } from './DeviceVaultStatus';
 export { default as EncryptionKeyList } from './EncryptionKeyList';

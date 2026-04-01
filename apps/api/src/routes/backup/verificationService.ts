@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, lte, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, lte, sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import {
   backupJobs as backupJobsTable,
@@ -25,8 +25,6 @@ import type {
   RecoveryReadiness
 } from './types';
 import { normalizeBackupVerificationType } from './types';
-import { recomputeRecoveryReadinessForDevice } from './readinessCalculator';
-import { isCriticalBackupDevice } from './criticality';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -42,6 +40,16 @@ export const BACKUP_READINESS_RECOVERY_THRESHOLD = 75;
 export const BACKUP_HIGH_READINESS_THRESHOLD = 85;
 export const BACKUP_RECENT_COVERAGE_DAYS = 30;
 export const BACKUP_MAX_RECENT_VERIFICATIONS = 12;
+
+export class BackupVerificationDispatchError extends Error {
+  statusCode: number;
+
+  constructor(message: string, statusCode: number) {
+    super(message);
+    this.name = 'BackupVerificationDispatchError';
+    this.statusCode = statusCode;
+  }
+}
 
 type VerificationFilters = {
   deviceId?: string;
@@ -78,14 +86,6 @@ function toIso(value?: string | Date | null): string | null {
     return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
   }
   return Number.isNaN(value.getTime()) ? null : value.toISOString();
-}
-
-function deterministicSeed(input: string): number {
-  let hash = 0;
-  for (let index = 0; index < input.length; index += 1) {
-    hash = (hash * 31 + input.charCodeAt(index)) >>> 0;
-  }
-  return hash;
 }
 
 function isUuid(value?: string | null): value is string {
@@ -218,7 +218,7 @@ function listBackupVerificationsFromMemory(orgId: string, filters: VerificationF
   if (filters.verificationType === 'integrity') {
     rows = rows.filter((item) => item.verificationType === 'integrity');
   } else if (filters.verificationType === 'test_restore') {
-    rows = rows.filter((item) => item.verificationType === 'test_restore' || String(item.verificationType) === 'full_recovery');
+    rows = rows.filter((item) => item.verificationType === 'test_restore');
   }
   if (filters.status) rows = rows.filter((item) => item.status === filters.status);
   if (from) rows = rows.filter((item) => toEpoch(item.startedAt) >= from);
@@ -245,7 +245,7 @@ async function listBackupVerificationsFromDb(
   if (filters.verificationType === 'integrity') {
     conditions.push(eq(backupVerificationsTable.verificationType, 'integrity'));
   } else if (filters.verificationType === 'test_restore') {
-    conditions.push(inArray(backupVerificationsTable.verificationType, ['test_restore', 'full_recovery']));
+    conditions.push(eq(backupVerificationsTable.verificationType, 'test_restore'));
   }
   if (filters.status) conditions.push(eq(backupVerificationsTable.status, filters.status));
   if (filters.from) conditions.push(gte(backupVerificationsTable.startedAt, new Date(filters.from)));
@@ -510,74 +510,27 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
   const now = new Date().toISOString();
   const agentSnapshotId = snapshot?.providerSnapshotId ?? backupJob.snapshotId ?? snapshot?.id ?? undefined;
 
-  // --- Try to dispatch to agent ---
   const commandType = input.verificationType === 'integrity' ? 'backup_verify' : 'backup_test_restore';
-  try {
-    const dispatchResult = await queueCommandForExecution(
-      input.deviceId,
-      commandType,
-      { snapshotId: agentSnapshotId, verificationType: input.verificationType },
-      { userId: input.requestedBy || undefined }
+  const dispatchResult = await queueCommandForExecution(
+    input.deviceId,
+    commandType,
+    { snapshotId: agentSnapshotId, verificationType: input.verificationType },
+    { userId: input.requestedBy || undefined }
+  );
+
+  if (dispatchResult.error) {
+    throw new BackupVerificationDispatchError(
+      dispatchResult.error,
+      dispatchResult.error.startsWith('Device is ') ? 409 : 502
     );
-
-    if (dispatchResult.command) {
-      // Agent is online — create pending record and return
-      const verification = addBackupVerification(
-        {
-          orgId: input.orgId,
-          deviceId: input.deviceId,
-          backupJobId: backupJob.id,
-          snapshotId,
-          verificationType: input.verificationType,
-          status: 'pending',
-          startedAt: now,
-          completedAt: null,
-          filesVerified: 0,
-          filesFailed: 0,
-          details: {
-            source: input.source,
-            requestedBy: input.requestedBy,
-            simulated: false,
-            commandId: dispatchResult.command.id,
-          },
-        },
-        input.orgId
-      );
-
-      await persistVerificationToDb(verification);
-      return { verification, readiness: null };
-    }
-  } catch (dispatchErr) {
-    // Device offline or dispatch failed — fall through to simulation
-    console.log(`[backupVerification] Command dispatch failed, using simulation: ${dispatchErr}`);
-  }
-  // --- End dispatch attempt, fall through to simulation ---
-
-  const seed = deterministicSeed(`${input.orgId}:${input.deviceId}:${backupJob.id}:${input.verificationType}:${snapshotId ?? 'none'}`);
-  const filesVerified = snapshot?.fileCount ?? Math.max(100, Math.round((backupJob.totalSize ?? 0) / 32768));
-  const expectedFailures = Math.max(1, Math.round(filesVerified * 0.01));
-  const restoreTimeSeconds = input.verificationType === 'integrity'
-    ? 20 + (seed % 120)
-    : 180 + (seed % 900);
-
-  let status: BackupVerificationStatus = 'passed';
-  if (backupJob.status === 'failed') {
-    status = 'failed';
-  } else if (input.verificationType === 'test_restore' && seed % 10 === 0) {
-    status = 'partial';
-  } else if (input.verificationType === 'integrity' && seed % 19 === 0) {
-    status = 'partial';
   }
 
-  const filesFailed = status === 'passed'
-    ? 0
-    : status === 'partial'
-      ? Math.max(1, Math.round(expectedFailures / 3))
-      : expectedFailures;
-
-  const startedAt = new Date();
-  const completedAt = new Date(startedAt.getTime() + (restoreTimeSeconds * 1000));
-  const isolatedRestorePath = `/tmp/breeze/restore-tests/${input.deviceId}/${completedAt.getTime()}`;
+  if (!dispatchResult.command?.id) {
+    throw new BackupVerificationDispatchError(
+      'Verification command was queued without a command ID',
+      502
+    );
+  }
 
   const verification = addBackupVerification({
     orgId: input.orgId,
@@ -585,52 +538,20 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
     backupJobId: backupJob.id,
     snapshotId,
     verificationType: input.verificationType,
-    status,
-    startedAt: startedAt.toISOString(),
-    completedAt: completedAt.toISOString(),
-    restoreTimeSeconds,
-    filesVerified,
-    filesFailed,
-    sizeBytes: snapshot?.sizeBytes ?? backupJob.totalSize ?? null,
+    status: dispatchResult.command.status === 'sent' ? 'running' : 'pending',
+    startedAt: now,
+    completedAt: null,
+    filesVerified: 0,
+    filesFailed: 0,
     details: {
       source: input.source,
       requestedBy: input.requestedBy ?? null,
-      simulated: true,
-      isolatedRestorePath: input.verificationType === 'integrity' ? null : isolatedRestorePath,
-      cleanup: input.verificationType === 'integrity'
-        ? null
-        : { attempted: true, removed: true },
-      reason: status === 'failed'
-        ? 'Verification detected unrecoverable artifacts or inconsistent metadata.'
-        : null
+      commandId: dispatchResult.command.id,
     }
   }, input.orgId);
 
   await persistVerificationToDb(verification);
-  const readiness = await recomputeRecoveryReadinessForDevice(input.orgId, input.deviceId);
-
-  const criticalAsset = await isCriticalBackupDevice(input.orgId, verification.deviceId);
-
-  await safePublish(
-    status === 'passed' ? 'backup.verification_passed' : 'backup.verification_failed',
-    input.orgId,
-    {
-      verificationId: verification.id,
-      deviceId: verification.deviceId,
-      backupJobId: verification.backupJobId,
-      snapshotId: verification.snapshotId,
-      verificationType: verification.verificationType,
-      status: verification.status,
-      filesVerified: verification.filesVerified,
-      filesFailed: verification.filesFailed,
-      restoreTimeSeconds: verification.restoreTimeSeconds,
-      readinessScore: readiness.readinessScore,
-      criticalAsset
-    },
-    input.source
-  );
-
-  return { verification, readiness };
+  return { verification, readiness: null };
 }
 
 // Re-export for callers that import from this file

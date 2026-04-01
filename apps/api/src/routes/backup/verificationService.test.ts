@@ -11,10 +11,12 @@ vi.mock('../../services/commandQueue', () => ({
 
 import { recomputeRecoveryReadinessForDevice, runBackupVerification, processBackupVerificationResult, timeoutStaleVerifications } from './verificationService';
 import { backupVerifications, verificationOrgById } from './store';
+import { queueCommandForExecution } from '../../services/commandQueue';
 
 describe('backup verification service', () => {
   beforeEach(() => {
     publishEventMock.mockClear();
+    vi.mocked(queueCommandForExecution).mockReset();
   });
 
   it('rejects backupJobId/deviceId mismatches', async () => {
@@ -79,6 +81,22 @@ describe('backup verification service', () => {
     const readiness = await recomputeRecoveryReadinessForDevice(orgId, deviceId);
     expect(readiness.readinessScore).toBe(0);
     expect(readiness.riskFactors.some((factor) => factor.code === 'no_verification_history')).toBe(true);
+  });
+
+  it('fails verification startup instead of fabricating a simulated result when dispatch is unavailable', async () => {
+    const priorCount = backupVerifications.length;
+    vi.mocked(queueCommandForExecution).mockResolvedValueOnce({
+      error: 'Device is offline, cannot execute command',
+    });
+
+    await expect(runBackupVerification({
+      orgId: 'org-123',
+      deviceId: 'dev-001',
+      verificationType: 'integrity',
+      source: 'test'
+    })).rejects.toThrow('Device is offline, cannot execute command');
+
+    expect(backupVerifications.length).toBe(priorCount);
   });
 });
 
@@ -186,10 +204,41 @@ describe('processBackupVerificationResult', () => {
 
     const updated = backupVerifications.find((v) => v.id === verificationId);
     expect(updated?.status).toBe('failed');
-    expect((updated?.details as Record<string, unknown>)?.reason).toBe('Failed to parse agent result');
+    expect(String((updated?.details as Record<string, unknown>)?.reason)).toContain('Malformed verification result payload');
 
     const failedEvents = publishEventMock.mock.calls.filter((call) => call[0] === 'backup.verification_failed');
     expect(failedEvents.length).toBe(1);
+  });
+
+  it('marks verification as failed when parsed stdout does not match the expected schema', async () => {
+    const testCommandId = `cmd-test-schema-${Date.now()}`;
+    const verificationId = `verify-proc-schema-${Date.now()}`;
+
+    backupVerifications.push({
+      id: verificationId,
+      orgId: TEST_ORG_ID,
+      deviceId: 'dev-001',
+      backupJobId: 'job-001',
+      snapshotId: null,
+      verificationType: 'integrity',
+      status: 'pending',
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+      filesVerified: 0,
+      filesFailed: 0,
+      details: { source: 'test', commandId: testCommandId },
+      createdAt: new Date().toISOString(),
+    });
+    verificationOrgById.set(verificationId, TEST_ORG_ID);
+
+    await processBackupVerificationResult(testCommandId, {
+      status: 'completed',
+      stdout: JSON.stringify({ filesVerified: 7 }),
+    });
+
+    const updated = backupVerifications.find((v) => v.id === verificationId);
+    expect(updated?.status).toBe('failed');
+    expect(String((updated?.details as Record<string, unknown>)?.reason)).toContain('Malformed verification result payload');
   });
 
   it('does not crash when no pending verification matches the commandId', async () => {

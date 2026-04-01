@@ -1,5 +1,5 @@
 /**
- * Backup Queue — enqueue helpers for backup/restore job dispatch
+ * Backup Queue — enqueue helpers for backup job dispatch/result processing
  *
  * Extracted from backupWorker.ts to keep files under the 500-line limit.
  * Re-exported from backupWorker.ts for backward compatibility.
@@ -75,12 +75,6 @@ const AGENT_RESULT_META: QueueActorMeta = {
   source: 'route:agentWs:backup-result',
 };
 
-const SYSTEM_RESTORE_META: QueueActorMeta = {
-  actorType: 'system',
-  actorId: null,
-  source: 'service:backup:restore-dispatch',
-};
-
 // ── Public enqueue functions ─────────────────────────────────────────────────
 
 export async function enqueueBackupDispatch(
@@ -131,38 +125,6 @@ export async function enqueueBackupResults(
     payload,
     {
       jobId: `backup-result-${jobId}`,
-      ...PRIVILEGED_JOB_OPTIONS,
-      removeOnComplete: { count: 50 },
-      removeOnFail: { count: 100 },
-    }
-  );
-  return job.id!;
-}
-
-export async function enqueueRestoreDispatch(
-  restoreJobId: string,
-  snapshotId: string,
-  deviceId: string,
-  orgId: string,
-  targetPath?: string,
-  selectedPaths?: string[],
-  meta: QueueActorMeta = SYSTEM_RESTORE_META,
-): Promise<string> {
-  const queue = getBackupQueue();
-  const payload = backupQueueJobDataSchema.parse(withQueueMeta({
-    type: 'dispatch-restore' as const,
-    restoreJobId,
-    snapshotId,
-    deviceId,
-    orgId,
-    targetPath,
-    selectedPaths,
-  }, meta));
-  const job = await queue.add(
-    'dispatch-restore',
-    payload,
-    {
-      jobId: `backup-restore-${restoreJobId}`,
       ...PRIVILEGED_JOB_OPTIONS,
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 },
