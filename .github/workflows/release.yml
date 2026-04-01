@@ -177,6 +177,28 @@ jobs:
           path: agent/breeze-backup-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
           retention-days: 30
 
+      - name: Build breeze-desktop-helper
+        if: matrix.goos == 'darwin'
+        working-directory: agent
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: ${{ matrix.cgo }}
+          BUILD_VERSION: ${{ steps.version.outputs.version }}
+          CGO_LDFLAGS_ALLOW: '-weak_framework|ScreenCaptureKit'
+        run: |
+          go build -ldflags="-s -w -X main.version=${BUILD_VERSION}" \
+            -o "breeze-desktop-helper-${GOOS}-${GOARCH}" \
+            ./cmd/breeze-desktop-helper
+
+      - name: Upload breeze-desktop-helper artifact
+        if: matrix.goos == 'darwin'
+        uses: actions/upload-artifact@v7
+        with:
+          name: breeze-desktop-helper-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: agent/breeze-desktop-helper-${{ matrix.goos }}-${{ matrix.goarch }}
+          retention-days: 30
+
   build-windows-msi:
     name: Build + Sign Windows Artifacts
     if: vars.ENABLE_WINDOWS_SIGNING == 'true'
@@ -442,6 +464,18 @@ jobs:
           name: breeze-backup-darwin-arm64
           path: staging/
 
+      - name: Download desktop-helper darwin/amd64 artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: breeze-desktop-helper-darwin-amd64
+          path: staging/
+
+      - name: Download desktop-helper darwin/arm64 artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: breeze-desktop-helper-darwin-arm64
+          path: staging/
+
       - name: Import certificate into keychain
         if: vars.ENABLE_MACOS_SIGNING == 'true'
         env:
@@ -471,7 +505,7 @@ jobs:
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
-          for bin in staging/breeze-agent-darwin-* staging/breeze-backup-darwin-*; do
+          for bin in staging/breeze-agent-darwin-* staging/breeze-backup-darwin-* staging/breeze-desktop-helper-darwin-*; do
             [ -f "$bin" ] || continue
             codesign --force --options runtime \
               --entitlements agent/entitlements/agent-macos.entitlements.plist \
@@ -487,7 +521,7 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          for bin in staging/breeze-agent-darwin-* staging/breeze-backup-darwin-*; do
+          for bin in staging/breeze-agent-darwin-* staging/breeze-backup-darwin-* staging/breeze-desktop-helper-darwin-*; do
             [ -f "$bin" ] || continue
             ZIP_PATH="${bin}.zip"
             ditto -c -k --keepParent "$bin" "$ZIP_PATH"
@@ -535,6 +569,22 @@ jobs:
           overwrite: true
           retention-days: 30
 
+      - name: Upload signed desktop-helper darwin/amd64
+        uses: actions/upload-artifact@v7
+        with:
+          name: breeze-desktop-helper-darwin-amd64
+          path: staging/breeze-desktop-helper-darwin-amd64
+          overwrite: true
+          retention-days: 30
+
+      - name: Upload signed desktop-helper darwin/arm64
+        uses: actions/upload-artifact@v7
+        with:
+          name: breeze-desktop-helper-darwin-arm64
+          path: staging/breeze-desktop-helper-darwin-arm64
+          overwrite: true
+          retention-days: 30
+
       - name: Build macOS .pkg installers
         env:
           BUILD_VERSION: ${{ github.ref_name }}
@@ -544,6 +594,7 @@ jobs:
           for arch in amd64 arm64; do
             agent/installer/macos/build-pkg.sh \
               "staging/breeze-agent-darwin-${arch}" \
+              "staging/breeze-desktop-helper-darwin-${arch}" \
               "staging/breeze-backup-darwin-${arch}" \
               "$VERSION" \
               "$arch" \
@@ -1138,7 +1189,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           path: artifacts
-          pattern: '{api-dist,web-dist,breeze-agent-*,breeze-backup-*,breeze-viewer-*,breeze-helper-*}'
+          pattern: '{api-dist,web-dist,breeze-agent-*,breeze-backup-*,breeze-desktop-helper-*,breeze-viewer-*,breeze-helper-*}'
           merge-multiple: false
 
       - name: Prepare release assets
@@ -1154,6 +1205,13 @@ jobs:
 
           # Copy backup binaries
           for dir in artifacts/breeze-backup-*; do
+            if [ -d "$dir" ] && ls "$dir"/* >/dev/null 2>&1; then
+              cp "$dir"/* release-assets/
+            fi
+          done
+
+          # Copy desktop-helper binaries
+          for dir in artifacts/breeze-desktop-helper-*; do
             if [ -d "$dir" ] && ls "$dir"/* >/dev/null 2>&1; then
               cp "$dir"/* release-assets/
             fi
