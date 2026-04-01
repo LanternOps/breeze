@@ -274,8 +274,8 @@ importers:
   apps/portal:
     dependencies:
       '@astrojs/node':
-        specifier: ^9.5.4
-        version: 9.5.4(astro@5.18.0(@types/node@25.5.0)(ioredis@5.10.1)(jiti@1.21.7)(lightningcss@1.32.0)(rollup@4.59.0)(terser@5.44.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3))
+        specifier: ^10.0.4
+        version: 10.0.4(astro@5.18.0(@types/node@25.5.0)(ioredis@5.10.1)(jiti@1.21.7)(lightningcss@1.32.0)(rollup@4.59.0)(terser@5.44.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3))
       '@astrojs/react':
         specifier: ^4.1.0
         version: 4.4.2(@types/node@25.5.0)(@types/react-dom@19.2.3(@types/react@19.2.8))(@types/react@19.2.8)(jiti@1.21.7)(lightningcss@1.32.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(terser@5.44.1)(tsx@4.21.0)(yaml@2.8.3)
@@ -408,8 +408,8 @@ importers:
   apps/web:
     dependencies:
       '@astrojs/node':
-        specifier: ^9.5.4
-        version: 9.5.4(astro@5.18.0(@types/node@25.5.0)(ioredis@5.10.1)(jiti@1.21.7)(lightningcss@1.32.0)(rollup@4.59.0)(terser@5.44.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3))
+        specifier: ^10.0.4
+        version: 10.0.4(astro@5.18.0(@types/node@25.5.0)(ioredis@5.10.1)(jiti@1.21.7)(lightningcss@1.32.0)(rollup@4.59.0)(terser@5.44.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3))
       '@astrojs/react':
         specifier: ^4.1.0
         version: 4.4.2(@types/node@25.5.0)(@types/react-dom@19.2.3(@types/react@19.2.8))(@types/react@19.2.8)(jiti@1.21.7)(lightningcss@1.32.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(terser@5.44.1)(tsx@4.21.0)(yaml@2.8.3)
@@ -617,10 +617,10 @@ packages:
     peerDependencies:
       astro: ^6.0.0
 
-  '@astrojs/node@9.5.4':
-    resolution: {integrity: sha512-AbPSZsMGu8hXPR2XxV79RaKy8h6wijhtoqZGeUf4OXg2w1mxXlx4VnIc1D+QvtsgauSz7P5PLhmvf6w/J41GJg==}
+  '@astrojs/node@10.0.4':
+    resolution: {integrity: sha512-7pVgiVSscQHRC2WqjlXcnbbcKMYp2GXrYpmuvdGg5zgA8J1lFm2vmwVhHZFuZK3Ik5PzoxiDROaEgoDGLbfhLw==}
     peerDependencies:
-      astro: ^5.17.3
+      astro: ^6.0.0
 
   '@astrojs/prism@3.3.0':
     resolution: {integrity: sha512-q8VwfU/fDZNoDOf+r7jUnMC2//H2l0TuQ6FkGJL8vD8nw/q5KiL3DS1KKBI3QhI9UQhpJ5dc7AtqfbXWuOgLCQ==}
@@ -10287,9 +10287,9 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@astrojs/node@9.5.4(astro@5.18.0(@types/node@25.5.0)(ioredis@5.10.1)(jiti@1.21.7)(lightningcss@1.32.0)(rollup@4.59.0)(terser@5.44.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3))':
+  '@astrojs/node@10.0.4(astro@5.18.0(@types/node@25.5.0)(ioredis@5.10.1)(jiti@1.21.7)(lightningcss@1.32.0)(rollup@4.59.0)(terser@5.44.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3))':
     dependencies:
-      '@astrojs/internal-helpers': 0.7.5
+      '@astrojs/internal-helpers': 0.8.0
       astro: 5.18.0(@types/node@25.5.0)(ioredis@5.10.1)(jiti@1.21.7)(lightningcss@1.32.0)(rollup@4.59.0)(terser@5.44.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)
       send: 1.2.1
       server-destroy: 1.0.1
