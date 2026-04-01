@@ -16,11 +16,20 @@ import {
 import { getRedisConnection } from '../services/redis';
 import { getCommandTimeoutMs, EXCLUDED_COMMAND_TYPES } from '../services/commandTimeouts';
 import { captureException } from '../services/sentry';
+import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/backupMetrics';
 
 const QUEUE_NAME = 'stale-command-reaper';
 const REAP_INTERVAL_MS = 2 * 60 * 1000; // every 2 minutes
 const MAX_REAP_PER_RUN = 200;
 const SHORTEST_TIMEOUT_MS = 5 * 60 * 1000; // conservative SQL pre-filter
+
+// Backup-related command types — used to guard backup-specific Prometheus metrics
+const BACKUP_COMMAND_TYPES = new Set([
+  'backup_run', 'backup_stop', 'backup_restore', 'backup_verify',
+  'backup_test_restore', 'backup_cleanup', 'vm_restore_from_backup',
+  'vm_instant_boot', 'bmr_recover', 'mssql_backup', 'mssql_restore',
+  'hyperv_backup', 'hyperv_restore',
+]);
 
 // Deployment/patch stale thresholds
 const DEPLOYMENT_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
@@ -49,7 +58,7 @@ function getQueue(): Queue<ReaperJobData> {
   return reaperQueue;
 }
 
-async function propagateTimedOutDeviceCommand(params: {
+export async function propagateTimedOutDeviceCommand(params: {
   commandId: string;
   payload: Record<string, unknown> | null;
   errorMsg: string;
@@ -94,7 +103,7 @@ async function propagateTimedOutDeviceCommand(params: {
 
 // ── Reap functions ────────────────────────────────────────────────
 
-async function reapStaleDeviceCommands(): Promise<number> {
+export async function reapStaleDeviceCommands(): Promise<number> {
   const now = Date.now();
   const conservativeCutoff = new Date(now - SHORTEST_TIMEOUT_MS);
   const excludedTypes = [...EXCLUDED_COMMAND_TYPES];
@@ -163,6 +172,12 @@ async function reapStaleDeviceCommands(): Promise<number> {
     if (updated.length === 0) continue;
 
     reaped++;
+    if (BACKUP_COMMAND_TYPES.has(cmd.type)) {
+      recordBackupCommandTimeout(cmd.type, 'reaper');
+    }
+    if (cmd.type === 'backup_restore' || cmd.type === 'vm_restore_from_backup' || cmd.type === 'vm_instant_boot' || cmd.type === 'bmr_recover') {
+      recordRestoreTimeout(cmd.type);
+    }
 
     try {
       await propagateTimedOutDeviceCommand({

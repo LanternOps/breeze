@@ -109,4 +109,110 @@ describe('RestoreWizard', () => {
     expect(screen.getByText('Latest restore job')).toBeTruthy();
     expect(screen.getByText(/pending/i)).toBeTruthy();
   });
+
+  it('surfaces the restore API error when restore startup fails', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'snap-1',
+              label: 'Server snapshot',
+              status: 'Ready',
+              size: '4 GB',
+            },
+          ],
+        });
+      }
+
+      if (url === '/backup/snapshots/snap-1/browse') {
+        return makeJsonResponse({ data: [] });
+      }
+
+      if (url === '/backup/restore?limit=6') {
+        return makeJsonResponse({ data: [] });
+      }
+
+      if (url === '/backup/restore' && method === 'POST') {
+        return makeJsonResponse({
+          error: 'Device is offline, cannot execute command',
+        }, false, 409);
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+
+    await screen.findByText('Restore Wizard');
+
+    for (let index = 0; index < 4; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    }
+
+    fireEvent.click(screen.getByRole('button', { name: /Start restore/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Device is offline, cannot execute command')).toBeTruthy();
+    });
+  });
+
+  it('hydrates the latest restore job from restore history before a new restore is started', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'snap-1',
+              label: 'Server snapshot',
+              status: 'Ready',
+              size: '4 GB',
+            },
+          ],
+        });
+      }
+
+      if (url === '/backup/snapshots/snap-1/browse') {
+        return makeJsonResponse({ data: [] });
+      }
+
+      if (url === '/backup/restore?limit=6') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'restore-history-1',
+              snapshotId: 'snap-1',
+              deviceId: 'device-1',
+              restoreType: 'full',
+              status: 'running',
+              targetPath: '/restore-target',
+              createdAt: '2026-03-31T11:00:00.000Z',
+              updatedAt: '2026-03-31T11:05:00.000Z',
+              startedAt: '2026-03-31T11:01:00.000Z',
+              completedAt: null,
+              restoredSize: 1024,
+              restoredFiles: 2,
+              commandId: 'cmd-history-1',
+              errorSummary: null,
+              resultDetails: { status: 'running' },
+            },
+          ],
+        });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+
+    await screen.findByText('Latest restore job');
+    expect(screen.getAllByText('running').length).toBeGreaterThan(0);
+    expect(screen.getByText(/Command: cmd-history-1/i)).toBeTruthy();
+    expect(screen.getByText(/Target path: \/restore-target/i)).toBeTruthy();
+  });
 });

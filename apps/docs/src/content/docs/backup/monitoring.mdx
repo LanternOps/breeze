@@ -69,6 +69,8 @@ To back up one device:
 
 The job appears immediately in the dashboard's Recent Jobs feed.
 
+If the device is offline, Breeze returns an error immediately and does not create a backup job. If queue dispatch fails after job creation, the job is marked **Failed** with the dispatch error so the history stays accurate.
+
 ---
 
 ## Per-Device Backup Status
@@ -91,7 +93,7 @@ Backup and restore jobs move through these statuses:
 
 | Status | Meaning |
 |--------|---------|
-| **Queued** | Created and waiting to be dispatched to the agent |
+| **Pending / Queued** | Created and waiting to be dispatched to the agent |
 | **Running** | Actively in progress on the device |
 | **Completed** | Finished successfully; a snapshot was created |
 | **Failed** | Encountered an error (check the error details) |
@@ -101,6 +103,10 @@ Jobs are triggered either **automatically** by a policy schedule, **manually** v
 
 <Aside type="caution">
   Only jobs in the **Running** or **Queued** status can be canceled. Canceling a running job stops the operation, but data already transferred to the storage target remains.
+</Aside>
+
+<Aside type="note">
+  Restore jobs also use the same durable command pipeline. If a restore command times out, Breeze marks the device command failed and propagates the timeout into the restore job result so it does not remain stuck in **Pending** or **Running** forever.
 </Aside>
 
 ---

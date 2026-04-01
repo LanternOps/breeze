@@ -22,7 +22,7 @@ const (
 	writeWait      = 10 * time.Second
 	pongWait       = 60 * time.Second
 	pingPeriod     = (pongWait * 9) / 10
-	maxMessageSize = 512 * 1024
+	maxMessageSize = 64 * 1024 * 1024 // 64MB — file_write commands carry base64 content
 	initialBackoff = 1 * time.Second
 	maxBackoff     = 60 * time.Second
 	backoffFactor  = 2.0

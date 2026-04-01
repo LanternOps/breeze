@@ -149,11 +149,15 @@ fileBrowserRoutes.post(
 
     const body = c.req.valid('json');
 
+    // Large files (base64-encoded) need more time to transit DB → WS → agent → disk.
+    const sizeBytes = Buffer.byteLength(body.content, 'utf8');
+    const timeoutMs = sizeBytes > 1024 * 1024 ? 120000 : 30000;
+
     const result = await executeCommand(deviceId, CommandTypes.FILE_WRITE, {
       path: body.path,
       content: body.content,
       encoding: body.encoding
-    }, { userId: auth.user?.id, timeoutMs: 30000 });
+    }, { userId: auth.user?.id, timeoutMs });
 
     await createAuditLog({
       orgId: device.orgId,

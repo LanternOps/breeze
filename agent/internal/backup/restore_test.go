@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -159,6 +160,45 @@ func TestRestoreFromSnapshot_HappyPath(t *testing.T) {
 	}
 	if fileCount != 2 {
 		t.Errorf("expected 2 files in target, got %d", fileCount)
+	}
+}
+
+func TestRestoreFromSnapshot_CancelledMidway(t *testing.T) {
+	testFiles := map[string]string{
+		"one.txt": "first\n",
+		"two.txt": "second\n",
+	}
+	provider, snapID := setupRestoreTestSnapshot(t, testFiles)
+
+	targetDir := t.TempDir()
+	cfg := RestoreConfig{
+		SnapshotID: snapID,
+		TargetPath: targetDir,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	progressCalls := 0
+	progressFn := func(phase string, current, total int64, message string) {
+		progressCalls++
+		if progressCalls == 2 {
+			cancel()
+		}
+	}
+
+	result, err := RestoreFromSnapshotContext(ctx, provider, cfg, progressFn)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "partial" {
+		t.Fatalf("status = %q, want partial", result.Status)
+	}
+	if result.FilesRestored != 1 {
+		t.Fatalf("FilesRestored = %d, want 1", result.FilesRestored)
+	}
+	if result.Error == "" {
+		t.Fatal("expected cancellation error to be recorded")
 	}
 }
 

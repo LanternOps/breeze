@@ -2,6 +2,7 @@ import { and, desc, eq, inArray, lte, or, sql } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import {
   backupJobs as backupJobsTable,
+  deviceCommands,
   backupVerifications as backupVerificationsTable,
 } from '../../db/schema';
 import {
@@ -20,6 +21,11 @@ import {
   runBackupVerification,
   safePublish
 } from './verificationService';
+import {
+  recordBackupCommandTimeout,
+  recordBackupVerificationResult,
+  recordBackupVerificationSkip,
+} from '../../services/backupMetrics';
 import { normalizeBackupVerificationType } from './types';
 import { isCriticalBackupDevice } from './criticality';
 import { backupVerificationStructuredResultSchema } from '../../services/agentCommandResultValidation';
@@ -119,10 +125,108 @@ async function listTimedOutVerificationsFromDb(cutoff: Date): Promise<typeof bac
         lte(backupVerificationsTable.startedAt, cutoff),
       )));
 
-    return rows.map((row) => normalizeDbVerificationRow(row));
+    return rows.map((row) => {
+      const normalized = normalizeDbVerificationRow(row);
+      verificationOrgById.set(normalized.id, normalized.orgId);
+      return normalized;
+    });
   } catch (error) {
     console.warn('[backupVerification] DB timeout scan failed; falling back to memory:', error);
     return [];
+  }
+}
+
+async function markVerificationFailedAndRefreshReadiness(params: {
+  verification: BackupVerification;
+  orgId: string;
+  reason: string;
+  source: string;
+}): Promise<void> {
+  const { verification, orgId, reason, source } = params;
+  verification.status = 'failed';
+  verification.completedAt = new Date().toISOString();
+  const details = (verification.details && typeof verification.details === 'object' && !Array.isArray(verification.details))
+    ? verification.details as Record<string, unknown>
+    : {};
+  details.reason = reason;
+  verification.details = details;
+  verificationOrgById.set(verification.id, orgId);
+
+  await persistVerificationToDb(verification);
+  recordBackupVerificationResult(verification.verificationType, 'failed');
+  await safePublish(
+    'backup.verification_failed',
+    orgId,
+    {
+      verificationId: verification.id,
+      deviceId: verification.deviceId,
+      backupJobId: verification.backupJobId,
+      verificationType: verification.verificationType,
+      status: 'failed',
+    },
+    source
+  );
+  await recomputeRecoveryReadinessForDevice(orgId, verification.deviceId);
+}
+
+async function markVerificationCommandTimedOut(commandId: string | null | undefined): Promise<boolean> {
+  if (!commandId || !isUuid(commandId)) return false;
+
+  const completedAt = new Date();
+  const updated = await runWithSystemDbAccess(() => db
+    .update(deviceCommands)
+    .set({
+      status: 'failed',
+      completedAt,
+      result: {
+        status: 'timeout',
+        error: 'Verification timed out after 30 minutes',
+        timedOutBy: 'verification-timeout-check',
+      },
+    })
+    .where(and(
+      eq(deviceCommands.id, commandId),
+      inArray(deviceCommands.status, ['pending', 'sent']),
+    ))
+    .returning({ id: deviceCommands.id }));
+
+  return updated.length > 0;
+}
+
+async function findTimedOutVerificationByCommandId(commandId: string): Promise<BackupVerification | null> {
+  if (!isUuid(commandId)) return null;
+
+  try {
+    const [row] = await runWithSystemDbAccess(() => db
+      .select()
+      .from(backupVerificationsTable)
+      .where(and(
+        sql`${backupVerificationsTable.details}->>'commandId' = ${commandId}`,
+        eq(backupVerificationsTable.status, 'failed'),
+        sql`coalesce(${backupVerificationsTable.details}->>'reason', '') = 'Verification timed out after 30 minutes'`,
+      ))
+      .orderBy(desc(backupVerificationsTable.startedAt))
+      .limit(1));
+
+    if (!row) return null;
+
+    const normalized = normalizeDbVerificationRow(row);
+    verificationOrgById.set(normalized.id, normalized.orgId);
+    const existing = backupVerifications.find((item) => item.id === normalized.id);
+    if (existing) {
+      Object.assign(existing, normalized);
+      return existing;
+    }
+    backupVerifications.push(normalized);
+    return normalized;
+  } catch (error) {
+    console.warn('[backupVerification] DB timed-out command lookup failed; falling back to memory:', error);
+    return backupVerifications.find((item) => (
+      item.details
+      && (item.details as Record<string, unknown>).commandId === commandId
+      && item.status === 'failed'
+      && (item.details as Record<string, unknown>).reason === 'Verification timed out after 30 minutes'
+    )) ?? null;
   }
 }
 
@@ -202,35 +306,26 @@ export async function processBackupVerificationResult(
         v.details &&
         (v.details as Record<string, unknown>).commandId === commandId &&
         (v.status === 'pending' || v.status === 'running')
-    );
+    ) ?? await findTimedOutVerificationByCommandId(commandId);
   }
   if (!pending) {
     console.warn(`[backupVerification] No pending verification found for command ${commandId}`);
     return;
   }
 
-  const orgId = verificationOrgById.get(pending.id);
+  const orgId = verificationOrgById.get(pending.id) ?? pending.orgId;
   if (!orgId) return;
+  verificationOrgById.set(pending.id, orgId);
 
   const resultNow = new Date().toISOString();
 
   if (commandResult.status !== 'completed' || !commandResult.stdout) {
-    pending.status = 'failed';
-    pending.completedAt = resultNow;
-    (pending.details as Record<string, unknown>).reason =
-      commandResult.error || 'Agent command failed';
-    await persistVerificationToDb(pending);
-    await safePublish(
-      'backup.verification_failed',
+    await markVerificationFailedAndRefreshReadiness({
+      verification: pending,
       orgId,
-      {
-        verificationId: pending.id,
-        deviceId: pending.deviceId,
-        verificationType: pending.verificationType,
-        status: 'failed',
-      },
-      'agent.result'
-    );
+      reason: commandResult.error || 'Agent command failed',
+      source: 'agent.result',
+    });
     return;
   }
 
@@ -241,23 +336,14 @@ export async function processBackupVerificationResult(
     agentResult = backupVerificationStructuredResultSchema.parse(parsed) as Record<string, unknown>;
   } catch (parseErr) {
     console.error(`[backupVerification] Failed to parse agent result for command ${commandId}:`, parseErr);
-    pending.status = 'failed';
-    pending.completedAt = resultNow;
-    (pending.details as Record<string, unknown>).reason = parseErr instanceof Error
-      ? `Malformed verification result payload: ${parseErr.message}`
-      : 'Failed to parse agent result';
-    await persistVerificationToDb(pending);
-    await safePublish(
-      'backup.verification_failed',
+    await markVerificationFailedAndRefreshReadiness({
+      verification: pending,
       orgId,
-      {
-        verificationId: pending.id,
-        deviceId: pending.deviceId,
-        verificationType: pending.verificationType,
-        status: 'failed',
-      },
-      'agent.result'
-    );
+      reason: parseErr instanceof Error
+        ? `Malformed verification result payload: ${parseErr.message}`
+        : 'Failed to parse agent result',
+      source: 'agent.result',
+    });
     return;
   }
 
@@ -278,6 +364,7 @@ export async function processBackupVerificationResult(
   details.restorePath = agentResult.restorePath;
 
   await persistVerificationToDb(pending);
+  recordBackupVerificationResult(pending.verificationType, pending.status);
 
   // Publish event
   const eventName =
@@ -326,24 +413,48 @@ export async function timeoutStaleVerifications(): Promise<number> {
     const startedMs = new Date(v.startedAt).getTime();
     if (startedMs > cutoff) continue;
 
-    v.status = 'failed';
-    v.completedAt = new Date().toISOString();
-    (v.details as Record<string, unknown>).reason = 'Verification timed out after 30 minutes';
-    await persistVerificationToDb(v);
-
-    const orgId = verificationOrgById.get(v.id);
+    const orgId = verificationOrgById.get(v.id) ?? v.orgId;
     if (orgId) {
-      await safePublish(
-        'backup.verification_failed',
+      const commandId =
+        v.details && typeof v.details === 'object' && !Array.isArray(v.details)
+          ? typeof (v.details as Record<string, unknown>).commandId === 'string'
+            ? (v.details as Record<string, unknown>).commandId as string
+            : null
+          : null;
+      const commandTimedOut = await markVerificationCommandTimedOut(commandId);
+      if (commandTimedOut) {
+        const commandType = v.verificationType === 'test_restore' ? 'backup_test_restore' : 'backup_verify';
+        recordBackupCommandTimeout(commandType, 'verification_timeout');
+      }
+      await markVerificationFailedAndRefreshReadiness({
+        verification: v,
         orgId,
-        {
-          verificationId: v.id,
-          deviceId: v.deviceId,
-          verificationType: v.verificationType,
-          status: 'failed',
-        },
-        'timeout-check'
-      );
+        reason: 'Verification timed out after 30 minutes',
+        source: 'timeout-check',
+      });
+    } else {
+      // No orgId available — still handle command timeout and persist failure.
+      console.warn(`[backupVerification] Verification ${v.id} timed out but has no orgId; persisting failure without readiness recompute`);
+      const commandId =
+        v.details && typeof v.details === 'object' && !Array.isArray(v.details)
+          ? typeof (v.details as Record<string, unknown>).commandId === 'string'
+            ? (v.details as Record<string, unknown>).commandId as string
+            : null
+          : null;
+      const commandTimedOut = await markVerificationCommandTimedOut(commandId);
+      if (commandTimedOut) {
+        const commandType = v.verificationType === 'test_restore' ? 'backup_test_restore' : 'backup_verify';
+        recordBackupCommandTimeout(commandType, 'verification_timeout');
+      }
+      v.status = 'failed';
+      v.completedAt = new Date().toISOString();
+      const details = (v.details && typeof v.details === 'object' && !Array.isArray(v.details))
+        ? v.details as Record<string, unknown>
+        : {};
+      details.reason = 'Verification timed out after 30 minutes';
+      v.details = details;
+      await persistVerificationToDb(v);
+      recordBackupVerificationResult(v.verificationType, 'failed');
     }
     timedOut++;
   }
@@ -377,6 +488,7 @@ export async function ensurePostBackupIntegrityChecks(orgId?: string): Promise<n
       created += 1;
     } catch (error) {
       if (error instanceof BackupVerificationDispatchError) {
+        recordBackupVerificationSkip('integrity', error.message.startsWith('Device is ') ? 'device_offline' : 'dispatch_failed');
         console.info('[backupVerification] Skipping post-backup integrity check because dispatch could not start', {
           orgId: effectiveOrgId,
           deviceId: job.deviceId,
@@ -454,6 +566,7 @@ export async function runWeeklyTestRestore(orgId?: string): Promise<number> {
       queued += 1;
     } catch (error) {
       if (error instanceof BackupVerificationDispatchError) {
+        recordBackupVerificationSkip('test_restore', error.message.startsWith('Device is ') ? 'device_offline' : 'dispatch_failed');
         console.info('[backupVerification] Skipping weekly restore test because dispatch could not start', {
           orgId: targetOrg,
           deviceId: job.deviceId,

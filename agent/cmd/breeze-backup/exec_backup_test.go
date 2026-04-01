@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"os"
@@ -24,7 +25,7 @@ func TestExecBackupRestoreWithProgressNilManager(t *testing.T) {
 		t.Fatalf("marshal payload: %v", err)
 	}
 
-	result := execBackupRestoreWithProgress("", payload, nil, nil, nil)
+	result := execBackupRestoreWithProgress(context.Background(), "", payload, nil, nil, nil)
 	if result.Success {
 		t.Fatal("expected restore to fail without a configured backup manager")
 	}
@@ -109,7 +110,7 @@ func TestExecBackupRestoreWithProgressUsesWrapperCommandID(t *testing.T) {
 		t.Fatalf("marshal payload: %v", err)
 	}
 
-	result := execBackupRestoreWithProgress("wrapper-cmd-1", payload, mgr, nil, serverIPC)
+	result := execBackupRestoreWithProgress(context.Background(), "wrapper-cmd-1", payload, mgr, nil, serverIPC)
 	if !result.Success {
 		t.Fatalf("expected restore to succeed, got stderr %q", result.Stderr)
 	}
@@ -132,7 +133,7 @@ func TestExecBMRRecoverRequiresTokenAndServer(t *testing.T) {
 		t.Fatalf("marshal payload: %v", err)
 	}
 
-	result := execBMRRecover(payload, nil)
+	result := execBMRRecover(context.Background(), payload, nil)
 	if result.Success {
 		t.Fatal("expected BMR recovery to fail without token/server")
 	}
@@ -146,8 +147,11 @@ func TestExecBMRRecoverUsesTokenDrivenRunner(t *testing.T) {
 	defer func() { runBMRRecovery = origRunner }()
 
 	var gotCfg any
-	runBMRRecovery = func(cfg bmr.RecoveryConfig) (*bmr.RecoveryResult, error) {
+	runBMRRecovery = func(ctx context.Context, cfg bmr.RecoveryConfig) (*bmr.RecoveryResult, error) {
 		gotCfg = cfg
+		if ctx == nil {
+			t.Fatal("expected context to be provided")
+		}
 		return &bmr.RecoveryResult{Status: "completed"}, nil
 	}
 
@@ -162,7 +166,7 @@ func TestExecBMRRecoverUsesTokenDrivenRunner(t *testing.T) {
 		t.Fatalf("marshal payload: %v", err)
 	}
 
-	result := execBMRRecover(payload, nil)
+	result := execBMRRecover(context.Background(), payload, nil)
 	if !result.Success {
 		t.Fatalf("expected BMR recovery to succeed, got stderr %q", result.Stderr)
 	}

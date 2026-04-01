@@ -5,13 +5,11 @@ import {
   Database,
   ChevronDown,
   ChevronRight,
-  Download,
   FileText,
   Folder,
   FolderOpen,
   History,
   RefreshCw,
-  RotateCcw
 } from 'lucide-react';
 import { cn, marginLeftPxClass } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -660,16 +658,9 @@ export default function SnapshotBrowser() {
                   </span>
                 ))}
               </div>
-              <div className="flex items-center gap-2">
-                <button type="button" className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-accent">
-                  <RotateCcw className="h-4 w-4" />
-                  Restore selected
-                </button>
-                <button type="button" className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
-                  <Download className="h-4 w-4" />
-                  Download file
-                </button>
-              </div>
+              <p className="text-xs text-muted-foreground">
+                Use the restore workflow to recover or export files from this snapshot.
+              </p>
             </div>
 
             <div className="overflow-x-auto rounded-lg border">

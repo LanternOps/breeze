@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -9,7 +10,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var runBMRRecovery = bmr.RunRecoveryWithToken
+var runBMRRecovery = bmr.RunRecoveryWithTokenContext
 
 func init() {
 	rootCmd.AddCommand(newBMRRecoverCommand())
@@ -34,7 +35,7 @@ func newBMRRecoverCommand() *cobra.Command {
 			}
 			cfg.TargetPaths = targetPaths
 
-			result, err := runBMRRecovery(cfg)
+			result, err := runBMRRecovery(context.Background(), cfg)
 			if result != nil {
 				encoded, marshalErr := json.MarshalIndent(result, "", "  ")
 				if marshalErr != nil {

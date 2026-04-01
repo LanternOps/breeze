@@ -707,7 +707,7 @@ func newHypervSnapshotID(vmName string) string {
 
 // --- VM restore from backup + instant boot ---
 
-func execVMRestoreFromBackup(payload json.RawMessage, mgr *backup.BackupManager) backupipc.BackupCommandResult {
+func execVMRestoreFromBackup(parentCtx context.Context, payload json.RawMessage, mgr *backup.BackupManager) backupipc.BackupCommandResult {
 	var p struct {
 		SnapshotID string `json:"snapshotId"`
 		VMName     string `json:"vmName"`
@@ -729,14 +729,14 @@ func execVMRestoreFromBackup(payload json.RawMessage, mgr *backup.BackupManager)
 		SwitchName: p.SwitchName,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	ctx, cancel := context.WithTimeout(parentCtx, 2*time.Hour)
 	defer cancel()
 
 	result, err := hyperv.RestoreAsVM(ctx, cfg, mgr.GetProvider(), nil)
 	return marshalResult(result, err)
 }
 
-func execInstantBoot(payload json.RawMessage, mgr *backup.BackupManager) backupipc.BackupCommandResult {
+func execInstantBoot(parentCtx context.Context, payload json.RawMessage, mgr *backup.BackupManager) backupipc.BackupCommandResult {
 	var p struct {
 		SnapshotID string `json:"snapshotId"`
 		VMName     string `json:"vmName"`
@@ -758,7 +758,7 @@ func execInstantBoot(payload json.RawMessage, mgr *backup.BackupManager) backupi
 		WorkDir:    p.WorkDir,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := context.WithTimeout(parentCtx, 30*time.Minute)
 	defer cancel()
 
 	result, err := hyperv.InstantBoot(ctx, cfg, mgr.GetProvider(), nil)

@@ -28,6 +28,14 @@ type MssqlDatabase = {
   tdeEnabled?: boolean;
 };
 
+type DeviceSummary = {
+  id: string;
+  hostname?: string | null;
+  displayName?: string | null;
+  osType?: string | null;
+  status?: string | null;
+};
+
 type MssqlInstance = {
   id: string;
   deviceId: string;
@@ -74,20 +82,24 @@ function normalizeInstanceStatus(status?: string): InstanceStatus {
 export default function MssqlDashboard() {
   const [instances, setInstances] = useState<MssqlInstance[]>([]);
   const [chains, setChains] = useState<BackupChain[]>([]);
+  const [devices, setDevices] = useState<DeviceSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [message, setMessage] = useState<string>();
   const [expandedInstanceId, setExpandedInstanceId] = useState<string | null>(null);
   const [discoveringDeviceId, setDiscoveringDeviceId] = useState<string | null>(null);
   const [backingUpDb, setBackingUpDb] = useState<string | null>(null);
+  const [emptyDiscoveryDeviceId, setEmptyDiscoveryDeviceId] = useState('');
   const [query, setQuery] = useState('');
 
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
       setError(undefined);
-      const [instRes, chainRes] = await Promise.all([
+      const [instRes, chainRes, deviceRes] = await Promise.all([
         fetchWithAuth('/backup/mssql/instances'),
         fetchWithAuth('/backup/mssql/chains'),
+        fetchWithAuth('/devices?limit=200'),
       ]);
 
       if (instRes.ok) {
@@ -100,9 +112,21 @@ export default function MssqlDashboard() {
         setChains(Array.isArray(payload?.data) ? payload.data : []);
       }
 
-      const firstFail = [instRes, chainRes].find((r) => !r.ok);
-      if (firstFail) {
-        setError(`Failed to load some data (${firstFail.status})`);
+      if (deviceRes.ok) {
+        const payload = await deviceRes.json();
+        const data = payload?.data ?? payload ?? [];
+        const allDevices = Array.isArray(data) ? data as DeviceSummary[] : [];
+        const windowsDevices = allDevices.filter((device) => `${device.osType ?? ''}`.toLowerCase().includes('windows'));
+        setDevices(windowsDevices);
+        setEmptyDiscoveryDeviceId((current) => current || windowsDevices[0]?.id || '');
+      }
+
+      const failures: string[] = [];
+      if (!instRes.ok) failures.push(`SQL instances (${instRes.status})`);
+      if (!chainRes.ok) failures.push(`backup chains (${chainRes.status})`);
+      if (!deviceRes.ok) failures.push(`device list (${deviceRes.status})`);
+      if (failures.length > 0) {
+        setError(`Failed to load: ${failures.join(', ')}`);
       }
     } catch (err) {
       console.error('[MssqlDashboard] fetchData:', err);
@@ -119,6 +143,8 @@ export default function MssqlDashboard() {
   const handleDiscover = useCallback(async (deviceId: string) => {
     try {
       setDiscoveringDeviceId(deviceId);
+      setError(undefined);
+      setMessage(undefined);
       const response = await fetchWithAuth(`/backup/mssql/discover/${deviceId}`, {
         method: 'POST',
       });
@@ -127,6 +153,7 @@ export default function MssqlDashboard() {
         throw new Error(body?.error ?? 'Discovery failed');
       }
       await fetchData();
+      setMessage('SQL Server discovery completed.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Discovery failed');
     } finally {
@@ -134,24 +161,34 @@ export default function MssqlDashboard() {
     }
   }, [fetchData]);
 
-  const handleBackupDb = useCallback(async (instanceId: string, databaseName: string) => {
-    const key = `${instanceId}:${databaseName}`;
+  const handleBackupDb = useCallback(async (instance: MssqlInstance, databaseName: string) => {
+    const key = `${instance.id}:${databaseName}`;
     try {
       setBackingUpDb(key);
+      setError(undefined);
+      setMessage(undefined);
       const response = await fetchWithAuth('/backup/mssql/backup', {
         method: 'POST',
-        body: JSON.stringify({ instanceId, databaseName }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceId: instance.deviceId,
+          instance: instance.instanceName,
+          database: databaseName,
+          backupType: 'full',
+        }),
       });
       if (!response.ok) {
         const body = await response.json().catch(() => null);
         throw new Error(body?.error ?? 'Backup failed');
       }
+      await fetchData();
+      setMessage(`Backup started for ${databaseName}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Backup failed');
     } finally {
       setBackingUpDb(null);
     }
-  }, []);
+  }, [fetchData]);
 
   const filteredInstances = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -201,15 +238,38 @@ export default function MssqlDashboard() {
         <Database className="h-12 w-12 text-muted-foreground/40" />
         <h3 className="mt-4 text-base font-semibold text-foreground">No SQL Server instances found</h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          Run discovery on a device with SQL Server to detect instances.
+          Select a Windows device and run discovery to detect SQL Server instances.
         </p>
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+          <select
+            className="min-w-64 rounded-md border bg-background px-3 py-2 text-sm"
+            value={emptyDiscoveryDeviceId}
+            onChange={(event) => setEmptyDiscoveryDeviceId(event.target.value)}
+          >
+            <option value="">Select a Windows device</option>
+            {devices.map((device) => (
+              <option key={device.id} value={device.id}>
+                {device.displayName ?? device.hostname ?? device.id}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => void handleDiscover(emptyDiscoveryDeviceId)}
+            disabled={!emptyDiscoveryDeviceId || discoveringDeviceId === emptyDiscoveryDeviceId}
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {discoveringDeviceId === emptyDiscoveryDeviceId ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+            Run discovery
+          </button>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="space-y-6">
-      <AlphaBadge variant="banner" disclaimer="SQL Server backup and restore is in early access. Discovery, backup chains, and point-in-time restore are functional but may require additional configuration for your environment." />
+      <AlphaBadge variant="banner" disclaimer="SQL Server backup is in early access. Discovery and backup chains are functional, but recovery workflows still require direct API or operator handling." />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold text-foreground">SQL Server Backup</h2>
@@ -230,6 +290,11 @@ export default function MssqlDashboard() {
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}
+        </div>
+      )}
+      {message && (
+        <div className="rounded-md border border-success/40 bg-success/10 px-3 py-2 text-sm text-success">
+          {message}
         </div>
       )}
 
@@ -282,7 +347,7 @@ export default function MssqlDashboard() {
                     onToggle={() => toggleExpand(inst.id)}
                     onDiscover={() => handleDiscover(inst.deviceId)}
                     discovering={discoveringDeviceId === inst.deviceId}
-                    onBackupDb={(dbName) => handleBackupDb(inst.id, dbName)}
+                    onBackupDb={(dbName) => handleBackupDb(inst, dbName)}
                     backingUpDb={backingUpDb}
                     instanceId={inst.id}
                   />

@@ -22,7 +22,7 @@ import {
   sqlInstances,
 } from '../db/schema';
 import { recoveryTokens } from '../db/schema/recoveryTokens';
-import { eq, and, sql, isNull, lt } from 'drizzle-orm';
+import { eq, and, sql, isNull, lt, inArray } from 'drizzle-orm';
 import { resolveAllBackupAssignedDevices } from '../services/featureConfigResolver';
 import { getRedisConnection } from '../services/redis';
 import {
@@ -349,6 +349,10 @@ export async function resolveBackupTargets(
 async function processDispatchBackup(
   data: DispatchBackupJobData
 ): Promise<{ dispatched: boolean }> {
+  if (await isBackupJobCancelled(data.jobId)) {
+    return { dispatched: false };
+  }
+
   // Load config for command payload
   const [config] = await db
     .select()
@@ -358,6 +362,10 @@ async function processDispatchBackup(
 
   if (!config) {
     await markJobFailed(data.jobId, 'Backup config not found');
+    return { dispatched: false };
+  }
+
+  if (await isBackupJobCancelled(data.jobId)) {
     return { dispatched: false };
   }
 
@@ -371,6 +379,10 @@ async function processDispatchBackup(
   const agentId = device?.agentId;
   if (!agentId || !isAgentConnected(agentId)) {
     await markJobFailed(data.jobId, 'Agent not connected');
+    return { dispatched: false };
+  }
+
+  if (await isBackupJobCancelled(data.jobId)) {
     return { dispatched: false };
   }
 
@@ -403,6 +415,10 @@ async function processDispatchBackup(
   // Resolve targets into typed commands based on backup mode
   const targets = await resolveBackupTargets(backupMode, modeTargets, data.deviceId);
 
+  if (await isBackupJobCancelled(data.jobId)) {
+    return { dispatched: false };
+  }
+
   if (targets.length === 0) {
     console.warn(`[BackupWorker] No backup targets resolved for job ${data.jobId} (mode=${backupMode}, device=${data.deviceId}) — marking job failed`);
     await db
@@ -422,6 +438,10 @@ async function processDispatchBackup(
   const failedTargets: string[] = [];
 
   for (let i = 0; i < targets.length; i++) {
+    if (await isBackupJobCancelled(data.jobId)) {
+      return { dispatched: false };
+    }
+
     const target = targets[i]!;
 
     // First target reuses the original jobId; additional targets get their own DB row
@@ -447,6 +467,11 @@ async function processDispatchBackup(
         continue;
       }
       commandJobId = newJob.id;
+
+      if (await isBackupJobCancelled(data.jobId)) {
+        await markBackupJobCancelled(commandJobId, 'Cancelled before dispatch');
+        return { dispatched: false };
+      }
     }
 
     const command: AgentCommand = {
@@ -477,6 +502,10 @@ async function processDispatchBackup(
     }
   }
 
+  if (await isBackupJobCancelled(data.jobId)) {
+    return { dispatched: false };
+  }
+
   if (sentCount === 0) {
     await markJobFailed(data.jobId, 'Failed to send command to agent');
     return { dispatched: false };
@@ -499,7 +528,10 @@ async function processDispatchBackup(
       startedAt: new Date(),
       updatedAt: new Date(),
     })
-    .where(eq(backupJobs.id, data.jobId));
+    .where(and(
+      eq(backupJobs.id, data.jobId),
+      inArray(backupJobs.status, ['pending', 'running'])
+    ));
 
   console.log(
     `[BackupWorker] Dispatched ${sentCount}/${targets.length} ${backupMode} command(s) to agent ${agentId} for job ${data.jobId}`
@@ -546,7 +578,35 @@ async function markJobFailed(jobId: string, error: string): Promise<void> {
   await db
     .update(backupJobs)
     .set({ status: 'failed', completedAt: new Date(), errorLog: error, updatedAt: new Date() })
-    .where(eq(backupJobs.id, jobId));
+    .where(and(
+      eq(backupJobs.id, jobId),
+      inArray(backupJobs.status, ['pending', 'running'])
+    ));
+}
+
+async function markBackupJobCancelled(jobId: string, error: string): Promise<void> {
+  await db
+    .update(backupJobs)
+    .set({
+      status: 'cancelled',
+      completedAt: new Date(),
+      updatedAt: new Date(),
+      errorLog: error,
+    })
+    .where(and(
+      eq(backupJobs.id, jobId),
+      inArray(backupJobs.status, ['pending', 'running'])
+    ));
+}
+
+async function isBackupJobCancelled(jobId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ status: backupJobs.status })
+    .from(backupJobs)
+    .where(eq(backupJobs.id, jobId))
+    .limit(1);
+
+  return row?.status === 'cancelled';
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────

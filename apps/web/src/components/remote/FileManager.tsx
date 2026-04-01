@@ -485,14 +485,23 @@ export default function FileManager({
         // Upload file content to agent via system tools API
         const remotePath = joinRemotePath(currentPath, file.name);
 
-        const response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files/upload`, {
-          method: 'POST',
-          body: JSON.stringify({
-            path: remotePath,
-            content,
-            encoding: 'base64'
-          })
-        });
+        // Large files transit API → DB → WS → agent → disk; allow up to 2 minutes.
+        const uploadController = new AbortController();
+        const uploadTimeout = setTimeout(() => uploadController.abort(), 120_000);
+        let response: Response;
+        try {
+          response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files/upload`, {
+            method: 'POST',
+            body: JSON.stringify({
+              path: remotePath,
+              content,
+              encoding: 'base64'
+            }),
+            signal: uploadController.signal
+          });
+        } finally {
+          clearTimeout(uploadTimeout);
+        }
 
         if (!response.ok) {
           const err = await response.json().catch(() => ({ error: 'Upload failed' }));

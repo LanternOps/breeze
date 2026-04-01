@@ -55,7 +55,8 @@ This page lists all backup API endpoints for teams building integrations or auto
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/backup/restore` | Initiate a restore (`snapshotId`, optional `deviceId`, `targetPath`) |
-| GET | `/backup/restore/:id` | Get restore status and progress (0–100) |
+| GET | `/backup/restore` | List restore jobs (filter: `deviceId`, `snapshotId`, `status`, `from`, `to`) |
+| GET | `/backup/restore/:id` | Get a single restore job with status and result details |
 
 ---
 
@@ -106,7 +107,7 @@ This page lists all backup API endpoints for teams building integrations or auto
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/backup/restore/as-vm` | Restore a snapshot as a new VM |
-| POST | `/backup/instant-boot` | Instant boot a VM from snapshot |
+| POST | `/backup/restore/instant-boot` | Instant boot a VM from snapshot |
 
 ---
 
@@ -123,7 +124,7 @@ This page lists all backup API endpoints for teams building integrations or auto
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/backup/verify` | Run verification (`deviceId`, `verificationType`: integrity/test_restore/full_recovery) |
+| POST | `/backup/verify` | Run verification (`deviceId`, `verificationType`: integrity/test_restore) |
 | GET | `/backup/verifications` | List verification results (filter: `deviceId`, `verificationType`, `status`, `from`, `to`) |
 | GET | `/backup/health` | Organization backup health summary (query: `refresh`) |
 | GET | `/backup/recovery-readiness` | Per-device readiness scores (query: `deviceId`, `refresh`) |

@@ -308,7 +308,12 @@ commandsRoutes.post(
       }
     }
 
-    if (command.type === 'vm_restore_from_backup' || command.type === 'vm_instant_boot') {
+    if (
+      command.type === 'backup_restore' ||
+      command.type === 'bmr_recover' ||
+      command.type === 'vm_restore_from_backup' ||
+      command.type === 'vm_instant_boot'
+    ) {
       try {
         await updateRestoreJobByCommandId({
           commandId,

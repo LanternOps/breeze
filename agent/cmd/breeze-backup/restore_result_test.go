@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -87,7 +88,7 @@ func TestExecBackupRestoreWithProgressTreatsPartialRestoreAsFailure(t *testing.T
 		t.Fatalf("marshal payload: %v", err)
 	}
 
-	result := execBackupRestoreWithProgress("restore-cmd-1", payload, mgr, nil, nil)
+	result := execBackupRestoreWithProgress(context.Background(), "restore-cmd-1", payload, mgr, nil, nil)
 	if result.Success {
 		t.Fatal("expected partial restore to report command failure")
 	}
@@ -101,5 +102,8 @@ func TestExecBackupRestoreWithProgressTreatsPartialRestoreAsFailure(t *testing.T
 	}
 	if restoreResult.Status != "partial" {
 		t.Fatalf("restore status = %q, want partial", restoreResult.Status)
+	}
+	if restoreResult.Error != "" {
+		t.Fatalf("restore error = %q, want empty for partial restore", restoreResult.Error)
 	}
 }

@@ -2,6 +2,7 @@ package bmr
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -19,9 +20,13 @@ var newHTTPClient = func() *http.Client {
 	return &http.Client{Timeout: 30 * time.Second}
 }
 
-var runRecovery = RunRecovery
+var runRecovery = RunRecoveryContext
 
 func RunRecoveryWithToken(cfg RecoveryConfig) (*RecoveryResult, error) {
+	return RunRecoveryWithTokenContext(context.Background(), cfg)
+}
+
+func RunRecoveryWithTokenContext(ctx context.Context, cfg RecoveryConfig) (*RecoveryResult, error) {
 	if strings.TrimSpace(cfg.RecoveryToken) == "" {
 		return nil, fmt.Errorf("bmr: recoveryToken is required")
 	}
@@ -29,7 +34,7 @@ func RunRecoveryWithToken(cfg RecoveryConfig) (*RecoveryResult, error) {
 		return nil, fmt.Errorf("bmr: serverUrl is required")
 	}
 
-	bootstrap, err := authenticateRecoverySession(cfg.ServerURL, cfg.RecoveryToken)
+	bootstrap, err := authenticateRecoverySessionContext(ctx, cfg.ServerURL, cfg.RecoveryToken)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +64,7 @@ func RunRecoveryWithToken(cfg RecoveryConfig) (*RecoveryResult, error) {
 
 	var provider providers.BackupProvider
 	if bootstrap.Download != nil {
-		provider = newRecoveryDownloadProvider(cfg.ServerURL, cfg.RecoveryToken, bootstrap.Download)
+		provider = newRecoveryDownloadProvider(ctx, cfg.ServerURL, cfg.RecoveryToken, bootstrap.Download)
 	} else {
 		provider, err = providerFromAuthenticatedConfig(authConfig)
 		if err != nil {
@@ -81,7 +86,7 @@ func RunRecoveryWithToken(cfg RecoveryConfig) (*RecoveryResult, error) {
 		effectiveCfg.TargetPaths = targetPathsFromConfig(bootstrap.TargetConfig)
 	}
 
-	runResult, runErr := runRecovery(effectiveCfg, provider)
+	runResult, runErr := runRecovery(ctx, effectiveCfg, provider)
 	if runResult != nil {
 		result = runResult
 	}
@@ -89,12 +94,16 @@ func RunRecoveryWithToken(cfg RecoveryConfig) (*RecoveryResult, error) {
 }
 
 func authenticateRecoverySession(serverURL, token string) (*BootstrapResponse, error) {
+	return authenticateRecoverySessionContext(context.Background(), serverURL, token)
+}
+
+func authenticateRecoverySessionContext(ctx context.Context, serverURL, token string) (*BootstrapResponse, error) {
 	payload, err := json.Marshal(map[string]string{"token": token})
 	if err != nil {
 		return nil, fmt.Errorf("bmr: marshal authenticate request: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, buildBMRURL(serverURL, "/api/v1/backup/bmr/recover/authenticate"), bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, buildBMRURL(serverURL, "/api/v1/backup/bmr/recover/authenticate"), bytes.NewReader(payload))
 	if err != nil {
 		return nil, fmt.Errorf("bmr: create authenticate request: %w", err)
 	}

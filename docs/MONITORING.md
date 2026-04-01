@@ -169,6 +169,16 @@ sum(rate(http_requests_total{job="breeze-api"}[5m])) by (method)
 | `agent_heartbeat_total` | Counter | Agent heartbeats received |
 | `breeze_scripts_executed_total` | Counter | Scripts executed |
 
+### Backup Operational Checks
+
+Backup and restore correctness still relies on a few database and log checks in addition to metrics:
+
+- **Manual backup dispatch failures**: query `backup_jobs` for `type='manual'`, `status='failed'`, and `started_at is null`
+- **Restore jobs stuck without a command ID**: query `restore_jobs` for `status in ('pending','running')` and `command_id is null`
+- **Restore jobs past timeout**: join `restore_jobs.command_id` to `device_commands.id` and compare `coalesce(executed_at, created_at)` against the 30-minute file-restore timeout and 60-minute VM/BMR timeout
+- **Scheduled verification skips**: search API logs for `Skipping post-backup integrity check because dispatch could not start` and `Skipping weekly restore test because dispatch could not start`
+- **Legacy simulated verification rows**: query `backup_verifications` where `(details ->> 'simulated')::boolean = true`
+
 ### Infrastructure Metrics
 
 | Metric | Source | Description |

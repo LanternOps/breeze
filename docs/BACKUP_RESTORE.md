@@ -7,7 +7,7 @@ This document covers backup and restore procedures for a Breeze RMM deployment.
 | Component | Script Flag | Tool | Description |
 |---|---|---|---|
 | Database | `--db` | `pg_dump` / `pg_restore` | All PostgreSQL data: devices, users, orgs, alerts, audit logs, etc. |
-| Object storage | `--storage` | `aws s3 sync` or `mc mirror` | Scripts, agent binaries, report exports, attachments in MinIO/S3 |
+| Object storage | `--storage` | `aws s3 sync` or `mc mirror` | Scripts, agent binaries, report exports, attachments mirrored from MinIO/S3 into a directory |
 | Configuration | `--config` | `tar` + `openssl` | `.env`, `.env.production`, `certs/`, `docker/` -- encrypted at rest |
 
 Use `--all` with the backup script to back up all three components at once.
@@ -109,9 +109,9 @@ timestamped filenames:
 
 ```
 /var/backups/breeze/
-  db_20260211_020000.dump          # pg_dump custom format, compressed
-  storage_20260211_020000/         # mirror of S3 bucket
-  config_20260211_020000.tar.gz.enc  # encrypted tarball
+  db_20260211_020000.dump           # pg_dump custom format, compressed
+  storage_20260211_020000/          # mirror of S3 bucket contents
+  config_20260211_020000.tar.gz.enc # encrypted tarball
 ```
 
 ## Manual Restore
@@ -167,10 +167,12 @@ RESTORE_SKIP_CONFIRM=yes ./scripts/restore.sh --db /var/backups/breeze/db_202602
 Use backup verification endpoints to prove recoverability and track RTO/RPO readiness:
 
 - `GET /api/v1/backup/health` — fleet verification and readiness summary
-- `POST /api/v1/backup/verify` — trigger integrity/test-restore/full-recovery verification
+- `POST /api/v1/backup/verify` — trigger integrity or test-restore verification
 - `GET /api/v1/backup/verifications` — verification history with filters
 - `GET /api/v1/backup/recovery-readiness` — per-device readiness scores and risk factors
 - Add `?refresh=true` to `health` or `recovery-readiness` when you want a forced readiness recalculation.
+
+Verification is live-only. The target device must be online and connected so Breeze can queue a real agent command. If dispatch cannot start, the API returns a non-2xx error and creates no synthetic verification record.
 
 Example verification trigger:
 
@@ -184,10 +186,95 @@ curl -X POST http://localhost:3001/api/v1/backup/verify \
   }'
 ```
 
-High-impact mode safeguard:
+Operational behavior:
 
-- `verificationType: "full_recovery"` requires `highImpactApproved: true`
-- full-recovery checks should restore into isolated temp paths and clean up afterward
+- devices that are offline fail verification requests immediately with `409`
+- scheduled verification skips offline devices and logs the skip instead of fabricating pass/fail history
+- readiness scores are based on completed live verifications only
+
+## Operational SQL Checks
+
+Use these queries when auditing backup and restore behavior directly in PostgreSQL.
+
+### Manual backup jobs that failed before agent execution
+
+```sql
+select
+  id,
+  device_id,
+  status,
+  error_log,
+  created_at,
+  completed_at
+from backup_jobs
+where type = 'manual'
+  and status = 'failed'
+  and started_at is null
+order by created_at desc
+limit 50;
+```
+
+### Restore jobs that are still in flight without a durable command ID
+
+```sql
+select
+  id,
+  device_id,
+  restore_type,
+  status,
+  created_at,
+  started_at
+from restore_jobs
+where status in ('pending', 'running')
+  and command_id is null
+order by created_at desc;
+```
+
+### Restore commands that have exceeded their timeout window
+
+```sql
+select
+  rj.id as restore_job_id,
+  rj.device_id,
+  dc.id as command_id,
+  dc.type as command_type,
+  dc.status as command_status,
+  dc.created_at,
+  dc.executed_at
+from restore_jobs rj
+join device_commands dc on dc.id = rj.command_id
+where rj.status in ('pending', 'running')
+  and (
+    (dc.type = 'backup_restore' and coalesce(dc.executed_at, dc.created_at) < now() - interval '30 minutes')
+    or (dc.type in ('vm_restore_from_backup', 'vm_instant_boot', 'bmr_recover') and coalesce(dc.executed_at, dc.created_at) < now() - interval '60 minutes')
+  )
+order by coalesce(dc.executed_at, dc.created_at) asc;
+```
+
+### Legacy simulated verification rows
+
+```sql
+select
+  count(*) as simulated_rows
+from backup_verifications
+where coalesce((details ->> 'simulated')::boolean, false) = true;
+```
+
+### Historical `full_recovery` verification rows before normalization
+
+```sql
+select
+  count(*) as legacy_full_recovery_rows
+from backup_verifications
+where verification_type = 'full_recovery';
+```
+
+### Scheduled verification skips due to unavailable devices
+
+Search API logs for:
+
+- `Skipping post-backup integrity check because dispatch could not start`
+- `Skipping weekly restore test because dispatch could not start`
 
 ## Automated Backups (Cron)
 

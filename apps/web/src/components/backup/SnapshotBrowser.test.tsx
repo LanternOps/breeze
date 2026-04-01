@@ -98,6 +98,7 @@ describe('SnapshotBrowser', () => {
     await screen.findByText(/Protection Controls/i);
     expect(screen.getByText(/Protection Controls/i)).toBeTruthy();
     expect(screen.getByText(/Snapshot Details/i)).toBeTruthy();
+    expect(screen.getByText(/Use the restore workflow to recover or export files from this snapshot/i)).toBeTruthy();
   });
 
   it('applies legal hold for the selected snapshot', async () => {

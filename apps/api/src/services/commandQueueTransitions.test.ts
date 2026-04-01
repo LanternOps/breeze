@@ -9,22 +9,26 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
-vi.mock('../db/schema', () => ({
-  deviceCommands: {
-    id: 'deviceCommands.id',
-    deviceId: 'deviceCommands.deviceId',
-    status: 'deviceCommands.status',
-    createdAt: 'deviceCommands.createdAt',
-    executedAt: 'deviceCommands.executedAt',
-  },
-  devices: {
-    id: 'devices.id',
-    status: 'devices.status',
-    orgId: 'devices.orgId',
-    hostname: 'devices.hostname',
-  },
-  auditLogs: {},
-}));
+vi.mock('../db/schema', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../db/schema')>();
+  return {
+    ...actual,
+    deviceCommands: {
+      id: 'deviceCommands.id',
+      deviceId: 'deviceCommands.deviceId',
+      status: 'deviceCommands.status',
+      createdAt: 'deviceCommands.createdAt',
+      executedAt: 'deviceCommands.executedAt',
+    },
+    devices: {
+      id: 'devices.id',
+      status: 'devices.status',
+      orgId: 'devices.orgId',
+      hostname: 'devices.hostname',
+    },
+    auditLogs: {},
+  };
+});
 
 vi.mock('../routes/agentWs', () => ({
   sendCommandToAgent: vi.fn(() => false),
@@ -64,13 +68,13 @@ describe('command queue state transitions', () => {
     expect(where).toHaveBeenCalledTimes(1);
   });
 
-  it('times out only sent commands', async () => {
+  it('times out pending commands too', async () => {
     vi.useFakeTimers();
 
     const limit = vi.fn()
-      .mockResolvedValueOnce([{ id: 'cmd-1', status: 'sent' }])
-      .mockResolvedValueOnce([{ id: 'cmd-1', status: 'sent' }])
-      .mockResolvedValueOnce([{ id: 'cmd-1', status: 'sent' }])
+      .mockResolvedValueOnce([{ id: 'cmd-1', status: 'pending', type: 'mssql_backup' }])
+      .mockResolvedValueOnce([{ id: 'cmd-1', status: 'pending', type: 'mssql_backup' }])
+      .mockResolvedValueOnce([{ id: 'cmd-1', status: 'pending', type: 'mssql_backup' }])
       .mockResolvedValueOnce([{ id: 'cmd-1', status: 'failed', result: { status: 'timeout' } }]);
 
     vi.mocked(db.select).mockReturnValue({
@@ -81,15 +85,19 @@ describe('command queue state transitions', () => {
       }),
     } as any);
 
-    const where = vi.fn().mockResolvedValue(undefined);
+    const returning = vi.fn().mockResolvedValue([{ id: 'cmd-1', status: 'failed' }]);
     vi.mocked(db.update).mockReturnValue({
-      set: vi.fn().mockReturnValue({ where }),
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning,
+        }),
+      }),
     } as any);
 
     const promise = waitForCommandResult('cmd-1', 250, 100);
     await vi.advanceTimersByTimeAsync(300);
     await promise;
 
-    expect(where).toHaveBeenCalledTimes(1);
+    expect(returning).toHaveBeenCalledTimes(1);
   });
 });

@@ -43,6 +43,15 @@ export function buildRestoreResultMetadata(
   };
 
   for (const key of [
+    'snapshotId',
+    'filesRestored',
+    'bytesRestored',
+    'filesFailed',
+    'failedFiles',
+    'stagingDir',
+    'stateApplied',
+    'driversInjected',
+    'validated',
     'vmName',
     'newVmId',
     'vhdxPath',
@@ -52,6 +61,8 @@ export function buildRestoreResultMetadata(
     'error',
     'backgroundSyncActive',
     'syncProgress',
+    'databaseName',
+    'restoredAs',
   ]) {
     if (restoreData[key] !== undefined) {
       metadata[key] = restoreData[key];

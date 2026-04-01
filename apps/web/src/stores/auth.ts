@@ -38,6 +38,8 @@ interface AuthState {
   updateUser: (user: Partial<User>) => void;
 }
 
+type PersistedAuthState = Pick<AuthState, 'user' | 'isAuthenticated'>;
+
 export const useAuthStore = create<AuthState>()(
   persist(
     (set) => ({
@@ -83,15 +85,21 @@ export const useAuthStore = create<AuthState>()(
     {
       name: 'breeze-auth',
       version: 2,
-      partialize: (state) => ({
+      partialize: (state): PersistedAuthState => ({
         user: state.user,
         isAuthenticated: state.isAuthenticated,
       }),
-      migrate: (persistedState) => {
-        const nextState = (persistedState ?? {}) as Record<string, unknown>;
+      migrate: (persistedState): PersistedAuthState => {
+        const nextState = (persistedState ?? {}) as Partial<PersistedAuthState> & { tokens?: unknown };
         // Access tokens stay in memory only. Refresh cookies restore them after reload.
         delete nextState.tokens;
-        return nextState as Partial<AuthState>;
+        return {
+          user: nextState.user ?? null,
+          isAuthenticated:
+            typeof nextState.isAuthenticated === 'boolean'
+              ? nextState.isAuthenticated
+              : nextState.user != null,
+        };
       },
       onRehydrateStorage: () => (state) => {
         // Set isLoading to false after rehydration completes.

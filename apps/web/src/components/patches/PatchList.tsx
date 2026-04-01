@@ -360,6 +360,7 @@ export default function PatchList({
                     onClick={toggleSelectAll}
                     className="flex items-center justify-center text-muted-foreground hover:text-foreground"
                     title={allPageSelected ? 'Deselect all' : 'Select all'}
+                    aria-label={allPageSelected ? 'Deselect all patches' : 'Select all patches'}
                   >
                     {allPageSelected ? (
                       <CheckSquare className="h-4 w-4" />
@@ -400,6 +401,7 @@ export default function PatchList({
                           type="button"
                           onClick={() => toggleSelect(patch.id)}
                           className="flex items-center justify-center text-muted-foreground hover:text-foreground"
+                          aria-label={isSelected ? `Deselect ${patch.title}` : `Select ${patch.title}`}
                         >
                           {isSelected ? (
                             <CheckSquare className="h-4 w-4 text-primary" />

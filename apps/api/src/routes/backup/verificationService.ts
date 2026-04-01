@@ -5,6 +5,7 @@ import {
   backupSnapshots as backupSnapshotsTable,
   backupVerifications as backupVerificationsTable,
 } from '../../db/schema';
+import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { publishEvent } from '../../services/eventBus';
 import {
@@ -519,6 +520,10 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
   );
 
   if (dispatchResult.error) {
+    recordBackupDispatchFailure(
+      'backup_verification',
+      dispatchResult.error.startsWith('Device is ') ? 'device_offline' : 'enqueue_failed'
+    );
     throw new BackupVerificationDispatchError(
       dispatchResult.error,
       dispatchResult.error.startsWith('Device is ') ? 409 : 502
@@ -526,6 +531,7 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
   }
 
   if (!dispatchResult.command?.id) {
+    recordBackupDispatchFailure('backup_verification', 'missing_command_id');
     throw new BackupVerificationDispatchError(
       'Verification command was queued without a command ID',
       502

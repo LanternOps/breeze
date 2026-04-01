@@ -41,10 +41,10 @@ func resolveRestoreProvider(mgr *backup.BackupManager, vaultState *vaultManagerR
 }
 
 func execBackupRestore(payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef) backupipc.BackupCommandResult {
-	return execBackupRestoreWithProgress("", payload, mgr, vaultState, nil)
+	return execBackupRestoreWithProgress(context.Background(), "", payload, mgr, vaultState, nil)
 }
 
-func execBackupRestoreWithProgress(commandID string, payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn) backupipc.BackupCommandResult {
+func execBackupRestoreWithProgress(ctx context.Context, commandID string, payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn) backupipc.BackupCommandResult {
 	restoreProvider := resolveRestoreProvider(mgr, vaultState)
 	if restoreProvider == nil {
 		return fail("backup not configured on this device")
@@ -86,7 +86,7 @@ func execBackupRestoreWithProgress(commandID string, payload json.RawMessage, mg
 		}
 	}
 
-	result, err := backup.RestoreFromSnapshot(restoreProvider, cfg, progressFn)
+	result, err := backup.RestoreFromSnapshotContext(ctx, restoreProvider, cfg, progressFn)
 	return marshalRestoreResult(result, err)
 }
 
@@ -197,7 +197,7 @@ func execHardwareProfile() backupipc.BackupCommandResult {
 	return marshalResult(profile, err)
 }
 
-func execBMRRecover(payload json.RawMessage, _ *backup.BackupManager) backupipc.BackupCommandResult {
+func execBMRRecover(ctx context.Context, payload json.RawMessage, _ *backup.BackupManager) backupipc.BackupCommandResult {
 	var cfg bmr.RecoveryConfig
 	if err := json.Unmarshal(payload, &cfg); err != nil {
 		return fail("invalid BMR config: " + err.Error())
@@ -205,6 +205,6 @@ func execBMRRecover(payload json.RawMessage, _ *backup.BackupManager) backupipc.
 	if cfg.RecoveryToken == "" || cfg.ServerURL == "" {
 		return fail("bmr recovery requires recoveryToken and serverUrl")
 	}
-	result, err := runBMRRecovery(cfg)
+	result, err := runBMRRecovery(ctx, cfg)
 	return marshalResult(result, err)
 }

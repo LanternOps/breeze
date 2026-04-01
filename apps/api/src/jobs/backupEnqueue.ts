@@ -132,3 +132,19 @@ export async function enqueueBackupResults(
   );
   return job.id!;
 }
+
+export async function removeQueuedBackupDispatch(jobId: string): Promise<boolean> {
+  const queue = getBackupQueue();
+  const queuedJob = await queue.getJob(`backup-dispatch-${jobId}`);
+  if (!queuedJob) {
+    return false;
+  }
+
+  const state = await queuedJob.getState();
+  if (state !== 'waiting' && state !== 'delayed' && state !== 'paused') {
+    return false;
+  }
+
+  await queuedJob.remove();
+  return true;
+}

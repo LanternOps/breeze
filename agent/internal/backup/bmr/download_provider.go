@@ -1,6 +1,7 @@
 package bmr
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 )
 
 type recoveryDownloadProvider struct {
+	ctx       context.Context
 	serverURL string
 	token     string
 
@@ -21,8 +23,9 @@ type recoveryDownloadProvider struct {
 	descriptor *AuthenticatedDownloadDescriptor
 }
 
-func newRecoveryDownloadProvider(serverURL, token string, descriptor *AuthenticatedDownloadDescriptor) *recoveryDownloadProvider {
+func newRecoveryDownloadProvider(ctx context.Context, serverURL, token string, descriptor *AuthenticatedDownloadDescriptor) *recoveryDownloadProvider {
 	return &recoveryDownloadProvider{
+		ctx:        ctx,
 		serverURL:  serverURL,
 		token:      token,
 		descriptor: descriptor,
@@ -59,7 +62,7 @@ func (p *recoveryDownloadProvider) Download(remotePath, localPath string) error 
 		return err
 	}
 
-	bootstrap, authErr := authenticateRecoverySession(p.serverURL, p.token)
+	bootstrap, authErr := authenticateRecoverySessionContext(p.ctx, p.serverURL, p.token)
 	if authErr != nil {
 		return fmt.Errorf("%w; re-authenticate failed: %v", authErr, authErr)
 	}
@@ -126,7 +129,7 @@ func (p *recoveryDownloadProvider) downloadOnce(remotePath, localPath string) er
 	query.Set(pathParam, normalizedRemotePath)
 	requestURL.RawQuery = query.Encode()
 
-	req, err := http.NewRequest(http.MethodGet, requestURL.String(), nil)
+	req, err := http.NewRequestWithContext(p.ctx, http.MethodGet, requestURL.String(), nil)
 	if err != nil {
 		return fmt.Errorf("bmr: create download request: %w", err)
 	}

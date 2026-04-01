@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import MssqlDashboard from './MssqlDashboard';
@@ -27,7 +27,14 @@ const mockInstances = [
     edition: 'Standard',
     port: 1433,
     status: 'online',
-    databases: [],
+    databases: [
+      {
+        name: 'AppDb',
+        recoveryModel: 'full',
+        sizeMb: 512,
+        tdeEnabled: false,
+      },
+    ],
   },
 ];
 
@@ -41,6 +48,11 @@ describe('MssqlDashboard', () => {
       }
       if (url === '/backup/mssql/chains') {
         return makeJsonResponse({ data: [] });
+      }
+      if (url === '/devices?limit=200') {
+        return makeJsonResponse({
+          data: [{ id: 'device-1', displayName: 'Server 01', osType: 'Windows Server 2022' }],
+        });
       }
       return makeJsonResponse({});
     });
@@ -60,19 +72,69 @@ describe('MssqlDashboard', () => {
       if (url === '/backup/mssql/instances' || url === '/backup/mssql/chains') {
         return makeJsonResponse({ data: [] });
       }
+      if (url === '/devices?limit=200') {
+        return makeJsonResponse({
+          data: [{ id: 'device-1', displayName: 'Server 01', osType: 'Windows Server 2022' }],
+        });
+      }
       return makeJsonResponse({});
     });
 
     render(<MssqlDashboard />);
 
     await screen.findByText('No SQL Server instances found');
-    expect(screen.getByText(/Run discovery on a device with SQL Server/i)).toBeTruthy();
+    expect(screen.getByText(/Select a Windows device and run discovery/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Run discovery/i })).toBeTruthy();
   });
 
   it('renders alpha banner', async () => {
     render(<MssqlDashboard />);
 
     await screen.findByText('SQL Server Backup');
-    expect(screen.getByText(/SQL Server backup and restore is in early access/i)).toBeTruthy();
+    expect(screen.getByText(/SQL Server backup is in early access/i)).toBeTruthy();
+  });
+
+  it('sends the provider-backed MSSQL backup payload expected by the API', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+
+      if (url === '/backup/mssql/instances') {
+        return makeJsonResponse({ data: mockInstances });
+      }
+      if (url === '/backup/mssql/chains') {
+        return makeJsonResponse({ data: [] });
+      }
+      if (url === '/devices?limit=200') {
+        return makeJsonResponse({
+          data: [{ id: 'device-1', displayName: 'Server 01', osType: 'Windows Server 2022' }],
+        });
+      }
+      if (url === '/backup/mssql/backup' && method === 'POST') {
+        return makeJsonResponse({ data: { backupJobId: 'job-1' } });
+      }
+      return makeJsonResponse({});
+    });
+
+    render(<MssqlDashboard />);
+
+    await screen.findByText('MSSQLSERVER');
+    fireEvent.click(screen.getByRole('button', { name: /Expand/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Backup Now/i }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/backup/mssql/backup',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceId: 'device-1',
+          instance: 'MSSQLSERVER',
+          database: 'AppDb',
+          backupType: 'full',
+        }),
+      })
+    ));
+    expect(await screen.findByText('Backup started for AppDb.')).toBeTruthy();
   });
 });

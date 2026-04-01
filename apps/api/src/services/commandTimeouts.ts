@@ -87,6 +87,8 @@ const RESTORE_TIMEOUT_TYPES = new Set<string>([
   CommandTypes.VM_RESTORE_FROM_BACKUP,
   CommandTypes.VM_INSTANT_BOOT,
   CommandTypes.BMR_RECOVER,
+  CommandTypes.MSSQL_RESTORE,
+  CommandTypes.HYPERV_RESTORE,
 ]);
 
 const LONG_TIMEOUT_TYPES = new Set<string>([
@@ -94,6 +96,8 @@ const LONG_TIMEOUT_TYPES = new Set<string>([
   CommandTypes.BACKUP_VERIFY,
   CommandTypes.BACKUP_TEST_RESTORE,
   CommandTypes.BACKUP_CLEANUP,
+  CommandTypes.MSSQL_BACKUP,
+  CommandTypes.HYPERV_BACKUP,
   CommandTypes.CIS_BENCHMARK,
   CommandTypes.SENSITIVE_DATA_SCAN,
   CommandTypes.ENCRYPT_FILE,

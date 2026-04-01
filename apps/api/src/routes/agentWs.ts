@@ -50,6 +50,34 @@ function extractDesktopSessionId(commandId: string, prefix: 'desk-start-' | 'des
   return sessionId;
 }
 
+function asObjectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function inferRestoreCommandType(restoreJob: {
+  restoreType?: string | null;
+  targetConfig?: unknown;
+}): string {
+  const targetConfig = asObjectRecord(restoreJob.targetConfig);
+  const result = asObjectRecord(targetConfig.result);
+
+  if (typeof result.commandType === 'string' && result.commandType.trim()) {
+    return result.commandType;
+  }
+  if (restoreJob.restoreType === 'bare_metal') {
+    return 'bmr_recover';
+  }
+  if (targetConfig.mode === 'instant_boot') {
+    return 'vm_instant_boot';
+  }
+  if (typeof targetConfig.hypervisor === 'string' && targetConfig.hypervisor.trim()) {
+    return 'vm_restore_from_backup';
+  }
+  return 'backup_restore';
+}
+
 /**
  * Signature for per-command-type result handlers dispatched from processCommandResult.
  */
@@ -963,11 +991,12 @@ async function processOrphanedCommandResult(
       orgId: restoreJobs.orgId,
       agentId: devices.agentId,
       status: restoreJobs.status,
+      restoreType: restoreJobs.restoreType,
       targetConfig: restoreJobs.targetConfig,
     })
     .from(restoreJobs)
     .innerJoin(devices, eq(restoreJobs.deviceId, devices.id))
-    .where(eq(restoreJobs.id, result.commandId))
+    .where(eq(restoreJobs.commandId, result.commandId))
     .limit(1);
 
   if (restoreJob) {
@@ -977,18 +1006,19 @@ async function processOrphanedCommandResult(
     }
     console.log(`[AgentWs] Processing restore result for job ${restoreJob.id} from agent ${agentId}`);
     try {
-      const { normalizedResult, validationError } = normalizeCriticalResultIfNeeded('backup_restore', result);
+      const commandType = inferRestoreCommandType(restoreJob);
+      const { normalizedResult, validationError } = normalizeCriticalResultIfNeeded(commandType, result);
       if (validationError) {
         console.warn(`[AgentWs] ${validationError} for restore job ${restoreJob.id}`);
         // Mark restore job as failed so it doesn't stay stuck in pending/running
-        await updateRestoreJobFromResult(restoreJob, 'backup_restore', {
+        await updateRestoreJobFromResult(restoreJob, commandType, {
           ...normalizedResult,
           status: 'failed',
           error: validationError,
         });
         return;
       }
-      await updateRestoreJobFromResult(restoreJob, 'backup_restore', normalizedResult);
+      await updateRestoreJobFromResult(restoreJob, commandType, normalizedResult);
     } catch (err) {
       console.error(`[AgentWs] Failed to process restore results for ${agentId}:`, err);
       captureException(err);
@@ -996,7 +1026,7 @@ async function processOrphanedCommandResult(
     return;
   }
 
-  console.warn(`[AgentWs] Command ${result.commandId} not found in deviceCommands or discovery/backup jobs for agent ${agentId}`);
+  console.warn(`[AgentWs] Command ${result.commandId} not found in deviceCommands, discovery/backup jobs, or restore jobs for agent ${agentId}`);
 }
 
 /**

@@ -89,6 +89,10 @@ vi.mock('../../jobs/backupWorker', () => ({
   enqueueBackupDispatch: (...args: unknown[]) => enqueueBackupDispatchMock(...(args as [])),
 }));
 
+vi.mock('../../services/backupMetrics', () => ({
+  recordBackupDispatchFailure: vi.fn(),
+}));
+
 import { createManualBackupJobIfIdle } from '../../services/backupJobCreation';
 import { resolveAllBackupAssignedDevices, resolveBackupConfigForDevice } from '../../services/featureConfigResolver';
 import { jobsRoutes } from './jobs';
@@ -137,7 +141,8 @@ describe('backup jobs routes', () => {
     expect(body.data).toEqual({
       deviceCount: 1,
       deviceIds: ['device-online'],
-      alreadyRunning: 1,
+      alreadyRunning: 0,
+      offline: 1,
     });
   });
 
@@ -232,6 +237,8 @@ describe('backup jobs routes', () => {
     expect(body.data).toEqual({
       created: 1,
       skipped: 1,
+      skippedOffline: 1,
+      skippedRunning: 0,
       failed: 1,
       jobIds: ['job-online'],
       failedJobIds: ['job-failing'],

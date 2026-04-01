@@ -1,6 +1,7 @@
 package bmr
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -135,7 +136,10 @@ func TestRunRecoveryWithToken_UsesAuthenticatedBootstrap(t *testing.T) {
 	var seenRecoveryToken string
 	origRunRecovery := runRecovery
 	defer func() { runRecovery = origRunRecovery }()
-	runRecovery = func(cfg RecoveryConfig, provider providers.BackupProvider) (*RecoveryResult, error) {
+	runRecovery = func(ctx context.Context, cfg RecoveryConfig, provider providers.BackupProvider) (*RecoveryResult, error) {
+		if ctx == nil {
+			t.Fatal("expected context to be provided")
+		}
 		destPath := filepath.Join(t.TempDir(), "manifest.json")
 		if err := provider.Download("snapshots/provider-snapshot-1/manifest.json", destPath); err != nil {
 			t.Fatalf("provider download failed: %v", err)
@@ -235,7 +239,10 @@ func TestRunRecoveryWithToken_RequiresServerAuthentication(t *testing.T) {
 	defer func() { runRecovery = origRunRecovery }()
 
 	calledRecovery := false
-	runRecovery = func(cfg RecoveryConfig, provider providers.BackupProvider) (*RecoveryResult, error) {
+	runRecovery = func(ctx context.Context, cfg RecoveryConfig, provider providers.BackupProvider) (*RecoveryResult, error) {
+		if ctx == nil {
+			t.Fatal("expected context to be provided")
+		}
 		calledRecovery = true
 		return &RecoveryResult{Status: "completed"}, nil
 	}

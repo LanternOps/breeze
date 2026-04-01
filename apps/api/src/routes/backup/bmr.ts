@@ -61,7 +61,6 @@ import {
   bmrCreateTokenSchema,
   bmrMediaCreateSchema,
   bmrMediaListSchema,
-  bmrRecoveryDownloadSchema,
   bmrTokenListSchema,
 } from './schemas';
 
@@ -74,6 +73,12 @@ const BMR_AUTHENTICATE_TOKEN_LIMIT = 3;
 const BMR_AUTHENTICATE_TOKEN_WINDOW_SECONDS = 60 * 60;
 const BMR_DOWNLOAD_TOKEN_LIMIT = 100;
 const BMR_DOWNLOAD_TOKEN_WINDOW_SECONDS = 60;
+const recoveryDownloadQuerySchema = z.object({
+  token: z.string().min(1).optional(),
+  path: z.string().min(1).max(4096),
+});
+
+type RecoveryDownloadTokenSource = 'query' | 'authorization' | 'x-recovery-token' | 'missing';
 
 function getSessionStatus(row: {
   status: string;
@@ -112,6 +117,66 @@ function toTokenSummary(row: {
     completedAt: row.completedAt?.toISOString() ?? null,
     usedAt: row.usedAt?.toISOString() ?? null,
   };
+}
+
+function extractBearerToken(headerValue: string | null | undefined): string | null {
+  if (!headerValue) return null;
+  const trimmed = headerValue.trim();
+  if (!trimmed) return null;
+  const bearerMatch = /^Bearer\s+(.+)$/i.exec(trimmed);
+  return bearerMatch ? bearerMatch[1]!.trim() : null;
+}
+
+function resolveRecoveryDownloadToken(c: any, queryToken?: string | null): { token: string | null; source: RecoveryDownloadTokenSource } {
+  if (queryToken && queryToken.trim()) {
+    return { token: queryToken.trim(), source: 'query' };
+  }
+
+  const authHeader = extractBearerToken(c.req.header('authorization'));
+  if (authHeader) {
+    return { token: authHeader, source: 'authorization' };
+  }
+
+  const headerToken = c.req.header('x-recovery-token')?.trim();
+  if (headerToken) {
+    return { token: headerToken, source: 'x-recovery-token' };
+  }
+
+  return { token: null, source: 'missing' };
+}
+
+function writeRecoveryDownloadAudit(
+  c: any,
+  params: {
+    orgId: string | null;
+    result: 'success' | 'failure' | 'denied';
+    resourceId?: string | null;
+    snapshotId?: string | null;
+    path?: string;
+    tokenSource: RecoveryDownloadTokenSource;
+    statusCode?: number;
+    reason?: string;
+    providerType?: string | null;
+    transferType?: 'redirect' | 'stream';
+  }
+) {
+  writeAuditEvent(c, {
+    orgId: params.orgId,
+    action: 'bmr.recovery.download',
+    resourceType: 'recovery_token',
+    resourceId: params.resourceId ?? null,
+    details: {
+      snapshotId: params.snapshotId ?? null,
+      path: params.path ?? null,
+      tokenSource: params.tokenSource,
+      statusCode: params.statusCode ?? null,
+      reason: params.reason ?? null,
+      providerType: params.providerType ?? null,
+      transferType: params.transferType ?? null,
+    },
+    result: params.result,
+    errorMessage: params.reason ?? undefined,
+  });
 }
 
 function toMediaResponse(row: {
@@ -1202,14 +1267,36 @@ bmrPublicRoutes.post(
 
 bmrPublicRoutes.get(
   '/bmr/recover/download',
-  zValidator('query', bmrRecoveryDownloadSchema),
+  zValidator('query', recoveryDownloadQuerySchema),
   async (c) => {
     await expireUnusedRecoveryTokens();
 
-    const { token, path } = c.req.valid('query');
+    const { token: queryToken, path } = c.req.valid('query');
+    const { token, source: tokenSource } = resolveRecoveryDownloadToken(c, queryToken);
+    if (!token) {
+      writeRecoveryDownloadAudit(c, {
+        orgId: null,
+        result: 'denied',
+        path,
+        tokenSource,
+        statusCode: 400,
+        reason: 'Recovery token is required',
+      });
+      return c.json({ error: 'Recovery token is required' }, 400);
+    }
+
     if (!isValidRecoveryTokenFormat(token)) {
+      writeRecoveryDownloadAudit(c, {
+        orgId: null,
+        result: 'failure',
+        path,
+        tokenSource,
+        statusCode: 401,
+        reason: 'Invalid recovery token',
+      });
       return c.json({ error: 'Invalid recovery token' }, 401);
     }
+
     const tokenHash = hashRecoveryToken(token);
     const tokenRateLimited = await enforceTokenRateLimit(
       c,
@@ -1219,6 +1306,14 @@ bmrPublicRoutes.get(
       BMR_DOWNLOAD_TOKEN_WINDOW_SECONDS
     );
     if (tokenRateLimited) {
+      writeRecoveryDownloadAudit(c, {
+        orgId: null,
+        result: 'denied',
+        path,
+        tokenSource,
+        statusCode: 429,
+        reason: 'Rate limit exceeded',
+      });
       return tokenRateLimited;
     }
 
@@ -1235,6 +1330,14 @@ bmrPublicRoutes.get(
       .limit(1);
 
     if (!row) {
+      writeRecoveryDownloadAudit(c, {
+        orgId: null,
+        result: 'failure',
+        path,
+        tokenSource,
+        statusCode: 401,
+        reason: 'Invalid recovery token',
+      });
       return c.json({ error: 'Invalid recovery token' }, 401);
     }
 
@@ -1243,6 +1346,16 @@ bmrPublicRoutes.get(
         row.status === 'revoked' || row.status === 'expired' || row.status === 'used'
           ? 401
           : 409;
+      writeRecoveryDownloadAudit(c, {
+        orgId: row.orgId,
+        resourceId: row.id,
+        snapshotId: row.snapshotId,
+        result: status === 409 ? 'denied' : 'failure',
+        path,
+        tokenSource,
+        statusCode: status,
+        reason: row.status === 'active' ? 'Recovery token has not been authenticated' : `Token is ${row.status}`,
+      });
       return c.json({ error: row.status === 'active' ? 'Recovery token has not been authenticated' : `Token is ${row.status}` }, status);
     }
 
@@ -1250,6 +1363,16 @@ bmrPublicRoutes.get(
     try {
       target = await getAuthenticatedRecoveryDownloadTarget(row, path);
     } catch (error) {
+      writeRecoveryDownloadAudit(c, {
+        orgId: row.orgId,
+        resourceId: row.id,
+        snapshotId: row.snapshotId,
+        result: 'failure',
+        path,
+        tokenSource,
+        statusCode: 500,
+        reason: error instanceof Error ? error.message : 'Failed to resolve recovery download',
+      });
       return c.json(
         { error: error instanceof Error ? error.message : 'Failed to resolve recovery download' },
         500
@@ -1263,12 +1386,43 @@ bmrPublicRoutes.get(
           : target.reason.startsWith('Token is ')
             ? 401
             : 409;
+      writeRecoveryDownloadAudit(c, {
+        orgId: row.orgId,
+        resourceId: row.id,
+        snapshotId: row.snapshotId,
+        result: status === 409 ? 'denied' : 'failure',
+        path,
+        tokenSource,
+        statusCode: status,
+        reason: target.reason,
+      });
       return c.json({ error: target.reason }, status);
     }
 
     if (target.type === 'redirect') {
+      writeRecoveryDownloadAudit(c, {
+        orgId: row.orgId,
+        resourceId: row.id,
+        snapshotId: row.snapshotId,
+        result: 'success',
+        path,
+        tokenSource,
+        statusCode: 302,
+        transferType: 'redirect',
+      });
       return c.redirect(target.url, 302);
     }
+
+    writeRecoveryDownloadAudit(c, {
+      orgId: row.orgId,
+      resourceId: row.id,
+      snapshotId: row.snapshotId,
+      result: 'success',
+      path,
+      tokenSource,
+      statusCode: 200,
+      transferType: 'stream',
+    });
 
     const webStream = new ReadableStream({
       start(controller) {

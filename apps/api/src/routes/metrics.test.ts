@@ -25,6 +25,7 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
   requireScope: vi.fn(() => async (_c: any, next: any) => next())
 }));
@@ -47,6 +48,12 @@ describe('metrics routes', () => {
   let recordSensitiveDataFinding: typeof import('./metrics').recordSensitiveDataFinding;
   let recordSensitiveDataRemediationDecision: typeof import('./metrics').recordSensitiveDataRemediationDecision;
   let recordSensitiveDataScanQueued: typeof import('./metrics').recordSensitiveDataScanQueued;
+  let recordBackupDispatchFailure: typeof import('./metrics').recordBackupDispatchFailure;
+  let recordBackupCommandTimeout: typeof import('./metrics').recordBackupCommandTimeout;
+  let recordBackupVerificationResult: typeof import('./metrics').recordBackupVerificationResult;
+  let recordBackupVerificationSkip: typeof import('./metrics').recordBackupVerificationSkip;
+  let recordRestoreTimeout: typeof import('./metrics').recordRestoreTimeout;
+  let setLowReadinessDevices: typeof import('./metrics').setLowReadinessDevices;
   let updateBusinessMetrics: typeof import('./metrics').updateBusinessMetrics;
   let metricsMiddleware: typeof import('./metrics').metricsMiddleware;
 
@@ -62,6 +69,12 @@ describe('metrics routes', () => {
     recordSensitiveDataFinding = metricsModule.recordSensitiveDataFinding;
     recordSensitiveDataRemediationDecision = metricsModule.recordSensitiveDataRemediationDecision;
     recordSensitiveDataScanQueued = metricsModule.recordSensitiveDataScanQueued;
+    recordBackupDispatchFailure = metricsModule.recordBackupDispatchFailure;
+    recordBackupCommandTimeout = metricsModule.recordBackupCommandTimeout;
+    recordBackupVerificationResult = metricsModule.recordBackupVerificationResult;
+    recordBackupVerificationSkip = metricsModule.recordBackupVerificationSkip;
+    recordRestoreTimeout = metricsModule.recordRestoreTimeout;
+    setLowReadinessDevices = metricsModule.setLowReadinessDevices;
     updateBusinessMetrics = metricsModule.updateBusinessMetrics;
     metricsMiddleware = metricsModule.metricsMiddleware;
     app = new Hono();
@@ -217,5 +230,46 @@ describe('metrics routes', () => {
         { labels: { decision: 'encrypt_completed' }, value: 1 }
       ])
     );
+  });
+
+  it('records backup operational metrics', async () => {
+    recordBackupDispatchFailure('manual_restore', 'device_offline');
+    recordBackupCommandTimeout('mssql_backup', 'sync_wait');
+    recordBackupVerificationResult('test_restore', 'failed');
+    recordBackupVerificationSkip('test_restore', 'device_offline');
+    recordRestoreTimeout('backup_restore');
+    setLowReadinessDevices(3);
+
+    const jsonRes = await app.request('/json', {
+      headers: { Authorization: 'Bearer token' }
+    });
+    const body = await jsonRes.json();
+
+    expect(body.backup_operations.dispatch_failures).toEqual(
+      expect.arrayContaining([
+        { labels: { operation: 'manual_restore', reason: 'device_offline' }, value: 1 }
+      ])
+    );
+    expect(body.backup_operations.verification_skips).toEqual(
+      expect.arrayContaining([
+        { labels: { verification_type: 'test_restore', reason: 'device_offline' }, value: 1 }
+      ])
+    );
+    expect(body.backup_operations.verification_results).toEqual(
+      expect.arrayContaining([
+        { labels: { verification_type: 'test_restore', status: 'failed' }, value: 1 }
+      ])
+    );
+    expect(body.backup_operations.restore_timeouts).toEqual(
+      expect.arrayContaining([
+        { labels: { command_type: 'backup_restore' }, value: 1 }
+      ])
+    );
+    expect(body.backup_operations.command_timeouts).toEqual(
+      expect.arrayContaining([
+        { labels: { command_type: 'mssql_backup', source: 'sync_wait' }, value: 1 }
+      ])
+    );
+    expect(body.backup_operations.low_readiness_devices).toBe(3);
   });
 });

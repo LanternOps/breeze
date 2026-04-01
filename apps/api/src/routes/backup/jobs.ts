@@ -6,7 +6,10 @@ import { backupJobs, backupConfigs, devices } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { createManualBackupJobIfIdle } from '../../services/backupJobCreation';
+import { removeQueuedBackupDispatch } from '../../jobs/backupEnqueue';
+import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { resolveBackupConfigForDevice, resolveAllBackupAssignedDevices } from '../../services/featureConfigResolver';
+import { queueBackupStopCommand } from '../../services/commandQueue';
 import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import { jobListSchema } from './schemas';
@@ -144,6 +147,7 @@ jobsRoutes.post(
   }
 
   if (targetDevice.status !== 'online') {
+    recordBackupDispatchFailure('manual_backup', 'device_offline');
     return c.json({ error: `Device is ${targetDevice.status}, cannot execute backup` }, 409);
   }
 
@@ -196,6 +200,7 @@ jobsRoutes.post(
   } catch (err) {
     const error = err instanceof Error ? err.message : 'Failed to enqueue backup dispatch';
     console.error('[BackupJobs] Failed to enqueue dispatch:', err);
+    recordBackupDispatchFailure('manual_backup', 'enqueue_failed');
     await markBackupJobDispatchFailed(row.id, error);
     writeRouteAudit(c, {
       orgId,
@@ -258,12 +263,15 @@ jobsRoutes.get('/jobs/run-all/preview', requirePermission(PERMISSIONS.ORGS_READ.
   const activeDeviceIds = new Set(activeJobs.map((j) => j.deviceId));
 
   const eligibleIds = Array.from(deviceIds).filter((id) => onlineDeviceIds.has(id) && !activeDeviceIds.has(id));
+  const offlineDeviceIds = Array.from(deviceIds).filter((id) => !onlineDeviceIds.has(id));
+  const alreadyRunningDeviceIds = Array.from(deviceIds).filter((id) => onlineDeviceIds.has(id) && activeDeviceIds.has(id));
 
   return c.json({
     data: {
       deviceCount: eligibleIds.length,
       deviceIds: eligibleIds,
-      alreadyRunning: deviceIds.size - eligibleIds.length,
+      alreadyRunning: alreadyRunningDeviceIds.length,
+      offline: offlineDeviceIds.length,
     },
   });
 });
@@ -290,7 +298,8 @@ jobsRoutes.post(
   }
 
   const created: string[] = [];
-  const skipped: string[] = [];
+  const skippedOffline: string[] = [];
+  const skippedRunning: string[] = [];
   const failed: string[] = [];
   const deviceIds = Array.from(deviceConfigMap.keys());
   const onlineDevices = await db
@@ -307,7 +316,8 @@ jobsRoutes.post(
 
   for (const [deviceId, { configId, featureLinkId }] of deviceConfigMap) {
     if (!onlineDeviceIds.has(deviceId)) {
-      skipped.push(deviceId);
+      recordBackupDispatchFailure('manual_backup', 'device_offline');
+      skippedOffline.push(deviceId);
       continue;
     }
 
@@ -326,27 +336,38 @@ jobsRoutes.post(
       } catch (err) {
         const error = err instanceof Error ? err.message : 'Failed to enqueue backup dispatch';
         console.error('[BackupJobs] Failed to enqueue dispatch:', err);
+        recordBackupDispatchFailure('manual_backup', 'enqueue_failed');
         await markBackupJobDispatchFailed(result.job.id, error);
         failed.push(result.job.id);
       }
     } else {
-      skipped.push(deviceId);
+      skippedRunning.push(deviceId);
     }
   }
+
+  const skipped = skippedOffline.length + skippedRunning.length;
 
   writeRouteAudit(c, {
     orgId,
     action: 'backup.job.run_all',
     resourceType: 'backup_job',
     resourceId: null,
-    details: { created: created.length, skipped: skipped.length, failed: failed.length },
+    details: {
+      created: created.length,
+      skipped,
+      skippedOffline: skippedOffline.length,
+      skippedRunning: skippedRunning.length,
+      failed: failed.length,
+    },
     result: failed.length > 0 && created.length === 0 ? 'failure' : 'success',
   });
 
   return c.json({
     data: {
       created: created.length,
-      skipped: skipped.length,
+      skipped,
+      skippedOffline: skippedOffline.length,
+      skippedRunning: skippedRunning.length,
       failed: failed.length,
       jobIds: created,
       failedJobIds: failed,
@@ -388,13 +409,38 @@ jobsRoutes.post(
       status: 'cancelled',
       completedAt: now,
       updatedAt: now,
-      errorLog: 'Canceled by user',
+      errorLog: 'Cancelled by user',
     })
-    .where(eq(backupJobs.id, jobId))
+    .where(and(
+      eq(backupJobs.id, jobId),
+      inArray(backupJobs.status, ['pending', 'running'])
+    ))
     .returning();
 
   if (!row) {
-    return c.json({ error: 'Job not found' }, 404);
+    return c.json({ error: 'Job is not cancelable' }, 409);
+  }
+
+  let dispatchRemoved = false;
+  try {
+    dispatchRemoved = await removeQueuedBackupDispatch(row.id);
+  } catch (err) {
+    console.warn(`[BackupJobs] Failed to remove queued dispatch for job ${row.id}:`, err);
+  }
+
+  let stopQueued = false;
+  if (current.status === 'running' || (current.status === 'pending' && !dispatchRemoved)) {
+    try {
+      const { error } = await queueBackupStopCommand(row.deviceId, {
+        userId: auth?.user?.id ?? undefined,
+      });
+      stopQueued = !error;
+      if (error) {
+        console.warn(`[BackupJobs] Failed to queue backup_stop for job ${row.id}: ${error}`);
+      }
+    } catch (err) {
+      console.warn(`[BackupJobs] Failed to queue backup_stop for job ${row.id}:`, err);
+    }
   }
 
   writeRouteAudit(c, {
@@ -402,10 +448,18 @@ jobsRoutes.post(
     action: 'backup.job.cancel',
     resourceType: 'backup_job',
     resourceId: row.id,
-    details: { deviceId: row.deviceId },
+    details: {
+      deviceId: row.deviceId,
+      dispatchRemoved,
+      stopQueued,
+    },
   });
 
-  return c.json(toJobResponse(row));
+  const response = toJobResponse(row);
+  if (current.status === 'running' && !stopQueued) {
+    return c.json({ ...response, warning: 'Job marked as cancelled but the stop signal could not be delivered to the agent. The backup may still be running on the device.' });
+  }
+  return c.json(response);
 });
 
 function toJobResponse(row: typeof backupJobs.$inferSelect) {

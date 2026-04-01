@@ -9,7 +9,7 @@ import {
   recoveryReadinessRecords,
   upsertRecoveryReadiness
 } from './store';
-import { resolveAllBackupAssignedDevices } from '../../services/featureConfigResolver';
+import { resolveAllBackupAssignedDevices, type BackupAssignedDevice } from '../../services/featureConfigResolver';
 import type { RecoveryReadiness, RecoveryRiskFactor } from './types';
 // NOTE: Circular import with verificationService is intentional and safe.
 // listBackupVerifications is only called at function invocation time, not at module evaluation.
@@ -25,6 +25,7 @@ import { isCriticalBackupDevice } from './criticality';
 const MINUTE_MS = 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MISSING_RESTORE_PROOF_PENALTY = 20;
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -63,6 +64,58 @@ function clamp(value: number, min: number, max: number): number {
 function average(values: number[]): number | null {
   if (values.length === 0) return null;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function createNoHistoryReadiness(orgId: string, deviceId: string): RecoveryReadiness {
+  return {
+    id: `synthetic-readiness:${orgId}:${deviceId}`,
+    orgId,
+    deviceId,
+    readinessScore: 0,
+    estimatedRtoMinutes: null,
+    estimatedRpoMinutes: null,
+    riskFactors: [
+      {
+        code: 'no_verification_history',
+        severity: 'high',
+        message: 'No verification history is available for this device.'
+      }
+    ],
+    calculatedAt: new Date().toISOString()
+  };
+}
+
+async function addMissingAssignedDevicesToReadiness(
+  orgId: string,
+  rows: RecoveryReadiness[]
+): Promise<RecoveryReadiness[]> {
+  let assignedDevices: BackupAssignedDevice[] = [];
+
+  try {
+    assignedDevices = await resolveAllBackupAssignedDevices(orgId);
+  } catch (error) {
+    console.error(`[BackupReadiness] Failed to resolve assigned devices for readiness listing:`, error instanceof Error ? error.message : error);
+    return rows;
+  }
+
+  if (assignedDevices.length === 0) {
+    return rows;
+  }
+
+  const existingDeviceIds = new Set(rows.map((row) => row.deviceId));
+  const syntheticRows = assignedDevices
+    .filter((device) => !existingDeviceIds.has(device.deviceId))
+    .map((device) => createNoHistoryReadiness(orgId, device.deviceId));
+
+  if (syntheticRows.length === 0) {
+    return rows;
+  }
+
+  return [...rows, ...syntheticRows].sort((a, b) => {
+    const scoreDiff = a.readinessScore - b.readinessScore;
+    if (scoreDiff !== 0) return scoreDiff;
+    return a.deviceId.localeCompare(b.deviceId);
+  });
 }
 
 // ---- Low readiness state tracking ----
@@ -259,8 +312,8 @@ async function safePublish(
 
 export async function listRecoveryReadiness(orgId: string): Promise<RecoveryReadiness[]> {
   const dbRows = await listRecoveryReadinessFromDb(orgId);
-  if (dbRows) return dbRows;
-  return listRecoveryReadinessFromMemory(orgId);
+  const rows = dbRows ?? listRecoveryReadinessFromMemory(orgId);
+  return addMissingAssignedDevicesToReadiness(orgId, rows);
 }
 
 // ---- Main readiness computation ----
@@ -310,6 +363,10 @@ export async function recomputeRecoveryReadinessForDevice(
     return readiness;
   }
 
+  const hasRecentRestoreTest = recent.some((row) => (
+    row.verificationType === 'test_restore'
+    && (now - toEpoch(row.completedAt ?? row.startedAt)) <= (30 * DAY_MS)
+  ));
   const weightedRows = recent.map((row) => ({
     row,
     weight: row.verificationType === 'integrity' ? 0.5 : 1,
@@ -327,7 +384,7 @@ export async function recomputeRecoveryReadinessForDevice(
     .map((row) => row.restoreTimeSeconds ?? null)
     .filter((value): value is number => typeof value === 'number' && value > 0);
   const avgRestoreSeconds = average(restoreSamples);
-  const restoreQuality = avgRestoreSeconds === null ? 0.5 : clamp(1 - ((avgRestoreSeconds - 180) / 3600), 0, 1);
+  const restoreQuality = avgRestoreSeconds === null ? 0 : clamp(1 - ((avgRestoreSeconds - 180) / 3600), 0, 1);
 
   const lastRunAt = toEpoch(recent[0]?.completedAt ?? recent[0]?.startedAt);
   const ageDays = Math.max(0, (now - lastRunAt) / DAY_MS);
@@ -335,7 +392,7 @@ export async function recomputeRecoveryReadinessForDevice(
 
   const failureCount = recent.filter((row) => row.status === 'failed').length;
   const baseScore = Math.round((passRate * 55) + (restoreQuality * 30) + (recencyQuality * 15));
-  const readinessScore = clamp(baseScore - (failureCount * 6), 0, 100);
+  const readinessScore = clamp(baseScore - (failureCount * 6) - (hasRecentRestoreTest ? 0 : MISSING_RESTORE_PROOF_PENALTY), 0, 100);
 
   const riskFactors: RecoveryRiskFactor[] = [];
   if (failureCount > 0) {
@@ -360,10 +417,6 @@ export async function recomputeRecoveryReadinessForDevice(
     });
   }
 
-  const hasRecentRestoreTest = recent.some((row) => (
-    row.verificationType === 'test_restore'
-    && (now - toEpoch(row.completedAt ?? row.startedAt)) <= (30 * DAY_MS)
-  ));
   if (!hasRecentRestoreTest) {
     riskFactors.push({
       code: 'restore_test_missing',
@@ -426,23 +479,27 @@ export async function getBackupHealthSummary(orgId: string): Promise<{
     criticalVerificationFailures: number;
   };
 }> {
-  const [rows, readiness, assigned] = await Promise.all([
+  const [rows, readiness, assignedResult] = await Promise.all([
     listBackupVerifications(orgId, { excludeSimulated: true }),
     listRecoveryReadiness(orgId),
-    resolveAllBackupAssignedDevices(orgId).catch((err) => {
-      console.error(`[BackupReadiness] Failed to resolve assigned devices:`, err instanceof Error ? err.message : err);
-      return [];
-    })
+    resolveAllBackupAssignedDevices(orgId)
+      .then((assigned) => ({ assigned, failed: false as const }))
+      .catch((err) => {
+        console.error(`[BackupReadiness] Failed to resolve assigned devices:`, err instanceof Error ? err.message : err);
+        return { assigned: [] as BackupAssignedDevice[], failed: true as const };
+      })
   ]);
   const now = Date.now();
   const dayAgo = now - DAY_MS;
 
   const last24h = rows.filter((row) => toEpoch(row.completedAt ?? row.startedAt) >= dayAgo);
-  const protectedDeviceIds = assigned.map((a) => a.deviceId);
+  const protectedDeviceIds = assignedResult.assigned.map((a) => a.deviceId);
   const protectedDevices = new Set(protectedDeviceIds);
   const coveredRecently = new Set(
     rows
+      .filter((row) => row.status === 'passed')
       .filter((row) => (now - toEpoch(row.completedAt ?? row.startedAt)) <= (BACKUP_RECENT_COVERAGE_DAYS * DAY_MS))
+      .filter((row) => protectedDevices.has(row.deviceId))
       .map((row) => row.deviceId)
   );
   const failedLast24h = last24h.filter((row) => row.status === 'failed');
@@ -457,7 +514,9 @@ export async function getBackupHealthSummary(orgId: string): Promise<{
   const averageScore = readiness.length > 0
     ? Math.round((readiness.reduce((sum, row) => sum + row.readinessScore, 0) / readiness.length) * 10) / 10
     : 0;
-  const coveragePercent = protectedDevices.size > 0
+  const coveragePercent = assignedResult.failed
+    ? 0
+    : protectedDevices.size > 0
     ? Math.round((coveredRecently.size / protectedDevices.size) * 100)
     : 100;
 

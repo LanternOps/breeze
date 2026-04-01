@@ -116,6 +116,7 @@ if [ -n "$DB_FILE" ]; then
   if [ ! -f "$DB_FILE" ]; then die "Database backup file not found: $DB_FILE"; fi
   if [ -z "${DATABASE_URL:-}" ]; then die "DATABASE_URL is required for --db restore"; fi
   if ! command -v pg_restore &>/dev/null; then die "pg_restore is not installed or not in PATH"; fi
+  if ! command -v psql &>/dev/null; then die "psql is not installed or not in PATH"; fi
 fi
 
 if [ -n "$STORAGE_DIR" ]; then
