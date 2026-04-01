@@ -222,8 +222,8 @@ importers:
         specifier: ~55.0.10
         version: 55.0.10(expo@55.0.8)
       expo-linking:
-        specifier: ~55.0.8
-        version: 55.0.8(expo@55.0.8)(react-native@0.83.2(@babel/core@7.28.6)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.28.6))(@types/react@19.2.8)(react@19.2.0))(react@19.2.0)(typescript@5.9.3)
+        specifier: ~55.0.9
+        version: 55.0.9(expo@55.0.8)(react-native@0.83.2(@babel/core@7.28.6)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.28.6))(@types/react@19.2.8)(react@19.2.0))(react@19.2.0)(typescript@5.9.3)
       expo-local-authentication:
         specifier: ~55.0.9
         version: 55.0.9(expo@55.0.8)
@@ -2465,6 +2465,9 @@ packages:
 
   '@expo/config@55.0.10':
     resolution: {integrity: sha512-qCHxo9H1ZoeW+y0QeMtVZ3JfGmumpGrgUFX60wLWMarraoQZSe47ZUm9kJSn3iyoPjUtUNanO3eXQg+K8k4rag==}
+
+  '@expo/config@55.0.11':
+    resolution: {integrity: sha512-14AkSmR1gOIUhCsPJ0cAo5ZduMNsPQsmFV9jBNZn1xC5Zb3D8x5eqvUie5QzWaUwdcyrq79uYJ2bTCiC6+nD0Q==}
 
   '@expo/devcert@1.2.1':
     resolution: {integrity: sha512-qC4eaxmKMTmJC2ahwyui6ud8f3W60Ss7pMkpBq40Hu3zyiAaugPXnZ24145U7K36qO9UHdZUVxsCvIpz2RYYCA==}
@@ -6044,8 +6047,8 @@ packages:
       expo: '*'
       react: '*'
 
-  expo-linking@55.0.8:
-    resolution: {integrity: sha512-O9QgKAfEqKfsjL6IKs5p7pFAjo/3/TQwjMzzNPl8BCndbxWMPQfMeViXPYYNS9bA2ujUqrtF1OYhO6woI7GNQQ==}
+  expo-linking@55.0.9:
+    resolution: {integrity: sha512-QWEefQZUu7PuJzye19Hr6msqpO4VB4TiY4T/6AkISJzZnoZGxWg16s3JTZS7D/b3VMm8VQfhw9I5NF/7f8EPcA==}
     peerDependencies:
       react: '*'
       react-native: '*'
@@ -8791,6 +8794,10 @@ packages:
 
   slugify@1.6.6:
     resolution: {integrity: sha512-h+z7HKHYXj6wJU+AnS/+IH8Uh9fdcX1Lrhg1/VMdf9PwoBQXFcXiAdsy2tSK0P6gKwJLXp02r90ahUCqHk9rrw==}
+    engines: {node: '>=8.0.0'}
+
+  slugify@1.6.8:
+    resolution: {integrity: sha512-HVk9X1E0gz3mSpoi60h/saazLKXKaZThMLU3u/aNwoYn8/xQyX2MGxL0ui2eaokkD7tF+Zo+cKTHUbe1mmmGzA==}
     engines: {node: '>=8.0.0'}
 
   smol-toml@1.6.0:
@@ -12177,6 +12184,23 @@ snapshots:
       resolve-workspace-root: 2.0.1
       semver: 7.7.4
       slugify: 1.6.6
+    transitivePeerDependencies:
+      - supports-color
+      - typescript
+
+  '@expo/config@55.0.11(typescript@5.9.3)':
+    dependencies:
+      '@expo/config-plugins': 55.0.7
+      '@expo/config-types': 55.0.5
+      '@expo/json-file': 10.0.12
+      '@expo/require-utils': 55.0.3(typescript@5.9.3)
+      deepmerge: 4.3.1
+      getenv: 2.0.0
+      glob: 13.0.6
+      resolve-from: 5.0.0
+      resolve-workspace-root: 2.0.1
+      semver: 7.7.4
+      slugify: 1.6.8
     transitivePeerDependencies:
       - supports-color
       - typescript
@@ -16739,7 +16763,7 @@ snapshots:
 
   expo-constants@55.0.9(expo@55.0.8)(react-native@0.83.2(@babel/core@7.28.6)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.28.6))(@types/react@19.2.8)(react@19.2.0))(typescript@5.9.3):
     dependencies:
-      '@expo/config': 55.0.10(typescript@5.9.3)
+      '@expo/config': 55.0.11(typescript@5.9.3)
       '@expo/env': 2.1.1
       expo: 55.0.8(@babel/core@7.28.6)(@expo/dom-webview@55.0.3)(react-dom@19.2.3(react@19.2.0))(react-native@0.83.2(@babel/core@7.28.6)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.28.6))(@types/react@19.2.8)(react@19.2.0))(react@19.2.0)(typescript@5.9.3)
       react-native: 0.83.2(@babel/core@7.28.6)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.28.6))(@types/react@19.2.8)(react@19.2.0)
@@ -16769,7 +16793,7 @@ snapshots:
       expo: 55.0.8(@babel/core@7.28.6)(@expo/dom-webview@55.0.3)(react-dom@19.2.3(react@19.2.0))(react-native@0.83.2(@babel/core@7.28.6)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.28.6))(@types/react@19.2.8)(react@19.2.0))(react@19.2.0)(typescript@5.9.3)
       react: 19.2.0
 
-  expo-linking@55.0.8(expo@55.0.8)(react-native@0.83.2(@babel/core@7.28.6)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.28.6))(@types/react@19.2.8)(react@19.2.0))(react@19.2.0)(typescript@5.9.3):
+  expo-linking@55.0.9(expo@55.0.8)(react-native@0.83.2(@babel/core@7.28.6)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.28.6))(@types/react@19.2.8)(react@19.2.0))(react@19.2.0)(typescript@5.9.3):
     dependencies:
       expo-constants: 55.0.9(expo@55.0.8)(react-native@0.83.2(@babel/core@7.28.6)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.28.6))(@types/react@19.2.8)(react@19.2.0))(typescript@5.9.3)
       invariant: 2.2.4
@@ -20601,6 +20625,8 @@ snapshots:
     optional: true
 
   slugify@1.6.6: {}
+
+  slugify@1.6.8: {}
 
   smol-toml@1.6.0: {}
 
