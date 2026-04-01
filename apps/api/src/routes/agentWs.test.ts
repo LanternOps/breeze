@@ -80,12 +80,17 @@ vi.mock('../services/redis', () => ({
   isRedisAvailable: vi.fn(() => false)
 }));
 
+vi.mock('./backup/verificationService', () => ({
+  processBackupVerificationResult: vi.fn(),
+}));
+
 import { db } from '../db';
 import { createAgentWsHandlers } from './agentWs';
 import { enqueueDiscoveryResults } from '../jobs/discoveryWorker';
 import { enqueueSnmpPollResults } from '../jobs/snmpWorker';
 import { enqueueMonitorCheckResult } from '../jobs/monitorWorker';
 import { getActiveTerminalSession, handleTerminalOutput } from './terminalWs';
+import { processBackupVerificationResult } from './backup/verificationService';
 
 function wsMock() {
   return {
@@ -423,6 +428,40 @@ describe('agent websocket command results', () => {
     } as any, ws as any);
 
     expect(vi.mocked(enqueueDiscoveryResults)).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('rejects malformed critical verification payloads before readiness processing', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([
+        {
+          id: 'cmd-verify-1',
+          type: 'backup_verify',
+          payload: {},
+          deviceId: 'device-123'
+        }
+      ]) as any);
+
+    vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'cmd-verify-1' }]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '66666666-6666-4666-8666-666666666666',
+        status: 'completed',
+        result: {
+          filesVerified: 10
+        }
+      })
+    } as any, ws as any);
+
+    expect(vi.mocked(processBackupVerificationResult)).not.toHaveBeenCalled();
+    expect(db.update).toHaveBeenCalled();
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 

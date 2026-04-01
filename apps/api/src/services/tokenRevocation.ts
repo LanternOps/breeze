@@ -16,10 +16,18 @@ function getRevokedRefreshKey(jti: string): string {
   return `token:refresh:revoked:${jti}`;
 }
 
+// Fail-closed: when Redis is unavailable we treat access tokens as revoked.
+// This matches the refresh-token behavior and ensures that a Redis outage
+// cannot silently re-enable revoked user sessions.  The trade-off is that
+// all authenticated traffic is blocked during a Redis outage, but this is
+// the correct security posture — revocation is a critical control, not a
+// best-effort optimization.
 export async function isUserTokenRevoked(userId: string, tokenIssuedAt?: number): Promise<boolean> {
   const redis = getRedis();
   if (!redis) {
-    console.error('[token-revocation] Redis unavailable — failing closed (treating token as revoked)');
+    console.error(
+      '[token-revocation] Redis unavailable — failing closed (treating token as revoked)'
+    );
     return true;
   }
 
@@ -57,7 +65,10 @@ export async function isUserTokenRevoked(userId: string, tokenIssuedAt?: number)
 
     return tokenIssuedAt <= revokedAfter;
   } catch (error) {
-    console.error('[token-revocation] Failed to check token revocation state — failing closed:', error);
+    console.error(
+      '[token-revocation] Failed to check token revocation state — failing closed:',
+      error
+    );
     return true;
   }
 }

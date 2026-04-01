@@ -80,8 +80,17 @@ export const snapshotProtectionReasonSchema = z.object({
 });
 
 export const snapshotImmutabilityApplySchema = snapshotProtectionReasonSchema.extend({
-  immutableDays: z.number().int().min(1).max(3650),
+  immutableDays: z.number().int().min(1).max(3650).optional(),
+  extendUntil: z.string().datetime({ offset: true }).optional(),
   enforcement: z.enum(['application', 'provider']).default('application'),
+}).superRefine((value, ctx) => {
+  if (!value.immutableDays && !value.extendUntil) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['immutableDays'],
+      message: 'immutableDays or extendUntil is required',
+    });
+  }
 });
 
 export const usageHistoryQuerySchema = z.object({
@@ -207,7 +216,7 @@ export const bmrRecoveryDownloadSchema = z.object({
 });
 
 export const bmrTokenListSchema = z.object({
-  status: z.enum(['active', 'used', 'expired', 'revoked']).optional(),
+  status: z.enum(['active', 'authenticated', 'used', 'expired', 'revoked']).optional(),
   deviceId: z.string().uuid().optional(),
   snapshotId: z.string().uuid().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),

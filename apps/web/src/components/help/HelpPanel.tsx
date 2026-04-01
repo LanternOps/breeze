@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
 import { BookOpen, ExternalLink, Loader2, X } from 'lucide-react';
 import { useHelpStore } from '@/stores/helpStore';
+import { isDocsEmbeddableOrigin } from '@/lib/docsEmbed';
 
 export default function HelpPanel() {
   const { isOpen, docsUrl, label, toggle, close } = useHelpStore();
   const [iframeLoaded, setIframeLoaded] = useState(false);
   const [iframeError, setIframeError] = useState(false);
+  const currentOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+  const canEmbedDocs = currentOrigin ? isDocsEmbeddableOrigin(currentOrigin) : true;
 
   // Keyboard shortcut: Cmd+Shift+H to toggle
   useEffect(() => {
@@ -26,7 +29,7 @@ export default function HelpPanel() {
 
   // Timeout fallback if iframe never loads
   useEffect(() => {
-    if (!isOpen || iframeLoaded || iframeError) return;
+    if (!isOpen || !canEmbedDocs || iframeLoaded || iframeError) return;
     const timer = setTimeout(() => {
       if (!iframeLoaded) {
         console.warn('[HelpPanel] Iframe load timed out after 15s:', docsUrl);
@@ -34,7 +37,7 @@ export default function HelpPanel() {
       }
     }, 15000);
     return () => clearTimeout(timer);
-  }, [isOpen, docsUrl, iframeLoaded, iframeError]);
+  }, [isOpen, docsUrl, canEmbedDocs, iframeLoaded, iframeError]);
 
   const handleOpenInNewTab = () => {
     window.open(docsUrl, '_blank', 'noopener,noreferrer');
@@ -75,15 +78,22 @@ export default function HelpPanel() {
         </div>
 
         <div className="relative flex flex-1">
-          {!iframeLoaded && !iframeError && (
+          {canEmbedDocs && !iframeLoaded && !iframeError && (
             <div className="absolute inset-0 flex items-center justify-center bg-card">
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
             </div>
           )}
 
-          {iframeError && (
+          {(!canEmbedDocs || iframeError) && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-card">
-              <p className="text-sm text-muted-foreground">Could not load documentation.</p>
+              <p className="max-w-xs text-center text-sm text-muted-foreground">
+                {canEmbedDocs
+                  ? 'Could not load documentation in the side panel.'
+                  : 'Embedded docs are blocked on this app origin. Open the page in a new tab instead.'}
+              </p>
+              {!canEmbedDocs && currentOrigin && (
+                <code className="rounded bg-muted px-2 py-1 text-xs text-muted-foreground">{currentOrigin}</code>
+              )}
               <button
                 type="button"
                 onClick={handleOpenInNewTab}
@@ -95,17 +105,19 @@ export default function HelpPanel() {
             </div>
           )}
 
-          <iframe
-            key={docsUrl}
-            src={docsUrl}
-            title={label}
-            onLoad={() => setIframeLoaded(true)}
-            onError={(e) => {
-              console.error('[HelpPanel] Iframe failed to load:', docsUrl, e);
-              setIframeError(true);
-            }}
-            className="h-full w-full flex-1 border-0 bg-background"
-          />
+          {canEmbedDocs && (
+            <iframe
+              key={docsUrl}
+              src={docsUrl}
+              title={label}
+              onLoad={() => setIframeLoaded(true)}
+              onError={(e) => {
+                console.error('[HelpPanel] Iframe failed to load:', docsUrl, e);
+                setIframeError(true);
+              }}
+              className="h-full w-full flex-1 border-0 bg-background"
+            />
+          )}
         </div>
       </div>
 

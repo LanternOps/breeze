@@ -16,6 +16,10 @@ type RecoveryDownloadRow = Pick<
   'id' | 'snapshotId' | 'status' | 'authenticatedAt' | 'expiresAt'
 >;
 
+function isDownloadEligibleStatus(status: string, authenticatedAt: Date | null): boolean {
+  return status === 'authenticated' || (status === 'active' && authenticatedAt !== null);
+}
+
 function normalizeSnapshotPath(remotePath: string, expectedPrefix: string): string | null {
   const cleaned = pathPosix.normalize(String(remotePath || '').trim()).replace(/^\/+/, '');
   const prefix = expectedPrefix.replace(/^\/+|\/+$/g, '');
@@ -85,12 +89,17 @@ export async function getAuthenticatedRecoveryDownloadTarget(
   tokenRow: RecoveryDownloadRow,
   remotePath: string
 ) {
-  if (tokenRow.status !== 'active') {
+  if (tokenRow.status === 'revoked' || tokenRow.status === 'expired' || tokenRow.status === 'used') {
     return { unavailable: true, reason: `Token is ${tokenRow.status}` } as const;
   }
 
   const downloadExpiry = computeRecoveryDownloadExpiry(tokenRow.authenticatedAt, tokenRow.expiresAt);
-  if (!tokenRow.authenticatedAt || !downloadExpiry || downloadExpiry.getTime() <= Date.now()) {
+  if (
+    !isDownloadEligibleStatus(tokenRow.status, tokenRow.authenticatedAt) ||
+    !tokenRow.authenticatedAt ||
+    !downloadExpiry ||
+    downloadExpiry.getTime() <= Date.now()
+  ) {
     return { unavailable: true, reason: 'Recovery session has expired. Re-authenticate to continue.' } as const;
   }
 

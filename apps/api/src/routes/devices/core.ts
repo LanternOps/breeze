@@ -21,6 +21,7 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
 import { sendCommandToAgent, isAgentConnected } from '../agentWs';
 import { CommandTypes } from '../../services/commandQueue';
+import { getGlobalEnrollmentSecret } from '../agents/enrollment';
 
 export const coreRoutes = new Hono();
 
@@ -33,7 +34,9 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-// POST /devices/onboarding-token - Generate a short-lived enrollment key
+// POST /devices/onboarding-token - Generate a short-lived enrollment key.
+// If AGENT_ENROLLMENT_SECRET is configured, enrollment also requires that
+// shared secret; otherwise the short-lived key stands on its own.
 coreRoutes.post(
   '/onboarding-token',
   requireScope('organization', 'partner', 'system'),
@@ -89,14 +92,14 @@ coreRoutes.post(
       createdBy: auth.user.id,
     });
 
-    const configuredSecret = process.env.AGENT_ENROLLMENT_SECRET;
-    const secretRequired =
-      (process.env.NODE_ENV ?? 'development') === 'production'
-      && typeof configuredSecret === 'string'
-      && configuredSecret.length > 0;
+    const configuredSecret = getGlobalEnrollmentSecret();
+    const secretRequired = configuredSecret !== null;
 
     return c.json({
       token: key,
+      expiresAt: expiresAt.toISOString(),
+      enrollmentSecretMode: secretRequired ? 'global_env' : 'none',
+      additionalSecretRequired: secretRequired,
       ...(secretRequired && { enrollmentSecret: configuredSecret }),
     });
   }

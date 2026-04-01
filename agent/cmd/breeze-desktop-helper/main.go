@@ -87,6 +87,34 @@ func runDesktopHelper() {
 		defer logging.StopShipper()
 	}
 
+	startupProbe := collectProbeOutput(false, true)
+	attrs := []any{
+		"context", startupProbe.Context,
+		"processUser", startupProbe.ProcessUser,
+		"captureGranted", startupProbe.CaptureGranted,
+		"pid", os.Getpid(),
+		"version", version,
+	}
+	if startupProbe.CaptureError != "" {
+		attrs = append(attrs, "captureError", startupProbe.CaptureError)
+	}
+	if startupProbe.TCC != nil {
+		remoteDesktop := "unknown"
+		if startupProbe.TCC.RemoteDesktop != nil {
+			remoteDesktop = fmt.Sprintf("%t", *startupProbe.TCC.RemoteDesktop)
+		}
+		attrs = append(attrs,
+			"screenRecording", startupProbe.TCC.ScreenRecording,
+			"accessibility", startupProbe.TCC.Accessibility,
+			"fullDiskAccess", startupProbe.TCC.FullDiskAccess,
+			"remoteDesktop", remoteDesktop,
+		)
+	}
+	if len(startupProbe.Sessions) > 0 {
+		attrs = append(attrs, "sessions", startupProbe.Sessions)
+	}
+	log.Info("desktop helper startup probe", attrs...)
+
 	client := userhelper.NewWithOptions(socketPath, ipc.HelperRoleSystem, ipc.HelperBinaryDesktopHelper, contextFlag)
 
 	sigChan := make(chan os.Signal, 1)
@@ -115,6 +143,14 @@ type probeOutput struct {
 func runProbe() error {
 	logging.Init("text", "info", os.Stdout)
 
+	out := collectProbeOutput(probePrompt, true)
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
+}
+
+func collectProbeOutput(allowPrompt bool, allowCaptureProbe bool) probeOutput {
 	out := probeOutput{
 		Timestamp: time.Now().UTC(),
 		Context:   contextFlag,
@@ -133,20 +169,20 @@ func runProbe() error {
 		}
 	}
 
-	out.TCC = userhelper.ProbeTCCPermissions(contextFlag, probePrompt, true)
+	out.TCC = userhelper.ProbeTCCPermissions(contextFlag, allowPrompt, allowCaptureProbe)
 
-	granted, err := desktop.ProbeCaptureAccess(desktop.CaptureConfig{
-		DesktopContext: contextFlag,
-	})
-	out.CaptureGranted = granted
-	if err != nil {
-		if out.CaptureError != "" {
-			out.CaptureError += "; "
+	if allowCaptureProbe {
+		granted, err := desktop.ProbeCaptureAccess(desktop.CaptureConfig{
+			DesktopContext: contextFlag,
+		})
+		out.CaptureGranted = granted
+		if err != nil {
+			if out.CaptureError != "" {
+				out.CaptureError += "; "
+			}
+			out.CaptureError += err.Error()
 		}
-		out.CaptureError += err.Error()
 	}
 
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(out)
+	return out
 }

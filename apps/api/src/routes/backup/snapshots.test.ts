@@ -47,6 +47,7 @@ vi.mock('../../db/schema', () => ({
     fileCount: 'backup_snapshots.file_count',
     label: 'backup_snapshots.label',
     location: 'backup_snapshots.location',
+    metadata: 'backup_snapshots.metadata',
     expiresAt: 'backup_snapshots.expires_at',
     legalHold: 'backup_snapshots.legal_hold',
     legalHoldReason: 'backup_snapshots.legal_hold_reason',
@@ -102,6 +103,7 @@ function makeSnapshot(overrides: Record<string, unknown> = {}) {
     label: 'Backup 2026-03-31',
     location: 'snapshots/provider-snap-1',
     expiresAt: new Date('2026-04-30T00:00:00.000Z'),
+    metadata: {},
     legalHold: false,
     legalHoldReason: null,
     isImmutable: false,
@@ -127,6 +129,11 @@ describe('snapshot routes', () => {
   it('returns protection fields in snapshot responses', async () => {
     selectMock.mockReturnValueOnce(chainMock([
       makeSnapshot({
+        metadata: {
+          snapshotProtection: {
+            legalHoldSource: 'policy',
+          },
+        },
         legalHold: true,
         legalHoldReason: 'Regulatory matter',
         isImmutable: true,
@@ -145,10 +152,12 @@ describe('snapshot routes', () => {
     expect(body.data[0]).toMatchObject({
       legalHold: true,
       legalHoldReason: 'Regulatory matter',
+      legalHoldSource: 'policy',
       isImmutable: true,
       immutabilityEnforcement: 'application',
       requestedImmutabilityEnforcement: null,
       immutabilityFallbackReason: null,
+      retentionBlockedReason: 'legal_hold',
     });
   });
 
@@ -156,6 +165,11 @@ describe('snapshot routes', () => {
     selectMock.mockReturnValueOnce(chainMock([makeSnapshot()]));
     updateMock.mockReturnValueOnce(chainMock([
       makeSnapshot({
+        metadata: {
+          snapshotProtection: {
+            legalHoldSource: 'manual',
+          },
+        },
         legalHold: true,
         legalHoldReason: 'Litigation',
       }),
@@ -171,9 +185,49 @@ describe('snapshot routes', () => {
     const body = await res.json();
     expect(body.legalHold).toBe(true);
     expect(body.legalHoldReason).toBe('Litigation');
+    expect(body.legalHoldSource).toBe('manual');
     expect(writeRouteAuditMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ action: 'backup.snapshot.legal_hold.apply' }),
+    );
+  });
+
+  it('releases legal hold via DELETE', async () => {
+    selectMock.mockReturnValueOnce(chainMock([
+      makeSnapshot({
+        metadata: {
+          snapshotProtection: {
+            legalHoldSource: 'manual',
+          },
+        },
+        legalHold: true,
+        legalHoldReason: 'Litigation',
+      }),
+    ]));
+    updateMock.mockReturnValueOnce(chainMock([
+      makeSnapshot({
+        metadata: {
+          snapshotProtection: {
+            legalHoldSource: null,
+          },
+        },
+        legalHold: false,
+        legalHoldReason: null,
+      }),
+    ]));
+
+    const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}/legal-hold`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ reason: 'Released' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.legalHold).toBe(false);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'backup.snapshot.legal_hold.release' }),
     );
   });
 
@@ -241,6 +295,34 @@ describe('snapshot routes', () => {
       expect.anything(),
       expect.objectContaining({ action: 'backup.snapshot.immutability.apply.provider' }),
     );
+  });
+
+  it('rejects attempts to shorten an existing immutability window', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([
+        makeSnapshot({
+          isImmutable: true,
+          immutableUntil: new Date('2026-06-01T00:00:00.000Z'),
+          immutabilityEnforcement: 'application',
+        }),
+      ]))
+      .mockReturnValueOnce(chainMock([
+        makeSnapshot({
+          isImmutable: true,
+          immutableUntil: new Date('2026-06-01T00:00:00.000Z'),
+          immutabilityEnforcement: 'application',
+        }),
+      ]));
+
+    const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}/immutability`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ reason: 'Try shorten', extendUntil: '2026-05-01T00:00:00.000Z', enforcement: 'application' }),
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toContain('extended forward');
   });
 
   it('rejects manual provider immutability when object lock is unavailable', async () => {

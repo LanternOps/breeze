@@ -77,7 +77,15 @@ function readinessColor(score: number): string {
   return 'text-destructive';
 }
 
-export default function BackupVerificationTab({ deviceId }: { deviceId: string }) {
+type DeviceStatus = 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined';
+
+export default function BackupVerificationTab({
+  deviceId,
+  deviceStatus,
+}: {
+  deviceId: string;
+  deviceStatus?: DeviceStatus;
+}) {
   const [verifications, setVerifications] = useState<Verification[]>([]);
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [loading, setLoading] = useState(true);
@@ -160,11 +168,13 @@ export default function BackupVerificationTab({ deviceId }: { deviceId: string }
       await fetchData();
     } catch (err) {
       console.error('[BackupVerificationTab] triggerVerification:', err);
-      setError(friendlyFetchError(err));
+      setError(`Verification could not be started: ${friendlyFetchError(err)}`);
     } finally {
       setTriggering(null);
     }
   };
+
+  const isOffline = deviceStatus != null && deviceStatus !== 'online';
 
   if (loading) {
     return (
@@ -230,7 +240,7 @@ export default function BackupVerificationTab({ deviceId }: { deviceId: string }
           </div>
         ) : (
           <p className="text-sm text-muted-foreground">
-            No readiness data. Run a verification to generate.
+            No verification history. Run a verification to check backup integrity.
           </p>
         )}
       </div>
@@ -243,12 +253,17 @@ export default function BackupVerificationTab({ deviceId }: { deviceId: string }
             <p className="text-sm text-muted-foreground">
               Run checks to validate backup integrity and recoverability.
             </p>
+            {isOffline && (
+              <p className="mt-2 text-sm text-warning">
+                Device is offline. Verification requires a connected agent.
+              </p>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={() => triggerVerification('integrity')}
-              disabled={triggering !== null}
+              disabled={triggering !== null || isOffline}
               className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
             >
               {triggering === 'integrity' ? (
@@ -261,7 +276,7 @@ export default function BackupVerificationTab({ deviceId }: { deviceId: string }
             <button
               type="button"
               onClick={() => triggerVerification('test_restore')}
-              disabled={triggering !== null}
+              disabled={triggering !== null || isOffline}
               className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-60"
             >
               {triggering === 'test_restore' ? (
@@ -291,7 +306,7 @@ export default function BackupVerificationTab({ deviceId }: { deviceId: string }
           <h3 className="font-semibold">Verification History</h3>
         </div>
         {verifications.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No verifications yet.</p>
+          <p className="text-sm text-muted-foreground">No verification history. Run a verification to check backup integrity.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">

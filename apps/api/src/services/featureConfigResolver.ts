@@ -908,6 +908,39 @@ export interface BackupAssignedDevice {
   resolvedTimezone: string;
 }
 
+export type ResolvedBackupProtection = {
+  legalHold: boolean;
+  legalHoldReason: string | null;
+  immutabilityMode: 'application' | 'provider' | null;
+  immutableDays: number | null;
+  sourceFeatureLinkIds: string[];
+};
+
+function parseBackupRetentionObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function getRetentionLegalHoldReason(retention: Record<string, unknown> | null): string | null {
+  if (!retention) return null;
+  const reason = retention.legalHoldReason;
+  return typeof reason === 'string' && reason.trim().length > 0 ? reason.trim() : null;
+}
+
+function getRetentionImmutabilityMode(retention: Record<string, unknown> | null): 'application' | 'provider' | null {
+  if (!retention) return null;
+  return retention.immutabilityMode === 'application' || retention.immutabilityMode === 'provider'
+    ? retention.immutabilityMode
+    : null;
+}
+
+function getRetentionImmutableDays(retention: Record<string, unknown> | null): number | null {
+  if (!retention) return null;
+  const value = retention.immutableDays;
+  return typeof value === 'number' && value > 0 ? value : null;
+}
+
 /**
  * Finds ALL devices with backup config policy assignments for an org.
  * Used by the backup scheduler (to know which devices to back up) and the run-all endpoint.
@@ -1033,6 +1066,98 @@ export async function resolveAllBackupAssignedDevices(
   );
 
   return resolved;
+}
+
+export async function resolveBackupProtectionForDevice(
+  deviceId: string
+): Promise<ResolvedBackupProtection | null> {
+  const hierarchy = await loadDeviceHierarchy(deviceId);
+  if (!hierarchy) return null;
+
+  const targetConditions = buildTargetConditions(hierarchy);
+  const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
+
+  const rows = await db
+    .select({
+      featureLinkId: configPolicyFeatureLinks.id,
+      retention: configPolicyBackupSettings.retention,
+      assignmentLevel: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      assignmentCreatedAt: configPolicyAssignments.createdAt,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active')
+      )
+    )
+    .innerJoin(
+      configPolicyFeatureLinks,
+      and(
+        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyFeatureLinks.featureType, 'backup')
+      )
+    )
+    .leftJoin(
+      configPolicyBackupSettings,
+      eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id)
+    )
+    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+    .orderBy(
+      configPolicyAssignments.level,
+      configPolicyAssignments.priority,
+      configPolicyAssignments.createdAt
+    );
+
+  if (rows.length === 0) return null;
+
+  const sorted = sortByHierarchy(rows);
+  const legalHoldRows = sorted.filter((row) => parseBackupRetentionObject(row.retention)?.legalHold === true);
+  const legalHoldReason = legalHoldRows
+    .map((row) => getRetentionLegalHoldReason(parseBackupRetentionObject(row.retention)))
+    .find((reason) => reason !== null) ?? null;
+
+  const immutabilityRows = sorted
+    .map((row) => {
+      const retention = parseBackupRetentionObject(row.retention);
+      return {
+        featureLinkId: row.featureLinkId,
+        mode: getRetentionImmutabilityMode(retention),
+        immutableDays: getRetentionImmutableDays(retention),
+      };
+    })
+    .filter((row): row is { featureLinkId: string; mode: 'application' | 'provider'; immutableDays: number } =>
+      row.mode !== null && row.immutableDays !== null
+    );
+
+  const maxImmutableDays = immutabilityRows.reduce<number | null>(
+    (current, row) => current === null ? row.immutableDays : Math.max(current, row.immutableDays),
+    null,
+  );
+
+  const maxDurationRows = maxImmutableDays === null
+    ? []
+    : immutabilityRows.filter((row) => row.immutableDays === maxImmutableDays);
+
+  const immutabilityMode =
+    maxDurationRows.some((row) => row.mode === 'provider')
+      ? 'provider'
+      : maxDurationRows.some((row) => row.mode === 'application')
+        ? 'application'
+        : null;
+
+  return {
+    legalHold: legalHoldRows.length > 0,
+    legalHoldReason,
+    immutabilityMode,
+    immutableDays: maxImmutableDays,
+    sourceFeatureLinkIds: Array.from(new Set([
+      ...legalHoldRows.map((row) => row.featureLinkId),
+      ...maxDurationRows.map((row) => row.featureLinkId),
+    ])),
+  };
 }
 
 // ============================================

@@ -5,7 +5,6 @@
  * - check-schedules: Polls config policy backup assignments, creates jobs when due
  * - dispatch-backup: Sends backup_run command to agent via WebSocket
  * - process-results: Updates job/snapshot rows from agent result payload
- * - dispatch-restore: Sends backup_restore command to agent
  */
 
 import { Worker, Job } from 'bullmq';
@@ -15,7 +14,6 @@ import {
   backupSnapshotFiles,
   backupSnapshots,
   backupConfigs,
-  restoreJobs,
   devices,
   configurationPolicies,
   configPolicyFeatureLinks,
@@ -53,7 +51,6 @@ import {
 export const getBackupQueue = backupEnqueue.getBackupQueue;
 export const enqueueBackupDispatch = backupEnqueue.enqueueBackupDispatch;
 export const enqueueBackupResults = backupEnqueue.enqueueBackupResults;
-export const enqueueRestoreDispatch = backupEnqueue.enqueueRestoreDispatch;
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -69,7 +66,6 @@ type ExpireRecoveryTokensJobData = Extract<BackupQueueJobData, { type: 'expire-r
 type CleanupExpiredSnapshotsJobData = Extract<BackupQueueJobData, { type: 'cleanup-expired-snapshots' }>;
 type DispatchBackupJobData = Extract<BackupQueueJobData, { type: 'dispatch-backup' }>;
 type ProcessResultsJobData = Extract<BackupQueueJobData, { type: 'process-results' }>;
-type DispatchRestoreJobData = Extract<BackupQueueJobData, { type: 'dispatch-restore' }>;
 
 // ── Worker ────────────────────────────────────────────────────────────────────
 
@@ -95,9 +91,6 @@ function createBackupWorker(): Worker<BackupQueueJobData> {
           case 'process-results':
             assertQueueJobName(BACKUP_QUEUE, job, 'process-results');
             return await processResults(data);
-          case 'dispatch-restore':
-            assertQueueJobName(BACKUP_QUEUE, job, 'dispatch-restore');
-            return await processDispatchRestore(data);
           default:
             throw new Error(
               `Unknown job type: ${(data as { type: string }).type}`
@@ -547,48 +540,6 @@ async function processResults(
   return { processed: true };
 }
 
-// ── dispatch-restore ──────────────────────────────────────────────────────────
-
-async function processDispatchRestore(
-  data: DispatchRestoreJobData
-): Promise<{ dispatched: boolean }> {
-  const [device] = await db
-    .select({ agentId: devices.agentId })
-    .from(devices)
-    .where(eq(devices.id, data.deviceId))
-    .limit(1);
-
-  const agentId = device?.agentId;
-  if (!agentId || !isAgentConnected(agentId)) {
-    await markRestoreFailed(data.restoreJobId);
-    return { dispatched: false };
-  }
-
-  const command: AgentCommand = {
-    id: data.restoreJobId,
-    type: 'backup_restore',
-    payload: {
-      restoreJobId: data.restoreJobId,
-      snapshotId: data.snapshotId,
-      targetPath: data.targetPath ?? '',
-      selectedPaths: data.selectedPaths ?? [],
-    },
-  };
-
-  if (!sendCommandToAgent(agentId, command)) {
-    await markRestoreFailed(data.restoreJobId);
-    return { dispatched: false };
-  }
-
-  await db
-    .update(restoreJobs)
-    .set({ status: 'running', startedAt: new Date(), updatedAt: new Date() })
-    .where(eq(restoreJobs.id, data.restoreJobId));
-
-  console.log(`[BackupWorker] Restore dispatched to agent ${agentId} for job ${data.restoreJobId}`);
-  return { dispatched: true };
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async function markJobFailed(jobId: string, error: string): Promise<void> {
@@ -596,13 +547,6 @@ async function markJobFailed(jobId: string, error: string): Promise<void> {
     .update(backupJobs)
     .set({ status: 'failed', completedAt: new Date(), errorLog: error, updatedAt: new Date() })
     .where(eq(backupJobs.id, jobId));
-}
-
-async function markRestoreFailed(restoreJobId: string): Promise<void> {
-  await db
-    .update(restoreJobs)
-    .set({ status: 'failed', completedAt: new Date(), updatedAt: new Date() })
-    .where(eq(restoreJobs.id, restoreJobId));
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────

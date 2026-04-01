@@ -14,6 +14,7 @@ import type { BackupJob, BackupVerification, BackupVerificationStatus } from './
 import { recomputeRecoveryReadinessForDevice } from './readinessCalculator';
 import {
   BACKUP_MAX_RECENT_VERIFICATIONS,
+  BackupVerificationDispatchError,
   listBackupVerifications,
   persistVerificationToDb,
   runBackupVerification,
@@ -21,6 +22,7 @@ import {
 } from './verificationService';
 import { normalizeBackupVerificationType } from './types';
 import { isCriticalBackupDevice } from './criticality';
+import { backupVerificationStructuredResultSchema } from '../../services/agentCommandResultValidation';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -235,12 +237,15 @@ export async function processBackupVerificationResult(
   // Parse the agent result
   let agentResult: Record<string, unknown>;
   try {
-    agentResult = JSON.parse(commandResult.stdout) as Record<string, unknown>;
+    const parsed = JSON.parse(commandResult.stdout) as Record<string, unknown>;
+    agentResult = backupVerificationStructuredResultSchema.parse(parsed) as Record<string, unknown>;
   } catch (parseErr) {
     console.error(`[backupVerification] Failed to parse agent result for command ${commandId}:`, parseErr);
     pending.status = 'failed';
     pending.completedAt = resultNow;
-    (pending.details as Record<string, unknown>).reason = 'Failed to parse agent result';
+    (pending.details as Record<string, unknown>).reason = parseErr instanceof Error
+      ? `Malformed verification result payload: ${parseErr.message}`
+      : 'Failed to parse agent result';
     await persistVerificationToDb(pending);
     await safePublish(
       'backup.verification_failed',
@@ -371,7 +376,16 @@ export async function ensurePostBackupIntegrityChecks(orgId?: string): Promise<n
       });
       created += 1;
     } catch (error) {
-      console.warn('[backupVerification] Integrity check hook failed:', error);
+      if (error instanceof BackupVerificationDispatchError) {
+        console.info('[backupVerification] Skipping post-backup integrity check because dispatch could not start', {
+          orgId: effectiveOrgId,
+          deviceId: job.deviceId,
+          backupJobId: job.id,
+          error: error.message,
+        });
+      } else {
+        console.warn('[backupVerification] Integrity check hook failed:', error);
+      }
     }
   }
 
@@ -439,7 +453,16 @@ export async function runWeeklyTestRestore(orgId?: string): Promise<number> {
       });
       queued += 1;
     } catch (error) {
-      console.warn('[backupVerification] Weekly restore test failed:', error);
+      if (error instanceof BackupVerificationDispatchError) {
+        console.info('[backupVerification] Skipping weekly restore test because dispatch could not start', {
+          orgId: targetOrg,
+          deviceId: job.deviceId,
+          backupJobId: job.id,
+          error: error.message,
+        });
+      } else {
+        console.warn('[backupVerification] Weekly restore test failed:', error);
+      }
     }
   }
 

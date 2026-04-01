@@ -22,12 +22,15 @@ function getGreeting(): string {
 
 export default function DashboardStats() {
   const { user } = useAuthStore();
+  const [greeting, setGreeting] = useState('Welcome');
   const [stats, setStats] = useState<DashboardStatsData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
   const [retryCount, setRetryCount] = useState(0);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [updatedText, setUpdatedText] = useState('');
+
+  useEffect(() => { setGreeting(getGreeting()); }, []);
 
   useEffect(() => {
     const fetchStats = async () => {
@@ -137,7 +140,7 @@ export default function DashboardStats() {
   const header = (
     <div className="flex items-center justify-between">
       <h1 className="text-xl font-semibold tracking-tight">
-        {getGreeting()}{firstName ? `, ${firstName}` : ''}
+        {greeting}{firstName ? `, ${firstName}` : ''}
       </h1>
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         {updatedText && <span aria-live="polite">{updatedText}</span>}

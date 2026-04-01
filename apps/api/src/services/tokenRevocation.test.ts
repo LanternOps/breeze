@@ -36,6 +36,7 @@ function createMockRedis(overrides: Partial<Record<'get' | 'setex' | 'multi', un
 describe('tokenRevocation', () => {
   beforeEach(() => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -50,7 +51,7 @@ describe('tokenRevocation', () => {
 
       expect(result).toBe(true);
       expect(console.error).toHaveBeenCalledWith(
-        expect.stringContaining('Redis unavailable — failing closed')
+        expect.stringContaining('Redis unavailable — failing closed (treating token as revoked)')
       );
     });
 

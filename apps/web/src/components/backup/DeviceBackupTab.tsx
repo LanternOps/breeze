@@ -52,11 +52,13 @@ type Snapshot = {
   expiresAt?: string | null;
   legalHold: boolean;
   legalHoldReason?: string | null;
+  legalHoldSource?: 'policy' | 'manual' | null;
   isImmutable: boolean;
   immutableUntil?: string | null;
   immutabilityEnforcement?: 'application' | 'provider' | null;
   requestedImmutabilityEnforcement?: 'application' | 'provider' | null;
   immutabilityFallbackReason?: string | null;
+  retentionBlockedReason?: 'legal_hold' | 'immutable_until' | null;
 };
 
 type BackupStatus = {
@@ -147,10 +149,11 @@ function normalizeVssState(state: string | null | undefined): keyof typeof vssSt
 
 type DeviceBackupTabProps = {
   deviceId: string;
+  deviceStatus?: 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined';
   timezone?: string;
 };
 
-export default function DeviceBackupTab({ deviceId }: DeviceBackupTabProps) {
+export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackupTabProps) {
   const [status, setStatus] = useState<BackupStatus | null>(null);
   const [jobs, setJobs] = useState<BackupJob[]>([]);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
@@ -243,7 +246,7 @@ export default function DeviceBackupTab({ deviceId }: DeviceBackupTabProps) {
         case 'apply-hold':
           return `/backup/snapshots/${selectedSnapshotId}/legal-hold`;
         case 'release-hold':
-          return `/backup/snapshots/${selectedSnapshotId}/legal-hold/release`;
+          return `/backup/snapshots/${selectedSnapshotId}/legal-hold`;
         case 'apply-immutability':
           return `/backup/snapshots/${selectedSnapshotId}/immutability`;
         case 'release-immutability':
@@ -251,9 +254,19 @@ export default function DeviceBackupTab({ deviceId }: DeviceBackupTabProps) {
       }
     })();
 
+    const selectedSnapshot = snapshots.find((snapshot) => snapshot.id === selectedSnapshotId) ?? null;
     const body = action === 'apply-immutability'
-      ? { reason: trimmedReason, immutableDays, enforcement: immutabilityMode }
+      ? (
+        selectedSnapshot?.isImmutable && selectedSnapshot.immutableUntil
+          ? {
+              reason: trimmedReason,
+              extendUntil: new Date(new Date(selectedSnapshot.immutableUntil).getTime() + immutableDays * 24 * 60 * 60 * 1000).toISOString(),
+              enforcement: immutabilityMode,
+            }
+          : { reason: trimmedReason, immutableDays, enforcement: immutabilityMode }
+      )
       : { reason: trimmedReason };
+    const method = action === 'release-hold' ? 'DELETE' : 'POST';
 
     try {
       setActionLoading(true);
@@ -261,7 +274,7 @@ export default function DeviceBackupTab({ deviceId }: DeviceBackupTabProps) {
       setActionMessage(undefined);
 
       const response = await fetchWithAuth(path, {
-        method: 'POST',
+        method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
@@ -282,7 +295,7 @@ export default function DeviceBackupTab({ deviceId }: DeviceBackupTabProps) {
           : action === 'release-hold'
             ? 'Legal hold released from the selected restore point.'
             : action === 'apply-immutability'
-              ? `${immutabilityMode === 'provider' ? 'Provider' : 'Application'} immutability applied to the selected restore point.`
+              ? `${immutabilityMode === 'provider' ? 'Provider' : 'Application'} immutability ${selectedSnapshot?.isImmutable ? 'extended' : 'applied'} to the selected restore point.`
               : 'Application immutability released from the selected restore point.'
       );
       setReason('');
@@ -291,7 +304,7 @@ export default function DeviceBackupTab({ deviceId }: DeviceBackupTabProps) {
     } finally {
       setActionLoading(false);
     }
-  }, [immutableDays, immutabilityMode, reason, selectedSnapshotId]);
+  }, [immutableDays, immutabilityMode, reason, selectedSnapshotId, snapshots]);
 
   if (loading) {
     return (
@@ -591,6 +604,14 @@ export default function DeviceBackupTab({ deviceId }: DeviceBackupTabProps) {
                         <span className="text-muted-foreground">{selectedSnapshot.legalHoldReason}</span>
                       </div>
                     )}
+                    {selectedSnapshot.legalHoldSource && (
+                      <div>
+                        <span className="font-medium text-foreground">Hold source:</span>{' '}
+                        <span className="text-muted-foreground">
+                          {selectedSnapshot.legalHoldSource === 'policy' ? 'Inherited from backup policy' : 'Applied manually'}
+                        </span>
+                      </div>
+                    )}
                     {selectedSnapshot.immutabilityEnforcement && (
                       <div>
                         <span className="font-medium text-foreground">Enforcement:</span>{' '}
@@ -629,8 +650,13 @@ export default function DeviceBackupTab({ deviceId }: DeviceBackupTabProps) {
                   Protection Controls
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  These actions apply only to the selected restore point. Releasing protection can make an expired snapshot eligible for deletion immediately.
+                  These actions apply only to the selected restore point. Application protection is enforced by Breeze retention cleanup. Releasing protection can make an expired snapshot eligible for deletion immediately.
                 </p>
+                {selectedSnapshot.retentionBlockedReason && (
+                  <p className="text-xs text-muted-foreground">
+                    Retention cleanup is currently blocked by {selectedSnapshot.retentionBlockedReason === 'legal_hold' ? 'legal hold' : 'immutability'} for this restore point.
+                  </p>
+                )}
                 <div>
                   <label className="text-xs font-medium text-muted-foreground">Reason</label>
                   <input
@@ -681,11 +707,11 @@ export default function DeviceBackupTab({ deviceId }: DeviceBackupTabProps) {
                   </button>
                   <button
                     type="button"
-                    disabled={actionLoading || selectedSnapshot.isImmutable}
+                    disabled={actionLoading}
                     onClick={() => void handleProtectionAction('apply-immutability')}
                     className="rounded-md border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-sm font-medium text-sky-800 disabled:opacity-50"
                   >
-                    Apply immutability
+                    {selectedSnapshot.isImmutable ? 'Extend immutability' : 'Apply immutability'}
                   </button>
                   <button
                     type="button"
@@ -764,7 +790,7 @@ export default function DeviceBackupTab({ deviceId }: DeviceBackupTabProps) {
       )}
 
       {/* Verification & Readiness */}
-      <BackupVerificationTab deviceId={deviceId} />
+      <BackupVerificationTab deviceId={deviceId} deviceStatus={deviceStatus} />
     </div>
   );
 }

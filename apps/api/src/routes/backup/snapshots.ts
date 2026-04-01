@@ -25,11 +25,13 @@ const snapshotIdParamSchema = z.object({ id: z.string().uuid() });
 type SnapshotProtectionState = {
   legalHold: boolean;
   legalHoldReason: string | null;
+  legalHoldSource: 'policy' | 'manual' | null;
   isImmutable: boolean;
   immutableUntil: string | null;
   immutabilityEnforcement: string | null;
   requestedImmutabilityEnforcement: string | null;
   immutabilityFallbackReason: string | null;
+  retentionBlockedReason: 'legal_hold' | 'immutable_until' | null;
 };
 
 type SnapshotFileRow = {
@@ -105,15 +107,69 @@ function computeImmutableUntilFromNow(immutableDays: number): Date {
   return immutableUntil;
 }
 
+function normalizeSnapshotMetadata(
+  metadata: unknown,
+): Record<string, unknown> {
+  return metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+    ? { ...(metadata as Record<string, unknown>) }
+    : {};
+}
+
+function resolveLegalHoldSource(
+  metadata: unknown,
+): 'policy' | 'manual' | null {
+  const normalized = normalizeSnapshotMetadata(metadata);
+  const protection =
+    normalized.snapshotProtection && typeof normalized.snapshotProtection === 'object' && !Array.isArray(normalized.snapshotProtection)
+      ? normalized.snapshotProtection as Record<string, unknown>
+      : null;
+  return protection?.legalHoldSource === 'policy' || protection?.legalHoldSource === 'manual'
+    ? protection.legalHoldSource
+    : null;
+}
+
+function withLegalHoldSource(
+  metadata: unknown,
+  source: 'policy' | 'manual' | null,
+): Record<string, unknown> {
+  const normalized = normalizeSnapshotMetadata(metadata);
+  const protection =
+    normalized.snapshotProtection && typeof normalized.snapshotProtection === 'object' && !Array.isArray(normalized.snapshotProtection)
+      ? { ...(normalized.snapshotProtection as Record<string, unknown>) }
+      : {};
+
+  return {
+    ...normalized,
+    snapshotProtection: {
+      ...protection,
+      legalHoldSource: source,
+    },
+  };
+}
+
+function computeRetentionBlockedReason(
+  row: typeof backupSnapshots.$inferSelect,
+): 'legal_hold' | 'immutable_until' | null {
+  if (row.legalHold === true) {
+    return 'legal_hold';
+  }
+  if (row.isImmutable === true && row.immutableUntil && row.immutableUntil > new Date()) {
+    return 'immutable_until';
+  }
+  return null;
+}
+
 function toProtectionState(row: typeof backupSnapshots.$inferSelect): SnapshotProtectionState {
   return {
     legalHold: row.legalHold === true,
     legalHoldReason: row.legalHoldReason ?? null,
+    legalHoldSource: resolveLegalHoldSource(row.metadata),
     isImmutable: row.isImmutable === true,
     immutableUntil: row.immutableUntil?.toISOString() ?? null,
     immutabilityEnforcement: row.immutabilityEnforcement ?? null,
     requestedImmutabilityEnforcement: row.requestedImmutabilityEnforcement ?? null,
     immutabilityFallbackReason: row.immutabilityFallbackReason ?? null,
+    retentionBlockedReason: computeRetentionBlockedReason(row),
   };
 }
 
@@ -136,7 +192,7 @@ async function resolveSnapshotStorageConfig(
 
 snapshotsRoutes.get(
   '/snapshots',
-  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
   zValidator('query', snapshotListSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -165,7 +221,7 @@ snapshotsRoutes.get(
   }
 );
 
-snapshotsRoutes.get('/snapshots/:id', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('param', snapshotIdParamSchema), async (c) => {
+snapshotsRoutes.get('/snapshots/:id', requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action), zValidator('param', snapshotIdParamSchema), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -190,7 +246,7 @@ snapshotsRoutes.get('/snapshots/:id', requirePermission(PERMISSIONS.ORGS_READ.re
   return c.json(toSnapshotResponse(row));
 });
 
-snapshotsRoutes.get('/snapshots/:id/browse', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('param', snapshotIdParamSchema), async (c) => {
+snapshotsRoutes.get('/snapshots/:id/browse', requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action), zValidator('param', snapshotIdParamSchema), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -235,7 +291,7 @@ snapshotsRoutes.get('/snapshots/:id/browse', requirePermission(PERMISSIONS.ORGS_
 snapshotsRoutes.post(
   '/snapshots/:id/legal-hold',
   requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
   requireMfa(),
   zValidator('param', snapshotIdParamSchema),
   zValidator('json', snapshotProtectionReasonSchema),
@@ -264,6 +320,7 @@ snapshotsRoutes.post(
       .set({
         legalHold: true,
         legalHoldReason: payload.reason.trim(),
+        metadata: withLegalHoldSource(before.metadata, 'manual'),
       })
       .where(and(eq(backupSnapshots.id, snapshotId), eq(backupSnapshots.orgId, orgId)))
       .returning();
@@ -290,68 +347,81 @@ snapshotsRoutes.post(
   },
 );
 
+async function releaseLegalHold(c: any) {
+  const auth = c.get('auth');
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
+  const { id: snapshotId } = c.req.valid('param');
+  const payload = c.req.valid('json');
+
+  const [before] = await db
+    .select()
+    .from(backupSnapshots)
+    .where(and(eq(backupSnapshots.id, snapshotId), eq(backupSnapshots.orgId, orgId)))
+    .limit(1);
+
+  if (!before) {
+    return c.json({ error: 'Snapshot not found' }, 404);
+  }
+
+  const [updated] = await db
+    .update(backupSnapshots)
+    .set({
+      legalHold: false,
+      legalHoldReason: null,
+      metadata: withLegalHoldSource(before.metadata, null),
+    })
+    .where(and(eq(backupSnapshots.id, snapshotId), eq(backupSnapshots.orgId, orgId)))
+    .returning();
+
+  if (!updated) {
+    return c.json({ error: 'Snapshot not found' }, 404);
+  }
+
+  writeRouteAudit(c, {
+    orgId,
+    action: 'backup.snapshot.legal_hold.release',
+    resourceType: 'backup_snapshot',
+    resourceId: updated.id,
+    resourceName: updated.label ?? updated.snapshotId,
+    details: {
+      snapshotIds: [updated.id],
+      reason: payload.reason.trim(),
+      before: toProtectionState(before),
+      after: toProtectionState(updated),
+    },
+  });
+
+  return c.json(toSnapshotResponse(updated));
+}
+
 snapshotsRoutes.post(
   '/snapshots/:id/legal-hold/release',
   requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
   requireMfa(),
   zValidator('param', snapshotIdParamSchema),
   zValidator('json', snapshotProtectionReasonSchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
-    if (!orgId) {
-      return c.json({ error: 'orgId is required for this scope' }, 400);
-    }
+  releaseLegalHold,
+);
 
-    const { id: snapshotId } = c.req.valid('param');
-    const payload = c.req.valid('json');
-
-    const [before] = await db
-      .select()
-      .from(backupSnapshots)
-      .where(and(eq(backupSnapshots.id, snapshotId), eq(backupSnapshots.orgId, orgId)))
-      .limit(1);
-
-    if (!before) {
-      return c.json({ error: 'Snapshot not found' }, 404);
-    }
-
-    const [updated] = await db
-      .update(backupSnapshots)
-      .set({
-        legalHold: false,
-        legalHoldReason: null,
-      })
-      .where(and(eq(backupSnapshots.id, snapshotId), eq(backupSnapshots.orgId, orgId)))
-      .returning();
-
-    if (!updated) {
-      return c.json({ error: 'Snapshot not found' }, 404);
-    }
-
-    writeRouteAudit(c, {
-      orgId,
-      action: 'backup.snapshot.legal_hold.release',
-      resourceType: 'backup_snapshot',
-      resourceId: updated.id,
-      resourceName: updated.label ?? updated.snapshotId,
-      details: {
-        snapshotIds: [updated.id],
-        reason: payload.reason.trim(),
-        before: toProtectionState(before),
-        after: toProtectionState(updated),
-      },
-    });
-
-    return c.json(toSnapshotResponse(updated));
-  },
+snapshotsRoutes.delete(
+  '/snapshots/:id/legal-hold',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
+  requireMfa(),
+  zValidator('param', snapshotIdParamSchema),
+  zValidator('json', snapshotProtectionReasonSchema),
+  releaseLegalHold,
 );
 
 snapshotsRoutes.post(
   '/snapshots/:id/immutability',
   requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
   requireMfa(),
   zValidator('param', snapshotIdParamSchema),
   zValidator('json', snapshotImmutabilityApplySchema),
@@ -385,8 +455,26 @@ snapshotsRoutes.post(
       return c.json({ error: 'Snapshot not found' }, 404);
     }
 
-    const immutableUntil = computeImmutableUntilFromNow(payload.immutableDays);
-    let immutabilityEnforcement: 'application' | 'provider' = payload.enforcement;
+    const immutableUntil = payload.extendUntil
+      ? new Date(payload.extendUntil)
+      : computeImmutableUntilFromNow(payload.immutableDays ?? 0);
+    if (Number.isNaN(immutableUntil.getTime())) {
+      return c.json({ error: 'extendUntil must be a valid ISO-8601 timestamp' }, 400);
+    }
+    if (immutableUntil <= new Date()) {
+      return c.json({ error: 'Immutability must end in the future' }, 400);
+    }
+
+    if (before.immutableUntil && immutableUntil <= before.immutableUntil) {
+      return c.json({
+        error: 'Immutability can only be extended forward. Use the release endpoint to weaken application protection.',
+      }, 409);
+    }
+
+    let immutabilityEnforcement: 'application' | 'provider' =
+      before.immutabilityEnforcement === 'provider'
+        ? 'provider'
+        : payload.enforcement;
 
     if (payload.enforcement === 'provider') {
       const storage = await resolveSnapshotStorageConfig(updated.configId ?? null);
@@ -457,7 +545,7 @@ snapshotsRoutes.post(
 snapshotsRoutes.post(
   '/snapshots/:id/immutability/release',
   requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
   requireMfa(),
   zValidator('param', snapshotIdParamSchema),
   zValidator('json', snapshotProtectionReasonSchema),
@@ -533,10 +621,12 @@ function toSnapshotResponse(row: typeof backupSnapshots.$inferSelect) {
     expiresAt: row.expiresAt?.toISOString() ?? null,
     legalHold: row.legalHold === true,
     legalHoldReason: row.legalHoldReason ?? null,
+    legalHoldSource: resolveLegalHoldSource(row.metadata),
     isImmutable: row.isImmutable === true,
     immutableUntil: row.immutableUntil?.toISOString() ?? null,
     immutabilityEnforcement: row.immutabilityEnforcement ?? null,
     requestedImmutabilityEnforcement: row.requestedImmutabilityEnforcement ?? null,
     immutabilityFallbackReason: row.immutabilityFallbackReason ?? null,
+    retentionBlockedReason: computeRetentionBlockedReason(row),
   };
 }

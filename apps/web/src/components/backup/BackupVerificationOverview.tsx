@@ -28,15 +28,26 @@ type Verification = {
   startedAt: string;
   filesVerified: number;
   filesFailed: number;
+  details?: Record<string, unknown> | null;
 };
 
 type FleetHealth = {
-  totalDevices?: number;
-  protectedDevices?: number;
-  avgReadiness?: number;
-  highReadiness?: number;
-  lowReadiness?: number;
-  recentFailures?: number;
+  verification?: {
+    total?: number;
+    passedLast24h?: number;
+    failedLast24h?: number;
+    partialLast24h?: number;
+    coveragePercent?: number;
+  };
+  readiness?: {
+    averageScore?: number;
+    lowReadinessCount?: number;
+    criticalDevicesAtRisk?: number;
+  };
+  escalations?: {
+    verificationFailures?: number;
+    criticalVerificationFailures?: number;
+  };
 };
 
 function readinessColor(score: number): string {
@@ -89,11 +100,13 @@ export default function BackupVerificationOverview() {
       const healthData = healthPayload?.data ?? healthPayload ?? {};
       setHealth(healthData);
 
-      const readinessData: DeviceReadiness[] = Array.isArray(readinessPayload?.data)
-        ? readinessPayload.data
-        : Array.isArray(readinessPayload)
-          ? readinessPayload
-          : [];
+      const readinessData: DeviceReadiness[] = Array.isArray(readinessPayload?.data?.devices)
+        ? readinessPayload.data.devices
+        : Array.isArray(readinessPayload?.data)
+          ? readinessPayload.data
+          : Array.isArray(readinessPayload)
+            ? readinessPayload
+            : [];
       setDevices(readinessData);
 
       const rawVerifications: Verification[] = Array.isArray(verificationsPayload?.data)
@@ -101,7 +114,9 @@ export default function BackupVerificationOverview() {
         : Array.isArray(verificationsPayload)
           ? verificationsPayload
           : [];
-      setFailures(rawVerifications.filter((v) => v.status === 'failed'));
+      setFailures(
+        rawVerifications.filter((v) => v.status === 'failed' && v.details?.simulated !== true)
+      );
     } catch (err) {
       console.error('[BackupVerificationOverview] fetchData:', err);
       setError(friendlyFetchError(err));
@@ -140,10 +155,10 @@ export default function BackupVerificationOverview() {
     );
   }
 
-  const avgReadiness = health?.avgReadiness ?? 0;
-  const highReadiness = health?.highReadiness ?? 0;
-  const lowReadiness = health?.lowReadiness ?? 0;
-  const recentFailures = health?.recentFailures ?? failures.length;
+  const avgReadiness = health?.readiness?.averageScore ?? 0;
+  const highReadiness = devices.filter((device) => device.readinessScore >= 85).length;
+  const lowReadiness = health?.readiness?.lowReadinessCount ?? 0;
+  const recentFailures = health?.escalations?.verificationFailures ?? failures.length;
   const lowDevices = devices.filter((d) => d.readinessScore < 85).sort((a, b) => a.readinessScore - b.readinessScore);
 
   return (

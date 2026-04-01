@@ -1,2 +1,2 @@
 /*
-  Content-Security-Policy: frame-ancestors 'self' https://*.breezermm.com http://localhost:*
+  Content-Security-Policy: frame-ancestors 'self' https://breezermm.com https://*.breezermm.com https://2breeze.app https://*.2breeze.app http://localhost:* http://127.0.0.1:* http://tauri.localhost

@@ -68,6 +68,8 @@ async function dispatchVmRestoreCommand(options: VmRestoreDispatchOptions): Prom
     .update(restoreJobs)
     .set({
       commandId: command.id,
+      status: command.status === 'sent' ? 'running' : 'pending',
+      startedAt: command.status === 'sent' ? new Date() : null,
       updatedAt: new Date(),
     })
     .where(eq(restoreJobs.id, restoreJobId));
@@ -119,6 +121,10 @@ vmRestoreRoutes.post(
 
     if (!targetDevice) {
       return c.json({ error: 'Target device not found' }, 404);
+    }
+
+    if (targetDevice.status !== 'online') {
+      return c.json({ error: `Device is ${targetDevice.status}, cannot execute command` }, 409);
     }
 
     // Create restore job.
@@ -249,6 +255,10 @@ vmRestoreRoutes.post(
 
     if (!targetDevice) {
       return c.json({ error: 'Target device not found' }, 404);
+    }
+
+    if (targetDevice.status !== 'online') {
+      return c.json({ error: `Device is ${targetDevice.status}, cannot execute command` }, 409);
     }
 
     // Create restore job.

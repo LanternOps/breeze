@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { randomBytes } from 'crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { eq, and, gt } from 'drizzle-orm';
 import { db } from '../../db';
 import { c2cConnections, c2cConsentSessions } from '../../db/schema';
@@ -15,6 +15,61 @@ import {
   testGraphAccess,
 } from '../../services/c2cM365';
 import { resolveScopedOrgId } from './helpers';
+import { getCookieValue } from '../auth/helpers';
+
+const M365_CONSENT_COOKIE_NAME = 'breeze_c2c_m365_consent';
+const M365_CONSENT_COOKIE_PATH = '/api/v1/c2c/m365/callback';
+const M365_CONSENT_COOKIE_MAX_AGE_SECONDS = 10 * 60;
+
+function isSecureCookieEnvironment(): boolean {
+  return process.env.NODE_ENV === 'production';
+}
+
+function buildCookieSecuritySuffix(): string {
+  return `; SameSite=Lax${isSecureCookieEnvironment() ? '; Secure' : ''}`;
+}
+
+function buildConsentCookieValue(state: string): string | null {
+  // Use only secrets intended for server-side cryptographic operations.
+  // JWT_SECRET and AGENT_ENROLLMENT_SECRET are excluded to maintain key
+  // separation — using enrollment secrets for cookie signing would let a
+  // compromise of either system compromise both.
+  const secret =
+    getPlatformConfig()?.clientSecret?.trim()
+    || process.env.APP_ENCRYPTION_KEY?.trim()
+    || process.env.SECRET_ENCRYPTION_KEY?.trim();
+
+  if (!secret) {
+    return null;
+  }
+
+  return createHmac('sha256', secret).update(`c2c-m365-consent:${state}`).digest('hex');
+}
+
+function buildConsentCookie(state: string): string | null {
+  const value = buildConsentCookieValue(state);
+  if (!value) return null;
+  return `${M365_CONSENT_COOKIE_NAME}=${encodeURIComponent(value)}; Path=${M365_CONSENT_COOKIE_PATH}; HttpOnly${buildCookieSecuritySuffix()}; Max-Age=${M365_CONSENT_COOKIE_MAX_AGE_SECONDS}`;
+}
+
+function buildClearConsentCookie(): string {
+  return `${M365_CONSENT_COOKIE_NAME}=; Path=${M365_CONSENT_COOKIE_PATH}; HttpOnly${buildCookieSecuritySuffix()}; Max-Age=0`;
+}
+
+function isValidConsentCookie(state: string, cookieHeader: string | undefined): boolean {
+  const cookieValue = getCookieValue(cookieHeader, M365_CONSENT_COOKIE_NAME);
+  const expected = buildConsentCookieValue(state);
+  if (!cookieValue || !expected) {
+    return false;
+  }
+
+  const left = Buffer.from(cookieValue, 'utf8');
+  const right = Buffer.from(expected, 'utf8');
+  if (left.length !== right.length) {
+    return false;
+  }
+  return timingSafeEqual(left, right);
+}
 
 // ── Authenticated routes (behind authMiddleware) ───────────────────────────
 
@@ -59,6 +114,12 @@ m365AuthRoutes.get('/m365/consent-url', async (c) => {
     redirectUri: getCallbackUri(),
   });
 
+  const consentCookie = buildConsentCookie(state);
+  if (!consentCookie) {
+    return c.json({ error: 'Consent flow cookie secret is not configured on this instance' }, 500);
+  }
+  c.header('Set-Cookie', consentCookie, { append: true });
+
   return c.json({ url });
 });
 
@@ -82,14 +143,31 @@ m365CallbackRoute.get('/c2c/m365/callback', async (c) => {
   const error = c.req.query('error');
   const errorDescription = c.req.query('error_description');
 
+  const clearCookie = () => {
+    c.header('Set-Cookie', buildClearConsentCookie(), { append: true });
+  };
+
   if (error) {
     console.warn('[c2c/m365/callback] Microsoft returned OAuth error', { error, errorDescription, state: state ?? 'missing' });
+    clearCookie();
+    if (state) {
+      await db
+        .delete(c2cConsentSessions)
+        .where(eq(c2cConsentSessions.state, state));
+    }
     const msg = encodeURIComponent(safeErrorMsg(errorDescription || error));
     return c.redirect(`${frontendBase}/c2c?c2c_error=${msg}`);
   }
 
   if (!state) {
+    clearCookie();
     return c.redirect(`${frontendBase}/c2c?c2c_error=${encodeURIComponent('Missing state parameter')}`);
+  }
+
+  if (!isValidConsentCookie(state, c.req.header('cookie'))) {
+    console.warn('[c2c/m365/callback] Missing or invalid consent binding cookie', { state });
+    clearCookie();
+    return c.redirect(`${frontendBase}/c2c?c2c_error=${encodeURIComponent('Invalid or expired consent session')}`);
   }
 
   // Validate and consume session atomically (prevents replay attacks)
@@ -104,6 +182,7 @@ m365CallbackRoute.get('/c2c/m365/callback', async (c) => {
     .returning();
 
   if (!session) {
+    clearCookie();
     return c.redirect(`${frontendBase}/c2c?c2c_error=${encodeURIComponent('Invalid or expired consent session')}`);
   }
 
@@ -121,6 +200,7 @@ m365CallbackRoute.get('/c2c/m365/callback', async (c) => {
 
   if (!tenantId || adminConsent !== 'True') {
     console.warn('[c2c/m365/callback] Admin consent not granted', { tenantId, adminConsent, orgId: session.orgId });
+    clearCookie();
     return c.redirect(`${frontendBase}/c2c?c2c_error=${encodeURIComponent('Admin consent was not granted')}`);
   }
 
@@ -128,6 +208,7 @@ m365CallbackRoute.get('/c2c/m365/callback', async (c) => {
     const config = getPlatformConfig();
     if (!config) {
       console.error('[c2c/m365/callback] Platform app env vars missing during callback', { orgId: session.orgId });
+      clearCookie();
       return c.redirect(`${frontendBase}/c2c?c2c_error=${encodeURIComponent('Platform app no longer configured')}`);
     }
 
@@ -148,6 +229,36 @@ m365CallbackRoute.get('/c2c/m365/callback', async (c) => {
 
     const now = new Date();
     const tokenExpiresAt = new Date(Date.now() + tokenResult.expiresIn * 1000);
+
+    const [existing] = await db
+      .select()
+      .from(c2cConnections)
+      .where(and(
+        eq(c2cConnections.orgId, session.orgId),
+        eq(c2cConnections.provider, 'microsoft_365'),
+        eq(c2cConnections.authMethod, 'platform_app'),
+        eq(c2cConnections.tenantId, tenantId),
+      ))
+      .limit(1);
+
+    if (existing && existing.status !== 'revoked') {
+      await db
+        .update(c2cConnections)
+        .set({
+          displayName,
+          accessToken: encryptSecret(tokenResult.accessToken),
+          tokenExpiresAt,
+          scopes: session.scopes || existing.scopes || null,
+          status: 'active',
+          updatedAt: now,
+        })
+        .where(eq(c2cConnections.id, existing.id));
+
+      clearCookie();
+      return c.redirect(
+        `${frontendBase}/c2c?c2c_connected=true&connectionId=${existing.id}`
+      );
+    }
 
     // Create the connection
     const [connection] = await db
@@ -171,6 +282,7 @@ m365CallbackRoute.get('/c2c/m365/callback', async (c) => {
 
     if (!connection) {
       console.error('[c2c/m365/callback] Connection insert returned no row', { orgId: session.orgId, tenantId });
+      clearCookie();
       return c.redirect(`${frontendBase}/c2c?c2c_error=${encodeURIComponent('Failed to create connection')}`);
     }
 
@@ -191,6 +303,7 @@ m365CallbackRoute.get('/c2c/m365/callback', async (c) => {
       },
     });
 
+    clearCookie();
     return c.redirect(
       `${frontendBase}/c2c?c2c_connected=true&connectionId=${connection.id}`
     );
@@ -203,6 +316,7 @@ m365CallbackRoute.get('/c2c/m365/callback', async (c) => {
     captureException(err);
 
     const msg = err instanceof Error ? safeErrorMsg(err.message) : 'Unknown error during consent callback';
+    clearCookie();
     return c.redirect(`${frontendBase}/c2c?c2c_error=${encodeURIComponent(msg)}`);
   }
 });
