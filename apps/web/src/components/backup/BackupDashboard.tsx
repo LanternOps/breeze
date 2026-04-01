@@ -19,6 +19,8 @@ import {
 
 const MssqlDashboard = lazy(() => import('./MssqlDashboard'));
 const HypervDashboard = lazy(() => import('./HypervDashboard'));
+const VMRestoreWizard = lazy(() => import('./VMRestoreWizard'));
+const InstantBootStatus = lazy(() => import('./InstantBootStatus'));
 const VaultDashboard = lazy(() => import('./VaultDashboard'));
 const SLADashboard = lazy(() => import('./SLADashboard'));
 const EncryptionKeyList = lazy(() => import('./EncryptionKeyList'));
@@ -56,16 +58,6 @@ function TabFallback() {
   );
 }
 
-function ComingSoonTab({ name }: { name: string }) {
-  return (
-    <div className="flex flex-col items-center justify-center py-20 text-center">
-      <Database className="h-12 w-12 text-muted-foreground/40" />
-      <h3 className="mt-4 text-base font-semibold text-foreground">{name}</h3>
-      <p className="mt-1 text-sm text-muted-foreground">This feature is coming soon.</p>
-    </div>
-  );
-}
-
 export default function BackupDashboard() {
   const [activeTab, setActiveTab] = useState<BackupTab>(() => {
     if (typeof window === 'undefined') return 'overview';
@@ -82,9 +74,11 @@ export default function BackupDashboard() {
   const [showAllJobs, setShowAllJobs] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-  const [runAllPreview, setRunAllPreview] = useState<{ deviceCount: number; alreadyRunning: number } | null>(null);
+  const [runAllPreview, setRunAllPreview] = useState<{ deviceCount: number; alreadyRunning: number; offline: number } | null>(null);
   const [runAllLoading, setRunAllLoading] = useState(false);
   const [runAllResult, setRunAllResult] = useState<string>();
+  const [runOverdueLoading, setRunOverdueLoading] = useState(false);
+  const [runOverdueResult, setRunOverdueResult] = useState<string>();
   const runAllDialogRef = useRef<HTMLDialogElement>(null);
 
   const fetchOverview = useCallback(async () => {
@@ -219,7 +213,9 @@ export default function BackupDashboard() {
       const result = payload?.data ?? payload;
       const parts: string[] = [];
       if (result.created > 0) parts.push(`Started ${result.created} backup job${result.created !== 1 ? 's' : ''}`);
-      if (result.skipped > 0) parts.push(`${result.skipped} skipped (already running)`);
+      if (result.skippedRunning > 0) parts.push(`${result.skippedRunning} skipped (already running)`);
+      if (result.skippedOffline > 0) parts.push(`${result.skippedOffline} skipped (offline)`);
+      if (result.failed > 0) parts.push(`${result.failed} failed to dispatch`);
       setRunAllResult(parts.join('. ') || 'No backup jobs to run.');
       fetchOverview();
     } catch (err) {
@@ -235,6 +231,56 @@ export default function BackupDashboard() {
     runAllDialogRef.current?.close();
     setRunAllPreview(null);
   }, []);
+
+  const handleRunOverdueClick = useCallback(async () => {
+    const overdueIds = overdueDevices.map((device) => device.id).filter((id): id is string => Boolean(id));
+
+    if (overdueIds.length === 0) {
+      setRunOverdueResult('No overdue devices are ready to start from this view.');
+      return;
+    }
+
+    try {
+      setRunOverdueLoading(true);
+      setRunOverdueResult(undefined);
+      setError(undefined);
+
+      let created = 0;
+      let skipped = 0;
+      let failed = 0;
+      const failedDetails: string[] = [];
+
+      for (const deviceId of overdueIds) {
+        const response = await fetchWithAuth(`/backup/jobs/run/${deviceId}`, { method: 'POST' });
+        if (response.ok) {
+          created += 1;
+          continue;
+        }
+
+        if (response.status === 409) {
+          skipped += 1;
+          continue;
+        }
+
+        const body = await response.json().catch(() => null);
+        const deviceName = overdueDevices.find((d) => d.id === deviceId)?.hostname ?? deviceId;
+        failedDetails.push(`${deviceName}: ${body?.error ?? `status ${response.status}`}`);
+        failed += 1;
+      }
+
+      const parts: string[] = [];
+      if (created > 0) parts.push(`Started ${created} overdue backup job${created !== 1 ? 's' : ''}`);
+      if (skipped > 0) parts.push(`${skipped} skipped`);
+      if (failed > 0) parts.push(`${failed} failed (${failedDetails.join('; ')})`);
+      setRunOverdueResult(parts.join('. ') || 'No overdue backup jobs were started.');
+      await fetchOverview();
+    } catch (err) {
+      console.error('[BackupDashboard] handleRunOverdueClick:', err);
+      setError(err instanceof Error ? err.message : 'Failed to start overdue backups');
+    } finally {
+      setRunOverdueLoading(false);
+    }
+  }, [fetchOverview, overdueDevices]);
 
   const hasData = useMemo(
     () =>
@@ -356,10 +402,13 @@ export default function BackupDashboard() {
           runAllResult={runAllResult}
           runAllLoading={runAllLoading}
           runAllPreview={runAllPreview}
+          runOverdueResult={runOverdueResult}
+          runOverdueLoading={runOverdueLoading}
           runAllDialogRef={runAllDialogRef}
           handleRunAllClick={handleRunAllClick}
           handleRunAllConfirm={handleRunAllConfirm}
           handleRunAllCancel={handleRunAllCancel}
+          handleRunOverdueClick={handleRunOverdueClick}
           resolveChangeType={resolveChangeType}
           resolveStatIcon={resolveStatIcon}
           resolveJobStatus={resolveJobStatus}
@@ -384,7 +433,23 @@ export default function BackupDashboard() {
 
       {activeTab === 'hyperv' && (
         <Suspense fallback={<TabFallback />}>
-          <HypervDashboard />
+          <div className="space-y-6">
+            <HypervDashboard />
+
+            <div className="grid gap-6 2xl:grid-cols-[1.2fr,0.8fr]">
+              <VMRestoreWizard />
+
+              <div className="space-y-3 rounded-lg border bg-card p-5 shadow-sm">
+                <div>
+                  <h3 className="text-base font-semibold text-foreground">Active instant boots</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Monitor instant boot sessions that are still pending or running.
+                  </p>
+                </div>
+                <InstantBootStatus />
+              </div>
+            </div>
+          </div>
         </Suspense>
       )}
 

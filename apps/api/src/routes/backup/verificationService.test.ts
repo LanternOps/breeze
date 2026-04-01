@@ -1,21 +1,36 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 const publishEventMock = vi.fn(async (..._args: any[]) => 'event-id');
+const resolveAllBackupAssignedDevicesMock = vi.fn(async () => []);
 
 vi.mock('../../services/eventBus', () => ({
   publishEvent: (...args: any[]) => publishEventMock(...args),
+}));
+
+vi.mock('../../services/featureConfigResolver', () => ({
+  resolveAllBackupAssignedDevices: (...args: any[]) => resolveAllBackupAssignedDevicesMock(...args),
 }));
 
 vi.mock('../../services/commandQueue', () => ({
   queueCommandForExecution: vi.fn(),
 }));
 
-import { recomputeRecoveryReadinessForDevice, runBackupVerification, processBackupVerificationResult, timeoutStaleVerifications } from './verificationService';
+vi.mock('../../services/backupMetrics', () => ({
+  recordBackupDispatchFailure: vi.fn(),
+  recordBackupCommandTimeout: vi.fn(),
+  recordBackupVerificationResult: vi.fn(),
+  recordBackupVerificationSkip: vi.fn(),
+  setLowReadinessDevices: vi.fn(),
+}));
+
+import { recomputeRecoveryReadinessForDevice, runBackupVerification, processBackupVerificationResult, timeoutStaleVerifications, listRecoveryReadiness, getBackupHealthSummary } from './verificationService';
 import { backupVerifications, verificationOrgById } from './store';
 import { queueCommandForExecution } from '../../services/commandQueue';
 
 describe('backup verification service', () => {
   beforeEach(() => {
     publishEventMock.mockClear();
+    resolveAllBackupAssignedDevicesMock.mockReset();
+    resolveAllBackupAssignedDevicesMock.mockResolvedValue([]);
     vi.mocked(queueCommandForExecution).mockReset();
   });
 
@@ -81,6 +96,115 @@ describe('backup verification service', () => {
     const readiness = await recomputeRecoveryReadinessForDevice(orgId, deviceId);
     expect(readiness.readinessScore).toBe(0);
     expect(readiness.riskFactors.some((factor) => factor.code === 'no_verification_history')).toBe(true);
+  });
+
+  it('penalizes missing restore proof and surfaces zero-history assigned devices', async () => {
+    const orgId = `org-readiness-${Date.now()}`;
+    const deviceId = `dev-readiness-${Date.now()}`;
+    const assignedDeviceId = `dev-assigned-${Date.now()}`;
+    const verificationId = `verify-readiness-${Date.now()}`;
+
+    resolveAllBackupAssignedDevicesMock.mockResolvedValue([
+      {
+        deviceId: assignedDeviceId,
+        featureLinkId: 'feature-link-1',
+        configId: 'config-1',
+        settings: null,
+        resolvedTimezone: 'UTC',
+      },
+    ]);
+
+    try {
+      backupVerifications.push({
+        id: verificationId,
+        orgId,
+        deviceId,
+        backupJobId: 'job-readiness',
+        snapshotId: 'snap-readiness',
+        verificationType: 'integrity',
+        status: 'passed',
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        filesVerified: 25,
+        filesFailed: 0,
+        details: { source: 'test' },
+        createdAt: new Date().toISOString(),
+      });
+      verificationOrgById.set(verificationId, orgId);
+
+      const readiness = await recomputeRecoveryReadinessForDevice(orgId, deviceId);
+      expect(readiness.readinessScore).toBeLessThan(70);
+      expect(readiness.riskFactors.some((factor) => factor.code === 'restore_test_missing')).toBe(true);
+
+      const rows = await listRecoveryReadiness(orgId);
+      const synthetic = rows.find((row) => row.deviceId === assignedDeviceId);
+      expect(synthetic).toBeDefined();
+      expect(synthetic?.readinessScore).toBe(0);
+      expect(synthetic?.riskFactors.some((factor) => factor.code === 'no_verification_history')).toBe(true);
+
+      const summary = await getBackupHealthSummary(orgId);
+      expect(summary.verification.coveragePercent).toBe(0);
+    } finally {
+      const verificationIndex = backupVerifications.findIndex((row) => row.id === verificationId);
+      if (verificationIndex >= 0) {
+        backupVerifications.splice(verificationIndex, 1);
+      }
+      verificationOrgById.delete(verificationId);
+    }
+  });
+
+  it('does not count failed-only verification history as healthy coverage', async () => {
+    const orgId = `org-coverage-${Date.now()}`;
+    const deviceId = `dev-coverage-${Date.now()}`;
+    const assignedDeviceId = deviceId;
+    const verificationId = `verify-coverage-${Date.now()}`;
+
+    resolveAllBackupAssignedDevicesMock.mockResolvedValue([
+      {
+        deviceId: assignedDeviceId,
+        featureLinkId: 'feature-link-coverage',
+        configId: 'config-coverage',
+        settings: null,
+        resolvedTimezone: 'UTC',
+      },
+    ]);
+
+    try {
+      backupVerifications.push({
+        id: verificationId,
+        orgId,
+        deviceId,
+        backupJobId: 'job-coverage',
+        snapshotId: 'snap-coverage',
+        verificationType: 'test_restore',
+        status: 'failed',
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        filesVerified: 0,
+        filesFailed: 4,
+        details: { source: 'test' },
+        createdAt: new Date().toISOString(),
+      });
+      verificationOrgById.set(verificationId, orgId);
+
+      const summary = await getBackupHealthSummary(orgId);
+      expect(summary.verification.coveragePercent).toBe(0);
+    } finally {
+      const verificationIndex = backupVerifications.findIndex((row) => row.id === verificationId);
+      if (verificationIndex >= 0) {
+        backupVerifications.splice(verificationIndex, 1);
+      }
+      verificationOrgById.delete(verificationId);
+    }
+  });
+
+  it('reports zero coverage when assigned-device resolution fails', async () => {
+    const orgId = `org-assignment-failure-${Date.now()}`;
+
+    resolveAllBackupAssignedDevicesMock.mockRejectedValueOnce(new Error('feature config unavailable'));
+
+    const summary = await getBackupHealthSummary(orgId);
+    expect(summary.verification.coveragePercent).toBe(0);
   });
 
   it('fails verification startup instead of fabricating a simulated result when dispatch is unavailable', async () => {

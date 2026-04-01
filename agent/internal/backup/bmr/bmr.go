@@ -1,6 +1,7 @@
 package bmr
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -28,6 +29,10 @@ const (
 //  4. Run post-restore validation
 //  5. Return RecoveryResult
 func RunRecovery(cfg RecoveryConfig, provider providers.BackupProvider) (*RecoveryResult, error) {
+	return RunRecoveryContext(context.Background(), cfg, provider)
+}
+
+func RunRecoveryContext(ctx context.Context, cfg RecoveryConfig, provider providers.BackupProvider) (*RecoveryResult, error) {
 	if provider == nil {
 		return nil, fmt.Errorf("bmr: backup provider is required")
 	}
@@ -36,6 +41,18 @@ func RunRecovery(cfg RecoveryConfig, provider providers.BackupProvider) (*Recove
 	}
 
 	result := &RecoveryResult{Status: "failed"}
+	checkCancelled := func() bool {
+		if ctx == nil || ctx.Err() == nil {
+			return false
+		}
+		result.Error = fmt.Sprintf("operation cancelled: %v", ctx.Err())
+		if result.FilesRestored > 0 || result.StateApplied {
+			result.Status = "partial"
+			return true
+		}
+		result.Status = "failed"
+		return true
+	}
 
 	slog.Info("bmr: starting recovery",
 		"snapshotId", cfg.SnapshotID,
@@ -43,6 +60,9 @@ func RunRecovery(cfg RecoveryConfig, provider providers.BackupProvider) (*Recove
 	)
 
 	// 1. Download snapshot manifest.
+	if checkCancelled() {
+		return result, ctx.Err()
+	}
 	manifest, err := downloadManifest(cfg.SnapshotID, provider)
 	if err != nil {
 		result.Error = fmt.Sprintf("failed to download manifest: %s", err.Error())
@@ -55,24 +75,39 @@ func RunRecovery(cfg RecoveryConfig, provider providers.BackupProvider) (*Recove
 	)
 
 	// 2. Download and apply system state.
-	stateApplied, driversInjected, stateWarnings, stateErr := applySystemState(cfg, provider)
+	if checkCancelled() {
+		return result, ctx.Err()
+	}
+	stateApplied, driversInjected, stateWarnings, stateErr := applySystemState(ctx, cfg, provider)
 	result.StateApplied = stateApplied
 	result.DriversInjected = driversInjected
 	result.Warnings = append(result.Warnings, stateWarnings...)
 	if stateErr != nil {
 		slog.Warn("bmr: system state restore had errors", "error", stateErr.Error())
 	}
+	if checkCancelled() {
+		return result, ctx.Err()
+	}
 
 	// 3. Download and restore files.
-	filesRestored, bytesRestored, fileWarnings, filesErr := restoreFiles(manifest, cfg, provider)
+	if checkCancelled() {
+		return result, ctx.Err()
+	}
+	filesRestored, bytesRestored, fileWarnings, filesErr := restoreFiles(ctx, manifest, cfg, provider)
 	result.FilesRestored = filesRestored
 	result.BytesRestored = bytesRestored
 	result.Warnings = append(result.Warnings, fileWarnings...)
 	if filesErr != nil {
 		result.Error = fmt.Sprintf("file restore errors: %s", filesErr.Error())
 	}
+	if checkCancelled() {
+		return result, ctx.Err()
+	}
 
 	// 4. Post-restore validation.
+	if checkCancelled() {
+		return result, ctx.Err()
+	}
 	validation, valErr := Validate()
 	if valErr != nil {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("validation error: %s", valErr.Error()))
@@ -144,7 +179,7 @@ func downloadManifest(snapshotID string, provider providers.BackupProvider) (*sn
 	return &manifest, nil
 }
 
-func applySystemState(cfg RecoveryConfig, provider providers.BackupProvider) (applied bool, drivers int, warnings []string, err error) {
+func applySystemState(ctx context.Context, cfg RecoveryConfig, provider providers.BackupProvider) (applied bool, drivers int, warnings []string, err error) {
 	// Download system state manifest from the snapshot.
 	stateManifestKey := path.Join(snapshotRootDir, cfg.SnapshotID, systemStatePath, "manifest.json")
 
@@ -180,6 +215,9 @@ func applySystemState(cfg RecoveryConfig, provider providers.BackupProvider) (ap
 	defer os.RemoveAll(stagingDir)
 
 	for _, artifact := range stateManifest.Artifacts {
+		if ctx != nil && ctx.Err() != nil {
+			return applied, drivers, warnings, nil
+		}
 		remoteKey := path.Join(snapshotRootDir, cfg.SnapshotID, systemStatePath, artifact.Path)
 		localPath := filepath.Join(stagingDir, artifact.Path)
 		if mkErr := os.MkdirAll(filepath.Dir(localPath), 0o750); mkErr != nil {
@@ -213,11 +251,18 @@ func applySystemState(cfg RecoveryConfig, provider providers.BackupProvider) (ap
 }
 
 func restoreFiles(
+	ctx context.Context,
 	manifest *snapshotManifest,
 	cfg RecoveryConfig,
 	provider providers.BackupProvider,
 ) (filesRestored int, bytesRestored int64, warnings []string, err error) {
 	for _, file := range manifest.Files {
+		if ctx != nil && ctx.Err() != nil {
+			if filesRestored > 0 {
+				return filesRestored, bytesRestored, warnings, nil
+			}
+			return filesRestored, bytesRestored, warnings, fmt.Errorf("bmr: recovery cancelled")
+		}
 		targetPath := file.SourcePath
 		if override, ok := cfg.TargetPaths[file.SourcePath]; ok {
 			targetPath = override
@@ -232,6 +277,9 @@ func restoreFiles(
 		if dlErr := provider.Download(file.BackupPath, targetPath); dlErr != nil {
 			warnings = append(warnings, fmt.Sprintf("restore failed for %s: %s", file.SourcePath, dlErr.Error()))
 			continue
+		}
+		if ctx != nil && ctx.Err() != nil {
+			return filesRestored, bytesRestored, warnings, nil
 		}
 
 		filesRestored++

@@ -17,7 +17,7 @@ import { fetchWithAuth } from '../../stores/auth';
 
 type VmState = 'Running' | 'Off' | 'Saved' | 'Paused' | 'Starting' | 'Stopping' | 'Unknown';
 
-type PowerAction = 'start' | 'stop' | 'force-stop' | 'pause' | 'resume' | 'save';
+type PowerAction = 'start' | 'stop' | 'force_stop' | 'pause' | 'resume' | 'save';
 
 type CheckpointAction = 'create' | 'delete' | 'apply';
 
@@ -34,7 +34,7 @@ type HypervVMActionsProps = {
 const powerActionVisibility: Record<PowerAction, VmState[]> = {
   start: ['Off', 'Saved'],
   stop: ['Running'],
-  'force-stop': ['Running', 'Paused', 'Starting', 'Stopping'],
+  force_stop: ['Running', 'Paused', 'Starting', 'Stopping'],
   pause: ['Running'],
   resume: ['Paused'],
   save: ['Running'],
@@ -43,7 +43,7 @@ const powerActionVisibility: Record<PowerAction, VmState[]> = {
 const powerActionConfig: Record<PowerAction, { label: string; icon: typeof Play; destructive?: boolean }> = {
   start: { label: 'Start', icon: Play },
   stop: { label: 'Stop', icon: Square, destructive: true },
-  'force-stop': { label: 'Force Stop', icon: Power, destructive: true },
+  force_stop: { label: 'Force Stop', icon: Power, destructive: true },
   pause: { label: 'Pause', icon: Pause },
   resume: { label: 'Resume', icon: Play },
   save: { label: 'Save', icon: Save },
@@ -71,7 +71,7 @@ export default function HypervVMActions({
   const handlePowerAction = useCallback(
     async (action: PowerAction) => {
       // Destructive actions need confirmation
-      if ((action === 'stop' || action === 'force-stop') && confirmAction !== action) {
+      if ((action === 'stop' || action === 'force_stop') && confirmAction !== action) {
         setConfirmAction(action);
         confirmDialogRef.current?.showModal();
         return;
@@ -85,7 +85,7 @@ export default function HypervVMActions({
           `/backup/hyperv/vm-state/${deviceId}/${vmId}`,
           {
             method: 'POST',
-            body: JSON.stringify({ action }),
+            body: JSON.stringify({ state: action }),
           }
         );
         if (!response.ok) {
@@ -121,7 +121,7 @@ export default function HypervVMActions({
             method: 'POST',
             body: JSON.stringify({
               action,
-              name: action === 'create' ? checkpointName || `${vmName}-checkpoint` : checkpointName,
+              checkpointName: action === 'create' ? checkpointName || `${vmName}-checkpoint` : checkpointName,
             }),
           }
         );
@@ -144,7 +144,7 @@ export default function HypervVMActions({
     if (!confirmAction) return;
     if (confirmAction === 'delete') {
       handleCheckpointAction('delete');
-    } else if (confirmAction === 'stop' || confirmAction === 'force-stop') {
+    } else if (confirmAction === 'stop' || confirmAction === 'force_stop') {
       handlePowerAction(confirmAction);
     }
   }, [confirmAction, handleCheckpointAction, handlePowerAction]);
@@ -269,7 +269,7 @@ export default function HypervVMActions({
         <p className="mt-2 text-sm text-muted-foreground">
           {confirmAction === 'delete'
             ? `Are you sure you want to delete checkpoint "${checkpointName}" for ${vmName}?`
-            : confirmAction === 'force-stop'
+            : confirmAction === 'force_stop'
               ? `Are you sure you want to force stop ${vmName}? This may cause data loss.`
               : `Are you sure you want to stop ${vmName}?`}
         </p>

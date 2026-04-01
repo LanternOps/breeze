@@ -137,11 +137,14 @@ export type BackupOverviewContentProps = {
   error?: string;
   runAllResult?: string;
   runAllLoading: boolean;
-  runAllPreview: { deviceCount: number; alreadyRunning: number } | null;
+  runAllPreview: { deviceCount: number; alreadyRunning: number; offline: number } | null;
+  runOverdueResult?: string;
+  runOverdueLoading: boolean;
   runAllDialogRef: RefObject<HTMLDialogElement | null>;
   handleRunAllClick: () => void;
   handleRunAllConfirm: () => void;
   handleRunAllCancel: () => void;
+  handleRunOverdueClick: () => void;
   resolveChangeType: (stat: BackupStat) => StatChangeType;
   resolveStatIcon: (stat: BackupStat) => typeof Database;
   resolveJobStatus: (status?: string) => string;
@@ -153,8 +156,8 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
   const {
     stats, recentJobs, overdueDevices, storageProviders, usageHistory,
     usageHistoryError, attentionItems, showAllJobs, setShowAllJobs, error,
-    runAllResult, runAllLoading, runAllPreview, runAllDialogRef,
-    handleRunAllClick, handleRunAllConfirm, handleRunAllCancel,
+    runAllResult, runAllLoading, runAllPreview, runOverdueResult, runOverdueLoading, runAllDialogRef,
+    handleRunAllClick, handleRunAllConfirm, handleRunAllCancel, handleRunOverdueClick,
     resolveChangeType, resolveStatIcon, resolveJobStatus, resolveProviderPercent,
     fetchOverview
   } = props;
@@ -183,6 +186,12 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
       {runAllResult && (
         <div className="rounded-md border border-success/40 bg-success/10 px-3 py-2 text-sm text-success">
           {runAllResult}
+        </div>
+      )}
+
+      {runOverdueResult && (
+        <div className="rounded-md border border-success/40 bg-success/10 px-3 py-2 text-sm text-success">
+          {runOverdueResult}
         </div>
       )}
 
@@ -383,8 +392,13 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
               ))
             )}
           </div>
-          <button className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md border bg-card px-4 py-2 text-sm font-medium hover:bg-accent">
-            <PlayCircle className="h-4 w-4" />
+          <button
+            type="button"
+            onClick={handleRunOverdueClick}
+            disabled={runOverdueLoading || overdueDevices.length === 0}
+            className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md border bg-card px-4 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50"
+          >
+            {runOverdueLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
             Run overdue backups
           </button>
         </div>
@@ -397,9 +411,6 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
                 Alerts for backup performance and coverage.
               </p>
             </div>
-            <button className="text-sm font-medium text-primary hover:text-primary/80">
-              Resolve all
-            </button>
           </div>
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             {attentionItems.length === 0 ? (
@@ -452,9 +463,16 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
         {runAllPreview && runAllPreview.deviceCount === 0 ? (
           <>
             <p className="mt-2 text-sm text-muted-foreground">
-              No devices have backup policies configured.
-              {runAllPreview.alreadyRunning > 0 && ` (${runAllPreview.alreadyRunning} already running)`}
+              No eligible devices are ready for a manual backup run.
             </p>
+            <div className="mt-3 space-y-1 text-sm text-muted-foreground">
+              {runAllPreview.alreadyRunning > 0 && (
+                <p>{runAllPreview.alreadyRunning} device{runAllPreview.alreadyRunning !== 1 ? 's are' : ' is'} already running a backup.</p>
+              )}
+              {runAllPreview.offline > 0 && (
+                <p>{runAllPreview.offline} device{runAllPreview.offline !== 1 ? 's are' : ' is'} offline.</p>
+              )}
+            </div>
             <div className="mt-4 flex justify-end">
               <button
                 type="button"
@@ -470,10 +488,17 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
             <p className="mt-2 text-sm text-muted-foreground">
               This will start manual backup jobs for{' '}
               <span className="font-medium text-foreground">{runAllPreview?.deviceCount ?? 0} device{(runAllPreview?.deviceCount ?? 0) !== 1 ? 's' : ''}</span>.
-              {(runAllPreview?.alreadyRunning ?? 0) > 0 && (
-                <span> ({runAllPreview?.alreadyRunning} already running will be skipped.)</span>
-              )}
             </p>
+            {((runAllPreview?.alreadyRunning ?? 0) > 0 || (runAllPreview?.offline ?? 0) > 0) && (
+              <div className="mt-3 space-y-1 text-sm text-muted-foreground">
+                {(runAllPreview?.alreadyRunning ?? 0) > 0 && (
+                  <p>{runAllPreview?.alreadyRunning} already running {runAllPreview?.alreadyRunning === 1 ? 'device will' : 'devices will'} be skipped.</p>
+                )}
+                {(runAllPreview?.offline ?? 0) > 0 && (
+                  <p>{runAllPreview?.offline} offline {runAllPreview?.offline === 1 ? 'device will' : 'devices will'} be skipped.</p>
+                )}
+              </div>
+            )}
             <div className="mt-4 flex items-center justify-end gap-3">
               <button
                 type="button"

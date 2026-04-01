@@ -33,6 +33,8 @@ import { Aside } from '@astrojs/starlight/components';
 2. Confirm the Breeze agent is running on the device.
 3. Check that Redis is operational — backup jobs are dispatched through the job queue.
 
+If a manual backup request cannot be queued at all, Breeze now marks the job **Failed** immediately with the dispatch error instead of leaving it queued forever.
+
 ---
 
 ## Job fails immediately
@@ -66,6 +68,35 @@ import { Aside } from '@astrojs/starlight/components';
 **Cause:** The target device wasn't explicitly specified in the restore wizard.
 
 **Fix:** When restoring, explicitly select the target device in the destination step. If omitted, the restore defaults to the snapshot's original device. Both devices must be in the same organization.
+
+---
+
+## Restore or verification will not start
+
+**Symptom:** Starting a restore or verification returns an error immediately.
+
+**Cause:** The target device is offline, disconnected, or the command pipeline could not queue the agent command.
+
+**Fix:**
+1. Confirm the destination device shows as **Online** in Breeze.
+2. Verify the Breeze agent service is running and can reach the API.
+3. If the error mentions queue or dispatch failure, check Redis and API logs for command queue errors.
+4. Retry after the connectivity or queue issue is resolved.
+
+Breeze does not create simulated verification records or silent pending restores in this case. The action fails explicitly so operators can correct the underlying issue first.
+
+---
+
+## No verification history
+
+**Symptom:** The Verification tab shows **No verification history. Run a verification to check backup integrity.**
+
+**Cause:** No completed live verification has run yet for that device, or all recent attempts were skipped because the device was offline.
+
+**Fix:**
+1. Bring the device online.
+2. Run an **Integrity Check** or **Test Restore** manually.
+3. Review scheduled verification logs if the device is frequently offline during verification windows.
 
 ---
 

@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const queueCommandForExecutionMock = vi.fn();
+const queueBackupStopCommandMock = vi.fn();
+const runOutsideDbContextMock = vi.fn((fn: () => unknown) => fn());
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
@@ -14,13 +16,16 @@ function chainMock(resolvedValue: unknown = []) {
 const selectMock = vi.fn(() => chainMock([]));
 const insertMock = vi.fn(() => chainMock([]));
 const updateMock = vi.fn(() => chainMock([]));
+const deleteMock = vi.fn(() => chainMock([]));
 
 vi.mock('../../db', () => ({
   db: {
     select: (...args: unknown[]) => selectMock(...(args as [])),
     insert: (...args: unknown[]) => insertMock(...(args as [])),
     update: (...args: unknown[]) => updateMock(...(args as [])),
+    delete: (...args: unknown[]) => deleteMock(...(args as [])),
   },
+  runOutsideDbContext: (...args: unknown[]) => runOutsideDbContextMock(...(args as [])),
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -53,6 +58,10 @@ vi.mock('../../db/schema', () => ({
     createdAt: 'restore_jobs.created_at',
     updatedAt: 'restore_jobs.updated_at',
   },
+  deviceCommands: {
+    id: 'device_commands.id',
+    status: 'device_commands.status',
+  },
   devices: {
     id: 'devices.id',
     orgId: 'devices.org_id',
@@ -74,7 +83,12 @@ vi.mock('../../services/commandQueue', () => ({
   CommandTypes: {
     BACKUP_RESTORE: 'backup_restore',
   },
+  queueBackupStopCommand: (...args: unknown[]) => queueBackupStopCommandMock(...(args as [])),
   queueCommandForExecution: (...args: unknown[]) => queueCommandForExecutionMock(...(args as [])),
+}));
+
+vi.mock('../../services/backupMetrics', () => ({
+  recordBackupDispatchFailure: vi.fn(),
 }));
 
 import { restoreRoutes } from './restore';
@@ -158,6 +172,7 @@ describe('restore routes', () => {
     expect(res.status).toBe(201);
     const body = await res.json();
     expect(body.commandId).toBe('command-1');
+    expect(runOutsideDbContextMock).toHaveBeenCalled();
     expect(queueCommandForExecutionMock).toHaveBeenCalledWith(
       'device-1',
       'backup_restore',
@@ -169,6 +184,92 @@ describe('restore routes', () => {
       },
       { userId: 'user-1' }
     );
+  });
+
+  it('returns a restore job by id', async () => {
+    selectMock.mockReturnValueOnce(
+      chainMock([{
+        id: 'restore-1',
+        snapshotId: 'snap-db-1',
+        deviceId: 'device-1',
+        restoreType: 'full',
+        selectedPaths: [],
+        status: 'running',
+        targetPath: null,
+        startedAt: new Date('2026-04-01T00:00:00Z'),
+        completedAt: null,
+        restoredSize: 1024,
+        restoredFiles: 4,
+        targetConfig: {
+          result: {
+            status: 'running',
+            commandType: 'backup_restore',
+          },
+        },
+        commandId: 'command-1',
+        createdAt: new Date('2026-04-01T00:00:00Z'),
+        updatedAt: new Date('2026-04-01T00:00:00Z'),
+      }])
+    );
+
+    const res = await app.request('/restore/restore-1', {
+      method: 'GET',
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.id).toBe('restore-1');
+    expect(body.data.commandId).toBe('command-1');
+    expect(body.data.resultDetails).toEqual({
+      status: 'running',
+      commandType: 'backup_restore',
+    });
+  });
+
+  it('surfaces immediate dispatch failure details through the read API', async () => {
+    selectMock.mockReturnValueOnce(
+      chainMock([{
+        id: 'restore-2',
+        snapshotId: 'snap-db-1',
+        deviceId: 'device-1',
+        restoreType: 'full',
+        selectedPaths: [],
+        status: 'failed',
+        targetPath: null,
+        startedAt: null,
+        completedAt: new Date('2026-04-01T00:00:00Z'),
+        restoredSize: null,
+        restoredFiles: null,
+        targetConfig: {
+          error: 'Device is offline, cannot execute command',
+        },
+        commandId: null,
+        createdAt: new Date('2026-04-01T00:00:00Z'),
+        updatedAt: new Date('2026-04-01T00:00:00Z'),
+      }])
+    );
+
+    const res = await app.request('/restore/restore-2', {
+      method: 'GET',
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.errorSummary).toBe('Device is offline, cannot execute command');
+    expect(body.data.resultDetails).toMatchObject({
+      status: 'failed',
+      error: 'Device is offline, cannot execute command',
+    });
+  });
+
+  it('returns 404 when a restore job is not found by id', async () => {
+    selectMock.mockReturnValueOnce(chainMock([]));
+
+    const res = await app.request('/restore/missing-restore', {
+      method: 'GET',
+    });
+
+    expect(res.status).toBe(404);
   });
 
   it('returns 409 and does not create a restore job when the target device is offline', async () => {
@@ -231,5 +332,111 @@ describe('restore routes', () => {
 
     expect(res.status).toBe(502);
     expect(updateMock).toHaveBeenCalled();
+  });
+
+  it('cancels a running restore job and queues backup_stop', async () => {
+    selectMock.mockReturnValueOnce(
+      chainMock([{
+        id: 'restore-3',
+        orgId: 'org-1',
+        snapshotId: 'snap-db-1',
+        deviceId: 'device-1',
+        restoreType: 'full',
+        selectedPaths: [],
+        status: 'running',
+        targetPath: null,
+        startedAt: new Date('2026-04-01T00:00:00Z'),
+        completedAt: null,
+        restoredSize: null,
+        restoredFiles: null,
+        targetConfig: null,
+        commandId: 'command-3',
+        createdAt: new Date('2026-04-01T00:00:00Z'),
+        updatedAt: new Date('2026-04-01T00:00:00Z'),
+      }])
+    );
+    updateMock.mockReturnValueOnce(
+      chainMock([{
+        id: 'restore-3',
+        orgId: 'org-1',
+        snapshotId: 'snap-db-1',
+        deviceId: 'device-1',
+        restoreType: 'full',
+        selectedPaths: [],
+        status: 'cancelled',
+        targetPath: null,
+        startedAt: new Date('2026-04-01T00:00:00Z'),
+        completedAt: new Date('2026-04-01T01:00:00Z'),
+        restoredSize: null,
+        restoredFiles: null,
+        targetConfig: {
+          error: 'Cancelled by user',
+          result: { status: 'cancelled', error: 'Cancelled by user' },
+        },
+        commandId: 'command-3',
+        createdAt: new Date('2026-04-01T00:00:00Z'),
+        updatedAt: new Date('2026-04-01T01:00:00Z'),
+      }])
+    );
+    queueBackupStopCommandMock.mockResolvedValueOnce({ command: { id: 'stop-1', status: 'sent' } });
+
+    const res = await app.request('/restore/restore-3/cancel', { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.status).toBe('cancelled');
+    expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-1', { userId: 'user-1' });
+  });
+
+  it('removes a pending restore dispatch before cancelling', async () => {
+    selectMock.mockReturnValueOnce(
+      chainMock([{
+        id: 'restore-4',
+        orgId: 'org-1',
+        snapshotId: 'snap-db-1',
+        deviceId: 'device-1',
+        restoreType: 'full',
+        selectedPaths: [],
+        status: 'pending',
+        targetPath: null,
+        startedAt: null,
+        completedAt: null,
+        restoredSize: null,
+        restoredFiles: null,
+        targetConfig: null,
+        commandId: 'command-4',
+        createdAt: new Date('2026-04-01T00:00:00Z'),
+        updatedAt: new Date('2026-04-01T00:00:00Z'),
+      }])
+    );
+    updateMock.mockReturnValueOnce(
+      chainMock([{
+        id: 'restore-4',
+        orgId: 'org-1',
+        snapshotId: 'snap-db-1',
+        deviceId: 'device-1',
+        restoreType: 'full',
+        selectedPaths: [],
+        status: 'cancelled',
+        targetPath: null,
+        startedAt: null,
+        completedAt: new Date('2026-04-01T01:00:00Z'),
+        restoredSize: null,
+        restoredFiles: null,
+        targetConfig: {
+          error: 'Cancelled by user',
+          result: { status: 'cancelled', error: 'Cancelled by user' },
+        },
+        commandId: 'command-4',
+        createdAt: new Date('2026-04-01T00:00:00Z'),
+        updatedAt: new Date('2026-04-01T01:00:00Z'),
+      }])
+    );
+    deleteMock.mockReturnValueOnce(chainMock([{ id: 'command-4' }]));
+
+    const res = await app.request('/restore/restore-4/cancel', { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(queueBackupStopCommandMock).not.toHaveBeenCalled();
   });
 });

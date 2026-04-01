@@ -1,7 +1,5 @@
 import { useMemo, useState, useEffect, useCallback } from 'react';
 import { Layers, FileCog, BarChart3, Plus, Loader2, RefreshCw } from 'lucide-react';
-import type { FilterConditionGroup } from '@breeze/shared';
-import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import PatchList, {
   type Patch,
   type PatchApprovalStatus,
@@ -36,6 +34,8 @@ function setTabInUrl(tab: TabKey) {
   window.history.replaceState({}, '', url.toString());
 }
 
+const DEVICE_SCAN_PAGE_LIMIT = 100;
+
 export default function PatchesPage() {
   const [activeTab, setActiveTabState] = useState<TabKey>(getTabFromUrl);
   const setActiveTab = useCallback((tab: TabKey) => {
@@ -58,7 +58,7 @@ export default function PatchesPage() {
   const [patchesError, setPatchesError] = useState<string>();
   const [scanLoading, setScanLoading] = useState(false);
   const [scanError, setScanError] = useState<string>();
-  const [deviceFilter, setDeviceFilter] = useState<FilterConditionGroup | null>(null);
+  const [scanSuccess, setScanSuccess] = useState<string>();
 
   const tabs = useMemo(
     () => [
@@ -169,11 +169,20 @@ export default function PatchesPage() {
       if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
       throw new Error('Failed to approve patches');
     }
+    const body = await response.json().catch(() => ({})) as {
+      approved?: string[];
+      failed?: string[];
+    };
+    const approvedIds = Array.isArray(body.approved) ? body.approved : patchIds;
+    const failedIds = Array.isArray(body.failed) ? body.failed : [];
     setPatches(prev =>
       prev.map(patch =>
-        patchIds.includes(patch.id) ? { ...patch, approvalStatus: 'approved' as PatchApprovalStatus } : patch
+        approvedIds.includes(patch.id) ? { ...patch, approvalStatus: 'approved' as PatchApprovalStatus } : patch
       )
     );
+    if (failedIds.length > 0) {
+      throw new Error(`Failed to approve ${failedIds.length} ${failedIds.length === 1 ? 'patch' : 'patches'}`);
+    }
   };
 
   const handleBulkDecline = async (patchIds: string[]) => {
@@ -201,27 +210,51 @@ export default function PatchesPage() {
     try {
       setScanLoading(true);
       setScanError(undefined);
-      const devResponse = await fetchWithAuth('/devices?limit=100');
-      if (!devResponse.ok) {
-        if (devResponse.status === 401) { void navigateTo('/login', { replace: true }); return; }
-        throw new Error('Failed to load devices for scan');
+      setScanSuccess(undefined);
+      const ids = new Set<string>();
+      let page = 1;
+      let totalPages = 1;
+
+      while (page <= totalPages) {
+        const devResponse = await fetchWithAuth(`/devices?limit=${DEVICE_SCAN_PAGE_LIMIT}&page=${page}`);
+        if (!devResponse.ok) {
+          if (devResponse.status === 401) { void navigateTo('/login', { replace: true }); return; }
+          throw new Error('Failed to load devices for scan');
+        }
+
+        const devBody = await devResponse.json();
+        const devices = devBody.devices ?? devBody.data ?? devBody.items ?? devBody ?? [];
+        for (const device of Array.isArray(devices) ? devices : []) {
+          const rawDevice = device && typeof device === 'object' ? device as Record<string, unknown> : null;
+          const rawId = rawDevice?.id ?? rawDevice?.deviceId;
+          const id = rawId ? String(rawId) : '';
+          if (id) {
+            ids.add(id);
+          }
+        }
+
+        const total = Number(devBody?.pagination?.total ?? ids.size);
+        totalPages = total > 0 ? Math.ceil(total / DEVICE_SCAN_PAGE_LIMIT) : page;
+        page += 1;
       }
-      const devData = await devResponse.json();
-      const devices = devData.devices ?? devData.data ?? devData.items ?? devData ?? [];
-      const ids = (Array.isArray(devices) ? devices : [])
-        .map((d: Record<string, unknown>) => d.id ?? d.deviceId)
-        .map((id: unknown) => (id ? String(id) : ''))
-        .filter((id: string) => id.length > 0);
-      if (ids.length === 0) throw new Error('No devices available for scanning');
+
+      const deviceIds = [...ids];
+      if (deviceIds.length === 0) throw new Error('No devices available for scanning');
 
       const response = await fetchWithAuth('/patches/scan', {
         method: 'POST',
-        body: JSON.stringify({ deviceIds: ids })
+        body: JSON.stringify({ deviceIds })
       });
       if (!response.ok) {
         if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
         throw new Error('Failed to start patch scan');
       }
+      const body = await response.json().catch(() => ({}));
+      const dispatched = Array.isArray(body?.dispatchedCommandIds) ? body.dispatchedCommandIds.length : 0;
+      const queued = Array.isArray(body?.queuedCommandIds) ? body.queuedCommandIds.length : deviceIds.length;
+      setScanSuccess(
+        `Patch scan queued for ${queued} devices${dispatched > 0 ? `, ${dispatched} dispatched immediately` : ''}.`
+      );
       await fetchPatches();
     } catch (err) {
       setScanError(err instanceof Error ? err.message : 'Failed to start patch scan');
@@ -326,6 +359,11 @@ export default function PatchesPage() {
           </div>
         </div>
       )}
+      {scanSuccess && (
+        <div className="rounded-lg border border-success/40 bg-success/10 p-4 text-sm text-success">
+          {scanSuccess}
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="border-b">
@@ -356,12 +394,6 @@ export default function PatchesPage() {
             selectedRingId={selectedRingId}
             onChange={setSelectedRingId}
             loading={ringsLoading}
-          />
-          <DeviceFilterBar
-            value={deviceFilter}
-            onChange={setDeviceFilter}
-            collapsible
-            defaultExpanded={false}
           />
         </div>
       )}

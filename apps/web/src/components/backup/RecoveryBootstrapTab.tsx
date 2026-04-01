@@ -484,6 +484,47 @@ export default function RecoveryBootstrapTab() {
   const [bundlePlatform, setBundlePlatform] = useState('linux');
   const [bundleArchitecture, setBundleArchitecture] = useState('amd64');
 
+  const refreshArtifacts = useCallback(async () => {
+    const [mediaResponse, bootMediaResponse] = await Promise.all([
+      fetchWithAuth('/backup/bmr/media?limit=100'),
+      fetchWithAuth('/backup/bmr/boot-media?limit=100'),
+    ]);
+    if (!mediaResponse.ok) {
+      throw new Error('Failed to load recovery bundles');
+    }
+    if (!bootMediaResponse.ok) {
+      throw new Error('Failed to load bootable recovery media');
+    }
+
+    const mediaPayload = await mediaResponse.json();
+    const mediaRows = isRecord(mediaPayload) && Array.isArray(mediaPayload.data)
+      ? mediaPayload.data
+      : Array.isArray(mediaPayload)
+        ? mediaPayload
+        : [];
+    setMediaCatalog(
+      Array.isArray(mediaRows)
+        ? mediaRows
+            .filter((item): item is Record<string, unknown> => isRecord(item))
+            .map(toMediaRecord)
+        : []
+    );
+
+    const bootMediaPayload = await bootMediaResponse.json();
+    const bootMediaRows = isRecord(bootMediaPayload) && Array.isArray(bootMediaPayload.data)
+      ? bootMediaPayload.data
+      : Array.isArray(bootMediaPayload)
+        ? bootMediaPayload
+        : [];
+    setBootMediaCatalog(
+      Array.isArray(bootMediaRows)
+        ? bootMediaRows
+            .filter((item): item is Record<string, unknown> => isRecord(item))
+            .map(toBootMediaRecord)
+        : []
+    );
+  }, []);
+
   useEffect(() => {
     persistTokens(catalog);
   }, [catalog]);
@@ -495,11 +536,9 @@ export default function RecoveryBootstrapTab() {
     const fetchInitialData = async () => {
       try {
         setLoadingSnapshots(true);
-        const [snapshotsResponse, tokensResponse, mediaResponse, bootMediaResponse] = await Promise.all([
+        const [snapshotsResponse, tokensResponse] = await Promise.all([
           fetchWithAuth('/backup/snapshots'),
           fetchWithAuth('/backup/bmr/tokens?limit=100'),
-          fetchWithAuth('/backup/bmr/media?limit=100'),
-          fetchWithAuth('/backup/bmr/boot-media?limit=100'),
         ]);
         if (!snapshotsResponse.ok) {
           throw new Error('Failed to load snapshots');
@@ -507,13 +546,6 @@ export default function RecoveryBootstrapTab() {
         if (!tokensResponse.ok) {
           throw new Error('Failed to load recovery tokens');
         }
-        if (!mediaResponse.ok) {
-          throw new Error('Failed to load recovery bundles');
-        }
-        if (!bootMediaResponse.ok) {
-          throw new Error('Failed to load bootable recovery media');
-        }
-
         const payload = normalizeApiResponse(await snapshotsResponse.json());
         const list = Array.isArray(payload.snapshots)
           ? payload.snapshots
@@ -567,33 +599,7 @@ export default function RecoveryBootstrapTab() {
           return [...merged, ...localOnly];
         });
 
-        const mediaPayload = await mediaResponse.json();
-        const mediaRows = isRecord(mediaPayload) && Array.isArray(mediaPayload.data)
-          ? mediaPayload.data
-          : Array.isArray(mediaPayload)
-            ? mediaPayload
-            : [];
-        setMediaCatalog(
-          Array.isArray(mediaRows)
-            ? mediaRows
-                .filter((item): item is Record<string, unknown> => isRecord(item))
-                .map(toMediaRecord)
-            : []
-        );
-
-        const bootMediaPayload = await bootMediaResponse.json();
-        const bootMediaRows = isRecord(bootMediaPayload) && Array.isArray(bootMediaPayload.data)
-          ? bootMediaPayload.data
-          : Array.isArray(bootMediaPayload)
-            ? bootMediaPayload
-            : [];
-        setBootMediaCatalog(
-          Array.isArray(bootMediaRows)
-            ? bootMediaRows
-                .filter((item): item is Record<string, unknown> => isRecord(item))
-                .map(toBootMediaRecord)
-            : []
-        );
+        await refreshArtifacts();
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : 'Failed to load snapshots');
@@ -607,7 +613,7 @@ export default function RecoveryBootstrapTab() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshArtifacts]);
 
   const selectedToken = useMemo(
     () => catalog.find((token) => token.id === selectedTokenId) ?? null,
@@ -621,6 +627,21 @@ export default function RecoveryBootstrapTab() {
     () => bootMediaCatalog.filter((artifact) => artifact.tokenId === selectedTokenId),
     [bootMediaCatalog, selectedTokenId]
   );
+
+  useEffect(() => {
+    if (!selectedMedia.some((artifact) => artifact.status === 'pending' || artifact.status === 'building') &&
+        !selectedBootMedia.some((artifact) => artifact.status === 'pending' || artifact.status === 'building')) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      void refreshArtifacts().catch((err) => {
+        setError(err instanceof Error ? err.message : 'Failed to refresh recovery artifacts');
+      });
+    }, 10000);
+
+    return () => window.clearInterval(timer);
+  }, [refreshArtifacts, selectedBootMedia, selectedMedia]);
 
   useEffect(() => {
     if (!selectedTokenId && catalog.length > 0) {
@@ -913,12 +934,13 @@ export default function RecoveryBootstrapTab() {
         });
       }
       setTokenMessage('Recovery bundle build started.');
+      await refreshArtifacts();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create recovery bundle');
     } finally {
       setCreatingMedia(false);
     }
-  }, [bundleArchitecture, bundlePlatform, selectedToken]);
+  }, [bundleArchitecture, bundlePlatform, refreshArtifacts, selectedToken]);
 
   const handleDownloadBundle = useCallback(async (artifact: RecoveryMediaArtifact) => {
     if (!artifact.downloadPath) return;
@@ -1005,12 +1027,13 @@ export default function RecoveryBootstrapTab() {
         });
       }
       setTokenMessage('Bootable recovery media build started.');
+      await refreshArtifacts();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create bootable recovery media');
     } finally {
       setCreatingBootMedia(false);
     }
-  }, [selectedToken]);
+  }, [refreshArtifacts, selectedToken]);
 
   const selectedCommand = selectedToken?.token
     ? `breeze-backup bmr-recover --token ${selectedToken.token} --server ${selectedToken.bootstrapPreview?.serverUrl ?? getRecoveryServerBase()}`

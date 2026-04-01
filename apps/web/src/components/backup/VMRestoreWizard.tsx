@@ -21,6 +21,7 @@ import AlphaBadge from '../shared/AlphaBadge';
 type Snapshot = {
   id: string;
   label: string;
+  createdAt?: string;
   timestamp?: string;
   sizeBytes?: number | null;
   hardwareProfile?: {
@@ -84,7 +85,16 @@ export default function VMRestoreWizard() {
         if (snapRes.ok) {
           const payload = await snapRes.json();
           const data = payload?.data ?? payload ?? [];
-          setSnapshots(Array.isArray(data) ? data : []);
+          const snapshotRows = Array.isArray(data) ? data : [];
+          setSnapshots(
+            snapshotRows.map((snapshot) => {
+              const row = (snapshot ?? {}) as Snapshot & { createdAt?: string };
+              return {
+                ...row,
+                timestamp: row.timestamp ?? row.createdAt,
+              };
+            })
+          );
         }
 
         if (devRes.ok) {
@@ -264,7 +274,7 @@ export default function VMRestoreWizard() {
                     >
                       <div className="text-sm font-semibold text-foreground">{snap.label}</div>
                       <div className="mt-1 flex flex-wrap gap-3 text-xs text-muted-foreground">
-                        {snap.timestamp && <span>{formatTime(snap.timestamp)}</span>}
+                        {(snap.createdAt ?? snap.timestamp) && <span>{formatTime(snap.createdAt ?? snap.timestamp)}</span>}
                         {snap.sizeBytes != null && <span>{formatBytes(snap.sizeBytes)}</span>}
                       </div>
                       {snap.hardwareProfile && (

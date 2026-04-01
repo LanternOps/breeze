@@ -363,4 +363,30 @@ describe('RecoveryBootstrapTab', () => {
       expect(revokedLabels.some((el) => el.tagName === 'SPAN')).toBe(true);
     });
   });
+
+  it('refreshes recovery artifact catalogs after bundle and ISO creation', async () => {
+    render(<RecoveryBootstrapTab />);
+
+    await screen.findByText('Manual recovery environment');
+    fireEvent.click(screen.getByRole('button', { name: /Create token/i }));
+    await screen.findByText(/Recovery token created/i);
+
+    fireEvent.click(screen.getByRole('button', { name: /Create bundle/i }));
+
+    await waitFor(() => {
+      const mediaRefreshCalls = fetchMock.mock.calls.filter(
+        ([url, init]) => String(url) === '/backup/bmr/media?limit=100' && ((init as RequestInit | undefined)?.method ?? 'GET') === 'GET'
+      );
+      expect(mediaRefreshCalls.length).toBeGreaterThan(1);
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Create ISO/i }));
+
+    await waitFor(() => {
+      const bootMediaRefreshCalls = fetchMock.mock.calls.filter(
+        ([url, init]) => String(url) === '/backup/bmr/boot-media?limit=100' && ((init as RequestInit | undefined)?.method ?? 'GET') === 'GET'
+      );
+      expect(bootMediaRefreshCalls.length).toBeGreaterThan(1);
+    });
+  });
 });

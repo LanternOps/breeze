@@ -3,6 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AGENT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+TMP_DIR="$(mktemp -d /tmp/breeze-loginwindow-test.XXXXXX)"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
 HELPER_SRC_DEFAULT="/tmp/breeze-desktop-helper"
 HELPER_DST="/usr/local/bin/breeze-desktop-helper"
@@ -61,19 +63,95 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-if [ ! -f "$USER_PLIST_SRC" ] || [ ! -f "$LOGIN_PLIST_SRC" ]; then
-    echo "Error: expected launchd plists were not found under $AGENT_DIR/service/launchd" >&2
-    exit 1
-fi
+ensure_default_plists() {
+    if [ ! -f "$USER_PLIST_SRC" ]; then
+        USER_PLIST_SRC="$TMP_DIR/com.breeze.desktop-helper-user.plist"
+        cat > "$USER_PLIST_SRC" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.breeze.desktop-helper-user</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/breeze-desktop-helper</string>
+        <string>--context</string>
+        <string>user_session</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>StandardOutPath</key>
+    <string>/tmp/breeze-desktop-helper-user.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/breeze-desktop-helper-user.log</string>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
+PLIST
+    fi
+
+    if [ ! -f "$LOGIN_PLIST_SRC" ]; then
+        LOGIN_PLIST_SRC="$TMP_DIR/com.breeze.desktop-helper-loginwindow.plist"
+        cat > "$LOGIN_PLIST_SRC" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.breeze.desktop-helper-loginwindow</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/breeze-desktop-helper</string>
+        <string>--context</string>
+        <string>login_window</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>LimitLoadToSessionType</key>
+    <string>LoginWindow</string>
+    <key>StandardOutPath</key>
+    <string>/tmp/breeze-desktop-helper-loginwindow.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/breeze-desktop-helper-loginwindow.log</string>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
+PLIST
+    fi
+}
+
+ensure_default_plists
 
 if [ -z "$HELPER_SRC" ]; then
     HELPER_SRC="$HELPER_SRC_DEFAULT"
     if [ "$BUILD_HELPER" -eq 1 ]; then
-        echo "Building breeze-desktop-helper to $HELPER_SRC ..."
-        (
-            cd "$AGENT_DIR"
-            go build -o "$HELPER_SRC" ./cmd/breeze-desktop-helper
-        )
+        if [ -d "$AGENT_DIR/cmd/breeze-desktop-helper" ]; then
+            echo "Building breeze-desktop-helper to $HELPER_SRC ..."
+            (
+                cd "$AGENT_DIR"
+                go build -o "$HELPER_SRC" ./cmd/breeze-desktop-helper
+            )
+        elif [ -x "$HELPER_DST" ]; then
+            echo "Repo checkout not found; reusing existing helper at $HELPER_DST"
+            HELPER_SRC="$HELPER_DST"
+        else
+            echo "Error: could not find repo source under $AGENT_DIR and no existing helper at $HELPER_DST" >&2
+            echo "Run with --helper-src /path/to/breeze-desktop-helper or from a repo checkout." >&2
+            exit 1
+        fi
     fi
 fi
 

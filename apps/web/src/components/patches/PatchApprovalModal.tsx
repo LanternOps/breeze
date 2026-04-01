@@ -38,6 +38,13 @@ const actionConfig: Record<PatchApprovalAction, { label: string; description: st
   }
 };
 
+function getDefaultDeferUntil(): string {
+  const date = new Date();
+  date.setDate(date.getDate() + 7);
+  date.setHours(9, 0, 0, 0);
+  return date.toISOString().slice(0, 16);
+}
+
 export default function PatchApprovalModal({
   open,
   patch,
@@ -48,6 +55,7 @@ export default function PatchApprovalModal({
 }: PatchApprovalModalProps) {
   const [action, setAction] = useState<PatchApprovalAction>('approve');
   const [notes, setNotes] = useState('');
+  const [deferUntil, setDeferUntil] = useState(getDefaultDeferUntil());
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string>();
 
@@ -55,12 +63,18 @@ export default function PatchApprovalModal({
     if (open) {
       setAction('approve');
       setNotes('');
+      setDeferUntil(getDefaultDeferUntil());
       setSubmitting(false);
       setSubmitError(undefined);
     }
   }, [open, patch?.id]);
 
   const isSubmitting = useMemo(() => loading ?? submitting, [loading, submitting]);
+  const canSubmit = useMemo(() => {
+    if (isSubmitting) return false;
+    if (action !== 'defer') return true;
+    return deferUntil.trim().length > 0;
+  }, [action, deferUntil, isSubmitting]);
 
   if (!patch) return null;
 
@@ -74,6 +88,12 @@ export default function PatchApprovalModal({
       const endpoint = action === 'approve' ? 'approve' : action === 'decline' ? 'decline' : 'defer';
       const body: Record<string, unknown> = { note: notes };
       if (ringId) body.ringId = ringId;
+      if (action === 'defer') {
+        if (!deferUntil.trim()) {
+          throw new Error('Choose when the patch should be deferred until');
+        }
+        body.deferUntil = new Date(deferUntil).toISOString();
+      }
 
       const response = await fetchWithAuth(`/patches/${patch.id}/${endpoint}`, {
         method: 'POST',
@@ -85,7 +105,8 @@ export default function PatchApprovalModal({
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error('Failed to update patch approval');
+        const errorBody = await response.json().catch(() => ({})) as { error?: string; message?: string };
+        throw new Error(errorBody.error || errorBody.message || 'Failed to update patch approval');
       }
 
       await onSubmit?.(patch.id, action, notes);
@@ -150,6 +171,22 @@ export default function PatchApprovalModal({
           />
         </div>
 
+        {action === 'defer' && (
+          <div className="mt-6">
+            <label htmlFor="patch-defer-until" className="text-sm font-medium">
+              Defer Until
+            </label>
+            <input
+              id="patch-defer-until"
+              type="datetime-local"
+              value={deferUntil}
+              onChange={(event) => setDeferUntil(event.target.value)}
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              disabled={isSubmitting}
+            />
+          </div>
+        )}
+
         {submitError && (
           <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
             {submitError}
@@ -168,7 +205,7 @@ export default function PatchApprovalModal({
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={isSubmitting}
+            disabled={!canSubmit}
             className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
             <span className="inline-flex items-center gap-2">

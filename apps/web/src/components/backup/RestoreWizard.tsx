@@ -126,6 +126,16 @@ function renderJson(value: unknown): string {
   }
 }
 
+async function readApiError(response: Response, fallback: string): Promise<string> {
+  try {
+    const payload = await response.json();
+    const message = payload?.error;
+    return typeof message === 'string' && message.trim().length > 0 ? message : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export default function RestoreWizard() {
   const [step, setStep] = useState(0);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
@@ -186,7 +196,7 @@ export default function RestoreWizard() {
   const fetchRestoreJob = useCallback(async (restoreId: string) => {
     const response = await fetchWithAuth(`/backup/restore/${restoreId}`);
     if (!response.ok) {
-      throw new Error('Failed to fetch restore job status');
+      throw new Error(await readApiError(response, 'Failed to fetch restore job status'));
     }
     const payload = await response.json();
     const data = payload?.data ?? payload;
@@ -261,7 +271,17 @@ export default function RestoreWizard() {
     [snapshotId, snapshots]
   );
   const selectableFiles = selectedSnapshot?.files ?? [];
-  const activeRestore = restoreJob && ['pending', 'running'].includes(`${restoreJob.status}`.toLowerCase()) ? restoreJob : null;
+  const latestKnownRestore = useMemo(() => {
+    if (restoreJob) return restoreJob;
+    return restoreHistory[0] ?? null;
+  }, [restoreHistory, restoreJob]);
+  const activeRestore = useMemo(() => {
+    const candidate =
+      restoreJob
+      ?? restoreHistory.find((job) => ['pending', 'running'].includes(`${job.status}`.toLowerCase()))
+      ?? null;
+    return candidate && ['pending', 'running'].includes(`${candidate.status}`.toLowerCase()) ? candidate : null;
+  }, [restoreHistory, restoreJob]);
 
   useEffect(() => {
     if (!activeRestore?.id) return;
@@ -297,12 +317,14 @@ export default function RestoreWizard() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to start restore');
+        throw new Error(await readApiError(response, 'Failed to start restore'));
       }
       const payload = await response.json();
       const created = (payload?.data ?? payload) as RestoreJob;
       setRestoreJob(created);
-      setRestoreSuccess(`Restore job ${created.id} queued successfully.`);
+      setRestoreSuccess(
+        `Restore job ${created.id} ${created.status === 'running' ? 'started' : 'queued'} successfully.`
+      );
       await fetchRestoreHistory();
     } catch (err) {
       setRestoreError(err instanceof Error ? err.message : 'Failed to start restore');
@@ -653,7 +675,7 @@ export default function RestoreWizard() {
         </div>
       </div>
 
-      {(restoreJob || restoreHistoryLoading || restoreHistory.length > 0) ? (
+      {(latestKnownRestore || restoreHistoryLoading || restoreHistory.length > 0) ? (
         <div className="grid gap-6 xl:grid-cols-[1.2fr,0.8fr]">
           <div className="rounded-lg border bg-card p-5 shadow-sm">
             <div className="flex items-center justify-between gap-3">
@@ -663,10 +685,10 @@ export default function RestoreWizard() {
                   Status and result details for the most recently started restore.
                 </p>
               </div>
-              {restoreJob?.id ? (
+              {latestKnownRestore?.id ? (
                 <button
                   type="button"
-                  onClick={() => void fetchRestoreJob(restoreJob.id)}
+                  onClick={() => void fetchRestoreJob(latestKnownRestore.id)}
                   className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
                 >
                   <RefreshCw className="h-3.5 w-3.5" />
@@ -675,44 +697,44 @@ export default function RestoreWizard() {
               ) : null}
             </div>
 
-            {restoreJob ? (
+            {latestKnownRestore ? (
               <div className="mt-4 space-y-4">
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                   <div className="rounded-md border bg-muted/20 p-4">
                     <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Status</p>
-                    <p className="mt-2 text-sm font-semibold capitalize text-foreground">{restoreJob.status}</p>
+                    <p className="mt-2 text-sm font-semibold capitalize text-foreground">{latestKnownRestore.status}</p>
                   </div>
                   <div className="rounded-md border bg-muted/20 p-4">
                     <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Created</p>
-                    <p className="mt-2 text-sm font-semibold text-foreground">{formatTimestamp(restoreJob.createdAt)}</p>
+                    <p className="mt-2 text-sm font-semibold text-foreground">{formatTimestamp(latestKnownRestore.createdAt)}</p>
                   </div>
                   <div className="rounded-md border bg-muted/20 p-4">
                     <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Restored files</p>
-                    <p className="mt-2 text-sm font-semibold text-foreground">{restoreJob.restoredFiles ?? '--'}</p>
+                    <p className="mt-2 text-sm font-semibold text-foreground">{latestKnownRestore.restoredFiles ?? '--'}</p>
                   </div>
                   <div className="rounded-md border bg-muted/20 p-4">
                     <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Restored size</p>
-                    <p className="mt-2 text-sm font-semibold text-foreground">{formatBytes(restoreJob.restoredSize)}</p>
+                    <p className="mt-2 text-sm font-semibold text-foreground">{formatBytes(latestKnownRestore.restoredSize)}</p>
                   </div>
                 </div>
 
-                {restoreJob.errorSummary ? (
+                {latestKnownRestore.errorSummary ? (
                   <div className="rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
                     <div className="flex items-start gap-2">
                       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                      <span>{restoreJob.errorSummary}</span>
+                      <span>{latestKnownRestore.errorSummary}</span>
                     </div>
                   </div>
                 ) : null}
 
-                {Array.isArray(restoreJob.resultDetails?.warnings) && restoreJob.resultDetails.warnings.length > 0 ? (
+                {Array.isArray(latestKnownRestore.resultDetails?.warnings) && latestKnownRestore.resultDetails.warnings.length > 0 ? (
                   <div className="rounded-md border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-warning">
                     <div className="flex items-start gap-2">
                       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                       <div>
                         <p className="font-medium">Warnings</p>
                         <ul className="mt-1 space-y-1 text-xs">
-                          {restoreJob.resultDetails.warnings.map((warning) => (
+                          {latestKnownRestore.resultDetails.warnings.map((warning) => (
                             <li key={warning}>{warning}</li>
                           ))}
                         </ul>
@@ -724,21 +746,21 @@ export default function RestoreWizard() {
                 <div className="grid gap-3 md:grid-cols-2">
                   <div className="rounded-md border border-dashed bg-muted/20 p-4">
                     <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Command / target</p>
-                    <p className="mt-2 text-xs text-foreground">Command: {restoreJob.commandId ?? '--'}</p>
-                    <p className="mt-1 text-xs text-foreground">Target path: {restoreJob.targetPath ?? 'Original location'}</p>
-                    <p className="mt-1 text-xs text-foreground">Completed: {formatTimestamp(restoreJob.completedAt)}</p>
+                    <p className="mt-2 text-xs text-foreground">Command: {latestKnownRestore.commandId ?? '--'}</p>
+                    <p className="mt-1 text-xs text-foreground">Target path: {latestKnownRestore.targetPath ?? 'Original location'}</p>
+                    <p className="mt-1 text-xs text-foreground">Completed: {formatTimestamp(latestKnownRestore.completedAt)}</p>
                   </div>
                   <div className="rounded-md border border-dashed bg-muted/20 p-4">
                     <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Result payload</p>
                     <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words text-[11px] text-foreground">
-                      {renderJson(restoreJob.resultDetails)}
+                      {renderJson(latestKnownRestore.resultDetails)}
                     </pre>
                   </div>
                 </div>
               </div>
             ) : (
               <div className="mt-4 rounded-md border border-dashed p-4 text-sm text-muted-foreground">
-                Start a restore to load live result details here.
+                No restore history yet. Start a restore to load live result details here.
               </div>
             )}
           </div>

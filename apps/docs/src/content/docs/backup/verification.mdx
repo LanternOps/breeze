@@ -10,6 +10,10 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 
 A backup you can't restore is worthless. The Verification tab helps you continuously validate that your backups are recoverable and measure how prepared each device is for a recovery scenario.
 
+<Aside type="note">
+  Verification is a live agent operation. The target device must be online and connected to Breeze before an integrity check or test restore can start.
+</Aside>
+
 ---
 
 ## Verification Types
@@ -20,21 +24,18 @@ Go to **Operations > Backup > Verification** to access verification controls.
 |------|----------|----------------|--------|
 | **Integrity check** | Fast (minutes) | Checksums, file counts, manifest consistency | None — no data is restored |
 | **Test restore** | Medium (10+ min) | Extracts the full snapshot to a temporary location and measures restore time | Low — uses temp space, no production impact |
-| **Full recovery** | Long (varies) | Complete system restore to a target device with post-restore validation | High — requires approval before running |
 
 ### Running a Verification
 
 <Steps>
 1. Go to **Operations > Backup > Verification**.
-2. Click one of the verification buttons: **Run Integrity Check**, **Test Restore**, or **Full Recovery Test**.
+2. Click **Run Integrity Check** or **Test Restore**.
 3. Confirm the action in the dialog.
 4. The verification appears in the history table with a status of **Running**.
 5. When complete, the status updates to **Passed**, **Failed**, or **Partial**.
 </Steps>
 
-<Aside type="caution">
-  **Full recovery** verification restores data to a real device. You must approve a high-impact confirmation before it runs. Use this sparingly — typically during planned maintenance windows.
-</Aside>
+If the device is offline, Breeze shows `Device is offline. Verification requires a connected agent.` and the verification buttons stay disabled. If command dispatch fails for another reason, Breeze shows the dispatch error and lets you retry after the underlying issue is fixed.
 
 ### Verification History
 
@@ -53,12 +54,12 @@ Breeze runs verifications automatically on a schedule:
 
 | Check | Frequency | What it does |
 |-------|-----------|-------------|
-| **Post-backup integrity** | Every 10 minutes | Validates the most recent completed backup |
-| **Weekly test restore** | Sundays at 03:00 UTC | Runs a full test restore to verify recoverability |
+| **Post-backup integrity** | Every 10 minutes | Validates the most recent completed backup when the device is available |
+| **Weekly test restore** | Sundays at 03:00 UTC | Runs a restore test for recent backups when the device is available |
 | **Readiness score recalculation** | Daily at 02:00 UTC | Updates recovery readiness scores for all devices |
 | **Timeout detection** | Every 5 minutes | Flags verifications that have been running too long |
 
-No setup is needed — automated verifications run as soon as backup is configured.
+No setup is needed — automated verifications run as soon as backup is configured. If a device is offline when a scheduled verification window arrives, Breeze skips that run and logs the skip instead of creating a synthetic verification record.
 
 ---
 
@@ -103,3 +104,5 @@ The Verification tab also shows an organization-wide health summary:
 | **Critical** | Multiple devices are unprotected or have failed verifications |
 
 Use this as a quick indicator of overall backup posture.
+
+If the overview shows **No verification history**, that means Breeze has no completed live verification for the device yet. Run a real verification once the device is online to populate readiness and recent-failure history.

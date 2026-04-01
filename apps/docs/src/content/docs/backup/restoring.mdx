@@ -69,12 +69,14 @@ Before restoring, you can inspect what a snapshot contains:
 
 ## Monitoring a Restore
 
-After you start a restore, the job appears in the backup job list with a progress indicator (0–100%). You can track it from:
+After you start a restore, the job appears in restore history and on the target device's Backup tab. You can track it from:
 
 - The **Backup** dashboard's Recent Jobs section
 - The target device's **Backup** tab
 
-The restore job shows bytes restored, files restored, and an estimated completion time.
+Completed restore jobs show the final status, restored file count, restored byte count, and any structured warnings or errors reported by the agent.
+
+If the target device is offline, Breeze rejects the restore request immediately instead of creating a pending restore that cannot run.
 
 ---
 
@@ -87,6 +89,8 @@ You can restore a snapshot to a different device than the one it was taken from.
 - You want to test a restore without touching the production device
 
 In the Restore Wizard, change the target device in the destination step.
+
+Cross-device restores also require the destination device to be online when you start the restore. If Breeze cannot queue the restore command, the restore job is marked failed with the dispatch error instead of remaining stuck in a pending state.
 
 ---
 

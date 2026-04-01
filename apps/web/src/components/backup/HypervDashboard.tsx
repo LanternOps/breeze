@@ -35,15 +35,27 @@ type HypervCheckpoint = {
 type HypervVm = {
   id: string;
   deviceId: string;
-  name: string;
+  vmId?: string | null;
+  vmName?: string | null;
+  name?: string | null;
   state: string;
   generation?: number | null;
   memoryMb?: number | null;
+  processorCount?: number | null;
   cpuCount?: number | null;
+  vhdPaths?: string[] | null;
   vhdCount?: number | null;
   rctEnabled?: boolean;
+  hasPassthroughDisks?: boolean;
   hasPassthroughDisk?: boolean;
   checkpoints?: HypervCheckpoint[];
+};
+
+type DeviceSummary = {
+  id: string;
+  hostname?: string | null;
+  displayName?: string | null;
+  osType?: string | null;
 };
 
 const vmStateConfig: Record<VmState, { label: string; className: string }> = {
@@ -67,10 +79,13 @@ function normalizeVmState(state?: string): VmState {
 
 export default function HypervDashboard() {
   const [vms, setVms] = useState<HypervVm[]>([]);
+  const [devices, setDevices] = useState<DeviceSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [message, setMessage] = useState<string>();
   const [expandedVmId, setExpandedVmId] = useState<string | null>(null);
   const [discoveringDeviceId, setDiscoveringDeviceId] = useState<string | null>(null);
+  const [discoverTargetDeviceId, setDiscoverTargetDeviceId] = useState('');
   const [query, setQuery] = useState('');
   const [stateFilter, setStateFilter] = useState<VmState | 'all'>('all');
   const [hostFilter, setHostFilter] = useState('all');
@@ -79,12 +94,34 @@ export default function HypervDashboard() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetchWithAuth('/backup/hyperv/vms');
-      if (!response.ok) {
+      const [vmResponse, deviceResponse] = await Promise.all([
+        fetchWithAuth('/backup/hyperv/vms'),
+        fetchWithAuth('/devices?limit=200'),
+      ]);
+
+      if (!vmResponse.ok) {
         throw new Error('Failed to fetch Hyper-V VMs');
       }
-      const payload = await response.json();
-      setVms(Array.isArray(payload?.data) ? payload.data : []);
+
+      const vmPayload = await vmResponse.json();
+      const vmData = Array.isArray(vmPayload?.data)
+        ? vmPayload.data
+        : Array.isArray(vmPayload?.vms)
+          ? vmPayload.vms
+          : [];
+      setVms(vmData);
+
+      if (deviceResponse.ok) {
+        const devicePayload = await deviceResponse.json();
+        const rawDevices = devicePayload?.data ?? devicePayload ?? [];
+        const allDevices = Array.isArray(rawDevices) ? rawDevices as DeviceSummary[] : [];
+        const windowsDevices = allDevices.filter((device) => `${device.osType ?? ''}`.toLowerCase().includes('windows'));
+        setDevices(windowsDevices);
+        setDiscoverTargetDeviceId((current) => current || windowsDevices[0]?.id || '');
+      } else {
+        console.warn('[HypervDashboard] Failed to load device list:', deviceResponse.status);
+        setError('Loaded VMs but could not load device list for discovery.');
+      }
     } catch (err) {
       console.error('[HypervDashboard] fetchData:', err);
       setError(err instanceof Error ? err.message : 'An error occurred');
@@ -100,6 +137,8 @@ export default function HypervDashboard() {
   const handleDiscover = useCallback(async (deviceId: string) => {
     try {
       setDiscoveringDeviceId(deviceId);
+      setError(undefined);
+      setMessage(undefined);
       const response = await fetchWithAuth(`/backup/hyperv/discover/${deviceId}`, {
         method: 'POST',
       });
@@ -108,6 +147,7 @@ export default function HypervDashboard() {
         throw new Error(body?.error ?? 'Discovery failed');
       }
       await fetchData();
+      setMessage('Hyper-V discovery completed.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Discovery failed');
     } finally {
@@ -120,11 +160,18 @@ export default function HypervDashboard() {
     return Array.from(unique);
   }, [vms]);
 
+  const deviceNameById = useMemo(() => {
+    return new Map(
+      devices.map((device) => [device.id, device.displayName ?? device.hostname ?? device.id] as const)
+    );
+  }, [devices]);
+
   const filteredVms = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return vms.filter((vm) => {
+      const displayName = (vm.vmName ?? vm.name ?? '').toLowerCase();
       const matchesQuery = normalizedQuery
-        ? vm.name.toLowerCase().includes(normalizedQuery) ||
+        ? displayName.includes(normalizedQuery) ||
           vm.deviceId.toLowerCase().includes(normalizedQuery)
         : true;
       const matchesState =
@@ -171,8 +218,35 @@ export default function HypervDashboard() {
         <Monitor className="h-12 w-12 text-muted-foreground/40" />
         <h3 className="mt-4 text-base font-semibold text-foreground">No Hyper-V VMs found</h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          Run discovery on a Hyper-V host to detect virtual machines.
+          Select a Windows host and run discovery to detect virtual machines.
         </p>
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+          <select
+            className="min-w-64 rounded-md border bg-background px-3 py-2 text-sm"
+            value={discoverTargetDeviceId}
+            onChange={(event) => setDiscoverTargetDeviceId(event.target.value)}
+          >
+            <option value="">Select a Windows host</option>
+            {devices.map((device) => (
+              <option key={device.id} value={device.id}>
+                {device.displayName ?? device.hostname ?? device.id}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => void handleDiscover(discoverTargetDeviceId)}
+            disabled={!discoverTargetDeviceId || discoveringDeviceId === discoverTargetDeviceId}
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {discoveringDeviceId === discoverTargetDeviceId ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Search className="h-4 w-4" />
+            )}
+            Run discovery
+          </button>
+        </div>
       </div>
     );
   }
@@ -184,25 +258,36 @@ export default function HypervDashboard() {
         <div>
           <h2 className="text-xl font-semibold text-foreground">Hyper-V Backup</h2>
           <p className="text-sm text-muted-foreground">
-            Manage VMs, checkpoints, and backup operations.
+            Manage VMs, checkpoints, restore-as-VM, and instant boot operations.
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {hostDeviceIds.length > 0 && (
-            <button
-              type="button"
-              onClick={() => handleDiscover(hostDeviceIds[0])}
-              disabled={discoveringDeviceId !== null}
-              className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
-            >
-              {discoveringDeviceId ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Search className="h-3.5 w-3.5" />
-              )}
-              Discover VMs
-            </button>
-          )}
+          <select
+            aria-label="Discover Hyper-V host"
+            className="h-9 min-w-56 rounded-md border bg-background px-3 text-xs"
+            value={discoverTargetDeviceId}
+            onChange={(event) => setDiscoverTargetDeviceId(event.target.value)}
+          >
+            <option value="">Select host</option>
+            {devices.map((device) => (
+              <option key={device.id} value={device.id}>
+                {device.displayName ?? device.hostname ?? device.id}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => void handleDiscover(discoverTargetDeviceId)}
+            disabled={!discoverTargetDeviceId || discoveringDeviceId !== null}
+            className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
+          >
+            {discoveringDeviceId ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Search className="h-3.5 w-3.5" />
+            )}
+            Discover VMs
+          </button>
           <button
             type="button"
             onClick={fetchData}
@@ -217,6 +302,11 @@ export default function HypervDashboard() {
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}
+        </div>
+      )}
+      {message && (
+        <div className="rounded-md border border-success/40 bg-success/10 px-3 py-2 text-sm text-success">
+          {message}
         </div>
       )}
 
@@ -261,7 +351,7 @@ export default function HypervDashboard() {
             <option value="all">All hosts</option>
             {hostDeviceIds.map((id) => (
               <option key={id} value={id}>
-                {id.slice(0, 8)}...
+                {deviceNameById.get(id) ?? `${id.slice(0, 8)}...`}
               </option>
             ))}
           </select>
@@ -329,6 +419,11 @@ type VmRowProps = {
 };
 
 function VmRow({ vm, vmState, stateCfg, isExpanded, onToggle, onRefresh }: VmRowProps) {
+  const displayName = vm.vmName ?? vm.name ?? 'Unnamed VM';
+  const cpuCount = vm.processorCount ?? vm.cpuCount ?? null;
+  const vhdCount = Array.isArray(vm.vhdPaths) ? vm.vhdPaths.length : (vm.vhdCount ?? null);
+  const hasPassthroughDisk = vm.hasPassthroughDisks ?? vm.hasPassthroughDisk ?? false;
+
   return (
     <>
       <tr className="text-sm text-foreground">
@@ -349,7 +444,7 @@ function VmRow({ vm, vmState, stateCfg, isExpanded, onToggle, onRefresh }: VmRow
         <td className="px-4 py-3 font-medium">
           <div className="flex items-center gap-2">
             <Monitor className="h-4 w-4 text-muted-foreground" />
-            {vm.name}
+            {displayName}
           </div>
         </td>
         <td className="px-4 py-3">
@@ -366,8 +461,8 @@ function VmRow({ vm, vmState, stateCfg, isExpanded, onToggle, onRefresh }: VmRow
         <td className="px-4 py-3 text-muted-foreground">
           {vm.memoryMb != null ? `${vm.memoryMb} MB` : '--'}
         </td>
-        <td className="px-4 py-3 text-muted-foreground">{vm.cpuCount ?? '--'}</td>
-        <td className="px-4 py-3 text-muted-foreground">{vm.vhdCount ?? '--'}</td>
+        <td className="px-4 py-3 text-muted-foreground">{cpuCount ?? '--'}</td>
+        <td className="px-4 py-3 text-muted-foreground">{vhdCount ?? '--'}</td>
         <td className="px-4 py-3">
           {vm.rctEnabled ? (
             <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-xs font-medium text-success">
@@ -379,7 +474,7 @@ function VmRow({ vm, vmState, stateCfg, isExpanded, onToggle, onRefresh }: VmRow
           )}
         </td>
         <td className="px-4 py-3">
-          {vm.hasPassthroughDisk ? (
+          {hasPassthroughDisk ? (
             <span className="inline-flex items-center gap-1 rounded-full bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
               <AlertTriangle className="h-3 w-3" />
               Pass-through
@@ -407,7 +502,7 @@ function VmRow({ vm, vmState, stateCfg, isExpanded, onToggle, onRefresh }: VmRow
             <div className="space-y-4">
               {/* VM Actions */}
               <HypervVMActions
-                vmName={vm.name}
+                vmName={displayName}
                 vmId={vm.id}
                 deviceId={vm.deviceId}
                 currentState={vmState}

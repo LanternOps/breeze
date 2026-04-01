@@ -395,8 +395,8 @@ func TestConstants(t *testing.T) {
 	if pingPeriod >= pongWait {
 		t.Fatalf("pingPeriod (%v) must be less than pongWait (%v)", pingPeriod, pongWait)
 	}
-	if maxMessageSize != 512*1024 {
-		t.Fatalf("maxMessageSize = %d, want 524288", maxMessageSize)
+	if maxMessageSize != 64*1024*1024 {
+		t.Fatalf("maxMessageSize = %d, want %d", maxMessageSize, 64*1024*1024)
 	}
 	if initialBackoff != 1*time.Second {
 		t.Fatalf("initialBackoff = %v, want 1s", initialBackoff)

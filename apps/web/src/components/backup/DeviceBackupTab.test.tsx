@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceBackupTab from './DeviceBackupTab';
@@ -58,7 +58,7 @@ describe('DeviceBackupTab', () => {
               status: 'completed',
               startedAt: '2026-03-30T00:00:00Z',
               completedAt: '2026-03-30T00:10:00Z',
-              sizeBytes: 1024,
+              totalSize: 1024,
               errorCount: 0,
             },
           ],
@@ -119,6 +119,12 @@ describe('DeviceBackupTab', () => {
     await screen.findByText('Restore Points');
     expect(screen.getByText('Protection Controls')).toBeTruthy();
     expect(screen.getAllByText('Nightly Snapshot').length).toBeGreaterThan(0);
+    const jobHistoryHeading = screen.getByText('Job History');
+    const jobHistoryCard = jobHistoryHeading.parentElement;
+    const jobHistoryTable = jobHistoryCard?.querySelector('table');
+
+    expect(jobHistoryTable).toBeTruthy();
+    expect(within(jobHistoryTable as HTMLTableElement).getByText('1 KB')).toBeTruthy();
   });
 
   it('applies legal hold from the device tab', async () => {

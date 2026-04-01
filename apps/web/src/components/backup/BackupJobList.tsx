@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -30,6 +30,10 @@ type BackupJobRaw = {
   fileCount?: number | null;
   errorCount?: number | null;
   errorLog?: string | null;
+  policyId?: string | null;
+  featureLinkId?: string | null;
+  snapshotId?: string | null;
+  updatedAt?: string | null;
 };
 
 type BackupJob = {
@@ -44,6 +48,11 @@ type BackupJob = {
   size: string;
   errorCount: number;
   errorSummary: string;
+};
+
+type BackupJobDetails = BackupJobRaw & {
+  deviceName?: string | null;
+  configName?: string | null;
 };
 
 const statusConfig: Record<JobStatus, { label: string; icon: typeof CheckCircle2; className: string }> = {
@@ -159,6 +168,9 @@ export default function BackupJobList() {
   const [statusFilter, setStatusFilter] = useState<JobStatus | 'all'>('all');
   const [configFilter, setConfigFilter] = useState('all');
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
+  const [loadingDetailsId, setLoadingDetailsId] = useState<string | null>(null);
+  const [jobDetails, setJobDetails] = useState<Record<string, BackupJobDetails>>({});
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -204,6 +216,39 @@ export default function BackupJobList() {
       setCancellingId(null);
     }
   }, []);
+
+  const handleToggleDetails = useCallback(async (jobId: string) => {
+    if (expandedJobId === jobId) {
+      setExpandedJobId(null);
+      return;
+    }
+
+    if (jobDetails[jobId]) {
+      setExpandedJobId(jobId);
+      return;
+    }
+
+    try {
+      setLoadingDetailsId(jobId);
+      setError(undefined);
+      const response = await fetchWithAuth(`/backup/jobs/${jobId}`);
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error ?? 'Failed to fetch backup job details');
+      }
+
+      const payload = await response.json();
+      setJobDetails((prev) => ({
+        ...prev,
+        [jobId]: payload,
+      }));
+      setExpandedJobId(jobId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch backup job details');
+    } finally {
+      setLoadingDetailsId(null);
+    }
+  }, [expandedJobId, jobDetails]);
 
   const availableConfigs = useMemo(() => {
     const unique = new Set(jobs.map((job) => job.configName).filter((c) => c && c !== '--'));
@@ -336,66 +381,115 @@ export default function BackupJobList() {
                 const status = statusConfig[job.status] ?? statusConfig.queued;
                 const StatusIcon = status.icon;
                 const isCancellable = job.status === 'running' || job.status === 'queued';
+                const details = jobDetails[job.id];
+                const isExpanded = expandedJobId === job.id;
+                const isLoadingDetails = loadingDetailsId === job.id;
                 return (
-                  <tr key={job.id} className="text-sm text-foreground">
-                    <td className="px-4 py-3 font-medium">{job.deviceName}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{job.configName}</td>
-                    <td className="px-4 py-3 capitalize text-muted-foreground">{job.type}</td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={cn(
-                          'inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium',
-                          status.className
-                        )}
-                      >
-                        <StatusIcon
-                          className={cn('h-3.5 w-3.5', job.status === 'running' && 'animate-spin')}
-                        />
-                        {status.label}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">{formatTime(job.startedAt)}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{job.duration}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{job.size}</td>
-                    <td className="px-4 py-3">
-                      {job.errorCount > 0 ? (
-                        <span className="inline-flex items-center gap-1 text-xs font-medium text-destructive">
-                          <AlertTriangle className="h-3.5 w-3.5" />
-                          {job.errorSummary}
+                  <Fragment key={job.id}>
+                    <tr key={job.id} className="text-sm text-foreground">
+                      <td className="px-4 py-3 font-medium">{job.deviceName}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{job.configName}</td>
+                      <td className="px-4 py-3 capitalize text-muted-foreground">{job.type}</td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={cn(
+                            'inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium',
+                            status.className
+                          )}
+                        >
+                          <StatusIcon
+                            className={cn('h-3.5 w-3.5', job.status === 'running' && 'animate-spin')}
+                          />
+                          {status.label}
                         </span>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">-</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center justify-end gap-2">
-                        {isCancellable && (
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">{formatTime(job.startedAt)}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{job.duration}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{job.size}</td>
+                      <td className="px-4 py-3">
+                        {job.errorCount > 0 ? (
+                          <span className="inline-flex items-center gap-1 text-xs font-medium text-destructive">
+                            <AlertTriangle className="h-3.5 w-3.5" />
+                            {job.errorSummary}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">-</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-end gap-2">
+                          {isCancellable && (
+                            <button
+                              type="button"
+                              onClick={() => handleCancel(job.id)}
+                              disabled={cancellingId === job.id}
+                              aria-label={`Cancel backup for ${job.deviceName}`}
+                              className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent disabled:opacity-50"
+                            >
+                              {cancellingId === job.id ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <PauseCircle className="h-3.5 w-3.5" />
+                              )}
+                              Cancel
+                            </button>
+                          )}
                           <button
                             type="button"
-                            onClick={() => handleCancel(job.id)}
-                            disabled={cancellingId === job.id}
-                            aria-label={`Cancel backup for ${job.deviceName}`}
-                            className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent disabled:opacity-50"
+                            onClick={() => void handleToggleDetails(job.id)}
+                            disabled={isLoadingDetails}
+                            aria-label={`${isExpanded ? 'Hide' : 'View'} details for ${job.deviceName} backup`}
+                            className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/10 disabled:opacity-50"
                           >
-                            {cancellingId === job.id ? (
+                            {isLoadingDetails ? (
                               <Loader2 className="h-3.5 w-3.5 animate-spin" />
                             ) : (
-                              <PauseCircle className="h-3.5 w-3.5" />
+                              <ChevronRight className={cn('h-3.5 w-3.5 transition-transform', isExpanded && 'rotate-90')} />
                             )}
-                            Cancel
+                            {isExpanded ? 'Hide details' : 'View details'}
                           </button>
-                        )}
-                        <a
-                          href={`/backup/jobs/${job.id}`}
-                          aria-label={`View details for ${job.deviceName} backup`}
-                          className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/10"
-                        >
-                          View details
-                          <ChevronRight className="h-3.5 w-3.5" />
-                        </a>
-                      </div>
-                    </td>
-                  </tr>
+                        </div>
+                      </td>
+                    </tr>
+                    {isExpanded && details && (
+                      <tr className="bg-muted/20 text-sm">
+                        <td colSpan={9} className="px-4 py-4">
+                          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                            <div>
+                              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Created</p>
+                              <p className="mt-1 text-foreground">{formatTime(details.createdAt)}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Updated</p>
+                              <p className="mt-1 text-foreground">{formatTime(details.updatedAt)}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Files</p>
+                              <p className="mt-1 text-foreground">{details.fileCount ?? 0}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Snapshot ID</p>
+                              <p className="mt-1 break-all text-foreground">{details.snapshotId ?? '--'}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Policy ID</p>
+                              <p className="mt-1 break-all text-foreground">{details.policyId ?? '--'}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Feature Link ID</p>
+                              <p className="mt-1 break-all text-foreground">{details.featureLinkId ?? '--'}</p>
+                            </div>
+                          </div>
+                          <div className="mt-4">
+                            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Error Log</p>
+                            <pre className="mt-1 whitespace-pre-wrap rounded-md border bg-background px-3 py-2 text-xs text-foreground">
+                              {details.errorLog ?? 'No error log recorded.'}
+                            </pre>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })
             )}

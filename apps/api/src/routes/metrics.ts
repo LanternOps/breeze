@@ -10,14 +10,33 @@ import { Counter, Gauge, Histogram, Registry } from 'prom-client';
 import { createHash, timingSafeEqual } from 'crypto';
 
 import { db } from '../db';
-import { deviceMetrics, devices, remoteSessions } from '../db/schema';
+import { deviceMetrics, devices, recoveryReadiness as recoveryReadinessTable, remoteSessions } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { PERMISSIONS } from '../services/permissions';
+import { BACKUP_LOW_READINESS_THRESHOLD } from './backup/verificationService';
+import {
+  recordBackupCommandTimeout,
+  recordBackupDispatchFailure,
+  recordBackupVerificationResult,
+  recordBackupVerificationSkip,
+  recordRestoreTimeout,
+  setLowReadinessDevices,
+  setBackupMetricsRecorder,
+} from '../services/backupMetrics';
 import {
   getS1MetricsSnapshot,
   setS1MetricsRecorder
 } from '../services/sentinelOne/metrics';
+
+export {
+  recordBackupCommandTimeout,
+  recordBackupDispatchFailure,
+  recordBackupVerificationResult,
+  recordBackupVerificationSkip,
+  recordRestoreTimeout,
+  setLowReadinessDevices,
+} from '../services/backupMetrics';
 
 export const metricsRoutes = new Hono();
 const requireMetricsRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -122,6 +141,47 @@ const scriptsExecutedTotal = new Counter({
   registers: [register]
 });
 
+const backupDispatchFailuresTotal = new Counter({
+  name: 'breeze_backup_dispatch_failures_total',
+  help: 'Backup, restore, and verification start failures by operation and reason',
+  labelNames: ['operation', 'reason'] as const,
+  registers: [register]
+});
+
+const backupVerificationSkipsTotal = new Counter({
+  name: 'breeze_backup_verification_skips_total',
+  help: 'Scheduled backup verification skips by verification type and reason',
+  labelNames: ['verification_type', 'reason'] as const,
+  registers: [register]
+});
+
+const restoreTimeoutsTotal = new Counter({
+  name: 'breeze_restore_timeouts_total',
+  help: 'Restore commands timed out by command type',
+  labelNames: ['command_type'] as const,
+  registers: [register]
+});
+
+const backupCommandTimeoutsTotal = new Counter({
+  name: 'breeze_backup_command_timeouts_total',
+  help: 'Backup-related command timeouts by command type and timeout source',
+  labelNames: ['command_type', 'source'] as const,
+  registers: [register]
+});
+
+const backupVerificationResultsTotal = new Counter({
+  name: 'breeze_backup_verification_results_total',
+  help: 'Backup verification outcomes by verification type and status',
+  labelNames: ['verification_type', 'status'] as const,
+  registers: [register]
+});
+
+const backupLowReadinessDevicesGauge = new Gauge({
+  name: 'breeze_backup_low_readiness_devices',
+  help: 'Current number of devices below the low-readiness threshold',
+  registers: [register]
+});
+
 const softwarePolicyEvaluationsTotal = new Counter({
   name: 'breeze_software_policy_evaluations_total',
   help: 'Software policy evaluations by policy mode and result',
@@ -202,6 +262,12 @@ alertQueueLengthGauge.set(0);
 agentHeartbeatTotal.labels('success').inc(0);
 agentHeartbeatTotal.labels('failed').inc(0);
 scriptsExecutedTotal.inc(0);
+backupDispatchFailuresTotal.labels('manual_backup', 'device_offline').inc(0);
+backupVerificationSkipsTotal.labels('integrity', 'device_offline').inc(0);
+restoreTimeoutsTotal.labels('backup_restore').inc(0);
+backupCommandTimeoutsTotal.labels('backup_restore', 'reaper').inc(0);
+backupVerificationResultsTotal.labels('integrity', 'passed').inc(0);
+backupLowReadinessDevicesGauge.set(0);
 softwarePolicyEvaluationsTotal.labels('allowlist', 'compliant', 'evaluated').inc(0);
 softwarePolicyViolationsTotal.labels('allowlist').inc(0);
 softwareRemediationDecisionsTotal.labels('queued').inc(0);
@@ -221,6 +287,12 @@ const softwarePolicyEvaluationState = new Map<string, CounterValue>();
 const softwareRemediationDecisionState = new Map<string, CounterValue>();
 const sensitiveDataFindingState = new Map<string, CounterValue>();
 const sensitiveDataRemediationState = new Map<string, CounterValue>();
+const backupDispatchFailureState = new Map<string, CounterValue>();
+const backupVerificationSkipState = new Map<string, CounterValue>();
+const restoreTimeoutState = new Map<string, CounterValue>();
+const backupCommandTimeoutState = new Map<string, CounterValue>();
+const backupVerificationResultState = new Map<string, CounterValue>();
+let backupLowReadinessDevices = 0;
 let sensitiveDataScansQueuedTotal = 0;
 
 let devicesActive = 0;
@@ -236,6 +308,15 @@ function normalizeRoute(route: string): string {
   return route
     .replace(/\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '/:uuid')
     .replace(/\/\d+/g, '/:id');
+}
+
+function normalizeMetricLabel(value: string, fallback: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return normalized.length > 0 ? normalized : fallback;
 }
 
 function updateProcessMetrics(): void {
@@ -318,6 +399,82 @@ export function recordScriptExecution(): void {
   scriptsExecutedCount += 1;
 }
 
+function recordBackupDispatchFailureMetric(operation: string, reason: string, count = 1): void {
+  const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  if (safeCount === 0) return;
+
+  const normalizedOperation = normalizeMetricLabel(operation, 'unknown');
+  const normalizedReason = normalizeMetricLabel(reason, 'unknown');
+  backupDispatchFailuresTotal.labels(normalizedOperation, normalizedReason).inc(safeCount);
+  upsertCounterState(backupDispatchFailureState, {
+    operation: normalizedOperation,
+    reason: normalizedReason,
+  }, safeCount);
+}
+
+function recordBackupVerificationSkipMetric(
+  verificationType: string,
+  reason: string,
+  count = 1
+): void {
+  const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  if (safeCount === 0) return;
+
+  const normalizedType = normalizeMetricLabel(verificationType, 'unknown');
+  const normalizedReason = normalizeMetricLabel(reason, 'unknown');
+  backupVerificationSkipsTotal.labels(normalizedType, normalizedReason).inc(safeCount);
+  upsertCounterState(backupVerificationSkipState, {
+    verification_type: normalizedType,
+    reason: normalizedReason,
+  }, safeCount);
+}
+
+function recordRestoreTimeoutMetric(commandType: string, count = 1): void {
+  const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  if (safeCount === 0) return;
+
+  const normalizedType = normalizeMetricLabel(commandType, 'unknown');
+  restoreTimeoutsTotal.labels(normalizedType).inc(safeCount);
+  upsertCounterState(restoreTimeoutState, {
+    command_type: normalizedType,
+  }, safeCount);
+}
+
+function recordBackupCommandTimeoutMetric(commandType: string, source: string, count = 1): void {
+  const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  if (safeCount === 0) return;
+
+  const normalizedType = normalizeMetricLabel(commandType, 'unknown');
+  const normalizedSource = normalizeMetricLabel(source, 'unknown');
+  backupCommandTimeoutsTotal.labels(normalizedType, normalizedSource).inc(safeCount);
+  upsertCounterState(backupCommandTimeoutState, {
+    command_type: normalizedType,
+    source: normalizedSource,
+  }, safeCount);
+}
+
+function recordBackupVerificationResultMetric(
+  verificationType: string,
+  status: string,
+  count = 1
+): void {
+  const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  if (safeCount === 0) return;
+
+  const normalizedType = normalizeMetricLabel(verificationType, 'unknown');
+  const normalizedStatus = normalizeMetricLabel(status, 'unknown');
+  backupVerificationResultsTotal.labels(normalizedType, normalizedStatus).inc(safeCount);
+  upsertCounterState(backupVerificationResultState, {
+    verification_type: normalizedType,
+    status: normalizedStatus,
+  }, safeCount);
+}
+
+function setLowReadinessDevicesMetric(count: number): void {
+  backupLowReadinessDevices = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  backupLowReadinessDevicesGauge.set(backupLowReadinessDevices);
+}
+
 export function recordSoftwarePolicyEvaluation(
   mode: 'allowlist' | 'blocklist' | 'audit',
   status: 'compliant' | 'violation' | 'unknown',
@@ -388,7 +545,29 @@ setS1MetricsRecorder({
   }
 });
 
+setBackupMetricsRecorder({
+  onDispatchFailure: recordBackupDispatchFailureMetric,
+  onVerificationSkip: recordBackupVerificationSkipMetric,
+  onRestoreTimeout: recordRestoreTimeoutMetric,
+  onCommandTimeout: recordBackupCommandTimeoutMetric,
+  onVerificationResult: recordBackupVerificationResultMetric,
+  onLowReadinessDevices: setLowReadinessDevicesMetric,
+});
+
+async function refreshBackupOperationalGauges(): Promise<void> {
+  try {
+    const [row] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(recoveryReadinessTable)
+      .where(sql`${recoveryReadinessTable.readinessScore} < ${BACKUP_LOW_READINESS_THRESHOLD}`);
+    setLowReadinessDevicesMetric(Number(row?.count ?? 0));
+  } catch (error) {
+    console.warn('[metrics] Failed to refresh backup gauges:', error);
+  }
+}
+
 async function metricsResponse(c: any): Promise<Response> {
+  await refreshBackupOperationalGauges();
   updateProcessMetrics();
   const metrics = await register.metrics();
 
@@ -538,6 +717,7 @@ metricsRoutes.get('/scrape', async (c) => {
 });
 
 metricsRoutes.get('/json', authMiddleware, requireScope('system'), async (c) => {
+  await refreshBackupOperationalGauges();
   const s1Snapshot = getS1MetricsSnapshot();
   return c.json({
     http_requests_total: Array.from(httpRequestState.values()),
@@ -566,6 +746,14 @@ metricsRoutes.get('/json', authMiddleware, requireScope('system'), async (c) => 
       scans_queued_total: sensitiveDataScansQueuedTotal,
       findings: Array.from(sensitiveDataFindingState.values()),
       remediation_decisions: Array.from(sensitiveDataRemediationState.values()),
+    },
+    backup_operations: {
+      dispatch_failures: Array.from(backupDispatchFailureState.values()),
+      verification_skips: Array.from(backupVerificationSkipState.values()),
+      verification_results: Array.from(backupVerificationResultState.values()),
+      restore_timeouts: Array.from(restoreTimeoutState.values()),
+      command_timeouts: Array.from(backupCommandTimeoutState.values()),
+      low_readiness_devices: backupLowReadinessDevices,
     },
     agent_heartbeats: Array.from(agentHeartbeatState.values()),
     process: {

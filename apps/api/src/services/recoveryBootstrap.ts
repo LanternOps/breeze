@@ -96,6 +96,8 @@ export function buildRecoveryDownloadDescriptor(args: {
     method: 'GET',
     url: `${serverUrl}/api/v1/backup/bmr/recover/download`,
     tokenQueryParam: 'token',
+    tokenHeaderName: 'authorization',
+    tokenHeaderFormat: 'Bearer <recovery-token>',
     pathQueryParam: 'path',
     requiresAuthentication: true,
     pathPrefix: `snapshots/${args.providerSnapshotId}`,

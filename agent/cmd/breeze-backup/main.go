@@ -39,6 +39,51 @@ var rootCmd = &cobra.Command{
 
 var socketPath string
 
+type activeCommandCanceller struct {
+	mu      sync.Mutex
+	cancels map[string]context.CancelFunc
+}
+
+func newActiveCommandCanceller() *activeCommandCanceller {
+	return &activeCommandCanceller{
+		cancels: make(map[string]context.CancelFunc),
+	}
+}
+
+func (c *activeCommandCanceller) track(commandID string) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	c.mu.Lock()
+	c.cancels[commandID] = cancel
+	c.mu.Unlock()
+
+	return ctx, func() {
+		c.mu.Lock()
+		delete(c.cancels, commandID)
+		c.mu.Unlock()
+		cancel()
+	}
+}
+
+func (c *activeCommandCanceller) cancelAll() bool {
+	c.mu.Lock()
+	if len(c.cancels) == 0 {
+		c.mu.Unlock()
+		return false
+	}
+
+	cancels := make([]context.CancelFunc, 0, len(c.cancels))
+	for _, cancel := range c.cancels {
+		cancels = append(cancels, cancel)
+	}
+	c.mu.Unlock()
+
+	for _, cancel := range cancels {
+		cancel()
+	}
+	return true
+}
+
 func init() {
 	rootCmd.Flags().StringVar(&socketPath, "socket", "", "IPC socket path to connect to the main agent")
 }
@@ -301,6 +346,7 @@ func commandLoop(ctx context.Context, conn *ipc.Conn, mgr *backup.BackupManager,
 	idleTimer := time.NewTimer(idleTimeout)
 	defer idleTimer.Stop()
 	var activeCommands atomic.Int64
+	commandCanceller := newActiveCommandCanceller()
 
 	for {
 		select {
@@ -334,7 +380,7 @@ func commandLoop(ctx context.Context, conn *ipc.Conn, mgr *backup.BackupManager,
 			activeCommands.Add(1)
 			go func() {
 				defer activeCommands.Add(-1)
-				handleBackupCommand(conn, env, mgr, vaultState)
+				handleBackupCommand(conn, env, mgr, vaultState, commandCanceller)
 			}()
 		case backupipc.TypeBackupShutdown:
 			slog.Info("received shutdown command")
@@ -348,7 +394,7 @@ func commandLoop(ctx context.Context, conn *ipc.Conn, mgr *backup.BackupManager,
 	}
 }
 
-func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupManager, vaultState *vaultManagerRef) {
+func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupManager, vaultState *vaultManagerRef, commandCanceller *activeCommandCanceller) {
 	var req backupipc.BackupCommandRequest
 	if err := json.Unmarshal(env.Payload, &req); err != nil {
 		sendError(conn, env.ID, "invalid request payload: "+err.Error())
@@ -358,9 +404,11 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 	start := time.Now()
 	var result backupipc.BackupCommandResult
 	if req.CommandType == "backup_restore" {
-		result = execBackupRestoreWithProgress(req.CommandID, req.Payload, mgr, vaultState, conn)
+		ctx, cleanup := commandCanceller.track(req.CommandID)
+		defer cleanup()
+		result = execBackupRestoreWithProgress(ctx, req.CommandID, req.Payload, mgr, vaultState, conn)
 	} else {
-		result = executeCommand(req, mgr, vaultState, conn)
+		result = executeCommand(req, mgr, vaultState, conn, commandCanceller)
 	}
 	result.CommandID = req.CommandID
 	result.DurationMs = time.Since(start).Milliseconds()
@@ -370,7 +418,7 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 	}
 }
 
-func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn) backupipc.BackupCommandResult {
+func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn, commandCanceller *activeCommandCanceller) backupipc.BackupCommandResult {
 	if mgr == nil {
 		// Some commands don't need the manager (e.g., discovery, hardware profile)
 		switch req.CommandType {
@@ -385,7 +433,9 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 		case "vault_status":
 			return execVaultStatus(vaultState)
 		case "bmr_recover":
-			return execBMRRecover(req.Payload, nil)
+			ctx, cleanup := commandCanceller.track(req.CommandID)
+			defer cleanup()
+			return execBMRRecover(ctx, req.Payload, nil)
 		default:
 			return fail("backup not configured on this device")
 		}
@@ -404,7 +454,8 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 		return marshalResult(backup.ListSnapshots(mgr.GetProvider()))
 	case "backup_stop":
 		stopped := mgr.Stop()
-		return ok(fmt.Sprintf(`{"stopped":%t}`, stopped))
+		cancelled := commandCanceller.cancelAll()
+		return ok(fmt.Sprintf(`{"stopped":%t}`, stopped || cancelled))
 	case "backup_restore":
 		return execBackupRestore(req.Payload, mgr, vaultState)
 	case "backup_verify":
@@ -432,11 +483,17 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 	case "hardware_profile":
 		return execHardwareProfile()
 	case "bmr_recover":
-		return execBMRRecover(req.Payload, mgr)
+		ctx, cleanup := commandCanceller.track(req.CommandID)
+		defer cleanup()
+		return execBMRRecover(ctx, req.Payload, mgr)
 	case "vm_restore_from_backup":
-		return execVMRestoreFromBackup(req.Payload, mgr)
+		ctx, cleanup := commandCanceller.track(req.CommandID)
+		defer cleanup()
+		return execVMRestoreFromBackup(ctx, req.Payload, mgr)
 	case "vm_instant_boot":
-		return execInstantBoot(req.Payload, mgr)
+		ctx, cleanup := commandCanceller.track(req.CommandID)
+		defer cleanup()
+		return execInstantBoot(ctx, req.Payload, mgr)
 	case "vm_restore_estimate":
 		return execVMRestoreEstimate(req.Payload, mgr)
 

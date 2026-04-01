@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   AlertTriangle,
   CheckSquare,
@@ -42,6 +42,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
   const [statusFilter, setStatusFilter] = useState('all');
   const [exporting, setExporting] = useState(false);
   const [confirmInstall, setConfirmInstall] = useState(false);
+  const reportPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -120,6 +121,15 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
     fetchData();
   }, [fetchData]);
 
+  useEffect(() => {
+    return () => {
+      if (reportPollTimerRef.current) {
+        clearInterval(reportPollTimerRef.current);
+        reportPollTimerRef.current = null;
+      }
+    };
+  }, []);
+
   // Filters
   const filteredDevices = useMemo(() => {
     let list = devices;
@@ -137,13 +147,42 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
 
   const hasActiveFilters = searchQuery !== '' || statusFilter !== 'all';
 
+  const resolveInstallPatchIds = useCallback(async (deviceId: string) => {
+    const response = await fetchWithAuth(`/devices/${deviceId}/patches`);
+    if (!response.ok) {
+      if (response.status === 401) {
+        void navigateTo('/login', { replace: true });
+        return [];
+      }
+      throw new Error(`Failed to load pending patches for device ${deviceId}`);
+    }
+
+    const payload = await response.json().catch(() => ({}));
+    const data = payload?.data ?? payload;
+    const pending = data?.pending ?? data?.pendingPatches ?? data?.available ?? [];
+    if (!Array.isArray(pending)) {
+      return [];
+    }
+
+    return pending
+      .map((patch: unknown) => (patch && typeof patch === 'object' && 'id' in patch && patch.id ? String(patch.id) : ''))
+      .filter((patchId) => patchId.length > 0);
+  }, []);
+
   const filteredIds = useMemo(() => filteredDevices.map(d => d.id), [filteredDevices]);
   const { selectedIds, allPageSelected: allSelected, somePageSelected: someSelected, toggleSelect, toggleSelectAll, clearSelection } = usePatchSelection(filteredIds);
-  const { bulkAction, bulkError, setBulkError, bulkSuccess, setBulkSuccess, handleBulkScan, handleBulkInstall } = useBulkActions(selectedIds, clearSelection, fetchData);
+  const { bulkAction, bulkError, setBulkError, bulkSuccess, setBulkSuccess, handleBulkScan, handleBulkInstall } = useBulkActions(
+    selectedIds,
+    clearSelection,
+    fetchData,
+    { resolveInstallPatchIds }
+  );
 
   const handleExport = useCallback(async () => {
     try {
       setExporting(true);
+      setBulkError(undefined);
+      setBulkSuccess(undefined);
       const params = new URLSearchParams();
       if (ringId) params.set('ringId', ringId);
       params.set('format', 'csv');
@@ -155,7 +194,44 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
       const result = await response.json();
       const reportId = result.reportId ?? result.data?.id ?? result.id;
       if (reportId) {
-        void navigateTo(`/patches/compliance/report/${reportId}`);
+        setBulkSuccess(`Compliance report ${reportId} queued. Preparing download...`);
+
+        if (reportPollTimerRef.current) {
+          clearInterval(reportPollTimerRef.current);
+        }
+
+        reportPollTimerRef.current = setInterval(async () => {
+          try {
+            const statusResponse = await fetchWithAuth(`/patches/compliance/report/${reportId}`);
+            if (!statusResponse.ok) {
+              throw new Error('Failed to check report status');
+            }
+            const payload = await statusResponse.json();
+            const report = payload?.data ?? payload;
+            if (report?.status === 'completed') {
+              if (reportPollTimerRef.current) {
+                clearInterval(reportPollTimerRef.current);
+                reportPollTimerRef.current = null;
+              }
+              setBulkSuccess(`Compliance report ${reportId} is ready. Starting download...`);
+              window.location.assign(`/api/v1/patches/compliance/report/${reportId}/download`);
+            } else if (report?.status === 'failed') {
+              if (reportPollTimerRef.current) {
+                clearInterval(reportPollTimerRef.current);
+                reportPollTimerRef.current = null;
+              }
+              setBulkError(report?.errorMessage || `Compliance report ${reportId} failed`);
+              setBulkSuccess(undefined);
+            }
+          } catch (err) {
+            if (reportPollTimerRef.current) {
+              clearInterval(reportPollTimerRef.current);
+              reportPollTimerRef.current = null;
+            }
+            setBulkError(err instanceof Error ? err.message : 'Failed to check report status');
+            setBulkSuccess(undefined);
+          }
+        }, 3000);
       } else {
         setBulkError('Report was queued but no report ID was returned');
       }
@@ -164,7 +240,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
     } finally {
       setExporting(false);
     }
-  }, [ringId, setBulkError]);
+  }, [ringId, setBulkError, setBulkSuccess]);
 
   const selectedPatchDeviceIds = useMemo(() => {
     return Array.from(selectedIds).filter(id => {

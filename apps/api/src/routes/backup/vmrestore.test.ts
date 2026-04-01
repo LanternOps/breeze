@@ -11,6 +11,7 @@ const COMMAND_ID = '11111111-1111-4111-8111-111111111111';
 vi.mock('../../services', () => ({}));
 
 const queueCommandForExecutionMock = vi.fn();
+const runOutsideDbContextMock = vi.fn((fn: () => unknown) => fn());
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
@@ -37,7 +38,7 @@ vi.mock('../../db', () => ({
     insert: (...args: unknown[]) => insertMock(...(args as [])),
     update: (...args: unknown[]) => updateMock(...(args as [])),
   },
-  runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+  runOutsideDbContext: (...args: unknown[]) => runOutsideDbContextMock(...(args as [])),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
 }));
 
@@ -52,6 +53,7 @@ vi.mock('../../db/schema', () => ({
     status: 'restore_jobs.status',
     snapshotId: 'restore_jobs.snapshot_id',
     deviceId: 'restore_jobs.device_id',
+    commandId: 'restore_jobs.command_id',
     createdAt: 'restore_jobs.created_at',
     startedAt: 'restore_jobs.started_at',
     completedAt: 'restore_jobs.completed_at',
@@ -85,6 +87,10 @@ vi.mock('../../middleware/auth', () => ({
   requireScope: vi.fn(() => (c: any, next: any) => next()),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
   requireMfa: vi.fn(() => (c: any, next: any) => next()),
+}));
+
+vi.mock('../../services/backupMetrics', () => ({
+  recordBackupDispatchFailure: vi.fn(),
 }));
 
 import { authMiddleware } from '../../middleware/auth';
@@ -150,9 +156,18 @@ describe('vm restore routes', () => {
         createdAt: new Date('2026-03-30T00:00:00.000Z'),
       }])
     );
-    updateMock.mockReturnValue(chainMock([]));
+    updateMock.mockReturnValue(
+      chainMock([{
+        id: RESTORE_JOB_ID,
+        status: 'running',
+        snapshotId: SNAPSHOT_ID,
+        deviceId: DEVICE_ID,
+        commandId: COMMAND_ID,
+        createdAt: new Date('2026-03-30T00:00:00.000Z'),
+      }])
+    );
     queueCommandForExecutionMock.mockResolvedValue({
-      command: { id: COMMAND_ID },
+      command: { id: COMMAND_ID, status: 'sent' },
     });
 
     const res = await app.request('/backup/restore/as-vm', {
@@ -173,6 +188,9 @@ describe('vm restore routes', () => {
     });
 
     expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.status).toBe('running');
+    expect(body.commandId).toBe(COMMAND_ID);
     expect(queueCommandForExecutionMock).toHaveBeenCalledWith(
       DEVICE_ID,
       'VM_RESTORE_FROM_BACKUP',
@@ -187,6 +205,85 @@ describe('vm restore routes', () => {
       },
       { userId: 'user-123' }
     );
+  });
+
+  it('returns the updated instant boot restore job state after dispatch', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([{ id: SNAPSHOT_ID, orgId: ORG_ID, snapshotId: 'snap-ext-001' }]))
+      .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, status: 'online' }]));
+    insertMock.mockReturnValueOnce(
+      chainMock([{
+        id: RESTORE_JOB_ID,
+        status: 'pending',
+        snapshotId: SNAPSHOT_ID,
+        deviceId: DEVICE_ID,
+        createdAt: new Date('2026-03-30T00:00:00.000Z'),
+      }])
+    );
+    updateMock.mockReturnValue(
+      chainMock([{
+        id: RESTORE_JOB_ID,
+        status: 'running',
+        snapshotId: SNAPSHOT_ID,
+        deviceId: DEVICE_ID,
+        commandId: COMMAND_ID,
+        createdAt: new Date('2026-03-30T00:00:00.000Z'),
+      }])
+    );
+    queueCommandForExecutionMock.mockResolvedValue({
+      command: { id: COMMAND_ID, status: 'sent' },
+    });
+
+    const res = await app.request('/backup/restore/instant-boot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        snapshotId: SNAPSHOT_ID,
+        targetDeviceId: DEVICE_ID,
+        vmName: 'Instant VM',
+        vmSpecs: {
+          memoryMb: 4096,
+          cpuCount: 2,
+          diskSizeGb: 80,
+        },
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.status).toBe('running');
+    expect(body.commandId).toBe(COMMAND_ID);
+    expect(runOutsideDbContextMock).toHaveBeenCalled();
+  });
+
+  it('keeps instant boot jobs visible while background sync is active', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: RESTORE_JOB_ID,
+      status: 'completed',
+      snapshotId: SNAPSHOT_ID,
+      deviceId: DEVICE_ID,
+      startedAt: new Date('2026-03-30T00:00:00.000Z'),
+      completedAt: new Date('2026-03-30T01:00:00.000Z'),
+      targetConfig: {
+        mode: 'instant_boot',
+        vmName: 'Instant VM',
+        result: {
+          backgroundSyncActive: true,
+          syncProgress: 74,
+        },
+      },
+      hostDeviceName: 'host-1',
+    }]));
+
+    const res = await app.request('/backup/restore/instant-boot/active', {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toHaveLength(1);
+    expect(body[0].status).toBe('running');
+    expect(body[0].syncProgress).toBe(74);
   });
 
   it('fails the restore job immediately when the target device is offline', async () => {

@@ -36,7 +36,7 @@ type BackupJob = {
   status: BackupJobStatus;
   startedAt: string;
   completedAt?: string | null;
-  sizeBytes?: number | null;
+  totalSize?: number | null;
   errorCount?: number | null;
   vssMetadata?: VssMetadata | null;
 };
@@ -459,7 +459,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
                         {formatDuration(job.startedAt, job.completedAt)}
                       </td>
                       <td className="py-2 pr-4 text-muted-foreground">
-                        {formatBytes(job.sizeBytes)}
+                        {formatBytes(job.totalSize)}
                       </td>
                       <td className="py-2">
                         {errorCount > 0 ? (

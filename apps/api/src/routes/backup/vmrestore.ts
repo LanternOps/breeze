@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { eq, and, sql } from 'drizzle-orm';
-import { db } from '../../db';
+import { eq, and, or, sql } from 'drizzle-orm';
+import { db, runOutsideDbContext } from '../../db';
 import {
   backupSnapshots,
   restoreJobs,
@@ -9,6 +9,7 @@ import {
 } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { queueCommandForExecution, CommandTypes } from '../../services/commandQueue';
 import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
@@ -27,54 +28,73 @@ type VmRestoreDispatchOptions = {
   userId?: string | null;
 };
 
+type VmRestoreDispatchResult = {
+  commandId?: string;
+  error?: string;
+  restoreJob?: typeof restoreJobs.$inferSelect;
+};
+
 function mapDispatchErrorStatus(error: string): number {
   return error.startsWith('Device is ') ? 409 : 502;
 }
 
-async function markRestoreJobFailed(restoreJobId: string, error: string): Promise<void> {
-  const now = new Date();
-  await db
-    .update(restoreJobs)
-    .set({
-      status: 'failed',
-      completedAt: now,
-      updatedAt: now,
-      targetConfig: sql`coalesce(${restoreJobs.targetConfig}, '{}'::jsonb) || jsonb_build_object('error', ${error})`,
-    })
-    .where(eq(restoreJobs.id, restoreJobId));
+function dispatchFailureReason(error: string): string {
+  return error.startsWith('Device is ') ? 'device_offline' : 'enqueue_failed';
 }
 
-async function dispatchVmRestoreCommand(options: VmRestoreDispatchOptions): Promise<{ commandId?: string; error?: string }> {
+async function markRestoreJobFailed(restoreJobId: string, error: string): Promise<void> {
+  const now = new Date();
+  await runOutsideDbContext(async () => {
+    await db
+      .update(restoreJobs)
+      .set({
+        status: 'failed',
+        completedAt: now,
+        updatedAt: now,
+        targetConfig: sql`coalesce(${restoreJobs.targetConfig}, '{}'::jsonb) || jsonb_build_object('error', ${error})`,
+      })
+      .where(eq(restoreJobs.id, restoreJobId));
+  });
+}
+
+async function dispatchVmRestoreCommand(options: VmRestoreDispatchOptions): Promise<VmRestoreDispatchResult> {
   const { restoreJobId, deviceId, commandType, commandPayload, userId } = options;
-  const { command, error } = await queueCommandForExecution(
-    deviceId,
-    commandType,
-    commandPayload,
-    { userId: userId ?? undefined },
+  const { command, error } = await runOutsideDbContext(() =>
+    queueCommandForExecution(
+      deviceId,
+      commandType,
+      commandPayload,
+      { userId: userId ?? undefined },
+    )
   );
 
   if (error) {
+    recordBackupDispatchFailure('manual_restore', dispatchFailureReason(error));
     await markRestoreJobFailed(restoreJobId, error);
     return { error };
   }
 
   if (!command?.id) {
     const fallbackError = 'Restore command was queued without a command ID';
+    recordBackupDispatchFailure('manual_restore', 'missing_command_id');
     await markRestoreJobFailed(restoreJobId, fallbackError);
     return { error: fallbackError };
   }
 
-  await db
-    .update(restoreJobs)
-    .set({
-      commandId: command.id,
-      status: command.status === 'sent' ? 'running' : 'pending',
-      startedAt: command.status === 'sent' ? new Date() : null,
-      updatedAt: new Date(),
-    })
-    .where(eq(restoreJobs.id, restoreJobId));
+  const [updatedRestoreJob] = await runOutsideDbContext(async () =>
+    db
+      .update(restoreJobs)
+      .set({
+        commandId: command.id,
+        status: command.status === 'sent' ? 'running' : 'pending',
+        startedAt: command.status === 'sent' ? new Date() : null,
+        updatedAt: new Date(),
+      })
+      .where(eq(restoreJobs.id, restoreJobId))
+      .returning()
+  );
 
-  return { commandId: command.id };
+  return { commandId: command.id, restoreJob: updatedRestoreJob };
 }
 
 // ── POST /backup/restore/as-vm — Trigger VM restore ────────────────
@@ -124,29 +144,32 @@ vmRestoreRoutes.post(
     }
 
     if (targetDevice.status !== 'online') {
+      recordBackupDispatchFailure('manual_restore', 'device_offline');
       return c.json({ error: `Device is ${targetDevice.status}, cannot execute command` }, 409);
     }
 
     // Create restore job.
-    const [restoreJob] = await db
-      .insert(restoreJobs)
-      .values({
-        orgId,
-        snapshotId: snapshot.id,
-        deviceId: payload.targetDeviceId,
-        restoreType: 'full',
-        status: 'pending',
-        initiatedBy: auth.user?.id ?? null,
-        targetConfig: {
-          hypervisor: payload.hypervisor,
-          vmName: payload.vmName,
-          switchName: payload.switchName ?? null,
-          vmSpecs: payload.vmSpecs ?? {},
-        },
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .returning();
+    const [restoreJob] = await runOutsideDbContext(async () =>
+      db
+        .insert(restoreJobs)
+        .values({
+          orgId,
+          snapshotId: snapshot.id,
+          deviceId: payload.targetDeviceId,
+          restoreType: 'full',
+          status: 'pending',
+          initiatedBy: auth.user?.id ?? null,
+          targetConfig: {
+            hypervisor: payload.hypervisor,
+            vmName: payload.vmName,
+            switchName: payload.switchName ?? null,
+            vmSpecs: payload.vmSpecs ?? {},
+          },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .returning()
+    );
 
     if (!restoreJob) {
       return c.json({ error: 'Failed to create restore job' }, 500);
@@ -163,6 +186,9 @@ vmRestoreRoutes.post(
       switchName: payload.switchName,
     };
 
+    let responseRow = restoreJob;
+    let commandId: string | null = null;
+
     try {
       const dispatchResult = await dispatchVmRestoreCommand({
         restoreJobId: restoreJob.id,
@@ -178,9 +204,15 @@ vmRestoreRoutes.post(
           mapDispatchErrorStatus(dispatchResult.error)
         );
       }
+
+      commandId = dispatchResult.commandId ?? null;
+      if (dispatchResult.restoreJob) {
+        responseRow = dispatchResult.restoreJob;
+      }
     } catch (err) {
       const error = err instanceof Error ? err.message : 'Failed to dispatch restore command to agent';
       console.error('[BMR] Failed to dispatch VM restore command:', err);
+      recordBackupDispatchFailure('manual_restore', 'enqueue_failed');
       await markRestoreJobFailed(restoreJob.id, error);
       return c.json({ error }, 502);
     }
@@ -200,11 +232,12 @@ vmRestoreRoutes.post(
 
     return c.json(
       {
-        id: restoreJob.id,
-        status: restoreJob.status,
-        snapshotId: restoreJob.snapshotId,
-        deviceId: restoreJob.deviceId,
-        createdAt: restoreJob.createdAt.toISOString(),
+        id: responseRow.id,
+        status: responseRow.status,
+        snapshotId: responseRow.snapshotId,
+        deviceId: responseRow.deviceId,
+        commandId: responseRow.commandId ?? commandId,
+        createdAt: responseRow.createdAt.toISOString(),
       },
       201
     );
@@ -258,28 +291,31 @@ vmRestoreRoutes.post(
     }
 
     if (targetDevice.status !== 'online') {
+      recordBackupDispatchFailure('manual_restore', 'device_offline');
       return c.json({ error: `Device is ${targetDevice.status}, cannot execute command` }, 409);
     }
 
     // Create restore job.
-    const [restoreJob] = await db
-      .insert(restoreJobs)
-      .values({
-        orgId,
-        snapshotId: snapshot.id,
-        deviceId: payload.targetDeviceId,
-        restoreType: 'full',
-        status: 'pending',
-        initiatedBy: auth.user?.id ?? null,
-        targetConfig: {
-          mode: 'instant_boot',
-          vmName: payload.vmName,
-          vmSpecs: payload.vmSpecs ?? {},
-        },
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .returning();
+    const [restoreJob] = await runOutsideDbContext(async () =>
+      db
+        .insert(restoreJobs)
+        .values({
+          orgId,
+          snapshotId: snapshot.id,
+          deviceId: payload.targetDeviceId,
+          restoreType: 'full',
+          status: 'pending',
+          initiatedBy: auth.user?.id ?? null,
+          targetConfig: {
+            mode: 'instant_boot',
+            vmName: payload.vmName,
+            vmSpecs: payload.vmSpecs ?? {},
+          },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .returning()
+    );
 
     if (!restoreJob) {
       return c.json({ error: 'Failed to create restore job' }, 500);
@@ -294,6 +330,9 @@ vmRestoreRoutes.post(
       cpuCount: payload.vmSpecs?.cpuCount,
       diskSizeGb: payload.vmSpecs?.diskSizeGb,
     };
+
+    let responseRow = restoreJob;
+    let commandId: string | null = null;
 
     try {
       const dispatchResult = await dispatchVmRestoreCommand({
@@ -310,9 +349,15 @@ vmRestoreRoutes.post(
           mapDispatchErrorStatus(dispatchResult.error)
         );
       }
+
+      commandId = dispatchResult.commandId ?? null;
+      if (dispatchResult.restoreJob) {
+        responseRow = dispatchResult.restoreJob;
+      }
     } catch (err) {
       const error = err instanceof Error ? err.message : 'Failed to dispatch instant boot command to agent';
       console.error('[BMR] Failed to dispatch instant boot command:', err);
+      recordBackupDispatchFailure('manual_restore', 'enqueue_failed');
       await markRestoreJobFailed(restoreJob.id, error);
       return c.json({ error }, 502);
     }
@@ -331,11 +376,12 @@ vmRestoreRoutes.post(
 
     return c.json(
       {
-        id: restoreJob.id,
-        status: restoreJob.status,
-        snapshotId: restoreJob.snapshotId,
-        deviceId: restoreJob.deviceId,
-        createdAt: restoreJob.createdAt.toISOString(),
+        id: responseRow.id,
+        status: responseRow.status,
+        snapshotId: responseRow.snapshotId,
+        deviceId: responseRow.deviceId,
+        commandId: responseRow.commandId ?? commandId,
+        createdAt: responseRow.createdAt.toISOString(),
       },
       201
     );
@@ -371,7 +417,10 @@ vmRestoreRoutes.get(
         and(
           eq(restoreJobs.orgId, orgId),
           sql`${restoreJobs.targetConfig} ->> 'mode' = 'instant_boot'`,
-          sql`${restoreJobs.status} in ('pending', 'running')`
+          or(
+            sql`${restoreJobs.status} in ('pending', 'running')`,
+            sql`${restoreJobs.status} = 'completed' and coalesce(${restoreJobs.targetConfig} -> 'result' ->> 'backgroundSyncActive', 'false') = 'true'`
+          )
         )
       );
 
@@ -379,12 +428,18 @@ vmRestoreRoutes.get(
       rows.map((row) => {
         const config = (row.targetConfig ?? {}) as {
           vmName?: string;
-          result?: { syncProgress?: number | null };
+          result?: { syncProgress?: number | null; backgroundSyncActive?: boolean };
         };
+        const backgroundSyncActive = config.result?.backgroundSyncActive === true;
+        const status = backgroundSyncActive
+          ? 'running'
+          : row.status === 'pending'
+            ? 'booting'
+            : 'running';
         return {
           id: row.id,
           vmName: config.vmName ?? 'Instant Boot VM',
-          status: row.status === 'pending' ? 'booting' : 'running',
+          status,
           hostDeviceId: row.deviceId,
           hostDeviceName: row.hostDeviceName,
           snapshotId: row.snapshotId,

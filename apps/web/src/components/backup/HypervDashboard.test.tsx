@@ -24,16 +24,17 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
 
 const mockVms = [
   {
-    id: 'vm-1',
+    id: 'vm-row-1',
     deviceId: 'host-1',
-    name: 'SQL-VM',
+    vmId: 'vm-1',
+    vmName: 'SQL-VM',
     state: 'Running',
     generation: 2,
     memoryMb: 8192,
-    cpuCount: 4,
-    vhdCount: 1,
+    processorCount: 4,
+    vhdPaths: ['C:/VMs/SQL-VM.vhdx'],
     rctEnabled: true,
-    hasPassthroughDisk: false,
+    hasPassthroughDisks: false,
     checkpoints: [],
   },
 ];
@@ -41,7 +42,18 @@ const mockVms = [
 describe('HypervDashboard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    fetchMock.mockResolvedValue(makeJsonResponse({ data: mockVms }));
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/hyperv/vms') {
+        return makeJsonResponse({ vms: mockVms, total: 1 });
+      }
+      if (url === '/devices?limit=200') {
+        return makeJsonResponse({
+          data: [{ id: 'host-1', displayName: 'hyperv-01', osType: 'Windows Server 2022' }],
+        });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
   });
 
   it('renders loading state', () => {
@@ -53,12 +65,24 @@ describe('HypervDashboard', () => {
   });
 
   it('renders empty state when no VMs exist', async () => {
-    fetchMock.mockResolvedValueOnce(makeJsonResponse({ data: [] }));
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/hyperv/vms') {
+        return makeJsonResponse({ vms: [], total: 0 });
+      }
+      if (url === '/devices?limit=200') {
+        return makeJsonResponse({
+          data: [{ id: 'host-1', displayName: 'hyperv-01', osType: 'Windows Server 2022' }],
+        });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
 
     render(<HypervDashboard />);
 
     await screen.findByText('No Hyper-V VMs found');
-    expect(screen.getByText(/Run discovery on a Hyper-V host/i)).toBeTruthy();
+    expect(screen.getByText(/Select a Windows host and run discovery/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Run discovery/i })).toBeTruthy();
   });
 
   it('renders alpha banner', async () => {
@@ -66,5 +90,14 @@ describe('HypervDashboard', () => {
 
     await screen.findByText('Hyper-V Backup');
     expect(screen.getByText(/Hyper-V VM backup and restore is in early access/i)).toBeTruthy();
+  });
+
+  it('renders VMs from the API vms payload shape used by the backend route', async () => {
+    fetchMock.mockResolvedValueOnce(makeJsonResponse({ vms: mockVms, total: 1 }));
+
+    render(<HypervDashboard />);
+
+    expect(await screen.findByText('SQL-VM')).toBeTruthy();
+    expect(screen.getByText('4')).toBeTruthy();
   });
 });

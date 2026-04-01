@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const updateRestoreJobFromResultMock = vi.fn().mockResolvedValue(true);
+
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
@@ -49,7 +51,14 @@ vi.mock('../db/schema', () => ({
     devicesFailed: 'scriptExecutionBatches.devicesFailed',
   },
   backupJobs: {},
-  restoreJobs: {},
+  restoreJobs: {
+    id: 'restoreJobs.id',
+    commandId: 'restoreJobs.commandId',
+    deviceId: 'restoreJobs.deviceId',
+    restoreType: 'restoreJobs.restoreType',
+    status: 'restoreJobs.status',
+    targetConfig: 'restoreJobs.targetConfig',
+  },
 }));
 
 vi.mock('./terminalWs', () => ({
@@ -84,6 +93,11 @@ vi.mock('./backup/verificationService', () => ({
   processBackupVerificationResult: vi.fn(),
 }));
 
+vi.mock('../services/restoreResultPersistence', () => ({
+  updateRestoreJobByCommandId: vi.fn(),
+  updateRestoreJobFromResult: vi.fn((...args: unknown[]) => updateRestoreJobFromResultMock(...(args as []))),
+}));
+
 import { db } from '../db';
 import { createAgentWsHandlers } from './agentWs';
 import { enqueueDiscoveryResults } from '../jobs/discoveryWorker';
@@ -91,6 +105,7 @@ import { enqueueSnmpPollResults } from '../jobs/snmpWorker';
 import { enqueueMonitorCheckResult } from '../jobs/monitorWorker';
 import { getActiveTerminalSession, handleTerminalOutput } from './terminalWs';
 import { processBackupVerificationResult } from './backup/verificationService';
+import { updateRestoreJobFromResult } from '../services/restoreResultPersistence';
 
 function wsMock() {
   return {
@@ -114,6 +129,18 @@ function selectAgentDevice(rows: unknown[]) {
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
         limit: vi.fn().mockResolvedValue(rows)
+      })
+    })
+  };
+}
+
+function selectWithInnerJoin(rows: unknown[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      innerJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(rows)
+        })
       })
     })
   };
@@ -219,6 +246,62 @@ describe('agent websocket command results', () => {
     } as any, ws as any);
 
     expect(db.update).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('reconciles orphaned restore results using restore_jobs.command_id and inferred command type', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+      .mockReturnValueOnce(selectAgentDevice([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([
+        {
+          id: 'restore-1',
+          orgId: 'org-123',
+          agentId: 'agent-123',
+          restoreType: 'full',
+          status: 'running',
+          targetConfig: {
+            mode: 'instant_boot',
+          },
+        }
+      ]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '33333333-3333-4333-8333-333333333333',
+        status: 'completed',
+        result: {
+          status: 'completed',
+          backgroundSyncActive: true,
+          syncProgress: 58,
+        }
+      })
+    } as any, ws as any);
+
+    expect(updateRestoreJobFromResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'restore-1',
+        restoreType: 'full',
+        targetConfig: {
+          mode: 'instant_boot',
+        },
+      }),
+      'vm_instant_boot',
+      expect.objectContaining({
+        status: 'completed',
+        result: expect.objectContaining({
+          backgroundSyncActive: true,
+          syncProgress: 58,
+        }),
+      })
+    );
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 

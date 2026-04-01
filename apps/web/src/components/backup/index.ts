@@ -1,16 +1,11 @@
-export { default as BackupConfigEditor } from './BackupConfigEditor';
-export { default as BackupConfigList } from './BackupConfigList';
 export { default as BackupDashboard } from './BackupDashboard';
 export { default as BackupJobList } from './BackupJobList';
-export { default as DeviceBackupStatus } from './DeviceBackupStatus';
 export { default as DeviceVaultStatus } from './DeviceVaultStatus';
 export { default as EncryptionKeyList } from './EncryptionKeyList';
 export { default as HypervDashboard } from './HypervDashboard';
-export { default as HypervRestoreDialog } from './HypervRestoreDialog';
 export { default as HypervVMActions } from './HypervVMActions';
 export { default as InstantBootStatus } from './InstantBootStatus';
 export { default as MssqlDashboard } from './MssqlDashboard';
-export { default as MssqlRestoreDialog } from './MssqlRestoreDialog';
 export { default as RecoveryBootstrapTab } from './RecoveryBootstrapTab';
 export { default as RestoreWizard } from './RestoreWizard';
 export { default as SLAConfigDialog } from './SLAConfigDialog';

@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -33,6 +34,7 @@ type RestoreResult struct {
 	FailedFiles   []string `json:"failedFiles,omitempty"`
 	Warnings      []string `json:"warnings,omitempty"`
 	StagingDir    string   `json:"stagingDir,omitempty"`
+	Error         string   `json:"error,omitempty"`
 }
 
 // ProgressFunc is called after each file is restored.
@@ -41,6 +43,12 @@ type ProgressFunc func(phase string, current, total int64, message string)
 // RestoreFromSnapshot downloads files from a backup snapshot and restores them
 // to the target path or original source paths.
 func RestoreFromSnapshot(provider providers.BackupProvider, cfg RestoreConfig, progressFn ProgressFunc) (*RestoreResult, error) {
+	return RestoreFromSnapshotContext(context.Background(), provider, cfg, progressFn)
+}
+
+// RestoreFromSnapshotContext downloads files from a backup snapshot and restores them
+// to the target path or original source paths with cooperative cancellation.
+func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupProvider, cfg RestoreConfig, progressFn ProgressFunc) (*RestoreResult, error) {
 	if provider == nil {
 		return nil, errors.New("backup provider is required")
 	}
@@ -49,6 +57,22 @@ func RestoreFromSnapshot(provider providers.BackupProvider, cfg RestoreConfig, p
 	}
 
 	result := &RestoreResult{SnapshotID: cfg.SnapshotID}
+	checkCancelled := func() bool {
+		if ctx == nil || ctx.Err() == nil {
+			return false
+		}
+		result.Error = fmt.Sprintf("operation cancelled: %v", ctx.Err())
+		if result.FilesRestored > 0 {
+			result.Status = "partial"
+		} else {
+			result.Status = "failed"
+		}
+		return true
+	}
+
+	if checkCancelled() {
+		return result, ctx.Err()
+	}
 
 	// 1. Download and parse manifest
 	snapshot, err := downloadManifest(provider, cfg.SnapshotID)
@@ -99,6 +123,10 @@ func RestoreFromSnapshot(provider providers.BackupProvider, cfg RestoreConfig, p
 
 	// 5. Restore each file
 	for i, file := range files {
+		if checkCancelled() {
+			return result, ctx.Err()
+		}
+
 		current := int64(i + 1)
 		targetPath := resolveTargetPath(cfg.TargetPath, file.SourcePath)
 
@@ -133,6 +161,10 @@ func RestoreFromSnapshot(provider providers.BackupProvider, cfg RestoreConfig, p
 			slog.Warn("failed to download file",
 				"backupPath", file.BackupPath, "error", dlErr.Error())
 			continue
+		}
+		if checkCancelled() {
+			_ = os.Remove(stagingFile)
+			return result, ctx.Err()
 		}
 
 		// Path containment check
@@ -185,6 +217,10 @@ func RestoreFromSnapshot(provider providers.BackupProvider, cfg RestoreConfig, p
 			progressFn("restoring", current, total,
 				fmt.Sprintf("restored: %s", file.SourcePath))
 		}
+	}
+
+	if checkCancelled() {
+		return result, ctx.Err()
 	}
 
 	// 6. Determine status

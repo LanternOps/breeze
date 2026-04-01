@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/backup/bmr"
@@ -11,8 +12,11 @@ func TestBMRRecoverCommandParsesFlags(t *testing.T) {
 	defer func() { runBMRRecovery = origRunner }()
 
 	var gotCfg bmr.RecoveryConfig
-	runBMRRecovery = func(cfg bmr.RecoveryConfig) (*bmr.RecoveryResult, error) {
+	runBMRRecovery = func(ctx context.Context, cfg bmr.RecoveryConfig) (*bmr.RecoveryResult, error) {
 		gotCfg = cfg
+		if ctx == nil {
+			t.Fatal("expected context to be provided")
+		}
 		return &bmr.RecoveryResult{Status: "completed"}, nil
 	}
 

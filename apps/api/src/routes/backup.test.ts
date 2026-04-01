@@ -346,11 +346,11 @@ describe('backup routes', () => {
 
     expect(fetchRes.status).toBe(200);
     const fetched = await fetchRes.json();
-    expect(fetched.id).toBe(restore.id);
-    expect(fetched.snapshotId).toBe(SNAPSHOT_ID);
-    expect(fetched.commandId).toBe(RESTORE_COMMAND_ID);
-    expect(fetched.errorSummary).toBe('Restore target path is unavailable');
-    expect(fetched.resultDetails.status).toBe('failed');
+    expect(fetched.data.id).toBe(restore.id);
+    expect(fetched.data.snapshotId).toBe(SNAPSHOT_ID);
+    expect(fetched.data.commandId).toBe(RESTORE_COMMAND_ID);
+    expect(fetched.data.errorSummary).toBe('Restore target path is unavailable');
+    expect(fetched.data.resultDetails.status).toBe('failed');
   });
 
   it('should list restore jobs with structured result details', async () => {
@@ -422,7 +422,8 @@ describe('backup routes', () => {
     });
 
     // The verify endpoint creates a verification using the in-memory store
-    // and dispatches a command. With mocked DB, it falls back to simulation.
+    // and dispatches a live command. With mocked dependencies, some runs fail
+    // before persistence, so this test accepts the route-level error cases.
     const verifyPayload = await verifyRes.json();
     if (verifyRes.status === 201) {
       expect(verifyPayload.data.verification.id).toBeDefined();
