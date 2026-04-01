@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 
 import { db } from '../../db';
 import { devices } from '../../db/schema';
+import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { generateApiKey } from './helpers';
 
@@ -11,11 +12,7 @@ export const tokenRoutes = new Hono();
 
 tokenRoutes.post('/:id/rotate-token', async (c) => {
   const agentId = c.req.param('id');
-  const agent = c.get('agent') as {
-    deviceId?: string;
-    orgId?: string;
-    agentId?: string;
-  } | undefined;
+  const agent = c.get('agent') as AgentAuthContext;
 
   const [device] = await db
     .select({
@@ -27,7 +24,7 @@ tokenRoutes.post('/:id/rotate-token', async (c) => {
     .from(devices)
     .where(
       and(
-        eq(devices.id, agent?.deviceId ?? ''),
+        eq(devices.id, agent.deviceId),
         eq(devices.agentId, agentId)
       )
     )
@@ -67,9 +64,9 @@ tokenRoutes.post('/:id/rotate-token', async (c) => {
 
   try {
     writeAuditEvent(c, {
-      orgId: agent?.orgId ?? device.orgId,
+      orgId: agent.orgId,
       actorType: 'agent',
-      actorId: agent?.agentId ?? agentId,
+      actorId: agent.agentId,
       action: 'agent.token.rotate',
       resourceType: 'device',
       resourceId: device.id,

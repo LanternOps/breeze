@@ -29,6 +29,13 @@ import { isCronDue } from '../services/automationRuntime';
 import { lookupMacVendor, inferAssetTypeFromVendor } from '../services/macVendorLookup';
 import { buildEventFingerprint } from '../services/networkBaseline';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
+import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
+import {
+  discoveryQueueJobDataSchema,
+  type DiscoveryQueueJobData,
+  type QueueActorMeta,
+  withQueueMeta,
+} from './queueSchemas';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -98,8 +105,33 @@ export interface DiscoveredHostResult {
   responseTimeMs?: number;
   methods: string[];
 }
+type DiscoveryJobData = DiscoveryQueueJobData;
 
-type DiscoveryJobData = ScheduleProfilesJobData | DispatchScanJobData | ProcessResultsJobData;
+const PRIVILEGED_JOB_OPTIONS = {
+  attempts: 3,
+  backoff: {
+    type: 'exponential' as const,
+    delay: 1_000,
+  },
+};
+
+const DISCOVERY_REPEATABLE_META: QueueActorMeta = {
+  actorType: 'system',
+  actorId: null,
+  source: 'worker:discovery:schedule-profiles',
+};
+
+const DISCOVERY_DISPATCH_META: QueueActorMeta = {
+  actorType: 'system',
+  actorId: null,
+  source: 'worker:discovery:dispatch-scan',
+};
+
+const DISCOVERY_RESULT_META: QueueActorMeta = {
+  actorType: 'agent',
+  actorId: null,
+  source: 'route:agentWs:discovery-result',
+};
 
 /**
  * Create the discovery worker
@@ -109,15 +141,19 @@ export function createDiscoveryWorker(): Worker<DiscoveryJobData> {
     DISCOVERY_QUEUE,
     async (job: Job<DiscoveryJobData>) => {
       return runWithSystemDbAccess(async () => {
-        switch (job.data.type) {
+        const data = parseQueueJobData(DISCOVERY_QUEUE, job, discoveryQueueJobDataSchema);
+        switch (data.type) {
           case 'schedule-profiles':
+            assertQueueJobName(DISCOVERY_QUEUE, job, 'schedule-profiles');
             return await processScheduleProfiles();
           case 'dispatch-scan':
-            return await processDispatchScan(job.data);
+            assertQueueJobName(DISCOVERY_QUEUE, job, 'dispatch-scan');
+            return await processDispatchScan(data);
           case 'process-results':
-            return await processResults(job.data);
+            assertQueueJobName(DISCOVERY_QUEUE, job, 'process-results');
+            return await processResults(data);
           default:
-            throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
+            throw new Error(`Unknown job type: ${(data as { type: string }).type}`);
         }
       });
     },
@@ -1082,22 +1118,24 @@ export async function enqueueDiscoveryScan(
   profileId: string,
   orgId: string,
   siteId: string,
-  agentId?: string | null
+  agentId?: string | null,
+  meta: QueueActorMeta = DISCOVERY_DISPATCH_META,
 ): Promise<string> {
   const queue = getDiscoveryQueue();
   const job = await addUniqueDiscoveryJob(
     queue,
     'dispatch-scan',
-    {
+    discoveryQueueJobDataSchema.parse(withQueueMeta({
       type: 'dispatch-scan',
       jobId,
       profileId,
       orgId,
       siteId,
       agentId
-    },
+    }, meta)),
     `discovery-dispatch:${jobId}`,
     {
+      ...PRIVILEGED_JOB_OPTIONS,
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 }
     }
@@ -1115,13 +1153,14 @@ export async function enqueueDiscoveryResults(
   hosts: DiscoveredHostResult[],
   hostsScanned: number,
   hostsDiscovered: number,
-  profileId?: string
+  profileId?: string,
+  meta: QueueActorMeta = DISCOVERY_RESULT_META,
 ): Promise<string> {
   const queue = getDiscoveryQueue();
   const job = await addUniqueDiscoveryJob(
     queue,
     'process-results',
-    {
+    discoveryQueueJobDataSchema.parse(withQueueMeta({
       type: 'process-results',
       jobId,
       profileId,
@@ -1130,9 +1169,10 @@ export async function enqueueDiscoveryResults(
       hosts,
       hostsScanned,
       hostsDiscovered
-    },
+    }, meta)),
     `discovery-result:${jobId}`,
     {
+      ...PRIVILEGED_JOB_OPTIONS,
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 }
     }
@@ -1169,11 +1209,14 @@ async function scheduleRecurringProfilePlanner(): Promise<void> {
 
   const newJob = await queue.add(
     'schedule-profiles',
-    { type: 'schedule-profiles' as const },
+    discoveryQueueJobDataSchema.parse(
+      withQueueMeta({ type: 'schedule-profiles' as const }, DISCOVERY_REPEATABLE_META)
+    ),
     {
       repeat: {
         every: 60 * 1000
       },
+      attempts: 1,
       removeOnComplete: { count: 10 },
       removeOnFail: { count: 20 }
     }

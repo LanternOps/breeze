@@ -175,6 +175,28 @@ function toMaybeRecord(value: unknown): Record<string, unknown> | null {
   return isRecord(value) ? value : null;
 }
 
+function renderTrustMetadata(metadata: Record<string, unknown> | null | undefined, keys: string[]) {
+  if (!metadata) return null;
+  const rows = keys
+    .map((key) => {
+      const value = metadata[key];
+      if (value == null || value === '') return null;
+      return { key, value: typeof value === 'string' ? value : JSON.stringify(value) };
+    })
+    .filter(Boolean) as Array<{ key: string; value: string }>;
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="mt-2 space-y-1 text-[11px] text-muted-foreground">
+      {rows.map((row) => (
+        <p key={row.key}>
+          {row.key}: <span className="break-all font-mono">{row.value}</span>
+        </p>
+      ))}
+    </div>
+  );
+}
+
 function readStoredTokens(): RecoveryTokenRecord[] {
   if (typeof window === 'undefined') return [];
   try {
@@ -1348,6 +1370,13 @@ export default function RecoveryBootstrapTab() {
                               {artifact.signedAt ? <p>Signed at: {formatTime(artifact.signedAt)}</p> : null}
                             </div>
                           ) : null}
+                          {renderTrustMetadata(artifact.metadata, [
+                            'helperBinaryVersion',
+                            'helperBinaryDigestVerified',
+                            'helperBinarySourceType',
+                            'helperBinarySourceRef',
+                            'helperBinaryManifestVersion',
+                          ])}
                         </div>
                       ))}
                     </div>
@@ -1445,6 +1474,13 @@ export default function RecoveryBootstrapTab() {
                               {artifact.signedAt ? <p>Signed at: {formatTime(artifact.signedAt)}</p> : null}
                             </div>
                           ) : null}
+                          {renderTrustMetadata(artifact.metadata, [
+                            'bootTemplateId',
+                            'bootTemplateVersion',
+                            'bootTemplateSourceRef',
+                            'bootTemplateSha256',
+                            'bootTemplateManifestVersion',
+                          ])}
                         </div>
                       ))}
                     </div>

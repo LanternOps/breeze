@@ -31,6 +31,7 @@ export type BackupJob = {
   completedAt?: string | null;
   totalSize?: number | null;
   errorCount?: number | null;
+  errorLog?: string | null;
   // Legacy fields for compatibility
   device?: string;
   config?: string;

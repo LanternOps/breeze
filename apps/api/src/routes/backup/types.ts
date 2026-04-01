@@ -114,6 +114,9 @@ export type RestoreJob = {
   updatedAt: string;
   restoredSize?: number | null;
   restoredFiles?: number | null;
+  commandId?: string | null;
+  errorSummary?: string | null;
+  resultDetails?: Record<string, unknown> | null;
 };
 
 export type BackupVerificationType = 'integrity' | 'test_restore';

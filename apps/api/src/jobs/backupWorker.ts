@@ -36,12 +36,18 @@ import {
   cleanupExpiredSnapshots,
 } from './backupRetention';
 import * as backupEnqueue from './backupEnqueue';
-import type { ParsedBackupCommandResult } from '../routes/backup/resultSchemas';
 import { backupCommandResultSchema } from '../routes/backup/resultSchemas';
 import { getDueOccurrenceKey } from '../routes/backup/helpers';
 import { applyBackupCommandResultToJob } from '../services/backupResultPersistence';
 import { markBackupJobFailedIfInFlight } from '../services/backupResultPersistence';
 import { createScheduledBackupJobIfAbsent } from '../services/backupJobCreation';
+import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
+import {
+  backupQueueJobDataSchema,
+  type BackupQueueJobData,
+  type QueueActorMeta,
+  withQueueMeta,
+} from './queueSchemas';
 
 // Re-export enqueue functions for backward compatibility
 export const getBackupQueue = backupEnqueue.getBackupQueue;
@@ -58,49 +64,43 @@ const BACKUP_QUEUE = 'backup';
 
 // ── Job data types ────────────────────────────────────────────────────────────
 
-interface CheckSchedulesJobData { type: 'check-schedules' }
-interface ExpireRecoveryTokensJobData { type: 'expire-recovery-tokens' }
-interface CleanupExpiredSnapshotsJobData { type: 'cleanup-expired-snapshots' }
-interface DispatchBackupJobData { type: 'dispatch-backup'; jobId: string; configId: string; orgId: string; deviceId: string }
-interface ProcessResultsJobData {
-  type: 'process-results'; jobId: string; orgId: string; deviceId: string;
-  result: ParsedBackupCommandResult & { status: string; error?: string };
-}
-interface DispatchRestoreJobData {
-  type: 'dispatch-restore'; restoreJobId: string; snapshotId: string;
-  deviceId: string; orgId: string; targetPath?: string; selectedPaths?: string[];
-}
-type BackupJobData =
-  | CheckSchedulesJobData
-  | ExpireRecoveryTokensJobData
-  | CleanupExpiredSnapshotsJobData
-  | DispatchBackupJobData
-  | ProcessResultsJobData
-  | DispatchRestoreJobData;
+type CheckSchedulesJobData = Extract<BackupQueueJobData, { type: 'check-schedules' }>;
+type ExpireRecoveryTokensJobData = Extract<BackupQueueJobData, { type: 'expire-recovery-tokens' }>;
+type CleanupExpiredSnapshotsJobData = Extract<BackupQueueJobData, { type: 'cleanup-expired-snapshots' }>;
+type DispatchBackupJobData = Extract<BackupQueueJobData, { type: 'dispatch-backup' }>;
+type ProcessResultsJobData = Extract<BackupQueueJobData, { type: 'process-results' }>;
+type DispatchRestoreJobData = Extract<BackupQueueJobData, { type: 'dispatch-restore' }>;
 
 // ── Worker ────────────────────────────────────────────────────────────────────
 
-function createBackupWorker(): Worker<BackupJobData> {
-  return new Worker<BackupJobData>(
+function createBackupWorker(): Worker<BackupQueueJobData> {
+  return new Worker<BackupQueueJobData>(
     BACKUP_QUEUE,
-    async (job: Job<BackupJobData>) => {
+    async (job: Job<BackupQueueJobData>) => {
       return runWithSystemDbAccess(async () => {
-        switch (job.data.type) {
+        const data = parseQueueJobData(BACKUP_QUEUE, job, backupQueueJobDataSchema);
+        switch (data.type) {
           case 'check-schedules':
+            assertQueueJobName(BACKUP_QUEUE, job, 'check-schedules');
             return await processCheckSchedules();
           case 'expire-recovery-tokens':
+            assertQueueJobName(BACKUP_QUEUE, job, 'expire-recovery-tokens');
             return await processExpireRecoveryTokens();
           case 'cleanup-expired-snapshots':
+            assertQueueJobName(BACKUP_QUEUE, job, 'cleanup-expired-snapshots');
             return await processCleanupExpiredSnapshots();
           case 'dispatch-backup':
-            return await processDispatchBackup(job.data);
+            assertQueueJobName(BACKUP_QUEUE, job, 'dispatch-backup');
+            return await processDispatchBackup(data);
           case 'process-results':
-            return await processResults(job.data);
+            assertQueueJobName(BACKUP_QUEUE, job, 'process-results');
+            return await processResults(data);
           case 'dispatch-restore':
-            return await processDispatchRestore(job.data);
+            assertQueueJobName(BACKUP_QUEUE, job, 'dispatch-restore');
+            return await processDispatchRestore(data);
           default:
             throw new Error(
-              `Unknown job type: ${(job.data as { type: string }).type}`
+              `Unknown job type: ${(data as { type: string }).type}`
             );
         }
       });
@@ -126,6 +126,11 @@ type PolicySchedule = {
 };
 
 const SCHEDULE_LOOKBACK_MINUTES = 5;
+const BACKUP_REPEATABLE_META: QueueActorMeta = {
+  actorType: 'system',
+  actorId: null,
+  source: 'worker:backup:repeatable',
+};
 
 async function processCheckSchedules(): Promise<{ enqueued: number }> {
   const now = new Date();
@@ -620,9 +625,12 @@ export async function initializeBackupWorker(): Promise<void> {
     const queue = getBackupQueue();
     const newJob = await queue.add(
       'check-schedules',
-      { type: 'check-schedules' as const },
+      backupQueueJobDataSchema.parse(
+        withQueueMeta({ type: 'check-schedules' as const }, BACKUP_REPEATABLE_META)
+      ),
       {
         repeat: { every: 60_000 },
+        attempts: 1,
         removeOnComplete: { count: 10 },
         removeOnFail: { count: 20 },
       }
@@ -630,9 +638,12 @@ export async function initializeBackupWorker(): Promise<void> {
 
     const expireJob = await queue.add(
       'expire-recovery-tokens',
-      { type: 'expire-recovery-tokens' as const },
+      backupQueueJobDataSchema.parse(
+        withQueueMeta({ type: 'expire-recovery-tokens' as const }, BACKUP_REPEATABLE_META)
+      ),
       {
         repeat: { every: 60 * 60 * 1000 },
+        attempts: 1,
         removeOnComplete: { count: 10 },
         removeOnFail: { count: 20 },
       }
@@ -640,9 +651,12 @@ export async function initializeBackupWorker(): Promise<void> {
 
     const cleanupJob = await queue.add(
       'cleanup-expired-snapshots',
-      { type: 'cleanup-expired-snapshots' as const },
+      backupQueueJobDataSchema.parse(
+        withQueueMeta({ type: 'cleanup-expired-snapshots' as const }, BACKUP_REPEATABLE_META)
+      ),
       {
         repeat: { every: 6 * 60 * 60 * 1000 },
+        attempts: 1,
         removeOnComplete: { count: 10 },
         removeOnFail: { count: 20 },
       }

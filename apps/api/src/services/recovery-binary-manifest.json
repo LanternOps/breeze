@@ -1,0 +1,13 @@
+{
+  "version": "1",
+  "binaries": [
+    {
+      "platform": "linux",
+      "architecture": "amd64",
+      "sourceType": "local",
+      "sourceRef": "agent/bin/breeze-backup",
+      "version": "workspace-local",
+      "sha256": "13544e779e52d09dd6e10118306f3e4b16b7050b8423e24f6f503b7da6d80e61"
+    }
+  ]
+}

@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
+  CalendarClock,
+  Database,
   ChevronDown,
   ChevronRight,
   Download,
@@ -32,7 +35,19 @@ type SnapshotFile = {
 
 type Snapshot = {
   id: string;
-  label: string;
+  label: string | null;
+  createdAt: string;
+  sizeBytes: number | null;
+  fileCount: number | null;
+  location: string | null;
+  expiresAt: string | null;
+  legalHold: boolean;
+  legalHoldReason: string | null;
+  isImmutable: boolean;
+  immutableUntil: string | null;
+  immutabilityEnforcement: 'application' | 'provider' | null;
+  requestedImmutabilityEnforcement: 'application' | 'provider' | null;
+  immutabilityFallbackReason: string | null;
   tree?: TreeNode;
   files?: SnapshotFile[];
 };
@@ -74,6 +89,28 @@ function flattenTree(items: SnapshotTreeItem[], parentPath = '/'): SnapshotFile[
   });
 }
 
+function formatBytes(bytes: number | null | undefined): string {
+  if (bytes == null) return '-';
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / (1024 ** exponent);
+  return `${value.toFixed(value >= 10 || exponent === 0 ? 0 : 1)} ${units[exponent]}`;
+}
+
+function formatDateTime(value: string | null | undefined): string {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '-';
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 export default function SnapshotBrowser() {
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [selectedSnapshotId, setSelectedSnapshotId] = useState('');
@@ -82,6 +119,12 @@ export default function SnapshotBrowser() {
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [reason, setReason] = useState('');
+  const [immutableDays, setImmutableDays] = useState(30);
+  const [immutabilityMode, setImmutabilityMode] = useState<'application' | 'provider'>('application');
+  const [actionLoading, setActionLoading] = useState(false);
+  const [actionMessage, setActionMessage] = useState<string>();
+  const [actionError, setActionError] = useState<string>();
 
   const fetchSnapshots = useCallback(async () => {
     try {
@@ -152,10 +195,89 @@ export default function SnapshotBrowser() {
     };
   }, [selectedSnapshotId]);
 
+  const handleProtectionAction = useCallback(async (
+    action: 'apply-hold' | 'release-hold' | 'apply-immutability' | 'release-immutability',
+  ) => {
+    if (!selectedSnapshotId) return;
+
+    const trimmedReason = reason.trim();
+    if (!trimmedReason) {
+      setActionError('A reason is required for snapshot protection changes.');
+      return;
+    }
+
+    if (action === 'apply-immutability' && immutableDays < 1) {
+      setActionError('Immutable days must be at least 1.');
+      return;
+    }
+
+    const path = (() => {
+      switch (action) {
+        case 'apply-hold':
+          return `/backup/snapshots/${selectedSnapshotId}/legal-hold`;
+        case 'release-hold':
+          return `/backup/snapshots/${selectedSnapshotId}/legal-hold/release`;
+        case 'apply-immutability':
+          return `/backup/snapshots/${selectedSnapshotId}/immutability`;
+        case 'release-immutability':
+          return `/backup/snapshots/${selectedSnapshotId}/immutability/release`;
+      }
+    })();
+
+    const body = action === 'apply-immutability'
+      ? { reason: trimmedReason, immutableDays, enforcement: immutabilityMode }
+      : { reason: trimmedReason };
+
+    try {
+      setActionLoading(true);
+      setActionError(undefined);
+      setActionMessage(undefined);
+
+      const response = await fetchWithAuth(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.error ?? 'Failed to update snapshot protection');
+      }
+
+      const updated = payload?.data ?? payload;
+      setSnapshots((prev) => prev.map((snapshot) => (
+        snapshot.id === selectedSnapshotId
+          ? {
+              ...snapshot,
+              ...updated,
+              label: updated.label ?? snapshot.label,
+              tree: snapshot.tree,
+              files: snapshot.files,
+            }
+          : snapshot
+      )));
+      setActionMessage(
+        action === 'apply-hold'
+          ? 'Legal hold applied.'
+          : action === 'release-hold'
+            ? 'Legal hold released.'
+            : action === 'apply-immutability'
+              ? `${immutabilityMode === 'provider' ? 'Provider' : 'Application'} immutability applied.`
+              : 'Application immutability released.'
+      );
+      setReason('');
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to update snapshot protection');
+    } finally {
+      setActionLoading(false);
+    }
+  }, [immutableDays, immutabilityMode, reason, selectedSnapshotId]);
+
   const selectedSnapshot = useMemo(
     () => snapshots.find((snapshot) => snapshot.id === selectedSnapshotId),
     [selectedSnapshotId, snapshots]
   );
+  const selectedSnapshotDisplayLabel = selectedSnapshot?.label ?? selectedSnapshot?.id ?? 'Snapshot';
 
   useEffect(() => {
     if (selectedSnapshot?.tree?.id) {
@@ -279,16 +401,21 @@ export default function SnapshotBrowser() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-xl font-semibold text-foreground">Snapshot Browser</h2>
+        <h2 className="text-xl font-semibold text-foreground">Snapshots</h2>
         <p className="text-sm text-muted-foreground">
-          Explore snapshots, browse files, and restore with confidence.
+          Manage backup restore points, inspect protection state, and browse files inside each snapshot.
         </p>
       </div>
 
       <div className="rounded-lg border bg-card p-5 shadow-sm space-y-4">
-        {error && (
+        {(error || actionError) && (
           <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {error}
+            {actionError ?? error}
+          </div>
+        )}
+        {actionMessage && (
+          <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
+            {actionMessage}
           </div>
         )}
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -304,7 +431,7 @@ export default function SnapshotBrowser() {
             >
               {snapshots.map((snapshot) => (
                 <option key={snapshot.id} value={snapshot.id}>
-                  {snapshot.label}
+                  {snapshot.label ?? snapshot.id}
                 </option>
               ))}
             </select>
@@ -317,6 +444,170 @@ export default function SnapshotBrowser() {
             </button>
           </div>
         </div>
+
+        {selectedSnapshot && (
+          <div className="grid gap-4 rounded-lg border bg-muted/15 p-4 lg:grid-cols-[1.1fr_0.9fr]">
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-semibold text-foreground">{selectedSnapshotDisplayLabel}</span>
+                {selectedSnapshot.legalHold && (
+                  <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700">
+                    Legal hold
+                  </span>
+                )}
+                {selectedSnapshot.isImmutable && (
+                  <span className="rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-sky-700">
+                    {selectedSnapshot.immutabilityEnforcement === 'provider' ? 'Provider immutability' : 'Application immutability'}
+                  </span>
+                )}
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-md border bg-background p-3">
+                  <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    <CalendarClock className="h-3.5 w-3.5" />
+                    Snapshot Timing
+                  </div>
+                  <div className="mt-2 space-y-1 text-sm text-foreground">
+                    <div>Created: {formatDateTime(selectedSnapshot.createdAt)}</div>
+                    <div>Expires: {formatDateTime(selectedSnapshot.expiresAt)}</div>
+                    <div>Immutable until: {formatDateTime(selectedSnapshot.immutableUntil)}</div>
+                  </div>
+                </div>
+                <div className="rounded-md border bg-background p-3">
+                  <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    <Database className="h-3.5 w-3.5" />
+                    Snapshot Details
+                  </div>
+                  <div className="mt-2 space-y-1 text-sm text-foreground">
+                    <div>Size: {formatBytes(selectedSnapshot.sizeBytes)}</div>
+                    <div>Files: {selectedSnapshot.fileCount ?? '-'}</div>
+                    <div className="break-all text-muted-foreground">{selectedSnapshot.location ?? '-'}</div>
+                  </div>
+                </div>
+              </div>
+
+              {(selectedSnapshot.legalHoldReason || selectedSnapshot.immutabilityEnforcement) && (
+                <div className="rounded-md border bg-background p-3 text-sm">
+                  {selectedSnapshot.legalHoldReason && (
+                    <div>
+                      <span className="font-medium text-foreground">Hold reason:</span>{' '}
+                      <span className="text-muted-foreground">{selectedSnapshot.legalHoldReason}</span>
+                    </div>
+                  )}
+                  {selectedSnapshot.immutabilityEnforcement && (
+                    <div>
+                      <span className="font-medium text-foreground">Enforcement:</span>{' '}
+                      <span className="text-muted-foreground">
+                        {selectedSnapshot.immutabilityEnforcement === 'provider'
+                          ? 'Provider-enforced WORM'
+                          : 'Application-level cleanup protection'}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {selectedSnapshot.requestedImmutabilityEnforcement === 'provider' &&
+                selectedSnapshot.immutabilityEnforcement === 'application' && (
+                  <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800">
+                    Provider immutability was requested by policy, but Breeze applied application protection instead.
+                    {selectedSnapshot.immutabilityFallbackReason && (
+                      <div className="mt-1 text-xs text-amber-900/80">
+                        Reason: {selectedSnapshot.immutabilityFallbackReason}
+                      </div>
+                    )}
+                  </div>
+                )}
+            </div>
+
+            <div className="space-y-3 rounded-md border bg-background p-4">
+              <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                <AlertTriangle className="h-4 w-4 text-amber-600" />
+                Protection Controls
+              </div>
+              <p className="text-xs text-muted-foreground">
+                These actions apply to the selected snapshot only. Releasing protection can make an expired snapshot eligible for deletion immediately.
+              </p>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Reason</label>
+                <input
+                  aria-label="Reason"
+                  value={reason}
+                  onChange={(event) => setReason(event.target.value)}
+                  placeholder="Reason for applying or releasing protection"
+                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Application immutability days</label>
+                <input
+                  aria-label="Application immutability days"
+                  type="number"
+                  min={1}
+                  max={3650}
+                  value={immutableDays}
+                  onChange={(event) => setImmutableDays(Number(event.target.value) || 30)}
+                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Immutability enforcement</label>
+                <select
+                  value={immutabilityMode}
+                  onChange={(event) => setImmutabilityMode(event.target.value as 'application' | 'provider')}
+                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                >
+                  <option value="application">Application-level</option>
+                  <option value="provider">Provider-enforced</option>
+                </select>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <button
+                  type="button"
+                  disabled={actionLoading || selectedSnapshot.legalHold}
+                  onClick={() => void handleProtectionAction('apply-hold')}
+                  className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-800 disabled:opacity-50"
+                >
+                  {actionLoading ? 'Working...' : 'Apply legal hold'}
+                </button>
+                <button
+                  type="button"
+                  disabled={actionLoading || !selectedSnapshot.legalHold}
+                  onClick={() => void handleProtectionAction('release-hold')}
+                  className="rounded-md border px-3 py-2 text-sm font-medium text-foreground disabled:opacity-50"
+                >
+                  Release legal hold
+                </button>
+                <button
+                  type="button"
+                  disabled={actionLoading || selectedSnapshot.isImmutable}
+                  onClick={() => void handleProtectionAction('apply-immutability')}
+                  className="rounded-md border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-sm font-medium text-sky-800 disabled:opacity-50"
+                >
+                  Apply immutability
+                </button>
+                <button
+                  type="button"
+                  disabled={
+                    actionLoading ||
+                    !selectedSnapshot.isImmutable ||
+                    selectedSnapshot.immutabilityEnforcement === 'provider'
+                  }
+                  onClick={() => void handleProtectionAction('release-immutability')}
+                  className="rounded-md border px-3 py-2 text-sm font-medium text-foreground disabled:opacity-50"
+                >
+                  Release app immutability
+                </button>
+              </div>
+              {selectedSnapshot.immutabilityEnforcement === 'provider' && selectedSnapshot.isImmutable && (
+                <p className="text-xs text-muted-foreground">
+                  Provider-enforced immutability cannot be released from Breeze.
+                </p>
+              )}
+            </div>
+          </div>
+        )}
 
         <div className="grid gap-4 lg:grid-cols-[260px_1fr]">
           <div className="rounded-md border bg-muted/10 p-3">
@@ -345,11 +636,11 @@ export default function SnapshotBrowser() {
                 ))}
               </div>
               <div className="flex items-center gap-2">
-                <button className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-accent">
+                <button type="button" className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-accent">
                   <RotateCcw className="h-4 w-4" />
                   Restore selected
                 </button>
-                <button className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
+                <button type="button" className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
                   <Download className="h-4 w-4" />
                   Download file
                 </button>

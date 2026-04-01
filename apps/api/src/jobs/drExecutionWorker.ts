@@ -2,40 +2,50 @@ import { Job, Queue, Worker } from 'bullmq';
 import { getRedisConnection } from '../services/redis';
 import { reconcileDrExecution } from '../services/drExecutionService';
 import { isReusableState } from '../services/bullmqUtils';
+import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
+import {
+  drExecutionQueueJobDataSchema,
+  type DrExecutionQueueJobData,
+  withQueueMeta,
+} from './queueSchemas';
 
 const DR_EXECUTION_QUEUE = 'dr-execution';
-
-type DrExecutionJobData = {
-  type: 'reconcile-execution';
-  executionId: string;
+const PRIVILEGED_JOB_OPTIONS = {
+  attempts: 3,
+  backoff: {
+    type: 'exponential' as const,
+    delay: 1_000,
+  },
 };
 
-let drExecutionQueue: Queue<DrExecutionJobData> | null = null;
-let drExecutionWorkerInstance: Worker<DrExecutionJobData> | null = null;
+let drExecutionQueue: Queue<DrExecutionQueueJobData> | null = null;
+let drExecutionWorkerInstance: Worker<DrExecutionQueueJobData> | null = null;
 
 function getDrExecutionReconcileJobId(executionId: string): string {
   return `dr-execution:${executionId}`;
 }
 
-function getDrExecutionQueue(): Queue<DrExecutionJobData> {
+function getDrExecutionQueue(): Queue<DrExecutionQueueJobData> {
   if (!drExecutionQueue) {
-    drExecutionQueue = new Queue<DrExecutionJobData>(DR_EXECUTION_QUEUE, {
+    drExecutionQueue = new Queue<DrExecutionQueueJobData>(DR_EXECUTION_QUEUE, {
       connection: getRedisConnection(),
     });
   }
   return drExecutionQueue;
 }
 
-function createDrExecutionWorker(): Worker<DrExecutionJobData> {
-  return new Worker<DrExecutionJobData>(
+function createDrExecutionWorker(): Worker<DrExecutionQueueJobData> {
+  return new Worker<DrExecutionQueueJobData>(
     DR_EXECUTION_QUEUE,
-    async (job: Job<DrExecutionJobData>) => {
-      if (job.data.type !== 'reconcile-execution') {
-        throw new Error(`Unknown DR execution job type: ${(job.data as { type: string }).type}`);
+    async (job: Job<DrExecutionQueueJobData>) => {
+      const data = parseQueueJobData(DR_EXECUTION_QUEUE, job, drExecutionQueueJobDataSchema);
+      if (data.type !== 'reconcile-execution') {
+        throw new Error(`Unknown DR execution job type: ${(data as { type: string }).type}`);
       }
-      const execution = await reconcileDrExecution(job.data.executionId);
+      assertQueueJobName(DR_EXECUTION_QUEUE, job, 'reconcile-execution');
+      const execution = await reconcileDrExecution(data.executionId);
       return {
-        executionId: job.data.executionId,
+        executionId: data.executionId,
         status: execution?.status ?? 'missing',
       };
     },
@@ -43,6 +53,8 @@ function createDrExecutionWorker(): Worker<DrExecutionJobData> {
       connection: getRedisConnection(),
       concurrency: 4,
       lockDuration: 120_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 2,
     }
   );
 }
@@ -64,13 +76,18 @@ export async function enqueueDrExecutionReconcile(executionId: string, delayMs =
   }
   const job = await queue.add(
     'reconcile-execution',
-    {
+    drExecutionQueueJobDataSchema.parse(withQueueMeta({
       type: 'reconcile-execution',
       executionId,
-    },
+    }, {
+      actorType: 'system',
+      actorId: null,
+      source: 'service:dr:reconcile',
+    })),
     {
       jobId: stableJobId,
       delay: Math.max(0, delayMs),
+      ...PRIVILEGED_JOB_OPTIONS,
       removeOnComplete: { count: 100 },
       removeOnFail: { count: 100 },
     }

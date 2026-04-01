@@ -34,6 +34,7 @@ type Vault = {
   sizeBytes?: number | null;
   retentionCount?: number | null;
   active?: boolean;
+  lastSyncError?: string | null;
 };
 
 const statusConfig: Record<VaultStatus, { icon: typeof CheckCircle2; className: string; label: string }> = {
@@ -66,7 +67,41 @@ export default function VaultDashboard() {
       if (!response.ok) throw new Error('Failed to fetch vaults');
       const payload = await response.json();
       const data = payload?.data ?? payload ?? [];
-      setVaults(Array.isArray(data) ? data : []);
+      setVaults(
+        Array.isArray(data)
+          ? data.map((item) => {
+              const raw = item as Record<string, unknown>;
+              const rawStatus = `${raw.lastSyncStatus ?? ''}`.toLowerCase();
+              const status: VaultStatus =
+                rawStatus === 'pending' || rawStatus === 'running'
+                  ? 'syncing'
+                  : rawStatus === 'completed'
+                    ? 'completed'
+                    : rawStatus === 'failed'
+                      ? 'failed'
+                      : 'never';
+
+              return {
+                id: String(raw.id ?? ''),
+                deviceId: String(raw.deviceId ?? ''),
+                deviceName: typeof raw.deviceName === 'string' ? raw.deviceName : null,
+                vaultPath: String(raw.vaultPath ?? ''),
+                type: (raw.vaultType === 'smb' || raw.vaultType === 'usb' ? raw.vaultType : 'local') as VaultType,
+                status,
+                lastSyncAt: typeof raw.lastSyncAt === 'string' ? raw.lastSyncAt : null,
+                snapshotCount: typeof raw.snapshotCount === 'number' ? raw.snapshotCount : null,
+                sizeBytes: typeof raw.syncSizeBytes === 'number'
+                  ? raw.syncSizeBytes
+                  : typeof raw.sizeBytes === 'number'
+                    ? raw.sizeBytes
+                    : null,
+                retentionCount: typeof raw.retentionCount === 'number' ? raw.retentionCount : null,
+                active: typeof raw.isActive === 'boolean' ? raw.isActive : true,
+                lastSyncError: typeof raw.lastSyncError === 'string' ? raw.lastSyncError : null,
+              } satisfies Vault;
+            })
+          : []
+      );
     } catch (err) {
       console.error('[VaultDashboard] fetchVaults:', err);
       setError(err instanceof Error ? err.message : 'An error occurred');
@@ -231,7 +266,15 @@ export default function VaultDashboard() {
                         {vault.deviceName ?? vault.deviceId?.slice(0, 8) ?? '--'}
                       </td>
                       <td className="px-4 py-3 font-mono text-xs text-muted-foreground">
-                        {vault.vaultPath}
+                        <div>
+                          <div>{vault.vaultPath}</div>
+                          {vault.lastSyncError ? (
+                            <div className="mt-1 flex items-start gap-1 text-[11px] text-destructive">
+                              <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+                              <span className="line-clamp-2">{vault.lastSyncError}</span>
+                            </div>
+                          ) : null}
+                        </div>
                       </td>
                       <td className="px-4 py-3">
                         <span className={cn('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium', tCfg.className)}>

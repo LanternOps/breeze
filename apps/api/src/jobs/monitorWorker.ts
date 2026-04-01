@@ -15,6 +15,13 @@ import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
 import { buildMonitorCommand } from '../routes/monitors';
 import { isCooldownActive, setCooldown } from '../services/alertCooldown';
 import { resolveAlert } from '../services/alertService';
+import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
+import {
+  monitorQueueJobDataSchema,
+  type MonitorQueueJobData,
+  type QueueActorMeta,
+  withQueueMeta,
+} from './queueSchemas';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -63,24 +70,53 @@ interface MonitorSchedulerJobData {
   type: 'monitor-scheduler';
 }
 
-type MonitorJobData = CheckMonitorJobData | ProcessCheckResultJobData | MonitorSchedulerJobData;
+type MonitorJobData = MonitorQueueJobData;
 
 const MONITOR_ALERT_COOLDOWN_MINUTES = 5;
+const PRIVILEGED_JOB_OPTIONS = {
+  attempts: 3,
+  backoff: {
+    type: 'exponential' as const,
+    delay: 1_000,
+  },
+};
+
+const MONITOR_DISPATCH_META: QueueActorMeta = {
+  actorType: 'system',
+  actorId: null,
+  source: 'worker:monitor:check-monitor',
+};
+
+const MONITOR_RESULT_META: QueueActorMeta = {
+  actorType: 'agent',
+  actorId: null,
+  source: 'route:agentWs:monitor-result',
+};
+
+const MONITOR_REPEATABLE_META: QueueActorMeta = {
+  actorType: 'system',
+  actorId: null,
+  source: 'worker:monitor:scheduler',
+};
 
 function createMonitorWorker(): Worker<MonitorJobData> {
   return new Worker<MonitorJobData>(
     MONITOR_QUEUE,
     async (job: Job<MonitorJobData>) => {
       return runWithSystemDbAccess(async () => {
-        switch (job.data.type) {
+        const data = parseQueueJobData(MONITOR_QUEUE, job, monitorQueueJobDataSchema);
+        switch (data.type) {
           case 'monitor-scheduler':
+            assertQueueJobName(MONITOR_QUEUE, job, 'monitor-scheduler');
             return await processScheduler();
           case 'check-monitor':
-            return await processCheckMonitor(job.data);
+            assertQueueJobName(MONITOR_QUEUE, job, 'check-monitor');
+            return await processCheckMonitor(data);
           case 'process-check-result':
-            return await processCheckResult(job.data);
+            assertQueueJobName(MONITOR_QUEUE, job, 'process-check-result');
+            return await processCheckResult(data);
           default:
-            throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
+            throw new Error(`Unknown job type: ${(data as { type: string }).type}`);
         }
       });
     },
@@ -446,7 +482,8 @@ async function processScheduler(): Promise<{ enqueued: number }> {
 
 export async function enqueueMonitorCheck(
   monitorId: string,
-  orgId: string
+  orgId: string,
+  meta: QueueActorMeta = MONITOR_DISPATCH_META,
 ): Promise<string> {
   const queue = getMonitorQueue();
   const stableJobId = `monitor-check:${monitorId}`;
@@ -463,9 +500,10 @@ export async function enqueueMonitorCheck(
 
   const job = await queue.add(
     'check-monitor',
-    { type: 'check-monitor', monitorId, orgId },
+    monitorQueueJobDataSchema.parse(withQueueMeta({ type: 'check-monitor', monitorId, orgId }, meta)),
     {
       jobId: stableJobId,
+      ...PRIVILEGED_JOB_OPTIONS,
       removeOnComplete: { count: 100 },
       removeOnFail: { count: 200 }
     }
@@ -475,7 +513,8 @@ export async function enqueueMonitorCheck(
 
 export async function enqueueMonitorCheckResult(
   monitorId: string,
-  result: MonitorCheckResult
+  result: MonitorCheckResult,
+  meta: QueueActorMeta = MONITOR_RESULT_META,
 ): Promise<string> {
   const queue = getMonitorQueue();
   const stableJobId = result.checkId ? `monitor-result:${result.checkId}` : null;
@@ -493,9 +532,12 @@ export async function enqueueMonitorCheckResult(
   }
   const job = await queue.add(
     'process-check-result',
-    { type: 'process-check-result', monitorId, result },
+    monitorQueueJobDataSchema.parse(
+      withQueueMeta({ type: 'process-check-result', monitorId, result }, meta)
+    ),
     {
       ...(stableJobId ? { jobId: stableJobId } : {}),
+      ...PRIVILEGED_JOB_OPTIONS,
       removeOnComplete: { count: 100 },
       removeOnFail: { count: 200 }
     }
@@ -515,9 +557,12 @@ async function scheduleMonitorPolling(): Promise<void> {
 
   await queue.add(
     'monitor-scheduler',
-    { type: 'monitor-scheduler' as const },
+    monitorQueueJobDataSchema.parse(
+      withQueueMeta({ type: 'monitor-scheduler' as const }, MONITOR_REPEATABLE_META)
+    ),
     {
       repeat: { every: 30 * 1000 },
+      attempts: 1,
       removeOnComplete: { count: 10 },
       removeOnFail: { count: 20 }
     }

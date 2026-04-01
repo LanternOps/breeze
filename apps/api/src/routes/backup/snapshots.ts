@@ -3,16 +3,34 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { eq, and, desc } from 'drizzle-orm';
 import { db } from '../../db';
-import { backupSnapshotFiles, backupSnapshots } from '../../db/schema';
-import { requirePermission } from '../../middleware/auth';
+import { backupConfigs, backupSnapshotFiles, backupSnapshots } from '../../db/schema';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
+import { writeRouteAudit } from '../../services/auditEvents';
+import {
+  applyBackupSnapshotImmutability,
+  checkBackupProviderCapabilities,
+} from '../../services/backupSnapshotStorage';
 import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
-import { snapshotListSchema } from './schemas';
+import {
+  snapshotImmutabilityApplySchema,
+  snapshotListSchema,
+  snapshotProtectionReasonSchema,
+} from './schemas';
 import type { SnapshotTreeItem } from './types';
 
 export const snapshotsRoutes = new Hono();
 
 const snapshotIdParamSchema = z.object({ id: z.string().uuid() });
+type SnapshotProtectionState = {
+  legalHold: boolean;
+  legalHoldReason: string | null;
+  isImmutable: boolean;
+  immutableUntil: string | null;
+  immutabilityEnforcement: string | null;
+  requestedImmutabilityEnforcement: string | null;
+  immutabilityFallbackReason: string | null;
+};
 
 type SnapshotFileRow = {
   sourcePath: string;
@@ -79,6 +97,41 @@ function buildSnapshotTree(files: SnapshotFileRow[]): SnapshotTreeItem[] {
       });
 
   return sortNodes(root);
+}
+
+function computeImmutableUntilFromNow(immutableDays: number): Date {
+  const immutableUntil = new Date();
+  immutableUntil.setUTCDate(immutableUntil.getUTCDate() + immutableDays);
+  return immutableUntil;
+}
+
+function toProtectionState(row: typeof backupSnapshots.$inferSelect): SnapshotProtectionState {
+  return {
+    legalHold: row.legalHold === true,
+    legalHoldReason: row.legalHoldReason ?? null,
+    isImmutable: row.isImmutable === true,
+    immutableUntil: row.immutableUntil?.toISOString() ?? null,
+    immutabilityEnforcement: row.immutabilityEnforcement ?? null,
+    requestedImmutabilityEnforcement: row.requestedImmutabilityEnforcement ?? null,
+    immutabilityFallbackReason: row.immutabilityFallbackReason ?? null,
+  };
+}
+
+async function resolveSnapshotStorageConfig(
+  configId: string | null | undefined,
+): Promise<{ provider: string | null; providerConfig: unknown } | null> {
+  if (!configId) return null;
+
+  const [row] = await db
+    .select({
+      provider: backupConfigs.provider,
+      providerConfig: backupConfigs.providerConfig,
+    })
+    .from(backupConfigs)
+    .where(eq(backupConfigs.id, configId))
+    .limit(1);
+
+  return row ?? null;
 }
 
 snapshotsRoutes.get(
@@ -179,6 +232,293 @@ snapshotsRoutes.get('/snapshots/:id/browse', requirePermission(PERMISSIONS.ORGS_
   });
 });
 
+snapshotsRoutes.post(
+  '/snapshots/:id/legal-hold',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
+  zValidator('param', snapshotIdParamSchema),
+  zValidator('json', snapshotProtectionReasonSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
+    const { id: snapshotId } = c.req.valid('param');
+    const payload = c.req.valid('json');
+
+    const [before] = await db
+      .select()
+      .from(backupSnapshots)
+      .where(and(eq(backupSnapshots.id, snapshotId), eq(backupSnapshots.orgId, orgId)))
+      .limit(1);
+
+    if (!before) {
+      return c.json({ error: 'Snapshot not found' }, 404);
+    }
+
+    const [updated] = await db
+      .update(backupSnapshots)
+      .set({
+        legalHold: true,
+        legalHoldReason: payload.reason.trim(),
+      })
+      .where(and(eq(backupSnapshots.id, snapshotId), eq(backupSnapshots.orgId, orgId)))
+      .returning();
+
+    if (!updated) {
+      return c.json({ error: 'Snapshot not found' }, 404);
+    }
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'backup.snapshot.legal_hold.apply',
+      resourceType: 'backup_snapshot',
+      resourceId: updated.id,
+      resourceName: updated.label ?? updated.snapshotId,
+      details: {
+        snapshotIds: [updated.id],
+        reason: payload.reason.trim(),
+        before: toProtectionState(before),
+        after: toProtectionState(updated),
+      },
+    });
+
+    return c.json(toSnapshotResponse(updated));
+  },
+);
+
+snapshotsRoutes.post(
+  '/snapshots/:id/legal-hold/release',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
+  zValidator('param', snapshotIdParamSchema),
+  zValidator('json', snapshotProtectionReasonSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
+    const { id: snapshotId } = c.req.valid('param');
+    const payload = c.req.valid('json');
+
+    const [before] = await db
+      .select()
+      .from(backupSnapshots)
+      .where(and(eq(backupSnapshots.id, snapshotId), eq(backupSnapshots.orgId, orgId)))
+      .limit(1);
+
+    if (!before) {
+      return c.json({ error: 'Snapshot not found' }, 404);
+    }
+
+    const [updated] = await db
+      .update(backupSnapshots)
+      .set({
+        legalHold: false,
+        legalHoldReason: null,
+      })
+      .where(and(eq(backupSnapshots.id, snapshotId), eq(backupSnapshots.orgId, orgId)))
+      .returning();
+
+    if (!updated) {
+      return c.json({ error: 'Snapshot not found' }, 404);
+    }
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'backup.snapshot.legal_hold.release',
+      resourceType: 'backup_snapshot',
+      resourceId: updated.id,
+      resourceName: updated.label ?? updated.snapshotId,
+      details: {
+        snapshotIds: [updated.id],
+        reason: payload.reason.trim(),
+        before: toProtectionState(before),
+        after: toProtectionState(updated),
+      },
+    });
+
+    return c.json(toSnapshotResponse(updated));
+  },
+);
+
+snapshotsRoutes.post(
+  '/snapshots/:id/immutability',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
+  zValidator('param', snapshotIdParamSchema),
+  zValidator('json', snapshotImmutabilityApplySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
+    const { id: snapshotId } = c.req.valid('param');
+    const payload = c.req.valid('json');
+
+    const [before] = await db
+      .select()
+      .from(backupSnapshots)
+      .where(and(eq(backupSnapshots.id, snapshotId), eq(backupSnapshots.orgId, orgId)))
+      .limit(1);
+
+    if (!before) {
+      return c.json({ error: 'Snapshot not found' }, 404);
+    }
+
+    const [updated] = await db
+      .select()
+      .from(backupSnapshots)
+      .where(and(eq(backupSnapshots.id, snapshotId), eq(backupSnapshots.orgId, orgId)))
+      .limit(1);
+
+    if (!updated) {
+      return c.json({ error: 'Snapshot not found' }, 404);
+    }
+
+    const immutableUntil = computeImmutableUntilFromNow(payload.immutableDays);
+    let immutabilityEnforcement: 'application' | 'provider' = payload.enforcement;
+
+    if (payload.enforcement === 'provider') {
+      const storage = await resolveSnapshotStorageConfig(updated.configId ?? null);
+      if (!storage) {
+        return c.json({ error: 'Snapshot storage configuration is unavailable' }, 409);
+      }
+      const capability = await checkBackupProviderCapabilities({
+        provider: storage.provider,
+        providerConfig: storage.providerConfig,
+      });
+      if (!capability.objectLock.supported) {
+        return c.json({
+          error: capability.objectLock.error ?? 'Bucket object lock is not enabled',
+        }, 409);
+      }
+      try {
+        await applyBackupSnapshotImmutability({
+          provider: storage.provider,
+          providerConfig: storage.providerConfig,
+          snapshotId: updated.snapshotId,
+          metadata: updated.metadata,
+          retainUntil: immutableUntil,
+        });
+      } catch (err) {
+        return c.json({
+          error: err instanceof Error ? err.message : 'Failed to apply provider-enforced immutability',
+        }, 409);
+      }
+      immutabilityEnforcement = 'provider';
+    }
+
+    const [saved] = await db
+      .update(backupSnapshots)
+      .set({
+        isImmutable: true,
+        immutableUntil,
+        immutabilityEnforcement,
+        requestedImmutabilityEnforcement: immutabilityEnforcement,
+        immutabilityFallbackReason: null,
+      })
+      .where(and(eq(backupSnapshots.id, snapshotId), eq(backupSnapshots.orgId, orgId)))
+      .returning();
+
+    if (!saved) {
+      return c.json({ error: 'Snapshot not found' }, 404);
+    }
+
+    writeRouteAudit(c, {
+      orgId,
+      action: `backup.snapshot.immutability.apply.${immutabilityEnforcement}`,
+      resourceType: 'backup_snapshot',
+      resourceId: saved.id,
+      resourceName: saved.label ?? saved.snapshotId,
+      details: {
+        snapshotIds: [saved.id],
+        reason: payload.reason.trim(),
+        immutableDays: payload.immutableDays,
+        before: toProtectionState(before),
+        requestedEnforcement: payload.enforcement,
+        after: toProtectionState(saved),
+      },
+    });
+
+    return c.json(toSnapshotResponse(saved));
+  },
+);
+
+snapshotsRoutes.post(
+  '/snapshots/:id/immutability/release',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
+  zValidator('param', snapshotIdParamSchema),
+  zValidator('json', snapshotProtectionReasonSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
+    const { id: snapshotId } = c.req.valid('param');
+    const payload = c.req.valid('json');
+
+    const [before] = await db
+      .select()
+      .from(backupSnapshots)
+      .where(and(eq(backupSnapshots.id, snapshotId), eq(backupSnapshots.orgId, orgId)))
+      .limit(1);
+
+    if (!before) {
+      return c.json({ error: 'Snapshot not found' }, 404);
+    }
+
+    if (before.immutabilityEnforcement === 'provider') {
+      return c.json({ error: 'Provider-enforced immutability must be released by the storage provider' }, 409);
+    }
+
+    const [updated] = await db
+      .update(backupSnapshots)
+      .set({
+        isImmutable: false,
+        immutableUntil: null,
+        immutabilityEnforcement: null,
+        requestedImmutabilityEnforcement: null,
+        immutabilityFallbackReason: null,
+      })
+      .where(and(eq(backupSnapshots.id, snapshotId), eq(backupSnapshots.orgId, orgId)))
+      .returning();
+
+    if (!updated) {
+      return c.json({ error: 'Snapshot not found' }, 404);
+    }
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'backup.snapshot.immutability.release',
+      resourceType: 'backup_snapshot',
+      resourceId: updated.id,
+      resourceName: updated.label ?? updated.snapshotId,
+      details: {
+        snapshotIds: [updated.id],
+        reason: payload.reason.trim(),
+        before: toProtectionState(before),
+        after: toProtectionState(updated),
+      },
+    });
+
+    return c.json(toSnapshotResponse(updated));
+  },
+);
+
 function toSnapshotResponse(row: typeof backupSnapshots.$inferSelect) {
   return {
     id: row.id,
@@ -190,5 +530,13 @@ function toSnapshotResponse(row: typeof backupSnapshots.$inferSelect) {
     fileCount: row.fileCount ?? null,
     label: row.label ?? null,
     location: row.location ?? null,
+    expiresAt: row.expiresAt?.toISOString() ?? null,
+    legalHold: row.legalHold === true,
+    legalHoldReason: row.legalHoldReason ?? null,
+    isImmutable: row.isImmutable === true,
+    immutableUntil: row.immutableUntil?.toISOString() ?? null,
+    immutabilityEnforcement: row.immutabilityEnforcement ?? null,
+    requestedImmutabilityEnforcement: row.requestedImmutabilityEnforcement ?? null,
+    immutabilityFallbackReason: row.immutabilityFallbackReason ?? null,
   };
 }

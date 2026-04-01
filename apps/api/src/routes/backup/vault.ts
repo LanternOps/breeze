@@ -225,6 +225,7 @@ vaultRoutes.post(
       console.error('[Vault] Failed to dispatch sync command:', err);
       await db.update(localVaults).set({
         lastSyncStatus: 'failed',
+        lastSyncError: 'Failed to dispatch sync command to agent',
         updatedAt: new Date(),
       }).where(eq(localVaults.id, id));
       return c.json({ error: 'Failed to dispatch sync command to agent' }, 502);
@@ -275,6 +276,7 @@ vaultRoutes.get('/:id/status', requirePermission(PERMISSIONS.ORGS_READ.resource,
     lastSyncStatus: vault.lastSyncStatus,
     lastSyncSnapshotId: vault.lastSyncSnapshotId,
     syncSizeBytes: vault.syncSizeBytes,
+    lastSyncError: vault.lastSyncError ?? null,
   });
 });
 
@@ -290,6 +292,7 @@ function toVaultResponse(row: typeof localVaults.$inferSelect) {
     lastSyncStatus: row.lastSyncStatus,
     lastSyncSnapshotId: row.lastSyncSnapshotId,
     syncSizeBytes: row.syncSizeBytes,
+    lastSyncError: row.lastSyncError ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };

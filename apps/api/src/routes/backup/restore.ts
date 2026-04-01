@@ -1,15 +1,62 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, desc, gte, lte } from 'drizzle-orm';
 import { db } from '../../db';
 import { backupSnapshotFiles, backupSnapshots, restoreJobs } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
-import { restoreSchema } from './schemas';
+import { restoreListSchema, restoreSchema } from './schemas';
 
 export const restoreRoutes = new Hono();
+
+restoreRoutes.get(
+  '/restore',
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
+  zValidator('query', restoreListSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
+    const query = c.req.valid('query');
+    const conditions = [eq(restoreJobs.orgId, orgId)];
+
+    if (query.deviceId) {
+      conditions.push(eq(restoreJobs.deviceId, query.deviceId));
+    }
+    if (query.snapshotId) {
+      conditions.push(eq(restoreJobs.snapshotId, query.snapshotId));
+    }
+    if (query.status) {
+      conditions.push(eq(restoreJobs.status, query.status));
+    }
+    if (query.from) {
+      const fromDate = new Date(query.from);
+      if (!Number.isNaN(fromDate.getTime())) {
+        conditions.push(gte(restoreJobs.createdAt, fromDate));
+      }
+    }
+    if (query.to) {
+      const toDate = new Date(query.to);
+      if (!Number.isNaN(toDate.getTime())) {
+        conditions.push(lte(restoreJobs.createdAt, toDate));
+      }
+    }
+
+    const rows = await db
+      .select()
+      .from(restoreJobs)
+      .where(and(...conditions))
+      .orderBy(desc(restoreJobs.createdAt))
+      .limit(query.limit);
+
+    return c.json({ data: rows.map(toRestoreResponse) });
+  }
+);
 
 restoreRoutes.post(
   '/restore',
@@ -134,6 +181,24 @@ restoreRoutes.get('/restore/:id', requirePermission(PERMISSIONS.ORGS_READ.resour
 });
 
 function toRestoreResponse(row: typeof restoreJobs.$inferSelect) {
+  const targetConfig =
+    row.targetConfig && typeof row.targetConfig === 'object' && !Array.isArray(row.targetConfig)
+      ? row.targetConfig as Record<string, unknown>
+      : {};
+  const resultDetails =
+    targetConfig.result && typeof targetConfig.result === 'object' && !Array.isArray(targetConfig.result)
+      ? targetConfig.result as Record<string, unknown>
+      : null;
+  const errorSummary = resultDetails
+    ? typeof resultDetails.error === 'string' && resultDetails.error.trim()
+      ? resultDetails.error
+      : typeof resultDetails.stderr === 'string' && resultDetails.stderr.trim()
+        ? resultDetails.stderr
+        : Array.isArray(resultDetails.warnings) && resultDetails.warnings.length > 0
+          ? String(resultDetails.warnings[0])
+          : null
+    : null;
+
   return {
     id: row.id,
     snapshotId: row.snapshotId,
@@ -148,5 +213,8 @@ function toRestoreResponse(row: typeof restoreJobs.$inferSelect) {
     updatedAt: row.updatedAt.toISOString(),
     restoredSize: row.restoredSize ?? null,
     restoredFiles: row.restoredFiles ?? null,
+    commandId: row.commandId ?? null,
+    errorSummary,
+    resultDetails,
   };
 }

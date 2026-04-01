@@ -20,7 +20,8 @@ import {
   resolveServerUrl,
   resolveSnapshotProviderConfig,
 } from './recoveryBootstrap';
-import { getBinarySource, getGithubBackupUrl } from './binarySource';
+import { verifyBinaryChecksum } from './binaryManifest';
+import { getBinarySource, getGithubBackupUrl, getGithubReleaseVersion } from './binarySource';
 import { getRecoverySigningKey, isRecoverySigningConfigured, signRecoveryArtifact } from './recoverySigning';
 
 const execFileAsync = promisify(execFile);
@@ -76,23 +77,45 @@ async function downloadFile(url: string, destinationPath: string): Promise<void>
   await writeFile(destinationPath, Buffer.from(arrayBuffer));
 }
 
-async function resolveBackupBinary(platform: string, architecture: string, workingDir: string): Promise<{ fileName: string; filePath: string }> {
+async function resolveBackupBinary(platform: string, architecture: string, workingDir: string): Promise<{
+  fileName: string;
+  filePath: string;
+  verified: Awaited<ReturnType<typeof verifyBinaryChecksum>>;
+}> {
   const fileName = getBinaryFileName(platform, architecture);
   const destinationPath = join(workingDir, fileName);
+  const sourceType = getBinarySource();
+  let sourceRef: string;
+  let version: string;
 
-  if (getBinarySource() === 'github') {
+  if (sourceType === 'github') {
+    version = getGithubReleaseVersion();
+    if (version === 'latest') {
+      throw new Error('Recovery helper builds require a pinned GitHub release version, not "latest"');
+    }
+    sourceRef = `github-release:v${version}`;
     await downloadFile(getGithubBackupUrl(platform, architecture), destinationPath);
-    return { fileName, filePath: destinationPath };
+  } else {
+    const candidatePath = resolve(
+      process.env.BACKUP_BINARY_DIR ||
+        process.env.AGENT_BINARY_DIR ||
+        './agent/bin',
+      fileName
+    );
+    sourceRef = candidatePath;
+    version = process.env.BINARY_VERSION || process.env.BREEZE_VERSION || 'workspace-local';
+    await copyFile(candidatePath, destinationPath);
   }
 
-  const candidatePath = resolve(
-    process.env.BACKUP_BINARY_DIR ||
-      process.env.AGENT_BINARY_DIR ||
-      './agent/bin',
-    fileName
-  );
-  await copyFile(candidatePath, destinationPath);
-  return { fileName, filePath: destinationPath };
+  const verified = await verifyBinaryChecksum({
+    filePath: destinationPath,
+    platform,
+    architecture,
+    sourceType,
+    sourceRef,
+    version,
+  });
+  return { fileName, filePath: destinationPath, verified };
 }
 
 function buildBundleReadme(args: {
@@ -475,6 +498,14 @@ export async function buildRecoveryMediaArtifact(artifactId: string, requestUrl?
             artifact.platform === 'windows' ? 'breeze-backup.exe' : 'breeze-backup',
           ],
           bundleBinaryChecksum: binaryChecksum,
+          helperBinaryVersion: binary.verified.version,
+          helperBinaryDigestVerified: true,
+          helperBinarySourceType: binary.verified.sourceType,
+          helperBinarySourceRef:
+            binary.verified.sourceType === 'local'
+              ? binary.verified.sourceRef.replace(`${process.cwd()}/`, '')
+              : binary.verified.sourceRef,
+          helperBinaryManifestVersion: binary.verified.manifestVersion,
           serverUrl,
           signingConfigured: isRecoverySigningConfigured(),
         },
@@ -683,7 +714,11 @@ export function toRecoveryMediaSigningDetails(row: {
     signingKeyId: row.signingKeyId ?? null,
     signedAt: row.signedAt?.toISOString() ?? null,
     publicKey: signingKey?.publicKey ?? null,
-    publicKeyPath: row.signingKeyId ? `/api/v1/backup/bmr/signing-keys/${row.signingKeyId}` : null,
+    publicKeyPath: row.signingKeyId
+      ? signingKey?.isCurrent
+        ? '/api/v1/backup/bmr/signing-key'
+        : `/api/v1/backup/bmr/signing-keys/${row.signingKeyId}`
+      : null,
   };
 }
 

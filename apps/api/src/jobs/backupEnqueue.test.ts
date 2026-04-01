@@ -9,7 +9,7 @@ vi.mock('bullmq', () => ({
   Queue: class {
     add = addMock;
     close = closeMock;
-  },
+  }
 }));
 
 vi.mock('../services/redis', () => ({
@@ -59,5 +59,13 @@ describe('backup enqueue helpers', () => {
       expect.objectContaining({ restoreJobId: 'restore-123' }),
       expect.objectContaining({ jobId: 'backup-restore-restore-123' }),
     );
+  });
+
+  it('rejects malformed backup result payloads before enqueueing', async () => {
+    await expect(
+      enqueueBackupResults('job-123', 'org-1', 'dev-1', { status: '' }),
+    ).rejects.toThrow();
+
+    expect(addMock).not.toHaveBeenCalled();
   });
 });

@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
 import { z } from 'zod';
 import { eq, and, inArray, sql } from 'drizzle-orm';
-import { createHash, timingSafeEqual } from 'crypto';
+import { createHash } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, remoteSessions, backupJobs, restoreJobs } from '../db/schema';
 import { handleTerminalOutput, getActiveTerminalSession, unregisterTerminalOutputCallback } from './terminalWs';
@@ -19,6 +19,7 @@ import { applyBackupCommandResultToJob } from '../services/backupResultPersisten
 import { applyVaultSyncCommandResult } from '../services/vaultSyncPersistence';
 import { backupCommandResultSchema } from './backup/resultSchemas';
 import { claimPendingCommandsForDevice } from '../services/commandDispatch';
+import { matchAgentTokenHash } from '../middleware/agentAuth';
 
 declare module 'hono' {
   interface ContextVariableMap {
@@ -193,7 +194,13 @@ async function handleDiscoveryResult({ agentId, command, result }: Parameters<Co
           job.siteId,
           discoveryData.hosts,
           discoveryData.hostsScanned ?? 0,
-          discoveryData.hostsDiscovered ?? 0
+          discoveryData.hostsDiscovered ?? 0,
+          undefined,
+          {
+            actorType: 'agent',
+            actorId: agentId,
+            source: 'route:agentWs:script-network-scan',
+          }
         );
       } else if (job) {
         // Redis not available — mark job failed so user knows results weren't processed
@@ -553,7 +560,13 @@ const commandResultSchema = z.object({
   stderr: z.string().max(5_000_000).optional(),
   durationMs: z.number().int().optional(),
   error: z.string().max(10_000).optional(),
-  result: z.any().optional()
+  result: z.any().optional().refine(
+    (val) => {
+      if (val === undefined || val === null) return true;
+      try { return JSON.stringify(val).length <= 1_048_576; } catch { return false; }
+    },
+    { message: 'Command result payload exceeds 1 MB limit' }
+  )
 });
 
 const ipHistoryEntrySchema = z.object({
@@ -627,6 +640,8 @@ async function validateAgentToken(agentId: string, token: string): Promise<Agent
         id: devices.id,
         orgId: devices.orgId,
         agentTokenHash: devices.agentTokenHash,
+        previousTokenHash: devices.previousTokenHash,
+        previousTokenExpiresAt: devices.previousTokenExpiresAt,
         status: devices.status
       })
       .from(devices)
@@ -647,14 +662,13 @@ async function validateAgentToken(agentId: string, token: string): Promise<Agent
     return null;
   }
 
-  const storedBuf = Buffer.from(device.agentTokenHash, 'hex');
-  const computedBuf = Buffer.from(tokenHash, 'hex');
-  if (storedBuf.length !== computedBuf.length) {
-    // Hash format mismatch — treat as auth failure
-    return null;
-  }
-  const hashMatch = timingSafeEqual(storedBuf, computedBuf);
-  if (!hashMatch) {
+  const match = matchAgentTokenHash({
+    agentTokenHash: device.agentTokenHash,
+    previousTokenHash: device.previousTokenHash,
+    previousTokenExpiresAt: device.previousTokenExpiresAt,
+    tokenHash,
+  });
+  if (!match) {
     return null;
   }
 
@@ -755,6 +769,10 @@ async function processOrphanedCommandResult(
           statusCode: monitorData.statusCode,
           error: monitorData.error,
           details: monitorData as Record<string, unknown>
+        }, {
+          actorType: 'agent',
+          actorId: agentId,
+          source: 'route:agentWs:monitor-result',
         });
       } else {
         console.warn(`[AgentWs] Redis unavailable, recording monitor result directly for ${monitorData.monitorId}`);
@@ -845,7 +863,13 @@ async function processOrphanedCommandResult(
           discoveryJob.siteId,
           discoveryData.hosts,
           discoveryData.hostsScanned ?? 0,
-          discoveryData.hostsDiscovered ?? 0
+          discoveryData.hostsDiscovered ?? 0,
+          undefined,
+          {
+            actorType: 'agent',
+            actorId: agentId,
+            source: 'route:agentWs:discovery-result',
+          }
         );
       } else {
         console.warn(`[AgentWs] Redis unavailable, cannot process ${discoveryData.hosts.length} discovery hosts for job ${discoveryJob.id}`);
@@ -901,6 +925,11 @@ async function processOrphanedCommandResult(
             warning: backupData?.warning,
             snapshot: backupData?.snapshot,
             error: malformedPayloadError || result.error || result.stderr,
+          },
+          {
+            actorType: 'agent',
+            actorId: agentId,
+            source: 'route:agentWs:backup-result',
           }
         );
       } else {
@@ -1067,6 +1096,20 @@ async function processCommandResult(
         ? command.payload as Record<string, unknown>
         : {};
     if (DR_COMMAND_TYPES.has(command.type) && typeof commandPayload.drExecutionId === 'string') {
+      try {
+        const { handleDrCommandResult } = await import('./backup/drResultHandler');
+        await handleDrCommandResult({
+          commandId: result.commandId,
+          commandType: command.type,
+          deviceId: resolvedDeviceId,
+          status: result.status,
+          result: result.result,
+          payload: commandPayload,
+        });
+      } catch (err) {
+        console.error(`[AgentWs] Failed to persist DR result state for ${result.commandId}:`, err);
+      }
+
       try {
         const { enqueueDrExecutionReconcile } = await import('../jobs/drExecutionWorker');
         await enqueueDrExecutionReconcile(commandPayload.drExecutionId);

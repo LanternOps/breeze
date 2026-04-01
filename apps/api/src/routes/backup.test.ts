@@ -95,6 +95,8 @@ vi.mock('../db/schema', async () => {
     completedAt: 'restore_jobs.completed_at',
     restoredSize: 'restore_jobs.restored_size',
     restoredFiles: 'restore_jobs.restored_files',
+    targetConfig: 'restore_jobs.target_config',
+    commandId: 'restore_jobs.command_id',
   },
   backupSnapshotFiles: {
     id: 'backup_snapshot_files.id',
@@ -297,6 +299,14 @@ describe('backup routes', () => {
       completedAt: null,
       restoredSize: null,
       restoredFiles: null,
+      commandId: '22222222-2222-4222-8222-222222222222',
+      targetConfig: {
+        result: {
+          status: 'failed',
+          error: 'Restore target path is unavailable',
+          warnings: ['Retry on alternate path'],
+        },
+      },
     };
 
     insertMock.mockReturnValueOnce(chainMock([restoreRecord]));
@@ -327,6 +337,50 @@ describe('backup routes', () => {
     const fetched = await fetchRes.json();
     expect(fetched.id).toBe(restore.id);
     expect(fetched.snapshotId).toBe(SNAPSHOT_ID);
+    expect(fetched.commandId).toBe('22222222-2222-4222-8222-222222222222');
+    expect(fetched.errorSummary).toBe('Restore target path is unavailable');
+    expect(fetched.resultDetails.status).toBe('failed');
+  });
+
+  it('should list restore jobs with structured result details', async () => {
+    const now = new Date();
+    selectMock.mockReturnValueOnce(
+      chainMock([
+        {
+          id: RESTORE_ID,
+          orgId: ORG_ID,
+          snapshotId: SNAPSHOT_ID,
+          deviceId: DEVICE_ID,
+          restoreType: 'full',
+          targetPath: null,
+          selectedPaths: [],
+          status: 'completed',
+          createdAt: now,
+          updatedAt: now,
+          startedAt: now,
+          completedAt: now,
+          restoredSize: 2048,
+          restoredFiles: 12,
+          commandId: '22222222-2222-4222-8222-222222222222',
+          targetConfig: {
+            result: {
+              status: 'completed',
+              warnings: ['Minor ACL differences'],
+            },
+          },
+        },
+      ])
+    );
+
+    const res = await app.request('/backup/restore?limit=10&status=completed', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(Array.isArray(body.data)).toBe(true);
+    expect(body.data[0].resultDetails.warnings).toEqual(['Minor ACL differences']);
   });
 
   it('should return provider usage history timeline', async () => {

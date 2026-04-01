@@ -23,6 +23,7 @@ import { fetchWithAuth } from '../../../stores/auth';
 type ScheduleFrequency = 'daily' | 'weekly' | 'monthly';
 type RetentionPreset = 'standard' | 'extended' | 'compliance' | 'custom';
 type BackupProvider = 's3' | 'local';
+type ImmutabilityMode = 'none' | 'application' | 'provider';
 
 type BackupScheduleSettings = {
   scheduleFrequency: ScheduleFrequency;
@@ -47,6 +48,8 @@ type BackupScheduleSettings = {
   gfsWeeklyDayOfWeek: number;
   legalHoldEnabled: boolean;
   legalHoldReason: string;
+  immutabilityMode: ImmutabilityMode;
+  immutableDays: number;
   backupWindowStart: string;
   backupWindowEnd: string;
   bandwidthLimitMbps: number;
@@ -59,6 +62,13 @@ type BackupConfig = {
   provider: string;
   enabled: boolean;
   details: Record<string, unknown>;
+  providerCapabilities?: {
+    objectLock: {
+      supported: boolean;
+      checkedAt: string;
+      error: string | null;
+    };
+  } | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -82,6 +92,10 @@ type BackupInlineSettingsPayload = {
     keepMonthly: number;
     keepYearly: number;
     weeklyDay: number;
+    legalHold?: boolean;
+    legalHoldReason?: string;
+    immutabilityMode?: ImmutabilityMode;
+    immutableDays?: number;
   };
   paths: string[];
   backupMode: string;
@@ -113,6 +127,8 @@ const scheduleDefaults: BackupScheduleSettings = {
   gfsWeeklyDayOfWeek: 0,
   legalHoldEnabled: false,
   legalHoldReason: '',
+  immutabilityMode: 'none',
+  immutableDays: 30,
   backupWindowStart: '',
   backupWindowEnd: '',
   bandwidthLimitMbps: 0,
@@ -287,6 +303,10 @@ function inflateSettings(stored?: Record<string, unknown> | null): BackupSchedul
     gfsMonthlyRetention: (retention.keepMonthly as number) ?? scheduleDefaults.gfsMonthlyRetention,
     gfsYearlyRetention: (retention.keepYearly as number) ?? scheduleDefaults.gfsYearlyRetention,
     gfsWeeklyDayOfWeek: (retention.weeklyDay as number) ?? scheduleDefaults.gfsWeeklyDayOfWeek,
+    legalHoldEnabled: retention.legalHold === true,
+    legalHoldReason: (retention.legalHoldReason as string) ?? scheduleDefaults.legalHoldReason,
+    immutabilityMode: (retention.immutabilityMode as ImmutabilityMode) ?? scheduleDefaults.immutabilityMode,
+    immutableDays: (retention.immutableDays as number) ?? scheduleDefaults.immutableDays,
     backupWindowStart: (schedule.windowStart as string) ?? scheduleDefaults.backupWindowStart,
     backupWindowEnd: (schedule.windowEnd as string) ?? scheduleDefaults.backupWindowEnd,
   };
@@ -319,11 +339,42 @@ function buildInlineSettings(
       keepMonthly: settings.gfsMonthlyRetention,
       keepYearly: settings.gfsYearlyRetention,
       weeklyDay: settings.gfsWeeklyDayOfWeek,
+      ...(settings.legalHoldEnabled ? {
+        legalHold: true,
+        legalHoldReason: settings.legalHoldReason,
+      } : {}),
+      ...(settings.immutabilityMode !== 'none' ? {
+        immutabilityMode: settings.immutabilityMode,
+        immutableDays: settings.immutableDays,
+      } : {}),
     },
     paths: settings.paths ?? [],
     backupMode,
     targets: normalizedTargets,
   };
+}
+
+function getObjectLockCapability(config?: BackupConfig | null) {
+  return config?.providerCapabilities?.objectLock ?? null;
+}
+
+function supportsProviderImmutability(config?: BackupConfig | null): boolean {
+  return config?.provider === 's3' && getObjectLockCapability(config)?.supported === true;
+}
+
+function capabilitySummary(config?: BackupConfig | null): string {
+  if (!config) return 'Select a storage config to check provider immutability.';
+  const capability = getObjectLockCapability(config);
+  if (config.provider !== 's3') {
+    return 'Provider-enforced WORM is only available for S3-backed configs.';
+  }
+  if (!capability) {
+    return 'Run Test to verify that the selected bucket has object lock enabled.';
+  }
+  if (capability.supported) {
+    return `Object lock verified on ${new Date(capability.checkedAt).toLocaleString()}.`;
+  }
+  return capability.error ?? 'Object lock is not available for this config.';
 }
 
 // ── Main Component ─────────────────────────────────────────────────────────────
@@ -353,6 +404,7 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
   const [localPath, setLocalPath] = useState('/var/backups/breeze');
   const [configSaving, setConfigSaving] = useState(false);
   const [configError, setConfigError] = useState<string>();
+  const [testMessage, setTestMessage] = useState<string>();
 
   // Connection test
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle');
@@ -408,7 +460,10 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
   }, [configsLoading, configs.length, selectedConfigId]);
 
   // Reset test status when config changes
-  useEffect(() => { setTestStatus('idle'); }, [selectedConfigId]);
+  useEffect(() => {
+    setTestStatus('idle');
+    setTestMessage(undefined);
+  }, [selectedConfigId]);
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -429,14 +484,27 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
   const handleTestConnection = async () => {
     if (!selectedConfigId) return;
     setTestStatus('testing');
+    setTestMessage(undefined);
     try {
       const response = await fetchWithAuth(`/backup/configs/${selectedConfigId}/test`, {
         method: 'POST',
       });
-      const data = await response.json();
-      setTestStatus(data.status === 'success' ? 'success' : 'failed');
+      const data = await response.json().catch(() => ({}));
+      const nextConfig = data?.config;
+      if (nextConfig?.id) {
+        setConfigs((prev) => prev.map((config) => (config.id === nextConfig.id ? nextConfig : config)));
+      }
+
+      const capability = data?.providerCapabilities?.objectLock;
+      setTestMessage(
+        capability?.supported === true
+          ? 'Connection succeeded and object lock support was verified.'
+          : capability?.error || data?.error || 'Connection test completed.'
+      );
+      setTestStatus(response.ok && data.status === 'success' ? 'success' : 'failed');
     } catch {
       setTestStatus('failed');
+      setTestMessage('Connection test failed.');
     }
   };
 
@@ -488,7 +556,7 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
 
   // ── Save feature link ──────────────────────────────────────────────────────
 
-  const handleSave = async () => {
+  const handleSave = async (options?: { downgradeInvalidProvider?: boolean }) => {
     clearError();
     setConfigError(undefined);
 
@@ -505,12 +573,28 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
 
     if (!configId) { setConfigError('Please select or create a backup configuration'); return; }
 
+    const selected = configs.find((c) => c.id === configId);
+    const providerModeInvalid = settings.immutabilityMode === 'provider' && !supportsProviderImmutability(selected);
+    if (providerModeInvalid && !options?.downgradeInvalidProvider) {
+      setConfigError('Provider immutability cannot be saved until object lock support is verified. Retest the config or save with application protection.');
+      return;
+    }
+
+    const settingsToSave = providerModeInvalid && options?.downgradeInvalidProvider
+      ? { ...settings, immutabilityMode: 'application' as ImmutabilityMode }
+      : settings;
+
     const result = await save(existingLink?.id ?? null, {
       featureType: 'backup',
       featurePolicyId: configId,
-      inlineSettings: buildInlineSettings(settings, backupMode, targets),
+      inlineSettings: buildInlineSettings(settingsToSave, backupMode, targets),
     });
-    if (result) onLinkChanged(result, 'backup');
+    if (result) {
+      if (providerModeInvalid && options?.downgradeInvalidProvider) {
+        setSettings((prev) => ({ ...prev, immutabilityMode: 'application' }));
+      }
+      onLinkChanged(result, 'backup');
+    }
   };
 
   const handleRemove = async () => {
@@ -539,6 +623,9 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
   const isSaving = saving || configSaving;
   const combinedError = configError || error;
   const retentionInfo = retentionPresets.find((p) => p.value === settings.retentionPreset);
+  const selectedConfigSupportsProvider = supportsProviderImmutability(selectedConfig);
+  const invalidSavedProviderMode = settings.immutabilityMode === 'provider' && !selectedConfigSupportsProvider;
+  const selectedCapability = getObjectLockCapability(selectedConfig);
 
   return (
     <FeatureTabShell
@@ -762,7 +849,18 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
                           {selectedConfig.provider === 'local' && !!selectedConfig.details.path && (
                             <span>Path: <span className="font-mono text-foreground">{String(selectedConfig.details.path)}</span></span>
                           )}
+                          <span>
+                            Object lock:{' '}
+                            <span className="font-mono text-foreground">
+                              {selectedConfig.provider !== 's3'
+                                ? 'Not supported'
+                                : selectedCapability
+                                  ? selectedCapability.supported ? 'Verified' : 'Unavailable'
+                                  : 'Untested'}
+                            </span>
+                          </span>
                         </div>
+                        <p className="text-xs text-muted-foreground">{capabilitySummary(selectedConfig)}</p>
                       </div>
                       {/* Test connection button */}
                       <button
@@ -778,6 +876,15 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
                         {testStatus === 'testing' ? 'Testing...' : testStatus === 'success' ? 'Connected' : testStatus === 'failed' ? 'Failed' : 'Test'}
                       </button>
                     </div>
+                    {testMessage && (
+                      <div className={`mt-3 rounded-md border px-3 py-2 text-xs ${
+                        testStatus === 'failed'
+                          ? 'border-destructive/40 bg-destructive/10 text-destructive'
+                          : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700'
+                      }`}>
+                        {testMessage}
+                      </div>
+                    )}
                   </div>
                 )}
               </>
@@ -1174,6 +1281,89 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
             </select>
           </div>
         </div>
+      </div>
+
+      <div className="mt-6 space-y-4">
+        <h3 className="text-sm font-semibold">Snapshot Protection</h3>
+        {invalidSavedProviderMode && (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-3 text-sm text-amber-800">
+            <p>
+              Provider immutability is configured, but the selected storage config does not currently have verified object lock support.
+            </p>
+            <p className="mt-1 text-xs text-amber-900/80">
+              {capabilitySummary(selectedConfig)}
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={handleTestConnection}
+                disabled={!selectedConfigId || testStatus === 'testing'}
+                className="rounded-md border border-amber-600/40 bg-background px-3 py-1.5 text-xs font-medium text-amber-900 disabled:opacity-50"
+              >
+                Retest config
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSave({ downgradeInvalidProvider: true })}
+                disabled={isSaving}
+                className="rounded-md border border-amber-600/40 bg-amber-600/10 px-3 py-1.5 text-xs font-medium text-amber-900 disabled:opacity-50"
+              >
+                Save with application protection
+              </button>
+            </div>
+          </div>
+        )}
+        <ToggleRow
+          label="Legal Hold"
+          description="Prevent retention cleanup from deleting future snapshots until an operator explicitly releases the hold."
+          checked={settings.legalHoldEnabled}
+          onChange={(checked) => {
+            update('legalHoldEnabled', checked);
+            if (!checked) update('legalHoldReason', '');
+          }}
+        />
+        {settings.legalHoldEnabled && (
+          <div>
+            <label className="text-xs text-muted-foreground">Legal hold reason</label>
+            <input
+              value={settings.legalHoldReason}
+              onChange={(e) => update('legalHoldReason', e.target.value)}
+              placeholder="Reason for preserving future snapshots"
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+            />
+          </div>
+        )}
+
+        <div>
+          <label className="text-xs text-muted-foreground">Immutability</label>
+          <select
+            value={settings.immutabilityMode}
+            onChange={(e) => update('immutabilityMode', e.target.value as ImmutabilityMode)}
+            className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+          >
+            <option value="none">None</option>
+            <option value="application">Application-level protection</option>
+            <option value="provider" disabled={!selectedConfigSupportsProvider}>
+              Provider-enforced WORM
+            </option>
+          </select>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Application-level protection blocks deletion in Breeze cleanup jobs. Provider-enforced WORM requires an S3 config with verified object lock support and still re-validates at snapshot time.
+          </p>
+        </div>
+        {settings.immutabilityMode !== 'none' && (
+          <div>
+            <label className="text-xs text-muted-foreground">Immutable for (days)</label>
+            <input
+              type="number"
+              min={1}
+              max={3650}
+              value={settings.immutableDays}
+              onChange={(e) => update('immutableDays', Number(e.target.value) || 30)}
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+            />
+          </div>
+        )}
       </div>
 
       <div className="mt-6">

@@ -53,6 +53,7 @@ vi.mock('../../db/schema', () => ({
     lastSyncStatus: 'local_vaults.last_sync_status',
     lastSyncSnapshotId: 'local_vaults.last_sync_snapshot_id',
     syncSizeBytes: 'local_vaults.sync_size_bytes',
+    lastSyncError: 'local_vaults.last_sync_error',
     createdAt: 'local_vaults.created_at',
     updatedAt: 'local_vaults.updated_at',
   },
@@ -94,6 +95,7 @@ function makeVault(overrides: Record<string, unknown> = {}) {
     lastSyncStatus: null,
     lastSyncSnapshotId: null,
     syncSizeBytes: null,
+    lastSyncError: null,
     createdAt: new Date('2026-03-01T00:00:00.000Z'),
     updatedAt: new Date('2026-03-01T00:00:00.000Z'),
     ...overrides,
@@ -207,6 +209,7 @@ describe('vault routes', () => {
       lastSyncStatus: 'completed',
       lastSyncSnapshotId: 'snap-ext-001',
       syncSizeBytes: 1073741824,
+      lastSyncError: null,
     })]));
 
     const res = await app.request(`/backup/vault/${VAULT_ID}/status`, {
@@ -218,6 +221,7 @@ describe('vault routes', () => {
     const body = await res.json();
     expect(body.id).toBe(VAULT_ID);
     expect(body.deviceId).toBe(DEVICE_ID);
+    expect(body.lastSyncError).toBeNull();
     expect(body.isActive).toBe(true);
     expect(body.lastSyncStatus).toBe('completed');
     expect(body.lastSyncSnapshotId).toBe('snap-ext-001');

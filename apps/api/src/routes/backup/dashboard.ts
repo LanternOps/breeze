@@ -198,6 +198,7 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
     createdAt: r.job.createdAt.toISOString(),
     totalSize: r.job.totalSize ?? null,
     errorCount: r.job.errorCount ?? null,
+    errorLog: r.job.errorLog ?? null,
   }));
 
   return c.json({
@@ -269,6 +270,7 @@ dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ
         : null,
       lastSuccessAt: lastSuccess?.completedAt?.toISOString() ?? null,
       lastFailureAt: lastFailure?.completedAt?.toISOString() ?? null,
+      lastFailureError: lastFailure?.errorLog ?? null,
       nextScheduledAt: (() => {
         // Prefer normalized settings; fall back to inline_settings on the feature link
         const schedule = (resolved?.settings?.schedule ?? resolved?.inlineSettings) as Record<string, unknown> | null;

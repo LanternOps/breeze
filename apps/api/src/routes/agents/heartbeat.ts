@@ -22,6 +22,7 @@ import {
 } from './helpers';
 import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
+import { isAgentTokenRotationDue } from '../../middleware/agentAuth';
 
 export const heartbeatRoutes = new Hono();
 
@@ -266,6 +267,9 @@ if (latestHelper) {
     }
   }
 
+  const authenticatedWithPreviousToken = c.get('agentTokenRotationRequired') === true;
+  const rotateToken = !authenticatedWithPreviousToken && isAgentTokenRotationDue(device.tokenIssuedAt);
+
   return c.json({
     commands: commands.map(cmd => ({
       id: cmd.id,
@@ -276,6 +280,7 @@ if (latestHelper) {
     upgradeTo,
     helperUpgradeTo: helperUpgradeTo ?? undefined,
     renewCert: renewCert || undefined,
+    rotateToken: rotateToken || undefined,
     helperEnabled: helperSettings?.enabled ?? false,
     helperSettings: helperSettings ?? undefined,
   });

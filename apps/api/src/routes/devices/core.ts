@@ -509,6 +509,9 @@ coreRoutes.post(
       .update(devices)
       .set({
         agentTokenHash: tokenHash,
+        tokenIssuedAt: new Date(),
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
         updatedAt: new Date()
       })
       .where(eq(devices.id, deviceId))

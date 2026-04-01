@@ -46,6 +46,7 @@ vi.mock('../db/schema', () => ({
     lastSyncStatus: 'local_vaults.last_sync_status',
     lastSyncSnapshotId: 'local_vaults.last_sync_snapshot_id',
     syncSizeBytes: 'local_vaults.sync_size_bytes',
+    lastSyncError: 'local_vaults.last_sync_error',
     updatedAt: 'local_vaults.updated_at',
   },
   backupSnapshots: {

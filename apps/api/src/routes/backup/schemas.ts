@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   backupRetentionSchema as sharedBackupRetentionSchema,
+  backupRetentionUpdateSchema as sharedBackupRetentionUpdateSchema,
   backupScheduleSchema as sharedBackupScheduleSchema,
 } from '@breeze/shared/validators';
 
@@ -57,7 +58,7 @@ export const policyUpdateSchema = z.object({
   enabled: z.boolean().optional(),
   targets: policyTargetsSchema.partial().optional(),
   schedule: policyScheduleSchema.partial().optional(),
-  retention: policyRetentionSchema.partial().optional()
+  retention: sharedBackupRetentionUpdateSchema.optional()
 });
 
 export const jobListSchema = z.object({
@@ -72,6 +73,15 @@ export const jobListSchema = z.object({
 export const snapshotListSchema = z.object({
   deviceId: z.string().optional(),
   configId: z.string().optional()
+});
+
+export const snapshotProtectionReasonSchema = z.object({
+  reason: z.string().trim().min(1).max(500),
+});
+
+export const snapshotImmutabilityApplySchema = snapshotProtectionReasonSchema.extend({
+  immutableDays: z.number().int().min(1).max(3650),
+  enforcement: z.enum(['application', 'provider']).default('application'),
 });
 
 export const usageHistoryQuerySchema = z.object({
@@ -92,6 +102,15 @@ export const restoreSchema = z.object({
       path: ['selectedPaths'],
     });
   }
+});
+
+export const restoreListSchema = z.object({
+  deviceId: z.string().optional(),
+  snapshotId: z.string().optional(),
+  status: z.enum(['pending', 'running', 'completed', 'failed', 'partial', 'cancelled']).optional(),
+  from: z.string().optional(),
+  to: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 
 export const verificationRunSchema = z.object({

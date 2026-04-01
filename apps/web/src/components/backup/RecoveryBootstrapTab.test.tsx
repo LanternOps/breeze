@@ -51,11 +51,61 @@ describe('RecoveryBootstrapTab', () => {
       }
 
       if (url === '/backup/bmr/media?limit=100' && method === 'GET') {
-        return makeJsonResponse({ data: [] });
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'media-verified',
+              tokenId: 'token-1',
+              snapshotId: 'snapshot-1',
+              platform: 'linux',
+              architecture: 'amd64',
+              status: 'ready_signed',
+              checksumSha256: 'bundle-checksum',
+              signatureFormat: 'minisign',
+              signingKeyId: 'current',
+              signedAt: '2026-03-31T10:08:00Z',
+              metadata: {
+                helperBinaryVersion: 'workspace-local',
+                helperBinaryDigestVerified: true,
+                helperBinarySourceType: 'local',
+                helperBinarySourceRef: 'agent/bin/breeze-backup',
+                helperBinaryManifestVersion: '1',
+              },
+              downloadPath: '/backup/bmr/media/media-verified/download',
+              signatureDownloadPath: '/backup/bmr/media/media-verified/signature',
+            },
+          ],
+        });
       }
 
       if (url === '/backup/bmr/boot-media?limit=100' && method === 'GET') {
-        return makeJsonResponse({ data: [] });
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'boot-media-verified',
+              tokenId: 'token-1',
+              snapshotId: 'snapshot-1',
+              bundleArtifactId: 'media-verified',
+              platform: 'linux',
+              architecture: 'amd64',
+              mediaType: 'iso',
+              status: 'ready_signed',
+              checksumSha256: 'boot-checksum',
+              signatureFormat: 'minisign',
+              signingKeyId: 'current',
+              signedAt: '2026-03-31T10:09:00Z',
+              metadata: {
+                bootTemplateId: 'linux-iso-template',
+                bootTemplateVersion: '2026.03.31',
+                bootTemplateSourceRef: '/opt/recovery/template',
+                bootTemplateSha256: 'template-checksum',
+                bootTemplateManifestVersion: '1',
+              },
+              downloadPath: '/backup/bmr/boot-media/boot-media-verified/download',
+              signatureDownloadPath: '/backup/bmr/boot-media/boot-media-verified/signature',
+            },
+          ],
+        });
       }
 
       if (url === '/backup/bmr/tokens' && method === 'POST') {
@@ -262,6 +312,8 @@ describe('RecoveryBootstrapTab', () => {
     expect(screen.getByText('breeze_proxy')).toBeTruthy();
     expect(screen.getByText('snapshots/provider-snap-1')).toBeTruthy();
     expect(screen.getByText('Bootable recovery media')).toBeTruthy();
+    expect(screen.getByText(/helperBinaryDigestVerified:/)).toBeTruthy();
+    expect(screen.getByText(/bootTemplateVersion:/)).toBeTruthy();
   });
 
   it('filters the browser-local token catalog and revokes a token', async () => {

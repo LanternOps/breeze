@@ -2,40 +2,52 @@ import { Job, Queue, Worker } from 'bullmq';
 import { getRedisConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { buildRecoveryBootMediaArtifact } from '../services/recoveryBootMediaService';
+import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
+import {
+  recoveryBootMediaQueueJobDataSchema,
+  type RecoveryBootMediaQueueJobData,
+  withQueueMeta,
+} from './queueSchemas';
 
 const RECOVERY_BOOT_MEDIA_QUEUE = 'recovery-boot-media';
-
-type RecoveryBootMediaJobData = {
-  type: 'build-boot-media';
-  artifactId: string;
+const PRIVILEGED_JOB_OPTIONS = {
+  attempts: 3,
+  backoff: {
+    type: 'exponential' as const,
+    delay: 1_000,
+  },
 };
 
-let recoveryBootMediaQueue: Queue<RecoveryBootMediaJobData> | null = null;
-let recoveryBootMediaWorkerInstance: Worker<RecoveryBootMediaJobData> | null = null;
+let recoveryBootMediaQueue: Queue<RecoveryBootMediaQueueJobData> | null = null;
+let recoveryBootMediaWorkerInstance: Worker<RecoveryBootMediaQueueJobData> | null = null;
 
-function getRecoveryBootMediaQueue(): Queue<RecoveryBootMediaJobData> {
+function getRecoveryBootMediaQueue(): Queue<RecoveryBootMediaQueueJobData> {
   if (!recoveryBootMediaQueue) {
-    recoveryBootMediaQueue = new Queue<RecoveryBootMediaJobData>(RECOVERY_BOOT_MEDIA_QUEUE, {
+    recoveryBootMediaQueue = new Queue<RecoveryBootMediaQueueJobData>(RECOVERY_BOOT_MEDIA_QUEUE, {
       connection: getRedisConnection(),
     });
   }
   return recoveryBootMediaQueue;
 }
 
-function createRecoveryBootMediaWorker(): Worker<RecoveryBootMediaJobData> {
-  return new Worker<RecoveryBootMediaJobData>(
+function createRecoveryBootMediaWorker(): Worker<RecoveryBootMediaQueueJobData> {
+  return new Worker<RecoveryBootMediaQueueJobData>(
     RECOVERY_BOOT_MEDIA_QUEUE,
-    async (job: Job<RecoveryBootMediaJobData>) => {
-      if (job.data.type !== 'build-boot-media') {
-        throw new Error(`Unknown recovery boot media job type: ${(job.data as { type: string }).type}`);
+    async (job: Job<RecoveryBootMediaQueueJobData>) => {
+      const data = parseQueueJobData(RECOVERY_BOOT_MEDIA_QUEUE, job, recoveryBootMediaQueueJobDataSchema);
+      if (data.type !== 'build-boot-media') {
+        throw new Error(`Unknown recovery boot media job type: ${(data as { type: string }).type}`);
       }
-      await buildRecoveryBootMediaArtifact(job.data.artifactId);
-      return { artifactId: job.data.artifactId };
+      assertQueueJobName(RECOVERY_BOOT_MEDIA_QUEUE, job, 'build-boot-media');
+      await buildRecoveryBootMediaArtifact(data.artifactId);
+      return { artifactId: data.artifactId };
     },
     {
       connection: getRedisConnection(),
       concurrency: 1,
       lockDuration: 300_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 2,
     }
   );
 }
@@ -58,9 +70,17 @@ export async function enqueueRecoveryBootMediaBuild(artifactId: string): Promise
 
   const job = await queue.add(
     'build-boot-media',
-    { type: 'build-boot-media', artifactId },
+    recoveryBootMediaQueueJobDataSchema.parse(withQueueMeta({
+      type: 'build-boot-media',
+      artifactId,
+    }, {
+      actorType: 'system',
+      actorId: null,
+      source: 'service:recovery-boot-media:build',
+    })),
     {
       jobId: stableJobId,
+      ...PRIVILEGED_JOB_OPTIONS,
       removeOnComplete: { count: 100 },
       removeOnFail: { count: 100 },
     }

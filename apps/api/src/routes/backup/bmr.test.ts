@@ -219,6 +219,12 @@ vi.mock('../../services/recoveryBootMediaService', () => ({
 }));
 
 vi.mock('../../services/recoverySigning', () => ({
+  getCurrentRecoverySigningKey: vi.fn(() => ({
+    keyId: 'current',
+    format: 'minisign',
+    publicKey: 'RWQTESTMINISIGNPUBLICKEY',
+    isCurrent: true,
+  })),
   getRecoverySigningKeys: vi.fn(() => [
     {
       keyId: 'current',
@@ -429,7 +435,7 @@ describe('bmr routes', () => {
         targetConfig: { diskLayout: 'auto' },
         status: 'active',
         createdAt: new Date('2026-03-29T00:00:00.000Z'),
-        expiresAt: new Date('2026-04-01T00:00:00.000Z'),
+        expiresAt: new Date('2099-04-01T00:00:00.000Z'),
         authenticatedAt: null,
         completedAt: null,
       }]))
@@ -813,6 +819,21 @@ describe('bmr routes', () => {
         format: 'minisign',
       }),
     ]);
+  });
+
+  it('returns the current recovery signing key', async () => {
+    const res = await app.request('/backup/bmr/signing-key', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual(expect.objectContaining({
+      keyId: 'current',
+      format: 'minisign',
+      publicKey: 'RWQTESTMINISIGNPUBLICKEY',
+    }));
   });
 
   it('creates a bootable recovery media build job', async () => {
