@@ -40,7 +40,8 @@ type Config struct {
 }
 
 // SpawnFunc launches a helper in the given session with extra CLI args.
-type SpawnFunc func(sessionKey string, binaryPath string, args ...string) error
+// Returns the PID of the spawned process and any error.
+type SpawnFunc func(sessionKey string, binaryPath string, args ...string) (pid int, err error)
 
 // ErrNoActiveSession is returned by SpawnFunc when no user session is available.
 var ErrNoActiveSession = fmt.Errorf("no active user session")
@@ -134,7 +135,7 @@ func defaultBaseDir() string {
 	}
 }
 
-func defaultSpawnFunc(sessionKey, binaryPath string, args ...string) error {
+func defaultSpawnFunc(sessionKey, binaryPath string, args ...string) (int, error) {
 	if len(args) >= 2 && args[0] == "--config" {
 		return spawnWithConfig(binaryPath, sessionKey, args[1])
 	}
@@ -142,7 +143,12 @@ func defaultSpawnFunc(sessionKey, binaryPath string, args ...string) error {
 	cmd.Dir = filepath.Dir(binaryPath)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	return cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return 0, err
+	}
+	pid := cmd.Process.Pid
+	_ = cmd.Process.Release()
+	return pid, nil
 }
 
 // Apply is called on each heartbeat with the latest helper settings.
@@ -300,10 +306,18 @@ func (m *Manager) ensureRunningSession(state *sessionState) error {
 	if state.pid > 0 && m.isOurProcessFunc(state.pid, m.binaryPath) {
 		return nil
 	}
+	var pid int
+	var err error
 	if m.helperSupportsConfigFlag() {
-		return m.spawnFunc(state.key, m.binaryPath, "--config", state.configPath)
+		pid, err = m.spawnFunc(state.key, m.binaryPath, "--config", state.configPath)
+	} else {
+		pid, err = m.spawnFunc(state.key, m.binaryPath)
 	}
-	return m.spawnFunc(state.key, m.binaryPath)
+	if err != nil {
+		return err
+	}
+	state.pid = pid
+	return nil
 }
 
 func (m *Manager) helperSupportsConfigFlag() bool {

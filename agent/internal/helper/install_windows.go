@@ -89,15 +89,15 @@ func stopByPID(pid int) error {
 	return nil
 }
 
-func spawnWithConfig(binaryPath, sessionKey, configPath string) error {
+func spawnWithConfig(binaryPath, sessionKey, configPath string) (int, error) {
 	sessionNum, err := strconv.ParseUint(sessionKey, 10, 32)
 	if err != nil {
-		return fmt.Errorf("invalid session key %q: %w", sessionKey, err)
+		return 0, fmt.Errorf("invalid session key %q: %w", sessionKey, err)
 	}
 
 	dupToken, envBlock, identity, err := acquireSpawnToken(uint32(sessionNum))
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer dupToken.Close()
 	if envBlock != nil {
@@ -112,17 +112,17 @@ func spawnWithConfig(binaryPath, sessionKey, configPath string) error {
 
 	appName, err := windows.UTF16PtrFromString(cmdExe)
 	if err != nil {
-		return fmt.Errorf("UTF16PtrFromString appName: %w", err)
+		return 0, fmt.Errorf("UTF16PtrFromString appName: %w", err)
 	}
 	cmdLine, err := windows.UTF16PtrFromString(
 		fmt.Sprintf(`"%s" /c start "" "%s" --config "%s"`, cmdExe, binaryPath, configPath),
 	)
 	if err != nil {
-		return fmt.Errorf("UTF16PtrFromString cmdLine: %w", err)
+		return 0, fmt.Errorf("UTF16PtrFromString cmdLine: %w", err)
 	}
 	desktop, err := windows.UTF16PtrFromString(`winsta0\Default`)
 	if err != nil {
-		return fmt.Errorf("UTF16PtrFromString desktop: %w", err)
+		return 0, fmt.Errorf("UTF16PtrFromString desktop: %w", err)
 	}
 
 	si := windows.StartupInfo{
@@ -144,7 +144,7 @@ func spawnWithConfig(binaryPath, sessionKey, configPath string) error {
 		&si,
 		&pi,
 	); err != nil {
-		return fmt.Errorf("CreateProcessAsUser(session=%d, binary=%s): %w", sessionNum, binaryPath, err)
+		return 0, fmt.Errorf("CreateProcessAsUser(session=%d, binary=%s): %w", sessionNum, binaryPath, err)
 	}
 
 	windows.CloseHandle(pi.Thread)
@@ -157,7 +157,7 @@ func spawnWithConfig(binaryPath, sessionKey, configPath string) error {
 		"configPath", configPath,
 		"identity", identity,
 	)
-	return nil
+	return int(pi.ProcessId), nil
 }
 
 func acquireSpawnToken(sessionID uint32) (windows.Token, *uint16, string, error) {

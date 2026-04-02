@@ -84,19 +84,19 @@ func stopByPID(pid int) error {
 	return nil
 }
 
-func spawnWithConfig(binaryPath, sessionKey, configPath string) error {
+func spawnWithConfig(binaryPath, sessionKey, configPath string) (int, error) {
 	uid, err := strconv.ParseUint(sessionKey, 10, 32)
 	if err != nil {
-		return fmt.Errorf("invalid uid %q: %w", sessionKey, err)
+		return 0, fmt.Errorf("invalid uid %q: %w", sessionKey, err)
 	}
 
 	u, err := user.LookupId(sessionKey)
 	if err != nil {
-		return fmt.Errorf("lookup uid %s: %w", sessionKey, err)
+		return 0, fmt.Errorf("lookup uid %s: %w", sessionKey, err)
 	}
 	gid, err := strconv.ParseUint(u.Gid, 10, 32)
 	if err != nil {
-		return fmt.Errorf("parse gid %q: %w", u.Gid, err)
+		return 0, fmt.Errorf("parse gid %q: %w", u.Gid, err)
 	}
 
 	cmd := exec.Command(binaryPath, "--config", configPath)
@@ -116,9 +116,11 @@ func spawnWithConfig(binaryPath, sessionKey, configPath string) error {
 	)
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start helper for uid %s: %w", sessionKey, err)
+		return 0, fmt.Errorf("start helper for uid %s: %w", sessionKey, err)
 	}
-	return cmd.Process.Release()
+	pid := cmd.Process.Pid
+	_ = cmd.Process.Release()
+	return pid, nil
 }
 
 func isHelperRunning() bool {

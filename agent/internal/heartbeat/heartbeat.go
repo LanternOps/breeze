@@ -279,12 +279,12 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	if runtime.GOOS == "windows" && cfg.IsService {
 		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
-			helper.WithSpawnFunc(func(sessionKey, binaryPath string, args ...string) error {
+			helper.WithSpawnFunc(func(sessionKey, binaryPath string, args ...string) (int, error) {
 				// Try launching via connected user-role helper first (runs as
 				// the logged-in user, so the Tauri app inherits user identity).
 				if h.sessionBroker != nil {
 					if err := h.sessionBroker.LaunchProcessViaUserHelperForSession(sessionKey, binaryPath, args...); err == nil {
-						return nil
+						return 0, nil // PID unknown when launched via IPC; refreshPID will reconcile
 					} else {
 						log.Debug("user helper launch failed, falling back to direct spawn",
 							"error", err.Error())
@@ -293,9 +293,9 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 
 				sessionNum, err := strconv.ParseUint(sessionKey, 10, 32)
 				if err != nil {
-					return fmt.Errorf("invalid session key %q: %w", sessionKey, err)
+					return 0, fmt.Errorf("invalid session key %q: %w", sessionKey, err)
 				}
-				return sessionbroker.SpawnProcessInSessionWithArgs(binaryPath, args, uint32(sessionNum))
+				return 0, sessionbroker.SpawnProcessInSessionWithArgs(binaryPath, args, uint32(sessionNum))
 			}),
 		)
 	} else if cfg.IsHeadless && h.sessionBroker != nil {
@@ -303,11 +303,11 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		// IPC helper (LaunchAgent) so the Tauri app runs in the user session.
 		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
-			helper.WithSpawnFunc(func(sessionKey, binaryPath string, args ...string) error {
+			helper.WithSpawnFunc(func(sessionKey, binaryPath string, args ...string) (int, error) {
 				if err := h.sessionBroker.LaunchProcessViaUserHelperForSession(sessionKey, binaryPath, args...); err == nil {
-					return nil
+					return 0, nil // PID unknown when launched via IPC; refreshPID will reconcile
 				}
-				return helper.ErrNoActiveSession
+				return 0, helper.ErrNoActiveSession
 			}),
 		)
 	} else {
