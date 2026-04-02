@@ -15,6 +15,14 @@ func TestParseGUIUserUIDs(t *testing.T) {
 	if len(uids) != 1 || uids[0] != "501" {
 		t.Fatalf("parseGUIUserUIDs = %+v, want [501]", uids)
 	}
+
+	// uid 0 (root) should be excluded — its loginwindow process is the system
+	// login UI, not a GUI user session.
+	outputWithRoot := "0 /System/Library/CoreServices/loginwindow\n501 /System/Library/CoreServices/loginwindow\n"
+	uids2 := parseGUIUserUIDs(outputWithRoot)
+	if len(uids2) != 1 || uids2[0] != "501" {
+		t.Fatalf("parseGUIUserUIDs with root = %+v, want [501]", uids2)
+	}
 }
 
 func TestValidateDesktopSessionID(t *testing.T) {

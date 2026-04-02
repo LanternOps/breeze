@@ -457,6 +457,11 @@ func parseGUIUserUIDs(output string) []string {
 			continue
 		}
 		uid, comm := fields[0], fields[len(fields)-1]
+		// Skip root (uid 0) — its loginwindow process is the system login UI,
+		// not a GUI user session. Bootstrapping into gui/0 always fails (exit 125).
+		if uid == "0" {
+			continue
+		}
 		if _, err := sessionbroker.ParseWindowsSessionIDForHeartbeat(uid); err != nil {
 			continue
 		}
