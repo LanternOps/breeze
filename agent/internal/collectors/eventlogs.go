@@ -52,12 +52,16 @@ func NewEventLogCollector() *EventLogCollector {
 }
 
 // UpdateConfig updates the collector settings. Thread-safe via mutex.
-func (c *EventLogCollector) UpdateConfig(maxEvents int, categories []string, minimumLevel string, intervalMinutes int) {
+// Returns true if any setting actually changed.
+func (c *EventLogCollector) UpdateConfig(maxEvents int, categories []string, minimumLevel string, intervalMinutes int) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if maxEvents >= 10 && maxEvents <= 500 {
+	changed := false
+
+	if maxEvents >= 10 && maxEvents <= 500 && c.maxEvents != maxEvents {
 		c.maxEvents = maxEvents
+		changed = true
 	}
 	if len(categories) > 0 {
 		var valid []string
@@ -66,16 +70,32 @@ func (c *EventLogCollector) UpdateConfig(maxEvents int, categories []string, min
 				valid = append(valid, cat)
 			}
 		}
-		if len(valid) > 0 {
+		if len(valid) > 0 && !slicesEqual(c.categories, valid) {
 			c.categories = valid
+			changed = true
 		}
 	}
-	if _, ok := levelOrder[minimumLevel]; ok {
+	if _, ok := levelOrder[minimumLevel]; ok && c.minimumLevel != minimumLevel {
 		c.minimumLevel = minimumLevel
+		changed = true
 	}
-	if intervalMinutes >= 1 && intervalMinutes <= 60 {
+	if intervalMinutes >= 1 && intervalMinutes <= 60 && c.intervalMinutes != intervalMinutes {
 		c.intervalMinutes = intervalMinutes
+		changed = true
 	}
+	return changed
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // IntervalMinutes returns the configured collection interval.
