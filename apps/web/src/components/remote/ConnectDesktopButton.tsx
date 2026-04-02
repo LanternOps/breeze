@@ -34,7 +34,7 @@ function desktopAccessUnavailableReason(desktopAccess: DesktopAccessState | null
 
   switch (desktopAccess.reason) {
     case 'unsupported_os':
-      return 'This Mac is below the macOS 14+ floor for the native login-window desktop path';
+      return 'Login-window desktop requires macOS 14 (Sonoma) or later. User-session remote desktop is still available when a user is logged in.';
     case 'missing_entitlement':
       return 'Login-window desktop is blocked until the required Apple entitlement is approved';
     case 'manual_install':
