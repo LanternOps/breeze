@@ -79,7 +79,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	session := &Session{
 		id:           sessionID,
 		peerConn:     peerConn,
-		inputHandler: NewInputHandler(),
+		inputHandler: NewInputHandler(m.config.DesktopContext),
 		done:         make(chan struct{}),
 		isActive:     true,
 		fps:          defaultFrameRate,

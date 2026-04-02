@@ -129,7 +129,7 @@ func validateComputerActionInput(text, key string, modifiers []string) (string, 
 }
 
 func executeInputAction(action string, x, y int, text, key string, modifiers []string, scrollDelta int) error {
-	input := desktop.NewInputHandler()
+	input := desktop.NewInputHandler("user_session")
 
 	switch action {
 	case "left_click":

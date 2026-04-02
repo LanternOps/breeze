@@ -54,5 +54,7 @@ type TypeCharHandler interface {
 	TypeChar(ch rune) error
 }
 
-// NewInputHandler creates a platform-specific input handler
+// NewInputHandler creates a platform-specific input handler.
+// desktopContext is "user_session" or "login_window" — on macOS, login_window
+// uses IOHIDPostEvent instead of CGEvent for input at the login screen.
 // Implementation is in input_*.go files
