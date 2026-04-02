@@ -285,6 +285,14 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 			log.Info("kickstarted login-window desktop helper LaunchAgent")
 			return nil
 		}
+		// Fallback: try bootstrap in case the plist was never loaded into the loginwindow domain.
+		const loginwindowPlist = "/Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist"
+		if err := exec.Command("launchctl", "bootstrap", "loginwindow", loginwindowPlist).Run(); err == nil {
+			log.Info("bootstrapped login-window desktop helper LaunchAgent")
+			return nil
+		} else {
+			log.Warn("launchctl bootstrap loginwindow also failed", "error", err.Error())
+		}
 		return fmt.Errorf("no desktop-helper connected; ensure the LaunchAgents are loaded")
 	}
 
