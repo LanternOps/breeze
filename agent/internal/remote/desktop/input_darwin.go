@@ -4,6 +4,112 @@ package desktop
 
 /*
 #include <CoreGraphics/CoreGraphics.h>
+#include <IOKit/IOKitLib.h>
+#include <IOKit/hidsystem/IOHIDLib.h>
+#include <IOKit/hidsystem/event_status_driver.h>
+#include <mach/mach.h>
+
+// ---- IOHIDPostEvent wrappers for login-window input ----
+// IOHIDPostEvent is deprecated since macOS 11 but still functional and is
+// the only way to inject input at the login window where CGEvent is blocked.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+
+static io_connect_t g_hidConnection = 0;
+
+static int openHIDConnection(void) {
+    if (g_hidConnection != 0) return 0;
+    io_service_t service = IOServiceGetMatchingService(
+        kIOMainPortDefault,
+        IOServiceMatching("IOHIDSystem")
+    );
+    if (!service) return -1;
+    kern_return_t kr = IOServiceOpen(service, mach_task_self(),
+                                     kIOHIDServerConnectType, &g_hidConnection);
+    IOObjectRelease(service);
+    return (kr == KERN_SUCCESS) ? 0 : -2;
+}
+
+static void closeHIDConnection(void) {
+    if (g_hidConnection != 0) {
+        IOServiceClose(g_hidConnection);
+        g_hidConnection = 0;
+    }
+}
+
+static void hidMouseMove(int x, int y) {
+    NXEventData eventData = {0};
+    IOGPoint location = {(float)x, (float)y};
+    IOHIDPostEvent(g_hidConnection, NX_MOUSEMOVED, location, &eventData,
+                   kNXEventDataVersion, 0, 0);
+}
+
+static void hidMouseDown(int x, int y, int button) {
+    NXEventData eventData = {0};
+    IOGPoint location = {(float)x, (float)y};
+    int eventType;
+    switch (button) {
+        case 1:  eventType = NX_RMOUSEDOWN; break;
+        case 2:  eventType = NX_OMOUSEDOWN; break;
+        default: eventType = NX_LMOUSEDOWN; break;
+    }
+    IOHIDPostEvent(g_hidConnection, eventType, location, &eventData,
+                   kNXEventDataVersion, 0, 0);
+}
+
+static void hidMouseUp(int x, int y, int button) {
+    NXEventData eventData = {0};
+    IOGPoint location = {(float)x, (float)y};
+    int eventType;
+    switch (button) {
+        case 1:  eventType = NX_RMOUSEUP; break;
+        case 2:  eventType = NX_OMOUSEUP; break;
+        default: eventType = NX_LMOUSEUP; break;
+    }
+    IOHIDPostEvent(g_hidConnection, eventType, location, &eventData,
+                   kNXEventDataVersion, 0, 0);
+}
+
+static void hidMouseDrag(int x, int y, int button) {
+    NXEventData eventData = {0};
+    IOGPoint location = {(float)x, (float)y};
+    int eventType;
+    switch (button) {
+        case 1:  eventType = NX_RMOUSEDRAGGED; break;
+        case 2:  eventType = NX_OMOUSEDRAGGED; break;
+        default: eventType = NX_LMOUSEDRAGGED; break;
+    }
+    IOHIDPostEvent(g_hidConnection, eventType, location, &eventData,
+                   kNXEventDataVersion, 0, 0);
+}
+
+static void hidMouseScroll(int delta) {
+    NXEventData eventData = {0};
+    eventData.scrollWheel.deltaAxis1 = delta;
+    IOGPoint location = {0, 0};
+    IOHIDPostEvent(g_hidConnection, NX_SCROLLWHEELMOVED, location, &eventData,
+                   kNXEventDataVersion, 0, 0);
+}
+
+static void hidKeyDown(int keycode, int flags) {
+    NXEventData eventData = {0};
+    eventData.key.keyCode = keycode;
+    IOGPoint location = {0, 0};
+    IOHIDPostEvent(g_hidConnection, NX_KEYDOWN, location, &eventData,
+                   kNXEventDataVersion, flags, 0);
+}
+
+static void hidKeyUp(int keycode, int flags) {
+    NXEventData eventData = {0};
+    eventData.key.keyCode = keycode;
+    IOGPoint location = {0, 0};
+    IOHIDPostEvent(g_hidConnection, NX_KEYUP, location, &eventData,
+                   kNXEventDataVersion, flags, 0);
+}
+
+#pragma clang diagnostic pop
+
+// ---- CGEvent wrappers (existing, for user-session) ----
 
 // Returns the backing scale factor (2.0 on Retina, 1.0 otherwise) for the
 // main display using CoreGraphics display mode pixel vs logical dimensions.
@@ -100,10 +206,12 @@ static void inputKeyUp(int keycode, int flags) {
     }
 }
 */
+// #cgo LDFLAGS: -framework IOKit
 import "C"
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 )
 
@@ -153,20 +261,30 @@ var keyNameToKeycode = map[string]int{
 	"divide": 0x4B, "decimal": 0x41,
 }
 
-// DarwinInputHandler handles input on macOS using CGEvents.
-// Requires Accessibility permission (System Settings > Privacy > Accessibility).
+// DarwinInputHandler handles input on macOS using CGEvents (user session)
+// or IOHIDPostEvent (login window). Requires Accessibility permission.
 type DarwinInputHandler struct {
-	mouseDown   bool // track if mouse button is held for drag events
+	mouseDown   bool    // track if mouse button is held for drag events
 	mouseBtn    int
 	scaleFactor float64 // backing scale factor (2.0 on Retina)
+	useHID      bool    // true = IOHIDPostEvent for login window
 }
 
-func NewInputHandler() InputHandler {
+func NewInputHandler(desktopContext string) InputHandler {
 	sf := float64(C.getMainDisplayScaleFactor())
 	if sf < 1.0 {
 		sf = 1.0
 	}
-	return &DarwinInputHandler{scaleFactor: sf}
+	h := &DarwinInputHandler{scaleFactor: sf}
+	if desktopContext == "login_window" {
+		if rc := C.openHIDConnection(); rc == 0 {
+			h.useHID = true
+			slog.Info("using IOHIDPostEvent for login-window input")
+		} else {
+			slog.Warn("failed to open IOHIDSystem connection, input will use CGEvent fallback", "rc", int(rc))
+		}
+	}
+	return h
 }
 
 func (h *DarwinInputHandler) SetDisplayOffset(x, y int) {
@@ -213,7 +331,13 @@ func normalizeKeyName(key string) string {
 
 func (h *DarwinInputHandler) SendMouseMove(x, y int) error {
 	sx, sy := h.scaleXY(x, y)
-	if h.mouseDown {
+	if h.useHID {
+		if h.mouseDown {
+			C.hidMouseDrag(sx, sy, C.int(h.mouseBtn))
+		} else {
+			C.hidMouseMove(sx, sy)
+		}
+	} else if h.mouseDown {
 		C.inputMouseDrag(sx, sy, C.int(h.mouseBtn))
 	} else {
 		C.inputMouseMove(sx, sy)
@@ -224,8 +348,13 @@ func (h *DarwinInputHandler) SendMouseMove(x, y int) error {
 func (h *DarwinInputHandler) SendMouseClick(x, y int, button string) error {
 	sx, sy := h.scaleXY(x, y)
 	btn := C.int(buttonToInt(button))
-	C.inputMouseDown(sx, sy, btn)
-	C.inputMouseUp(sx, sy, btn)
+	if h.useHID {
+		C.hidMouseDown(sx, sy, btn)
+		C.hidMouseUp(sx, sy, btn)
+	} else {
+		C.inputMouseDown(sx, sy, btn)
+		C.inputMouseUp(sx, sy, btn)
+	}
 	return nil
 }
 
@@ -233,21 +362,35 @@ func (h *DarwinInputHandler) SendMouseDown(x, y int, button string) error {
 	h.mouseBtn = buttonToInt(button)
 	h.mouseDown = true
 	sx, sy := h.scaleXY(x, y)
-	C.inputMouseDown(sx, sy, C.int(h.mouseBtn))
+	if h.useHID {
+		C.hidMouseDown(sx, sy, C.int(h.mouseBtn))
+	} else {
+		C.inputMouseDown(sx, sy, C.int(h.mouseBtn))
+	}
 	return nil
 }
 
 func (h *DarwinInputHandler) SendMouseUp(x, y int, button string) error {
 	h.mouseDown = false
 	sx, sy := h.scaleXY(x, y)
-	C.inputMouseUp(sx, sy, C.int(buttonToInt(button)))
+	btn := C.int(buttonToInt(button))
+	if h.useHID {
+		C.hidMouseUp(sx, sy, btn)
+	} else {
+		C.inputMouseUp(sx, sy, btn)
+	}
 	return nil
 }
 
 func (h *DarwinInputHandler) SendMouseScroll(x, y int, delta int) error {
 	sx, sy := h.scaleXY(x, y)
-	C.inputMouseMove(sx, sy)
-	C.inputMouseScroll(C.int(-delta)) // negate: browser deltaY+ = scroll down
+	if h.useHID {
+		C.hidMouseMove(sx, sy)
+		C.hidMouseScroll(C.int(-delta))
+	} else {
+		C.inputMouseMove(sx, sy)
+		C.inputMouseScroll(C.int(-delta)) // negate: browser deltaY+ = scroll down
+	}
 	return nil
 }
 
@@ -258,8 +401,13 @@ func (h *DarwinInputHandler) SendKeyPress(key string, modifiers []string) error 
 		return fmt.Errorf("unknown key: %s", key)
 	}
 	flags := modifiersToFlags(modifiers)
-	C.inputKeyDown(C.int(keycode), flags)
-	C.inputKeyUp(C.int(keycode), flags)
+	if h.useHID {
+		C.hidKeyDown(C.int(keycode), flags)
+		C.hidKeyUp(C.int(keycode), flags)
+	} else {
+		C.inputKeyDown(C.int(keycode), flags)
+		C.inputKeyUp(C.int(keycode), flags)
+	}
 	return nil
 }
 
@@ -269,7 +417,11 @@ func (h *DarwinInputHandler) SendKeyDown(key string) error {
 	if !ok {
 		return fmt.Errorf("unknown key: %s", key)
 	}
-	C.inputKeyDown(C.int(keycode), 0)
+	if h.useHID {
+		C.hidKeyDown(C.int(keycode), 0)
+	} else {
+		C.inputKeyDown(C.int(keycode), 0)
+	}
 	return nil
 }
 
@@ -279,7 +431,11 @@ func (h *DarwinInputHandler) SendKeyUp(key string) error {
 	if !ok {
 		return fmt.Errorf("unknown key: %s", key)
 	}
-	C.inputKeyUp(C.int(keycode), 0)
+	if h.useHID {
+		C.hidKeyUp(C.int(keycode), 0)
+	} else {
+		C.inputKeyUp(C.int(keycode), 0)
+	}
 	return nil
 }
 

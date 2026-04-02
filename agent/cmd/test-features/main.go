@@ -72,7 +72,7 @@ func testCapture() {
 
 func testInput() {
 	fmt.Println("=== Testing Input Handler (macOS) ===")
-	handler := desktop.NewInputHandler()
+	handler := desktop.NewInputHandler("user_session")
 	
 	// Test mouse move (safe - just moves cursor slightly)
 	fmt.Println("Testing mouse move...")

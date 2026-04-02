@@ -13,7 +13,7 @@ import (
 type LinuxInputHandler struct{}
 
 // NewInputHandler creates a Linux input handler
-func NewInputHandler() InputHandler {
+func NewInputHandler(_ string) InputHandler {
 	return &LinuxInputHandler{}
 }
 

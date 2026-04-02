@@ -49,7 +49,7 @@ func (m *WsSessionManager) StartSession(id string, displayIndex int, config Stre
 	}
 
 	// Create input handler
-	inputHandler := NewInputHandler()
+	inputHandler := NewInputHandler("user_session")
 
 	// Create and start session
 	session := newWsStreamSession(id, capturer, inputHandler, sendFrame, config)

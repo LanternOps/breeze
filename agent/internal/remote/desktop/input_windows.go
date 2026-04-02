@@ -97,7 +97,7 @@ type WindowsInputHandler struct {
 }
 
 // NewInputHandler creates a Windows input handler
-func NewInputHandler() InputHandler {
+func NewInputHandler(_ string) InputHandler {
 	return &WindowsInputHandler{}
 }
 
