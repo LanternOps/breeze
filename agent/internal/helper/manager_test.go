@@ -81,11 +81,12 @@ func TestApplyEnabledSpawnsPerSession(t *testing.T) {
 		},
 	}
 	mgr.isOurProcessFunc = func(pid int, binaryPath string) bool { return false }
-	mgr.spawnFunc = func(sessionKey, binaryPath string, args ...string) error {
+	mgr.spawnFunc = func(sessionKey, binaryPath string, args ...string) (int, error) {
 		spawned[sessionKey] = append([]string(nil), args...)
 		statusPath := filepath.Join(tmpDir, "sessions", sessionKey, "helper_status.yaml")
 		_ = os.MkdirAll(filepath.Dir(statusPath), 0755)
-		return os.WriteFile(statusPath, []byte("version: 0.14.0\npid: 9001\n"), 0644)
+		_ = os.WriteFile(statusPath, []byte("version: 0.14.0\npid: 9001\n"), 0644)
+		return 9001, nil
 	}
 
 	helperBinary := filepath.Join(tmpDir, "breeze-helper")
