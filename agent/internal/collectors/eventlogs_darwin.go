@@ -112,8 +112,13 @@ func (c *EventLogCollector) queryUnifiedLog(predicate, category string, since ti
 		lastMinutes = 60
 	}
 
+	// Wrap predicate with messageType filter so macOS filters at the source.
+	// The Go code below only keeps error/fault entries anyway, so this avoids
+	// downloading megabytes of info/debug JSON that would be discarded.
+	filteredPredicate := fmt.Sprintf(`(%s) AND (messageType >= error)`, predicate)
+
 	output, err := runCollectorOutput(collectorLongCommandTimeout, "log", "show",
-		"--predicate", predicate,
+		"--predicate", filteredPredicate,
 		"--style", "json",
 		"--last", fmt.Sprintf("%dm", lastMinutes),
 	)
@@ -295,7 +300,7 @@ func parseCrashReport(path string) (*crashInfo, error) {
 
 // collectPowerEvents parses `pmset -g log` for sleep/wake/shutdown events
 func (c *EventLogCollector) collectPowerEvents(since time.Time) ([]EventLogEntry, error) {
-	output, err := runCollectorOutput(collectorLongCommandTimeout, "pmset", "-g", "log")
+	output, err := runCollectorLimitedOutput(collectorLongCommandTimeout, "pmset", "-g", "log")
 	if err != nil {
 		return nil, fmt.Errorf("pmset -g log failed: %w", err)
 	}

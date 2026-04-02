@@ -73,10 +73,10 @@ export async function propagateTimedOutDeviceCommand(params: {
       completedAt,
       updatedAt: completedAt,
       targetConfig: sql`coalesce(${restoreJobs.targetConfig}, '{}'::jsonb) || jsonb_build_object(
-        'error', ${errorMsg},
+        'error', ${errorMsg}::text,
         'result', jsonb_build_object(
           'status', 'failed',
-          'error', ${errorMsg},
+          'error', ${errorMsg}::text,
           'timedOutBy', 'server'
         )
       )`,
@@ -521,52 +521,52 @@ function createWorker(): Worker<ReaperJobData> {
   return new Worker<ReaperJobData>(
     QUEUE_NAME,
     async (job: Job<ReaperJobData>) => {
-      return runWithSystemDbAccess(async () => {
-        const results: Record<string, number> = {};
+      const results: Record<string, number> = {};
 
-        const domains = [
-          ['deviceCommands', reapStaleDeviceCommands],
-          ['scriptExecutions', reapStaleScriptExecutions],
-          ['patchJobResults', reapStalePatchJobResults],
-          ['deploymentDevices', reapStaleDeploymentDevices],
-          ['remoteSessions', reapStaleRemoteSessions],
-        ] as const;
+      const domains = [
+        ['deviceCommands', reapStaleDeviceCommands],
+        ['scriptExecutions', reapStaleScriptExecutions],
+        ['patchJobResults', reapStalePatchJobResults],
+        ['deploymentDevices', reapStaleDeploymentDevices],
+        ['remoteSessions', reapStaleRemoteSessions],
+      ] as const;
 
-        for (const [name, fn] of domains) {
-          try {
-            results[name] = await fn();
-          } catch (err) {
-            console.error(`[StaleCommandReaper] Error reaping ${name}:`, err);
-            captureException(err instanceof Error ? err : new Error(String(err)));
-            results[name] = -1;
-          }
+      // Each domain runs in its own transaction so a failure in one
+      // doesn't abort the Postgres transaction for the others.
+      for (const [name, fn] of domains) {
+        try {
+          results[name] = await runWithSystemDbAccess(fn);
+        } catch (err) {
+          console.error(`[StaleCommandReaper] Error reaping ${name}:`, err);
+          captureException(err instanceof Error ? err : new Error(String(err)));
+          results[name] = -1;
         }
+      }
 
-        const total = Object.values(results).filter((n) => n > 0).reduce((a, b) => a + b, 0);
-        if (total > 0) {
-          console.log(
-            `[StaleCommandReaper] Reaped ${total} stale items:`,
-            Object.entries(results)
-              .filter(([, n]) => n > 0)
-              .map(([k, n]) => `${k}=${n}`)
-              .join(', '),
-          );
-        }
+      const total = Object.values(results).filter((n) => n > 0).reduce((a, b) => a + b, 0);
+      if (total > 0) {
+        console.log(
+          `[StaleCommandReaper] Reaped ${total} stale items:`,
+          Object.entries(results)
+            .filter(([, n]) => n > 0)
+            .map(([k, n]) => `${k}=${n}`)
+            .join(', '),
+        );
+      }
 
-        // Log and escalate failures
-        const failures = Object.entries(results).filter(([, n]) => n === -1);
-        if (failures.length > 0) {
-          console.error(
-            `[StaleCommandReaper] ${failures.length}/${domains.length} domains failed:`,
-            failures.map(([k]) => k).join(', '),
-          );
-        }
-        if (failures.length === domains.length) {
-          throw new Error(`All reaper domains failed: ${failures.map(([k]) => k).join(', ')}`);
-        }
+      // Log and escalate failures
+      const failures = Object.entries(results).filter(([, n]) => n === -1);
+      if (failures.length > 0) {
+        console.error(
+          `[StaleCommandReaper] ${failures.length}/${domains.length} domains failed:`,
+          failures.map(([k]) => k).join(', '),
+        );
+      }
+      if (failures.length === domains.length) {
+        throw new Error(`All reaper domains failed: ${failures.map(([k]) => k).join(', ')}`);
+      }
 
-        return results;
-      });
+      return results;
     },
     {
       connection: getRedisConnection(),

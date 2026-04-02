@@ -10,6 +10,7 @@ const VM_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 vi.mock('../../services', () => ({}));
 
 const executeCommandMock = vi.fn();
+const resolveAllBackupAssignedDevicesMock = vi.fn();
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
@@ -45,6 +46,10 @@ vi.mock('../../db/schema', () => ({
   devices: {
     id: 'devices.id',
     orgId: 'devices.org_id',
+    displayName: 'devices.display_name',
+    hostname: 'devices.hostname',
+    osType: 'devices.os_type',
+    status: 'devices.status',
   },
   backupJobs: {
     id: 'backup_jobs.id',
@@ -72,6 +77,8 @@ vi.mock('../../services/auditEvents', () => ({
 
 const resolveBackupConfigForDeviceMock = vi.fn();
 vi.mock('../../services/featureConfigResolver', () => ({
+  resolveAllBackupAssignedDevices: (...args: unknown[]) =>
+    resolveAllBackupAssignedDevicesMock(...(args as [])),
   resolveBackupConfigForDevice: (...args: unknown[]) =>
     resolveBackupConfigForDeviceMock(...(args as [])),
 }));
@@ -121,6 +128,7 @@ describe('hyperv routes', () => {
       configId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
       featureLinkId: '99999999-9999-4999-8999-999999999999',
     });
+    resolveAllBackupAssignedDevicesMock.mockReset();
     applyBackupCommandResultToJobMock.mockResolvedValue({
       snapshotDbId: '55555555-5555-4555-8555-555555555555',
       providerSnapshotId: 'hyperv-accounting-1',
@@ -146,6 +154,50 @@ describe('hyperv routes', () => {
     const body = await res.json();
     expect(body.vms).toEqual([]);
     expect(body.total).toBe(0);
+  });
+
+  it('returns only Hyper-V-protected Windows discovery targets', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([
+      {
+        deviceId: 'host-1',
+        configId: 'config-1',
+        settings: { backupMode: 'hyperv' },
+      },
+      {
+        deviceId: 'host-2',
+        configId: 'config-2',
+        settings: { backupMode: 'file' },
+      },
+      {
+        deviceId: 'host-3',
+        configId: null,
+        settings: { backupMode: 'hyperv' },
+      },
+    ]);
+    selectMock.mockReturnValueOnce(chainMock([
+      {
+        id: 'host-1',
+        displayName: 'hyperv-01',
+        hostname: 'hyperv-01.local',
+        osType: 'windows',
+        status: 'online',
+      },
+    ]));
+
+    const res = await app.request('/backup/hyperv/discovery-targets', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(resolveAllBackupAssignedDevicesMock).toHaveBeenCalledWith(ORG_ID);
+    expect((await res.json()).data).toEqual([
+      expect.objectContaining({
+        id: 'host-1',
+        displayName: 'hyperv-01',
+        eligible: true,
+      }),
+    ]);
   });
 
   it('dispatches Hyper-V discovery for a device', async () => {

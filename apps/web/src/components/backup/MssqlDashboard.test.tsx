@@ -49,9 +49,9 @@ describe('MssqlDashboard', () => {
       if (url === '/backup/mssql/chains') {
         return makeJsonResponse({ data: [] });
       }
-      if (url === '/devices?limit=200') {
+      if (url === '/backup/mssql/discovery-targets') {
         return makeJsonResponse({
-          data: [{ id: 'device-1', displayName: 'Server 01', osType: 'Windows Server 2022' }],
+          data: [{ id: 'device-1', displayName: 'Server 01', osType: 'windows', status: 'online', eligible: true }],
         });
       }
       return makeJsonResponse({});
@@ -72,9 +72,9 @@ describe('MssqlDashboard', () => {
       if (url === '/backup/mssql/instances' || url === '/backup/mssql/chains') {
         return makeJsonResponse({ data: [] });
       }
-      if (url === '/devices?limit=200') {
+      if (url === '/backup/mssql/discovery-targets') {
         return makeJsonResponse({
-          data: [{ id: 'device-1', displayName: 'Server 01', osType: 'Windows Server 2022' }],
+          data: [{ id: 'device-1', displayName: 'Server 01', osType: 'windows', status: 'online', eligible: true }],
         });
       }
       return makeJsonResponse({});
@@ -83,8 +83,28 @@ describe('MssqlDashboard', () => {
     render(<MssqlDashboard />);
 
     await screen.findByText('No SQL Server instances found');
-    expect(screen.getByText(/Select a Windows device and run discovery/i)).toBeTruthy();
+    expect(screen.getByText(/Run discovery on Server 01 to detect SQL Server instances/i)).toBeTruthy();
     expect(screen.getByRole('button', { name: /Run discovery/i })).toBeTruthy();
+    expect(screen.queryByRole('combobox')).toBeNull();
+  });
+
+  it('explains when no protected SQL discovery targets exist', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/mssql/instances' || url === '/backup/mssql/chains') {
+        return makeJsonResponse({ data: [] });
+      }
+      if (url === '/backup/mssql/discovery-targets') {
+        return makeJsonResponse({ data: [] });
+      }
+      return makeJsonResponse({});
+    });
+
+    render(<MssqlDashboard />);
+
+    await screen.findByText('No SQL discovery targets available');
+    expect(screen.getByText(/Assign an SQL Server backup policy to a Windows device/i)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Run discovery/i })).toBeNull();
   });
 
   it('renders alpha banner', async () => {
@@ -105,9 +125,9 @@ describe('MssqlDashboard', () => {
       if (url === '/backup/mssql/chains') {
         return makeJsonResponse({ data: [] });
       }
-      if (url === '/devices?limit=200') {
+      if (url === '/backup/mssql/discovery-targets') {
         return makeJsonResponse({
-          data: [{ id: 'device-1', displayName: 'Server 01', osType: 'Windows Server 2022' }],
+          data: [{ id: 'device-1', displayName: 'Server 01', osType: 'windows', status: 'online', eligible: true }],
         });
       }
       if (url === '/backup/mssql/backup' && method === 'POST') {

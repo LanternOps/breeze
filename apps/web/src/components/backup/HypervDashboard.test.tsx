@@ -47,9 +47,9 @@ describe('HypervDashboard', () => {
       if (url === '/backup/hyperv/vms') {
         return makeJsonResponse({ vms: mockVms, total: 1 });
       }
-      if (url === '/devices?limit=200') {
+      if (url === '/backup/hyperv/discovery-targets') {
         return makeJsonResponse({
-          data: [{ id: 'host-1', displayName: 'hyperv-01', osType: 'Windows Server 2022' }],
+          data: [{ id: 'host-1', displayName: 'hyperv-01', osType: 'windows', status: 'online', eligible: true }],
         });
       }
       return makeJsonResponse({}, false, 404);
@@ -70,9 +70,9 @@ describe('HypervDashboard', () => {
       if (url === '/backup/hyperv/vms') {
         return makeJsonResponse({ vms: [], total: 0 });
       }
-      if (url === '/devices?limit=200') {
+      if (url === '/backup/hyperv/discovery-targets') {
         return makeJsonResponse({
-          data: [{ id: 'host-1', displayName: 'hyperv-01', osType: 'Windows Server 2022' }],
+          data: [{ id: 'host-1', displayName: 'hyperv-01', osType: 'windows', status: 'online', eligible: true }],
         });
       }
       return makeJsonResponse({}, false, 404);
@@ -81,8 +81,28 @@ describe('HypervDashboard', () => {
     render(<HypervDashboard />);
 
     await screen.findByText('No Hyper-V VMs found');
-    expect(screen.getByText(/Select a Windows host and run discovery/i)).toBeTruthy();
+    expect(screen.getByText(/Run discovery on hyperv-01 to detect virtual machines/i)).toBeTruthy();
     expect(screen.getByRole('button', { name: /Run discovery/i })).toBeTruthy();
+    expect(screen.queryByRole('combobox')).toBeNull();
+  });
+
+  it('explains when no protected Hyper-V discovery targets exist', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/hyperv/vms') {
+        return makeJsonResponse({ vms: [], total: 0 });
+      }
+      if (url === '/backup/hyperv/discovery-targets') {
+        return makeJsonResponse({ data: [] });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<HypervDashboard />);
+
+    await screen.findByText('No Hyper-V discovery targets available');
+    expect(screen.getByText(/Assign a Hyper-V backup policy to a Windows host/i)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Run discovery/i })).toBeNull();
   });
 
   it('renders alpha banner', async () => {

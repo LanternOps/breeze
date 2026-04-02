@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import { backupJobs, backupSnapshots, devices } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
@@ -12,7 +12,7 @@ import {
 } from '../../services/commandQueue';
 import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
-import { resolveBackupConfigForDevice } from '../../services/featureConfigResolver';
+import { resolveAllBackupAssignedDevices, resolveBackupConfigForDevice } from '../../services/featureConfigResolver';
 import { backupCommandResultSchema } from './resultSchemas';
 import {
   applyBackupCommandResultToJob,
@@ -103,6 +103,57 @@ mssqlRoutes.get(
       );
 
     return c.json({ data: instances });
+  }
+);
+
+// ── GET /mssql/discovery-targets — MSSQL-protected Windows devices ──
+
+mssqlRoutes.get(
+  '/mssql/discovery-targets',
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
+    const assignedDevices = await resolveAllBackupAssignedDevices(orgId);
+    const targetDeviceIds = assignedDevices
+      .filter((entry) => entry.configId && entry.settings?.backupMode === 'mssql')
+      .map((entry) => entry.deviceId);
+
+    if (targetDeviceIds.length === 0) {
+      return c.json({ data: [] });
+    }
+
+    const rows = await db
+      .select({
+        id: devices.id,
+        displayName: devices.displayName,
+        hostname: devices.hostname,
+        osType: devices.osType,
+        status: devices.status,
+      })
+      .from(devices)
+      .where(and(
+        eq(devices.orgId, orgId),
+        eq(devices.osType, 'windows'),
+        inArray(devices.id, targetDeviceIds),
+      ));
+
+    const data = rows
+      .sort((a, b) => {
+        const left = (a.displayName ?? a.hostname ?? a.id).toLowerCase();
+        const right = (b.displayName ?? b.hostname ?? b.id).toLowerCase();
+        return left.localeCompare(right);
+      })
+      .map((row) => ({
+        ...row,
+        eligible: row.status === 'online',
+      }));
+
+    return c.json({ data });
   }
 );
 
