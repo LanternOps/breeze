@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -250,10 +251,91 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 	return nil
 }
 
+// darwinHelperPlists defines the LaunchAgent plists the agent writes to disk
+// when they're missing, so the desktop helper self-configures without a .pkg.
+var darwinHelperPlists = map[string]string{
+	"/Library/LaunchAgents/com.breeze.desktop-helper-user.plist": `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.breeze.desktop-helper-user</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/breeze-desktop-helper</string>
+        <string>--context</string>
+        <string>user_session</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>StandardOutPath</key>
+    <string>/tmp/breeze-desktop-helper-user.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/breeze-desktop-helper-user.log</string>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
+`,
+	"/Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist": `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.breeze.desktop-helper-loginwindow</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/breeze-desktop-helper</string>
+        <string>--context</string>
+        <string>login_window</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>LimitLoadToSessionType</key>
+    <string>LoginWindow</string>
+    <key>StandardOutPath</key>
+    <string>/tmp/breeze-desktop-helper-loginwindow.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/breeze-desktop-helper-loginwindow.log</string>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
+`,
+}
+
+// ensureDarwinHelperPlists writes any missing LaunchAgent plists to disk.
+// The agent runs as root so it can write to /Library/LaunchAgents/.
+func ensureDarwinHelperPlists() {
+	for path, content := range darwinHelperPlists {
+		if _, err := os.Stat(path); err == nil {
+			continue // already exists
+		}
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			log.Warn("failed to write helper plist", "path", path, "error", err.Error())
+		} else {
+			log.Info("installed helper LaunchAgent plist", "path", path)
+		}
+	}
+}
+
 // spawnHelperForDesktop spawns a user helper in the target session.
 // If targetSession is empty, it auto-detects the first active non-services session.
 func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 	if runtime.GOOS != "windows" {
+		// Ensure LaunchAgent plists exist on disk before any kickstart/bootstrap.
+		ensureDarwinHelperPlists()
+
 		if uids := findGUIUserUIDs(); len(uids) > 0 {
 			bootstrapped := false
 			for _, uid := range uids {
