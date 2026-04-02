@@ -20,10 +20,7 @@ func (h *Heartbeat) computeDesktopAccess(sysInfo *collectors.SystemInfo) *Deskto
 		CheckedAt:           now,
 	}
 
-	if isUnsupportedDarwinVersion(sysInfo) {
-		state.Reason = "unsupported_os"
-		return state
-	}
+	unsupportedOS := isUnsupportedDarwinVersion(sysInfo)
 
 	desktopSession := h.sessionBroker.PreferredDesktopSession()
 	tccStatus := h.sessionBroker.TCCStatus()
@@ -60,9 +57,13 @@ func (h *Heartbeat) computeDesktopAccess(sysInfo *collectors.SystemInfo) *Deskto
 		default:
 			switch desktopSession.DesktopContext {
 			case ipc.DesktopContextLoginWindow:
-				state.Mode = "login_window"
-				state.LoginUIReachable = true
-				return state
+				if unsupportedOS {
+					state.Reason = "unsupported_os"
+				} else {
+					state.Mode = "login_window"
+					state.LoginUIReachable = true
+					return state
+				}
 			case ipc.DesktopContextUserSession, "":
 				state.Mode = "user_session"
 				return state
