@@ -34,6 +34,7 @@ type DeviceSummary = {
   displayName?: string | null;
   osType?: string | null;
   status?: string | null;
+  eligible?: boolean;
 };
 
 type MssqlInstance = {
@@ -82,7 +83,7 @@ function normalizeInstanceStatus(status?: string): InstanceStatus {
 export default function MssqlDashboard() {
   const [instances, setInstances] = useState<MssqlInstance[]>([]);
   const [chains, setChains] = useState<BackupChain[]>([]);
-  const [devices, setDevices] = useState<DeviceSummary[]>([]);
+  const [discoveryTargets, setDiscoveryTargets] = useState<DeviceSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [message, setMessage] = useState<string>();
@@ -99,7 +100,7 @@ export default function MssqlDashboard() {
       const [instRes, chainRes, deviceRes] = await Promise.all([
         fetchWithAuth('/backup/mssql/instances'),
         fetchWithAuth('/backup/mssql/chains'),
-        fetchWithAuth('/devices?limit=200'),
+        fetchWithAuth('/backup/mssql/discovery-targets'),
       ]);
 
       if (instRes.ok) {
@@ -115,16 +116,20 @@ export default function MssqlDashboard() {
       if (deviceRes.ok) {
         const payload = await deviceRes.json();
         const data = payload?.data ?? payload ?? [];
-        const allDevices = Array.isArray(data) ? data as DeviceSummary[] : [];
-        const windowsDevices = allDevices.filter((device) => `${device.osType ?? ''}`.toLowerCase().includes('windows'));
-        setDevices(windowsDevices);
-        setEmptyDiscoveryDeviceId((current) => current || windowsDevices[0]?.id || '');
+        const targets = Array.isArray(data) ? data as DeviceSummary[] : [];
+        setDiscoveryTargets(targets);
+        setEmptyDiscoveryDeviceId((current) => {
+          if (current && targets.some((device) => device.id === current)) {
+            return current;
+          }
+          return targets.find((device) => device.eligible)?.id ?? targets[0]?.id ?? '';
+        });
       }
 
       const failures: string[] = [];
       if (!instRes.ok) failures.push(`SQL instances (${instRes.status})`);
       if (!chainRes.ok) failures.push(`backup chains (${chainRes.status})`);
-      if (!deviceRes.ok) failures.push(`device list (${deviceRes.status})`);
+      if (!deviceRes.ok) failures.push(`discovery targets (${deviceRes.status})`);
       if (failures.length > 0) {
         setError(`Failed to load: ${failures.join(', ')}`);
       }
@@ -201,6 +206,29 @@ export default function MssqlDashboard() {
     );
   }, [instances, query]);
 
+  const selectedDiscoveryTarget = useMemo(
+    () => discoveryTargets.find((device) => device.id === emptyDiscoveryDeviceId) ?? null,
+    [discoveryTargets, emptyDiscoveryDeviceId]
+  );
+
+  const eligibleDiscoveryTargets = useMemo(
+    () => discoveryTargets.filter((device) => device.eligible),
+    [discoveryTargets]
+  );
+
+  const singleEligibleDiscoveryTarget =
+    eligibleDiscoveryTargets.length === 1 ? eligibleDiscoveryTargets[0] ?? null : null;
+
+  const emptyStateTitle = discoveryTargets.length === 0
+    ? 'No SQL discovery targets available'
+    : 'No SQL Server instances found';
+
+  const emptyStateDescription = discoveryTargets.length === 0
+    ? 'Assign an SQL Server backup policy to a Windows device before running discovery.'
+    : singleEligibleDiscoveryTarget
+      ? `Run discovery on ${singleEligibleDiscoveryTarget.displayName ?? singleEligibleDiscoveryTarget.hostname ?? 'the protected device'} to detect SQL Server instances.`
+      : 'Choose a protected Windows device and run discovery to detect SQL Server instances.';
+
   const toggleExpand = (id: string) => {
     setExpandedInstanceId((prev) => (prev === id ? null : id));
   };
@@ -236,33 +264,49 @@ export default function MssqlDashboard() {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-center">
         <Database className="h-12 w-12 text-muted-foreground/40" />
-        <h3 className="mt-4 text-base font-semibold text-foreground">No SQL Server instances found</h3>
+        <h3 className="mt-4 text-base font-semibold text-foreground">{emptyStateTitle}</h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          Select a Windows device and run discovery to detect SQL Server instances.
+          {emptyStateDescription}
         </p>
-        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-          <select
-            className="min-w-64 rounded-md border bg-background px-3 py-2 text-sm"
-            value={emptyDiscoveryDeviceId}
-            onChange={(event) => setEmptyDiscoveryDeviceId(event.target.value)}
-          >
-            <option value="">Select a Windows device</option>
-            {devices.map((device) => (
-              <option key={device.id} value={device.id}>
-                {device.displayName ?? device.hostname ?? device.id}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={() => void handleDiscover(emptyDiscoveryDeviceId)}
-            disabled={!emptyDiscoveryDeviceId || discoveringDeviceId === emptyDiscoveryDeviceId}
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-          >
-            {discoveringDeviceId === emptyDiscoveryDeviceId ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            Run discovery
-          </button>
-        </div>
+        {discoveryTargets.length > 0 && (
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+            {singleEligibleDiscoveryTarget ? (
+              <div className="min-w-64 rounded-md border bg-background px-3 py-2 text-left text-sm">
+                <div className="font-medium text-foreground">
+                  {singleEligibleDiscoveryTarget.displayName ?? singleEligibleDiscoveryTarget.hostname ?? singleEligibleDiscoveryTarget.id}
+                </div>
+                <div className="text-xs text-muted-foreground">Protected Windows device</div>
+              </div>
+            ) : (
+              <select
+                className="min-w-64 rounded-md border bg-background px-3 py-2 text-sm"
+                value={emptyDiscoveryDeviceId}
+                onChange={(event) => setEmptyDiscoveryDeviceId(event.target.value)}
+              >
+                <option value="">Select a protected Windows device</option>
+                {discoveryTargets.map((device) => (
+                  <option key={device.id} value={device.id}>
+                    {`${device.displayName ?? device.hostname ?? device.id}${device.eligible ? '' : ' — offline'}`}
+                  </option>
+                ))}
+              </select>
+            )}
+            <button
+              type="button"
+              onClick={() => void handleDiscover(emptyDiscoveryDeviceId)}
+              disabled={!emptyDiscoveryDeviceId || discoveringDeviceId === emptyDiscoveryDeviceId || !selectedDiscoveryTarget?.eligible}
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {discoveringDeviceId === emptyDiscoveryDeviceId ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              Run discovery
+            </button>
+          </div>
+        )}
+        {discoveryTargets.length > 0 && !eligibleDiscoveryTargets.length && (
+          <p className="mt-3 text-xs text-muted-foreground">
+            A protected target exists, but discovery requires the device to be online.
+          </p>
+        )}
       </div>
     );
   }

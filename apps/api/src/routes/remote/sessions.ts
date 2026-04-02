@@ -655,7 +655,7 @@ sessionRoutes.post(
     }
 
     const agentReachable = sendCommandToAgent(device.agentId, {
-      id: `desk-${sessionId}`,
+      id: `desk-start-${sessionId}`,
       type: 'start_desktop',
       payload: { sessionId, offer: data.offer, iceServers: getIceServers(), ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}) }
     });

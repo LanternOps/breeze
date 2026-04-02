@@ -56,6 +56,8 @@ type DeviceSummary = {
   hostname?: string | null;
   displayName?: string | null;
   osType?: string | null;
+  status?: string | null;
+  eligible?: boolean;
 };
 
 const vmStateConfig: Record<VmState, { label: string; className: string }> = {
@@ -79,7 +81,7 @@ function normalizeVmState(state?: string): VmState {
 
 export default function HypervDashboard() {
   const [vms, setVms] = useState<HypervVm[]>([]);
-  const [devices, setDevices] = useState<DeviceSummary[]>([]);
+  const [discoveryTargets, setDiscoveryTargets] = useState<DeviceSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [message, setMessage] = useState<string>();
@@ -96,7 +98,7 @@ export default function HypervDashboard() {
       setError(undefined);
       const [vmResponse, deviceResponse] = await Promise.all([
         fetchWithAuth('/backup/hyperv/vms'),
-        fetchWithAuth('/devices?limit=200'),
+        fetchWithAuth('/backup/hyperv/discovery-targets'),
       ]);
 
       if (!vmResponse.ok) {
@@ -113,14 +115,18 @@ export default function HypervDashboard() {
 
       if (deviceResponse.ok) {
         const devicePayload = await deviceResponse.json();
-        const rawDevices = devicePayload?.data ?? devicePayload ?? [];
-        const allDevices = Array.isArray(rawDevices) ? rawDevices as DeviceSummary[] : [];
-        const windowsDevices = allDevices.filter((device) => `${device.osType ?? ''}`.toLowerCase().includes('windows'));
-        setDevices(windowsDevices);
-        setDiscoverTargetDeviceId((current) => current || windowsDevices[0]?.id || '');
+        const rawTargets = devicePayload?.data ?? devicePayload ?? [];
+        const targets = Array.isArray(rawTargets) ? rawTargets as DeviceSummary[] : [];
+        setDiscoveryTargets(targets);
+        setDiscoverTargetDeviceId((current) => {
+          if (current && targets.some((device) => device.id === current)) {
+            return current;
+          }
+          return targets.find((device) => device.eligible)?.id ?? targets[0]?.id ?? '';
+        });
       } else {
-        console.warn('[HypervDashboard] Failed to load device list:', deviceResponse.status);
-        setError('Loaded VMs but could not load device list for discovery.');
+        console.warn('[HypervDashboard] Failed to load discovery targets:', deviceResponse.status);
+        setError('Loaded VMs but could not load Hyper-V discovery targets.');
       }
     } catch (err) {
       console.error('[HypervDashboard] fetchData:', err);
@@ -162,9 +168,22 @@ export default function HypervDashboard() {
 
   const deviceNameById = useMemo(() => {
     return new Map(
-      devices.map((device) => [device.id, device.displayName ?? device.hostname ?? device.id] as const)
+      discoveryTargets.map((device) => [device.id, device.displayName ?? device.hostname ?? device.id] as const)
     );
-  }, [devices]);
+  }, [discoveryTargets]);
+
+  const selectedDiscoveryTarget = useMemo(
+    () => discoveryTargets.find((device) => device.id === discoverTargetDeviceId) ?? null,
+    [discoveryTargets, discoverTargetDeviceId]
+  );
+
+  const eligibleDiscoveryTargets = useMemo(
+    () => discoveryTargets.filter((device) => device.eligible),
+    [discoveryTargets]
+  );
+
+  const singleEligibleDiscoveryTarget =
+    eligibleDiscoveryTargets.length === 1 ? eligibleDiscoveryTargets[0] ?? null : null;
 
   const filteredVms = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -213,40 +232,65 @@ export default function HypervDashboard() {
 
   // Empty state
   if (!error && vms.length === 0) {
+    const emptyStateTitle = discoveryTargets.length === 0
+      ? 'No Hyper-V discovery targets available'
+      : 'No Hyper-V VMs found';
+    const emptyStateDescription = discoveryTargets.length === 0
+      ? 'Assign a Hyper-V backup policy to a Windows host before running discovery.'
+      : singleEligibleDiscoveryTarget
+        ? `Run discovery on ${singleEligibleDiscoveryTarget.displayName ?? singleEligibleDiscoveryTarget.hostname ?? 'the protected host'} to detect virtual machines.`
+        : 'Choose a protected Windows host and run discovery to detect virtual machines.';
+
     return (
       <div className="flex flex-col items-center justify-center py-20 text-center">
         <Monitor className="h-12 w-12 text-muted-foreground/40" />
-        <h3 className="mt-4 text-base font-semibold text-foreground">No Hyper-V VMs found</h3>
+        <h3 className="mt-4 text-base font-semibold text-foreground">{emptyStateTitle}</h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          Select a Windows host and run discovery to detect virtual machines.
+          {emptyStateDescription}
         </p>
-        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-          <select
-            className="min-w-64 rounded-md border bg-background px-3 py-2 text-sm"
-            value={discoverTargetDeviceId}
-            onChange={(event) => setDiscoverTargetDeviceId(event.target.value)}
-          >
-            <option value="">Select a Windows host</option>
-            {devices.map((device) => (
-              <option key={device.id} value={device.id}>
-                {device.displayName ?? device.hostname ?? device.id}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={() => void handleDiscover(discoverTargetDeviceId)}
-            disabled={!discoverTargetDeviceId || discoveringDeviceId === discoverTargetDeviceId}
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-          >
-            {discoveringDeviceId === discoverTargetDeviceId ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
+        {discoveryTargets.length > 0 && (
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+            {singleEligibleDiscoveryTarget ? (
+              <div className="min-w-64 rounded-md border bg-background px-3 py-2 text-left text-sm">
+                <div className="font-medium text-foreground">
+                  {singleEligibleDiscoveryTarget.displayName ?? singleEligibleDiscoveryTarget.hostname ?? singleEligibleDiscoveryTarget.id}
+                </div>
+                <div className="text-xs text-muted-foreground">Protected Hyper-V host</div>
+              </div>
             ) : (
-              <Search className="h-4 w-4" />
+              <select
+                className="min-w-64 rounded-md border bg-background px-3 py-2 text-sm"
+                value={discoverTargetDeviceId}
+                onChange={(event) => setDiscoverTargetDeviceId(event.target.value)}
+              >
+                <option value="">Select a protected Windows host</option>
+                {discoveryTargets.map((device) => (
+                  <option key={device.id} value={device.id}>
+                    {`${device.displayName ?? device.hostname ?? device.id}${device.eligible ? '' : ' — offline'}`}
+                  </option>
+                ))}
+              </select>
             )}
-            Run discovery
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={() => void handleDiscover(discoverTargetDeviceId)}
+              disabled={!discoverTargetDeviceId || discoveringDeviceId === discoverTargetDeviceId || !selectedDiscoveryTarget?.eligible}
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {discoveringDeviceId === discoverTargetDeviceId ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Search className="h-4 w-4" />
+              )}
+              Run discovery
+            </button>
+          </div>
+        )}
+        {discoveryTargets.length > 0 && !eligibleDiscoveryTargets.length && (
+          <p className="mt-3 text-xs text-muted-foreground">
+            A protected Hyper-V host exists, but discovery requires the host to be online.
+          </p>
+        )}
       </div>
     );
   }
@@ -262,23 +306,35 @@ export default function HypervDashboard() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <select
-            aria-label="Discover Hyper-V host"
-            className="h-9 min-w-56 rounded-md border bg-background px-3 text-xs"
-            value={discoverTargetDeviceId}
-            onChange={(event) => setDiscoverTargetDeviceId(event.target.value)}
-          >
-            <option value="">Select host</option>
-            {devices.map((device) => (
-              <option key={device.id} value={device.id}>
-                {device.displayName ?? device.hostname ?? device.id}
-              </option>
-            ))}
-          </select>
+          {discoveryTargets.length > 0 ? (
+            singleEligibleDiscoveryTarget ? (
+              <div className="hidden h-9 min-w-56 items-center rounded-md border bg-background px-3 text-xs text-foreground md:flex">
+                {singleEligibleDiscoveryTarget.displayName ?? singleEligibleDiscoveryTarget.hostname ?? singleEligibleDiscoveryTarget.id}
+              </div>
+            ) : (
+              <select
+                aria-label="Discover Hyper-V host"
+                className="h-9 min-w-56 rounded-md border bg-background px-3 text-xs"
+                value={discoverTargetDeviceId}
+                onChange={(event) => setDiscoverTargetDeviceId(event.target.value)}
+              >
+                <option value="">Select protected host</option>
+                {discoveryTargets.map((device) => (
+                  <option key={device.id} value={device.id}>
+                    {`${device.displayName ?? device.hostname ?? device.id}${device.eligible ? '' : ' — offline'}`}
+                  </option>
+                ))}
+              </select>
+            )
+          ) : (
+            <div className="hidden rounded-md border bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground md:block">
+              No protected Hyper-V hosts
+            </div>
+          )}
           <button
             type="button"
             onClick={() => void handleDiscover(discoverTargetDeviceId)}
-            disabled={!discoverTargetDeviceId || discoveringDeviceId !== null}
+            disabled={!discoverTargetDeviceId || discoveringDeviceId !== null || !selectedDiscoveryTarget?.eligible}
             className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
           >
             {discoveringDeviceId ? (

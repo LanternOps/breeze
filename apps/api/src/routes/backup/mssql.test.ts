@@ -11,6 +11,7 @@ vi.mock('../../services', () => ({}));
 
 const executeCommandMock = vi.fn();
 const resolveBackupConfigForDeviceMock = vi.fn();
+const resolveAllBackupAssignedDevicesMock = vi.fn();
 const applyBackupCommandResultToJobMock = vi.fn();
 
 function chainMock(resolvedValue: unknown = []) {
@@ -46,6 +47,10 @@ vi.mock('../../db/schema', () => ({
   devices: {
     id: 'devices.id',
     orgId: 'devices.org_id',
+    displayName: 'devices.display_name',
+    hostname: 'devices.hostname',
+    osType: 'devices.os_type',
+    status: 'devices.status',
   },
   backupJobs: {
     id: 'backup_jobs.id',
@@ -99,6 +104,7 @@ vi.mock('../../middleware/auth', () => ({
 }));
 
 vi.mock('../../services/featureConfigResolver', () => ({
+  resolveAllBackupAssignedDevices: (...args: unknown[]) => resolveAllBackupAssignedDevicesMock(...(args as [])),
   resolveBackupConfigForDevice: (...args: unknown[]) => resolveBackupConfigForDeviceMock(...(args as [])),
 }));
 
@@ -117,6 +123,7 @@ describe('mssql routes', () => {
     insertMock.mockReset();
     executeCommandMock.mockReset();
     resolveBackupConfigForDeviceMock.mockReset();
+    resolveAllBackupAssignedDevicesMock.mockReset();
     applyBackupCommandResultToJobMock.mockReset();
     authState = {
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
@@ -144,6 +151,50 @@ describe('mssql routes', () => {
 
     expect(res.status).toBe(200);
     expect((await res.json()).data).toEqual([]);
+  });
+
+  it('returns only MSSQL-protected Windows discovery targets', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([
+      {
+        deviceId: 'device-1',
+        configId: 'config-1',
+        settings: { backupMode: 'mssql' },
+      },
+      {
+        deviceId: 'device-2',
+        configId: 'config-2',
+        settings: { backupMode: 'file' },
+      },
+      {
+        deviceId: 'device-3',
+        configId: null,
+        settings: { backupMode: 'mssql' },
+      },
+    ]);
+    selectMock.mockReturnValueOnce(chainMock([
+      {
+        id: 'device-1',
+        displayName: 'SQL Host',
+        hostname: 'sql-host',
+        osType: 'windows',
+        status: 'online',
+      },
+    ]));
+
+    const res = await app.request('/backup/mssql/discovery-targets', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(resolveAllBackupAssignedDevicesMock).toHaveBeenCalledWith(ORG_ID);
+    expect((await res.json()).data).toEqual([
+      expect.objectContaining({
+        id: 'device-1',
+        displayName: 'SQL Host',
+        eligible: true,
+      }),
+    ]);
   });
 
   it('dispatches MSSQL discovery for a device', async () => {

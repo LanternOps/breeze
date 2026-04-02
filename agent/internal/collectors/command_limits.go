@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"time"
@@ -62,6 +63,31 @@ func runCollectorCombinedOutputWithContext(parent context.Context, timeout time.
 		return nil, fmt.Errorf("%s output too large", name)
 	}
 	return output, err
+}
+
+// runCollectorLimitedOutput runs a command and reads up to collectorCommandOutputLimit
+// bytes from stdout via a pipe, discarding the rest. Safe for line-based output
+// where truncation is acceptable (e.g. pmset -g log).
+func runCollectorLimitedOutput(timeout time.Duration, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, name, args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("%s pipe failed: %w", name, err)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("%s start failed: %w", name, err)
+	}
+	output, err := io.ReadAll(io.LimitReader(stdout, int64(collectorCommandOutputLimit)))
+	if err != nil && ctx.Err() != nil {
+		return nil, fmt.Errorf("%s timed out: %w", name, ctx.Err())
+	}
+	// Drain any remaining output so the process can exit cleanly.
+	_, _ = io.Copy(io.Discard, stdout)
+	_ = cmd.Wait()
+	return output, nil
 }
 
 func newCollectorScanner(output []byte) *bufio.Scanner {
