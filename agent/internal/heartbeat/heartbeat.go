@@ -1317,21 +1317,23 @@ func (h *Heartbeat) applyEventLogConfig(raw any) {
 	}
 
 	if maxEvents > 0 || len(categories) > 0 || minLevel != "" || interval > 0 {
-		h.eventLogCol.UpdateConfig(maxEvents, categories, minLevel, interval)
-		logFields := []any{}
-		if maxEvents > 0 {
-			logFields = append(logFields, "maxEventsPerCycle", maxEvents)
+		changed := h.eventLogCol.UpdateConfig(maxEvents, categories, minLevel, interval)
+		if changed {
+			logFields := []any{}
+			if maxEvents > 0 {
+				logFields = append(logFields, "maxEventsPerCycle", maxEvents)
+			}
+			if len(categories) > 0 {
+				logFields = append(logFields, "collectCategories", categories)
+			}
+			if minLevel != "" {
+				logFields = append(logFields, "minimumLevel", minLevel)
+			}
+			if interval > 0 {
+				logFields = append(logFields, "collectionIntervalMinutes", interval)
+			}
+			log.Info("applied event log config update", logFields...)
 		}
-		if len(categories) > 0 {
-			logFields = append(logFields, "collectCategories", categories)
-		}
-		if minLevel != "" {
-			logFields = append(logFields, "minimumLevel", minLevel)
-		}
-		if interval > 0 {
-			logFields = append(logFields, "collectionIntervalMinutes", interval)
-		}
-		log.Info("applied event log config update", logFields...)
 	} else if len(m) > 0 {
 		keys := make([]string, 0, len(m))
 		for k := range m {
