@@ -5,6 +5,21 @@ package desktop
 /*
 #include <CoreGraphics/CoreGraphics.h>
 
+// Returns the backing scale factor (2.0 on Retina, 1.0 otherwise) for the
+// main display using CoreGraphics display mode pixel vs logical dimensions.
+static double getMainDisplayScaleFactor(void) {
+    CGDirectDisplayID mainDisplay = CGMainDisplayID();
+    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(mainDisplay);
+    if (!mode) return 1.0;
+    size_t pixelWidth = CGDisplayModeGetPixelWidth(mode);
+    size_t logicalWidth = CGDisplayModeGetWidth(mode);
+    CGDisplayModeRelease(mode);
+    if (logicalWidth > 0) {
+        return (double)pixelWidth / (double)logicalWidth;
+    }
+    return 1.0;
+}
+
 static void inputMouseMove(int x, int y) {
     CGEventRef event = CGEventCreateMouseEvent(NULL, kCGEventMouseMoved, CGPointMake(x, y), 0);
     if (event) {
@@ -141,16 +156,27 @@ var keyNameToKeycode = map[string]int{
 // DarwinInputHandler handles input on macOS using CGEvents.
 // Requires Accessibility permission (System Settings > Privacy > Accessibility).
 type DarwinInputHandler struct {
-	mouseDown bool // track if mouse button is held for drag events
-	mouseBtn  int
+	mouseDown   bool // track if mouse button is held for drag events
+	mouseBtn    int
+	scaleFactor float64 // backing scale factor (2.0 on Retina)
 }
 
 func NewInputHandler() InputHandler {
-	return &DarwinInputHandler{}
+	sf := float64(C.getMainDisplayScaleFactor())
+	if sf < 1.0 {
+		sf = 1.0
+	}
+	return &DarwinInputHandler{scaleFactor: sf}
 }
 
 func (h *DarwinInputHandler) SetDisplayOffset(x, y int) {
 	// macOS CGEvents use global display coordinates; offset handled by capturer.
+}
+
+// scaleXY converts viewer coordinates (video pixel space, 2x on Retina)
+// to macOS logical points that CGEvent expects.
+func (h *DarwinInputHandler) scaleXY(x, y int) (C.int, C.int) {
+	return C.int(float64(x) / h.scaleFactor), C.int(float64(y) / h.scaleFactor)
 }
 
 func buttonToInt(button string) int {
@@ -186,36 +212,41 @@ func normalizeKeyName(key string) string {
 }
 
 func (h *DarwinInputHandler) SendMouseMove(x, y int) error {
+	sx, sy := h.scaleXY(x, y)
 	if h.mouseDown {
-		C.inputMouseDrag(C.int(x), C.int(y), C.int(h.mouseBtn))
+		C.inputMouseDrag(sx, sy, C.int(h.mouseBtn))
 	} else {
-		C.inputMouseMove(C.int(x), C.int(y))
+		C.inputMouseMove(sx, sy)
 	}
 	return nil
 }
 
 func (h *DarwinInputHandler) SendMouseClick(x, y int, button string) error {
+	sx, sy := h.scaleXY(x, y)
 	btn := C.int(buttonToInt(button))
-	C.inputMouseDown(C.int(x), C.int(y), btn)
-	C.inputMouseUp(C.int(x), C.int(y), btn)
+	C.inputMouseDown(sx, sy, btn)
+	C.inputMouseUp(sx, sy, btn)
 	return nil
 }
 
 func (h *DarwinInputHandler) SendMouseDown(x, y int, button string) error {
 	h.mouseBtn = buttonToInt(button)
 	h.mouseDown = true
-	C.inputMouseDown(C.int(x), C.int(y), C.int(h.mouseBtn))
+	sx, sy := h.scaleXY(x, y)
+	C.inputMouseDown(sx, sy, C.int(h.mouseBtn))
 	return nil
 }
 
 func (h *DarwinInputHandler) SendMouseUp(x, y int, button string) error {
 	h.mouseDown = false
-	C.inputMouseUp(C.int(x), C.int(y), C.int(buttonToInt(button)))
+	sx, sy := h.scaleXY(x, y)
+	C.inputMouseUp(sx, sy, C.int(buttonToInt(button)))
 	return nil
 }
 
 func (h *DarwinInputHandler) SendMouseScroll(x, y int, delta int) error {
-	C.inputMouseMove(C.int(x), C.int(y))
+	sx, sy := h.scaleXY(x, y)
+	C.inputMouseMove(sx, sy)
 	C.inputMouseScroll(C.int(-delta)) // negate: browser deltaY+ = scroll down
 	return nil
 }
