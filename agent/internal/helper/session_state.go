@@ -17,6 +17,12 @@ type SessionInfo struct {
 	UID      uint32
 }
 
+// maxSpawnCrashes is the number of rapid crashes before we enter a cooldown.
+const maxSpawnCrashes = 5
+
+// spawnCooldown is how long to wait before retrying after repeated crashes.
+const spawnCooldown = 5 * time.Minute
+
 type sessionState struct {
 	key         string
 	configPath  string
@@ -25,6 +31,11 @@ type sessionState struct {
 	pid         int
 	watcher     *watcher
 	lastApplied time.Time
+
+	// Crash tracking: prevents spawn loops when the helper keeps crashing.
+	spawnCrashes    int       // consecutive spawns where the helper died before next check
+	lastSpawnTime   time.Time // when we last spawned
+	cooldownUntil   time.Time // if set, don't spawn until this time
 }
 
 func newSessionState(key, baseDir string) *sessionState {
@@ -55,4 +66,39 @@ func (s *sessionState) refreshPID() {
 		return
 	}
 	s.pid = status.PID
+}
+
+// inCooldown returns true if the helper crashed too many times and we should
+// wait before spawning again.
+func (s *sessionState) inCooldown() bool {
+	if s.cooldownUntil.IsZero() {
+		return false
+	}
+	if time.Now().After(s.cooldownUntil) {
+		// Cooldown expired — reset and allow spawning.
+		s.spawnCrashes = 0
+		s.cooldownUntil = time.Time{}
+		return false
+	}
+	return true
+}
+
+// recordSpawn notes that we just spawned the helper.
+func (s *sessionState) recordSpawn() {
+	s.lastSpawnTime = time.Now()
+}
+
+// recordCrash should be called when a previously-spawned helper is no longer
+// running. If crashes exceed the threshold, a cooldown is entered.
+func (s *sessionState) recordCrash() {
+	s.spawnCrashes++
+	if s.spawnCrashes >= maxSpawnCrashes {
+		s.cooldownUntil = time.Now().Add(spawnCooldown)
+	}
+}
+
+// resetCrashes clears the crash counter (called when the helper is confirmed alive).
+func (s *sessionState) resetCrashes() {
+	s.spawnCrashes = 0
+	s.cooldownUntil = time.Time{}
 }
