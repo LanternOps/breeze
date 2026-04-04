@@ -29,7 +29,7 @@ const statusConfig: Record<ConnectionStatus, { label: string; color: string }> =
 
 export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: VncViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const rfbRef = useRef<InstanceType<typeof import('@novnc/novnc/core/rfb').default> | null>(null);
+  const rfbRef = useRef<any>(null);
 
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -40,7 +40,7 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
   useEffect(() => {
     if (!containerRef.current) return;
 
-    let rfb: InstanceType<typeof import('@novnc/novnc/core/rfb').default> | null = null;
+    let rfb: any = null;
     let disposed = false;
 
     async function connect() {

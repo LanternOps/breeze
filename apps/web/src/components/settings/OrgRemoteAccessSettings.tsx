@@ -63,7 +63,7 @@ export default function OrgRemoteAccessSettings({ orgId, sites: propSites, onDir
   // Fetch sites if not provided via props
   useEffect(() => {
     if (propSites) return;
-    fetchWithAuth(`/orgs/organizations/${orgId}/sites`)
+    fetchWithAuth(`/orgs/sites?orgId=${orgId}`)
       .then(async res => {
         if (res.ok) {
           const data = await res.json();
