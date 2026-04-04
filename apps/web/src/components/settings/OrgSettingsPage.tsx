@@ -4,6 +4,7 @@ import {
   Bell,
   Building2,
   CheckCircle2,
+  Monitor,
   Paintbrush,
   ScrollText,
   Shield
@@ -13,6 +14,7 @@ import OrgDefaultsEditor from './OrgDefaultsEditor';
 import OrgNotificationSettings from './OrgNotificationSettings';
 import OrgSecuritySettings from './OrgSecuritySettings';
 import OrgEventLogSettings from './OrgEventLogSettings';
+import OrgRemoteAccessSettings from './OrgRemoteAccessSettings';
 import { useOrgStore } from '../../stores/orgStore';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
@@ -47,6 +49,12 @@ const tabs = [
     label: 'Event Logs',
     description: 'Forwarding and retention',
     icon: ScrollText
+  },
+  {
+    id: 'remote-access',
+    label: 'Remote Access',
+    description: 'VNC, proxy, and tunnel settings',
+    icon: Monitor
   }
 ] as const;
 
@@ -326,6 +334,13 @@ export default function OrgSettingsPage() {
             locked={locked}
           />
         );
+      case 'remote-access':
+        return currentOrgId ? (
+          <OrgRemoteAccessSettings
+            orgId={currentOrgId}
+            onDirty={handleDirty}
+          />
+        ) : null;
       case 'general':
       default:
         return (
