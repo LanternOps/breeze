@@ -75,6 +75,8 @@ import { deploymentRoutes } from './routes/deployments';
 import { createAgentWsRoutes } from './routes/agentWs';
 import { createTerminalWsRoutes } from './routes/terminalWs';
 import { createDesktopWsRoutes } from './routes/desktopWs';
+import { createTunnelWsRoutes } from './routes/tunnelWs';
+import { tunnelRoutes } from './routes/tunnels';
 import { agentVersionRoutes } from './routes/agentVersions';
 import { viewerRoutes } from './routes/viewers';
 import { aiRoutes } from './routes/ai';
@@ -654,6 +656,8 @@ api.route('/search', searchRoutes);
 api.route('/logs', logsRoutes);
 api.route('/remote/sessions', createTerminalWsRoutes(upgradeWebSocket)); // WebSocket routes first (no auth middleware)
 api.route('/desktop-ws', createDesktopWsRoutes(upgradeWebSocket)); // Desktop WebSocket routes (outside /remote to avoid auth middleware)
+api.route('/tunnel-ws', createTunnelWsRoutes(upgradeWebSocket)); // Tunnel WebSocket routes (no auth middleware — uses one-time tickets)
+api.route('/tunnels', tunnelRoutes);
 api.route('/remote', remoteRoutes);
 api.route('/api-keys', apiKeyRoutes);
 api.route('/enrollment-keys', enrollmentKeyRoutes);
