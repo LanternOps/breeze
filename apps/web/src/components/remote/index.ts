@@ -6,6 +6,7 @@ export { default as RemoteFilesPage } from './RemoteFilesPage';
 export { default as SessionHistoryPage } from './SessionHistoryPage';
 export { default as RemoteToolsPage } from './RemoteToolsPage';
 export { default as FileActivityPanel } from './FileActivityPanel';
+export { default as VncViewer } from './VncViewer';
 
 // System management tools
 export { default as ProcessManager } from './ProcessManager';

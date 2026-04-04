@@ -46,6 +46,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 	"github.com/breeze-rmm/agent/internal/tcc"
 	"github.com/breeze-rmm/agent/internal/terminal"
+	"github.com/breeze-rmm/agent/internal/tunnel"
 	"github.com/breeze-rmm/agent/internal/updater"
 	"github.com/breeze-rmm/agent/internal/websocket"
 	"github.com/breeze-rmm/agent/internal/workerpool"
@@ -134,6 +135,7 @@ type Heartbeat struct {
 	desktopMgr            *desktop.SessionManager
 	wsDesktopMgr          *desktop.WsSessionManager
 	terminalMgr           *terminal.Manager
+	tunnelMgr             *tunnel.Manager
 	executor              *executor.Executor
 	backupBinaryPath      string
 	rebootMgr             *patching.RebootManager
@@ -249,6 +251,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		desktopMgr:      desktop.NewSessionManager(),
 		wsDesktopMgr:    desktop.NewWsSessionManager(),
 		terminalMgr:     terminal.NewManager(),
+		tunnelMgr:       tunnel.NewManager(),
 		securityScanner: &security.SecurityScanner{Config: cfg},
 		pool:            workerpool.New(cfg.MaxConcurrentCommands, cfg.CommandQueueSize),
 		healthMon:       health.NewMonitor(),
@@ -732,6 +735,9 @@ func (h *Heartbeat) Stop() {
 		}
 		if h.helperMgr != nil {
 			h.helperMgr.Shutdown()
+		}
+		if h.tunnelMgr != nil {
+			h.tunnelMgr.Stop()
 		}
 		// Close stopChan first — this signals broker.Listen() to call broker.Close()
 		// internally. The broker's Close() is idempotent via its closed flag.

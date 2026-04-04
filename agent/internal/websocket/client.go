@@ -428,6 +428,25 @@ func (c *Client) SendDesktopFrame(sessionId string, data []byte) error {
 	}
 }
 
+// SendTunnelData sends binary tunnel data to the server.
+// Format: [0x03][36-byte tunnelId UTF-8][payload]
+// Non-blocking: drops data if channel is full.
+func (c *Client) SendTunnelData(tunnelId string, data []byte) error {
+	msg := make([]byte, 1+36+len(data))
+	msg[0] = 0x03
+	copy(msg[1:37], []byte(tunnelId))
+	copy(msg[37:], data)
+
+	select {
+	case c.binaryFrameChan <- msg:
+		return nil
+	case <-c.done:
+		return fmt.Errorf("client is stopped")
+	default:
+		return fmt.Errorf("tunnel data channel full, dropping data")
+	}
+}
+
 // SendPatchProgress sends a patch download/install progress event to the server.
 // Non-blocking: drops if send channel is full.
 func (c *Client) SendPatchProgress(commandID string, event any) error {
