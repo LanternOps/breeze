@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
 const (
@@ -115,6 +118,40 @@ func (s *Session) handleControlMessage(data []byte) {
 		// Viewer window regained focus — force IDR so picture is immediately sharp.
 		if enc := s.encoder.Load(); enc != nil {
 			_ = enc.ForceKeyframe()
+		}
+	case "list_sessions":
+		detector := sessionbroker.NewSessionDetector()
+		detected, err := detector.ListSessions()
+		if err != nil {
+			slog.Warn("Failed to list sessions", "session", s.id, "error", err.Error())
+			return
+		}
+		items := make([]ipc.SessionInfoItem, 0, len(detected))
+		for _, ds := range detected {
+			if ds.Type == "services" {
+				continue
+			}
+			sessionNum, parseErr := sessionbroker.ParseWindowsSessionIDForHeartbeat(ds.Session)
+			if parseErr != nil {
+				continue
+			}
+			items = append(items, ipc.SessionInfoItem{
+				SessionID:       sessionNum,
+				Username:        ds.Username,
+				State:           ds.State,
+				Type:            ds.Type,
+				HelperConnected: false,
+			})
+		}
+		resp, _ := json.Marshal(map[string]any{
+			"type":     "sessions",
+			"sessions": items,
+		})
+		s.mu.RLock()
+		dc := s.controlDC
+		s.mu.RUnlock()
+		if dc != nil {
+			dc.SendText(string(resp))
 		}
 	case "list_monitors":
 		monitors, err := ListMonitors()
