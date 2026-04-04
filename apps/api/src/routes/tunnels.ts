@@ -4,12 +4,15 @@ import { z } from 'zod';
 import { and, eq, desc, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { tunnelSessions, tunnelAllowlists, devices, users } from '../db/schema';
-import { requireScope } from '../middleware/auth';
+import { authMiddleware, requireScope } from '../middleware/auth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { createWsTicket } from '../services/remoteSessionAuth';
 import type { AuthContext } from '../middleware/auth';
 
 export const tunnelRoutes = new Hono();
+
+// Apply auth middleware to all tunnel routes
+tunnelRoutes.use('*', authMiddleware);
 
 // --- Schemas ---
 
