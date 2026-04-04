@@ -74,7 +74,9 @@ type Manager struct {
 	isOurProcessFunc  func(pid int, binaryPath string) bool
 	stopByPIDFunc     func(pid int) error
 
-	pendingHelperVersion string
+	pendingHelperVersion  string
+	updateFailures        int
+	abandonedVersion      string // version we gave up updating to
 }
 
 // New creates a new helper Manager.
@@ -304,8 +306,23 @@ var minConfigFlagVersion = [3]int{0, 14, 0}
 
 func (m *Manager) ensureRunningSession(state *sessionState) error {
 	if state.pid > 0 && m.isOurProcessFunc(state.pid, m.binaryPath) {
+		state.resetCrashes()
 		return nil
 	}
+
+	// If we recently spawned and the process is already gone, count it as a crash.
+	if !state.lastSpawnTime.IsZero() && state.pid > 0 {
+		state.recordCrash()
+		if state.inCooldown() {
+			log.Warn("breeze assist keeps crashing, backing off",
+				"session", state.key,
+				"crashes", state.spawnCrashes,
+				"cooldownUntil", state.cooldownUntil.Format("15:04:05"),
+			)
+			return fmt.Errorf("in cooldown after %d crashes", state.spawnCrashes)
+		}
+	}
+
 	var pid int
 	var err error
 	if m.helperSupportsConfigFlag() {
@@ -317,6 +334,7 @@ func (m *Manager) ensureRunningSession(state *sessionState) error {
 		return err
 	}
 	state.pid = pid
+	state.recordSpawn()
 	return nil
 }
 
@@ -409,9 +427,14 @@ func (m *Manager) downloadAndInstall() error {
 func (m *Manager) CheckUpdate(targetVersion string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if targetVersion == m.abandonedVersion {
+		return // already failed for this version, don't retry
+	}
 	if m.pendingHelperVersion != targetVersion {
 		log.Info("helper update pending", "targetVersion", targetVersion)
 		m.pendingHelperVersion = targetVersion
+		m.updateFailures = 0
+		m.abandonedVersion = ""
 	}
 }
 
@@ -445,6 +468,19 @@ func (m *Manager) applyPendingUpdate() {
 	if installed := m.installedVersionLocked(); installed == m.pendingHelperVersion {
 		log.Info("helper already at target version, clearing pending update", "version", installed)
 		m.pendingHelperVersion = ""
+		m.updateFailures = 0
+		return
+	}
+
+	const maxUpdateFailures = 3
+	if m.updateFailures >= maxUpdateFailures {
+		log.Warn("helper update abandoned after repeated failures, clearing pending update",
+			"targetVersion", m.pendingHelperVersion,
+			"failures", m.updateFailures,
+		)
+		m.abandonedVersion = m.pendingHelperVersion
+		m.pendingHelperVersion = ""
+		m.updateFailures = 0
 		return
 	}
 
@@ -472,7 +508,8 @@ func (m *Manager) applyPendingUpdate() {
 	}
 
 	if err := m.downloadAndInstall(); err != nil {
-		log.Error("failed to install helper update", "error", err.Error())
+		m.updateFailures++
+		log.Error("failed to install helper update", "error", err.Error(), "failures", m.updateFailures)
 		if restoreErr := restoreBackup(backupPath, m.binaryPath); restoreErr != nil {
 			log.Error("failed to rollback helper", "error", restoreErr.Error())
 		}
@@ -488,6 +525,7 @@ func (m *Manager) applyPendingUpdate() {
 
 	for _, state := range stopped {
 		state.pid = 0
+		state.resetCrashes() // new binary — give it a fresh chance
 		if err := m.ensureRunningSession(state); err != nil {
 			log.Error("failed to start updated helper", "session", state.key, "error", err.Error())
 			if restoreErr := restoreBackup(backupPath, m.binaryPath); restoreErr != nil {
