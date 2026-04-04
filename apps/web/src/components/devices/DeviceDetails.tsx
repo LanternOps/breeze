@@ -277,7 +277,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
       )}
 
       {activeTab === 'software' && (
-        <DeviceSoftwareInventory deviceId={device.id} timezone={effectiveTimezone} />
+        <DeviceSoftwareInventory deviceId={device.id} timezone={effectiveTimezone} osType={device.os} />
       )}
 
       {activeTab === 'patches' && (
