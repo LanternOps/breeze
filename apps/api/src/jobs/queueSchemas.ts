@@ -68,7 +68,7 @@ export const backupQueueJobDataSchema = z.discriminatedUnion('type', [
 
 const discoveredOpenPortSchema = z.object({
   port: z.number().int().nonnegative(),
-  service: z.string().min(1),
+  service: z.string(),
 }).strict();
 
 export const discoveredHostResultSchema = z.object({
@@ -82,12 +82,14 @@ export const discoveredHostResultSchema = z.object({
   openPorts: z.array(discoveredOpenPortSchema).optional(),
   osFingerprint: z.string().min(1).optional(),
   snmpData: z.object({
-    sysDescr: z.string().min(1).optional(),
-    sysObjectId: z.string().min(1).optional(),
-    sysName: z.string().min(1).optional(),
+    sysDescr: z.string().optional(),
+    sysObjectId: z.string().optional(),
+    sysName: z.string().optional(),
   }).strict().optional(),
   responseTimeMs: z.number().nonnegative().optional(),
   methods: z.array(z.string().min(1)),
+  firstSeen: z.string().optional(),
+  lastSeen: z.string().optional(),
 }).strict();
 
 export const discoveryQueueJobDataSchema = z.discriminatedUnion('type', [
