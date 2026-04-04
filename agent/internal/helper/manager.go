@@ -305,9 +305,14 @@ func (m *Manager) writeSessionConfig(state *sessionState, cfg *Config, si Sessio
 var minConfigFlagVersion = [3]int{0, 14, 0}
 
 func (m *Manager) ensureRunningSession(state *sessionState) error {
-	// Check the spawned PID first (authoritative), then the status-file PID.
-	// This prevents spawning duplicates when refreshPID overwrites state.pid
-	// with 0 or a stale value from the status file.
+	// First check: scan the process table for breeze-helper.exe in this
+	// session. This is the reliable check that the old code used (by process
+	// name) — immune to PID tracking failures from cmd.exe wrappers, Tauri
+	// re-exec, or missing status files.
+	if isHelperRunningInSession(state.key, m.binaryPath) {
+		return nil
+	}
+	// Fallback: check by tracked PIDs.
 	if state.spawnedPID > 0 && m.isOurProcessFunc(state.spawnedPID, m.binaryPath) {
 		return nil
 	}

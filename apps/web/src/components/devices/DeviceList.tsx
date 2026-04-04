@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
 import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2 } from 'lucide-react';
-import type { DesktopAccessState, FilterConditionGroup } from '@breeze/shared';
+import type { DesktopAccessState, FilterConditionGroup, RemoteAccessPolicy } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
 import { widthPercentClass } from '@/lib/utils';
@@ -32,6 +32,7 @@ export type Device = {
   displayName?: string;
   isHeadless?: boolean;
   desktopAccess?: DesktopAccessState | null;
+  remoteAccessPolicy?: RemoteAccessPolicy | null;
 };
 
 type DeviceListProps = {
@@ -661,6 +662,8 @@ export default function DeviceList({
                         iconOnly
                         disabled={device.status !== 'online'}
                         isHeadless={device.isHeadless}
+                        desktopAccess={device.desktopAccess}
+                        remoteAccessPolicy={device.remoteAccessPolicy}
                       />
                       <div className="relative" ref={rowMenuOpenId === device.id ? rowMenuRef : undefined}>
                         <button

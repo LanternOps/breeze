@@ -34,8 +34,7 @@ export default defineConfig({
           "'self'",
           'https://cdn.jsdelivr.net',
           'https://static.cloudflareinsights.com',
-          "'sha256-bacfnNOzS8xVciF1oRjNrpDu4hKrvSr0iXOXqEFy7QI='",
-          "'sha256-DKBc0lUFnELkt1qO57cJDibexAx9xbbfodYeIFq6uEQ='"
+          "'sha256-dr7co1YqmJP1+caEJBfXkM/oHRwOVAknT+gDygo8nD0='"
         ]
       },
       styleDirective: {
@@ -58,11 +57,16 @@ export default defineConfig({
     allowedHosts: ['2breeze.app']
   },
   vite: {
+    resolve: {
+      dedupe: ['react', 'react-dom']
+    },
     optimizeDeps: {
-      include: ['react-dom/client']
+      include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime', 'react/jsx-dev-runtime', 'zustand', 'zustand/middleware'],
+      exclude: ['@novnc/novnc']
     },
     ssr: {
-      noExternal: ['@tanstack/react-query']
+      noExternal: ['@tanstack/react-query'],
+      external: ['@novnc/novnc']
     },
     server: {
       allowedHosts: 'all',

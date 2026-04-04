@@ -8,6 +8,7 @@ import FeatureTabShell from './FeatureTabShell';
 type RemoteAccessSettings = {
   webrtcDesktop: boolean;
   vncRelay: boolean;
+  remoteTools: boolean;
   enableProxy: boolean;
   defaultAllowedPorts: number[];
   autoEnableProxy: boolean;
@@ -19,6 +20,7 @@ type RemoteAccessSettings = {
 const defaults: RemoteAccessSettings = {
   webrtcDesktop: true,
   vncRelay: false,
+  remoteTools: true,
   enableProxy: false,
   defaultAllowedPorts: [80, 443, 8080, 8443],
   autoEnableProxy: false,
@@ -121,6 +123,7 @@ export default function RemoteAccessTab({ policyId, existingLink, onLinkChanged,
           </div>
           <ToggleRow label="WebRTC Desktop" description="Enable browser-based remote desktop via WebRTC." checked={settings.webrtcDesktop} onChange={(v) => update('webrtcDesktop', v)} />
           <ToggleRow label="VNC Relay" description="Enable VNC relay connections through the platform." checked={settings.vncRelay} onChange={(v) => update('vncRelay', v)} />
+          <ToggleRow label="Remote System Tools" description="Allow remote process manager, services, registry, terminal, and file browser." checked={settings.remoteTools} onChange={(v) => update('remoteTools', v)} />
         </div>
 
         {/* Limits */}

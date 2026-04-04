@@ -100,7 +100,7 @@ describe('discovery queue helpers', () => {
     expect(addMock).toHaveBeenCalledWith(
       'process-results',
       expect.objectContaining({ jobId: 'job-123' }),
-      expect.objectContaining({ jobId: 'discovery-result:job-123' }),
+      expect.objectContaining({ jobId: 'discovery-result-job-123' }),
     );
   });
 

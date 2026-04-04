@@ -94,6 +94,15 @@ type CommandResultHandler = (params: {
 // Per-command-type result handlers (used by the dispatch map in processCommandResult)
 // ---------------------------------------------------------------------------
 
+/** Coerce Date instances in host firstSeen/lastSeen to ISO strings so Zod datetime validation passes. */
+function normalizeDiscoveryHosts(hosts: DiscoveredHostResult[]): DiscoveredHostResult[] {
+  return hosts.map(h => ({
+    ...h,
+    firstSeen: h.firstSeen instanceof Date ? h.firstSeen.toISOString() : h.firstSeen,
+    lastSeen: h.lastSeen instanceof Date ? h.lastSeen.toISOString() : h.lastSeen,
+  }));
+}
+
 async function handleDiscoveryResult({ agentId, command, result }: Parameters<CommandResultHandler>[0]): Promise<void> {
   const payload = command.payload as Record<string, unknown> | null;
   const expectedJobId = typeof payload?.jobId === 'string' ? payload.jobId : null;
@@ -128,7 +137,7 @@ async function handleDiscoveryResult({ agentId, command, result }: Parameters<Co
           expectedJobId,
           job.orgId,
           job.siteId,
-          discoveryData.hosts,
+          normalizeDiscoveryHosts(discoveryData.hosts),
           discoveryData.hostsScanned ?? 0,
           discoveryData.hostsDiscovered ?? 0,
           undefined,
@@ -978,7 +987,7 @@ async function processOrphanedCommandResult(
           discoveryJob.id,
           discoveryJob.orgId,
           discoveryJob.siteId,
-          discoveryData.hosts,
+          normalizeDiscoveryHosts(discoveryData.hosts),
           discoveryData.hostsScanned ?? 0,
           discoveryData.hostsDiscovered ?? 0,
           undefined,

@@ -60,6 +60,8 @@ function createBackupVerificationWorker(): Worker<BackupVerificationJobData> {
     {
       connection: getRedisConnection(),
       concurrency: 3,
+      lockDuration: 120_000,
+      lockRenewTime: 60_000,
     }
   );
 }

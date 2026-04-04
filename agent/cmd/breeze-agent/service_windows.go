@@ -46,8 +46,12 @@ func hasConsole() bool {
 	return ret != 0
 }
 
-// isHeadless mirrors isWindowsService on Windows — Session 0 has no display.
-func isHeadless() bool { return isWindowsService() }
+// isHeadless on Windows is always false. Even when the agent runs as a
+// Windows service (Session 0), the machine typically has interactive user
+// sessions with displays. The session broker + helper architecture handles
+// the Session 0 ↔ user session gap. True headless detection (Server Core,
+// Nano Server) can be added later if needed.
+func isHeadless() bool { return false }
 
 // ensureSASPolicy checks the SoftwareSASGeneration registry value and
 // auto-enables it if not sufficient. Value 3 = services AND apps can generate

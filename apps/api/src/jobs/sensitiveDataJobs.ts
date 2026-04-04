@@ -488,7 +488,9 @@ export function createSensitiveDataWorker(): Worker<SensitiveDataJobData> {
     },
     {
       connection: getRedisConnection(),
-      concurrency: SENSITIVE_DATA_WORKER_CONCURRENCY
+      concurrency: SENSITIVE_DATA_WORKER_CONCURRENCY,
+      lockDuration: 120_000,
+      lockRenewTime: 60_000,
     }
   );
 }

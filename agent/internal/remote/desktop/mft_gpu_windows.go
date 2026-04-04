@@ -206,3 +206,51 @@ func (m *mftEncoder) SupportsGPUInput() bool {
 	}
 	return m.gpuEnabled || m.d3d11Device != 0
 }
+
+// createDXGISurfaceSample wraps a D3D11 NV12 texture as an IMFSample backed
+// by a DXGI surface buffer. The MFT reads directly from GPU memory — no CPU
+// readback required. Returns (sample, cleanup, error). Caller must call
+// cleanup() after ProcessInput returns to release the COM objects.
+func createDXGISurfaceSample(nv12Texture uintptr, timestamp int64) (uintptr, func(), error) {
+	// MFCreateDXGISurfaceBuffer(riid, surface, subresourceIndex, bottomUpWhenFalse) → IMFMediaBuffer
+	var mediaBuffer uintptr
+	hr, _, _ := procMFCreateDXGISurfaceBuffer.Call(
+		uintptr(unsafe.Pointer(&iidID3D11Texture2D)),
+		nv12Texture,
+		0, // subresource index 0
+		0, // bottomUpWhenFalse = FALSE
+		uintptr(unsafe.Pointer(&mediaBuffer)),
+	)
+	if int32(hr) < 0 {
+		return 0, nil, fmt.Errorf("MFCreateDXGISurfaceBuffer: 0x%08X", uint32(hr))
+	}
+
+	// MFCreateSample → IMFSample
+	var sample uintptr
+	hr, _, _ = procMFCreateSample.Call(uintptr(unsafe.Pointer(&sample)))
+	if int32(hr) < 0 {
+		comRelease(mediaBuffer)
+		return 0, nil, fmt.Errorf("MFCreateSample: 0x%08X", uint32(hr))
+	}
+
+	// IMFSample::AddBuffer(mediaBuffer)
+	_, err := comCall(sample, vtblAddBuffer, mediaBuffer)
+	if err != nil {
+		comRelease(sample)
+		comRelease(mediaBuffer)
+		return 0, nil, fmt.Errorf("AddBuffer: %w", err)
+	}
+
+	// Set sample timestamp (100ns units)
+	comCall(sample, vtblSetSampleTime, uintptr(timestamp))
+
+	// Set sample duration (100ns units, ~60fps default)
+	comCall(sample, vtblSetSampleDuration, uintptr(166667))
+
+	cleanup := func() {
+		comRelease(mediaBuffer)
+		// Note: do NOT release sample here — MFT owns it after ProcessInput
+	}
+
+	return sample, cleanup, nil
+}

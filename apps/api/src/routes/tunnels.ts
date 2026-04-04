@@ -6,6 +6,7 @@ import { db } from '../db';
 import { tunnelSessions, tunnelAllowlists, devices, users } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
+import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { createWsTicket } from '../services/remoteSessionAuth';
 import type { AuthContext } from '../middleware/auth';
 
@@ -191,6 +192,18 @@ tunnelRoutes.post(
 
     if (!device.agentId || !isAgentConnected(device.agentId)) {
       return c.json({ error: 'Agent is not connected' }, 400);
+    }
+
+    // Remote access policy enforcement
+    const tunnelCapability = body.type === 'vnc' ? 'vncRelay' as const : 'proxy' as const;
+    const policyCheck = await checkRemoteAccess(body.deviceId, tunnelCapability);
+    if (!policyCheck.allowed) {
+      return c.json({
+        error: policyCheck.reason,
+        code: 'REMOTE_ACCESS_POLICY_DENIED',
+        capability: tunnelCapability,
+        policyName: policyCheck.policyName,
+      }, 403);
     }
 
     const isVNC = body.type === 'vnc';

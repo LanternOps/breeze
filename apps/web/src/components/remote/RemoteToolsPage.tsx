@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
+import type { DesktopAccessState, RemoteAccessPolicy } from '@breeze/shared';
 import {
   Activity,
   Settings2,
@@ -8,7 +9,8 @@ import {
   Terminal,
   FolderOpen,
   Monitor,
-  Loader2
+  Loader2,
+  ShieldOff
 } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
 
@@ -51,6 +53,8 @@ type DeviceApiResponse = {
   displayName?: string | null;
   osType?: string | null;
   isHeadless?: boolean;
+  desktopAccess?: DesktopAccessState | null;
+  remoteAccessPolicy?: RemoteAccessPolicy | null;
 };
 
 type ApiProcess = {
@@ -391,6 +395,8 @@ export default function RemoteToolsPage({
   const [resolvedDeviceName, setResolvedDeviceName] = useState(deviceName);
   const [resolvedDeviceOs, setResolvedDeviceOs] = useState<DeviceOs>(normalizeDeviceOs(deviceOs));
   const [isHeadless, setIsHeadless] = useState(false);
+  const [desktopAccess, setDesktopAccess] = useState<DesktopAccessState | null>(null);
+  const [remoteAccessPolicy, setRemoteAccessPolicy] = useState<RemoteAccessPolicy | null>(null);
 
   // Process state
   const [processes, setProcesses] = useState<Process[]>([]);
@@ -446,6 +452,8 @@ export default function RemoteToolsPage({
         setResolvedDeviceName(data.displayName || data.hostname || deviceName);
         setResolvedDeviceOs(normalizeDeviceOs(data.osType));
         setIsHeadless(data.isHeadless === true);
+        setDesktopAccess(data.desktopAccess ?? null);
+        setRemoteAccessPolicy(data.remoteAccessPolicy ?? null);
       } catch (error) {
         console.error('Failed to load device info:', error);
       }
@@ -809,7 +817,7 @@ export default function RemoteToolsPage({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <ConnectDesktopButton deviceId={deviceId} isHeadless={isHeadless} />
+          <ConnectDesktopButton deviceId={deviceId} isHeadless={isHeadless} desktopAccess={desktopAccess} remoteAccessPolicy={remoteAccessPolicy} />
           {shouldShowClose && (
             <button
               onClick={handleClose}
@@ -842,6 +850,23 @@ export default function RemoteToolsPage({
           );
         })}
       </div>
+
+      {/* Policy blocked banner */}
+      {remoteAccessPolicy?.remoteTools === false && (
+        <div className="mx-4 mt-4 flex items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-800 dark:bg-amber-950">
+          <ShieldOff className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
+          <div>
+            <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
+              Remote tools are disabled for this device
+            </p>
+            <p className="text-xs text-amber-700 dark:text-amber-400">
+              {remoteAccessPolicy.policyName
+                ? `Configuration policy "${remoteAccessPolicy.policyName}" has disabled remote system tools.`
+                : 'A configuration policy has disabled remote system tools.'}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Tool Content */}
       <div className={`flex-1 min-h-0 flex flex-col p-6 ${activeTab === 'files' ? '' : 'overflow-auto'}`}>

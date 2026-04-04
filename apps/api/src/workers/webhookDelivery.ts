@@ -413,7 +413,12 @@ export async function initializeWebhookDelivery(
         }
       });
     } catch (err) {
-      console.error('[WebhookDelivery] Error routing event to webhooks:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('CONNECTION_DESTROYED') || msg.includes('CONNECTION_ENDED')) {
+        console.warn('[WebhookDelivery] Transient DB connection error, will retry on next event');
+      } else {
+        console.error('[WebhookDelivery] Error routing event to webhooks:', err);
+      }
     }
   });
 

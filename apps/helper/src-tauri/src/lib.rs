@@ -80,20 +80,22 @@ fn load_agent_config_full() -> Result<AgentConfigFull, String> {
     let path = agent_config_path();
 
     let contents = std::fs::read_to_string(&path).map_err(|e| {
-        format!(
-            "Failed to read agent config at {}: {}",
-            path.display(),
-            e
-        )
+        log_helper_error(&format!("agent config not found at {}: {}", path.display(), e));
+        "Breeze Assist requires the Breeze agent. Ensure the Breeze agent is installed and running on this device.".to_string()
     })?;
 
-    let yaml: serde_yaml::Value = serde_yaml::from_str(&contents)
-        .map_err(|e| format!("Failed to parse agent config: {}", e))?;
+    let yaml: serde_yaml::Value = serde_yaml::from_str(&contents).map_err(|e| {
+        log_helper_error(&format!("failed to parse agent config at {}: {}", path.display(), e));
+        "Agent configuration is corrupt. Reinstall the Breeze agent or contact your administrator.".to_string()
+    })?;
 
     let api_url = yaml
         .get("server_url")
         .and_then(|v| v.as_str())
-        .ok_or("Missing 'server_url' in agent config")?
+        .ok_or_else(|| {
+            log_helper_error("missing required field 'server_url' in agent config");
+            "Agent configuration is incomplete. The agent may still be enrolling \u{2014} wait a moment and retry.".to_string()
+        })?
         .to_string();
 
     // Read secrets from secrets.yaml (same directory, different file) for tokens/mTLS creds.
@@ -108,13 +110,19 @@ fn load_agent_config_full() -> Result<AgentConfigFull, String> {
         .and_then(|s| s.get("auth_token"))
         .and_then(|v| v.as_str())
         .or_else(|| yaml.get("auth_token").and_then(|v| v.as_str())) // fallback to agent.yaml
-        .ok_or("Missing 'auth_token' in secrets.yaml or agent.yaml")?
+        .ok_or_else(|| {
+            log_helper_error("secrets.yaml not found and no auth_token in agent.yaml");
+            "The Breeze agent is still setting up. Wait a moment and retry, or contact your administrator.".to_string()
+        })?
         .to_string();
 
     let agent_id = yaml
         .get("agent_id")
         .and_then(|v| v.as_str())
-        .ok_or("Missing 'agent_id' in agent config")?
+        .ok_or_else(|| {
+            log_helper_error("missing required field 'agent_id' in agent config");
+            "Agent configuration is incomplete. The agent may still be enrolling \u{2014} wait a moment and retry.".to_string()
+        })?
         .to_string();
 
     let mtls_cert_pem = secrets
@@ -463,10 +471,10 @@ async fn helper_fetch(
         req_builder = req_builder.body(body.clone());
     }
 
-    let response = req_builder
-        .send()
-        .await
-        .map_err(|e| format!("HTTP request failed: {}", e))?;
+    let response = req_builder.send().await.map_err(|e| {
+        log_helper_error(&format!("HTTP request to {} failed: {}", request.url, e));
+        "Cannot connect to the Breeze server. Check your network connection.".to_string()
+    })?;
 
     let status = response.status().as_u16();
 

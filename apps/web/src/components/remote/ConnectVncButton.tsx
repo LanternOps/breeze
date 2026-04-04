@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { Monitor, ExternalLink, X, Globe } from 'lucide-react';
+import { Monitor, MonitorOff, ExternalLink, X, Globe } from 'lucide-react';
+import type { RemoteAccessPolicy } from '@breeze/shared';
 import { fetchWithAuth } from '@/stores/auth';
 
 interface Props {
@@ -10,6 +11,7 @@ interface Props {
   disabled?: boolean;
   /** When true, shown as primary option (e.g., macOS < 14 login-window fallback) */
   primary?: boolean;
+  remoteAccessPolicy?: RemoteAccessPolicy | null;
 }
 
 /**
@@ -24,6 +26,7 @@ export default function ConnectVncButton({
   iconOnly = false,
   disabled = false,
   primary = false,
+  remoteAccessPolicy = null,
 }: Props) {
   const [status, setStatus] = useState<'idle' | 'creating' | 'launching' | 'fallback'>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -195,12 +198,47 @@ export default function ConnectVncButton({
     </div>
   ) : null;
 
+  const policyDisabled = remoteAccessPolicy?.vncRelay === false;
+  const policyTitle = policyDisabled
+    ? `VNC relay is disabled by policy${remoteAccessPolicy?.policyName ? ` "${remoteAccessPolicy.policyName}"` : ''}`
+    : undefined;
+
   const label = primary ? 'VNC Desktop' : 'VNC Remote';
   const buttonLabel =
     error ? 'Connection failed' :
     status === 'creating' ? 'Creating tunnel...' :
     status === 'launching' ? 'Launching...' :
     label;
+
+  if (policyDisabled) {
+    if (iconOnly) {
+      return (
+        <div className={`relative ${className}`}>
+          <button type="button" disabled title={policyTitle} className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground cursor-not-allowed opacity-50">
+            <MonitorOff className="h-4 w-4" />
+          </button>
+        </div>
+      );
+    }
+    if (compact) {
+      return (
+        <div className="relative">
+          <button type="button" disabled title={policyTitle} className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-muted-foreground cursor-not-allowed opacity-50">
+            <MonitorOff className="h-4 w-4" />
+            VNC Unavailable
+          </button>
+        </div>
+      );
+    }
+    return (
+      <div className={`relative ${className}`}>
+        <button type="button" disabled title={policyTitle} className="flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground cursor-not-allowed opacity-50">
+          <MonitorOff className="h-4 w-4" />
+          VNC Unavailable
+        </button>
+      </div>
+    );
+  }
 
   if (iconOnly) {
     return (

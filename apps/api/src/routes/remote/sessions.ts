@@ -10,6 +10,7 @@ import {
 } from '../../db/schema';
 import { requireScope } from '../../middleware/auth';
 import { sendCommandToAgent } from '../agentWs';
+import { checkRemoteAccess } from '../../services/remoteAccessPolicy';
 import { createDesktopConnectCode, createWsTicket } from '../../services/remoteSessionAuth';
 import {
   createSessionSchema,
@@ -112,6 +113,21 @@ sessionRoutes.post(
     // Check device is online
     if (device.status !== 'online') {
       return c.json({ error: 'Device is not online', deviceStatus: device.status }, 400);
+    }
+
+    // Remote access policy enforcement
+    const capability = data.type === 'desktop' ? 'webrtcDesktop' as const
+      : 'remoteTools' as const; // terminal + file_transfer are both remote tools
+    {
+      const policyCheck = await checkRemoteAccess(data.deviceId, capability);
+      if (!policyCheck.allowed) {
+        return c.json({
+          error: policyCheck.reason,
+          code: 'REMOTE_ACCESS_POLICY_DENIED',
+          capability,
+          policyName: policyCheck.policyName,
+        }, 403);
+      }
     }
 
     // Check rate limit for org

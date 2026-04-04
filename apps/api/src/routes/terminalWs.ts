@@ -6,6 +6,7 @@ import { db } from '../db';
 import { remoteSessions, devices, users } from '../db/schema';
 import { consumeWsTicket } from '../services/remoteSessionAuth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
+import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 
 // Zod validation for terminal user messages
 const terminalMessageSchema = z.discriminatedUnion('type', [
@@ -139,6 +140,12 @@ async function validateTerminalAccess(
   // Check device is online
   if (device.status !== 'online') {
     return { valid: false, error: 'Device is not online' };
+  }
+
+  // Remote access policy enforcement (defense-in-depth)
+  const policyCheck = await checkRemoteAccess(device.id, 'remoteTools');
+  if (!policyCheck.allowed) {
+    return { valid: false, error: policyCheck.reason ?? 'Remote tools disabled by policy' };
   }
 
   return { valid: true, session, device, userId: user.id };

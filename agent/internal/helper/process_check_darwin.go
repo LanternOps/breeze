@@ -25,3 +25,9 @@ func isOurProcess(pid int, binaryPath string) bool {
 	}
 	return filepath.Clean(exePath) == filepath.Clean(binaryPath)
 }
+
+// isHelperRunningInSession is a no-op on macOS (session-based spawning is
+// Windows-only). The PID-based check is sufficient on macOS/Linux.
+func isHelperRunningInSession(_ string, _ string) bool {
+	return false
+}

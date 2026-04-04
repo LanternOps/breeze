@@ -80,7 +80,9 @@ export function createOfflineWorker(): Worker<OfflineJobData> {
     },
     {
       connection: getRedisConnection(),
-      concurrency: 5
+      concurrency: 5,
+      lockDuration: 120_000,
+      lockRenewTime: 60_000,
     }
   );
 }

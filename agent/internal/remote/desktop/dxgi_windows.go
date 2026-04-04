@@ -4,6 +4,7 @@ package desktop
 
 import (
 	"fmt"
+	"image"
 	"log/slog"
 	"runtime"
 	"sync"
@@ -62,6 +63,8 @@ const (
 	dxgiOutput1DuplicateOutput = 22  // IDXGIOutput1
 	dxgiDuplGetDesc            = 7   // IDXGIOutputDuplication
 	dxgiDuplAcquireNextFrame   = 8   // IDXGIOutputDuplication
+	dxgiDuplGetFrameDirtyRects = 9   // IDXGIOutputDuplication::GetFrameDirtyRects
+	dxgiDuplGetFrameMoveRects  = 10  // IDXGIOutputDuplication::GetFrameMoveRects
 	dxgiDuplReleaseFrame       = 14  // IDXGIOutputDuplication
 	d3d11DeviceCreateTexture2D = 5   // ID3D11Device
 	d3d11CtxMap                = 14  // ID3D11DeviceContext
@@ -121,6 +124,11 @@ type dxgiOutDuplDesc struct {
 	DesktopImageInSystemMemory int32 // BOOL
 }
 
+// dxgiRECT matches the Win32 RECT structure used by GetFrameDirtyRects.
+type dxgiRECT struct {
+	Left, Top, Right, Bottom int32
+}
+
 // dxgiOutDuplFrameInfo matches DXGI_OUTDUPL_FRAME_INFO.
 type dxgiOutDuplFrameInfo struct {
 	LastPresentTime           int64
@@ -169,6 +177,9 @@ type dxgiCapturer struct {
 
 	// Last AcquireNextFrame accumulated count
 	lastAccumulatedFrames uint32
+
+	// Dirty rects from the last successful AcquireNextFrame
+	lastDirtyRects []image.Rectangle
 
 	// Failure tracking for GDI fallback
 	consecutiveFailures int
@@ -494,9 +505,10 @@ func (c *dxgiCapturer) releaseDXGI() {
 }
 
 var (
-	_ ScreenCapturer  = (*dxgiCapturer)(nil)
-	_ BGRAProvider    = (*dxgiCapturer)(nil)
-	_ TightLoopHint   = (*dxgiCapturer)(nil)
-	_ FrameChangeHint = (*dxgiCapturer)(nil)
-	_ TextureProvider = (*dxgiCapturer)(nil)
+	_ ScreenCapturer   = (*dxgiCapturer)(nil)
+	_ BGRAProvider     = (*dxgiCapturer)(nil)
+	_ TightLoopHint    = (*dxgiCapturer)(nil)
+	_ FrameChangeHint  = (*dxgiCapturer)(nil)
+	_ TextureProvider  = (*dxgiCapturer)(nil)
+	_ DirtyRectProvider = (*dxgiCapturer)(nil)
 )
