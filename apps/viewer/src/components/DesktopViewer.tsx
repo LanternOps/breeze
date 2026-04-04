@@ -60,6 +60,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [cursorStreamActive, setCursorStreamActive] = useState(false);
   const [monitors, setMonitors] = useState<Array<{ index: number; name: string; width: number; height: number; isPrimary: boolean }>>([]);
   const [activeMonitor, setActiveMonitor] = useState(0);
+  const [sessions, setSessions] = useState<Array<{ sessionId: number; username: string; state: string; type: string; helperConnected: boolean }>>([]);
+  const [activeSessionId, setActiveSessionId] = useState<number | null>(params.targetSessionId ?? null);
+  const [switchingSession, setSwitchingSession] = useState<string | null>(null);
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [hasAudioTrack, setHasAudioTrack] = useState(false);
   const [showRemoteCursor, setShowRemoteCursor] = useState(false);
@@ -105,12 +108,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
   // ── WebRTC connection ──────────────────────────────────────────────
 
-  const connectWebRTC = useCallback(async (auth: AuthenticatedConnectionParams): Promise<boolean> => {
+  const connectWebRTC = useCallback(async (auth: AuthenticatedConnectionParams, targetSessionId?: number): Promise<boolean> => {
     const videoEl = videoRef.current;
     if (!videoEl) return false;
 
 	    try {
-	      const session = await createWebRTCSession(auth, videoEl);
+	      const session = await createWebRTCSession(auth, videoEl, undefined, targetSessionId ?? params.targetSessionId);
 	      webrtcRef.current = session;
 
 	      // Reduce input lag under loss: coalesce mouse moves, and avoid unbounded buffering.
@@ -810,6 +813,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
 	    const onOpen = () => {
 	      ch.send(JSON.stringify({ type: 'list_monitors' }));
+	      ch.send(JSON.stringify({ type: 'list_sessions' }));
 	    };
     const onMessage = (e: MessageEvent) => {
       try {
@@ -817,6 +821,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         switch (msg.type) {
           case 'monitors':
             if (Array.isArray(msg.monitors)) setMonitors(msg.monitors);
+            break;
+          case 'sessions':
+            if (Array.isArray(msg.sessions)) setSessions(msg.sessions);
             break;
           case 'monitor_switched':
             setActiveMonitor(msg.index ?? 0);
@@ -844,9 +851,17 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }
     ch.addEventListener('open', onOpen);
     ch.addEventListener('message', onMessage);
+
+    const sessionPollInterval = setInterval(() => {
+      if (ch.readyState === 'open') {
+        ch.send(JSON.stringify({ type: 'list_sessions' }));
+      }
+    }, 30_000);
+
 	    return () => {
 	      ch.removeEventListener('open', onOpen);
 	      ch.removeEventListener('message', onMessage);
+	      clearInterval(sessionPollInterval);
 	    };
 	  }, [transport]);
 
@@ -1219,6 +1234,41 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }
   }, []);
 
+  const handleSwitchSession = useCallback(async (sessionId: number) => {
+    const auth = authRef.current;
+    if (!auth) return;
+    const target = sessions.find(s => s.sessionId === sessionId);
+    const label = target?.username || `Session ${sessionId}`;
+
+    setSwitchingSession(label);
+
+    // Tear down current WebRTC session
+    releaseAllKeys();
+    const prevSession = webrtcRef.current;
+    webrtcRef.current = null;
+    const audioEl = (prevSession as any)?._audioEl as HTMLAudioElement | undefined;
+    if (audioEl) {
+      audioEl.pause();
+      audioEl.srcObject = null;
+    }
+    prevSession?.close();
+
+    // Reset display state
+    setMonitors([]);
+    setActiveMonitor(0);
+    setTransportState(null);
+
+    try {
+      const ok = await connectWebRTC(auth, sessionId);
+      if (!ok) throw new Error('WebRTC connection failed');
+      setActiveSessionId(sessionId);
+    } catch (err) {
+      setErrorMessage(`Failed to switch to ${label}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSwitchingSession(null);
+    }
+  }, [sessions, connectWebRTC, releaseAllKeys, setTransportState]);
+
   const handleToggleAudio = useCallback(() => {
     const newEnabled = !audioEnabled;
     setAudioEnabled(newEnabled);
@@ -1319,6 +1369,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         remapCmdCtrl={remapCmdCtrl}
         monitors={monitors}
         activeMonitor={activeMonitor}
+        sessions={sessions}
+        activeSessionId={activeSessionId}
+        onSwitchSession={handleSwitchSession}
         audioEnabled={audioEnabled}
         hasAudioTrack={hasAudioTrack}
         showRemoteCursor={showRemoteCursor}
@@ -1347,6 +1400,16 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           style={{ cursor: cursorStreamActive && showRemoteCursor ? 'none' : 'default' }}
           {...interactionProps}
         />
+
+        {/* Session switching overlay */}
+        {switchingSession && (
+          <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-20">
+            <div className="text-center">
+              <div className="animate-spin w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full mx-auto mb-3" />
+              <p className="text-white text-sm">Switching to {switchingSession}...</p>
+            </div>
+          </div>
+        )}
 
         {/* Remote cursor overlay — streamed at 120Hz independent of video frame rate */}
         <div
