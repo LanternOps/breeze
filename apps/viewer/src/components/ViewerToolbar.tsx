@@ -65,7 +65,7 @@ const KEY_COMBOS: KeyCombo[] = [
 
 function UserIcon({ className }: { className?: string }) {
   return (
-    <svg className={className} viewBox="0 0 16 16" fill="currentColor">
+    <svg className={className} viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
       <path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM2 14s-1 0-1-1 1-4 7-4 7 3 7 4-1 1-1 1H2Z" />
     </svg>
   );
@@ -333,7 +333,7 @@ export default function ViewerToolbar({
                 <span className="max-w-[80px] truncate">{s.username || `Session ${s.sessionId}`}</span>
                 <span className={`w-1.5 h-1.5 rounded-full ${
                   s.state === 'active' ? 'bg-green-400' : 'bg-yellow-400'
-                }`} />
+                }`} aria-hidden="true" />
                 {s.type === 'rdp' && (
                   <span className="text-[9px] font-medium text-gray-500 uppercase">RDP</span>
                 )}
