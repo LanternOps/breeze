@@ -88,8 +88,8 @@ export const discoveredHostResultSchema = z.object({
   }).strict().optional(),
   responseTimeMs: z.number().nonnegative().optional(),
   methods: z.array(z.string().min(1)),
-  firstSeen: z.string().optional(),
-  lastSeen: z.string().optional(),
+  firstSeen: z.string().datetime({ offset: true }).optional(),
+  lastSeen: z.string().datetime({ offset: true }).optional(),
 }).strict();
 
 export const discoveryQueueJobDataSchema = z.discriminatedUnion('type', [
