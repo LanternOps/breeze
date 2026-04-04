@@ -63,6 +63,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [sessions, setSessions] = useState<Array<{ sessionId: number; username: string; state: string; type: string; helperConnected: boolean }>>([]);
   const [activeSessionId, setActiveSessionId] = useState<number | null>(params.targetSessionId ?? null);
   const [switchingSession, setSwitchingSession] = useState<string | null>(null);
+  const switchingSessionRef = useRef(false);
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [hasAudioTrack, setHasAudioTrack] = useState(false);
   const [showRemoteCursor, setShowRemoteCursor] = useState(false);
@@ -1235,15 +1236,25 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   }, []);
 
   const handleSwitchSession = useCallback(async (sessionId: number) => {
+    if (switchingSessionRef.current) return;
     const auth = authRef.current;
     if (!auth) return;
     const target = sessions.find(s => s.sessionId === sessionId);
     const label = target?.username || `Session ${sessionId}`;
 
+    switchingSessionRef.current = true;
     setSwitchingSession(label);
+    stopReconnect();
 
     // Tear down current WebRTC session
     releaseAllKeys();
+
+    if (webrtcMouseMoveRafRef.current !== null) {
+      cancelAnimationFrame(webrtcMouseMoveRafRef.current);
+      webrtcMouseMoveRafRef.current = null;
+    }
+    webrtcMouseMovePendingRef.current = null;
+
     const prevSession = webrtcRef.current;
     webrtcRef.current = null;
     const audioEl = (prevSession as any)?._audioEl as HTMLAudioElement | undefined;
@@ -1265,9 +1276,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     } catch (err) {
       setErrorMessage(`Failed to switch to ${label}: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
+      switchingSessionRef.current = false;
       setSwitchingSession(null);
     }
-  }, [sessions, connectWebRTC, releaseAllKeys, setTransportState]);
+  }, [sessions, connectWebRTC, releaseAllKeys, setTransportState, stopReconnect]);
 
   const handleToggleAudio = useCallback(() => {
     const newEnabled = !audioEnabled;
