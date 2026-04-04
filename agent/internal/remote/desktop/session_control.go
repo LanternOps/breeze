@@ -133,6 +133,7 @@ func (s *Session) handleControlMessage(data []byte) {
 			}
 			sessionNum, parseErr := sessionbroker.ParseWindowsSessionIDForHeartbeat(ds.Session)
 			if parseErr != nil {
+				slog.Debug("Skipping session with unparseable ID", "session", s.id, "winSession", ds.Session, "error", parseErr.Error())
 				continue
 			}
 			items = append(items, ipc.SessionInfoItem{

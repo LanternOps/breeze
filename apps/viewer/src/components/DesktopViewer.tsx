@@ -1274,12 +1274,25 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       if (!ok) throw new Error('WebRTC connection failed');
       setActiveSessionId(sessionId);
     } catch (err) {
-      setErrorMessage(`Failed to switch to ${label}: ${err instanceof Error ? err.message : String(err)}`);
+      // Try to reconnect to the previous session so the viewer isn't dead
+      const prevId = activeSessionId ?? undefined;
+      try {
+        const recovered = await connectWebRTC(auth, prevId);
+        if (recovered) {
+          setErrorMessage(`Failed to switch to ${label}. Restored previous session.`);
+        } else {
+          setErrorMessage(`Failed to switch to ${label} and could not restore previous session`);
+          startReconnectRef.current();
+        }
+      } catch {
+        setErrorMessage(`Failed to switch to ${label} and could not restore previous session`);
+        startReconnectRef.current();
+      }
     } finally {
       switchingSessionRef.current = false;
       setSwitchingSession(null);
     }
-  }, [sessions, connectWebRTC, releaseAllKeys, setTransportState, stopReconnect]);
+  }, [sessions, activeSessionId, connectWebRTC, releaseAllKeys, setTransportState, stopReconnect]);
 
   const handleToggleAudio = useCallback(() => {
     const newEnabled = !audioEnabled;
