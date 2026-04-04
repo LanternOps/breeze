@@ -8,7 +8,7 @@ import (
 const (
 	watcherBaseInterval = 30 * time.Second
 	watcherBackoffCap   = 30 * time.Second
-	watcherMaxRetries   = 10
+	watcherMaxRetries   = 5
 )
 
 type watcher struct {
@@ -56,31 +56,32 @@ func (w *watcher) run() {
 			continue
 		}
 
-		err := w.mgr.ensureRunningSession(w.state)
-		w.mgr.mu.Unlock()
-
-		if err == nil {
-			failures = 0
-			interval = watcherBaseInterval
-			timer.Reset(interval)
-			log.Info("breeze assist restarted by watcher", "session", w.state.key)
-			continue
-		}
-
+		// Helper is not running — this counts as a failure whether the
+		// spawn itself fails OR the previous spawn succeeded but the
+		// helper crashed before the next check.
 		failures++
-		log.Warn("watcher failed to restart breeze assist",
-			"session", w.state.key,
-			"error", err.Error(),
-			"failures", failures,
-			"maxRetries", watcherMaxRetries,
-		)
 
-		if failures >= watcherMaxRetries {
-			log.Error("watcher giving up after max retries, will retry on next heartbeat",
+		if failures > watcherMaxRetries {
+			w.state.watcherGaveUp = true
+			w.mgr.mu.Unlock()
+			log.Error("breeze assist keeps crashing, giving up",
 				"session", w.state.key,
 				"failures", failures,
 			)
 			return
+		}
+
+		err := w.mgr.ensureRunningSession(w.state)
+		w.mgr.mu.Unlock()
+
+		if err != nil {
+			log.Warn("watcher failed to restart breeze assist",
+				"session", w.state.key,
+				"error", err.Error(),
+				"failures", failures,
+			)
+		} else {
+			log.Info("breeze assist restarted by watcher", "session", w.state.key)
 		}
 
 		backoff := time.Duration(1<<uint(failures)) * time.Second
