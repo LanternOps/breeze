@@ -30,6 +30,7 @@ type SoftwareItem = {
 type DeviceSoftwareInventoryProps = {
   deviceId: string;
   timezone?: string;
+  osType?: string;
 };
 
 function formatDate(value?: string, timezone?: string) {
@@ -38,7 +39,7 @@ function formatDate(value?: string, timezone?: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString([], timezone ? { timeZone: timezone } : undefined);
 }
 
-export default function DeviceSoftwareInventory({ deviceId, timezone }: DeviceSoftwareInventoryProps) {
+export default function DeviceSoftwareInventory({ deviceId, timezone, osType }: DeviceSoftwareInventoryProps) {
   const [software, setSoftware] = useState<SoftwareItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -149,6 +150,7 @@ export default function DeviceSoftwareInventory({ deviceId, timezone }: DeviceSo
     setCurrentPage(1);
   };
 
+  const isMac = osType?.toLowerCase() === 'macos' || osType?.toLowerCase() === 'darwin';
   const hasActiveFilters = search || publisherFilter !== 'all' || typeFilter !== 'all';
 
   if (loading) {
@@ -213,25 +215,27 @@ export default function DeviceSoftwareInventory({ deviceId, timezone }: DeviceSo
           />
         </div>
 
-        {/* Type filter (Apple vs Third Party) */}
-        <div className="flex items-center rounded-md border bg-background text-sm">
-          {(['all', 'apple', 'third-party'] as const).map(type => (
-            <button
-              key={type}
-              type="button"
-              onClick={() => { setTypeFilter(type); setCurrentPage(1); }}
-              className={`flex items-center gap-1.5 px-3 py-2 transition-colors first:rounded-l-md last:rounded-r-md ${
-                typeFilter === type
-                  ? 'bg-primary text-primary-foreground'
-                  : 'hover:bg-muted'
-              }`}
-            >
-              {type === 'apple' && <AppleIcon className="h-3.5 w-3.5" />}
-              {type === 'third-party' && <Box className="h-3.5 w-3.5" />}
-              {type === 'all' ? 'All' : type === 'apple' ? 'Apple' : '3rd Party'}
-            </button>
-          ))}
-        </div>
+        {/* Type filter (Apple vs Third Party) — only on macOS */}
+        {isMac && (
+          <div className="flex items-center rounded-md border bg-background text-sm">
+            {(['all', 'apple', 'third-party'] as const).map(type => (
+              <button
+                key={type}
+                type="button"
+                onClick={() => { setTypeFilter(type); setCurrentPage(1); }}
+                className={`flex items-center gap-1.5 px-3 py-2 transition-colors first:rounded-l-md last:rounded-r-md ${
+                  typeFilter === type
+                    ? 'bg-primary text-primary-foreground'
+                    : 'hover:bg-muted'
+                }`}
+              >
+                {type === 'apple' && <AppleIcon className="h-3.5 w-3.5" />}
+                {type === 'third-party' && <Box className="h-3.5 w-3.5" />}
+                {type === 'all' ? 'All' : type === 'apple' ? 'Apple' : '3rd Party'}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Publisher filter */}
         <select
