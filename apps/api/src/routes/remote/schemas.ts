@@ -27,7 +27,8 @@ export const sessionHistorySchema = z.object({
 
 export const webrtcOfferSchema = z.object({
   offer: z.string().min(1).max(65536),
-  displayIndex: z.number().int().min(0).max(15).optional()
+  displayIndex: z.number().int().min(0).max(15).optional(),
+  targetSessionId: z.number().int().min(0).max(65535).optional()
 });
 
 export const webrtcAnswerSchema = z.object({

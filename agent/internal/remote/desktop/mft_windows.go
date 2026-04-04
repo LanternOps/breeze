@@ -736,6 +736,17 @@ func (m *mftEncoder) SetDimensions(w, h int) error {
 	m.width = w
 	m.height = h
 	m.stride = w * 4
+	// Eagerly initialize the MFT so BackendIsHardware() is accurate
+	// before the first Encode() call. This eliminates the blind spot where
+	// the startup stall guard checks IsHardware() but gets false because
+	// lazy init hasn't run yet.
+	if !m.inited && m.width > 0 && m.height > 0 {
+		if err := m.initialize(m.width, m.height, m.stride); err != nil {
+			slog.Warn("Eager MFT initialization failed, will retry on first encode",
+				"error", err.Error(), "width", m.width, "height", m.height)
+			// Non-fatal: lazy init on first Encode() will retry
+		}
+	}
 	return nil
 }
 
@@ -812,4 +823,49 @@ func (m *mftEncoder) IsPermanentlyStalled() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.permanentlyStalled
+}
+
+// AdvanceStallDetection progresses the stall state machine during idle periods
+// when no Encode() calls happen. If the encoder has pending nil outputs and
+// enough time has passed since the last flush attempt, this triggers the same
+// flush/permanent-stall logic that trackNilOutput uses.
+func (m *mftEncoder) AdvanceStallDetection() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.permanentlyStalled || !m.inited || m.consecutiveNilOutputs == 0 {
+		return
+	}
+	// Use the same threshold and timing logic as trackNilOutput, but
+	// trigger based on the existing counter that froze when encoding stopped.
+	threshold := mftStallThreshold
+	if m.lastStallFlush != (time.Time{}) && time.Since(m.lastStallFlush) < 10*time.Second {
+		threshold = mftStallThreshold / 2
+	}
+	if m.consecutiveNilOutputs >= threshold && time.Since(m.lastStallFlush) >= 2*time.Second {
+		if !m.outputSinceFlush && m.stallFlushCount > 0 {
+			m.stallFlushCount++
+		} else {
+			m.stallFlushCount = 1
+		}
+		m.outputSinceFlush = false
+
+		if m.stallFlushCount >= 2 {
+			slog.Error("MFT encoder permanently stalled during idle — flush recovery not working",
+				"stallFlushCount", m.stallFlushCount,
+				"consecutiveNil", m.consecutiveNilOutputs,
+				"isHW", m.isHW,
+			)
+			m.permanentlyStalled = true
+			return
+		}
+
+		slog.Warn("MFT encoder stalled during idle, flushing pipeline to recover",
+			"consecutiveNil", m.consecutiveNilOutputs,
+			"isHW", m.isHW,
+			"stallFlushCount", m.stallFlushCount,
+		)
+		m.flushLocked()
+		m.consecutiveNilOutputs = 0
+		m.lastStallFlush = time.Now()
+	}
 }

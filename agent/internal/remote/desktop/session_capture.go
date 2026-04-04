@@ -474,6 +474,19 @@ func (s *Session) captureLoopDXGI() captureMode {
 							forceDesktopRepaint()
 						}
 					}
+					// Check for encoder stall during idle. The MFT stall detection
+					// only advances during Encode() calls, so if the screen goes idle
+					// mid-stall, the counter freezes and recovery never triggers.
+					// Proactively check and advance the stall state machine here.
+					if enc := s.encoder.Load(); enc != nil {
+						if enc.IsPermanentlyStalled() {
+							slog.Warn("Encoder stalled during idle, swapping to software",
+								"session", s.id, "backend", enc.BackendName())
+							s.swapToSoftwareEncoder()
+						} else {
+							enc.AdvanceStallDetection()
+						}
+					}
 				} else {
 					// Scene change: screen was idle and now has activity.
 					if wasIdle || consecutiveSkips >= 30 {

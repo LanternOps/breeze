@@ -15,6 +15,7 @@ import (
 // StartSession creates and starts a new remote desktop session.
 // iceServers is optional; if nil, falls back to Google STUN.
 func (m *SessionManager) StartSession(sessionID string, offer string, iceServers []ICEServerConfig, displayIndex ...int) (answer string, err error) {
+	sessionStart := time.Now()
 	// Desktop Duplication and GPU pipelines get unstable with multiple concurrent
 	// sessions in one process. Enforce single active desktop session per agent.
 	var toStop []*Session
@@ -28,6 +29,9 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	m.mu.Unlock()
 	for _, s := range toStop {
 		s.Stop()
+	}
+	if elapsed := time.Since(sessionStart); elapsed > 500*time.Millisecond {
+		slog.Info("StartSession: stop existing sessions took long", "session", sessionID, "elapsed", elapsed)
 	}
 
 	// Create WebRTC configuration
@@ -169,10 +173,12 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	if len(displayIndex) > 0 && displayIndex[0] > 0 {
 		capConfig.DisplayIndex = displayIndex[0]
 	}
+	capturerStart := time.Now()
 	capturer, err := NewScreenCapturer(capConfig)
 	if err != nil {
 		return "", fmt.Errorf("failed to create screen capturer: %w", err)
 	}
+	slog.Info("StartSession: capturer created", "session", sessionID, "elapsed", time.Since(capturerStart))
 	session.capturer = capturer
 	session.displayIndex = capConfig.DisplayIndex
 	session.captureConfig = capConfig
@@ -194,6 +200,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	if err != nil {
 		return "", fmt.Errorf("failed to get screen bounds: %w", err)
 	}
+	probeStart := time.Now()
 	if probeImg, probeErr := capturer.Capture(); probeErr == nil && probeImg != nil {
 		pw, ph := probeImg.Rect.Dx(), probeImg.Rect.Dy()
 		if pw != w || ph != h {
@@ -211,6 +218,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		// The defer at line 80 calls StopSession which closes the capturer.
 		return "", fmt.Errorf("screen capture failed (display may be unavailable): %w", probeErr)
 	}
+	slog.Info("StartSession: probe capture done", "session", sessionID, "elapsed", time.Since(probeStart))
 
 	// Start at 2.5Mbps — matches the viewer's default max-bitrate slider.
 	// Adaptive ramps from here. Too low and the MFT encoder can't produce
@@ -220,6 +228,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	// Create H264 encoder via factory (will use MFT on Windows).
 	// Always configure the encoder for maxFrameRate so hardware MFT rate control
 	// is correct from first frame. The capture loop throttles if needed.
+	encoderStart := time.Now()
 	enc, err := NewVideoEncoder(EncoderConfig{
 		Codec:          CodecH264,
 		Quality:        QualityAuto,
@@ -230,6 +239,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	if err != nil {
 		return "", fmt.Errorf("failed to create H264 encoder: %w", err)
 	}
+	slog.Info("StartSession: encoder created", "session", sessionID, "backend", enc.BackendName(), "elapsed", time.Since(encoderStart))
 	session.encoder.Store(enc)
 
 	if enc.BackendIsPlaceholder() {
@@ -493,6 +503,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	if ld == nil {
 		return "", fmt.Errorf("local description not available")
 	}
+	slog.Info("StartSession: complete", "session", sessionID, "totalElapsed", time.Since(sessionStart))
 	return ld.SDP, nil
 }
 

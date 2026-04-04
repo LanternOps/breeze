@@ -179,8 +179,10 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 	return tools.NewErrorResult(fmt.Errorf("desktop start failed after %d attempts (helper keeps crashing)", maxAttempts), 0)
 }
 
-// findOrSpawnHelper locates a capable helper session, spawning one if needed.
-func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Session {
+// findActiveHelper looks up a capable helper for the target session, applying
+// macOS preference and filtering out disconnected Windows sessions when no
+// specific target is requested.
+func (h *Heartbeat) findActiveHelper(targetSession string) *sessionbroker.Session {
 	session := h.sessionBroker.FindCapableSession("capture", targetSession)
 	if runtime.GOOS == "darwin" {
 		if preferred := h.sessionBroker.PreferredDesktopSession(); preferred != nil {
@@ -188,15 +190,25 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 		}
 	}
 	if targetSession != "" && session != nil && session.WinSessionID != targetSession {
-		session = nil
+		return nil
 	}
-
-	// Validate the helper's Windows session is still active.
 	if session != nil && targetSession == "" && isWinSessionDisconnected(session.WinSessionID) {
-		log.Warn("helper is in a disconnected Windows session, spawning new helper",
-			"helperSession", session.SessionID,
-			"winSession", session.WinSessionID)
-		session = nil
+		return nil
+	}
+	return session
+}
+
+// findOrSpawnHelper locates a capable helper session, spawning one if needed.
+func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Session {
+	session := h.findActiveHelper(targetSession)
+
+	// Log when an existing helper is in a disconnected Windows session.
+	if session == nil {
+		if candidate := h.sessionBroker.FindCapableSession("capture", targetSession); candidate != nil && targetSession == "" && isWinSessionDisconnected(candidate.WinSessionID) {
+			log.Warn("helper is in a disconnected Windows session, spawning new helper",
+				"helperSession", candidate.SessionID,
+				"winSession", candidate.WinSessionID)
+		}
 	}
 
 	if session != nil {
@@ -209,19 +221,7 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 	defer mu.Unlock()
 
 	// Re-check after lock
-	session = h.sessionBroker.FindCapableSession("capture", targetSession)
-	if runtime.GOOS == "darwin" {
-		if preferred := h.sessionBroker.PreferredDesktopSession(); preferred != nil {
-			session = preferred
-		}
-	}
-	if targetSession != "" && session != nil && session.WinSessionID != targetSession {
-		session = nil
-	}
-	if session != nil && targetSession == "" && isWinSessionDisconnected(session.WinSessionID) {
-		session = nil
-	}
-	if session != nil {
+	if session = h.findActiveHelper(targetSession); session != nil {
 		return session
 	}
 
@@ -233,16 +233,7 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 	// Poll for the helper to connect (up to 10s)
 	for i := 0; i < 100; i++ {
 		time.Sleep(100 * time.Millisecond)
-		session = h.sessionBroker.FindCapableSession("capture", targetSession)
-		if runtime.GOOS == "darwin" {
-			if preferred := h.sessionBroker.PreferredDesktopSession(); preferred != nil {
-				session = preferred
-			}
-		}
-		if targetSession != "" && session != nil && session.WinSessionID != targetSession {
-			session = nil
-		}
-		if session != nil && (targetSession != "" || !isWinSessionDisconnected(session.WinSessionID)) {
+		if session = h.findActiveHelper(targetSession); session != nil {
 			return session
 		}
 	}

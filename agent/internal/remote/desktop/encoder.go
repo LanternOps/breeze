@@ -75,6 +75,10 @@ type optionalKeyframeForcer interface {
 // permanent stall conditions (e.g., MFT Quality VBR on certain GPUs).
 type optionalStallDetector interface {
 	IsPermanentlyStalled() bool
+	// AdvanceStallDetection progresses the stall state machine without
+	// requiring a new frame. Called from the capture loop during idle
+	// periods when no Encode() calls happen but the encoder may be stalled.
+	AdvanceStallDetection()
 }
 
 type encoderBackend interface {
@@ -253,6 +257,17 @@ func (v *VideoEncoder) IsPermanentlyStalled() bool {
 		return sd.IsPermanentlyStalled()
 	}
 	return false
+}
+
+// AdvanceStallDetection progresses the stall state machine without a new frame.
+// Call during idle periods when no Encode() calls happen but the encoder may
+// be mid-stall (consecutiveNilOutputs > 0).
+func (v *VideoEncoder) AdvanceStallDetection() {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if sd, ok := v.backend.(optionalStallDetector); ok {
+		sd.AdvanceStallDetection()
+	}
 }
 
 func (v *VideoEncoder) BackendName() string {
