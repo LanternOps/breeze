@@ -12,9 +12,10 @@ type SiteListProps = {
   onAddSite?: () => void;
   onEdit?: (site: Site) => void;
   onDelete?: (site: Site) => void;
+  onSiteClick?: (site: Site) => void;
 };
 
-export default function SiteList({ sites, onAddSite, onEdit, onDelete }: SiteListProps) {
+export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteClick }: SiteListProps) {
   const [query, setQuery] = useState('');
 
   const filteredSites = useMemo(() => {
@@ -74,14 +75,26 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete }: SiteLis
             ) : (
               filteredSites.map(site => (
                 <tr key={site.id} className="transition hover:bg-muted/40">
-                  <td className="px-4 py-3 text-sm font-medium">{site.name}</td>
+                  <td className="px-4 py-3 text-sm font-medium">
+                    {onSiteClick ? (
+                      <button
+                        type="button"
+                        onClick={() => onSiteClick(site)}
+                        className="text-left text-primary hover:underline"
+                      >
+                        {site.name}
+                      </button>
+                    ) : (
+                      site.name
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-sm">{site.timezone}</td>
                   <td className="px-4 py-3 text-sm">{site.deviceCount}</td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex justify-end gap-2">
                       <button
                         type="button"
-                        onClick={() => onEdit?.(site)}
+                        onClick={() => onSiteClick ? onSiteClick(site) : onEdit?.(site)}
                         className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
                       >
                         Edit

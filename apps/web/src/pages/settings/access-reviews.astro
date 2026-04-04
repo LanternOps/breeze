@@ -1,13 +1,8 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
 import AccessReviewPage from '../../components/settings/AccessReviewPage';
-import Breadcrumbs from '../../components/layout/Breadcrumbs';
 ---
 
 <DashboardLayout title="Access Reviews">
-  <Breadcrumbs client:load items={[
-    { label: 'Settings', href: '/settings' },
-    { label: 'Access Reviews' }
-  ]} />
   <AccessReviewPage client:load />
 </DashboardLayout>
