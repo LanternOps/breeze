@@ -306,12 +306,20 @@ var minConfigFlagVersion = [3]int{0, 14, 0}
 
 func (m *Manager) ensureRunningSession(state *sessionState) error {
 	if state.pid > 0 && m.isOurProcessFunc(state.pid, m.binaryPath) {
-		state.resetCrashes()
+		// Only clear the crash counter if the helper has been alive long enough
+		// to be considered stable. Without this, Apply() on heartbeat can catch
+		// the helper momentarily alive (before it crashes) and reset the counter,
+		// preventing the cooldown from ever kicking in.
+		if state.lastSpawnTime.IsZero() || time.Since(state.lastSpawnTime) > 2*time.Minute {
+			state.resetCrashes()
+		}
 		return nil
 	}
 
 	// If we recently spawned and the process is already gone, count it as a crash.
-	if !state.lastSpawnTime.IsZero() && state.pid > 0 {
+	// Use lastSpawnedPID (not state.pid) because refreshPID() can overwrite state.pid
+	// with 0 from the status file if the helper crashed before writing its PID.
+	if state.lastSpawnedPID > 0 && !m.isOurProcessFunc(state.lastSpawnedPID, m.binaryPath) {
 		state.recordCrash()
 		if state.inCooldown() {
 			log.Warn("breeze assist keeps crashing, backing off",
@@ -334,7 +342,7 @@ func (m *Manager) ensureRunningSession(state *sessionState) error {
 		return err
 	}
 	state.pid = pid
-	state.recordSpawn()
+	state.recordSpawn(pid)
 	return nil
 }
 

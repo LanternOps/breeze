@@ -33,6 +33,7 @@ type sessionState struct {
 	lastApplied time.Time
 
 	// Crash tracking: prevents spawn loops when the helper keeps crashing.
+	lastSpawnedPID  int       // PID from the most recent spawn (not overwritten by refreshPID)
 	spawnCrashes    int       // consecutive spawns where the helper died before next check
 	lastSpawnTime   time.Time // when we last spawned
 	cooldownUntil   time.Time // if set, don't spawn until this time
@@ -84,7 +85,8 @@ func (s *sessionState) inCooldown() bool {
 }
 
 // recordSpawn notes that we just spawned the helper.
-func (s *sessionState) recordSpawn() {
+func (s *sessionState) recordSpawn(pid int) {
+	s.lastSpawnedPID = pid
 	s.lastSpawnTime = time.Now()
 }
 
