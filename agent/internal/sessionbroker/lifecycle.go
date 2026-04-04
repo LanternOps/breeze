@@ -136,10 +136,12 @@ func (m *HelperLifecycleManager) reconcile() {
 			continue
 		}
 
-		// Spawn SYSTEM helper if missing.
+		// Spawn SYSTEM helper if missing, reset retry tracking when connected.
 		systemKey := s.Session + "-system"
 		currentKeys[systemKey] = true
-		if !m.broker.HasHelperForWinSessionRole(s.Session, "system") {
+		if m.broker.HasHelperForWinSessionRole(s.Session, "system") {
+			m.resetTracked(systemKey)
+		} else {
 			m.spawnWithRetry(s.Session, "system")
 		}
 
@@ -148,7 +150,9 @@ func (m *HelperLifecycleManager) reconcile() {
 		// where WTSQueryUserToken may fail.
 		userKey := s.Session + "-user"
 		currentKeys[userKey] = true
-		if s.State == "active" && !m.broker.HasHelperForWinSessionRole(s.Session, "user") {
+		if m.broker.HasHelperForWinSessionRole(s.Session, "user") {
+			m.resetTracked(userKey)
+		} else if s.State == "active" {
 			m.spawnWithRetry(s.Session, "user")
 		}
 	}
@@ -186,6 +190,17 @@ func (m *HelperLifecycleManager) handleSCMEvent(evt SCMSessionEvent) {
 		delete(m.tracked, sessionID+"-system")
 		delete(m.tracked, sessionID+"-user")
 		m.mu.Unlock()
+	}
+}
+
+// resetTracked clears retry state for a tracked session. Called when the
+// helper is confirmed connected via IPC, proving the spawn succeeded.
+func (m *HelperLifecycleManager) resetTracked(trackKey string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ts, ok := m.tracked[trackKey]; ok {
+		ts.retryCount = 0
+		ts.lastFailure = time.Time{}
 	}
 }
 
@@ -239,12 +254,17 @@ func (m *HelperLifecycleManager) spawnWithRetry(winSessionID, role string) {
 		err = SpawnHelperInSession(uint32(sessionNum))
 	}
 
-	if err != nil {
-		m.mu.Lock()
-		ts.retryCount++
-		ts.lastFailure = time.Now()
-		m.mu.Unlock()
+	// Count every spawn attempt toward the retry cap, not just errors.
+	// A "successful" CreateProcessAsUser that crashes before connecting to
+	// IPC is still a failure from the lifecycle perspective. The counter
+	// resets only when the helper actually connects (resetTracked in reconcile)
+	// or the session disappears from WTS.
+	m.mu.Lock()
+	ts.retryCount++
+	ts.lastFailure = time.Now()
+	m.mu.Unlock()
 
+	if err != nil {
 		if ts.retryCount >= maxSpawnRetries {
 			log.Error("lifecycle: giving up on session after max retries",
 				"winSessionID", winSessionID,
@@ -264,8 +284,6 @@ func (m *HelperLifecycleManager) spawnWithRetry(winSessionID, role string) {
 
 	m.mu.Lock()
 	ts.spawnedAt = time.Now()
-	ts.retryCount = 0
-	ts.lastFailure = time.Time{}
 	m.mu.Unlock()
 
 	log.Info("proactively spawned helper in session", "winSessionID", winSessionID, "role", role)

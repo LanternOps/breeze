@@ -250,6 +250,19 @@ export interface DesktopAccessState {
 }
 
 // ============================================
+// Remote Access Policy
+// ============================================
+
+export interface RemoteAccessPolicy {
+  webrtcDesktop: boolean;
+  vncRelay: boolean;
+  remoteTools: boolean;
+  enableProxy: boolean;
+  policyName: string | null;
+  policyId: string | null;
+}
+
+// ============================================
 // mTLS Types
 // ============================================
 

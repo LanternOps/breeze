@@ -12,9 +12,10 @@ import (
 
 // mftStallThreshold is the maximum consecutive nil outputs from the MFT before
 // the pipeline is flushed and restarted. Hardware MFTs (Intel Quick Sync, etc.)
-// can stall permanently on certain GPUs. Flushing at 15 frames (~250ms at 60fps)
+// can stall permanently on certain GPUs. Flushing at 8 frames (~133ms at 60fps)
+// must trigger before the screen goes idle, otherwise the stall counter freezes.
 // breaks the stall with acceptable quality loss (one IDR keyframe).
-const mftStallThreshold = 15
+const mftStallThreshold = 8
 
 // Encode takes RGBA or BGRA pixel data (per SetPixelFormat), converts to NV12, and encodes to H264.
 // Returns nil, nil when the MFT is buffering (no output yet).
@@ -64,6 +65,13 @@ func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 		_ = m.forceKeyframeLocked()
 	}
 
+	// If the MFT is mid-stall, skip feeding to avoid a blocking ProcessInput.
+	if m.consecutiveNilOutputs >= mftStallThreshold {
+		m.permanentlyStalled = true
+		slog.Warn("MFT stall detected before ProcessInput (CPU path), marking permanently stalled",
+			"consecutiveNil", m.consecutiveNilOutputs, "frameIdx", m.frameIdx, "isHW", m.isHW)
+		return nil, nil
+	}
 	// Feed to encoder
 	ret, _, _ := syscall.SyscallN(
 		m.vtblFn(vtblProcessInput),
@@ -526,11 +534,11 @@ func (m *mftEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 		_ = m.forceKeyframeLocked()
 	}
 
-	// 1. GPU BGRA→NV12 conversion + readback to CPU memory.
-	// We use ConvertAndReadback instead of the DXGI surface buffer path because
-	// hardware MFT encoders often have issues reading DXGI surface buffers directly.
-	// The GPU still does the expensive BGRA→NV12 color conversion; the only extra
-	// cost is a ~5.5MB NV12 GPU→CPU readback (fast over PCIe).
+	// GPU BGRA→NV12 conversion + readback to CPU memory.
+	// The GPU does the expensive color conversion via VideoProcessorBlt;
+	// the NV12 result is read back to CPU and fed as a regular memory buffer.
+	// Zero-copy DXGI surface path was tested but hardware MFTs stall on
+	// many GPU/driver combinations. Direct NVENC (Phase 3) is the real fix.
 	nv12, err := m.gpuConv.ConvertAndReadback()
 	if err != nil {
 		return nil, fmt.Errorf("GPU convert: %w", err)
@@ -607,7 +615,16 @@ func (m *mftEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 	}
 	defer comRelease(sample)
 
-	// 3. Feed to encoder
+	// 3. Feed to encoder. If the MFT is mid-stall (accepting input but not
+	// producing output), skip feeding and mark permanently stalled instead
+	// of risking a blocking ProcessInput call.
+	if m.consecutiveNilOutputs >= mftStallThreshold {
+		comRelease(sample)
+		m.permanentlyStalled = true
+		slog.Warn("MFT stall detected before ProcessInput, marking permanently stalled",
+			"consecutiveNil", m.consecutiveNilOutputs, "frameIdx", m.frameIdx, "isHW", m.isHW)
+		return nil, nil
+	}
 	ret, _, _ := syscall.SyscallN(
 		m.vtblFn(vtblProcessInput),
 		m.transform,

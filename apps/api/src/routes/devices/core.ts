@@ -18,6 +18,7 @@ import { PERMISSIONS } from '../../services/permissions';
 import { getPagination, getDeviceWithOrgCheck } from './helpers';
 import { listDevicesSchema, updateDeviceSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
 import { sendCommandToAgent, isAgentConnected } from '../agentWs';
 import { CommandTypes } from '../../services/commandQueue';
@@ -378,6 +379,22 @@ coreRoutes.get(
       .where(eq(sites.id, device.siteId))
       .limit(1);
 
+    // Resolve remote access policy (non-critical — don't fail the whole response)
+    let remoteAccessPolicy = null;
+    try {
+      const remoteAccess = await resolveRemoteAccessForDevice(deviceId);
+      remoteAccessPolicy = remoteAccess.policyId ? {
+        webrtcDesktop: remoteAccess.settings.webrtcDesktop,
+        vncRelay: remoteAccess.settings.vncRelay,
+        remoteTools: remoteAccess.settings.remoteTools,
+        enableProxy: remoteAccess.settings.enableProxy,
+        policyName: remoteAccess.policyName,
+        policyId: remoteAccess.policyId,
+      } : null;
+    } catch (err) {
+      console.error(`[DeviceDetail] Failed to resolve remote access policy for ${deviceId}:`, err);
+    }
+
     return c.json({
       ...device,
       hardware: hardware || null,
@@ -385,7 +402,8 @@ coreRoutes.get(
       recentMetrics,
       groups: memberships,
       siteName: site?.name || 'Unknown Site',
-      siteTimezone: site?.timezone || 'UTC'
+      siteTimezone: site?.timezone || 'UTC',
+      remoteAccessPolicy,
     });
   }
 );

@@ -2,9 +2,7 @@ package helper
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -104,18 +102,16 @@ func spawnWithConfig(binaryPath, sessionKey, configPath string) (int, error) {
 		defer windows.DestroyEnvironmentBlock(envBlock)
 	}
 
-	sysRoot := os.Getenv("SystemRoot")
-	if sysRoot == "" {
-		sysRoot = `C:\Windows`
-	}
-	cmdExe := filepath.Join(sysRoot, "System32", "cmd.exe")
-
-	appName, err := windows.UTF16PtrFromString(cmdExe)
+	// Launch breeze-helper.exe directly so we get the real PID back.
+	// Previously this used cmd.exe /c start "" which returned cmd.exe's PID
+	// instead of the helper's PID, causing isOurProcess() to always return
+	// false and the watcher to respawn infinitely.
+	appName, err := windows.UTF16PtrFromString(binaryPath)
 	if err != nil {
 		return 0, fmt.Errorf("UTF16PtrFromString appName: %w", err)
 	}
 	cmdLine, err := windows.UTF16PtrFromString(
-		fmt.Sprintf(`"%s" /c start "" "%s" --config "%s"`, cmdExe, binaryPath, configPath),
+		fmt.Sprintf(`"%s" --config "%s"`, binaryPath, configPath),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("UTF16PtrFromString cmdLine: %w", err)
@@ -138,7 +134,7 @@ func spawnWithConfig(binaryPath, sessionKey, configPath string) (int, error) {
 		nil,
 		nil,
 		false,
-		windows.CREATE_NO_WINDOW|windows.CREATE_UNICODE_ENVIRONMENT,
+		windows.CREATE_UNICODE_ENVIRONMENT,
 		envBlock,
 		nil,
 		&si,

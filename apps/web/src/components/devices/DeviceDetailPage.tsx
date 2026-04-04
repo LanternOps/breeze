@@ -58,7 +58,12 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         agentVersion: data.agentVersion ?? '',
         tags: data.tags ?? [],
         lastUser: data.lastUser ?? undefined,
-        uptimeSeconds: typeof data.uptimeSeconds === 'number' ? data.uptimeSeconds : (latestMetrics?.uptimeSeconds ?? undefined)
+        uptimeSeconds: typeof data.uptimeSeconds === 'number' ? data.uptimeSeconds : (latestMetrics?.uptimeSeconds ?? undefined),
+        deviceRole: data.deviceRole ?? undefined,
+        displayName: data.displayName ?? undefined,
+        isHeadless: data.isHeadless ?? undefined,
+        desktopAccess: data.desktopAccess ?? undefined,
+        remoteAccessPolicy: data.remoteAccessPolicy ?? undefined,
       };
 
       setDevice(transformedDevice);

@@ -86,11 +86,12 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
                 <Play className="h-4 w-4" />
                 Run Script
               </button>
-              <ConnectDesktopButton deviceId={device.id} compact isHeadless={device.isHeadless} desktopAccess={device.desktopAccess} />
+              <ConnectDesktopButton deviceId={device.id} compact isHeadless={device.isHeadless} desktopAccess={device.desktopAccess} remoteAccessPolicy={device.remoteAccessPolicy} />
               <button
                 type="button"
                 onClick={() => handleAction('remote-tools')}
-                disabled={device.status === 'offline'}
+                disabled={device.status === 'offline' || device.remoteAccessPolicy?.remoteTools === false}
+                title={device.remoteAccessPolicy?.remoteTools === false ? `Remote tools disabled by policy${device.remoteAccessPolicy?.policyName ? ` "${device.remoteAccessPolicy.policyName}"` : ''}` : undefined}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Wrench className="h-4 w-4" />
@@ -180,11 +181,12 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
           <Play className="h-4 w-4" />
           Run Script
         </button>
-        <ConnectDesktopButton deviceId={device.id} isHeadless={device.isHeadless} desktopAccess={device.desktopAccess} />
+        <ConnectDesktopButton deviceId={device.id} isHeadless={device.isHeadless} desktopAccess={device.desktopAccess} remoteAccessPolicy={device.remoteAccessPolicy} />
         <button
           type="button"
           onClick={() => handleAction('remote-tools')}
-          disabled={device.status === 'offline' || loading}
+          disabled={device.status === 'offline' || loading || device.remoteAccessPolicy?.remoteTools === false}
+          title={device.remoteAccessPolicy?.remoteTools === false ? `Remote tools disabled by policy${device.remoteAccessPolicy?.policyName ? ` "${device.remoteAccessPolicy.policyName}"` : ''}` : undefined}
           className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
         >
           <Wrench className="h-4 w-4" />

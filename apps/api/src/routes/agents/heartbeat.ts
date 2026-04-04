@@ -71,7 +71,16 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.desktopAccess = data.desktopAccess;
   }
   if (data.isHeadless !== undefined) {
-    deviceUpdates.isHeadless = data.isHeadless;
+    // On Windows and macOS, the agent runs as a service/daemon but the machine
+    // still has interactive user sessions with displays. The session broker +
+    // helper handles Session 0 / LaunchDaemon limitations. Only trust the
+    // agent's headless flag on Linux where it checks for graphical sessions.
+    const osType = data.osType ?? device.osType;
+    if (osType === 'windows' || osType === 'macos' || osType === 'darwin') {
+      deviceUpdates.isHeadless = false;
+    } else {
+      deviceUpdates.isHeadless = data.isHeadless;
+    }
   }
 
   await db

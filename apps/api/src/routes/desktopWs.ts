@@ -10,6 +10,7 @@ import { createWsTicket, consumeDesktopConnectCode, consumeWsTicket, getViewerAc
 import { getIceServers, logSessionAudit } from './remote/helpers';
 import { webrtcOfferSchema } from './remote/schemas';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
+import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 
 // Brief cache for exchange results so duplicate calls (e.g. React effect re-fire)
 // return the same token instead of 401 after the one-time code is consumed.
@@ -253,6 +254,12 @@ async function validateDesktopAccess(
 
   if (device.status !== 'online') {
     return { valid: false, error: 'Device is not online' };
+  }
+
+  // Remote access policy enforcement (defense-in-depth)
+  const policyCheck = await checkRemoteAccess(device.id, 'webrtcDesktop');
+  if (!policyCheck.allowed) {
+    return { valid: false, error: policyCheck.reason ?? 'Remote desktop disabled by policy' };
   }
 
   return { valid: true, session, device, userId: user.id };

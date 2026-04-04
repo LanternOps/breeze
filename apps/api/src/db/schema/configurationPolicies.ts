@@ -40,6 +40,7 @@ export const configFeatureTypeEnum = pgEnum('config_feature_type', [
   'peripheral_control',
   'warranty',
   'helper',
+  'remote_access',
 ]);
 
 export const configAssignmentLevelEnum = pgEnum('config_assignment_level', [

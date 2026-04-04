@@ -32,10 +32,49 @@ func hasConsole() bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
-// isHeadless returns true when the process has no controlling terminal.
-// This is the case for launchd daemons and systemd services — both of which
-// redirect stdout/stderr to log files, leaving no character device.
-func isHeadless() bool { return !hasConsole() }
+// isHeadless reports whether the machine lacks any graphical display.
+//
+// macOS: always false — even LaunchDaemons can reach user-session displays
+// via the session broker + helper. The desktopAccess heartbeat field provides
+// the detailed capability check (permissions, entitlements, OS version).
+//
+// Linux: check whether any graphical session exists. Headless servers
+// (Ubuntu Core, containers) have no X11/Wayland session; desktop distros do.
+func isHeadless() bool {
+	if runtime.GOOS == "darwin" {
+		return false
+	}
+	return !linuxHasGraphicalSession()
+}
+
+// linuxHasGraphicalSession checks for any active graphical user session.
+// First checks common environment variables, then falls back to scanning
+// /run/user/*/dbus-session for evidence of a desktop session.
+func linuxHasGraphicalSession() bool {
+	// If the agent itself has display env vars (rare for services, but possible)
+	if os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != "" {
+		return true
+	}
+	// Check if any user has an active graphical session by looking for
+	// X11 or Wayland sockets under /tmp/.X11-unix or /run/user/*/
+	if entries, err := os.ReadDir("/tmp/.X11-unix"); err == nil && len(entries) > 0 {
+		return true
+	}
+	// Check for Wayland sockets in any user's runtime dir
+	if userDirs, err := os.ReadDir("/run/user"); err == nil {
+		for _, ud := range userDirs {
+			dirPath := "/run/user/" + ud.Name()
+			if dirEntries, err := os.ReadDir(dirPath); err == nil {
+				for _, e := range dirEntries {
+					if len(e.Name()) > 8 && e.Name()[:8] == "wayland-" {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
 
 // redirectStderr points fd 2 at the given file so that Go runtime panics
 // are captured in the log file.

@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import {
   Moon,
   Sun,
+  Monitor,
+  Check,
   ChevronDown,
   LogOut,
   User,
@@ -24,10 +26,12 @@ import { navigateTo } from '../../lib/navigation';
 
 export default function Header() {
   const [mounted, setMounted] = useState(false);
-  const [darkMode, setDarkMode] = useState(false);
+  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('light');
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [showThemeMenu, setShowThemeMenu] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const themeRef = useRef<HTMLDivElement>(null);
 
   const { user, isAuthenticated } = useAuthStore();
   const { isOpen: isAiOpen, toggle: toggleAi } = useAiStore();
@@ -37,14 +41,19 @@ export default function Header() {
   // Mark as mounted after hydration to avoid SSR/client mismatch
   useEffect(() => {
     setMounted(true);
-    setDarkMode(document.documentElement.classList.contains('dark'));
+    const raw = localStorage.getItem('theme');
+    const stored = (raw === 'light' || raw === 'dark' || raw === 'system') ? raw : null;
+    setTheme(stored || 'system');
   }, []);
 
-  // Close dropdown when clicking outside
+  // Close dropdowns when clicking outside
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setShowUserMenu(false);
+      }
+      if (themeRef.current && !themeRef.current.contains(event.target as Node)) {
+        setShowThemeMenu(false);
       }
     }
 
@@ -52,19 +61,43 @@ export default function Header() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const toggleDarkMode = () => {
-    const newTheme = !darkMode ? 'dark' : 'light';
-    setDarkMode(!darkMode);
-    document.documentElement.classList.toggle('dark');
-    localStorage.setItem('theme', newTheme);
+  const applyTheme = (next: 'light' | 'dark' | 'system') => {
+    setTheme(next);
+    setShowThemeMenu(false);
+
+    const resolved = next === 'system'
+      ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+      : next;
+
+    if (resolved === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+    localStorage.setItem('theme', next);
 
     if (isAuthenticated) {
       fetchWithAuth('/users/me', {
         method: 'PATCH',
-        body: JSON.stringify({ preferences: { theme: newTheme } })
-      }).catch(() => {});
+        body: JSON.stringify({ preferences: { theme: next } })
+      }).catch((err) => console.warn('[theme] Failed to persist preference:', err));
     }
   };
+
+  // Listen for OS theme changes when in system mode
+  useEffect(() => {
+    if (theme !== 'system') return;
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const handler = (e: MediaQueryListEvent) => {
+      if (e.matches) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+    };
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, [theme]);
 
   const handleSignOut = async () => {
     setIsLoggingOut(true);
@@ -130,15 +163,44 @@ export default function Header() {
         {/* Notifications */}
         {mounted && isAuthenticated && <NotificationCenter />}
 
-        {/* Dark Mode Toggle */}
-        <button
-          type="button"
-          onClick={toggleDarkMode}
-          className="rounded-md p-2 hover:bg-muted"
-          title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
-        >
-          {mounted ? (darkMode ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />) : <Moon className="h-5 w-5" />}
-        </button>
+        {/* Theme Picker */}
+        <div className="relative" ref={themeRef}>
+          <button
+            type="button"
+            onClick={() => setShowThemeMenu(!showThemeMenu)}
+            className="rounded-md p-2 hover:bg-muted"
+            title="Theme"
+            aria-expanded={showThemeMenu}
+            aria-haspopup="true"
+          >
+            {mounted ? (
+              theme === 'dark' ? <Moon className="h-5 w-5" /> :
+              theme === 'system' ? <Monitor className="h-5 w-5" /> :
+              <Sun className="h-5 w-5" />
+            ) : <Moon className="h-5 w-5" />}
+          </button>
+
+          {showThemeMenu && (
+            <div className="absolute right-0 top-full z-50 mt-2 w-36 rounded-lg border bg-popover py-1 shadow-lg">
+              {([
+                { value: 'light' as const, label: 'Light', Icon: Sun },
+                { value: 'dark' as const, label: 'Dark', Icon: Moon },
+                { value: 'system' as const, label: 'System', Icon: Monitor },
+              ]).map(({ value, label, Icon }) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => applyTheme(value)}
+                  className="flex w-full items-center gap-3 px-3 py-2 text-sm transition hover:bg-muted"
+                >
+                  <Icon className="h-4 w-4 text-muted-foreground" />
+                  <span className="flex-1 text-left">{label}</span>
+                  {theme === value && <Check className="h-4 w-4 text-primary" />}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
 
         {/* Help & Docs */}
         {mounted && isAuthenticated && (

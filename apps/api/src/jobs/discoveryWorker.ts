@@ -1183,7 +1183,7 @@ export async function enqueueDiscoveryScan(
       siteId,
       agentId
     }, meta)),
-    `discovery-dispatch:${jobId}`,
+    `discovery-dispatch-${jobId}`,
     {
       ...PRIVILEGED_JOB_OPTIONS,
       removeOnComplete: { count: 50 },
@@ -1220,7 +1220,7 @@ export async function enqueueDiscoveryResults(
       hostsScanned,
       hostsDiscovered
     }, meta)),
-    `discovery-result:${jobId}`,
+    `discovery-result-${jobId}`,
     {
       ...PRIVILEGED_JOB_OPTIONS,
       removeOnComplete: { count: 50 },

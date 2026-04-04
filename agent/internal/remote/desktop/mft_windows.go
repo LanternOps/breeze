@@ -62,6 +62,7 @@ type mftEncoder struct {
 	dxgiResetToken uint32
 	gpuEnabled     bool
 	gpuFailed      bool // permanently disabled after init failure
+	zeroCopyLogged bool // true after first successful zero-copy output is logged
 
 	// Keyframe forcing: set when we want the next output to be an IDR.
 	forceKeyframePending bool
@@ -347,10 +348,12 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 		_ = m.forceKeyframeLocked()
 	}
 
-	// NOTE: We no longer set up the DXGI device manager on the MFT.
+	// NOTE: We do not set up the DXGI device manager on the MFT.
 	// The GPU pipeline uses VideoProcessorBlt for BGRA→NV12 on the GPU,
 	// then reads back NV12 to CPU and feeds it as a regular memory buffer.
-	// This avoids DXGI surface buffer compatibility issues with hardware MFTs.
+	// Hardware MFTs (Intel Quick Sync, AMD VCE) stall when fed DXGI surface
+	// samples on many GPU/driver combinations — tested and confirmed on Kit.
+	// The real zero-copy path is direct NVENC (Phase 3), which bypasses MFT.
 
 	hwStr := "software"
 	if isHW {

@@ -6,6 +6,7 @@ import { tunnelSessions, devices, users } from '../db/schema';
 import { consumeWsTicket } from '../services/remoteSessionAuth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { captureException } from '../services/sentry';
+import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 
 // Store active tunnel connections: Map<tunnelId, TunnelConnection>
 interface TunnelConnection {
@@ -174,6 +175,13 @@ async function validateTunnelAccess(
 
   if (device.status !== 'online') {
     return { valid: false, error: 'Device is not online' };
+  }
+
+  // Remote access policy enforcement (defense-in-depth)
+  const tunnelCapability = session.type === 'vnc' ? 'vncRelay' as const : 'proxy' as const;
+  const policyCheck = await checkRemoteAccess(device.id, tunnelCapability);
+  if (!policyCheck.allowed) {
+    return { valid: false, error: policyCheck.reason ?? 'Tunnel access disabled by policy' };
   }
 
   return { valid: true, session, agentId: device.agentId ?? undefined, userId: user.id };

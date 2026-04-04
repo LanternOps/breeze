@@ -70,8 +70,6 @@ export default function AssetDetailModal({
     setSelectedProxyPort(asset?.openPorts?.[0]?.port ?? 80);
   }, [asset]);
 
-  if (!asset) return null;
-
   const handleLink = async () => {
     if (!selectedDevice) {
       setLinkError('Select a device to link.');
@@ -221,6 +219,8 @@ export default function AssetDetailModal({
       setConnectingProxy(false);
     }
   }, [asset, selectedProxyPort]);
+
+  if (!asset) return null;
 
   const openPorts = asset.openPorts ?? [];
   const osFingerprint = asset.osFingerprint ?? '—';

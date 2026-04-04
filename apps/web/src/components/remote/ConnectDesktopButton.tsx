@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Monitor, MonitorOff, ExternalLink, Download, X } from 'lucide-react';
-import type { DesktopAccessState } from '@breeze/shared';
+import type { DesktopAccessState, RemoteAccessPolicy } from '@breeze/shared';
 import { fetchWithAuth } from '@/stores/auth';
 import { getViewerDownloadInfo, getAllViewerDownloads } from '@/lib/viewerDownload';
 
@@ -12,6 +12,7 @@ interface Props {
   disabled?: boolean;
   isHeadless?: boolean;
   desktopAccess?: DesktopAccessState | null;
+  remoteAccessPolicy?: RemoteAccessPolicy | null;
 }
 
 /**
@@ -50,7 +51,7 @@ function desktopAccessUnavailableReason(desktopAccess: DesktopAccessState | null
   }
 }
 
-export default function ConnectDesktopButton({ deviceId, className = '', compact = false, iconOnly = false, disabled = false, isHeadless = false, desktopAccess = null }: Props) {
+export default function ConnectDesktopButton({ deviceId, className = '', compact = false, iconOnly = false, disabled = false, isHeadless = false, desktopAccess = null, remoteAccessPolicy = null }: Props) {
   const [status, setStatus] = useState<'idle' | 'creating' | 'launching' | 'fallback'>('idle');
   const [error, setError] = useState<string | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -254,9 +255,13 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
 
   const headlessTitle = 'This device has no display \u2014 remote desktop is unavailable';
   const desktopAccessUnavailable = desktopAccessUnavailableReason(desktopAccess);
-  const unavailableTitle = desktopAccessUnavailable ?? headlessTitle;
+  const policyDisabled = remoteAccessPolicy?.webrtcDesktop === false;
+  const policyTitle = policyDisabled
+    ? `Remote desktop is disabled by policy${remoteAccessPolicy?.policyName ? ` "${remoteAccessPolicy.policyName}"` : ''}`
+    : null;
+  const unavailableTitle = policyTitle ?? desktopAccessUnavailable ?? headlessTitle;
 
-  if (isHeadless || desktopAccessUnavailable) {
+  if (policyDisabled || isHeadless || desktopAccessUnavailable) {
     if (iconOnly) {
       return (
         <div className={`relative ${className}`}>

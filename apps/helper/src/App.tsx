@@ -447,8 +447,7 @@ export default function App() {
     return (
       <div className="helper-container helper-center">
         <div className="helper-error-banner">
-          <p>Failed to connect</p>
-          <p className="helper-error-detail">{connectionError}</p>
+          <p>{connectionError || 'Failed to connect'}</p>
           <button onClick={initialize} className="helper-btn">
             Retry
           </button>

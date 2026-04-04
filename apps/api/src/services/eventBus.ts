@@ -209,7 +209,9 @@ class EventBus {
     // Publish to global channel for cross-org subscribers (webhooks, etc.)
     await redis.publish(`${STREAM_PREFIX}:global`, JSON.stringify(event));
 
-    console.log(`[EventBus] Published ${type} for org ${orgId}: ${eventId}`);
+    if (type !== 'monitoring.check_failed' && type !== 'monitoring.check_recovered') {
+      console.log(`[EventBus] Published ${type} for org ${orgId}: ${eventId}`);
+    }
 
     // Invoke local in-process handlers immediately
     // This handles the case where startConsuming() hasn't been called
