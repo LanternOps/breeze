@@ -148,7 +148,7 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 			return tools.NewErrorResult(fmt.Errorf("no capable helper available after spawn attempt"), 0)
 		}
 
-		resp, err := session.SendCommand("desk-"+sessionID, ipc.TypeDesktopStart, req, 15*time.Second)
+		resp, err := session.SendCommand("desk-"+sessionID, ipc.TypeDesktopStart, req, 30*time.Second)
 		if err != nil {
 			log.Warn("IPC desktop start failed, will retry with new helper",
 				"attempt", attempt+1,
@@ -192,7 +192,7 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 	}
 
 	// Validate the helper's Windows session is still active.
-	if session != nil && isWinSessionDisconnected(session.WinSessionID) {
+	if session != nil && targetSession == "" && isWinSessionDisconnected(session.WinSessionID) {
 		log.Warn("helper is in a disconnected Windows session, spawning new helper",
 			"helperSession", session.SessionID,
 			"winSession", session.WinSessionID)
@@ -218,7 +218,7 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 	if targetSession != "" && session != nil && session.WinSessionID != targetSession {
 		session = nil
 	}
-	if session != nil && isWinSessionDisconnected(session.WinSessionID) {
+	if session != nil && targetSession == "" && isWinSessionDisconnected(session.WinSessionID) {
 		session = nil
 	}
 	if session != nil {
@@ -242,7 +242,7 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 		if targetSession != "" && session != nil && session.WinSessionID != targetSession {
 			session = nil
 		}
-		if session != nil && !isWinSessionDisconnected(session.WinSessionID) {
+		if session != nil && (targetSession != "" || !isWinSessionDisconnected(session.WinSessionID)) {
 			return session
 		}
 	}
