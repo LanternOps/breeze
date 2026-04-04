@@ -4,9 +4,10 @@ import { z } from 'zod';
 import { eq, and, inArray, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
-import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, remoteSessions, backupJobs, restoreJobs } from '../db/schema';
+import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, remoteSessions, backupJobs, restoreJobs, tunnelSessions } from '../db/schema';
 import { handleTerminalOutput, getActiveTerminalSession, unregisterTerminalOutputCallback } from './terminalWs';
 import { handleDesktopFrame, isDesktopSessionOwnedByAgent } from './desktopWs';
+import { handleTunnelDataFromAgent, isTunnelOwnedByAgent, registerTunnelOwnership } from './tunnelWs';
 import { enqueueDiscoveryResults, type DiscoveredHostResult } from '../jobs/discoveryWorker';
 import { enqueueBackupResults } from '../jobs/backupWorker';
 import { enqueueSnmpPollResults, type SnmpMetricResult } from '../jobs/snmpWorker';
@@ -864,6 +865,72 @@ async function processOrphanedCommandResult(
     return;
   }
 
+  // Tunnel open results: update tunnel session status on failure.
+  if (result.commandId.startsWith('tun-open-')) {
+    const tunnelId = result.commandId.slice('tun-open-'.length);
+    if (result.status !== 'completed') {
+      try {
+        await db
+          .update(tunnelSessions)
+          .set({
+            status: 'failed',
+            errorMessage: result.error || result.stderr || 'Agent failed to open tunnel',
+            endedAt: new Date(),
+          })
+          .where(eq(tunnelSessions.id, tunnelId));
+        console.warn(`[AgentWs] Tunnel ${tunnelId} open failed: ${result.error || result.stderr}`);
+      } catch (err) {
+        console.error(`[AgentWs] Failed to update tunnel session ${tunnelId}:`, err);
+      }
+    } else {
+      try {
+        // Only transition to 'connecting' if still 'pending' — avoids resurrecting
+        // a tunnel the user already closed while the agent was still opening it.
+        const [current] = await db
+          .select({ status: tunnelSessions.status })
+          .from(tunnelSessions)
+          .where(eq(tunnelSessions.id, tunnelId))
+          .limit(1);
+        if (current && current.status === 'pending') {
+          await db
+            .update(tunnelSessions)
+            .set({ status: 'connecting' })
+            .where(eq(tunnelSessions.id, tunnelId));
+          // Register ownership so agent binary frames are accepted
+          // and early data can be buffered before the browser connects.
+          registerTunnelOwnership(tunnelId, agentId);
+        }
+      } catch (err) {
+        console.error(`[AgentWs] Failed to update tunnel session ${tunnelId}:`, err);
+      }
+    }
+    return;
+  }
+
+  // Tunnel close/data command results are fire-and-forget.
+  if (result.commandId.startsWith('tun-close-') || result.commandId.startsWith('tun-data-')) {
+    return;
+  }
+
+  // Agent-initiated tunnel close notification (TCP peer disconnected or idle reaper).
+  if (result.commandId.startsWith('tun-closed-')) {
+    const tunnelId = result.commandId.slice('tun-closed-'.length);
+    try {
+      await db
+        .update(tunnelSessions)
+        .set({
+          status: 'disconnected',
+          endedAt: new Date(),
+          errorMessage: result.error || null,
+        })
+        .where(eq(tunnelSessions.id, tunnelId));
+      console.log(`[AgentWs] Tunnel ${tunnelId} closed by agent${result.error ? ': ' + result.error : ''}`);
+    } catch (err) {
+      console.error(`[AgentWs] Failed to update tunnel session ${tunnelId} on close:`, err);
+    }
+    return;
+  }
+
   // Discovery jobs use UUID IDs; skip lookup for non-UUID command IDs.
   if (!UUID_REGEX.test(result.commandId)) {
     console.warn(`[AgentWs] Command ${result.commandId} not found in deviceCommands or discovery jobs for agent ${agentId}`);
@@ -1330,6 +1397,20 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             }
             const frameData = buf.subarray(37);
             handleDesktopFrame(sessionId, new Uint8Array(frameData));
+            return;
+          }
+          // Tunnel data frames: [0x03][36-byte tunnelId][payload]
+          if (buf.length > 37 && buf[0] === 0x03) {
+            // Tighter size limit for tunnel data: 1MB
+            if (buf.length > 1_000_000) {
+              console.warn(`[AgentWs] Dropping oversized tunnel frame from agent ${agentId}: ${buf.length} bytes`);
+              return;
+            }
+            const tunnelId = buf.subarray(1, 37).toString('utf8');
+            if (!isTunnelOwnedByAgent(tunnelId, agentId)) {
+              return;
+            }
+            handleTunnelDataFromAgent(tunnelId, new Uint8Array(buf.subarray(37)));
             return;
           }
         }

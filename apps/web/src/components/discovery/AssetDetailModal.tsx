@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
+import { Globe, ExternalLink } from 'lucide-react';
 import type { DiscoveredAsset, OpenPortEntry } from './DiscoveredAssetList';
 import { typeConfig, approvalStatusConfig } from './DiscoveredAssetList';
 import AssetMonitoringSection from './AssetMonitoringSection';
@@ -45,6 +46,11 @@ export default function AssetDetailModal({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string>();
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [proxyEnabled, setProxyEnabled] = useState(false);
+  const [enablingProxy, setEnablingProxy] = useState(false);
+  const [proxyError, setProxyError] = useState<string>();
+  const [connectingProxy, setConnectingProxy] = useState(false);
+  const [selectedProxyPort, setSelectedProxyPort] = useState<number>(0);
 
   useEffect(() => {
     if (asset?.linkedDeviceId) {
@@ -59,6 +65,9 @@ export default function AssetDetailModal({
     setEditTags(asset?.tags?.join(', ') ?? '');
     setSaveError(undefined);
     setSaveSuccess(false);
+    setProxyEnabled((asset as any)?.proxyEnabled ?? false);
+    setProxyError(undefined);
+    setSelectedProxyPort(asset?.openPorts?.[0]?.port ?? 80);
   }, [asset]);
 
   if (!asset) return null;
@@ -142,6 +151,76 @@ export default function AssetDetailModal({
       setSaving(false);
     }
   };
+
+  const handleEnableProxy = useCallback(async () => {
+    if (!asset) return;
+    try {
+      setEnablingProxy(true);
+      setProxyError(undefined);
+      const ports = (asset.openPorts ?? []).map(p => p.port);
+      const portRange = ports.length > 0
+        ? (ports.length === 1 ? `${ports[0]}` : `${Math.min(...ports)}-${Math.max(...ports)}`)
+        : '80-443';
+      const response = await fetchWithAuth('/tunnels/allowlist', {
+        method: 'POST',
+        body: JSON.stringify({
+          direction: 'destination',
+          pattern: `${asset.ip}/32:${portRange}`,
+          description: `Auto-created for ${asset.label || asset.hostname || asset.ip}`,
+          source: 'discovery',
+          discoveredAssetId: asset.id,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error('Failed to create allowlist entry');
+      }
+      setProxyEnabled(true);
+      onUpdated?.(asset.id);
+    } catch (err) {
+      setProxyError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setEnablingProxy(false);
+    }
+  }, [asset, onUpdated]);
+
+  const handleConnectProxy = useCallback(async () => {
+    if (!asset || !asset.linkedDeviceId) return;
+    try {
+      setConnectingProxy(true);
+      setProxyError(undefined);
+      const port = selectedProxyPort || 80;
+      const response = await fetchWithAuth('/tunnels', {
+        method: 'POST',
+        body: JSON.stringify({
+          deviceId: asset.linkedDeviceId,
+          type: 'proxy',
+          targetHost: asset.ip,
+          targetPort: port,
+        }),
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ error: 'Failed to create tunnel' }));
+        throw new Error(err.error || 'Failed to create proxy tunnel');
+      }
+      const tunnel = await response.json();
+      const ticketRes = await fetchWithAuth(`/tunnels/${tunnel.id}/ws-ticket`, { method: 'POST' });
+      if (!ticketRes.ok) throw new Error('Failed to get tunnel ticket');
+      const { ticket } = await ticketRes.json();
+
+      const apiUrl = (import.meta as any).env?.PUBLIC_API_URL || window.location.origin;
+      const wsProtocol = apiUrl.startsWith('https') ? 'wss' : 'ws';
+      const wsHost = apiUrl.replace(/^https?:\/\//, '');
+      const wsUrl = `${wsProtocol}://${wsHost}/api/v1/tunnel-ws/${tunnel.id}/ws?ticket=${ticket}`;
+
+      // Open proxy info in a new tab
+      const proxyUrl = `/remote/proxy/${tunnel.id}?target=${encodeURIComponent(`${asset.ip}:${port}`)}&ws=${encodeURIComponent(wsUrl)}`;
+      window.open(proxyUrl, '_blank');
+    } catch (err) {
+      setProxyError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setConnectingProxy(false);
+    }
+  }, [asset, selectedProxyPort]);
 
   const openPorts = asset.openPorts ?? [];
   const osFingerprint = asset.osFingerprint ?? '—';
@@ -320,6 +399,76 @@ export default function AssetDetailModal({
               {linkError && (
                 <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
                   {linkError}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-md border bg-muted/30 p-4">
+              <h3 className="text-sm font-semibold flex items-center gap-2">
+                <Globe className="h-4 w-4" />
+                Proxy Access
+              </h3>
+              {!proxyEnabled ? (
+                <div className="mt-3">
+                  <p className="text-xs text-muted-foreground">
+                    Enable proxy access to reach this device's web interface through a managed agent.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleEnableProxy}
+                    disabled={enablingProxy}
+                    className="mt-2 h-8 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-70"
+                  >
+                    {enablingProxy ? 'Enabling...' : 'Enable Proxy Access'}
+                  </button>
+                </div>
+              ) : (
+                <div className="mt-3 space-y-3">
+                  <div className="flex items-center gap-1.5">
+                    <span className="inline-flex items-center rounded-full bg-green-50 px-2 py-0.5 text-xs font-medium text-green-700 dark:bg-green-950 dark:text-green-400">
+                      Proxy enabled
+                    </span>
+                  </div>
+                  {asset.linkedDeviceId ? (
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={selectedProxyPort}
+                        onChange={e => setSelectedProxyPort(Number(e.target.value))}
+                        className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                      >
+                        {openPorts.length > 0 ? (
+                          openPorts.map(p => (
+                            <option key={p.port} value={p.port}>
+                              Port {p.port}{p.service ? ` (${p.service})` : ''}
+                            </option>
+                          ))
+                        ) : (
+                          <>
+                            <option value={80}>Port 80 (HTTP)</option>
+                            <option value={443}>Port 443 (HTTPS)</option>
+                          </>
+                        )}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={handleConnectProxy}
+                        disabled={connectingProxy}
+                        className="inline-flex h-8 items-center gap-1.5 rounded-md bg-blue-600 px-3 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-70"
+                      >
+                        <ExternalLink className="h-3 w-3" />
+                        {connectingProxy ? 'Connecting...' : 'Connect'}
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-amber-600 dark:text-amber-400">
+                      Link this asset to a managed device first to use as the proxy agent.
+                    </p>
+                  )}
+                </div>
+              )}
+              {proxyError && (
+                <div className="mt-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  {proxyError}
                 </div>
               )}
             </div>

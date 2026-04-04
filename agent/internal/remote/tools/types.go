@@ -199,6 +199,11 @@ const (
 	// Incident response
 	CmdCollectEvidence    = "collect_evidence"
 	CmdExecuteContainment = "execute_containment"
+
+	// TCP tunnel relay (VNC + network proxy)
+	CmdTunnelOpen  = "tunnel_open"
+	CmdTunnelData  = "tunnel_data"
+	CmdTunnelClose = "tunnel_close"
 )
 
 // CommandResult represents the result of a command execution
