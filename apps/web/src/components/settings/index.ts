@@ -21,7 +21,6 @@ export { default as RoleSelector } from './RoleSelector';
 export { default as RolesPage } from './RolesPage';
 export { default as SiteForm } from './SiteForm';
 export { default as SiteList } from './SiteList';
-export { default as SitesPage } from './SitesPage';
 export { default as SsoProviderForm } from './SsoProviderForm';
 export { default as SsoProviderList } from './SsoProviderList';
 export { default as SsoProvidersPage } from './SsoProvidersPage';

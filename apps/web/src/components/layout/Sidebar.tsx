@@ -154,7 +154,6 @@ const navSections: NavSection[] = [
     label: 'Settings',
     icon: Building,
     items: [
-      { name: 'Org Settings', href: '/settings/organization', icon: Building },
       { name: 'AI Usage & Budget', href: '/settings/ai-usage', icon: BrainCircuit },
       { name: 'Custom Fields', href: '/settings/custom-fields', icon: ListChecks },
       { name: 'Saved Filters', href: '/settings/filters', icon: Filter },

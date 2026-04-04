@@ -1,13 +1,8 @@
 ---
 import DashboardLayout from '../../../layouts/DashboardLayout.astro';
 import HuntressIntegration from '../../../components/integrations/HuntressIntegration';
-import Breadcrumbs from '../../../components/layout/Breadcrumbs';
 ---
 
 <DashboardLayout title="Huntress Integration">
-  <Breadcrumbs client:load items={[
-    { label: 'Settings', href: '/settings' },
-    { label: 'Huntress Integration' }
-  ]} />
   <HuntressIntegration client:load />
 </DashboardLayout>

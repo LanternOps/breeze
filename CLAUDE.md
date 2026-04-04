@@ -41,6 +41,10 @@ Partner (MSP) → Organization (Customer) → Site (Location) → Device Group �
 - Use subagents for: codebase searches, file reading/analysis, PR reviews, build log inspection, and any work that produces large output.
 - Keep the main context for: decision-making, coordinating work, and user interaction.
 
+### URL State in Components
+- Use `window.location.hash` (`#value`) for client-side UI state like selected tabs, selected items in lists, etc. See `DeviceDetails.tsx` and `OrganizationsPage.tsx` for examples.
+- Do **not** use query params (`?key=value`) for transient UI state — keep the pattern consistent.
+
 ### Shared Code
 - `packages/shared/src/types/` - TypeScript interfaces
 - `packages/shared/src/validators/` - Zod schemas

@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 export type Permission = {
   resource: string;
@@ -84,6 +85,56 @@ export default function RoleManager({
 }: RoleManagerProps) {
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<'all' | 'system' | 'custom'>('all');
+  const [expandedRoleId, setExpandedRoleId] = useState<string | null>(null);
+  const [rolePermissions, setRolePermissions] = useState<Record<string, Permission[]>>({});
+
+  const normalizePermissions = useCallback((perms: Permission[]): Permission[] => {
+    // Map API action names to matrix action names
+    const actionMap: Record<string, string> = { read: 'view' };
+    const normalized: Permission[] = [];
+    for (const p of perms) {
+      // Expand wildcards
+      if (p.resource === '*' && p.action === '*') {
+        for (const r of RESOURCES) {
+          for (const a of ACTIONS) {
+            normalized.push({ resource: r, action: a });
+          }
+        }
+        continue;
+      }
+      const resources = p.resource === '*' ? [...RESOURCES] : [p.resource];
+      const actions = p.action === '*' ? [...ACTIONS] : [actionMap[p.action] || p.action];
+      for (const r of resources) {
+        for (const a of actions) {
+          normalized.push({ resource: r, action: a });
+        }
+      }
+    }
+    return normalized;
+  }, []);
+
+  const toggleExpand = useCallback(async (role: Role) => {
+    if (expandedRoleId === role.id) {
+      setExpandedRoleId(null);
+      return;
+    }
+    setExpandedRoleId(role.id);
+    if (!rolePermissions[role.id]) {
+      try {
+        const res = await fetchWithAuth(`/roles/${role.id}`);
+        if (res.ok) {
+          const data = await res.json();
+          setRolePermissions(prev => ({ ...prev, [role.id]: normalizePermissions(data.permissions || []) }));
+        } else {
+          console.error(`Failed to fetch permissions for role ${role.id}: ${res.status} ${res.statusText}`);
+          setRolePermissions(prev => ({ ...prev, [role.id]: [] }));
+        }
+      } catch (err) {
+        console.error(`Error fetching permissions for role ${role.id}:`, err);
+        setRolePermissions(prev => ({ ...prev, [role.id]: [] }));
+      }
+    }
+  }, [expandedRoleId, rolePermissions, normalizePermissions]);
 
   const filteredRoles = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -165,12 +216,25 @@ export default function RoleManager({
               </tr>
             ) : (
               filteredRoles.map((role) => (
-                <tr key={role.id} className="transition hover:bg-muted/40">
+                <React.Fragment key={role.id}>
+                <tr
+                  className={cn(
+                    'transition hover:bg-muted/40',
+                    role.isSystem && 'cursor-pointer',
+                    expandedRoleId === role.id && 'bg-muted/40'
+                  )}
+                  onClick={() => {
+                    if (role.isSystem) void toggleExpand(role);
+                  }}
+                >
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
                       {role.isSystem && (
                         <svg
-                          className="h-4 w-4 text-muted-foreground"
+                          className={cn(
+                            'h-4 w-4 text-muted-foreground transition-transform',
+                            expandedRoleId === role.id && 'rotate-90'
+                          )}
                           fill="none"
                           viewBox="0 0 24 24"
                           stroke="currentColor"
@@ -179,14 +243,14 @@ export default function RoleManager({
                           <path
                             strokeLinecap="round"
                             strokeLinejoin="round"
-                            d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
+                            d="M9 5l7 7-7 7"
                           />
                         </svg>
                       )}
                       <div>
                         <div className="text-sm font-medium">{role.name}</div>
                         {role.description && (
-                          <div className="text-xs text-muted-foreground truncate max-w-[200px]">
+                          <div className="text-xs text-muted-foreground">
                             {role.description}
                           </div>
                         )}
@@ -277,6 +341,28 @@ export default function RoleManager({
                     </div>
                   </td>
                 </tr>
+                {expandedRoleId === role.id && role.isSystem && (
+                  <tr>
+                    <td colSpan={6} className="border-b bg-muted/20 px-6 py-4">
+                      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        Permissions for {role.name}
+                      </div>
+                      {rolePermissions[role.id] ? (
+                        <PermissionMatrix
+                          permissions={rolePermissions[role.id]}
+                          onChange={() => {}}
+                          disabled
+                        />
+                      ) : (
+                        <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
+                          <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                          Loading permissions...
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>
               ))
             )}
           </tbody>

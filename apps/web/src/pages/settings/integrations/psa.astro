@@ -1,13 +1,8 @@
 ---
 import DashboardLayout from '../../../layouts/DashboardLayout.astro';
 import PSAIntegration from '../../../components/integrations/PSAIntegration';
-import Breadcrumbs from '../../../components/layout/Breadcrumbs';
 ---
 
 <DashboardLayout title="PSA Integration Settings">
-  <Breadcrumbs client:load items={[
-    { label: 'Settings', href: '/settings' },
-    { label: 'PSA Integration' }
-  ]} />
   <PSAIntegration client:load />
 </DashboardLayout>

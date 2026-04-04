@@ -1,13 +1,8 @@
 ---
 import DashboardLayout from '../../../layouts/DashboardLayout.astro';
 import MonitoringIntegration from '../../../components/integrations/MonitoringIntegration';
-import Breadcrumbs from '../../../components/layout/Breadcrumbs';
 ---
 
 <DashboardLayout title="Monitoring Integrations">
-  <Breadcrumbs client:load items={[
-    { label: 'Settings', href: '/settings' },
-    { label: 'Monitoring Integrations' }
-  ]} />
   <MonitoringIntegration client:load />
 </DashboardLayout>
