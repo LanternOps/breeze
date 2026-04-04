@@ -306,31 +306,11 @@ var minConfigFlagVersion = [3]int{0, 14, 0}
 
 func (m *Manager) ensureRunningSession(state *sessionState) error {
 	if state.pid > 0 && m.isOurProcessFunc(state.pid, m.binaryPath) {
-		// Only clear the crash counter if the helper has been alive long enough
-		// to be considered stable. Without this, Apply() on heartbeat can catch
-		// the helper momentarily alive (before it crashes) and reset the counter,
-		// preventing the cooldown from ever kicking in.
-		if state.lastSpawnTime.IsZero() || time.Since(state.lastSpawnTime) > 2*time.Minute {
-			state.resetCrashes()
-		}
 		return nil
 	}
-
-	// If we recently spawned and the process is already gone, count it as a crash.
-	// Use lastSpawnedPID (not state.pid) because refreshPID() can overwrite state.pid
-	// with 0 from the status file if the helper crashed before writing its PID.
-	if state.lastSpawnedPID > 0 && !m.isOurProcessFunc(state.lastSpawnedPID, m.binaryPath) {
-		state.recordCrash()
-		if state.inCooldown() {
-			log.Warn("breeze assist keeps crashing, backing off",
-				"session", state.key,
-				"crashes", state.spawnCrashes,
-				"cooldownUntil", state.cooldownUntil.Format("15:04:05"),
-			)
-			return fmt.Errorf("in cooldown after %d crashes", state.spawnCrashes)
-		}
+	if state.watcherGaveUp {
+		return fmt.Errorf("helper keeps crashing, not respawning until next update")
 	}
-
 	var pid int
 	var err error
 	if m.helperSupportsConfigFlag() {
@@ -342,7 +322,6 @@ func (m *Manager) ensureRunningSession(state *sessionState) error {
 		return err
 	}
 	state.pid = pid
-	state.recordSpawn(pid)
 	return nil
 }
 
@@ -522,6 +501,7 @@ func (m *Manager) applyPendingUpdate() {
 			log.Error("failed to rollback helper", "error", restoreErr.Error())
 		}
 		for _, state := range stopped {
+			state.watcherGaveUp = false // intentional stop, not a crash
 			if err := m.ensureRunningSession(state); err != nil {
 				log.Error("failed to restart helper after rollback", "session", state.key, "error", err.Error())
 			} else {
@@ -533,7 +513,7 @@ func (m *Manager) applyPendingUpdate() {
 
 	for _, state := range stopped {
 		state.pid = 0
-		state.resetCrashes() // new binary — give it a fresh chance
+		state.watcherGaveUp = false // new binary — give it a fresh chance
 		if err := m.ensureRunningSession(state); err != nil {
 			log.Error("failed to start updated helper", "session", state.key, "error", err.Error())
 			if restoreErr := restoreBackup(backupPath, m.binaryPath); restoreErr != nil {
