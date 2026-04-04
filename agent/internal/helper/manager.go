@@ -442,7 +442,11 @@ func (m *Manager) CheckUpdate(targetVersion string) {
 		log.Info("helper update pending", "targetVersion", targetVersion)
 		m.pendingHelperVersion = targetVersion
 		m.updateFailures = 0
-		m.abandonedVersion = ""
+		// Only clear abandonedVersion when a genuinely different version is
+		// requested. This prevents re-triggering a failed update.
+		if m.abandonedVersion != "" && targetVersion != m.abandonedVersion {
+			m.abandonedVersion = ""
+		}
 	}
 }
 
