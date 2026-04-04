@@ -25,6 +25,9 @@ interface Props {
   remapCmdCtrl: boolean;
   monitors: MonitorInfo[];
   activeMonitor: number;
+  sessions: Array<{ sessionId: number; username: string; state: string; type: string; helperConnected: boolean }>;
+  activeSessionId: number | null;
+  onSwitchSession: (id: number) => void;
   audioEnabled: boolean;
   hasAudioTrack: boolean;
   showRemoteCursor: boolean;
@@ -60,6 +63,14 @@ const KEY_COMBOS: KeyCombo[] = [
   { label: 'Win+D',           key: 'd',      modifiers: ['win'],           description: 'Show desktop' },
 ];
 
+function UserIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 16 16" fill="currentColor">
+      <path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM2 14s-1 0-1-1 1-4 7-4 7 3 7 4-1 1-1 1H2Z" />
+    </svg>
+  );
+}
+
 function formatDuration(startDate: Date): string {
   const seconds = Math.floor((Date.now() - startDate.getTime()) / 1000);
   const h = Math.floor(seconds / 3600);
@@ -91,6 +102,9 @@ export default function ViewerToolbar({
   onConfigChange,
   onBitrateChange,
   onSwitchMonitor,
+  sessions,
+  activeSessionId,
+  onSwitchSession,
   onToggleAudio,
   onSendKeys,
   onSendSAS,
@@ -292,6 +306,37 @@ export default function ViewerToolbar({
                   <MonitorIcon className="w-4 h-4" />
                   <span className="absolute text-[7px] font-bold leading-none" style={{ marginTop: '-2px' }}>{m.index + 1}</span>
                 </span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* Session picker (only shown with 2+ sessions on WebRTC) */}
+      {sessions.length > 1 && transport === 'webrtc' && (
+        <>
+          <div className="w-px h-5 bg-gray-600" />
+          <div className="flex items-center gap-1">
+            {sessions.map((s) => (
+              <button
+                key={s.sessionId}
+                onClick={() => onSwitchSession(s.sessionId)}
+                disabled={activeSessionId === s.sessionId}
+                title={`${s.username || `Session ${s.sessionId}`} (${s.type}${s.state === 'disconnected' ? ', disconnected' : ''})`}
+                className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-xs transition-colors ${
+                  activeSessionId === s.sessionId
+                    ? 'text-blue-400 bg-blue-500/20'
+                    : 'text-gray-500 hover:text-gray-300 hover:bg-gray-700'
+                }`}
+              >
+                <UserIcon className="w-3 h-3" />
+                <span className="max-w-[80px] truncate">{s.username || `Session ${s.sessionId}`}</span>
+                <span className={`w-1.5 h-1.5 rounded-full ${
+                  s.state === 'active' ? 'bg-green-400' : 'bg-yellow-400'
+                }`} />
+                {s.type === 'rdp' && (
+                  <span className="text-[9px] font-medium text-gray-500 uppercase">RDP</span>
+                )}
               </button>
             ))}
           </div>
