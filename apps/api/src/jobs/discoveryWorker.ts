@@ -340,11 +340,48 @@ async function enqueueScheduledProfileRun(
   }
 }
 
+async function expireStaleRunningJobs(): Promise<number> {
+  const staleThreshold = new Date(Date.now() - 15 * 60 * 1000); // 15 minutes
+  const staleJobs = await db
+    .select({ id: discoveryJobs.id })
+    .from(discoveryJobs)
+    .where(
+      and(
+        eq(discoveryJobs.status, 'running'),
+        sql`${discoveryJobs.updatedAt} < ${staleThreshold.toISOString()}::timestamptz`
+      )
+    );
+
+  if (staleJobs.length === 0) return 0;
+
+  for (const job of staleJobs) {
+    await db
+      .update(discoveryJobs)
+      .set({
+        status: 'failed',
+        completedAt: new Date(),
+        errors: { message: 'Job timed out after 15 minutes without completing' },
+        updatedAt: new Date()
+      })
+      .where(eq(discoveryJobs.id, job.id));
+  }
+
+  console.warn(`[DiscoveryWorker] Expired ${staleJobs.length} stale running job(s)`);
+  return staleJobs.length;
+}
+
 async function processScheduleProfiles(): Promise<{ enqueued: number }> {
   const now = new Date();
   const minuteStart = new Date(now);
   minuteStart.setSeconds(0, 0);
   const minuteEnd = new Date(minuteStart.getTime() + 60 * 1000);
+
+  // Clean up stale running jobs that may be blocking scheduled scans
+  try {
+    await expireStaleRunningJobs();
+  } catch (err) {
+    console.error('[DiscoveryWorker] Failed to expire stale jobs:', err);
+  }
 
   const profiles = await db
     .select({
@@ -692,10 +729,12 @@ async function processResults(data: ProcessResultsJobData): Promise<{
   let newCount = 0;
   let updatedCount = 0;
   let changeEventsCreated = 0;
+  let hostErrors = 0;
 
   for (const host of data.hosts) {
     if (!host.ip) continue;
 
+    try {
     // Check if asset already exists (by org + IP)
     const [existing] = await db
       .select({ id: discoveredAssets.id })
@@ -861,6 +900,17 @@ async function processResults(data: ProcessResultsJobData): Promise<{
         );
       }
     }
+    } catch (hostErr) {
+      hostErrors++;
+      console.error(
+        `[DiscoveryWorker] Failed to process discovered host ${host.ip}:`,
+        hostErr instanceof Error ? hostErr.message : hostErr
+      );
+    }
+  }
+
+  if (hostErrors > 0) {
+    console.warn(`[DiscoveryWorker] ${hostErrors}/${data.hosts.length} host(s) failed to process for job ${data.jobId}`);
   }
 
   // ── Bootstrap change events when alerts are first enabled ────────────
@@ -1251,8 +1301,9 @@ export async function initializeDiscoveryWorker(): Promise<void> {
       console.error(`[DiscoveryWorker] Job ${job?.id} failed:`, error);
 
       // Update the discoveryJobs row so the UI doesn't show "running" forever
-      if (job?.data?.type === 'process-results') {
-        const jobId = (job.data as ProcessResultsJobData).jobId;
+      const jobType = job?.data?.type;
+      if (jobType === 'process-results' || jobType === 'dispatch-scan') {
+        const jobId = (job!.data as { jobId: string }).jobId;
         runWithSystemDbAccess(async () => {
           await db
             .update(discoveryJobs)

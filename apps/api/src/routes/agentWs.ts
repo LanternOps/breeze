@@ -94,9 +94,9 @@ type CommandResultHandler = (params: {
 // ---------------------------------------------------------------------------
 
 async function handleDiscoveryResult({ agentId, command, result }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  const payload = command.payload as Record<string, unknown> | null;
+  const expectedJobId = typeof payload?.jobId === 'string' ? payload.jobId : null;
   try {
-    const payload = command.payload as Record<string, unknown> | null;
-    const expectedJobId = typeof payload?.jobId === 'string' ? payload.jobId : null;
     const discoveryData = result.result as {
       jobId?: string;
       hosts?: DiscoveredHostResult[];
@@ -151,11 +151,31 @@ async function handleDiscoveryResult({ agentId, command, result }: Parameters<Co
             updatedAt: new Date()
           })
           .where(eq(discoveryJobs.id, expectedJobId));
+      } else {
+        console.warn(
+          `[AgentWs] Discovery job ${expectedJobId} not found in DB — ` +
+          `discarding ${discoveryData.hosts.length} host(s) from agent ${agentId}`
+        );
       }
     }
   } catch (err) {
     console.error(`[AgentWs] Failed to process discovery results for ${agentId}:`, err);
     captureException(err);
+    if (expectedJobId) {
+      try {
+        await db
+          .update(discoveryJobs)
+          .set({
+            status: 'failed',
+            completedAt: new Date(),
+            errors: { message: err instanceof Error ? err.message : 'Failed to enqueue discovery results' },
+            updatedAt: new Date()
+          })
+          .where(eq(discoveryJobs.id, expectedJobId));
+      } catch (dbErr) {
+        console.error(`[AgentWs] Additionally failed to mark discovery job ${expectedJobId} as failed:`, dbErr);
+      }
+    }
   }
 }
 
@@ -753,6 +773,7 @@ async function processOrphanedCommandResult(
       }
     } catch (err) {
       console.error(`[AgentWs] Failed to process SNMP poll results for ${agentId}:`, err);
+      captureException(err);
     }
     return;
   }
@@ -806,6 +827,7 @@ async function processOrphanedCommandResult(
       }
     } catch (err) {
       console.error(`[AgentWs] Failed to process monitor check result for ${agentId}:`, err);
+      captureException(err);
     }
     return;
   }
@@ -916,6 +938,19 @@ async function processOrphanedCommandResult(
     } catch (err) {
       console.error(`[AgentWs] Failed to process discovery results for ${agentId}:`, err);
       captureException(err);
+      try {
+        await db
+          .update(discoveryJobs)
+          .set({
+            status: 'failed',
+            completedAt: new Date(),
+            errors: { message: err instanceof Error ? err.message : 'Failed to enqueue discovery results' },
+            updatedAt: new Date()
+          })
+          .where(eq(discoveryJobs.id, discoveryJob.id));
+      } catch (dbErr) {
+        console.error(`[AgentWs] Additionally failed to mark discovery job ${discoveryJob.id} as failed:`, dbErr);
+      }
     }
     return;
   }
