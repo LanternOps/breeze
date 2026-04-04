@@ -858,7 +858,7 @@ func (c *Client) handleDesktopStart(env *ipc.Envelope) {
 
 	resp, err := c.desktopMgr.startSession(&req)
 	if err != nil {
-		log.Warn("desktop session start failed", "sessionId", req.SessionID, "error", err)
+		log.Warn("desktop session start failed", "sessionId", req.SessionID, "error", err.Error())
 		if sendErr := c.conn.SendError(env.ID, ipc.TypeDesktopStart, err.Error()); sendErr != nil {
 			log.Warn("failed to send desktop_start error", "error", sendErr)
 		}

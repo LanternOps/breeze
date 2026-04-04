@@ -49,6 +49,7 @@ export async function createWebRTCSession(
   params: AuthenticatedConnectionParams,
   videoEl: HTMLVideoElement,
   displayIndex?: number,
+  targetSessionId?: number,
 ): Promise<WebRTCSession> {
   // Fetch ICE servers (includes TURN credentials if configured)
   let iceServers: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
@@ -122,7 +123,7 @@ export async function createWebRTCSession(
       params.accessToken,
       {
         method: 'POST',
-        body: JSON.stringify({ offer: localDesc.sdp, ...(displayIndex != null ? { displayIndex } : {}) }),
+        body: JSON.stringify({ offer: localDesc.sdp, ...(displayIndex != null ? { displayIndex } : {}), ...(targetSessionId != null ? { targetSessionId } : {}) }),
       },
     );
 

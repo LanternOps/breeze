@@ -902,7 +902,8 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 			if b.onMessage != nil {
 				b.onMessage(s, env)
 			}
-		case ipc.TypeTrayAction, ipc.TypeNotifyResult, ipc.TypeClipboardData, ipc.TypeCommandResult, ipc.TypeSASRequest, ipc.TypeDesktopPeerDisconnected:
+		case ipc.TypeTrayAction, ipc.TypeNotifyResult, ipc.TypeClipboardData, ipc.TypeCommandResult, ipc.TypeSASRequest, ipc.TypeDesktopPeerDisconnected,
+			ipc.TypeDesktopStart, ipc.TypeDesktopStop, ipc.TypeLaunchResult:
 			if !shouldForwardUnsolicitedHelperMessage(s, env) {
 				log.Warn("dropping unsolicited or unauthorized helper message",
 					"type", env.Type, "sessionId", s.SessionID, "role", s.HelperRole)
