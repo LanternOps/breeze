@@ -305,11 +305,25 @@ func (m *Manager) writeSessionConfig(state *sessionState, cfg *Config, si Sessio
 var minConfigFlagVersion = [3]int{0, 14, 0}
 
 func (m *Manager) ensureRunningSession(state *sessionState) error {
-	if state.pid > 0 && m.isOurProcessFunc(state.pid, m.binaryPath) {
+	// Check the spawned PID first (authoritative), then the status-file PID.
+	// This prevents spawning duplicates when refreshPID overwrites state.pid
+	// with 0 or a stale value from the status file.
+	if state.spawnedPID > 0 && m.isOurProcessFunc(state.spawnedPID, m.binaryPath) {
+		return nil
+	}
+	if state.pid > 0 && state.pid != state.spawnedPID && m.isOurProcessFunc(state.pid, m.binaryPath) {
 		return nil
 	}
 	if state.watcherGaveUp {
 		return fmt.Errorf("helper keeps crashing, not respawning until next update")
+	}
+	// Kill any lingering helper that we lost track of (e.g. status file had
+	// stale PID, so we kept spawning new ones). This prevents accumulating
+	// hundreds of orphaned helper processes.
+	if state.spawnedPID > 0 && state.spawnedPID != state.pid {
+		if m.isOurProcessFunc(state.spawnedPID, m.binaryPath) {
+			_ = m.stopByPIDFunc(state.spawnedPID)
+		}
 	}
 	var pid int
 	var err error
@@ -322,6 +336,7 @@ func (m *Manager) ensureRunningSession(state *sessionState) error {
 		return err
 	}
 	state.pid = pid
+	state.spawnedPID = pid
 	return nil
 }
 
@@ -358,9 +373,15 @@ func semverAtLeast(version string, target [3]int) bool {
 }
 
 func (m *Manager) ensureStoppedSession(state *sessionState) error {
-	if state.pid > 0 && m.isOurProcessFunc(state.pid, m.binaryPath) {
-		return m.stopByPIDFunc(state.pid)
+	// Kill by spawned PID (authoritative) and status-file PID if different.
+	for _, pid := range []int{state.spawnedPID, state.pid} {
+		if pid > 0 && m.isOurProcessFunc(pid, m.binaryPath) {
+			if err := m.stopByPIDFunc(pid); err != nil {
+				return err
+			}
+		}
 	}
+	state.spawnedPID = 0
 	return nil
 }
 

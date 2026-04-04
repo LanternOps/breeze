@@ -47,7 +47,8 @@ func (w *watcher) run() {
 
 		w.mgr.mu.Lock()
 		w.state.refreshPID()
-		running := w.state.pid > 0 && w.mgr.isOurProcessFunc(w.state.pid, w.mgr.binaryPath)
+		running := (w.state.spawnedPID > 0 && w.mgr.isOurProcessFunc(w.state.spawnedPID, w.mgr.binaryPath)) ||
+			(w.state.pid > 0 && w.mgr.isOurProcessFunc(w.state.pid, w.mgr.binaryPath))
 		if running {
 			w.mgr.mu.Unlock()
 			failures = 0
