@@ -16,6 +16,7 @@ type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 interface VncViewerProps {
   wsUrl: string;
   tunnelId: string;
+  password?: string;
   onDisconnect?: () => void;
   className?: string;
 }
@@ -27,7 +28,7 @@ const statusConfig: Record<ConnectionStatus, { label: string; color: string }> =
   error: { label: 'Connection Error', color: 'text-red-500' },
 };
 
-export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: VncViewerProps) {
+export default function VncViewer({ wsUrl, tunnelId, password, onDisconnect, className }: VncViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const rfbRef = useRef<any>(null);
 
@@ -71,7 +72,10 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
       });
 
       rfb.addEventListener('credentialsrequired', () => {
-        // noVNC handles password prompt natively in the canvas
+        if (password) {
+          rfb.sendCredentials({ password });
+        }
+        // If no password, noVNC shows its native password prompt in the canvas
       });
 
       rfbRef.current = rfb;
@@ -92,7 +96,7 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
       }
       rfbRef.current = null;
     };
-  }, [wsUrl, onDisconnect]);
+  }, [wsUrl, password, onDisconnect]);
 
   // Sync scale setting to RFB instance
   useEffect(() => {

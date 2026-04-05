@@ -1,26 +1,31 @@
-import { useCallback } from 'react';
-import { ArrowLeft, X } from 'lucide-react';
+import { useCallback, useState } from 'react';
+import { ArrowLeft, X, Key, Copy, Check } from 'lucide-react';
 import VncViewer from './VncViewer';
 import { fetchWithAuth } from '@/stores/auth';
 
 interface Props {
   tunnelId: string;
   wsUrl: string;
+  password?: string;
 }
 
-/**
- * Full-page VNC viewer wrapper. Shown when the user opens a VNC session
- * in the browser (fallback from Tauri deep link or direct navigation).
- */
-export default function VncViewerPage({ tunnelId, wsUrl }: Props) {
+export default function VncViewerPage({ tunnelId, wsUrl, password }: Props) {
+  const [copied, setCopied] = useState(false);
+
   const handleDisconnect = useCallback(() => {
     fetchWithAuth(`/tunnels/${tunnelId}`, { method: 'DELETE' }).catch(() => {});
-    window.close();
-    // If window.close() doesn't work (not opened via script), navigate back
-    setTimeout(() => {
-      window.location.href = '/remote';
-    }, 200);
   }, [tunnelId]);
+
+  const handleCopyPassword = useCallback(async () => {
+    if (!password) return;
+    try {
+      await navigator.clipboard.writeText(password);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard API may be blocked
+    }
+  }, [password]);
 
   return (
     <div className="flex h-full flex-col bg-black">
@@ -39,19 +44,34 @@ export default function VncViewerPage({ tunnelId, wsUrl }: Props) {
           </span>
           <span className="text-xs text-gray-500">{tunnelId.slice(0, 8)}</span>
         </div>
-        <button
-          type="button"
-          onClick={handleDisconnect}
-          className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-gray-400 hover:bg-gray-800 hover:text-white transition"
-        >
-          <X className="h-4 w-4" />
-          Disconnect
-        </button>
+        <div className="flex items-center gap-2">
+          {password && (
+            <button
+              type="button"
+              onClick={handleCopyPassword}
+              className="flex items-center gap-1.5 rounded-md bg-gray-800 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-700 transition"
+              title="Copy VNC password"
+            >
+              <Key className="h-3 w-3" />
+              <span className="font-mono">{password}</span>
+              {copied ? <Check className="h-3 w-3 text-green-400" /> : <Copy className="h-3 w-3" />}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={handleDisconnect}
+            className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-gray-400 hover:bg-gray-800 hover:text-white transition"
+          >
+            <X className="h-4 w-4" />
+            Disconnect
+          </button>
+        </div>
       </div>
       <div className="flex-1">
         <VncViewer
           wsUrl={wsUrl}
           tunnelId={tunnelId}
+          password={password}
           onDisconnect={handleDisconnect}
         />
       </div>
