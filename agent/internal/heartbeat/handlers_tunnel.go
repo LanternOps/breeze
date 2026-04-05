@@ -76,7 +76,7 @@ func handleTunnelOpen(h *Heartbeat, cmd Command) tools.CommandResult {
 
 	// For VNC on macOS, enable Screen Sharing if needed.
 	if isVNC {
-		if err := tunnel.EnableScreenSharing(); err != nil {
+		if err := tunnel.EnableScreenSharing(""); err != nil {
 			log.Warn("failed to enable screen sharing", "error", err.Error())
 			// Non-fatal — VNC server might already be running.
 		}
