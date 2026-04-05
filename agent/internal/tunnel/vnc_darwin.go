@@ -12,27 +12,34 @@ import (
 const (
 	vncPort       = 5900
 	vncCheckDelay = 2 * time.Second
+	kickstartPath = "/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
 )
 
-// EnableScreenSharing enables macOS Screen Sharing (VNC) if not already running.
+// EnableScreenSharing enables macOS Screen Sharing (VNC) with an optional
+// VNC legacy password. If password is empty, VNC legacy auth is not configured.
 // The agent runs as root, so kickstart works without sudo.
-func EnableScreenSharing() error {
-	if isPortListening("127.0.0.1", vncPort) {
-		log.Info("VNC server already listening on port 5900")
-		return nil
-	}
+func EnableScreenSharing(password string) error {
+	log.Info("enabling macOS Screen Sharing via kickstart", "hasPassword", password != "")
 
-	log.Info("enabling macOS Screen Sharing via kickstart")
-
-	kickstart := "/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
-	cmd := exec.Command(kickstart,
+	args := []string{
 		"-activate",
 		"-configure", "-access", "-on",
 		"-restart", "-agent",
 		"-privs", "-all",
-	)
+	}
+
+	if password != "" {
+		args = append(args, "-configure", "-clientopts",
+			"-setvnclegacy", "-vnclegacy", "yes",
+			"-setvncpw", "-vncpw", password,
+		)
+	}
+
+	cmd := exec.Command(kickstartPath, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		// Atomic rollback: disable if enable failed partway
+		_ = DisableScreenSharing()
 		return fmt.Errorf("kickstart failed: %w (output: %s)", err, string(output))
 	}
 
@@ -40,11 +47,33 @@ func EnableScreenSharing() error {
 	time.Sleep(vncCheckDelay)
 
 	if !isPortListening("127.0.0.1", vncPort) {
+		// Atomic rollback: disable if port never came up
+		_ = DisableScreenSharing()
 		return fmt.Errorf("VNC server not listening on port %d after kickstart", vncPort)
 	}
 
 	log.Info("macOS Screen Sharing enabled successfully")
 	return nil
+}
+
+// DisableScreenSharing deactivates macOS Screen Sharing (ARD agent).
+// Idempotent — safe to call if already disabled.
+func DisableScreenSharing() error {
+	log.Info("disabling macOS Screen Sharing via kickstart")
+
+	cmd := exec.Command(kickstartPath, "-deactivate", "-stop")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("kickstart deactivate failed: %w (output: %s)", err, string(output))
+	}
+
+	log.Info("macOS Screen Sharing disabled")
+	return nil
+}
+
+// IsScreenSharingRunning checks if VNC is listening on port 5900.
+func IsScreenSharingRunning() bool {
+	return isPortListening("127.0.0.1", vncPort)
 }
 
 func isPortListening(host string, port int) bool {
