@@ -1,8 +1,4 @@
-// Lazy re-export for noVNC RFB class.
-// Kept as an async loader so Vite's SSR analyzer never statically resolves the
-// browser-only noVNC package. v1.7.0-beta ships native ESM via "exports".
-export async function loadRFB() {
-  // @ts-expect-error — no types for noVNC
-  const mod = await import('@novnc/novnc');
-  return mod.default as any;
-}
+// Re-export noVNC RFB class.
+// v1.7.0-beta ships native ESM via the "exports" field in package.json.
+// @ts-expect-error — no types for noVNC
+export { default as RFB } from '@novnc/novnc';

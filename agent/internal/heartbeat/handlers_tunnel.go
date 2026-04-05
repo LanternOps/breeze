@@ -74,11 +74,15 @@ func handleTunnelOpen(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
-	// For VNC on macOS, enable Screen Sharing if needed.
+	// For VNC on macOS, enable Screen Sharing with JIT password.
 	if isVNC {
-		if err := tunnel.EnableScreenSharing(); err != nil {
-			log.Warn("failed to enable screen sharing", "error", err.Error())
-			// Non-fatal — VNC server might already be running.
+		vncPassword, _ := cmd.Payload["vncPassword"].(string)
+		if err := tunnel.EnableScreenSharing(vncPassword); err != nil {
+			return tools.CommandResult{
+				Status:     "failed",
+				Error:      fmt.Sprintf("failed to enable VNC screen sharing: %s", err.Error()),
+				DurationMs: time.Since(start).Milliseconds(),
+			}
 		}
 	}
 
@@ -170,7 +174,11 @@ func handleTunnelClose(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 
 	if h.tunnelMgr != nil {
+		wasVNC := h.tunnelMgr.GetTunnelType(tunnelID) == "vnc"
 		h.tunnelMgr.CloseTunnel(tunnelID)
+		if wasVNC {
+			h.tunnelMgr.DisableScreenSharingIfIdle("tunnel close")
+		}
 	}
 
 	return tools.NewSuccessResult(map[string]any{
