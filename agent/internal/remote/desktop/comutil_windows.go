@@ -124,7 +124,8 @@ const (
 	dxgiFormatNV12 = 103
 
 	// D3D11 bind flags
-	d3d11BindRenderTarget = 0x20
+	d3d11BindRenderTarget      = 0x20
+	d3d11BindShaderResource    = 0x08
 )
 
 // mftRegisterTypeInfo matches MFT_REGISTER_TYPE_INFO.
