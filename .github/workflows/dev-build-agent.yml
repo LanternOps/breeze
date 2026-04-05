@@ -1,0 +1,146 @@
+name: Dev Build Agent (Signed)
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to build from'
+        required: true
+        default: 'main'
+      platform:
+        description: 'Target platform'
+        required: true
+        type: choice
+        options:
+          - darwin-arm64
+          - darwin-amd64
+          - all-darwin
+      version:
+        description: 'Version string (e.g. dev-jit-vnc)'
+        required: true
+        default: 'dev'
+
+env:
+  GO_VERSION: '1.25.8'
+
+jobs:
+  build:
+    name: Build Agent (${{ matrix.goarch }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goarch: amd64
+            enabled: ${{ inputs.platform == 'darwin-amd64' || inputs.platform == 'all-darwin' }}
+          - goarch: arm64
+            enabled: ${{ inputs.platform == 'darwin-arm64' || inputs.platform == 'all-darwin' }}
+    steps:
+      - name: Skip if not enabled
+        if: matrix.enabled != 'true'
+        run: echo "Skipping ${{ matrix.goarch }}" && exit 0
+
+      - name: Checkout
+        if: matrix.enabled == 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.branch }}
+
+      - name: Setup Go
+        if: matrix.enabled == 'true'
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agent/go.sum
+
+      - name: Download Go dependencies
+        if: matrix.enabled == 'true'
+        working-directory: agent
+        run: go mod download
+
+      - name: Build Agent
+        if: matrix.enabled == 'true'
+        working-directory: agent
+        env:
+          GOOS: darwin
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '1'
+          CGO_LDFLAGS_ALLOW: '-weak_framework|ScreenCaptureKit'
+          BUILD_VERSION: ${{ inputs.version }}
+        run: |
+          go build -ldflags="-s -w -X main.version=${BUILD_VERSION}" \
+            -o "breeze-agent-darwin-${GOARCH}" \
+            ./cmd/breeze-agent
+
+      - name: Import certificate into keychain
+        if: matrix.enabled == 'true' && vars.ENABLE_MACOS_SIGNING == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychains -d user | tr -d '"')
+
+          rm -f "$CERT_PATH"
+
+      - name: Sign binary
+        if: matrix.enabled == 'true' && vars.ENABLE_MACOS_SIGNING == 'true'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          GOARCH: ${{ matrix.goarch }}
+        working-directory: agent
+        run: |
+          bin="breeze-agent-darwin-${GOARCH}"
+          codesign --force --options runtime \
+            --entitlements entitlements/agent-macos.entitlements.plist \
+            --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$bin"
+          codesign --verify --verbose "$bin"
+          echo "Signed: $bin"
+
+      - name: Notarize binary
+        if: matrix.enabled == 'true' && vars.ENABLE_MACOS_SIGNING == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          GOARCH: ${{ matrix.goarch }}
+        working-directory: agent
+        run: |
+          bin="breeze-agent-darwin-${GOARCH}"
+          ZIP_PATH="${bin}.zip"
+          ditto -c -k --keepParent "$bin" "$ZIP_PATH"
+
+          echo "Submitting $bin for notarization..."
+          xcrun notarytool submit "$ZIP_PATH" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 30m
+
+          rm -f "$ZIP_PATH"
+          echo "Notarized: $bin"
+
+      - name: Upload artifact
+        if: matrix.enabled == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: breeze-agent-darwin-${{ matrix.goarch }}
+          path: agent/breeze-agent-darwin-${{ matrix.goarch }}
+          retention-days: 7
+
+      - name: Cleanup keychain
+        if: always() && matrix.enabled == 'true' && vars.ENABLE_MACOS_SIGNING == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
