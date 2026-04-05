@@ -6,6 +6,7 @@ import { db } from '../../db';
 import {
   remoteSessions,
   devices,
+  deviceHardware,
   users
 } from '../../db/schema';
 import { requireScope } from '../../middleware/auth';
@@ -670,10 +671,29 @@ sessionRoutes.post(
       return c.json({ error: 'Device has no agent connection identifier' }, 502);
     }
 
+    // Look up GPU vendor from device hardware inventory
+    let gpuVendor: string | undefined;
+    try {
+      const [hw] = await db.select({ gpuModel: deviceHardware.gpuModel })
+        .from(deviceHardware)
+        .where(eq(deviceHardware.deviceId, device.id))
+        .limit(1);
+      if (hw?.gpuModel) {
+        const g = hw.gpuModel.toLowerCase();
+        if (g.includes('nvidia') || g.includes('geforce') || g.includes('quadro') || g.includes('rtx')) {
+          gpuVendor = 'nvidia';
+        } else if (g.includes('radeon') || g.includes('amd')) {
+          gpuVendor = 'amd';
+        } else if (g.includes('intel') || g.includes('uhd') || g.includes('iris')) {
+          gpuVendor = 'intel';
+        }
+      }
+    } catch { /* non-fatal — encoder auto-detects */ }
+
     const agentReachable = sendCommandToAgent(device.agentId, {
       id: `desk-start-${sessionId}`,
       type: 'start_desktop',
-      payload: { sessionId, offer: data.offer, iceServers: getIceServers(), ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}), ...(data.targetSessionId != null ? { targetSessionId: data.targetSessionId } : {}) }
+      payload: { sessionId, offer: data.offer, iceServers: getIceServers(), ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}), ...(data.targetSessionId != null ? { targetSessionId: data.targetSessionId } : {}), ...(gpuVendor ? { gpuVendor } : {}) }
     });
 
     if (!agentReachable) {

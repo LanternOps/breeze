@@ -124,9 +124,10 @@ type Session struct {
 
 // SessionManager manages remote desktop sessions
 type SessionManager struct {
-	sessions map[string]*Session
-	mu       sync.RWMutex
-	config   CaptureConfig
+	sessions  map[string]*Session
+	mu        sync.RWMutex
+	config    CaptureConfig
+	gpuVendor string // "nvidia", "amd", "intel", or "" for auto-detect
 
 	// OnSASRequest is called when a viewer requests Ctrl+Alt+Del. In service
 	// mode the helper sets this to route the request via IPC to the SCM service
@@ -160,6 +161,14 @@ func (m *SessionManager) CaptureConfig() CaptureConfig {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.config
+}
+
+// SetGPUVendor sets the GPU vendor hint used when creating the video encoder.
+// Valid values: "nvidia", "amd", "intel", or "" for auto-detect.
+func (m *SessionManager) SetGPUVendor(vendor string) {
+	m.mu.Lock()
+	m.gpuVendor = vendor
+	m.mu.Unlock()
 }
 
 // HasActiveSessions reports whether any desktop session is currently active.
