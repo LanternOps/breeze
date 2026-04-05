@@ -114,6 +114,28 @@ func (m *Manager) ActiveCount() int {
 	return len(m.sessions)
 }
 
+// GetTunnelType returns the tunnel type for the given ID, or empty string if not found.
+func (m *Manager) GetTunnelType(id string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if s, ok := m.sessions[id]; ok && s != nil {
+		return s.TunnelType
+	}
+	return ""
+}
+
+// HasVNCTunnels returns true if any active tunnel has type "vnc".
+func (m *Manager) HasVNCTunnels() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, s := range m.sessions {
+		if s != nil && s.TunnelType == "vnc" {
+			return true
+		}
+	}
+	return false
+}
+
 // Stop closes all tunnels and stops the reaper.
 func (m *Manager) Stop() {
 	m.stopOnce.Do(func() {
@@ -160,8 +182,19 @@ func (m *Manager) reapIdle() {
 	}
 	m.mu.RUnlock()
 
+	var reapedVNC bool
 	for _, id := range stale {
+		if m.GetTunnelType(id) == "vnc" {
+			reapedVNC = true
+		}
 		log.Info("reaping idle tunnel", "tunnelId", id)
 		m.CloseTunnel(id)
+	}
+
+	// If we reaped a VNC tunnel and no others remain, disable Screen Sharing.
+	if reapedVNC && !m.HasVNCTunnels() {
+		if err := DisableScreenSharing(); err != nil {
+			log.Warn("failed to disable screen sharing after idle VNC reap", "error", err.Error())
+		}
 	}
 }
