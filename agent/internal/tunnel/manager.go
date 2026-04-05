@@ -158,13 +158,23 @@ func (m *Manager) Stop() {
 
 		m.mu.Lock()
 		m.stopped = true
+		hasVNC := false
 		for id, s := range m.sessions {
 			if s != nil {
+				if s.TunnelType == "vnc" {
+					hasVNC = true
+				}
 				s.Close()
 			}
 			delete(m.sessions, id)
 		}
 		m.mu.Unlock()
+
+		if hasVNC {
+			if err := DisableScreenSharing(); err != nil {
+				log.Warn("failed to disable screen sharing during shutdown", "error", err.Error())
+			}
+		}
 
 		log.Info("tunnel manager stopped")
 	})
