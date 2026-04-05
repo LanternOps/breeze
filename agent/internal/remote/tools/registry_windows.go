@@ -5,6 +5,7 @@ package tools
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -20,7 +21,7 @@ func listRegistryKeysOS(hive, path string, startTime time.Time) CommandResult {
 	defer key.Close()
 
 	subkeys, err := key.ReadSubKeyNames(maxRegistryListEntries + 1)
-	if err != nil {
+	if err != nil && err != io.EOF {
 		return NewErrorResult(fmt.Errorf("failed to read subkeys: %w", err), time.Since(startTime).Milliseconds())
 	}
 
@@ -82,7 +83,7 @@ func listRegistryValuesOS(hive, path string, startTime time.Time) CommandResult 
 	defer key.Close()
 
 	valueNames, err := key.ReadValueNames(maxRegistryListEntries + 1)
-	if err != nil {
+	if err != nil && err != io.EOF {
 		return NewErrorResult(fmt.Errorf("failed to read values: %w", err), time.Since(startTime).Milliseconds())
 	}
 
