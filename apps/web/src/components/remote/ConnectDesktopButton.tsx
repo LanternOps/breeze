@@ -28,14 +28,19 @@ function tryDeepLink(url: string) {
   setTimeout(() => a.remove(), 100);
 }
 
-function desktopAccessUnavailableReason(desktopAccess: DesktopAccessState | null | undefined): string | null {
+function desktopAccessUnavailableReason(
+  desktopAccess: DesktopAccessState | null | undefined,
+  remoteAccessPolicy?: RemoteAccessPolicy | null,
+): string | null {
   if (!desktopAccess || desktopAccess.mode !== 'unavailable') {
     return null;
   }
 
   switch (desktopAccess.reason) {
     case 'unsupported_os':
-      return 'Login-window desktop requires macOS 14 (Sonoma) or later. User-session remote desktop is still available when a user is logged in.';
+      return remoteAccessPolicy?.vncRelay
+        ? null  // VNC fallback available — don't show unavailable message
+        : 'Login-window desktop requires macOS 14 (Sonoma) or later. Enable VNC Relay in the device\'s configuration policy to connect at the login screen.';
     case 'missing_entitlement':
       return 'Login-window desktop is blocked until the required Apple entitlement is approved';
     case 'manual_install':
@@ -75,6 +80,44 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
     setError(null);
 
     try {
+      // Auto-detect: fall back to VNC for older macOS at login screen
+      const needsVNC = desktopAccess?.mode === 'unavailable'
+        && desktopAccess?.reason === 'unsupported_os'
+        && remoteAccessPolicy?.vncRelay === true;
+
+      if (needsVNC) {
+        // Create VNC tunnel — API generates ephemeral password
+        const tunnelRes = await fetchWithAuth('/tunnels', {
+          method: 'POST',
+          body: JSON.stringify({ deviceId, type: 'vnc' }),
+        });
+
+        if (!tunnelRes.ok) {
+          const err = await tunnelRes.json().catch(() => ({ error: 'Failed to create VNC tunnel' }));
+          throw new Error(err.error || 'Failed to create VNC tunnel');
+        }
+
+        const tunnel = await tunnelRes.json();
+        const vncPassword = tunnel.vncPassword || '';
+
+        // Get WS ticket for the tunnel
+        const ticketRes = await fetchWithAuth(`/tunnels/${tunnel.id}/ws-ticket`, {
+          method: 'POST',
+        });
+        if (!ticketRes.ok) {
+          throw new Error('Failed to obtain VNC tunnel ticket');
+        }
+        const ticketData = await ticketRes.json();
+        const ticket = ticketData.ticket?.ticket;
+
+        // Navigate to the in-browser VNC viewer
+        const wsUrl = `wss://${window.location.host}/api/v1/tunnel-ws/${tunnel.id}/ws?ticket=${ticket}`;
+        window.location.href = `/remote/vnc/${tunnel.id}?ws=${encodeURIComponent(wsUrl)}&pwd=${encodeURIComponent(vncPassword)}`;
+
+        setStatus('idle');
+        return;
+      }
+
       // Clean up stale sessions in parallel with creating new one
       const [, response] = await Promise.all([
         fetchWithAuth('/remote/sessions/stale', { method: 'DELETE' }).catch(() => {}),
@@ -162,7 +205,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       setError(err instanceof Error ? err.message : 'Connection failed');
       setStatus('idle');
     }
-  }, [deviceId, endSession]);
+  }, [deviceId, desktopAccess, remoteAccessPolicy, endSession]);
 
   const handleDismiss = useCallback(() => {
     setStatus('idle');
@@ -254,7 +297,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
   ) : null;
 
   const headlessTitle = 'This device has no display \u2014 remote desktop is unavailable';
-  const desktopAccessUnavailable = desktopAccessUnavailableReason(desktopAccess);
+  const desktopAccessUnavailable = desktopAccessUnavailableReason(desktopAccess, remoteAccessPolicy);
   const policyDisabled = remoteAccessPolicy?.webrtcDesktop === false;
   const policyTitle = policyDisabled
     ? `Remote desktop is disabled by policy${remoteAccessPolicy?.policyName ? ` "${remoteAccessPolicy.policyName}"` : ''}`
