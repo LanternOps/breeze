@@ -97,13 +97,16 @@ func (m *Manager) WriteTunnel(id string, data []byte) error {
 
 // CloseTunnel closes and removes the specified tunnel session.
 func (m *Manager) CloseTunnel(id string) {
-	m.mu.RLock()
+	m.mu.Lock()
 	s, ok := m.sessions[id]
-	m.mu.RUnlock()
+	if ok {
+		delete(m.sessions, id) // Remove from map synchronously
+	}
+	m.mu.Unlock()
 
 	if ok && s != nil {
 		s.Close()
-		// wrappedOnClose removes from map via the read loop exit
+		// wrappedOnClose will try to delete again — harmless no-op
 	}
 }
 
@@ -136,19 +139,26 @@ func (m *Manager) HasVNCTunnels() bool {
 	return false
 }
 
+// DisableScreenSharingIfIdle disables macOS Screen Sharing when no VNC
+// tunnels remain active. Called after closing/reaping VNC tunnels and on
+// startup to clean up after crashes.
+func (m *Manager) DisableScreenSharingIfIdle(context string) {
+	if m.HasVNCTunnels() {
+		return
+	}
+	if err := DisableScreenSharing(); err != nil {
+		log.Warn("failed to disable screen sharing", "context", context, "error", err.Error())
+	}
+}
+
 // CleanupOrphanedVNC disables Screen Sharing if it's running but there are
 // no active VNC tunnels. Called on agent startup to clean up after crashes.
 func (m *Manager) CleanupOrphanedVNC() {
 	if !IsScreenSharingRunning() {
 		return
 	}
-	if m.HasVNCTunnels() {
-		return
-	}
 	log.Info("disabling orphaned Screen Sharing (no active VNC tunnels)")
-	if err := DisableScreenSharing(); err != nil {
-		log.Warn("failed to disable orphaned screen sharing", "error", err.Error())
-	}
+	m.DisableScreenSharingIfIdle("orphan cleanup")
 }
 
 // Stop closes all tunnels and stops the reaper.
@@ -171,9 +181,7 @@ func (m *Manager) Stop() {
 		m.mu.Unlock()
 
 		if hasVNC {
-			if err := DisableScreenSharing(); err != nil {
-				log.Warn("failed to disable screen sharing during shutdown", "error", err.Error())
-			}
+			m.DisableScreenSharingIfIdle("shutdown")
 		}
 
 		log.Info("tunnel manager stopped")
@@ -216,10 +224,7 @@ func (m *Manager) reapIdle() {
 		m.CloseTunnel(id)
 	}
 
-	// If we reaped a VNC tunnel and no others remain, disable Screen Sharing.
-	if reapedVNC && !m.HasVNCTunnels() {
-		if err := DisableScreenSharing(); err != nil {
-			log.Warn("failed to disable screen sharing after idle VNC reap", "error", err.Error())
-		}
+	if reapedVNC {
+		m.DisableScreenSharingIfIdle("idle reap")
 	}
 }

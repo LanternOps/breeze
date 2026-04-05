@@ -105,14 +105,19 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           method: 'POST',
         });
         if (!ticketRes.ok) {
+          fetchWithAuth(`/tunnels/${tunnel.id}`, { method: 'DELETE' }).catch(() => {});
           throw new Error('Failed to obtain VNC tunnel ticket');
         }
         const ticketData = await ticketRes.json();
         const ticket = ticketData.ticket?.ticket;
+        if (!ticket) {
+          fetchWithAuth(`/tunnels/${tunnel.id}`, { method: 'DELETE' }).catch(() => {});
+          throw new Error('Invalid ticket response from server');
+        }
 
         // Navigate to the in-browser VNC viewer
         const wsUrl = `wss://${window.location.host}/api/v1/tunnel-ws/${tunnel.id}/ws?ticket=${ticket}`;
-        window.location.href = `/remote/vnc/${tunnel.id}?ws=${encodeURIComponent(wsUrl)}&pwd=${encodeURIComponent(vncPassword)}`;
+        window.location.href = `/remote/vnc/${tunnel.id}?ws=${encodeURIComponent(wsUrl)}#pwd=${encodeURIComponent(vncPassword)}`;
 
         setStatus('idle');
         return;
