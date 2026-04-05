@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import { ArrowLeft, X, Key, Copy, Check } from 'lucide-react';
 import VncViewer from './VncViewer';
 import { fetchWithAuth } from '@/stores/auth';
@@ -9,11 +9,29 @@ interface Props {
   password?: string;
 }
 
-export default function VncViewerPage({ tunnelId, wsUrl, password }: Props) {
+export default function VncViewerPage({ tunnelId, wsUrl, password: initialPassword }: Props) {
   const [copied, setCopied] = useState(false);
+  const [password, setPassword] = useState(initialPassword || '');
+
+  // Read password from URL hash (not query params) for security
+  useEffect(() => {
+    const hash = window.location.hash;
+    if (hash) {
+      const params = new URLSearchParams(hash.slice(1));
+      const pwd = params.get('pwd');
+      if (pwd) {
+        setPassword(pwd);
+        // Strip password from URL for security
+        window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      }
+    }
+  }, []);
 
   const handleDisconnect = useCallback(() => {
-    fetchWithAuth(`/tunnels/${tunnelId}`, { method: 'DELETE' }).catch(() => {});
+    fetchWithAuth(`/tunnels/${tunnelId}`, { method: 'DELETE' }).catch((err) => {
+      console.error(`[VncViewerPage] Failed to close tunnel ${tunnelId}:`, err);
+    });
+    window.location.href = '/remote';
   }, [tunnelId]);
 
   const handleCopyPassword = useCallback(async () => {

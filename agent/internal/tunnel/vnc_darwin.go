@@ -39,7 +39,10 @@ func EnableScreenSharing(password string) error {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		// Atomic rollback: disable if enable failed partway
-		_ = DisableScreenSharing()
+		if rollbackErr := DisableScreenSharing(); rollbackErr != nil {
+			log.Error("rollback of screen sharing failed — port may be left open",
+				"enableError", err.Error(), "rollbackError", rollbackErr.Error())
+		}
 		return fmt.Errorf("kickstart failed: %w (output: %s)", err, string(output))
 	}
 
@@ -47,9 +50,13 @@ func EnableScreenSharing(password string) error {
 	time.Sleep(vncCheckDelay)
 
 	if !isPortListening("127.0.0.1", vncPort) {
+		portErr := fmt.Errorf("VNC server not listening on port %d after kickstart", vncPort)
 		// Atomic rollback: disable if port never came up
-		_ = DisableScreenSharing()
-		return fmt.Errorf("VNC server not listening on port %d after kickstart", vncPort)
+		if rollbackErr := DisableScreenSharing(); rollbackErr != nil {
+			log.Error("rollback of screen sharing failed — port may be left open",
+				"enableError", portErr.Error(), "rollbackError", rollbackErr.Error())
+		}
+		return portErr
 	}
 
 	log.Info("macOS Screen Sharing enabled successfully")
@@ -60,6 +67,13 @@ func EnableScreenSharing(password string) error {
 // Idempotent — safe to call if already disabled.
 func DisableScreenSharing() error {
 	log.Info("disabling macOS Screen Sharing via kickstart")
+
+	// Clear VNC legacy password before deactivating
+	clearCmd := exec.Command(kickstartPath, "-configure", "-clientopts",
+		"-setvnclegacy", "-vnclegacy", "no")
+	if output, err := clearCmd.CombinedOutput(); err != nil {
+		log.Warn("failed to clear VNC legacy password", "error", err.Error(), "output", string(output))
+	}
 
 	cmd := exec.Command(kickstartPath, "-deactivate", "-stop")
 	output, err := cmd.CombinedOutput()
