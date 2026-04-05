@@ -121,6 +121,12 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 		targetSession = fmt.Sprintf("%d", int(ts))
 	}
 
+	// Read optional GPU vendor hint from payload (set by API from device hardware inventory)
+	gpuVendor := ""
+	if v, ok := payload["gpuVendor"].(string); ok {
+		gpuVendor = v
+	}
+
 	// Marshal ICE servers once (used across retries)
 	var iceRaw json.RawMessage
 	if len(iceServers) > 0 {
@@ -136,6 +142,7 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 		Offer:        offer,
 		ICEServers:   iceRaw,
 		DisplayIndex: displayIndex,
+		GPUVendor:    gpuVendor,
 	}
 
 	// Retry up to 2 times: if the helper crashes during SendCommand, respawn

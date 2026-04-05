@@ -173,6 +173,7 @@ type DesktopStartRequest struct {
 	Offer        string          `json:"offer"`
 	ICEServers   json.RawMessage `json:"iceServers,omitempty"`
 	DisplayIndex int             `json:"displayIndex"`
+	GPUVendor    string          `json:"gpuVendor,omitempty"`
 }
 
 // DesktopStartResponse is returned by the user helper after creating the

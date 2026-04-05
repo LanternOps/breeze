@@ -45,6 +45,10 @@ func (h *helperDesktopManager) startSession(req *ipc.DesktopStartRequest) (*ipc.
 		}
 	}
 
+	if req.GPUVendor != "" {
+		h.mgr.SetGPUVendor(req.GPUVendor)
+	}
+
 	answer, err := h.mgr.StartSession(req.SessionID, req.Offer, iceServers, req.DisplayIndex)
 	if err != nil {
 		return nil, fmt.Errorf("start desktop session: %w", err)

@@ -235,6 +235,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		Bitrate:        initBitrate,
 		FPS:            maxFrameRate,
 		PreferHardware: true,
+		GPUVendor:      m.gpuVendor,
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to create H264 encoder: %w", err)
