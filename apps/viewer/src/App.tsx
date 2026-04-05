@@ -102,12 +102,10 @@ export default function App() {
 
   const handleDisconnect = useCallback(() => {
     lastDeepLinkRef.current = null;
-    try {
-      getCurrentWebviewWindow().close();
-    } catch {
-      // If close fails, at least clear state
+    getCurrentWebviewWindow().close().catch(() => {
+      // If Tauri close fails, clear state to unmount the viewer
       setParams(null);
-    }
+    });
   }, []);
 
   const handleError = useCallback((msg: string) => {

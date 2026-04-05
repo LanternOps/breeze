@@ -31,6 +31,7 @@ interface Props {
   audioEnabled: boolean;
   hasAudioTrack: boolean;
   showRemoteCursor: boolean;
+  remoteOs: string | null;
   onRemapCmdCtrlChange: (v: boolean) => void;
   onShowRemoteCursorChange: (v: boolean) => void;
   onConfigChange: (quality: number, scale: number, maxFps: number) => void;
@@ -52,7 +53,7 @@ interface KeyCombo {
   action?: 'sas' | 'lock';
 }
 
-const KEY_COMBOS: KeyCombo[] = [
+const WINDOWS_KEY_COMBOS: KeyCombo[] = [
   { label: 'Ctrl+Alt+Del',    key: 'delete', modifiers: ['ctrl', 'alt'],  description: 'Security screen', action: 'sas' },
   { label: 'Ctrl+Shift+Esc',  key: 'escape', modifiers: ['ctrl', 'shift'], description: 'Task Manager' },
   { label: 'Alt+Tab',         key: 'tab',    modifiers: ['alt'],           description: 'Switch windows' },
@@ -62,6 +63,37 @@ const KEY_COMBOS: KeyCombo[] = [
   { label: 'Win+E',           key: 'e',      modifiers: ['win'],           description: 'File Explorer' },
   { label: 'Win+D',           key: 'd',      modifiers: ['win'],           description: 'Show desktop' },
 ];
+
+const MACOS_KEY_COMBOS: KeyCombo[] = [
+  { label: 'Cmd+Opt+Esc',     key: 'escape', modifiers: ['cmd', 'alt'],           description: 'Force Quit' },
+  { label: 'Cmd+Tab',         key: 'tab',    modifiers: ['cmd'],                  description: 'Switch apps' },
+  { label: 'Cmd+W',           key: 'w',      modifiers: ['cmd'],                  description: 'Close window' },
+  { label: 'Cmd+Q',           key: 'q',      modifiers: ['cmd'],                  description: 'Quit app' },
+  { label: 'Cmd+Space',       key: 'space',  modifiers: ['cmd'],                  description: 'Spotlight' },
+  { label: 'Cmd+Shift+3',     key: '3',      modifiers: ['cmd', 'shift'],         description: 'Screenshot' },
+  { label: 'Ctrl+Cmd+Q',      key: 'q',      modifiers: ['ctrl', 'cmd'],          description: 'Lock screen' },
+  { label: 'Cmd+Opt+D',       key: 'd',      modifiers: ['cmd', 'alt'],           description: 'Show/hide Dock' },
+];
+
+const LINUX_KEY_COMBOS: KeyCombo[] = [
+  { label: 'Ctrl+Alt+Del',    key: 'delete', modifiers: ['ctrl', 'alt'],  description: 'System menu' },
+  { label: 'Ctrl+Alt+T',      key: 't',      modifiers: ['ctrl', 'alt'],  description: 'Terminal' },
+  { label: 'Alt+Tab',         key: 'tab',    modifiers: ['alt'],           description: 'Switch windows' },
+  { label: 'Alt+F4',          key: 'f4',     modifiers: ['alt'],           description: 'Close window' },
+  { label: 'Super+L',         key: 'l',      modifiers: ['win'],           description: 'Lock screen' },
+  { label: 'Super+E',         key: 'e',      modifiers: ['win'],           description: 'File manager' },
+];
+
+function getKeyCombos(osType: string | null): KeyCombo[] {
+  switch (osType) {
+    case 'macos': return MACOS_KEY_COMBOS;
+    case 'linux': return LINUX_KEY_COMBOS;
+    case 'windows': case null: return WINDOWS_KEY_COMBOS;
+    default:
+      console.warn(`Unrecognized remote OS type "${osType}", falling back to Windows key combos`);
+      return WINDOWS_KEY_COMBOS;
+  }
+}
 
 function UserIcon({ className }: { className?: string }) {
   return (
@@ -97,6 +129,7 @@ export default function ViewerToolbar({
   audioEnabled,
   hasAudioTrack,
   showRemoteCursor,
+  remoteOs,
   onRemapCmdCtrlChange,
   onShowRemoteCursorChange,
   onConfigChange,
@@ -441,7 +474,7 @@ export default function ViewerToolbar({
 
         {keysOpen && (
           <div className="absolute right-0 top-full mt-1 w-56 bg-gray-800 border border-gray-600 rounded-lg shadow-xl z-50 py-1">
-            {KEY_COMBOS.map((combo) => (
+            {getKeyCombos(remoteOs).map((combo) => (
               <button
                 key={combo.label}
                 onClick={() => {

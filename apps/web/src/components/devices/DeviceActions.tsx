@@ -86,7 +86,7 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
                 <Play className="h-4 w-4" />
                 Run Script
               </button>
-              <ConnectDesktopButton deviceId={device.id} compact isHeadless={device.isHeadless} desktopAccess={device.desktopAccess} remoteAccessPolicy={device.remoteAccessPolicy} />
+              <ConnectDesktopButton deviceId={device.id} compact disabled={device.status === 'offline'} isHeadless={device.isHeadless} desktopAccess={device.desktopAccess} remoteAccessPolicy={device.remoteAccessPolicy} />
               <button
                 type="button"
                 onClick={() => handleAction('remote-tools')}
@@ -181,7 +181,7 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
           <Play className="h-4 w-4" />
           Run Script
         </button>
-        <ConnectDesktopButton deviceId={device.id} isHeadless={device.isHeadless} desktopAccess={device.desktopAccess} remoteAccessPolicy={device.remoteAccessPolicy} />
+        <ConnectDesktopButton deviceId={device.id} disabled={device.status === 'offline'} isHeadless={device.isHeadless} desktopAccess={device.desktopAccess} remoteAccessPolicy={device.remoteAccessPolicy} />
         <button
           type="button"
           onClick={() => handleAction('remote-tools')}

@@ -53,6 +53,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [maxFps, setMaxFps] = useState(60);
   const [bitrate, setBitrate] = useState(2500);
   const [hostname, setHostname] = useState('');
+  const [remoteOs, setRemoteOs] = useState<string | null>(null);
   const [connectedAt, setConnectedAt] = useState<Date | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [pasteProgress, setPasteProgress] = useState<{ current: number; total: number } | null>(null);
@@ -342,6 +343,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             setStatus('connected');
             const deviceHostname = msg.device?.hostname || 'Unknown';
             setHostname(deviceHostname);
+            if (msg.device?.osType) {
+              setRemoteOs(msg.device.osType);
+            }
             // Window title set from Rust in update_session_hostname
             invoke('update_session_hostname', { hostname: deviceHostname }).catch((err) => {
               console.warn('Failed to update session hostname:', err);
@@ -569,13 +573,16 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         };
         authRef.current = authParams;
 
-        // Set hostname from exchange response (available for all transports)
+        // Set hostname + OS from exchange response (available for all transports)
         if (exchange.hostname) {
           setHostname(exchange.hostname);
           // Window title set from Rust in update_session_hostname
           invoke('update_session_hostname', { hostname: exchange.hostname }).catch((err) => {
             console.warn('Failed to update session hostname:', err);
           });
+        }
+        if (exchange.osType) {
+          setRemoteOs(exchange.osType);
         }
 
         // Try WebRTC first
@@ -1400,6 +1407,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         audioEnabled={audioEnabled}
         hasAudioTrack={hasAudioTrack}
         showRemoteCursor={showRemoteCursor}
+        remoteOs={remoteOs}
         onRemapCmdCtrlChange={setRemapCmdCtrl}
         onShowRemoteCursorChange={setShowRemoteCursor}
         onConfigChange={handleConfigChange}

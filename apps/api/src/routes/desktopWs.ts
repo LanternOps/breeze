@@ -14,7 +14,7 @@ import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 
 // Brief cache for exchange results so duplicate calls (e.g. React effect re-fire)
 // return the same token instead of 401 after the one-time code is consumed.
-const exchangeCache = new Map<string, { result: { accessToken: string; expiresInSeconds: number; hostname: string | null }; expiresAt: number }>();
+const exchangeCache = new Map<string, { result: { accessToken: string; expiresInSeconds: number; hostname: string | null; osType: string | null }; expiresAt: number }>();
 const EXCHANGE_CACHE_TTL_MS = 30_000; // 30 seconds
 
 // Zod validation for desktop user messages
@@ -650,16 +650,18 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
         return c.json({ error: 'Session is not available for connection' }, 400);
       }
 
-      // Look up device hostname for the viewer window title (non-critical)
+      // Look up device hostname + OS for the viewer window title and OS-specific UI
       let hostname: string | undefined;
+      let osType: string | undefined;
       if (session.deviceId) {
         try {
           const [device] = await db
-            .select({ hostname: devices.hostname })
+            .select({ hostname: devices.hostname, osType: devices.osType })
             .from(devices)
             .where(eq(devices.id, session.deviceId))
             .limit(1);
           hostname = device?.hostname ?? undefined;
+          osType = device?.osType ?? undefined;
         } catch (err) {
           console.error('Failed to look up device hostname for viewer title:', err);
         }
@@ -674,6 +676,7 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
         accessToken,
         expiresInSeconds: getViewerAccessTokenExpirySeconds(),
         hostname: hostname ?? null,
+        osType: osType ?? null,
       };
 
       // Cache the result briefly for duplicate requests

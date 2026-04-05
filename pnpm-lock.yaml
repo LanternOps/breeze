@@ -443,8 +443,8 @@ importers:
         specifier: ^4.6.0
         version: 4.7.0(monaco-editor@0.55.1)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       '@novnc/novnc':
-        specifier: ^1.6.0
-        version: 1.6.0
+        specifier: 1.7.0-beta
+        version: 1.7.0-beta
       '@tanstack/react-query':
         specifier: ^5.95.2
         version: 5.95.2(react@19.2.3)
@@ -2877,8 +2877,8 @@ packages:
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
 
-  '@novnc/novnc@1.6.0':
-    resolution: {integrity: sha512-CJrmdSe9Yt2ZbLsJpVFoVkEu0KICEvnr3njW25Nz0jodaiFJtg8AYLGZogRYy0/N5HUWkGUsCmegKXYBSqwygw==}
+  '@novnc/novnc@1.7.0-beta':
+    resolution: {integrity: sha512-h1NihPIO1bo023eL5b8OCSJarVOngWmCYQIN0jZfjgvP/s9ZKQZVsrH8pwVqB8zCkqmqzSSEOTN0mHtLp7u7gg==}
 
   '@one-ini/wasm@0.1.1':
     resolution: {integrity: sha512-XuySG1E38YScSJoMlqovLru4KTUNSjgVTIjyh7qMX6aNN5HY5Ct5LhRJdxO79JtTzKfzV/bnWpz+zquYrISsvw==}
@@ -12712,7 +12712,7 @@ snapshots:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.20.1
 
-  '@novnc/novnc@1.6.0': {}
+  '@novnc/novnc@1.7.0-beta': {}
 
   '@one-ini/wasm@0.1.1': {}
 

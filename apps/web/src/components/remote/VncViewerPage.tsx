@@ -14,12 +14,9 @@ interface Props {
  */
 export default function VncViewerPage({ tunnelId, wsUrl }: Props) {
   const handleDisconnect = useCallback(() => {
-    fetchWithAuth(`/tunnels/${tunnelId}`, { method: 'DELETE' }).catch(() => {});
-    window.close();
-    // If window.close() doesn't work (not opened via script), navigate back
-    setTimeout(() => {
-      window.location.href = '/remote';
-    }, 200);
+    fetchWithAuth(`/tunnels/${tunnelId}`, { method: 'DELETE' }).catch((err) => {
+      console.error(`Failed to clean up tunnel ${tunnelId}:`, err);
+    });
   }, [tunnelId]);
 
   return (
