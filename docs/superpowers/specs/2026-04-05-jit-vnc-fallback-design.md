@@ -124,6 +124,36 @@ When `unsupported_os` but `vncRelay` is NOT enabled in policy, update tooltip me
 - Remove `window.close()` + `setTimeout(() => window.location.href = '/remote')` auto-redirect
 - Show error state with back/reconnect options instead
 
+## Interruption Safety
+
+VNC must never be left enabled after a session ends, regardless of how it ends.
+
+### Atomic Enable with Rollback
+
+`EnableScreenSharing(password)` runs all kickstart flags in a single command. If the command fails or the port check fails afterward, immediately call `DisableScreenSharing()` before returning the error. The agent never leaves VNC half-configured.
+
+### Idle Reaper Cleanup
+
+The agent tracks active VNC tunnel IDs. The existing tunnel idle reaper (30s tick, 5 min timeout) already closes idle tunnels. Extend the `CloseTunnel` path: when a VNC tunnel is reaped due to idle timeout, call `DisableScreenSharing()`. This catches network drops and orphaned sessions where the agent never receives `tunnel_close`.
+
+### Startup Cleanup
+
+On agent startup, before connecting to the API, check if macOS Screen Sharing is enabled (`isPortListening(127.0.0.1:5900)`) and there are no active VNC tunnels in the tunnel manager. If Screen Sharing is running with no active tunnels, call `DisableScreenSharing()`. This catches agent crash/restart scenarios.
+
+### Idempotent Disable
+
+`DisableScreenSharing()` is safe to call multiple times. Returns nil if already disabled. All cleanup paths (explicit disconnect, idle reaper, startup) can call it without coordination.
+
+### Summary of Cleanup Triggers
+
+| Scenario | Cleanup mechanism |
+|----------|------------------|
+| Normal disconnect (user clicks Disconnect) | `tunnel_close` command → `DisableScreenSharing()` |
+| Browser tab closed | API detects WS close → sends `tunnel_close` → agent disables |
+| Network drop (no WS close received) | Idle reaper (5 min) closes tunnel → disables |
+| Agent crash during session | Startup cleanup on restart → disables |
+| Enable fails mid-kickstart | Atomic rollback in `EnableScreenSharing()` → disables |
+
 ## Non-Goals
 
 - VNC password storage in config policy (password is ephemeral per session)
