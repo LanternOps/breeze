@@ -392,6 +392,9 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		}
 	}
 
+	// Clean up any orphaned Screen Sharing left running from a previous crash.
+	h.tunnelMgr.CleanupOrphanedVNC()
+
 	return h
 }
 

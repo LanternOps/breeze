@@ -136,6 +136,21 @@ func (m *Manager) HasVNCTunnels() bool {
 	return false
 }
 
+// CleanupOrphanedVNC disables Screen Sharing if it's running but there are
+// no active VNC tunnels. Called on agent startup to clean up after crashes.
+func (m *Manager) CleanupOrphanedVNC() {
+	if !IsScreenSharingRunning() {
+		return
+	}
+	if m.HasVNCTunnels() {
+		return
+	}
+	log.Info("disabling orphaned Screen Sharing (no active VNC tunnels)")
+	if err := DisableScreenSharing(); err != nil {
+		log.Warn("failed to disable orphaned screen sharing", "error", err.Error())
+	}
+}
+
 // Stop closes all tunnels and stops the reaper.
 func (m *Manager) Stop() {
 	m.stopOnce.Do(func() {
