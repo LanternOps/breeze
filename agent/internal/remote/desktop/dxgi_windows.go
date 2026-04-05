@@ -406,6 +406,7 @@ func (c *dxgiCapturer) initDXGI() error {
 
 	// Create GPU-only texture for zero-copy pipeline (video processor input).
 	// Must have DEFAULT usage and RENDER_TARGET bind for CreateVideoProcessorInputView.
+	// SHADER_RESOURCE bind is needed for AMF/NVENC to read the texture for encoding.
 	// Uses native (pre-rotation) dimensions to match acquired DXGI textures.
 	gpuDesc := d3d11Texture2DDesc{
 		Width:          uint32(texW),
@@ -416,7 +417,7 @@ func (c *dxgiCapturer) initDXGI() error {
 		SampleCount:    1,
 		SampleQuality:  0,
 		Usage:          0, // D3D11_USAGE_DEFAULT
-		BindFlags:      d3d11BindRenderTarget,
+		BindFlags:      d3d11BindRenderTarget | d3d11BindShaderResource,
 		CPUAccessFlags: 0,
 		MiscFlags:      0,
 	}
