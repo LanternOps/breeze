@@ -664,26 +664,64 @@ coreRoutes.delete(
 
     // Cascade: remove all FK-referencing records in a transaction.
     // Uses raw SQL to cover all child tables without importing each schema.
+    // When adding new tables with device_id FK, add them here too.
     try {
       await db.transaction(async (tx) => {
+        // Transitive dependencies: tables that reference device-scoped records
+        // but don't have a direct device_id column.
+        const deviceAlertIds = sql`(SELECT id FROM alerts WHERE device_id = ${deviceId})`;
+        const deviceAiSessionIds = sql`(SELECT id FROM ai_sessions WHERE device_id = ${deviceId})`;
+
+        await tx.execute(sql`DELETE FROM ai_tool_executions WHERE session_id IN ${deviceAiSessionIds}`);
+        await tx.execute(sql`DELETE FROM ai_messages WHERE session_id IN ${deviceAiSessionIds}`);
+        await tx.execute(sql`DELETE FROM ai_action_plans WHERE session_id IN ${deviceAiSessionIds}`);
+        await tx.execute(sql`DELETE FROM alert_correlations WHERE parent_alert_id IN ${deviceAlertIds} OR child_alert_id IN ${deviceAlertIds}`);
+        await tx.execute(sql`DELETE FROM alert_notifications WHERE alert_id IN ${deviceAlertIds}`);
+        await tx.execute(sql`UPDATE log_correlations SET alert_id = NULL WHERE alert_id IN ${deviceAlertIds}`);
+        await tx.execute(sql`UPDATE network_change_events SET alert_id = NULL WHERE alert_id IN ${deviceAlertIds}`);
+        await tx.execute(sql`UPDATE network_change_events SET linked_device_id = NULL WHERE linked_device_id = ${deviceId}`);
+
+        // All tables with a device_id FK, ordered so children come before parents.
         const tables = [
-          'device_group_memberships', 'device_hardware', 'device_network', 'device_metrics',
-          'device_software', 'device_software_history', 'device_disks', 'device_connections',
-          'device_boot_metrics', 'device_registry_state', 'device_config_state',
-          'device_patches', 'device_patch_history', 'device_patch_state',
-          'device_commands', 'device_event_logs', 'device_analytics',
-          'alerts', 'agent_logs', 'script_executions', 'automation_executions',
-          'sessions', 'remote_sessions', 'remote_desktop_sessions',
-          'changes', 'device_service_processes',
-          'software_policy_device_states', 'sensitive_data_scans',
-          'security_posture_device_details', 'security_scan_history', 'security_findings',
-          'cis_device_results', 'cis_device_scans',
-          'deployment_devices', 'backup_jobs',
-          'browser_security_profiles', 'browser_extension_inventory',
+          // Backup chain: restore_jobs → backup_snapshots → backup_jobs
+          'restore_jobs', 'backup_verifications', 'backup_snapshots', 'backup_jobs',
+          // Core device tables
+          'device_group_memberships', 'group_membership_log',
+          'device_hardware', 'device_network', 'device_ip_history', 'device_disks',
+          'device_metrics', 'device_software', 'device_registry_state', 'device_config_state',
+          'device_commands', 'device_connections', 'device_boot_metrics',
+          'device_sessions', 'device_change_log', 'device_warranty',
+          // Patches
+          'device_patches', 'patch_job_results', 'patch_rollbacks',
+          // Deployments & software
+          'deployment_devices', 'deployment_results', 'software_inventory',
+          'software_compliance_status', 'software_policy_audit',
+          // Remote access
+          'remote_sessions', 'file_transfers', 'tunnel_sessions',
+          // Monitoring & logs
+          'service_process_check_results', 'alerts', 'agent_logs', 'script_executions',
+          'device_event_logs', 'automation_policy_compliance',
+          // Security
+          'sensitive_data_scans', 'sensitive_data_findings',
+          'dns_security_events', 'dns_event_aggregations',
+          'security_status', 'security_threats', 'security_scans', 'security_posture_snapshots',
+          'cis_baseline_results', 'cis_remediation_actions',
+          'browser_extensions', 'browser_policy_violations',
+          'audit_baseline_results', 'audit_policy_states',
+          'peripheral_events',
+          's1_agents', 's1_threats', 's1_actions',
+          'huntress_agents', 'huntress_incidents',
+          // AI & context
+          'ai_sessions', 'ai_screenshots', 'brain_device_context',
+          // Analytics & reliability
+          'device_reliability_history', 'device_reliability',
+          'playbook_executions', 'time_series_metrics', 'capacity_predictions',
+          // Portal & integrations
+          'psa_ticket_mappings', 'tickets', 'asset_checkouts',
+          // Filesystem
           'device_filesystem_snapshots', 'device_filesystem_cleanup_runs', 'device_filesystem_scan_state',
-          'audit_baseline_results', 'audit_device_profiles',
-          'peripheral_control_device_policies',
-          'ai_device_contexts', 'brain_device_contexts',
+          // Backup verification
+          'recovery_readiness',
         ];
         for (const table of tables) {
           await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE device_id = ${deviceId}`);
@@ -693,6 +731,8 @@ coreRoutes.delete(
     } catch (err: unknown) {
       const pgCode = (err as { code?: string })?.code;
       if (pgCode === '23503') {
+        const detail = (err as { detail?: string })?.detail ?? 'unknown constraint';
+        console.error(`[devices] FK violation during cascade delete of ${deviceId}: ${detail}`, err);
         return c.json({ error: 'Cannot delete: device still has related records. Please contact support.' }, 409);
       }
       throw err;

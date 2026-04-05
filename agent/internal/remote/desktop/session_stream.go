@@ -185,7 +185,7 @@ func (s *Session) cursorStreamLoop(prov CursorProvider) {
 				payload = append(payload, '"')
 			}
 			payload = append(payload, '}')
-			if err := s.cursorDC.Send(payload); err != nil {
+			if err := s.cursorDC.SendText(string(payload)); err != nil {
 				slog.Debug("Failed to send cursor update", "session", s.id, "error", err.Error())
 			}
 		}

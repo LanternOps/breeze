@@ -44,7 +44,8 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
     let disposed = false;
 
     async function connect() {
-      const { default: RFB } = await import(/* @vite-ignore */ '@novnc/novnc/lib/rfb');
+      const { loadRFB } = await import('@/lib/novnc');
+      const RFB = await loadRFB();
       if (disposed || !containerRef.current) return;
 
       rfb = new RFB(containerRef.current, wsUrl, {
@@ -217,10 +218,18 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
         )}
       />
 
-      {/* Error banner */}
-      {status === 'error' && errorMessage && (
-        <div className="border-t border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-400">
-          {errorMessage}
+      {/* Status banner for disconnected / error */}
+      {(status === 'disconnected' || (status === 'error' && errorMessage)) && (
+        <div className={cn(
+          'border-t px-4 py-2 text-sm flex items-center justify-between',
+          status === 'error'
+            ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-400'
+            : 'border-gray-200 bg-gray-50 text-gray-600 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400',
+        )}>
+          <span>{status === 'error' ? errorMessage : 'Session disconnected'}</span>
+          <a href="/remote" className="ml-4 underline hover:no-underline whitespace-nowrap">
+            Back to Remote
+          </a>
         </div>
       )}
     </div>
