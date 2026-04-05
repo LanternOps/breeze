@@ -44,7 +44,7 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
     let disposed = false;
 
     async function connect() {
-      const { default: RFB } = await import(/* @vite-ignore */ '@novnc/novnc/lib/rfb');
+      const { RFB } = await import('@/lib/novnc');
       if (disposed || !containerRef.current) return;
 
       rfb = new RFB(containerRef.current, wsUrl, {
