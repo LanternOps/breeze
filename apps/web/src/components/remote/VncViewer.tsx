@@ -16,6 +16,7 @@ type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 interface VncViewerProps {
   wsUrl: string;
   tunnelId: string;
+  password?: string;
   onDisconnect?: () => void;
   className?: string;
 }
@@ -27,7 +28,7 @@ const statusConfig: Record<ConnectionStatus, { label: string; color: string }> =
   error: { label: 'Connection Error', color: 'text-red-500' },
 };
 
-export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: VncViewerProps) {
+export default function VncViewer({ wsUrl, tunnelId, password, onDisconnect, className }: VncViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const rfbRef = useRef<any>(null);
 
@@ -44,8 +45,7 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
     let disposed = false;
 
     async function connect() {
-      const { loadRFB } = await import('@/lib/novnc');
-      const RFB = await loadRFB();
+      const { RFB } = await import('@/lib/novnc');
       if (disposed || !containerRef.current) return;
 
       rfb = new RFB(containerRef.current, wsUrl, {
@@ -72,7 +72,10 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
       });
 
       rfb.addEventListener('credentialsrequired', () => {
-        // noVNC handles password prompt natively in the canvas
+        if (password) {
+          rfb.sendCredentials({ password });
+        }
+        // If no password, noVNC shows its native password prompt in the canvas
       });
 
       rfbRef.current = rfb;
@@ -93,7 +96,7 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
       }
       rfbRef.current = null;
     };
-  }, [wsUrl, onDisconnect]);
+  }, [wsUrl, password, onDisconnect]);
 
   // Sync scale setting to RFB instance
   useEffect(() => {
@@ -218,18 +221,10 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
         )}
       />
 
-      {/* Status banner for disconnected / error */}
-      {(status === 'disconnected' || (status === 'error' && errorMessage)) && (
-        <div className={cn(
-          'border-t px-4 py-2 text-sm flex items-center justify-between',
-          status === 'error'
-            ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-400'
-            : 'border-gray-200 bg-gray-50 text-gray-600 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400',
-        )}>
-          <span>{status === 'error' ? errorMessage : 'Session disconnected'}</span>
-          <a href="/remote" className="ml-4 underline hover:no-underline whitespace-nowrap">
-            Back to Remote
-          </a>
+      {/* Error banner */}
+      {status === 'error' && errorMessage && (
+        <div className="border-t border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-400">
+          {errorMessage}
         </div>
       )}
     </div>

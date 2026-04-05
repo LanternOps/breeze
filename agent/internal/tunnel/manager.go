@@ -97,13 +97,16 @@ func (m *Manager) WriteTunnel(id string, data []byte) error {
 
 // CloseTunnel closes and removes the specified tunnel session.
 func (m *Manager) CloseTunnel(id string) {
-	m.mu.RLock()
+	m.mu.Lock()
 	s, ok := m.sessions[id]
-	m.mu.RUnlock()
+	if ok {
+		delete(m.sessions, id) // Remove from map synchronously
+	}
+	m.mu.Unlock()
 
 	if ok && s != nil {
 		s.Close()
-		// wrappedOnClose removes from map via the read loop exit
+		// wrappedOnClose will try to delete again — harmless no-op
 	}
 }
 
@@ -114,6 +117,50 @@ func (m *Manager) ActiveCount() int {
 	return len(m.sessions)
 }
 
+// GetTunnelType returns the tunnel type for the given ID, or empty string if not found.
+func (m *Manager) GetTunnelType(id string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if s, ok := m.sessions[id]; ok && s != nil {
+		return s.TunnelType
+	}
+	return ""
+}
+
+// HasVNCTunnels returns true if any active tunnel has type "vnc".
+func (m *Manager) HasVNCTunnels() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, s := range m.sessions {
+		if s != nil && s.TunnelType == "vnc" {
+			return true
+		}
+	}
+	return false
+}
+
+// DisableScreenSharingIfIdle disables macOS Screen Sharing when no VNC
+// tunnels remain active. Called after closing/reaping VNC tunnels and on
+// startup to clean up after crashes.
+func (m *Manager) DisableScreenSharingIfIdle(context string) {
+	if m.HasVNCTunnels() {
+		return
+	}
+	if err := DisableScreenSharing(); err != nil {
+		log.Warn("failed to disable screen sharing", "context", context, "error", err.Error())
+	}
+}
+
+// CleanupOrphanedVNC disables Screen Sharing if it's running but there are
+// no active VNC tunnels. Called on agent startup to clean up after crashes.
+func (m *Manager) CleanupOrphanedVNC() {
+	if !IsScreenSharingRunning() {
+		return
+	}
+	log.Info("disabling orphaned Screen Sharing (no active VNC tunnels)")
+	m.DisableScreenSharingIfIdle("orphan cleanup")
+}
+
 // Stop closes all tunnels and stops the reaper.
 func (m *Manager) Stop() {
 	m.stopOnce.Do(func() {
@@ -121,13 +168,21 @@ func (m *Manager) Stop() {
 
 		m.mu.Lock()
 		m.stopped = true
+		hasVNC := false
 		for id, s := range m.sessions {
 			if s != nil {
+				if s.TunnelType == "vnc" {
+					hasVNC = true
+				}
 				s.Close()
 			}
 			delete(m.sessions, id)
 		}
 		m.mu.Unlock()
+
+		if hasVNC {
+			m.DisableScreenSharingIfIdle("shutdown")
+		}
 
 		log.Info("tunnel manager stopped")
 	})
@@ -160,8 +215,16 @@ func (m *Manager) reapIdle() {
 	}
 	m.mu.RUnlock()
 
+	var reapedVNC bool
 	for _, id := range stale {
+		if m.GetTunnelType(id) == "vnc" {
+			reapedVNC = true
+		}
 		log.Info("reaping idle tunnel", "tunnelId", id)
 		m.CloseTunnel(id)
+	}
+
+	if reapedVNC {
+		m.DisableScreenSharingIfIdle("idle reap")
 	}
 }
