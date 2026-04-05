@@ -4,6 +4,7 @@ import VncViewerPage from '../../../components/remote/VncViewerPage';
 
 const { tunnelId } = Astro.params;
 const wsUrl = Astro.url.searchParams.get('ws') || '';
+const password = Astro.url.searchParams.get('pwd') || '';
 
 if (!tunnelId || !wsUrl) {
   return Astro.redirect('/remote');
@@ -15,6 +16,7 @@ if (!tunnelId || !wsUrl) {
     <VncViewerPage
       tunnelId={tunnelId}
       wsUrl={wsUrl}
+      password={password}
       client:only="react"
     />
   </div>
