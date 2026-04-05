@@ -47,6 +47,7 @@ type EncoderConfig struct {
 	Bitrate        int
 	FPS            int
 	PreferHardware bool
+	GPUVendor      string // "nvidia", "amd", "intel", or "" for auto-detect
 }
 
 func DefaultEncoderConfig() EncoderConfig {
@@ -102,15 +103,24 @@ type encoderBackend interface {
 
 type backendFactory func(cfg EncoderConfig) (encoderBackend, error)
 
+type taggedFactory struct {
+	vendor  string // "" means universal (e.g., MFT works on all GPUs)
+	factory backendFactory
+}
+
 var (
 	hardwareFactoriesMu sync.Mutex
-	hardwareFactories   []backendFactory
+	hardwareFactories   []taggedFactory
 )
 
 func registerHardwareFactory(factory backendFactory) {
+	registerHardwareFactoryForVendor("", factory)
+}
+
+func registerHardwareFactoryForVendor(vendor string, factory backendFactory) {
 	hardwareFactoriesMu.Lock()
 	defer hardwareFactoriesMu.Unlock()
-	hardwareFactories = append(hardwareFactories, factory)
+	hardwareFactories = append(hardwareFactories, taggedFactory{vendor: vendor, factory: factory})
 }
 
 func NewVideoEncoder(cfg EncoderConfig) (*VideoEncoder, error) {
@@ -385,10 +395,24 @@ func newBackend(cfg EncoderConfig) (encoderBackend, error) {
 
 func tryHardware(cfg EncoderConfig) encoderBackend {
 	hardwareFactoriesMu.Lock()
-	factories := append([]backendFactory(nil), hardwareFactories...)
+	factories := append([]taggedFactory(nil), hardwareFactories...)
 	hardwareFactoriesMu.Unlock()
-	for _, factory := range factories {
-		backend, err := factory(cfg)
+
+	// First pass: try vendor-specific factories matching GPUVendor
+	if cfg.GPUVendor != "" {
+		for _, tf := range factories {
+			if tf.vendor == cfg.GPUVendor {
+				backend, err := tf.factory(cfg)
+				if err == nil && backend != nil {
+					return backend
+				}
+			}
+		}
+	}
+
+	// Second pass: try all factories in registration order
+	for _, tf := range factories {
+		backend, err := tf.factory(cfg)
 		if err == nil && backend != nil {
 			return backend
 		}
