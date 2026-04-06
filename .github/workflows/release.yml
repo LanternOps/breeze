@@ -177,6 +177,25 @@ jobs:
           path: agent/breeze-backup-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
           retention-days: 30
 
+      - name: Build breeze-watchdog
+        working-directory: agent
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+          BUILD_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          go build -ldflags="-s -w -X main.version=${BUILD_VERSION}" \
+            -o "breeze-watchdog-${GOOS}-${GOARCH}${{ matrix.suffix }}" \
+            ./cmd/breeze-watchdog
+
+      - name: Upload breeze-watchdog artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: breeze-watchdog-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: agent/breeze-watchdog-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
+          retention-days: 30
+
       - name: Build breeze-desktop-helper
         if: matrix.goos == 'darwin'
         working-directory: agent
@@ -270,6 +289,13 @@ jobs:
           $env:CGO_ENABLED = "0"
           go build -ldflags="-s -w -X main.version=$env:BUILD_VERSION" -o ..\dist\breeze-backup-windows-amd64.exe .\cmd\breeze-backup
           Pop-Location
+          # Build breeze-watchdog
+          Push-Location agent
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          $env:CGO_ENABLED = "0"
+          go build -ldflags="-s -w -X main.version=$env:BUILD_VERSION" -o ..\dist\breeze-watchdog-windows-amd64.exe .\cmd\breeze-watchdog
+          Pop-Location
 
       - name: Validate signing configuration
         shell: pwsh
@@ -354,6 +380,30 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
+      - name: Sign watchdog executable (stable profile)
+        if: ${{ !contains(github.ref_name, '-') }}
+        uses: azure/artifact-signing-action@v1
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PROD }}
+          files: ${{ github.workspace }}\dist\breeze-watchdog-windows-amd64.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign watchdog executable (prerelease profile)
+        if: ${{ contains(github.ref_name, '-') }}
+        uses: azure/artifact-signing-action@v1
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PRERELEASE }}
+          files: ${{ github.workspace }}\dist\breeze-watchdog-windows-amd64.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
       - name: Build MSI
         shell: pwsh
         run: |
@@ -361,8 +411,9 @@ jobs:
           $version = "${{ steps.version.outputs.version }}"
           $agentExe = Join-Path $root "dist\breeze-agent-windows-amd64.exe"
           $backupExe = Join-Path $root "dist\breeze-backup-windows-amd64.exe"
+          $watchdogExe = Join-Path $root "dist\breeze-watchdog-windows-amd64.exe"
           $msiPath = Join-Path $root "dist\breeze-agent.msi"
-          & (Join-Path $root "agent\installer\build-msi.ps1") -Version $version -AgentExePath $agentExe -BackupExePath $backupExe -OutputPath $msiPath
+          & (Join-Path $root "agent\installer\build-msi.ps1") -Version $version -AgentExePath $agentExe -BackupExePath $backupExe -WatchdogExePath $watchdogExe -OutputPath $msiPath
 
       - name: Sign MSI (stable profile)
         if: ${{ !contains(github.ref_name, '-') }}
@@ -394,6 +445,7 @@ jobs:
           $targets = @(
             (Join-Path $env:GITHUB_WORKSPACE "dist\breeze-agent-windows-amd64.exe"),
             (Join-Path $env:GITHUB_WORKSPACE "dist\breeze-backup-windows-amd64.exe"),
+            (Join-Path $env:GITHUB_WORKSPACE "dist\breeze-watchdog-windows-amd64.exe"),
             (Join-Path $env:GITHUB_WORKSPACE "dist\breeze-agent.msi")
           )
           foreach ($target in $targets) {
@@ -429,6 +481,14 @@ jobs:
         with:
           name: breeze-backup-windows-amd64
           path: dist/breeze-backup-windows-amd64.exe
+          overwrite: true
+          retention-days: 30
+
+      - name: Upload signed watchdog EXE artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: breeze-watchdog-windows-amd64
+          path: dist/breeze-watchdog-windows-amd64.exe
           overwrite: true
           retention-days: 30
 
@@ -476,6 +536,18 @@ jobs:
           name: breeze-desktop-helper-darwin-arm64
           path: staging/
 
+      - name: Download watchdog darwin/amd64 artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: breeze-watchdog-darwin-amd64
+          path: staging/
+
+      - name: Download watchdog darwin/arm64 artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: breeze-watchdog-darwin-arm64
+          path: staging/
+
       - name: Import certificate into keychain
         if: vars.ENABLE_MACOS_SIGNING == 'true'
         env:
@@ -505,7 +577,7 @@ jobs:
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
-          for bin in staging/breeze-agent-darwin-* staging/breeze-backup-darwin-* staging/breeze-desktop-helper-darwin-*; do
+          for bin in staging/breeze-agent-darwin-* staging/breeze-backup-darwin-* staging/breeze-desktop-helper-darwin-* staging/breeze-watchdog-darwin-*; do
             [ -f "$bin" ] || continue
             codesign --force --options runtime \
               --entitlements agent/entitlements/agent-macos.entitlements.plist \
@@ -521,7 +593,7 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          for bin in staging/breeze-agent-darwin-* staging/breeze-backup-darwin-* staging/breeze-desktop-helper-darwin-*; do
+          for bin in staging/breeze-agent-darwin-* staging/breeze-backup-darwin-* staging/breeze-desktop-helper-darwin-* staging/breeze-watchdog-darwin-*; do
             [ -f "$bin" ] || continue
             ZIP_PATH="${bin}.zip"
             ditto -c -k --keepParent "$bin" "$ZIP_PATH"
@@ -585,6 +657,22 @@ jobs:
           overwrite: true
           retention-days: 30
 
+      - name: Upload signed watchdog darwin/amd64
+        uses: actions/upload-artifact@v7
+        with:
+          name: breeze-watchdog-darwin-amd64
+          path: staging/breeze-watchdog-darwin-amd64
+          overwrite: true
+          retention-days: 30
+
+      - name: Upload signed watchdog darwin/arm64
+        uses: actions/upload-artifact@v7
+        with:
+          name: breeze-watchdog-darwin-arm64
+          path: staging/breeze-watchdog-darwin-arm64
+          overwrite: true
+          retention-days: 30
+
       - name: Build macOS .pkg installers
         env:
           BUILD_VERSION: ${{ github.ref_name }}
@@ -596,6 +684,7 @@ jobs:
               "staging/breeze-agent-darwin-${arch}" \
               "staging/breeze-desktop-helper-darwin-${arch}" \
               "staging/breeze-backup-darwin-${arch}" \
+              "staging/breeze-watchdog-darwin-${arch}" \
               "$VERSION" \
               "$arch" \
               "staging/breeze-agent-darwin-${arch}.pkg"
@@ -1189,7 +1278,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           path: artifacts
-          pattern: '{api-dist,web-dist,breeze-agent-*,breeze-backup-*,breeze-desktop-helper-*,breeze-viewer-*,breeze-helper-*}'
+          pattern: '{api-dist,web-dist,breeze-agent-*,breeze-backup-*,breeze-desktop-helper-*,breeze-watchdog-*,breeze-viewer-*,breeze-helper-*}'
           merge-multiple: false
 
       - name: Prepare release assets
@@ -1212,6 +1301,13 @@ jobs:
 
           # Copy desktop-helper binaries
           for dir in artifacts/breeze-desktop-helper-*; do
+            if [ -d "$dir" ] && ls "$dir"/* >/dev/null 2>&1; then
+              cp "$dir"/* release-assets/
+            fi
+          done
+
+          # Copy watchdog binaries
+          for dir in artifacts/breeze-watchdog-*; do
             if [ -d "$dir" ] && ls "$dir"/* >/dev/null 2>&1; then
               cp "$dir"/* release-assets/
             fi
