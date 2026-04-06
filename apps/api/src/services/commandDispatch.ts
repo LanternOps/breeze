@@ -41,6 +41,7 @@ export async function releaseClaimedCommandDelivery(
 export async function claimPendingCommandsForDevice(
   deviceId: string,
   limit: number = 10,
+  targetRole: 'agent' | 'watchdog' = 'agent',
 ): Promise<DeviceCommandRow[]> {
   return db.transaction(async (tx) => {
     const pendingCommands = await tx
@@ -50,6 +51,7 @@ export async function claimPendingCommandsForDevice(
         and(
           eq(deviceCommands.deviceId, deviceId),
           eq(deviceCommands.status, 'pending'),
+          eq(deviceCommands.targetRole, targetRole),
         ),
       )
       .orderBy(deviceCommands.createdAt)
