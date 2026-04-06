@@ -3,8 +3,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,6 +18,37 @@ import (
 	"github.com/breeze-rmm/agent/internal/watchdog"
 	"github.com/spf13/cobra"
 )
+
+// tokenHolder wraps a SecureString so that callers sharing the holder see
+// updates made by handleIPCMessage (TypeTokenUpdate).
+type tokenHolder struct {
+	mu    sync.Mutex
+	token *secmem.SecureString
+}
+
+func (h *tokenHolder) Get() *secmem.SecureString {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.token
+}
+
+func (h *tokenHolder) Replace(newToken string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.token != nil {
+		h.token.Zero()
+	}
+	h.token = secmem.NewSecureString(newToken)
+}
+
+func (h *tokenHolder) Reveal() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.token == nil {
+		return ""
+	}
+	return h.token.Reveal()
+}
 
 var version = "0.1.0"
 
@@ -139,7 +172,13 @@ func runWatchdog() {
 
 	// Read agent state file for PID.
 	statePath := state.PathInDir(config.ConfigDir())
-	agentState, _ := state.Read(statePath)
+	agentState, err := state.Read(statePath)
+	if err != nil {
+		journal.Log(watchdog.LevelWarn, "state.read_failed", map[string]any{
+			"path":  statePath,
+			"error": err.Error(),
+		})
+	}
 
 	pid := agentPID
 	if pid == 0 && agentState != nil {
@@ -155,7 +194,10 @@ func runWatchdog() {
 		select {
 		case ipcMessages <- env:
 		default:
-			// Drop if full — non-blocking.
+			journal.Log(watchdog.LevelWarn, "ipc.message_dropped", map[string]any{
+				"type":       env.Type,
+				"queue_size": len(ipcMessages),
+			})
 		}
 	}
 
@@ -173,10 +215,11 @@ func runWatchdog() {
 	// Create recovery manager.
 	recovery := watchdog.NewRecoveryManager(wdCfg.MaxRecoveryAttempts, wdCfg.RecoveryCooldown)
 
-	// Wrap auth token for failover client.
-	var secureToken *secmem.SecureString
+	// Wrap auth token in a mutable holder so IPC token updates are visible
+	// to every goroutine that reads the token (failover client, updater, etc.).
+	tokenStore := &tokenHolder{}
 	if cfg.AuthToken != "" {
-		secureToken = secmem.NewSecureString(cfg.AuthToken)
+		tokenStore.token = secmem.NewSecureString(cfg.AuthToken)
 		cfg.AuthToken = "" // Clear from config struct.
 	}
 
@@ -234,6 +277,8 @@ func runWatchdog() {
 			if s, err := state.Read(statePath); err == nil && s != nil {
 				pid = s.PID
 				agentState = s
+			} else if err != nil {
+				slog.Warn("state.read_failed", "path", statePath, "error", err.Error())
 			}
 
 			if pid > 0 {
@@ -264,6 +309,10 @@ func runWatchdog() {
 					wd.HandleEvent(watchdog.EventIPCConnected)
 					healthChecker.ResetIPCFails()
 					journal.Log(watchdog.LevelInfo, "ipc.reconnected", nil)
+				} else {
+					journal.Log(watchdog.LevelWarn, "ipc.reconnect_failed", map[string]any{
+						"error": err.Error(),
+					})
 				}
 			}
 
@@ -271,6 +320,8 @@ func runWatchdog() {
 			// Re-read state file for heartbeat staleness.
 			if s, err := state.Read(statePath); err == nil {
 				agentState = s
+			} else {
+				slog.Warn("state.read_failed", "path", statePath, "error", err.Error())
 			}
 			result := healthChecker.CheckHeartbeatStaleness(agentState)
 			if result == watchdog.CheckHeartbeatStale {
@@ -279,14 +330,14 @@ func runWatchdog() {
 			}
 
 		case env := <-ipcMessages:
-			handleIPCMessage(env, wd, journal, cfg, secureToken)
+			handleIPCMessage(env, wd, journal, cfg, tokenStore)
 
 		case <-failoverTicker.C:
 			// Only poll in FAILOVER state.
 			if wd.State() != watchdog.StateFailover || failoverClient == nil {
 				continue
 			}
-			handleFailoverPoll(failoverClient, wd, journal, cfg, secureToken, recovery)
+			handleFailoverPoll(failoverClient, wd, journal, cfg, tokenStore, recovery)
 		}
 
 		// State-driven actions after each tick.
@@ -314,9 +365,9 @@ func runWatchdog() {
 			}
 
 		case watchdog.StateFailover:
-			if failoverClient == nil && secureToken != nil {
+			if failoverClient == nil && tokenStore.Reveal() != "" {
 				failoverClient = watchdog.NewFailoverClient(
-					cfg.ServerURL, cfg.AgentID, secureToken.Reveal(), nil,
+					cfg.ServerURL, cfg.AgentID, tokenStore.Reveal(), nil,
 				)
 				journal.Log(watchdog.LevelInfo, "failover.start", nil)
 
@@ -327,7 +378,7 @@ func runWatchdog() {
 						"error": err.Error(),
 					})
 				} else {
-					processHeartbeatResponse(resp, wd, journal, cfg, secureToken, recovery)
+					processHeartbeatResponse(resp, wd, journal, cfg, tokenStore, recovery)
 				}
 			}
 
@@ -349,7 +400,7 @@ func runWatchdog() {
 }
 
 // handleIPCMessage dispatches IPC envelope messages from the agent.
-func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdog.Journal, cfg *config.Config, token *secmem.SecureString) {
+func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdog.Journal, cfg *config.Config, tokens *tokenHolder) {
 	switch env.Type {
 	case ipc.TypeShutdownIntent:
 		var intent ipc.ShutdownIntent
@@ -374,9 +425,7 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 			return
 		}
 		journal.Log(watchdog.LevelInfo, "token.updated", nil)
-		if token != nil {
-			token.Zero()
-		}
+		tokens.Replace(update.Token)
 		// Persist the new token. We store it via config.SetAndPersist so
 		// that the next Load() picks it up automatically.
 		if err := config.SetAndPersist("auth_token", update.Token); err != nil {
@@ -388,6 +437,9 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 	case ipc.TypeStateSync:
 		var sync ipc.StateSync
 		if err := json.Unmarshal(env.Payload, &sync); err != nil {
+			journal.Log(watchdog.LevelError, "ipc.bad_state_sync", map[string]any{
+				"error": err.Error(),
+			})
 			return
 		}
 		journal.Log(watchdog.LevelInfo, "agent.state_sync", map[string]any{
@@ -413,7 +465,7 @@ func handleFailoverPoll(
 	wd *watchdog.Watchdog,
 	journal *watchdog.Journal,
 	cfg *config.Config,
-	token *secmem.SecureString,
+	tokens *tokenHolder,
 	recovery *watchdog.RecoveryManager,
 ) {
 	// Send failover heartbeat.
@@ -424,7 +476,7 @@ func handleFailoverPoll(
 		})
 		return
 	}
-	processHeartbeatResponse(resp, wd, journal, cfg, token, recovery)
+	processHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery)
 
 	// Poll for commands.
 	commands, err := fc.PollCommands()
@@ -436,7 +488,7 @@ func handleFailoverPoll(
 	}
 
 	for _, cmd := range commands {
-		handleFailoverCommand(fc, cmd, wd, journal, cfg, token, recovery)
+		handleFailoverCommand(fc, cmd, wd, journal, cfg, tokens, recovery)
 	}
 }
 
@@ -446,7 +498,7 @@ func processHeartbeatResponse(
 	wd *watchdog.Watchdog,
 	journal *watchdog.Journal,
 	cfg *config.Config,
-	token *secmem.SecureString,
+	tokens *tokenHolder,
 	recovery *watchdog.RecoveryManager,
 ) {
 	if resp == nil {
@@ -456,13 +508,13 @@ func processHeartbeatResponse(
 		journal.Log(watchdog.LevelInfo, "failover.upgrade_agent", map[string]any{
 			"version": resp.UpgradeTo,
 		})
-		doUpdateAgent(resp.UpgradeTo, cfg, token, journal)
+		doUpdateAgent(resp.UpgradeTo, cfg, tokens, journal)
 	}
 	if resp.WatchdogUpgradeTo != "" {
 		journal.Log(watchdog.LevelInfo, "failover.upgrade_watchdog", map[string]any{
 			"version": resp.WatchdogUpgradeTo,
 		})
-		doUpdateWatchdog(resp.WatchdogUpgradeTo, cfg, token, journal)
+		doUpdateWatchdog(resp.WatchdogUpgradeTo, cfg, tokens, journal)
 	}
 }
 
@@ -473,7 +525,7 @@ func handleFailoverCommand(
 	wd *watchdog.Watchdog,
 	journal *watchdog.Journal,
 	cfg *config.Config,
-	token *secmem.SecureString,
+	tokens *tokenHolder,
 	recovery *watchdog.RecoveryManager,
 ) {
 	journal.Log(watchdog.LevelInfo, "failover.command", map[string]any{
@@ -535,7 +587,7 @@ func handleFailoverCommand(
 			resultStatus = "failed"
 			errMsg = "missing version in payload"
 		} else {
-			err := doUpdateAgent(targetVersion, cfg, token, journal)
+			err := doUpdateAgent(targetVersion, cfg, tokens, journal)
 			if err != nil {
 				resultStatus = "failed"
 				errMsg = err.Error()
@@ -551,7 +603,7 @@ func handleFailoverCommand(
 			resultStatus = "failed"
 			errMsg = "missing version in payload"
 		} else {
-			err := doUpdateWatchdog(targetVersion, cfg, token, journal)
+			err := doUpdateWatchdog(targetVersion, cfg, tokens, journal)
 			if err != nil {
 				resultStatus = "failed"
 				errMsg = err.Error()
@@ -575,14 +627,15 @@ func handleFailoverCommand(
 }
 
 // doUpdateAgent creates an updater and downloads the target version for the agent binary.
-func doUpdateAgent(targetVersion string, cfg *config.Config, token *secmem.SecureString, journal *watchdog.Journal) error {
-	if token == nil {
+func doUpdateAgent(targetVersion string, cfg *config.Config, tokens *tokenHolder, journal *watchdog.Journal) error {
+	tok := tokens.Get()
+	if tok == nil {
 		return fmt.Errorf("no auth token available")
 	}
 	binaryPath := agentBinaryPath()
 	u := updater.New(&updater.Config{
 		ServerURL:      cfg.ServerURL,
-		AuthToken:      token,
+		AuthToken:      tok,
 		CurrentVersion: "", // Not tracking agent version from watchdog.
 		BinaryPath:     binaryPath,
 		BackupPath:     binaryPath + ".bak",
@@ -601,8 +654,9 @@ func doUpdateAgent(targetVersion string, cfg *config.Config, token *secmem.Secur
 }
 
 // doUpdateWatchdog updates the watchdog binary and restarts the service.
-func doUpdateWatchdog(targetVersion string, cfg *config.Config, token *secmem.SecureString, journal *watchdog.Journal) error {
-	if token == nil {
+func doUpdateWatchdog(targetVersion string, cfg *config.Config, tokens *tokenHolder, journal *watchdog.Journal) error {
+	tok := tokens.Get()
+	if tok == nil {
 		return fmt.Errorf("no auth token available")
 	}
 	exePath, err := os.Executable()
@@ -611,7 +665,7 @@ func doUpdateWatchdog(targetVersion string, cfg *config.Config, token *secmem.Se
 	}
 	u := updater.New(&updater.Config{
 		ServerURL:      cfg.ServerURL,
-		AuthToken:      token,
+		AuthToken:      tok,
 		CurrentVersion: version,
 		BinaryPath:     exePath,
 		BackupPath:     exePath + ".bak",
