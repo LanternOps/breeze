@@ -263,8 +263,8 @@ importers:
         specifier: 0.83.2
         version: 0.83.2(@babel/core@7.28.6)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.28.6))(@types/react@19.2.8)(react@19.2.0)
       react-native-gesture-handler:
-        specifier: ~2.30.1
-        version: 2.30.1(react-native@0.83.2(@babel/core@7.28.6)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.28.6))(@types/react@19.2.8)(react@19.2.0))(react@19.2.0)
+        specifier: ~2.31.0
+        version: 2.31.0(react-native@0.83.2(@babel/core@7.28.6)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.28.6))(@types/react@19.2.8)(react@19.2.0))(react@19.2.0)
       react-native-paper:
         specifier: ^5.15.0
         version: 5.15.0(react-native-safe-area-context@5.6.2(react-native@0.83.2(@babel/core@7.28.6)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.28.6))(@types/react@19.2.8)(react@19.2.0))(react@19.2.0))(react-native@0.83.2(@babel/core@7.28.6)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.28.6))(@types/react@19.2.8)(react@19.2.0))(react@19.2.0)
@@ -4447,6 +4447,9 @@ packages:
     peerDependencies:
       '@types/react': ^19.2.0
 
+  '@types/react-test-renderer@19.1.0':
+    resolution: {integrity: sha512-XD0WZrHqjNrxA/MaR9O22w/RNidWR9YZmBdRGI7wcnWGrv/3dA8wKCJ8m63Sn+tLJhcjmuhOi629N66W6kgWzQ==}
+
   '@types/react@18.3.28':
     resolution: {integrity: sha512-z9VXpC7MWrhfWipitjNdgCauoMLRdIILQsAEV+ZesIzBq/oUlxk0m3ApZuMFCXdnS4U7KrI+l3WRUEGQ8K1QKw==}
 
@@ -8208,8 +8211,8 @@ packages:
       '@types/react': '>=18'
       react: '>=18'
 
-  react-native-gesture-handler@2.30.1:
-    resolution: {integrity: sha512-xIUBDo5ktmJs++0fZlavQNvDEE4PsihWhSeJsJtoz4Q6p0MiTM9TgrTgfEgzRR36qGPytFoeq+ShLrVwGdpUdA==}
+  react-native-gesture-handler@2.31.0:
+    resolution: {integrity: sha512-wmMs24UaRCIvIU/Nm7cSIV0FEWFsMrNBXxtpo5+9i8iCeOFFuyi8v8Dgfo7JKspcqPMUin0DBzi9DiG3vsDq5A==}
     peerDependencies:
       react: '*'
       react-native: '*'
@@ -14770,6 +14773,10 @@ snapshots:
     dependencies:
       '@types/react': 19.2.8
 
+  '@types/react-test-renderer@19.1.0':
+    dependencies:
+      '@types/react': 19.2.8
+
   '@types/react@18.3.28':
     dependencies:
       '@types/prop-types': 15.7.15
@@ -19783,9 +19790,10 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  react-native-gesture-handler@2.30.1(react-native@0.83.2(@babel/core@7.28.6)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.28.6))(@types/react@19.2.8)(react@19.2.0))(react@19.2.0):
+  react-native-gesture-handler@2.31.0(react-native@0.83.2(@babel/core@7.28.6)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.28.6))(@types/react@19.2.8)(react@19.2.0))(react@19.2.0):
     dependencies:
       '@egjs/hammerjs': 2.0.17
+      '@types/react-test-renderer': 19.1.0
       hoist-non-react-statics: 3.3.2
       invariant: 2.2.4
       react: 19.2.0
