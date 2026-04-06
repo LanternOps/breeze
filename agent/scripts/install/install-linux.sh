@@ -40,6 +40,17 @@ else
 fi
 chmod 755 "$BINARY"
 
+# Install watchdog
+if [ -f "bin/breeze-watchdog" ]; then
+    echo "Installing watchdog..."
+    cp bin/breeze-watchdog /usr/local/bin/breeze-watchdog
+    chmod 755 /usr/local/bin/breeze-watchdog
+elif [ -f "breeze-watchdog" ]; then
+    echo "Installing watchdog..."
+    cp breeze-watchdog /usr/local/bin/breeze-watchdog
+    chmod 755 /usr/local/bin/breeze-watchdog
+fi
+
 # Install systemd unit
 if [ -f "$SERVICE_SRC" ]; then
     cp "$SERVICE_SRC" "$SERVICE_DST"

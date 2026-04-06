@@ -22,6 +22,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/mtls"
 	"github.com/breeze-rmm/agent/internal/safemode"
 	"github.com/breeze-rmm/agent/internal/secmem"
+	"github.com/breeze-rmm/agent/internal/state"
 	"github.com/breeze-rmm/agent/internal/tcc"
 	"github.com/breeze-rmm/agent/internal/userhelper"
 	"github.com/breeze-rmm/agent/internal/websocket"
@@ -180,6 +181,28 @@ func shutdownAgent(comps *agentComponents) {
 	if comps == nil {
 		return
 	}
+
+	// Write stopping state so the watchdog knows shutdown is intentional.
+	statePath := state.PathInDir(config.ConfigDir())
+	if err := state.Write(statePath, &state.AgentState{
+		Status:    state.StatusStopping,
+		Reason:    state.ReasonUserStop,
+		PID:       os.Getpid(),
+		Version:   version,
+		Timestamp: time.Now(),
+	}); err != nil {
+		log.Warn("failed to write stopping state file", "error", err.Error())
+	}
+
+	// Notify the watchdog of intentional shutdown so it doesn't restart us.
+	if broker := comps.hb.SessionBroker(); broker != nil {
+		if sess := broker.PreferredSessionWithScope("watchdog"); sess != nil {
+			_ = sess.SendNotify("", ipc.TypeShutdownIntent, ipc.ShutdownIntent{
+				Reason: state.ReasonUserStop,
+			})
+		}
+	}
+
 	comps.hb.StopAcceptingCommands()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -348,6 +371,20 @@ func startAgent() (*agentComponents, error) {
 	go wsClient.Start()
 
 	log.Info("agent is running")
+
+	// Write state file so the watchdog can detect a running agent.
+	statePath := state.PathInDir(config.ConfigDir())
+	if err := state.Write(statePath, &state.AgentState{
+		Status:    state.StatusRunning,
+		PID:       os.Getpid(),
+		Version:   version,
+		Timestamp: time.Now(),
+	}); err != nil {
+		log.Warn("failed to write agent state file", "error", err.Error())
+	}
+
+	// Tell the heartbeat where the state file is so it can update after each heartbeat.
+	hb.SetStatePath(statePath)
 
 	return &agentComponents{
 		hb:          hb,

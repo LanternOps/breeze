@@ -8,6 +8,7 @@ export const deviceStatusEnum = pgEnum('device_status', ['online', 'offline', 'm
 export const deviceGroupTypeEnum = pgEnum('device_group_type', ['static', 'dynamic']);
 export const membershipSourceEnum = pgEnum('membership_source', ['manual', 'dynamic_rule', 'policy']);
 export const ipAssignmentTypeEnum = pgEnum('ip_assignment_type', ['dhcp', 'static', 'vpn', 'link-local', 'unknown']);
+export const watchdogStatusEnum = pgEnum('watchdog_status', ['connected', 'failover', 'offline']);
 
 export const devices = pgTable('devices', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -45,6 +46,9 @@ export const devices = pgTable('devices', {
   lastUser: varchar('last_user', { length: 255 }),
   uptimeSeconds: integer('uptime_seconds'),
   isHeadless: boolean('is_headless').notNull().default(false),
+  watchdogStatus: watchdogStatusEnum('watchdog_status'),
+  watchdogLastSeen: timestamp('watchdog_last_seen'),
+  watchdogVersion: varchar('watchdog_version', { length: 50 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
@@ -228,6 +232,7 @@ export const deviceCommands = pgTable('device_commands', {
   type: varchar('type', { length: 50 }).notNull(),
   payload: jsonb('payload'),
   status: varchar('status', { length: 20 }).notNull().default('pending'),
+  targetRole: varchar('target_role', { length: 20 }).notNull().default('agent'),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   executedAt: timestamp('executed_at'),

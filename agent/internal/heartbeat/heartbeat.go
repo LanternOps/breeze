@@ -44,6 +44,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/security"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
+	"github.com/breeze-rmm/agent/internal/state"
 	"github.com/breeze-rmm/agent/internal/tcc"
 	"github.com/breeze-rmm/agent/internal/terminal"
 	"github.com/breeze-rmm/agent/internal/tunnel"
@@ -196,6 +197,9 @@ type Heartbeat struct {
 
 	// Tracks whether the read-only FS error has been logged (prevents log spam)
 	updateReadOnlyLogged bool
+
+	// Path to the agent state file, set by main after startup.
+	statePath string
 }
 
 func New(cfg *config.Config) *Heartbeat {
@@ -401,6 +405,11 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 // SetWebSocketClient sets the WebSocket client for terminal output streaming
 func (h *Heartbeat) SetWebSocketClient(ws *websocket.Client) {
 	h.wsClient = ws
+}
+
+// SetStatePath sets the path to the agent state file for heartbeat updates.
+func (h *Heartbeat) SetStatePath(path string) {
+	h.statePath = path
 }
 
 func (h *Heartbeat) httpClient() *http.Client {
@@ -1904,6 +1913,18 @@ func (h *Heartbeat) sendHeartbeat() {
 
 	h.healthMon.Update("heartbeat", health.Healthy, "")
 
+	// Update state file with latest heartbeat timestamp so the watchdog
+	// can detect stale heartbeats.
+	now := time.Now()
+	if h.statePath != "" {
+		if err := state.UpdateHeartbeat(h.statePath, now); err != nil {
+			log.Warn("failed to update state file heartbeat", "error", err.Error())
+		}
+	}
+
+	// Send state_sync to the watchdog so it has current connectivity info.
+	h.sendWatchdogStateSync(now)
+
 	// Heartbeat succeeded — commit (clear) the dropped log counter so it is
 	// not re-reported. If the POST had failed, the count would be preserved
 	// for the next attempt.
@@ -2106,9 +2127,45 @@ func (h *Heartbeat) handleTokenRotation() {
 		log.Info("agent token rotated", "rotatedAt", rotateResp.RotatedAt)
 	}
 
+	// Notify the watchdog of the new token so it can use it for failover heartbeats.
+	h.sendWatchdogTokenUpdate(rotateResp.AuthToken)
+
 	if h.wsClient != nil {
 		h.wsClient.ForceReconnect()
 	}
+}
+
+// sendWatchdogStateSync sends a state_sync IPC message to the watchdog
+// so it knows the agent's current connectivity and version.
+func (h *Heartbeat) sendWatchdogStateSync(lastHeartbeat time.Time) {
+	if h.sessionBroker == nil {
+		return
+	}
+	sess := h.sessionBroker.PreferredSessionWithScope("watchdog")
+	if sess == nil {
+		return
+	}
+	_ = sess.SendNotify("", ipc.TypeStateSync, ipc.StateSync{
+		AgentVersion:  h.agentVersion,
+		ConfigHash:    "", // TODO: populate when config hashing is implemented
+		Connected:     true,
+		LastHeartbeat: lastHeartbeat.Format(time.RFC3339),
+	})
+}
+
+// sendWatchdogTokenUpdate notifies the watchdog that the agent token was rotated
+// so it can update its own copy for failover heartbeats.
+func (h *Heartbeat) sendWatchdogTokenUpdate(newToken string) {
+	if h.sessionBroker == nil {
+		return
+	}
+	sess := h.sessionBroker.PreferredSessionWithScope("watchdog")
+	if sess == nil {
+		return
+	}
+	_ = sess.SendNotify("", ipc.TypeTokenUpdate, ipc.TokenUpdate{
+		Token: newToken,
+	})
 }
 
 func (h *Heartbeat) processCommand(cmd Command) {

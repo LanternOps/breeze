@@ -39,6 +39,17 @@ else
 fi
 chmod 755 "$BINARY"
 
+# Install watchdog
+if [ -f "bin/breeze-watchdog" ]; then
+    echo "Installing watchdog..."
+    cp bin/breeze-watchdog /usr/local/bin/breeze-watchdog
+    chmod 755 /usr/local/bin/breeze-watchdog
+elif [ -f "breeze-watchdog" ]; then
+    echo "Installing watchdog..."
+    cp breeze-watchdog /usr/local/bin/breeze-watchdog
+    chmod 755 /usr/local/bin/breeze-watchdog
+fi
+
 # Install launchd plist
 if [ -f "$PLIST_SRC" ]; then
     cp "$PLIST_SRC" "$PLIST_DST"

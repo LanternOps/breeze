@@ -5,9 +5,24 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/spf13/viper"
 )
+
+// WatchdogConfig holds settings for the breeze-watchdog service.
+type WatchdogConfig struct {
+	Enabled                 bool          `mapstructure:"enabled" yaml:"enabled"`
+	ProcessCheckInterval    time.Duration `mapstructure:"process_check_interval" yaml:"process_check_interval"`
+	IPCProbeInterval        time.Duration `mapstructure:"ipc_probe_interval" yaml:"ipc_probe_interval"`
+	HeartbeatStaleThreshold time.Duration `mapstructure:"heartbeat_stale_threshold" yaml:"heartbeat_stale_threshold"`
+	MaxRecoveryAttempts     int           `mapstructure:"max_recovery_attempts" yaml:"max_recovery_attempts"`
+	RecoveryCooldown        time.Duration `mapstructure:"recovery_cooldown" yaml:"recovery_cooldown"`
+	StandbyTimeout          time.Duration `mapstructure:"standby_timeout" yaml:"standby_timeout"`
+	FailoverPollInterval    time.Duration `mapstructure:"failover_poll_interval" yaml:"failover_poll_interval"`
+	HealthJournalMaxSizeMB  int           `mapstructure:"health_journal_max_size_mb" yaml:"health_journal_max_size_mb"`
+	HealthJournalMaxFiles   int           `mapstructure:"health_journal_max_files" yaml:"health_journal_max_files"`
+}
 
 type PolicyRegistryStateProbe struct {
 	RegistryPath string `mapstructure:"registry_path"`
@@ -92,6 +107,9 @@ type Config struct {
 	MtlsKeyPEM      string `mapstructure:"mtls_key_pem"`
 	MtlsCertExpires string `mapstructure:"mtls_cert_expires"`
 
+	// Watchdog configuration for the breeze-watchdog service.
+	Watchdog WatchdogConfig `mapstructure:"watchdog" yaml:"watchdog"`
+
 	// IsService is a runtime flag set when the agent is running as a system service
 	// (Windows SCM, macOS launchd, Linux systemd). It is not persisted to config.
 	IsService bool `mapstructure:"-"`
@@ -111,6 +129,16 @@ func defaultLogFile() string {
 	default:
 		return "/var/log/breeze/agent.log"
 	}
+}
+
+// LogDir returns the platform-specific directory where agent logs are written.
+func LogDir() string {
+	return filepath.Dir(defaultLogFile())
+}
+
+// ConfigDir returns the platform-specific configuration directory.
+func ConfigDir() string {
+	return configDir()
 }
 
 func Default() *Config {
@@ -136,8 +164,21 @@ func Default() *Config {
 		PatchRequireACPower:        true,
 		PatchRebootMaxPerDay:       3,
 		PatchAutoAcceptEula:        false,
-		PolicyRegistryStateProbes:  []PolicyRegistryStateProbe{},
-		PolicyConfigStateProbes:    []PolicyConfigStateProbe{},
+		PolicyRegistryStateProbes: []PolicyRegistryStateProbe{},
+		PolicyConfigStateProbes:   []PolicyConfigStateProbe{},
+
+		Watchdog: WatchdogConfig{
+			Enabled:                 true,
+			ProcessCheckInterval:    5 * time.Second,
+			IPCProbeInterval:        30 * time.Second,
+			HeartbeatStaleThreshold: 3 * time.Minute,
+			MaxRecoveryAttempts:     3,
+			RecoveryCooldown:        10 * time.Minute,
+			StandbyTimeout:          30 * time.Minute,
+			FailoverPollInterval:    30 * time.Second,
+			HealthJournalMaxSizeMB:  10,
+			HealthJournalMaxFiles:   3,
+		},
 	}
 }
 

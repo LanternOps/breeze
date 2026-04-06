@@ -40,6 +40,67 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     return c.json({ error: 'Device not found' }, 404);
   }
 
+  const isWatchdog = data.role === 'watchdog';
+
+  if (isWatchdog) {
+    // Update watchdog-specific columns only — don't touch agent metrics
+    try {
+      await db.update(devices)
+        .set({
+          watchdogStatus: data.watchdogState === 'FAILOVER' ? 'failover' : 'connected',
+          watchdogLastSeen: new Date(),
+          watchdogVersion: data.agentVersion,
+          updatedAt: new Date(),
+        })
+        .where(eq(devices.id, device.id));
+    } catch (err) {
+      console.error('Failed to update watchdog status:', err);
+    }
+
+    // Claim watchdog-targeted commands (marks as sent to prevent duplicate delivery)
+    const watchdogCommands = await claimPendingCommandsForDevice(device.id, 10, 'watchdog');
+
+    // Check for watchdog upgrade
+    let watchdogUpgradeTo: string | undefined;
+    const normalizedArch = normalizeAgentArchitecture(device.architecture);
+    if (normalizedArch) {
+      try {
+        const [latestWatchdog] = await db
+          .select({ version: agentVersions.version })
+          .from(agentVersions)
+          .where(
+            and(
+              eq(agentVersions.platform, device.osType),
+              eq(agentVersions.architecture, normalizedArch),
+              eq(agentVersions.component, 'watchdog'),
+              eq(agentVersions.isLatest, true)
+            )
+          )
+          .limit(1);
+
+        if (latestWatchdog) {
+          if (!data.agentVersion.startsWith('dev-')) {
+            const cmp = compareAgentVersions(latestWatchdog.version, data.agentVersion);
+            if (cmp > 0) {
+              watchdogUpgradeTo = latestWatchdog.version;
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`[agents] failed to evaluate watchdog upgrade target for ${agentId}:`, err);
+      }
+    }
+
+    return c.json({
+      commands: watchdogCommands.map(cmd => ({
+        id: cmd.id,
+        type: cmd.type,
+        payload: cmd.payload,
+      })),
+      watchdogUpgradeTo,
+    });
+  }
+
   const deviceUpdates: Record<string, unknown> = {
     lastSeenAt: new Date(),
     status: 'online',
@@ -233,6 +294,38 @@ if (latestHelper) {
     }
   }
 
+  let watchdogUpgradeTo: string | null = null;
+  if (normalizedArch) {
+    try {
+      const [latestWatchdog] = await db
+        .select({ version: agentVersions.version })
+        .from(agentVersions)
+        .where(
+          and(
+            eq(agentVersions.platform, device.osType),
+            eq(agentVersions.architecture, normalizedArch),
+            eq(agentVersions.component, 'watchdog'),
+            eq(agentVersions.isLatest, true)
+          )
+        )
+        .limit(1);
+
+      if (latestWatchdog && device.watchdogVersion) {
+        if (!device.watchdogVersion.startsWith('dev-')) {
+          const cmp = compareAgentVersions(latestWatchdog.version, device.watchdogVersion);
+          if (cmp > 0) {
+            watchdogUpgradeTo = latestWatchdog.version;
+          }
+        }
+      } else if (latestWatchdog && !device.watchdogVersion) {
+        // Watchdog not yet installed — signal to agent to install it
+        watchdogUpgradeTo = latestWatchdog.version;
+      }
+    } catch (err) {
+      console.error(`[agents] failed to evaluate watchdog upgrade target for ${agentId}:`, err);
+    }
+  }
+
   let renewCert = false;
   if (device.mtlsCertExpiresAt && device.mtlsCertIssuedAt) {
     const now = Date.now();
@@ -288,6 +381,7 @@ if (latestHelper) {
     configUpdate: mergedConfigUpdate,
     upgradeTo,
     helperUpgradeTo: helperUpgradeTo ?? undefined,
+    watchdogUpgradeTo: watchdogUpgradeTo ?? undefined,
     renewCert: renewCert || undefined,
     rotateToken: rotateToken || undefined,
     helperEnabled: helperSettings?.enabled ?? false,
