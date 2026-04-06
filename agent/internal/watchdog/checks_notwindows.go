@@ -5,6 +5,7 @@ package watchdog
 import (
 	"fmt"
 	"os"
+	"strings"
 	"syscall"
 )
 
@@ -33,8 +34,13 @@ func (c *OSProcessChecker) IsZombie(pid int) bool {
 		return false
 	}
 	for _, line := range splitLines(data) {
-		if len(line) > 7 && line[:7] == "State: " {
-			return line[7] == 'Z'
+		if strings.HasPrefix(line, "State:") && len(line) > 6 {
+			// Skip whitespace (tab or space) after "State:"
+			for i := 6; i < len(line); i++ {
+				if line[i] != ' ' && line[i] != '\t' {
+					return line[i] == 'Z'
+				}
+			}
 		}
 	}
 	return false

@@ -24,6 +24,8 @@ type IPCClient struct {
 	connected  bool
 	onMessage  func(*ipc.Envelope)
 	stopCh     chan struct{}
+	lastPingAt time.Time
+	lastPongAt time.Time
 }
 
 // NewIPCClient constructs an IPCClient that will connect to socketPath and
@@ -97,24 +99,38 @@ func (c *IPCClient) Connect() error {
 	return nil
 }
 
-// Ping implements IPCProber. It sends a watchdog_ping to the agent and returns
-// true immediately; the corresponding pong arrives asynchronously via the
-// onMessage callback.
+// Ping implements IPCProber. It checks whether the previous ping received a
+// pong (indicating the agent is responsive), records the current time as the
+// new ping timestamp, and sends a watchdog_ping. On the very first call there
+// is no prior ping/pong pair, so true is returned optimistically.
+//
+// Because pongs arrive asynchronously, three consecutive calls without any
+// pong in between will return false — indicating a hung agent.
 func (c *IPCClient) Ping() (bool, error) {
 	c.mu.Lock()
-	conn := c.conn
-	connected := c.connected
-	c.mu.Unlock()
-
-	if !connected || conn == nil {
+	if !c.connected || c.conn == nil {
+		c.mu.Unlock()
 		return false, fmt.Errorf("watchdog ipc: not connected")
 	}
+	// Check whether the last ping got a response.
+	firstPing := c.lastPingAt.IsZero()
+	gotPong := !c.lastPongAt.IsZero() && c.lastPongAt.After(c.lastPingAt)
+	c.lastPingAt = time.Now()
+	conn := c.conn
+	c.mu.Unlock()
 
 	ping := ipc.WatchdogPing{RequestHealthSummary: false}
 	if err := conn.SendTyped("wd-ping", ipc.TypeWatchdogPing, ping); err != nil {
 		return false, fmt.Errorf("watchdog ipc: send ping: %w", err)
 	}
-	return true, nil
+
+	// On the very first ping there has been no opportunity to receive a pong
+	// yet, so we give the agent the benefit of the doubt.
+	if firstPing {
+		return true, nil
+	}
+
+	return gotPong, nil
 }
 
 // IsConnected returns whether the client currently has an active connection.
@@ -168,10 +184,17 @@ func (c *IPCClient) readLoop() {
 
 		env, err := conn.Recv()
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "watchdog ipc: read loop error: %v\n", err)
 			c.mu.Lock()
 			c.connected = false
 			c.mu.Unlock()
 			return
+		}
+
+		if env.Type == ipc.TypeWatchdogPong {
+			c.mu.Lock()
+			c.lastPongAt = time.Now()
+			c.mu.Unlock()
 		}
 
 		if c.onMessage != nil {
