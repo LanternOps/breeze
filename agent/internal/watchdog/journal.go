@@ -111,11 +111,15 @@ func (j *Journal) Log(level, event string, data map[string]any) {
 	defer j.mu.Unlock()
 
 	if j.file == nil {
+		fmt.Fprintf(os.Stderr, "watchdog journal: file not open, dropping entry: %s\n", event)
 		return
 	}
 
-	n, _ := j.file.Write(line)
+	n, writeErr := j.file.Write(line)
 	j.written += int64(n)
+	if writeErr != nil {
+		fmt.Fprintf(os.Stderr, "watchdog journal: write failed: %v\n", writeErr)
+	}
 
 	// Append to in-memory ring buffer.
 	j.recent = append(j.recent, entry)
@@ -154,7 +158,7 @@ func (j *Journal) ReadFromDisk() ([]JournalEntry, error) {
 	dir := j.dir
 	// Flush the active file so all writes are visible on disk before reading.
 	if j.file != nil {
-		j.file.Sync() //nolint:errcheck
+		j.file.Sync() // best-effort flush; errors are non-fatal for a read operation
 	}
 	j.mu.Unlock()
 
@@ -229,13 +233,16 @@ func (j *Journal) rotate() {
 	active := filepath.Join(j.dir, journalFileName)
 	stamp := time.Now().UnixMilli()
 	rotated := filepath.Join(j.dir, fmt.Sprintf("watchdog-journal.%d.log", stamp))
-	// Best-effort rename; if it fails the next openFile will truncate/append.
-	os.Rename(active, rotated) //nolint:errcheck
+	if err := os.Rename(active, rotated); err != nil {
+		fmt.Fprintf(os.Stderr, "watchdog journal: rename failed: %v\n", err)
+	}
 
 	j.pruneOldFiles()
 
 	j.written = 0
-	j.openFile() //nolint:errcheck
+	if err := j.openFile(); err != nil {
+		fmt.Fprintf(os.Stderr, "watchdog journal: reopen after rotate failed: %v\n", err)
+	}
 }
 
 // pruneOldFiles removes the oldest rotated journal files so that at most
@@ -259,7 +266,7 @@ func (j *Journal) pruneOldFiles() {
 	sort.Strings(rotated)
 
 	for len(rotated) > j.maxFiles {
-		os.Remove(rotated[0]) //nolint:errcheck
+		os.Remove(rotated[0]) // best-effort; ignore error
 		rotated = rotated[1:]
 	}
 }
