@@ -136,6 +136,11 @@ func LogDir() string {
 	return filepath.Dir(defaultLogFile())
 }
 
+// ConfigDir returns the platform-specific configuration directory.
+func ConfigDir() string {
+	return configDir()
+}
+
 func Default() *Config {
 	return &Config{
 		HeartbeatIntervalSeconds: 60,
