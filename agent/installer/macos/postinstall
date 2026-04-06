@@ -30,6 +30,21 @@ chmod 0644 "$DAEMON_PLIST"
 chmod 0644 "$DESKTOP_USER_PLIST"
 chmod 0644 "$DESKTOP_LOGINWINDOW_PLIST"
 
+# Watchdog
+WATCHDOG_BINARY="/usr/local/bin/breeze-watchdog"
+if [ -f "$WATCHDOG_BINARY" ]; then
+    xattr -d com.apple.quarantine "$WATCHDOG_BINARY" 2>/dev/null || true
+    chmod 0755 "$WATCHDOG_BINARY"
+fi
+
+# Bootstrap watchdog daemon
+WATCHDOG_PLIST="/Library/LaunchDaemons/com.breeze.watchdog.plist"
+if [ -f "$WATCHDOG_PLIST" ]; then
+    launchctl bootout system/com.breeze.watchdog 2>/dev/null || true
+    launchctl bootstrap system "$WATCHDOG_PLIST" 2>/dev/null || \
+        launchctl load "$WATCHDOG_PLIST" 2>/dev/null || true
+fi
+
 # Create breeze group for IPC socket access (best-effort)
 if ! dscl . -read /Groups/breeze &>/dev/null; then
     dscl . -create /Groups/breeze 2>/dev/null || true
