@@ -51,6 +51,17 @@ elif [ -f "breeze-watchdog" ]; then
     chmod 755 /usr/local/bin/breeze-watchdog
 fi
 
+# Install watchdog systemd unit if not already present
+if [ -f "/usr/local/bin/breeze-watchdog" ]; then
+    if [ ! -f "/etc/systemd/system/breeze-watchdog.service" ]; then
+        echo "Registering watchdog service..."
+        /usr/local/bin/breeze-watchdog service install
+    else
+        echo "Restarting watchdog service..."
+        systemctl restart breeze-watchdog || true
+    fi
+fi
+
 # Install systemd unit
 if [ -f "$SERVICE_SRC" ]; then
     cp "$SERVICE_SRC" "$SERVICE_DST"

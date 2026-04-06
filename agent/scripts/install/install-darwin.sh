@@ -50,6 +50,17 @@ elif [ -f "breeze-watchdog" ]; then
     chmod 755 /usr/local/bin/breeze-watchdog
 fi
 
+# Register watchdog service
+if [ -f "/usr/local/bin/breeze-watchdog" ]; then
+    if [ ! -f "/Library/LaunchDaemons/com.breeze.watchdog.plist" ]; then
+        echo "Registering watchdog service..."
+        /usr/local/bin/breeze-watchdog service install
+    else
+        echo "Restarting watchdog service..."
+        launchctl kickstart -k system/com.breeze.watchdog 2>/dev/null || true
+    fi
+fi
+
 # Install launchd plist
 if [ -f "$PLIST_SRC" ]; then
     cp "$PLIST_SRC" "$PLIST_DST"
