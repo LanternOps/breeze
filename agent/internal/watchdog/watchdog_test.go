@@ -137,6 +137,31 @@ func TestConnectingToRecovering(t *testing.T) {
 	}
 }
 
+func TestFailoverToMonitoringViaIPC(t *testing.T) {
+	w := NewWatchdog(DefaultTestConfig())
+	w.HandleEvent(EventAgentNotFound)     // CONNECTING → RECOVERING
+	w.HandleEvent(EventRecoveryExhausted) // RECOVERING → FAILOVER
+	next, ok := w.HandleEvent(EventIPCConnected)
+	if !ok {
+		t.Fatal("expected transition to succeed")
+	}
+	if next != StateMonitoring {
+		t.Fatalf("expected %s, got %s", StateMonitoring, next)
+	}
+}
+
+func TestRecoveringToMonitoringViaIPC(t *testing.T) {
+	w := NewWatchdog(DefaultTestConfig())
+	w.HandleEvent(EventAgentNotFound) // CONNECTING → RECOVERING
+	next, ok := w.HandleEvent(EventIPCConnected)
+	if !ok {
+		t.Fatal("expected transition to succeed")
+	}
+	if next != StateMonitoring {
+		t.Fatalf("expected %s, got %s", StateMonitoring, next)
+	}
+}
+
 func TestInvalidTransitionIgnored(t *testing.T) {
 	w := NewWatchdog(DefaultTestConfig())
 	// CONNECTING has no transition for EventAgentRecovered
