@@ -134,10 +134,10 @@ func runAsWindowsService() error {
 func (s *watchdogSvc) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
 	changes <- svc.Status{State: svc.StartPending}
 
-	// Start the watchdog loop in a goroutine.
+	// Start the watchdog loop in a goroutine with a stop channel.
 	done := make(chan struct{})
 	go func() {
-		runWatchdog()
+		runWatchdog(s.stopCh)
 		close(done)
 	}()
 
@@ -151,11 +151,7 @@ func (s *watchdogSvc) Execute(args []string, r <-chan svc.ChangeRequest, changes
 				changes <- cr.CurrentStatus
 			case svc.Stop, svc.Shutdown:
 				changes <- svc.Status{State: svc.StopPending}
-				// Send SIGTERM-equivalent to the watchdog's signal handler.
-				p, _ := os.FindProcess(os.Getpid())
-				if p != nil {
-					p.Signal(os.Interrupt)
-				}
+				close(s.stopCh) // signals runWatchdog to return
 				<-done
 				return false, 0
 			}
