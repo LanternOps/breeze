@@ -194,6 +194,15 @@ func shutdownAgent(comps *agentComponents) {
 		log.Warn("failed to write stopping state file", "error", err.Error())
 	}
 
+	// Notify the watchdog of intentional shutdown so it doesn't restart us.
+	if broker := comps.hb.SessionBroker(); broker != nil {
+		if sess := broker.PreferredSessionWithScope("watchdog"); sess != nil {
+			_ = sess.SendNotify("", ipc.TypeShutdownIntent, ipc.ShutdownIntent{
+				Reason: state.ReasonUserStop,
+			})
+		}
+	}
+
 	comps.hb.StopAcceptingCommands()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
