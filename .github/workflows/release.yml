@@ -248,7 +248,7 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Install WiX v4 CLI
+      - name: Install WiX CLI
         shell: pwsh
         run: |
           dotnet tool update --global wix | Out-Null
@@ -256,6 +256,8 @@ jobs:
             dotnet tool install --global wix | Out-Null
           }
           "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        env:
+          WIX_OSMF_EULA_ACCEPTED: "true"
 
       - name: Get version from tag
         id: version
@@ -406,6 +408,8 @@ jobs:
 
       - name: Build MSI
         shell: pwsh
+        env:
+          WIX_OSMF_EULA_ACCEPTED: "true"
         run: |
           $root = $env:GITHUB_WORKSPACE
           $version = "${{ steps.version.outputs.version }}"
