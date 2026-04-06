@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -41,7 +40,7 @@ func NewIPCClient(socketPath string, onMessage func(*ipc.Envelope)) *IPCClient {
 // Connect dials the Unix socket, authenticates as a watchdog role client,
 // and starts the receive loop. It must be called before Ping.
 func (c *IPCClient) Connect() error {
-	raw, err := net.DialTimeout("unix", c.socketPath, 5*time.Second)
+	raw, err := dialIPC(c.socketPath)
 	if err != nil {
 		return fmt.Errorf("watchdog ipc: connect to %s: %w", c.socketPath, err)
 	}
