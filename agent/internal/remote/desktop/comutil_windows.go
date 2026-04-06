@@ -124,7 +124,8 @@ const (
 	dxgiFormatNV12 = 103
 
 	// D3D11 bind flags
-	d3d11BindRenderTarget = 0x20
+	d3d11BindRenderTarget      = 0x20
+	d3d11BindShaderResource    = 0x08
 )
 
 // mftRegisterTypeInfo matches MFT_REGISTER_TYPE_INFO.
@@ -190,8 +191,14 @@ var (
 	codecAPIAVEncCommonRateControlMode   = comGUID{0x1c0608e9, 0x370c, 0x4710, [8]byte{0x8a, 0x58, 0xcb, 0x61, 0x81, 0xc4, 0x24, 0x23}}
 	codecAPIAVEncCommonBufferSize        = comGUID{0x0db96574, 0xb6a4, 0x4c8b, [8]byte{0x81, 0x06, 0x37, 0x73, 0xde, 0x03, 0x10, 0xcd}}
 
+	// ICodecAPI — low latency and quality/speed tradeoff
+	codecAPIAVLowLatencyMode          = comGUID{0x9c27891a, 0xed7a, 0x40e1, [8]byte{0x88, 0xe8, 0xb2, 0x27, 0x27, 0xa0, 0x24, 0xee}}
+	codecAPIAVEncCommonQualityVsSpeed = comGUID{0x98332df8, 0x03cd, 0x476b, [8]byte{0x89, 0xfa, 0x3f, 0x9e, 0x44, 0x2d, 0xec, 0x9f}}
+	codecAPIAVEncVideoEncodeQP        = comGUID{0x2cb5696b, 0x23fb, 0x4ce1, [8]byte{0xa0, 0xf9, 0xef, 0x5b, 0x90, 0xfd, 0x55, 0xca}}
+
 	// Rate control modes
-	eAVEncCommonRateControlMode_CBR uint32 = 1
+	eAVEncCommonRateControlMode_CBR     uint32 = 1
+	eAVEncCommonRateControlMode_Quality uint32 = 5
 
 	// H264 profile constants
 	eAVEncH264VProfileBaseline uint32 = 66
@@ -281,7 +288,8 @@ type comVariant struct {
 	val      uint64   // union (holds ULONG for VT_UI4)
 }
 
-const vtUI4 = 19 // VT_UI4
+const vtUI4 = 19  // VT_UI4
+const vtBool = 11 // VT_BOOL
 
 // d3d11VideoProcessorContentDesc matches D3D11_VIDEO_PROCESSOR_CONTENT_DESC.
 type d3d11VideoProcessorContentDesc struct {

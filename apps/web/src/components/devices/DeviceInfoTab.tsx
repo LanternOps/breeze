@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Monitor, Cpu, HardDrive, MemoryStick, Shield, Tag, Info, ListChecks, Pencil, Check, X } from 'lucide-react';
-import type { TCCPermissions } from '@breeze/shared';
+import { Monitor, Cpu, Shield, Tag, Info, ListChecks, Pencil, Check, X, AlertTriangle } from 'lucide-react';
+import type { DesktopAccessState, TCCPermissions } from '@breeze/shared';
 import MacOSPermissionsCard from './MacOSPermissionsCard';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatUptime } from '../../lib/utils';
@@ -45,6 +45,7 @@ type DeviceInfo = {
   tags?: string[];
   customFields?: Record<string, unknown>;
   tccPermissions?: TCCPermissions | null;
+  desktopAccess?: DesktopAccessState | null;
   hardware?: {
     serialNumber?: string | null;
     manufacturer?: string | null;
@@ -101,6 +102,38 @@ function formatOsVersionForDisplay(raw: string | null | undefined): string {
   return raw.replace(/^(darwin|linux)\s+/i, '');
 }
 
+function formatDesktopAccessMode(mode: DesktopAccessState['mode'] | undefined): string {
+  switch (mode) {
+    case 'user_session':
+      return 'Ready After User Login';
+    case 'login_window':
+      return 'Ready At Login Window';
+    case 'unavailable':
+      return 'Unavailable';
+    default:
+      return 'Unknown';
+  }
+}
+
+function formatDesktopAccessReason(reason: DesktopAccessState['reason'] | undefined | null): string {
+  switch (reason) {
+    case 'missing_permission':
+      return 'Missing Permission';
+    case 'missing_entitlement':
+      return 'Missing Entitlement';
+    case 'helper_not_connected':
+      return 'Helper Not Connected';
+    case 'virtual_display_unavailable':
+      return 'Virtual Display Unavailable';
+    case 'unsupported_os':
+      return 'Unsupported macOS Version';
+    case 'manual_install':
+      return 'Manual Install';
+    default:
+      return '—';
+  }
+}
+
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex justify-between py-2">
@@ -115,7 +148,7 @@ function Section({ title, icon, children }: { title: string; icon: React.ReactNo
     <div className="rounded-lg border bg-card p-6 shadow-sm">
       <div className="flex items-center gap-2 mb-4">
         {icon}
-        <h3 className="font-semibold">{title}</h3>
+        <h3 className="text-sm font-semibold">{title}</h3>
       </div>
       <dl className="divide-y">{children}</dl>
     </div>
@@ -123,9 +156,9 @@ function Section({ title, icon, children }: { title: string; icon: React.ReactNo
 }
 
 const statusColors: Record<string, string> = {
-  online: 'bg-green-500/20 text-green-700 border-green-500/40',
-  offline: 'bg-red-500/20 text-red-700 border-red-500/40',
-  maintenance: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40',
+  online: 'bg-success/15 text-success border-success/30',
+  offline: 'bg-destructive/15 text-destructive border-destructive/30',
+  maintenance: 'bg-warning/15 text-warning border-warning/30',
 };
 
 export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
@@ -372,7 +405,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
             const RoleIcon = getDeviceRoleIcon(role);
             return <RoleIcon className="h-4 w-4 text-muted-foreground" />;
           })()}
-          <h3 className="font-semibold">Device Role</h3>
+          <h3 className="text-sm font-semibold">Device Role</h3>
         </div>
         <dl className="divide-y">
           <div className="flex items-center justify-between py-2">
@@ -485,6 +518,40 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         <InfoRow label="Logged-in User" value={info?.lastUser ?? '—'} />
       </Section>
 
+      {info?.osType === 'macos' && info?.desktopAccess && (
+        <Section title="Desktop Access" icon={<Monitor className="h-4 w-4 text-muted-foreground" />}>
+          <InfoRow label="Mode" value={formatDesktopAccessMode(info.desktopAccess.mode)} />
+          <InfoRow label="Login UI Reachable" value={info.desktopAccess.loginUiReachable ? 'Yes' : 'No'} />
+          <InfoRow label="Virtual Display" value={info.desktopAccess.virtualDisplayReady ? 'Ready' : 'Not Ready'} />
+          <InfoRow
+            label="Remote Desktop Permission"
+            value={
+              info.desktopAccess.remoteDesktopPermission == null
+                ? 'Unknown'
+                : info.desktopAccess.remoteDesktopPermission ? 'Granted' : 'Missing'
+            }
+          />
+          <InfoRow label="Reason" value={formatDesktopAccessReason(info.desktopAccess.reason)} />
+          <InfoRow label="Last Checked" value={formatDate(info.desktopAccess.checkedAt)} />
+          {info.desktopAccess.mode === 'unavailable' && (
+            <div className="pt-3">
+              <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                <p className="text-sm text-amber-700 dark:text-amber-400">
+                  {info.desktopAccess.reason === 'unsupported_os'
+                    ? 'This Mac is below the macOS 14+ floor for the native login-window desktop path.'
+                    : info.desktopAccess.reason === 'manual_install'
+                      ? 'Login-window reachability is only advertised for managed installs with the desktop helper deployed.'
+                      : info.desktopAccess.reason === 'missing_entitlement'
+                        ? 'The native login-window desktop path is gated behind Apple entitlement approval.'
+                        : 'The native login-window desktop path is not ready on this device yet.'}
+                </p>
+              </div>
+            </div>
+          )}
+        </Section>
+      )}
+
       {info?.osType === 'macos' && info?.tccPermissions && (
         <MacOSPermissionsCard deviceId={deviceId} tccPermissions={info.tccPermissions} formatDate={formatDate} />
       )}
@@ -493,7 +560,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
           <div className="rounded-lg border bg-card p-6 shadow-sm">
             <div className="flex items-center gap-2 mb-4">
               <Tag className="h-4 w-4 text-muted-foreground" />
-              <h3 className="font-semibold">Tags</h3>
+              <h3 className="text-sm font-semibold">Tags</h3>
             </div>
             <div className="flex flex-wrap gap-2">
               {tags.map(tag => (
@@ -512,7 +579,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         <div className="rounded-lg border bg-card p-6 shadow-sm lg:col-span-2">
           <div className="flex items-center gap-2 mb-4">
             <ListChecks className="h-4 w-4 text-muted-foreground" />
-            <h3 className="font-semibold">Custom Fields</h3>
+            <h3 className="text-sm font-semibold">Custom Fields</h3>
           </div>
           {saveError && (
             <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">

@@ -3,9 +3,9 @@
 package collectors
 
 import (
+	"bytes"
 	"encoding/csv"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -14,21 +14,21 @@ func collectAuditPolicyState() (AuditPolicySnapshot, error) {
 	settings := map[string]any{}
 	raw := map[string]any{}
 
-	if output, err := exec.Command("auditpol", "/get", "/category:*", "/r").Output(); err == nil {
-		raw["auditpol"] = string(output)
+	if output, err := runCollectorOutput(collectorLongCommandTimeout, "auditpol", "/get", "/category:*", "/r"); err == nil {
+		raw["auditpol"] = truncateCollectorString(string(output))
 		parseWindowsAuditpolCSV(string(output), settings)
 	} else {
-		raw["auditpol_error"] = err.Error()
+		raw["auditpol_error"] = truncateCollectorString(err.Error())
 	}
 
 	for _, logName := range []string{"Security", "System", "Application"} {
-		output, err := exec.Command("wevtutil", "gl", logName).Output()
+		output, err := runCollectorOutput(collectorShortCommandTimeout, "wevtutil", "gl", logName)
 		if err != nil {
-			raw["wevtutil_"+strings.ToLower(logName)+"_error"] = err.Error()
+			raw["wevtutil_"+strings.ToLower(logName)+"_error"] = truncateCollectorString(err.Error())
 			continue
 		}
 
-		raw["wevtutil_"+strings.ToLower(logName)] = string(output)
+		raw["wevtutil_"+strings.ToLower(logName)] = truncateCollectorString(string(output))
 		parseWindowsEventLogSettings(logName, string(output), settings)
 	}
 
@@ -41,18 +41,22 @@ func collectAuditPolicyState() (AuditPolicySnapshot, error) {
 }
 
 func parseWindowsAuditpolCSV(content string, settings map[string]any) {
-	reader := csv.NewReader(strings.NewReader(content))
-	records, err := reader.ReadAll()
-	if err != nil || len(records) < 2 {
+	reader := csv.NewReader(bytes.NewReader([]byte(content)))
+	header, err := reader.Read()
+	if err != nil {
 		return
 	}
 
-	subIdx, incIdx, settingValueIdx, ok := resolveWindowsAuditpolIndexes(records[0])
+	subIdx, incIdx, settingValueIdx, ok := resolveWindowsAuditpolIndexes(header)
 	if !ok {
 		return
 	}
 
-	for _, row := range records[1:] {
+	for i := 0; i < collectorResultLimit; i++ {
+		row, err := reader.Read()
+		if err != nil {
+			break
+		}
 		if len(row) <= subIdx {
 			continue
 		}
@@ -78,7 +82,7 @@ func parseWindowsAuditpolCSV(content string, settings map[string]any) {
 		}
 
 		key := "auditpol:" + strings.ToLower(subcategory)
-		settings[key] = inclusion
+		settings[truncateCollectorString(key)] = truncateCollectorString(inclusion)
 	}
 }
 
@@ -213,16 +217,16 @@ func applyAuditPolicyBaseline(settings map[string]any) (AuditPolicyApplyResult, 
 			failureArg = "enable"
 		}
 
-		cmd := exec.Command(
+		output, err := runCollectorCombinedOutput(
+			collectorLongCommandTimeout,
 			"auditpol",
 			"/set",
 			"/subcategory:"+subcategory,
 			"/success:"+successArg,
 			"/failure:"+failureArg,
 		)
-
-		if output, err := cmd.CombinedOutput(); err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v (%s)", key, err, strings.TrimSpace(string(output))))
+		if err != nil {
+			result.Errors = append(result.Errors, truncateCollectorString(fmt.Sprintf("%s: %v (%s)", key, err, strings.TrimSpace(string(output)))))
 			continue
 		}
 
@@ -230,7 +234,7 @@ func applyAuditPolicyBaseline(settings map[string]any) (AuditPolicyApplyResult, 
 	}
 
 	if result.Applied == 0 && len(result.Errors) > 0 {
-		return result, fmt.Errorf("failed to apply audit baseline: %s", strings.Join(result.Errors, "; "))
+		return result, fmt.Errorf("failed to apply audit baseline: %s", truncateCollectorString(strings.Join(result.Errors, "; ")))
 	}
 
 	return result, nil

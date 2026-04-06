@@ -1,12 +1,16 @@
 package helper
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 )
 
 const desktopEntryDir = "/etc/xdg/autostart"
@@ -63,8 +67,64 @@ X-GNOME-Autostart-enabled=true
 	return nil
 }
 
+func removeAutoStart() error {
+	if err := os.Remove(desktopEntryPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove desktop entry: %w", err)
+	}
+	return nil
+}
+
+func stopByPID(pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("invalid pid %d", pid)
+	}
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("kill pid %d: %w", pid, err)
+	}
+	return nil
+}
+
+func spawnWithConfig(binaryPath, sessionKey, configPath string) (int, error) {
+	uid, err := strconv.ParseUint(sessionKey, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("invalid uid %q: %w", sessionKey, err)
+	}
+
+	u, err := user.LookupId(sessionKey)
+	if err != nil {
+		return 0, fmt.Errorf("lookup uid %s: %w", sessionKey, err)
+	}
+	gid, err := strconv.ParseUint(u.Gid, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("parse gid %q: %w", u.Gid, err)
+	}
+
+	cmd := exec.Command(binaryPath, "--config", configPath)
+	cmd.Dir = filepath.Dir(binaryPath)
+	if os.Geteuid() == 0 && uint32(uid) != uint32(os.Geteuid()) {
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Credential: &syscall.Credential{
+				Uid: uint32(uid),
+				Gid: uint32(gid),
+			},
+		}
+	}
+	cmd.Env = append(os.Environ(),
+		"HOME="+u.HomeDir,
+		"USER="+u.Username,
+		"LOGNAME="+u.Username,
+	)
+
+	if err := cmd.Start(); err != nil {
+		return 0, fmt.Errorf("start helper for uid %s: %w", sessionKey, err)
+	}
+	pid := cmd.Process.Pid
+	_ = cmd.Process.Release()
+	return pid, nil
+}
+
 func isHelperRunning() bool {
-	out, err := exec.Command("pgrep", "-f", "breeze-helper").Output()
+	out, err := outputHelperCommand("pgrep", "-f", "breeze-helper")
 	if err != nil {
 		return false
 	}
@@ -72,5 +132,5 @@ func isHelperRunning() bool {
 }
 
 func stopHelper() error {
-	return exec.Command("pkill", "-f", "breeze-helper").Run()
+	return runHelperCommand("pkill", "-f", "breeze-helper")
 }

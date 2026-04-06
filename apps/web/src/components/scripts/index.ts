@@ -19,7 +19,6 @@ export { default as ScriptTagManager } from './ScriptTagManager';
 export { default as ScriptVersionHistory } from './ScriptVersionHistory';
 export { default as ScriptTemplateGallery } from './ScriptTemplateGallery';
 export type { ScriptTemplate } from './ScriptTemplateGallery';
-export { default as ScriptEditor } from './ScriptEditor';
 
 // Page Components
 export { default as ScriptsPage } from './ScriptsPage';

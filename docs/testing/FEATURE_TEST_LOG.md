@@ -4,6 +4,68 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## TCP Tunnel Relay (VNC + Network Proxy) — 2026-04-04
+
+**Branch:** `main` (merged from `feature/tcp-tunnel-relay`)
+**Commit:** `c6c33624`
+**Tested by:** Claude
+**Device:** KIT (Windows, `e65460f3`)
+**Agent Version:** `dev-1775280177`
+**Result:** PASS — all layers verified
+
+### What was tested
+
+#### Agent Deploy
+- [x] Cross-compiled Windows/amd64 binary with tunnel support
+- [x] dev-push delivered, agent restarted with new version
+- [x] Issue: unsigned binary quarantined by Defender (resolved with AV exclusion)
+
+#### API Endpoints
+- [x] `POST /tunnels` VNC — 201, command sent to agent
+- [x] `GET /tunnels/:id` — correct status (failed = no VNC server on Windows)
+- [x] `GET /tunnels` — lists user's tunnels
+- [x] SSRF block: 169.254.169.254 → 403
+- [x] Default deny: no allowlist rules → 403
+- [x] Allowlist CRUD requires org context (partner user gets 400) — correct
+
+#### Agent-Side (via diagnostic logs)
+- [x] Agent received `tun-open-*` commands
+- [x] TCP dial to localhost:5900 failed (no VNC server) — correct
+- [x] Failed status propagated back to API
+
+#### UI (Playwright)
+- [x] Org Settings → Remote Access tab renders: source IP restrictions, sites section
+- [x] Config Policy → Remote Access tab renders: WebRTC/VNC toggles, proxy toggles, port chips (80/443/8080/8443), limits (tunnels/idle/duration)
+- [x] Discovery → Asset Detail modal shows Proxy Access section with enable button
+- [x] Zero JS console errors across all tested pages
+- [ ] VNC viewer (noVNC) — requires @novnc/novnc install
+- [ ] Proxy data flow — needs reachable target on KIT's LAN
+
+### Issues Found & Fixed
+1. `authMiddleware` missing on tunnel routes → 401 on all endpoints
+2. BigInt serialization crash → `mode: 'number'` fix
+3. dev-push AV quarantine → unsigned binary needs exclusion
+
+## Enterprise Backup UI + AI Tools — 2026-03-29
+
+**Branch:** `main`
+**Commit:** `d55d118e`
+**Tested by:** Claude (Playwright MCP)
+**Result:** PARTIAL — UI renders correctly, API 404s expected (migrations not yet applied)
+
+### Tested
+- [x] Sidebar: Backup, Cloud Backup, Disaster Recovery links present
+- [x] `/c2c` loads: alpha banner, 4 tabs, connections table, empty state, Add Connection button
+- [x] `/dr` loads: alpha banner, 2 tabs, plans table, empty state, Create Plan + Refresh buttons
+- [x] `/backup` loads: React island hydrates, overview fetch attempted
+- [ ] Backup enterprise tabs not visible (see issue #1)
+- [ ] Enterprise tab content (blocked by #1 + API 404s from missing migrations)
+- [ ] Dialogs/wizards (blocked by API 404s)
+
+### Issues Found
+1. **BUG: BackupDashboard tab bar hidden on API error** — When `/backup/dashboard` returns error, entire component shows only error + retry. Tab bar not rendered, blocking navigation to enterprise tabs. Fix: render tab bar regardless of overview fetch status.
+2. **Expected: API 404s** — Migrations 0074-0082 not applied to live DB. All enterprise endpoints return 404.
+
 ## GitHub Issues #183, #182, #168 Bug Fixes — 2026-03-01
 
 **Branch:** `fix/integration-testing-502s`

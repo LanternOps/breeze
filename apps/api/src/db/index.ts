@@ -11,7 +11,11 @@ import * as schema from './schema';
 
 const connectionString = process.env.DATABASE_URL || 'postgresql://breeze:breeze@localhost:5432/breeze';
 
-const client = postgres(connectionString);
+const client = postgres(connectionString, {
+  idle_timeout: 20,
+  max_lifetime: 60 * 30,
+  connect_timeout: 10,
+});
 const baseDb = drizzle(client, { schema });
 const dbContextStorage = new AsyncLocalStorage<typeof baseDb>();
 

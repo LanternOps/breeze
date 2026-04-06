@@ -3,12 +3,10 @@
 package collectors
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -98,7 +96,7 @@ func applyDarwinBootTiming(metrics *BootPerformanceMetrics, desktopReady, uptime
 
 // getBootTimestamp retrieves the system boot time from sysctl kern.boottime.
 func getBootTimestamp() (time.Time, error) {
-	out, err := exec.Command("sysctl", "-n", "kern.boottime").Output()
+	out, err := runCollectorOutput(collectorShortCommandTimeout, "sysctl", "-n", "kern.boottime")
 	if err != nil {
 		return time.Time{}, fmt.Errorf("sysctl kern.boottime failed: %w", err)
 	}
@@ -123,17 +121,17 @@ func getDesktopReadyTime(bootTime time.Time) float64 {
 	// Query for loginwindow events during the last boot.
 	// The "loginwindow" process posting its first event is a reasonable proxy
 	// for the desktop becoming ready.
-	out, err := exec.Command("log", "show",
+	out, err := runCollectorOutput(collectorLongCommandTimeout, "log", "show",
 		"--predicate", `eventMessage contains "loginwindow"`,
 		"--last", "boot",
 		"--style", "compact",
-	).Output()
+	)
 	if err != nil {
 		slog.Warn("failed to query unified log for desktop-ready time", "error", err)
 		return 0
 	}
 
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+	scanner := newCollectorScanner(out)
 	for scanner.Scan() {
 		line := scanner.Text()
 		// Compact log format: "2024-01-15 10:00:05.123 ... loginwindow ..."
@@ -160,6 +158,9 @@ func getDesktopReadyTime(bootTime time.Time) float64 {
 		if delta > 0 && delta < 600 { // Sanity check: under 10 minutes
 			return delta
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		slog.Warn("failed to parse unified log for desktop-ready time", "error", err)
 	}
 
 	return 0
@@ -216,7 +217,7 @@ func parseLaunchPlist(path, itemType string) StartupItem {
 	}
 
 	// Use plutil to convert plist to JSON on stdout.
-	out, err := exec.Command("plutil", "-convert", "json", "-o", "-", path).Output()
+	out, err := runCollectorOutput(collectorShortCommandTimeout, "plutil", "-convert", "json", "-o", "-", path)
 	if err != nil {
 		return item
 	}
@@ -245,9 +246,9 @@ func parseLaunchPlist(path, itemType string) StartupItem {
 // getLoginItems retrieves login items configured through System Preferences
 // via osascript/System Events.
 func getLoginItems() []StartupItem {
-	out, err := exec.Command("osascript", "-e",
+	out, err := runCollectorOutput(collectorShortCommandTimeout, "osascript", "-e",
 		`tell application "System Events" to get the name of every login item`,
-	).Output()
+	)
 	if err != nil {
 		slog.Warn("failed to enumerate login items via osascript", "error", err)
 		return nil
@@ -267,7 +268,7 @@ func getLoginItems() []StartupItem {
 			continue
 		}
 		items = append(items, StartupItem{
-			Name:    name,
+			Name:    truncateCollectorString(name),
 			Type:    "login_item",
 			Path:    "", // Path not readily available from this AppleScript call.
 			Enabled: true,
@@ -290,14 +291,14 @@ func getEarlyBootProcesses(bootTime time.Time) []processInfo {
 	// ps -eo etime,cputime,comm
 	// etime format: [[DD-]HH:]MM:SS
 	// cputime format: [[DD-]HH:]MM:SS
-	out, err := exec.Command("ps", "-eo", "etime,cputime,comm").Output()
+	out, err := runCollectorOutput(collectorShortCommandTimeout, "ps", "-eo", "etime,cputime,comm")
 	if err != nil {
 		slog.Warn("failed to enumerate early boot processes; startup item impact scores will be unavailable", "error", err)
 		return nil
 	}
 
 	var procs []processInfo
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+	scanner := newCollectorScanner(out)
 
 	// Skip header line
 	if scanner.Scan() {
@@ -338,10 +339,16 @@ func getEarlyBootProcesses(bootTime time.Time) []processInfo {
 		cpuMs := cpuTime.Milliseconds()
 
 		procs = append(procs, processInfo{
-			comm:      filepath.Base(comm),
+			comm:      truncateCollectorString(filepath.Base(comm)),
 			cpuTimeMs: cpuMs,
 			elapsed:   elapsed,
 		})
+		if len(procs) >= collectorResultLimit {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		slog.Warn("failed to parse early boot process list", "error", err)
 	}
 
 	return procs
@@ -474,7 +481,7 @@ func manageLaunchdItem(label, path, action string) error {
 	home := os.Getenv("HOME")
 	if home != "" && strings.HasPrefix(path, home) {
 		// User-level agent: use gui/<uid> domain.
-		uidOut, err := exec.Command("id", "-u").Output()
+		uidOut, err := runCollectorOutput(collectorShortCommandTimeout, "id", "-u")
 		if err == nil {
 			uid := strings.TrimSpace(string(uidOut))
 			domain = "gui/" + uid
@@ -485,24 +492,20 @@ func manageLaunchdItem(label, path, action string) error {
 	case "disable":
 		// Try launchctl bootout to unload/disable the service.
 		target := domain + "/" + label
-		cmd := exec.Command("launchctl", "bootout", target)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			slog.Info("launchctl bootout failed, falling back to legacy unload", "label", label, "error", strings.TrimSpace(string(out)))
-			cmd2 := exec.Command("launchctl", "unload", "-w", path)
-			if out2, err2 := cmd2.CombinedOutput(); err2 != nil {
-				return fmt.Errorf("failed to disable %s (bootout: %s; unload: %s)", label, string(out), string(out2))
+		if out, err := runCollectorCombinedOutput(collectorShortCommandTimeout, "launchctl", "bootout", target); err != nil {
+			slog.Info("launchctl bootout failed, falling back to legacy unload", "label", label, "error", truncateCollectorString(string(out)))
+			if out2, err2 := runCollectorCombinedOutput(collectorShortCommandTimeout, "launchctl", "unload", "-w", path); err2 != nil {
+				return fmt.Errorf("failed to disable %s (bootout: %s; unload: %s)", label, truncateCollectorString(string(out)), truncateCollectorString(string(out2)))
 			}
 		}
 		return nil
 
 	case "enable":
 		// Bootstrap (load) the plist into the domain.
-		cmd := exec.Command("launchctl", "bootstrap", domain, path)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			slog.Info("launchctl bootstrap failed, falling back to legacy load", "label", label, "error", strings.TrimSpace(string(out)))
-			cmd2 := exec.Command("launchctl", "load", "-w", path)
-			if out2, err2 := cmd2.CombinedOutput(); err2 != nil {
-				return fmt.Errorf("failed to enable %s (bootstrap: %s; load: %s)", label, string(out), string(out2))
+		if out, err := runCollectorCombinedOutput(collectorShortCommandTimeout, "launchctl", "bootstrap", domain, path); err != nil {
+			slog.Info("launchctl bootstrap failed, falling back to legacy load", "label", label, "error", truncateCollectorString(string(out)))
+			if out2, err2 := runCollectorCombinedOutput(collectorShortCommandTimeout, "launchctl", "load", "-w", path); err2 != nil {
+				return fmt.Errorf("failed to enable %s (bootstrap: %s; load: %s)", label, truncateCollectorString(string(out)), truncateCollectorString(string(out2)))
 			}
 		}
 		return nil
@@ -524,9 +527,8 @@ func manageLoginItem(name, action string) error {
 			`tell application "System Events" to delete login item "%s"`,
 			name,
 		)
-		cmd := exec.Command("osascript", "-e", script)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("failed to remove login item %q: %s (%w)", name, string(out), err)
+		if out, err := runCollectorCombinedOutput(collectorShortCommandTimeout, "osascript", "-e", script); err != nil {
+			return fmt.Errorf("failed to remove login item %q: %s (%w)", name, truncateCollectorString(string(out)), err)
 		}
 		return nil
 

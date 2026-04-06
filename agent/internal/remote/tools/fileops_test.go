@@ -1,12 +1,25 @@
 package tools
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func decodeSuccessPayload(t *testing.T, result CommandResult, target any) {
+	t.Helper()
+	if result.Status != "completed" {
+		t.Fatalf("expected completed, got %q: %s", result.Status, result.Error)
+	}
+	if err := json.Unmarshal([]byte(result.Stdout), target); err != nil {
+		t.Fatalf("unmarshal success payload: %v", err)
+	}
+}
 
 func TestCopyFile_SingleFile(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -195,6 +208,98 @@ func TestDeleteFile_MovesToTrash(t *testing.T) {
 	}
 }
 
+func TestListFilesCapsEntriesAndMarksTruncated(t *testing.T) {
+	tmpDir := t.TempDir()
+	for i := 0; i < 4; i++ {
+		path := filepath.Join(tmpDir, strings.Repeat("a", i+1)+".txt")
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result := ListFiles(map[string]any{
+		"path":  tmpDir,
+		"limit": 2,
+	})
+
+	var payload FileListResponse
+	decodeSuccessPayload(t, result, &payload)
+
+	if len(payload.Entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(payload.Entries))
+	}
+	if payload.Limit != 2 {
+		t.Fatalf("expected limit 2, got %d", payload.Limit)
+	}
+	if !payload.Truncated {
+		t.Fatal("expected listing to be marked truncated")
+	}
+}
+
+func TestListFilesClampsLimit(t *testing.T) {
+	tmpDir := t.TempDir()
+	for i := 0; i < 3; i++ {
+		path := filepath.Join(tmpDir, strings.Repeat("b", i+1)+".txt")
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result := ListFiles(map[string]any{
+		"path":  tmpDir,
+		"limit": maxFileListLimit + 100,
+	})
+
+	var payload FileListResponse
+	decodeSuccessPayload(t, result, &payload)
+
+	if payload.Limit != maxFileListLimit {
+		t.Fatalf("expected clamped limit %d, got %d", maxFileListLimit, payload.Limit)
+	}
+	if len(payload.Entries) != 3 {
+		t.Fatalf("expected all 3 entries, got %d", len(payload.Entries))
+	}
+	if payload.Truncated {
+		t.Fatal("expected small listing not to be truncated")
+	}
+}
+
+func TestWriteFileRejectsOversizedTextPayload(t *testing.T) {
+	tmpDir := t.TempDir()
+	target := filepath.Join(tmpDir, "too-large.txt")
+
+	result := WriteFile(map[string]any{
+		"path":    target,
+		"content": strings.Repeat("x", maxFileWriteSize+1),
+	})
+
+	if result.Status != "failed" {
+		t.Fatalf("expected failed, got %q", result.Status)
+	}
+	if !strings.Contains(result.Error, "file write payload too large") {
+		t.Fatalf("unexpected error: %s", result.Error)
+	}
+}
+
+func TestWriteFileRejectsOversizedBase64Payload(t *testing.T) {
+	tmpDir := t.TempDir()
+	target := filepath.Join(tmpDir, "too-large.bin")
+	data := make([]byte, maxFileWriteSize+1)
+
+	result := WriteFile(map[string]any{
+		"path":     target,
+		"encoding": "base64",
+		"content":  base64.StdEncoding.EncodeToString(data),
+	})
+
+	if result.Status != "failed" {
+		t.Fatalf("expected failed, got %q", result.Status)
+	}
+	if !strings.Contains(result.Error, "file write payload too large") {
+		t.Fatalf("unexpected error: %s", result.Error)
+	}
+}
+
 func TestDeleteFile_PermanentSkipsTrash(t *testing.T) {
 	tmpDir := t.TempDir()
 	origGetTrashDir := getTrashDirFunc
@@ -238,6 +343,57 @@ func TestTrashList(t *testing.T) {
 	// Verify stdout contains the original path
 	if !strings.Contains(result.Stdout, testFile) {
 		t.Errorf("trash list should contain original path %s, got: %s", testFile, result.Stdout)
+	}
+}
+
+func TestTrashListTruncatesAndSkipsOversizedMetadata(t *testing.T) {
+	tmpDir := t.TempDir()
+	origGetTrashDir := getTrashDirFunc
+	getTrashDirFunc = func() (string, error) { return filepath.Join(tmpDir, ".breeze-trash"), nil }
+	defer func() { getTrashDirFunc = origGetTrashDir }()
+
+	trashDir := filepath.Join(tmpDir, ".breeze-trash")
+	if err := os.MkdirAll(trashDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < maxTrashListItems+5; i++ {
+		itemDir := filepath.Join(trashDir, fmt.Sprintf("item-%03d", i))
+		if err := os.MkdirAll(itemDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		meta := TrashMetadata{
+			OriginalPath: filepath.Join(tmpDir, "f.txt"),
+			TrashID:      filepath.Base(itemDir),
+			DeletedAt:    time.Now().UTC().Format(time.RFC3339),
+			IsDirectory:  false,
+		}
+		metaBytes, err := json.Marshal(meta)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(itemDir, "metadata.json"), metaBytes, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	oversizedDir := filepath.Join(trashDir, "oversized")
+	if err := os.MkdirAll(oversizedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oversizedDir, "metadata.json"), []byte(strings.Repeat("x", maxTrashMetadataSize+1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := TrashList(map[string]any{})
+	var payload TrashListResponse
+	decodeSuccessPayload(t, result, &payload)
+
+	if !payload.Truncated {
+		t.Fatal("expected trash list to be marked truncated")
+	}
+	if len(payload.Items) > maxTrashListItems {
+		t.Fatalf("expected at most %d items, got %d", maxTrashListItems, len(payload.Items))
 	}
 }
 

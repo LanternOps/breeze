@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import type { ComponentType } from 'react';
-import { Monitor, Wifi, WifiOff, Maximize, Minimize, Power, Keyboard, ClipboardPaste, ChevronDown, X, ArrowLeftRight, Volume2, VolumeX, MousePointer2 } from 'lucide-react';
+import { Monitor, Wifi, WifiOff, Maximize, Minimize, Keyboard, ClipboardPaste, ChevronDown, X, ArrowLeftRight, Volume2, VolumeX, MousePointer2 } from 'lucide-react';
 
 interface MonitorInfo {
   index: number;
@@ -25,9 +25,13 @@ interface Props {
   remapCmdCtrl: boolean;
   monitors: MonitorInfo[];
   activeMonitor: number;
+  sessions: Array<{ sessionId: number; username: string; state: string; type: string; helperConnected: boolean }>;
+  activeSessionId: number | null;
+  onSwitchSession: (id: number) => void;
   audioEnabled: boolean;
   hasAudioTrack: boolean;
   showRemoteCursor: boolean;
+  remoteOs: string | null;
   onRemapCmdCtrlChange: (v: boolean) => void;
   onShowRemoteCursorChange: (v: boolean) => void;
   onConfigChange: (quality: number, scale: number, maxFps: number) => void;
@@ -39,7 +43,6 @@ interface Props {
   onLockWorkstation: () => void;
   onPasteAsKeystrokes: () => void;
   onCancelPaste: () => void;
-  onDisconnect: () => void;
 }
 
 interface KeyCombo {
@@ -50,7 +53,7 @@ interface KeyCombo {
   action?: 'sas' | 'lock';
 }
 
-const KEY_COMBOS: KeyCombo[] = [
+const WINDOWS_KEY_COMBOS: KeyCombo[] = [
   { label: 'Ctrl+Alt+Del',    key: 'delete', modifiers: ['ctrl', 'alt'],  description: 'Security screen', action: 'sas' },
   { label: 'Ctrl+Shift+Esc',  key: 'escape', modifiers: ['ctrl', 'shift'], description: 'Task Manager' },
   { label: 'Alt+Tab',         key: 'tab',    modifiers: ['alt'],           description: 'Switch windows' },
@@ -60,6 +63,45 @@ const KEY_COMBOS: KeyCombo[] = [
   { label: 'Win+E',           key: 'e',      modifiers: ['win'],           description: 'File Explorer' },
   { label: 'Win+D',           key: 'd',      modifiers: ['win'],           description: 'Show desktop' },
 ];
+
+const MACOS_KEY_COMBOS: KeyCombo[] = [
+  { label: 'Cmd+Opt+Esc',     key: 'escape', modifiers: ['cmd', 'alt'],           description: 'Force Quit' },
+  { label: 'Cmd+Tab',         key: 'tab',    modifiers: ['cmd'],                  description: 'Switch apps' },
+  { label: 'Cmd+W',           key: 'w',      modifiers: ['cmd'],                  description: 'Close window' },
+  { label: 'Cmd+Q',           key: 'q',      modifiers: ['cmd'],                  description: 'Quit app' },
+  { label: 'Cmd+Space',       key: 'space',  modifiers: ['cmd'],                  description: 'Spotlight' },
+  { label: 'Cmd+Shift+3',     key: '3',      modifiers: ['cmd', 'shift'],         description: 'Screenshot' },
+  { label: 'Ctrl+Cmd+Q',      key: 'q',      modifiers: ['ctrl', 'cmd'],          description: 'Lock screen' },
+  { label: 'Cmd+Opt+D',       key: 'd',      modifiers: ['cmd', 'alt'],           description: 'Show/hide Dock' },
+];
+
+const LINUX_KEY_COMBOS: KeyCombo[] = [
+  { label: 'Ctrl+Alt+Del',    key: 'delete', modifiers: ['ctrl', 'alt'],  description: 'System menu' },
+  { label: 'Ctrl+Alt+T',      key: 't',      modifiers: ['ctrl', 'alt'],  description: 'Terminal' },
+  { label: 'Alt+Tab',         key: 'tab',    modifiers: ['alt'],           description: 'Switch windows' },
+  { label: 'Alt+F4',          key: 'f4',     modifiers: ['alt'],           description: 'Close window' },
+  { label: 'Super+L',         key: 'l',      modifiers: ['win'],           description: 'Lock screen' },
+  { label: 'Super+E',         key: 'e',      modifiers: ['win'],           description: 'File manager' },
+];
+
+function getKeyCombos(osType: string | null): KeyCombo[] {
+  switch (osType) {
+    case 'macos': return MACOS_KEY_COMBOS;
+    case 'linux': return LINUX_KEY_COMBOS;
+    case 'windows': case null: return WINDOWS_KEY_COMBOS;
+    default:
+      console.warn(`Unrecognized remote OS type "${osType}", falling back to Windows key combos`);
+      return WINDOWS_KEY_COMBOS;
+  }
+}
+
+function UserIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM2 14s-1 0-1-1 1-4 7-4 7 3 7 4-1 1-1 1H2Z" />
+    </svg>
+  );
+}
 
 function formatDuration(startDate: Date): string {
   const seconds = Math.floor((Date.now() - startDate.getTime()) / 1000);
@@ -87,18 +129,21 @@ export default function ViewerToolbar({
   audioEnabled,
   hasAudioTrack,
   showRemoteCursor,
+  remoteOs,
   onRemapCmdCtrlChange,
   onShowRemoteCursorChange,
   onConfigChange,
   onBitrateChange,
   onSwitchMonitor,
+  sessions,
+  activeSessionId,
+  onSwitchSession,
   onToggleAudio,
   onSendKeys,
   onSendSAS,
   onLockWorkstation,
   onPasteAsKeystrokes,
   onCancelPaste,
-  onDisconnect,
   reconnectSecondsLeft,
 }: Props) {
   const MonitorIcon = Monitor as unknown as ComponentType<{ className?: string }>;
@@ -106,7 +151,6 @@ export default function ViewerToolbar({
   const DisconnectedIcon = WifiOff as unknown as ComponentType<{ className?: string }>;
   const MinimizeIcon = Minimize as unknown as ComponentType<{ className?: string }>;
   const MaximizeIcon = Maximize as unknown as ComponentType<{ className?: string }>;
-  const PowerIcon = Power as unknown as ComponentType<{ className?: string }>;
   const KeyboardIcon = Keyboard as unknown as ComponentType<{ className?: string }>;
   const PasteIcon = ClipboardPaste as unknown as ComponentType<{ className?: string }>;
   const ChevronDownIcon = ChevronDown as unknown as ComponentType<{ className?: string }>;
@@ -279,19 +323,55 @@ export default function ViewerToolbar({
       {monitors.length > 1 && transport === 'webrtc' && (
         <>
           <div className="w-px h-5 bg-gray-600" />
-          <div className="flex items-center gap-1.5">
-            <MonitorIcon className="w-3.5 h-3.5 text-gray-400" />
-            <select
-              value={activeMonitor}
-              onChange={(e) => onSwitchMonitor(parseInt(e.target.value))}
-              className="bg-gray-700 text-gray-300 text-xs rounded px-1 py-0.5 border border-gray-600"
-            >
-              {monitors.map((m) => (
-                <option key={m.index} value={m.index}>
-                  {m.name || `Display ${m.index + 1}`}{m.isPrimary ? ' (Primary)' : ''}{m.width ? ` ${m.width}x${m.height}` : ''}
-                </option>
-              ))}
-            </select>
+          <div className="flex items-center gap-1">
+            {monitors.map((m) => (
+              <button
+                key={m.index}
+                onClick={() => onSwitchMonitor(m.index)}
+                title={`${m.name || `Display ${m.index + 1}`}${m.isPrimary ? ' (Primary)' : ''} ${m.width}x${m.height}`}
+                className={`p-1 rounded transition-colors ${
+                  activeMonitor === m.index
+                    ? 'text-blue-400 bg-blue-500/20'
+                    : 'text-gray-500 hover:text-gray-300 hover:bg-gray-700'
+                }`}
+              >
+                <span className="relative inline-flex items-center justify-center w-4 h-4">
+                  <MonitorIcon className="w-4 h-4" />
+                  <span className="absolute text-[7px] font-bold leading-none" style={{ marginTop: '-2px' }}>{m.index + 1}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* Session picker (only shown with 2+ sessions on WebRTC) */}
+      {sessions.length > 1 && transport === 'webrtc' && (
+        <>
+          <div className="w-px h-5 bg-gray-600" />
+          <div className="flex items-center gap-1">
+            {sessions.map((s) => (
+              <button
+                key={s.sessionId}
+                onClick={() => onSwitchSession(s.sessionId)}
+                disabled={activeSessionId === s.sessionId}
+                title={`${s.username || `Session ${s.sessionId}`} (${s.type}${s.state === 'disconnected' ? ', disconnected' : ''})`}
+                className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-xs transition-colors ${
+                  activeSessionId === s.sessionId
+                    ? 'text-blue-400 bg-blue-500/20'
+                    : 'text-gray-500 hover:text-gray-300 hover:bg-gray-700'
+                }`}
+              >
+                <UserIcon className="w-3 h-3" />
+                <span className="max-w-[80px] truncate">{s.username || `Session ${s.sessionId}`}</span>
+                <span className={`w-1.5 h-1.5 rounded-full ${
+                  s.state === 'active' ? 'bg-green-400' : 'bg-yellow-400'
+                }`} aria-hidden="true" />
+                {s.type === 'rdp' && (
+                  <span className="text-[9px] font-medium text-gray-500 uppercase">RDP</span>
+                )}
+              </button>
+            ))}
           </div>
         </>
       )}
@@ -394,7 +474,7 @@ export default function ViewerToolbar({
 
         {keysOpen && (
           <div className="absolute right-0 top-full mt-1 w-56 bg-gray-800 border border-gray-600 rounded-lg shadow-xl z-50 py-1">
-            {KEY_COMBOS.map((combo) => (
+            {getKeyCombos(remoteOs).map((combo) => (
               <button
                 key={combo.label}
                 onClick={() => {
@@ -430,14 +510,6 @@ export default function ViewerToolbar({
         {isFullscreen ? <MinimizeIcon className="w-4 h-4" /> : <MaximizeIcon className="w-4 h-4" />}
       </button>
 
-      <button
-        onClick={onDisconnect}
-        className="flex items-center gap-1 px-2 py-1 text-xs text-red-400 hover:text-red-300 hover:bg-gray-700 rounded"
-        title="Disconnect"
-      >
-        <PowerIcon className="w-3.5 h-3.5" />
-        <span>Disconnect</span>
-      </button>
     </div>
   );
 }

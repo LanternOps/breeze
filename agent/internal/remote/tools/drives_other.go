@@ -24,7 +24,8 @@ func listDrivesOS(startTime time.Time) CommandResult {
 				FreeBytes:  int64(stat.Bavail) * int64(stat.Bsize),
 			})
 		}
-		return NewSuccessResult(DriveListResponse{Drives: drives}, time.Since(startTime).Milliseconds())
+		drives, truncated := sanitizeDriveList(drives)
+		return NewSuccessResult(DriveListResponse{Drives: drives, Truncated: truncated}, time.Since(startTime).Milliseconds())
 	}
 
 	seen := make(map[string]bool)
@@ -65,6 +66,6 @@ func listDrivesOS(startTime time.Time) CommandResult {
 	if len(drives) == 0 {
 		drives = append(drives, DriveInfo{MountPoint: "/", DriveType: "fixed"})
 	}
-
-	return NewSuccessResult(DriveListResponse{Drives: drives}, time.Since(startTime).Milliseconds())
+	drives, truncated := sanitizeDriveList(drives)
+	return NewSuccessResult(DriveListResponse{Drives: drives, Truncated: truncated}, time.Since(startTime).Milliseconds())
 }

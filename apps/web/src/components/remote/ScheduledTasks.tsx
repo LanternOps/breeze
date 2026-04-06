@@ -146,11 +146,11 @@ export type ScheduledTasksProps = {
 
 // Status badge configuration
 const statusConfig: Record<TaskStatus, { label: string; color: string; icon: typeof CheckCircle }> = {
-  ready: { label: 'Ready', color: 'bg-green-500/20 text-green-700 border-green-500/40', icon: CheckCircle },
+  ready: { label: 'Ready', color: 'bg-success/15 text-success border-success/30', icon: CheckCircle },
   running: { label: 'Running', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40', icon: Loader2 },
-  disabled: { label: 'Disabled', color: 'bg-gray-500/20 text-gray-500 border-gray-500/40', icon: Pause },
-  queued: { label: 'Queued', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40', icon: Clock },
-  unknown: { label: 'Unknown', color: 'bg-gray-500/20 text-gray-500 border-gray-500/40', icon: AlertCircle }
+  disabled: { label: 'Disabled', color: 'bg-muted text-muted-foreground border-border', icon: Pause },
+  queued: { label: 'Queued', color: 'bg-warning/15 text-warning border-warning/30', icon: Clock },
+  unknown: { label: 'Unknown', color: 'bg-muted text-muted-foreground border-border', icon: AlertCircle }
 };
 
 // Last result interpretation
@@ -954,8 +954,8 @@ export default function ScheduledTasks({
           ) : (
             <div className="flex-1 overflow-auto">
               <table className="w-full">
-                <thead className="bg-gray-50 sticky top-0">
-                  <tr className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <thead className="bg-muted/40 sticky top-0">
+                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                     <th className="px-4 py-3">Name</th>
                     <th className="px-4 py-3">Status</th>
                     <th className="px-4 py-3 hidden lg:table-cell">Triggers</th>

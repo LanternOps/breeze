@@ -29,6 +29,8 @@ Description=Breeze RMM Agent
 Documentation=https://github.com/breeze-rmm/breeze
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -36,13 +38,11 @@ ExecStart=/usr/local/bin/breeze-agent run
 WorkingDirectory=/etc/breeze
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 # Security hardening
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/etc/breeze /var/lib/breeze /var/log/breeze /var/cache/apt /var/lib/apt /var/lib/dpkg /var/log/apt
+ReadWritePaths=/etc/breeze /var/lib/breeze /var/log/breeze /var/run/breeze /var/cache/apt /var/lib/apt /var/lib/dpkg /var/log/apt /usr/local/bin
 PrivateTmp=true
 NoNewPrivileges=false
 CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_FOWNER
@@ -82,6 +82,9 @@ var serviceCmd = &cobra.Command{
 }
 
 var withUserHelper bool
+
+// healLaunchdPlistsIfNeeded is a no-op on Linux.
+func healLaunchdPlistsIfNeeded() {}
 
 func init() {
 	rootCmd.AddCommand(serviceCmd)
@@ -170,9 +173,14 @@ var serviceInstallCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "Warning: failed to enable service: %s\n", strings.TrimSpace(string(out)))
 		}
 
-		// Create breeze group for IPC socket access (best-effort)
-		if err := exec.Command("groupadd", "--system", "breeze").Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to create 'breeze' group: %v (may already exist)\n", err)
+		// Create breeze group for IPC socket access (best-effort, idempotent)
+		if err := exec.Command("getent", "group", "breeze").Run(); err != nil {
+			// Group doesn't exist — create it
+			if createErr := exec.Command("groupadd", "--system", "breeze").Run(); createErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to create 'breeze' group: %v\n", createErr)
+			} else {
+				fmt.Println("Created 'breeze' group for IPC socket access.")
+			}
 		}
 
 		// Create IPC socket directory
@@ -187,9 +195,16 @@ var serviceInstallCmd = &cobra.Command{
 		fmt.Println()
 		fmt.Println("Breeze Agent service installed and enabled.")
 
-		// If already enrolled, skip the enrollment step in Next Steps.
+		// Show contextual next steps based on enrollment and service state.
 		existingCfg, _ := config.Load(cfgFile)
-		if existingCfg != nil && existingCfg.AgentID != "" {
+		enrolled := existingCfg != nil && existingCfg.AgentID != ""
+		running := isSystemServiceRunning()
+
+		if enrolled && running {
+			// Already enrolled and running — nothing more to do.
+			fmt.Printf("\nAgent is enrolled and the service is running.\n")
+			fmt.Println("  Logs:    journalctl -u breeze-agent -f")
+		} else if enrolled {
 			fmt.Println()
 			fmt.Println("Next steps:")
 			fmt.Printf("  1. Start:   sudo breeze-agent service start\n")

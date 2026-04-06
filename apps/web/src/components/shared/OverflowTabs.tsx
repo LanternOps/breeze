@@ -6,6 +6,10 @@ export type OverflowTab = {
   label: string;
   icon: React.ReactNode;
   dot?: boolean;
+  /** Render a vertical separator before this tab */
+  separator?: boolean;
+  /** Tooltip text for non-obvious labels */
+  title?: string;
 };
 
 export function OverflowTabs({ tabs, activeTab, onTabChange }: {
@@ -24,8 +28,17 @@ export function OverflowTabs({ tabs, activeTab, onTabChange }: {
   useLayoutEffect(() => {
     const nav = navRef.current;
     if (!nav || measured) return;
-    const buttons = nav.querySelectorAll<HTMLButtonElement>(':scope > button');
-    tabWidths.current = Array.from(buttons).map(b => b.offsetWidth);
+    const buttons = nav.querySelectorAll<HTMLButtonElement>(':scope > span > button, :scope > button');
+    // Measure each tab's total width including any preceding separator
+    tabWidths.current = Array.from(buttons).map(b => {
+      const wrapper = b.parentElement;
+      if (wrapper && wrapper.tagName === 'SPAN') {
+        // Wrapper with display:contents — measure the separator too if present
+        const sep = wrapper.querySelector(':scope > span[aria-hidden]');
+        return b.offsetWidth + (sep ? (sep as HTMLElement).offsetWidth + 8 : 0);
+      }
+      return b.offsetWidth;
+    });
     setMeasured(true);
   }, [measured]);
 
@@ -66,7 +79,7 @@ export function OverflowTabs({ tabs, activeTab, onTabChange }: {
   useEffect(() => {
     if (!measured) return;
     const container = containerRef.current;
-    if (!container) return;
+    if (!container || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(() => computeVisible());
     ro.observe(container);
     return () => ro.disconnect();
@@ -102,16 +115,19 @@ export function OverflowTabs({ tabs, activeTab, onTabChange }: {
         className={`-mb-px flex items-center gap-4 ${measured ? '' : 'invisible'}`}
       >
         {visibleTabs.map(tab => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => onTabChange(tab.id)}
-            className={tabClass(activeTab === tab.id)}
-          >
-            {tab.icon}
-            {tab.label}
-            {tab.dot && <span className="h-2 w-2 rounded-full bg-green-500" />}
-          </button>
+          <span key={tab.id} className="contents">
+            {tab.separator && <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />}
+            <button
+              type="button"
+              title={tab.title}
+              onClick={() => onTabChange(tab.id)}
+              className={tabClass(activeTab === tab.id)}
+            >
+              {tab.icon}
+              {tab.label}
+              {tab.dot && <span className="h-2 w-2 rounded-full bg-green-500" />}
+            </button>
+          </span>
         ))}
         {overflowTabs.length > 0 && (
           <div ref={moreRef} className="relative">

@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"testing"
 
+	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
 
@@ -20,7 +21,7 @@ var allCommandTypes = []string{
 	tools.CmdRegistryKeys, tools.CmdRegistryValues, tools.CmdRegistryGet,
 	tools.CmdRegistrySet, tools.CmdRegistryDelete,
 	tools.CmdRegistryKeyCreate, tools.CmdRegistryKeyDelete,
-	tools.CmdReboot, tools.CmdShutdown, tools.CmdLock,
+	tools.CmdReboot, tools.CmdShutdown, tools.CmdLock, tools.CmdRebootSafeMode,
 	tools.CmdCollectSoftware, tools.CmdSoftwareUninstall, tools.CmdSoftwareInstall,
 	tools.CmdCollectBootPerformance, tools.CmdManageStartupItem,
 	tools.CmdCollectReliabilityMetrics,
@@ -60,8 +61,27 @@ var allCommandTypes = []string{
 	tools.CmdSensitiveDataScan, tools.CmdQuarantineFile,
 	tools.CmdEncryptFile, tools.CmdSecureDeleteFile,
 
-	// handlers_patch.go init() — backup
+	// handlers_backup_forward.go init() — backup commands forwarded to breeze-backup via IPC
 	tools.CmdBackupRun, tools.CmdBackupList, tools.CmdBackupStop, tools.CmdBackupRestore,
+
+	// handlers_backup_verify_forward.go init()
+	tools.CmdBackupVerify, tools.CmdBackupTestRestore, tools.CmdBackupCleanup,
+
+	// handlers_vss_forward.go init()
+	tools.CmdVSSStatus, tools.CmdVSSWriterList,
+
+	// handlers_mssql_forward.go init()
+	tools.CmdMSSQLDiscover, tools.CmdMSSQLBackup, tools.CmdMSSQLRestore, tools.CmdMSSQLVerify,
+
+	// handlers_hyperv_forward.go init()
+	tools.CmdHypervDiscover, tools.CmdHypervBackup, tools.CmdHypervRestore,
+	tools.CmdHypervCheckpoint, tools.CmdHypervVMState,
+
+	// handlers_systemstate_forward.go init()
+	tools.CmdSystemStateCollect, tools.CmdHardwareProfile,
+
+	// handlers_bmr_forward.go init()
+	tools.CmdVMRestoreEstimate, tools.CmdVMRestoreFromBackup, tools.CmdBMRRecover,
 
 	// handlers_user.go init()
 	CmdNotifyUser, CmdTrayUpdate,
@@ -83,6 +103,12 @@ var allCommandTypes = []string{
 
 	// handlers_peripheral.go init()
 	tools.CmdPeripheralPolicySync,
+
+	// handlers_uninstall.go init()
+	tools.CmdSelfUninstall,
+
+	// handlers_incident_response.go init()
+	tools.CmdCollectEvidence, tools.CmdExecuteContainment,
 }
 
 func TestHandlerRegistryCompleteness(t *testing.T) {
@@ -113,5 +139,31 @@ func TestDispatchUnknownCommandReturnsFalse(t *testing.T) {
 	})
 	if handled {
 		t.Fatal("dispatchCommand should return false for unknown command type")
+	}
+}
+
+func TestHandleDesktopStreamStartPassesDisplayIndex(t *testing.T) {
+	var gotDisplayIndex int
+	h := &Heartbeat{
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error) {
+			gotDisplayIndex = displayIndex
+			return 1920, 1080, nil
+		},
+	}
+
+	result := handleDesktopStreamStart(h, Command{
+		ID:   "desktop-stream-1",
+		Type: tools.CmdDesktopStreamStart,
+		Payload: map[string]any{
+			"sessionId":    "ws-1",
+			"displayIndex": float64(2),
+		},
+	})
+
+	if result.Status != "completed" {
+		t.Fatalf("expected completed, got %s (%s)", result.Status, result.Error)
+	}
+	if gotDisplayIndex != 2 {
+		t.Fatalf("displayIndex = %d, want 2", gotDisplayIndex)
 	}
 }

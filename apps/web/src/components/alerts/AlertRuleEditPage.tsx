@@ -211,7 +211,7 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
           <ArrowLeft className="h-5 w-5" />
         </a>
         <div>
-          <h1 className="text-2xl font-bold">
+          <h1 className="text-xl font-semibold tracking-tight">
             {isNew ? 'Create Alert Rule' : 'Edit Alert Rule'}
           </h1>
           <p className="text-muted-foreground">

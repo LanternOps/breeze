@@ -1,8 +1,8 @@
 /**
  * AI Fleet Orchestration Tools
  *
- * 7 fleet-level MCP tools for managing deployments, patches,
- * groups, maintenance windows, automations, alert rules, and reports.
+ * Fleet-level MCP tools for managing deployments, patches,
+ * groups, maintenance windows, automations, alert rules, service monitors, and reports.
  * Each tool wraps existing DB schema and service logic with org-scoped isolation.
  */
 
@@ -37,9 +37,20 @@ import {
 } from '../db/schema/maintenance';
 import {
   alertRules,
+  alertTemplates,
   alerts,
   notificationChannels,
 } from '../db/schema/alerts';
+import {
+  configurationPolicies,
+  configPolicyFeatureLinks,
+  configPolicyMonitoringSettings,
+  configPolicyMonitoringWatches,
+} from '../db/schema/configurationPolicies';
+import {
+  addFeatureLink,
+  updateFeatureLink,
+} from './configurationPolicy';
 import {
   reports,
   reportRuns,
@@ -70,10 +81,16 @@ function safeHandler(toolName: string, fn: FleetHandler): FleetHandler {
   return async (input, auth) => {
     try {
       return await fn(input, auth);
-    } catch (err) {
+    } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Internal error';
+      const code = (err as { code?: string }).code;
       console.error(`[fleet:${toolName}]`, input.action, message, err);
-      return JSON.stringify({ error: `Operation failed. Check server logs for details.` });
+
+      // Surface specific DB constraint errors instead of generic "Operation failed"
+      if (code === '23503') return JSON.stringify({ error: `Referenced record not found — a required ID (template, device, policy, etc.) does not exist or was deleted.` });
+      if (code === '23505') return JSON.stringify({ error: `Duplicate entry — a record with this name or key already exists.` });
+      if (code === '22P02') return JSON.stringify({ error: `Invalid ID format — expected a valid UUID.` });
+      return JSON.stringify({ error: `Operation failed: ${message}` });
     }
   };
 }
@@ -280,11 +297,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'manage_patches',
-      description: 'Manage patches: list available patches, check compliance, trigger scans, approve/decline/defer patches, bulk approve, install on targets, or rollback.',
+      description: 'Manage patches: list available patches, check compliance, trigger scans, approve/decline/defer patches, bulk approve, install on targets, or rollback. To configure patch schedules and auto-approval policies, use manage_policy_feature_link with featureType "patch".',
       input_schema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback'], description: 'The action to perform' },
+          action: { type: 'string', enum: ['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback'], description: 'The action to perform. To configure patch policies/auto-approval, use manage_policy_feature_link with featureType "patch".' },
           patchId: { type: 'string', description: 'Patch UUID (for approve/decline/defer/rollback)' },
           patchIds: { type: 'array', items: { type: 'string' }, description: 'Patch UUIDs (for bulk_approve/install)' },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs (for scan/install)' },
@@ -293,6 +310,13 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           status: { type: 'string', enum: ['pending', 'approved', 'rejected', 'deferred'], description: 'Filter by approval status' },
           deferUntil: { type: 'string', description: 'ISO date to defer until (for defer)' },
           notes: { type: 'string', description: 'Approval/decline notes' },
+          configPolicyId: { type: 'string', description: 'Configuration policy UUID to attach patch settings to (for setup_auto_approval). If omitted, creates a new policy.' },
+          autoApprove: { type: 'boolean', description: 'Enable auto-approval of patches (for setup_auto_approval)' },
+          autoApproveSeverities: { type: 'array', items: { type: 'string', enum: ['critical', 'important', 'moderate', 'low'] }, description: 'Which severities to auto-approve (for setup_auto_approval)' },
+          scheduleFrequency: { type: 'string', enum: ['daily', 'weekly', 'monthly'], description: 'Patch scan frequency (for setup_auto_approval, default: weekly)' },
+          scheduleTime: { type: 'string', description: 'Time to run scans in HH:MM format (for setup_auto_approval, default: 02:00)' },
+          rebootPolicy: { type: 'string', enum: ['if_required', 'always', 'never'], description: 'Reboot policy after patching (for setup_auto_approval, default: if_required)' },
+          sources: { type: 'array', items: { type: 'string', enum: ['os', 'third_party', 'custom'] }, description: 'Patch sources to include (for setup_auto_approval, default: ["os"])' },
           limit: { type: 'number', description: 'Max results (default 25)' },
         },
         required: ['action'],
@@ -301,6 +325,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     handler: safeHandler('manage_patches', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
+
+      if (action === 'setup_auto_approval') {
+        return JSON.stringify({
+          error: 'Action "setup_auto_approval" is disabled. Patch policies must be managed through configuration policies. Use manage_policy_feature_link with featureType "patch" to configure auto-approval rules on a policy.',
+        });
+      }
 
       if (action === 'list') {
         const conditions: SQL[] = [];
@@ -481,6 +511,82 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         }).returning();
 
         return JSON.stringify({ success: true, rollbackId: rollback?.id, message: 'Rollback initiated' });
+      }
+
+      if (action === 'setup_auto_approval') {
+        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+
+        const patchSettings = {
+          sources: Array.isArray(input.sources) ? input.sources as string[] : ['os'],
+          autoApprove: typeof input.autoApprove === 'boolean' ? input.autoApprove : true,
+          autoApproveSeverities: Array.isArray(input.autoApproveSeverities) ? input.autoApproveSeverities as string[] : ['critical', 'important'],
+          scheduleFrequency: typeof input.scheduleFrequency === 'string' ? input.scheduleFrequency : 'weekly',
+          scheduleTime: typeof input.scheduleTime === 'string' ? input.scheduleTime : '02:00',
+          rebootPolicy: typeof input.rebootPolicy === 'string' ? input.rebootPolicy : 'if_required',
+        };
+
+        const configPolicyId = input.configPolicyId as string | undefined;
+
+        if (configPolicyId) {
+          // Check if policy exists and user has access
+          const oc = orgWhere(auth, configurationPolicies.orgId);
+          const policyConditions: SQL[] = [eq(configurationPolicies.id, configPolicyId)];
+          if (oc) policyConditions.push(oc);
+          const [policy] = await db.select().from(configurationPolicies).where(and(...policyConditions)).limit(1);
+          if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
+
+          // Check if patch feature link already exists
+          const existingLinks = await db.select()
+            .from(configPolicyFeatureLinks)
+            .where(and(
+              eq(configPolicyFeatureLinks.configPolicyId, configPolicyId),
+              eq(configPolicyFeatureLinks.featureType, 'patch'),
+            )).limit(1);
+
+          if (existingLinks.length > 0) {
+            // Update existing feature link
+            const updated = await updateFeatureLink(existingLinks[0]!.id, { inlineSettings: patchSettings }, configPolicyId);
+            if (!updated) return JSON.stringify({ error: 'Failed to update patch settings — the feature link may have been deleted. Try again.' });
+            return JSON.stringify({
+              success: true,
+              message: `Patch auto-approval settings updated on policy "${policy.name}"`,
+              configPolicyId,
+              featureLinkId: existingLinks[0]!.id,
+              settings: patchSettings,
+            });
+          }
+
+          // Add new patch feature link
+          const link = await addFeatureLink(configPolicyId, 'patch', null, patchSettings);
+          return JSON.stringify({
+            success: true,
+            message: `Patch auto-approval configured on policy "${policy.name}"`,
+            configPolicyId,
+            featureLinkId: link.id,
+            settings: patchSettings,
+          });
+        }
+
+        // No configPolicyId — create a new config policy with patch settings
+        const [newPolicy] = await db.insert(configurationPolicies).values({
+          orgId,
+          name: `Patch Auto-Approval Policy`,
+          description: `Auto-approve ${patchSettings.autoApproveSeverities.join(', ')} patches on a ${patchSettings.scheduleFrequency} schedule`,
+          status: 'active',
+          createdBy: auth.user.id,
+        }).returning();
+
+        if (!newPolicy) return JSON.stringify({ error: 'Failed to create configuration policy' });
+
+        const link = await addFeatureLink(newPolicy.id, 'patch', null, patchSettings);
+        return JSON.stringify({
+          success: true,
+          message: `Created new policy "${newPolicy.name}" with patch auto-approval`,
+          configPolicyId: newPolicy.id,
+          featureLinkId: link.id,
+          settings: patchSettings,
+          hint: 'Use apply_configuration_policy to assign this policy to an organization, site, or device group.',
+        });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });
@@ -709,11 +815,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'manage_maintenance_windows',
-      description: 'Manage maintenance windows: list windows, get details with occurrences, check what is in maintenance right now, create/update/delete windows.',
+      description: 'Query maintenance windows (read-only): list windows, get details with occurrences, check what is in maintenance right now. To create or modify maintenance windows, use manage_policy_feature_link with featureType "maintenance".',
       input_schema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['list', 'get', 'active_now', 'create', 'update', 'delete'], description: 'The action to perform' },
+          action: { type: 'string', enum: ['list', 'get', 'active_now'], description: 'The action to perform. This tool is read-only — to create/modify maintenance windows, use manage_policy_feature_link with featureType "maintenance".' },
           windowId: { type: 'string', description: 'Maintenance window UUID (required for get/update/delete)' },
           name: { type: 'string', description: 'Window name (for create/update)' },
           description: { type: 'string', description: 'Window description' },
@@ -737,6 +843,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     handler: safeHandler('manage_maintenance_windows', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
+
+      if (action === 'create' || action === 'update' || action === 'delete') {
+        return JSON.stringify({
+          error: `Action "${action}" is disabled. Maintenance windows must be managed through configuration policies. Use manage_policy_feature_link with featureType "maintenance" to configure maintenance windows on a policy.`,
+        });
+      }
 
       if (action === 'list') {
         const conditions: SQL[] = [];
@@ -903,11 +1015,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'manage_automations',
-      description: 'Manage automations: list, get details, view run history, create/update/delete automations, enable/disable, or manually trigger a run.',
+      description: 'Query and operate on automations: list, get details, view run history, enable/disable, or manually trigger a run. To create, update, or delete automations, use manage_policy_feature_link with featureType "automation".',
       input_schema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['list', 'get', 'history', 'create', 'update', 'delete', 'enable', 'disable', 'run'], description: 'The action to perform' },
+          action: { type: 'string', enum: ['list', 'get', 'history', 'enable', 'disable', 'run'], description: 'The action to perform. To create/update/delete automations, use manage_policy_feature_link with featureType "automation".' },
           automationId: { type: 'string', description: 'Automation UUID (required for get/history/update/delete/enable/disable/run)' },
           name: { type: 'string', description: 'Automation name (for create/update)' },
           description: { type: 'string', description: 'Automation description' },
@@ -925,6 +1037,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     handler: safeHandler('manage_automations', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
+
+      if (action === 'create' || action === 'update' || action === 'delete') {
+        return JSON.stringify({
+          error: `Action "${action}" is disabled. Automations must be managed through configuration policies. Use manage_policy_feature_link with featureType "automation" to configure automations on a policy.`,
+        });
+      }
 
       if (action === 'list') {
         const conditions: SQL[] = [];
@@ -1090,19 +1208,14 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'manage_alert_rules',
-      description: 'Manage alert rules and notification channels: list/get/create/update/delete rules, test rules, list notification channels, or get alert summary stats.',
+      description: 'Query alert rules, templates, and notification channels (read-only). Alert rules are managed through configuration policies — use manage_policy_feature_link with featureType "alert_rule" to create or modify alert rules. This tool is for querying only: list_templates to discover available templates, list_rules/get_rule to inspect existing rules, test_rule to check rule state, list_channels for notification channels, alert_summary for overview. Actions: list_templates, list_rules, get_rule, test_rule, list_channels, alert_summary.',
       input_schema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['list_rules', 'get_rule', 'create_rule', 'update_rule', 'delete_rule', 'test_rule', 'list_channels', 'alert_summary'], description: 'The action to perform' },
-          ruleId: { type: 'string', description: 'Alert rule UUID (required for get_rule/update_rule/delete_rule/test_rule)' },
-          name: { type: 'string', description: 'Rule name (for create_rule/update_rule)' },
-          templateId: { type: 'string', description: 'Alert template UUID (for create_rule)' },
-          targetType: { type: 'string', description: 'Target type (for create_rule)' },
-          targetId: { type: 'string', description: 'Target UUID (for create_rule)' },
-          overrideSettings: { type: 'object', description: 'Override settings (for create_rule/update_rule)' },
-          isActive: { type: 'boolean', description: 'Active state (for update_rule)' },
-          severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'], description: 'Filter by severity (for alert_summary)' },
+          action: { type: 'string', enum: ['list_templates', 'list_rules', 'get_rule', 'test_rule', 'list_channels', 'alert_summary'], description: 'The action to perform. This tool is read-only — to create/modify alert rules, use manage_policy_feature_link with featureType "alert_rule".' },
+          ruleId: { type: 'string', description: 'Alert rule UUID (required for get_rule/test_rule)' },
+          category: { type: 'string', description: 'Filter templates by category (for list_templates)' },
+          severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'], description: 'Filter by severity (for list_templates/alert_summary)' },
           limit: { type: 'number', description: 'Max results (default 25)' },
         },
         required: ['action'],
@@ -1111,6 +1224,41 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     handler: safeHandler('manage_alert_rules', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
+
+      if (action === 'list_templates') {
+        const conditions: SQL[] = [];
+        // Show built-in templates (orgId IS NULL) + custom templates for accessible orgs
+        const oc = orgWhere(auth, alertTemplates.orgId);
+        if (oc) {
+          // Org/partner scope: built-in OR belonging to accessible org(s)
+          conditions.push(sql`(${alertTemplates.isBuiltIn} = true OR ${oc})`);
+        }
+        // System scope (oc undefined): no filter — show all templates
+        if (typeof input.category === 'string') conditions.push(eq(alertTemplates.category, input.category as string));
+        if (typeof input.severity === 'string') conditions.push(eq(alertTemplates.severity, input.severity as any));
+
+        const limit = Math.min(Math.max(1, Number(input.limit) || 50), 100);
+        const rows = await db.select({
+          id: alertTemplates.id,
+          name: alertTemplates.name,
+          description: alertTemplates.description,
+          category: alertTemplates.category,
+          severity: alertTemplates.severity,
+          conditions: alertTemplates.conditions,
+          isBuiltIn: alertTemplates.isBuiltIn,
+          autoResolve: alertTemplates.autoResolve,
+          cooldownMinutes: alertTemplates.cooldownMinutes,
+        }).from(alertTemplates)
+          .where(conditions.length > 0 ? and(...conditions) : undefined)
+          .orderBy(desc(alertTemplates.isBuiltIn), alertTemplates.name)
+          .limit(limit);
+
+        return JSON.stringify({
+          templates: rows,
+          showing: rows.length,
+          hint: 'Alert rules are managed through configuration policies. Use manage_policy_feature_link with featureType "alert_rule" and inlineSettings to add alert rules to a policy.',
+        });
+      }
 
       if (action === 'list_rules') {
         const conditions: SQL[] = [];
@@ -1158,50 +1306,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ rule, recentAlerts });
       }
 
-      if (action === 'create_rule') {
-        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
-        const [rule] = await db.insert(alertRules).values({
-          orgId,
-          name: input.name as string,
-          templateId: input.templateId as string,
-          targetType: input.targetType as string,
-          targetId: input.targetId as string,
-          overrideSettings: (input.overrideSettings as Record<string, unknown>) ?? null,
-          isActive: input.isActive !== false,
-        }).returning();
-
-        return JSON.stringify({ success: true, ruleId: rule?.id, name: rule?.name });
-      }
-
-      if (action === 'update_rule') {
-        if (!input.ruleId) return JSON.stringify({ error: 'ruleId is required' });
-        const conditions: SQL[] = [eq(alertRules.id, input.ruleId as string)];
-        const oc = orgWhere(auth, alertRules.orgId);
-        if (oc) conditions.push(oc);
-
-        const [existing] = await db.select().from(alertRules).where(and(...conditions)).limit(1);
-        if (!existing) return JSON.stringify({ error: 'Alert rule not found or access denied' });
-
-        const updates: Record<string, unknown> = {};
-        if (typeof input.name === 'string') updates.name = input.name;
-        if (input.overrideSettings) updates.overrideSettings = input.overrideSettings;
-        if (typeof input.isActive === 'boolean') updates.isActive = input.isActive;
-
-        await db.update(alertRules).set(updates).where(eq(alertRules.id, existing.id));
-        return JSON.stringify({ success: true, message: `Alert rule "${existing.name}" updated` });
-      }
-
-      if (action === 'delete_rule') {
-        if (!input.ruleId) return JSON.stringify({ error: 'ruleId is required' });
-        const conditions: SQL[] = [eq(alertRules.id, input.ruleId as string)];
-        const oc = orgWhere(auth, alertRules.orgId);
-        if (oc) conditions.push(oc);
-
-        const [existing] = await db.select().from(alertRules).where(and(...conditions)).limit(1);
-        if (!existing) return JSON.stringify({ error: 'Alert rule not found or access denied' });
-
-        await db.delete(alertRules).where(eq(alertRules.id, existing.id));
-        return JSON.stringify({ success: true, message: `Alert rule "${existing.name}" deleted` });
+      if (action === 'create_rule' || action === 'update_rule' || action === 'delete_rule') {
+        return JSON.stringify({
+          error: `Action "${action}" is disabled. Alert rules must be managed through configuration policies. Use manage_policy_feature_link with featureType "alert_rule" to add, update, or remove alert rules on a configuration policy.`,
+        });
       }
 
       if (action === 'test_rule') {
@@ -1545,6 +1653,66 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });
+    }),
+  });
+
+  // ============================================
+  // 9. manage_service_monitors — Service/process monitoring setup
+  // ============================================
+
+  registerTool({
+    tier: 1,
+    definition: {
+      name: 'manage_service_monitors',
+      description: 'Query service and process monitoring watches (read-only). To add or remove monitoring watches, use manage_policy_feature_link with featureType "monitoring" and action "update" to configure watches on a configuration policy.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          action: { type: 'string', enum: ['list'], description: 'The action to perform. To add/remove monitors, use manage_policy_feature_link with featureType "monitoring".' },
+          configPolicyId: { type: 'string', description: 'Configuration policy UUID. For list, shows all monitors across policies if omitted.' },
+        },
+        required: ['action'],
+      },
+    },
+    handler: safeHandler('manage_service_monitors', async (input, auth) => {
+      const action = input.action as string;
+      const orgId = getOrgId(auth);
+
+      if (action === 'list') {
+        // List all monitoring watches, optionally filtered by policy
+        const conditions: SQL[] = [];
+        const oc = orgWhere(auth, configurationPolicies.orgId);
+        if (oc) conditions.push(oc);
+        if (typeof input.configPolicyId === 'string') {
+          conditions.push(eq(configPolicyFeatureLinks.configPolicyId, input.configPolicyId as string));
+        }
+        conditions.push(eq(configPolicyFeatureLinks.featureType, 'monitoring'));
+
+        const rows = await db.select({
+          watchId: configPolicyMonitoringWatches.id,
+          watchType: configPolicyMonitoringWatches.watchType,
+          name: configPolicyMonitoringWatches.name,
+          displayName: configPolicyMonitoringWatches.displayName,
+          enabled: configPolicyMonitoringWatches.enabled,
+          alertOnStop: configPolicyMonitoringWatches.alertOnStop,
+          alertSeverity: configPolicyMonitoringWatches.alertSeverity,
+          cpuThresholdPercent: configPolicyMonitoringWatches.cpuThresholdPercent,
+          memoryThresholdMb: configPolicyMonitoringWatches.memoryThresholdMb,
+          autoRestart: configPolicyMonitoringWatches.autoRestart,
+          policyId: configurationPolicies.id,
+          policyName: configurationPolicies.name,
+          checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds,
+        }).from(configPolicyMonitoringWatches)
+          .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringWatches.settingsId, configPolicyMonitoringSettings.id))
+          .innerJoin(configPolicyFeatureLinks, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyFeatureLinks.id))
+          .innerJoin(configurationPolicies, eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id))
+          .where(conditions.length > 0 ? and(...conditions) : undefined)
+          .orderBy(configurationPolicies.name, configPolicyMonitoringWatches.sortOrder);
+
+        return JSON.stringify({ monitors: rows, showing: rows.length });
+      }
+
+      return JSON.stringify({ error: `Unknown action: ${action}. Only "list" is supported. Use manage_policy_feature_link to add/update/remove monitors.` });
     }),
   });
 }

@@ -5,6 +5,12 @@
 <?ifndef AgentExePath?>
 <?define AgentExePath=..\breeze-agent-windows-amd64.exe?>
 <?endif?>
+<?ifndef BackupExePath?>
+<?define BackupExePath=..\breeze-backup-windows-amd64.exe?>
+<?endif?>
+<?ifndef WatchdogExePath?>
+<?define WatchdogExePath=..\breeze-watchdog-windows-amd64.exe?>
+<?endif?>
 <?ifndef UserTaskXmlPath?>
 <?define UserTaskXmlPath=..\service\windows\breeze-agent-user-task.xml?>
 <?endif?>
@@ -40,7 +46,8 @@
     <Property Id="SERVER_URL" Secure="yes" />
     <Property Id="ENROLLMENT_KEY" Secure="yes" Hidden="yes" />
     <Property Id="ARPNOREPAIR" Value="1" />
-    <Property Id="POWERSHELL_EXE" Value="[SystemFolder]WindowsPowerShell\v1.0\powershell.exe" />
+    <Property Id="POWERSHELL_EXE" Secure="yes" />
+    <CustomAction Id="SetPowerShellPath" Property="POWERSHELL_EXE" Value="[System64Folder]WindowsPowerShell\v1.0\powershell.exe" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Breeze">
@@ -53,15 +60,49 @@
             Description="Breeze RMM endpoint agent"
             Type="ownProcess"
             Arguments="run"
-            Start="demand"
+            Start="auto"
             ErrorControl="normal"
             Vital="yes" />
           <ServiceControl
             Id="svcControlBreezeAgent"
             Name="BreezeAgent"
+            Start="install"
             Stop="both"
             Remove="uninstall"
             Wait="yes" />
+        </Component>
+
+        <Component Id="cmpBreezeBackupExe" Guid="*">
+          <File Id="filBreezeBackupExe" Name="breeze-backup.exe"
+                Source="$(var.BackupExePath)" KeyPath="yes" />
+        </Component>
+
+        <Component Id="cmpBreezeWatchdogExe" Guid="*">
+          <File Id="filBreezeWatchdogExe" Name="breeze-watchdog.exe"
+                Source="$(var.WatchdogExePath)" KeyPath="yes" />
+          <ServiceInstall Id="svcInstallWatchdog"
+                          Name="BreezeWatchdog"
+                          DisplayName="Breeze RMM Watchdog"
+                          Description="Monitors and recovers the Breeze RMM Agent"
+                          Start="auto"
+                          Type="ownProcess"
+                          ErrorControl="normal"
+                          Arguments="run" />
+          <ServiceControl Id="svcControlWatchdog"
+                          Name="BreezeWatchdog"
+                          Start="install"
+                          Stop="both"
+                          Remove="uninstall"
+                          Wait="yes" />
+        </Component>
+
+        <!-- Register BreezeAgent to run in Safe Mode with Networking. Without this,
+             the SCM won't start the service in safe mode, preventing the agent from
+             auto-clearing the BCD safeboot flag and reconnecting to the server. -->
+        <Component Id="cmpSafeBootNetworkReg" Guid="*">
+          <RegistryKey Root="HKLM" Key="SYSTEM\CurrentControlSet\Control\SafeBoot\Network\BreezeAgent">
+            <RegistryValue Type="string" Value="Service" />
+          </RegistryKey>
         </Component>
 
         <Directory Id="INSTALL_SERVICE_DIR" Name="service">
@@ -138,13 +179,14 @@
     <CustomAction
       Id="EnrollAgent"
       Property="POWERSHELL_EXE"
-      ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#filEnrollAgentPs1]&quot; -CustomActionData &quot;[CustomActionData]&quot;"
+      ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#filEnrollAgentPs1]&quot; -CustomActionData &quot;[EnrollAgent]&quot;"
       Execute="deferred"
       Impersonate="no"
       Return="check"
       HideTarget="yes" />
 
     <InstallExecuteSequence>
+      <Custom Action="SetPowerShellPath" After="InstallInitialize" />
       <Custom Action="RollbackRegisterUserHelperTask" Before="RegisterUserHelperTask" Condition="NOT Installed AND NOT REMOVE AND NOT WIX_UPGRADE_DETECTED" />
       <Custom Action="RegisterUserHelperTask" After="InstallServices" Condition="NOT Installed AND NOT REMOVE" />
       <Custom Action="SetEnrollAgentData" Before="EnrollAgent" Condition="NOT Installed AND SERVER_URL AND ENROLLMENT_KEY" />
@@ -154,6 +196,9 @@
 
     <Feature Id="MainFeature" Title="Breeze Agent" Level="1">
       <ComponentRef Id="cmpBreezeAgentExe" />
+      <ComponentRef Id="cmpBreezeBackupExe" />
+      <ComponentRef Id="cmpBreezeWatchdogExe" />
+      <ComponentRef Id="cmpSafeBootNetworkReg" />
       <ComponentRef Id="cmpUserTaskXml" />
       <ComponentRef Id="cmpInstallWindowsPs1" />
       <ComponentRef Id="cmpRemoveWindowsTaskPs1" />

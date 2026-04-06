@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { exportReport, getBrowserTimezone } from './reportExport';
 
 export type ReportType =
   | 'device_inventory'
@@ -81,8 +82,6 @@ const formatLabels: Record<ReportFormat, string> = {
   excel: 'Excel'
 };
 
-const getBrowserTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
-
 export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: ReportsListProps) {
   const effectiveTimezone = timezone || getBrowserTimezone();
   const [reports, setReports] = useState<Report[]>([]);
@@ -113,12 +112,14 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
   const fetchRecentRuns = useCallback(async () => {
     try {
       const response = await fetchWithAuth('/reports/runs?limit=20');
-      if (response.ok) {
-        const data = await response.json();
-        setRecentRuns(data.data ?? []);
+      if (!response.ok) {
+        console.error('Failed to fetch recent runs:', response.status);
+        return;
       }
-    } catch {
-      // Silently fail
+      const data = await response.json();
+      setRecentRuns(data.data ?? []);
+    } catch (err) {
+      console.error('Failed to fetch recent runs:', err);
     }
   }, []);
 
@@ -189,6 +190,41 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
     }
   };
 
+  const [downloadingRunId, setDownloadingRunId] = useState<string | null>(null);
+
+  const handleDownload = async (run: ReportRun) => {
+    setDownloadingRunId(run.id);
+    try {
+      const runRes = await fetchWithAuth(`/reports/runs/${run.id}`);
+      if (!runRes.ok) throw new Error('Failed to fetch run details');
+      const runDetails = await runRes.json();
+      const report = runDetails.report;
+      if (!report?.type || !report?.format) throw new Error('Report data is incomplete');
+
+      // Fetch the full report definition to get the original config
+      const reportRes = await fetchWithAuth(`/reports/${report.id}`);
+      const reportConfig = reportRes.ok ? (await reportRes.json()).config ?? {} : {};
+
+      const genRes = await fetchWithAuth('/reports/generate', {
+        method: 'POST',
+        body: JSON.stringify({ type: report.type, format: report.format, config: reportConfig }),
+      });
+      if (!genRes.ok) throw new Error('Failed to generate report data');
+      const genData = await genRes.json();
+
+      const rows = (genData.data as { rows?: unknown[] })?.rows ?? [];
+      exportReport(rows, {
+        format: report.format as 'csv' | 'pdf' | 'excel',
+        reportType: report.type,
+        timezone: effectiveTimezone,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Download failed');
+    } finally {
+      setDownloadingRunId(null);
+    }
+  };
+
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return 'Never';
     return new Date(dateStr).toLocaleString([], { timeZone: effectiveTimezone });
@@ -224,7 +260,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Reports</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Reports</h1>
           <p className="text-muted-foreground">Generate and schedule reports for your infrastructure.</p>
         </div>
         <div className="flex items-center gap-2">
@@ -301,24 +337,24 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
           ) : (
             <div className="rounded-lg border bg-card shadow-sm overflow-hidden">
               <table className="w-full">
-                <thead className="border-b bg-muted/50">
-                  <tr>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                <thead className="bg-muted/40">
+                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <th className="px-4 py-3">
                       Name
                     </th>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                    <th className="px-4 py-3">
                       Type
                     </th>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                    <th className="px-4 py-3">
                       Schedule
                     </th>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                    <th className="px-4 py-3">
                       Format
                     </th>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                    <th className="px-4 py-3">
                       Last Generated
                     </th>
-                    <th className="px-4 py-3 text-right text-sm font-medium text-muted-foreground">
+                    <th className="px-4 py-3 text-right">
                       Actions
                     </th>
                   </tr>
@@ -414,21 +450,21 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
           ) : (
             <div className="rounded-lg border bg-card shadow-sm overflow-hidden">
               <table className="w-full">
-                <thead className="border-b bg-muted/50">
-                  <tr>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                <thead className="bg-muted/40">
+                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <th className="px-4 py-3">
                       Report
                     </th>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                    <th className="px-4 py-3">
                       Status
                     </th>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                    <th className="px-4 py-3">
                       Started
                     </th>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                    <th className="px-4 py-3">
                       Completed
                     </th>
-                    <th className="px-4 py-3 text-right text-sm font-medium text-muted-foreground">
+                    <th className="px-4 py-3 text-right">
                       Actions
                     </th>
                   </tr>
@@ -472,14 +508,20 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end">
-                          {run.status === 'completed' && run.outputUrl && (
-                            <a
-                              href={run.outputUrl}
-                              className="flex h-8 items-center gap-1 rounded-md border px-3 text-sm hover:bg-muted"
+                          {run.status === 'completed' && (
+                            <button
+                              type="button"
+                              onClick={() => handleDownload(run)}
+                              disabled={downloadingRunId === run.id}
+                              className="flex h-8 items-center gap-1 rounded-md border px-3 text-sm hover:bg-muted disabled:opacity-50"
                             >
-                              <Download className="h-4 w-4" />
+                              {downloadingRunId === run.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Download className="h-4 w-4" />
+                              )}
                               Download
-                            </a>
+                            </button>
                           )}
                         </div>
                       </td>

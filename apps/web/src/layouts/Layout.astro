@@ -16,30 +16,32 @@ const { title } = Astro.props;
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Breeze RMM - Remote Monitoring and Management" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <title>{title} | Breeze RMM</title>
     <ClientRouter />
   </head>
   <body class="min-h-screen bg-background antialiased">
     <script is:inline>
       (function(){
+        // Apply theme immediately to prevent flash (runs on every navigation)
         var t = localStorage.getItem('theme');
-        if (t === 'dark' || (!t && matchMedia('(prefers-color-scheme: dark)').matches)) {
-          document.documentElement.classList.add('dark');
+        var dark = t === 'dark' || (t !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.classList.toggle('dark', dark);
+
+        // Register after-swap handler once (guard prevents re-registration on View Transitions)
+        if (!window.__themeSwap) {
+          window.__themeSwap = true;
+          document.addEventListener('astro:after-swap', function() {
+            var t = localStorage.getItem('theme');
+            var dark = t === 'dark' || (t !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+            document.documentElement.classList.toggle('dark', dark);
+            var main = document.querySelector('main');
+            if (main) main.scrollTop = 0;
+          });
         }
       })();
-    </script>
-    <script is:inline>
-      document.addEventListener('astro:after-swap', function() {
-        // Re-apply theme after View Transition swaps the DOM
-        var t = localStorage.getItem('theme');
-        if (t === 'dark' || (!t && matchMedia('(prefers-color-scheme: dark)').matches)) {
-          document.documentElement.classList.add('dark');
-        } else {
-          document.documentElement.classList.remove('dark');
-        }
-        var main = document.querySelector('main');
-        if (main) main.scrollTop = 0;
-      });
     </script>
     <slot />
   </body>

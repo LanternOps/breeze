@@ -2,6 +2,7 @@ package providers
 
 import (
 	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -45,6 +46,14 @@ func NewLocalProvider(basePath string) *LocalProvider {
 
 // Upload copies a file into the local backup store.
 func (p *LocalProvider) Upload(localPath, remotePath string) error {
+	return p.UploadContext(context.Background(), localPath, remotePath)
+}
+
+// UploadContext copies a file into the local backup store with cancellation support.
+func (p *LocalProvider) UploadContext(ctx context.Context, localPath, remotePath string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if p.BasePath == "" {
 		return errors.New("local provider base path is required")
 	}
@@ -64,9 +73,9 @@ func (p *LocalProvider) Upload(localPath, remotePath string) error {
 	}
 
 	if strings.HasSuffix(remotePath, ".gz") {
-		return compressFile(localPath, destPath)
+		return compressFileContext(ctx, localPath, destPath)
 	}
-	return copyFile(localPath, destPath)
+	return copyFileContext(ctx, localPath, destPath)
 }
 
 // Download retrieves a file from the local backup store.
@@ -92,7 +101,7 @@ func (p *LocalProvider) Download(remotePath, localPath string) error {
 	if strings.HasSuffix(remotePath, ".gz") {
 		return decompressFile(srcPath, localPath)
 	}
-	return copyFile(srcPath, localPath)
+	return copyFileContext(context.Background(), srcPath, localPath)
 }
 
 // List enumerates files under the given prefix.
@@ -178,7 +187,10 @@ func (p *LocalProvider) cleanupEmptyDirs(startPath string) {
 	}
 }
 
-func copyFile(srcPath, destPath string) error {
+func copyFileContext(ctx context.Context, srcPath, destPath string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	srcFile, err := os.Open(srcPath)
 	if err != nil {
 		return fmt.Errorf("failed to open source file: %w", err)
@@ -200,7 +212,7 @@ func copyFile(srcPath, destPath string) error {
 		return fmt.Errorf("failed to create destination file: %w", err)
 	}
 
-	_, err = io.Copy(destFile, srcFile)
+	_, err = io.Copy(destFile, &contextReader{ctx: ctx, reader: srcFile})
 	closeErr := destFile.Close()
 	if err == nil {
 		err = closeErr
@@ -214,12 +226,16 @@ func copyFile(srcPath, destPath string) error {
 	}
 
 	if err != nil {
+		_ = os.Remove(destPath)
 		return fmt.Errorf("failed to copy file: %w", err)
 	}
 	return nil
 }
 
-func compressFile(srcPath, destPath string) error {
+func compressFileContext(ctx context.Context, srcPath, destPath string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	srcFile, err := os.Open(srcPath)
 	if err != nil {
 		return fmt.Errorf("failed to open source file: %w", err)
@@ -245,7 +261,7 @@ func compressFile(srcPath, destPath string) error {
 	gzipWriter.Name = filepath.Base(srcPath)
 	gzipWriter.ModTime = srcInfo.ModTime()
 
-	_, err = io.Copy(gzipWriter, srcFile)
+	_, err = io.Copy(gzipWriter, &contextReader{ctx: ctx, reader: srcFile})
 	closeErr := gzipWriter.Close()
 	if err == nil {
 		err = closeErr
@@ -260,9 +276,24 @@ func compressFile(srcPath, destPath string) error {
 	}
 
 	if err != nil {
+		_ = os.Remove(destPath)
 		return fmt.Errorf("failed to compress file: %w", err)
 	}
 	return nil
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r *contextReader) Read(p []byte) (int, error) {
+	if r.ctx != nil {
+		if err := r.ctx.Err(); err != nil {
+			return 0, err
+		}
+	}
+	return r.reader.Read(p)
 }
 
 func decompressFile(srcPath, destPath string) error {

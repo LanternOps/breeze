@@ -23,6 +23,8 @@ const (
 	defaultFSTimeoutSecs         = 20
 	maxFSErrors                  = 200
 	maxFSCleanupCandidates       = 1000
+	maxFSCheckpointDirs          = 5000
+	maxFSTargetDirectories       = 1000
 	unrotatedLogMinBytes         = 100 * 1024 * 1024
 	defaultFSWorkerCap           = 8
 	maxFSWorkers                 = 32
@@ -516,7 +518,7 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 	cleanupCandidates := mapCleanupCandidates(cleanupByPath, maxFSCleanupCandidates)
 
 	completedAt := time.Now()
-	pendingCheckpoint := buildCheckpointPayload(pendingFrames, 50000)
+	pendingCheckpoint := buildCheckpointPayload(pendingFrames, maxFSCheckpointDirs)
 	response := FilesystemAnalysisResponse{
 		Path:        cleanRoot,
 		ScanMode:    scanMode,
@@ -566,6 +568,9 @@ func readCheckpointFrames(raw any) []scanDirFrame {
 	}
 	frames := make([]scanDirFrame, 0, len(pending))
 	for _, item := range pending {
+		if len(frames) >= maxFSCheckpointDirs {
+			break
+		}
 		entry, entryOk := item.(map[string]any)
 		if !entryOk {
 			continue
@@ -589,6 +594,9 @@ func readTargetDirectories(raw any) []string {
 	dirs := make([]string, 0, len(entries))
 	seen := make(map[string]struct{})
 	for _, item := range entries {
+		if len(dirs) >= maxFSTargetDirectories {
+			break
+		}
 		pathRaw, ok := item.(string)
 		if !ok || pathRaw == "" {
 			continue

@@ -4,12 +4,8 @@ package collectors
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"os/exec"
 	"sort"
 	"strings"
-	"time"
 )
 
 type windowsServiceInfo struct {
@@ -27,27 +23,12 @@ Get-CimInstance -ClassName Win32_Service -ErrorAction Stop |
   ConvertTo-Json -Compress -Depth 2
 `
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
-	output, err := cmd.Output()
+	rows, err := runWindowsJSON[windowsServiceInfo](ctx, psScript)
 	if err != nil {
-		return nil, fmt.Errorf("service collection failed: %w", err)
-	}
-
-	trimmed := strings.TrimSpace(string(output))
-	if trimmed == "" || trimmed == "null" {
-		return []ServiceInfo{}, nil
-	}
-
-	var rows []windowsServiceInfo
-	if err := json.Unmarshal([]byte(trimmed), &rows); err != nil {
-		var single windowsServiceInfo
-		if errSingle := json.Unmarshal([]byte(trimmed), &single); errSingle != nil {
-			return nil, fmt.Errorf("failed to parse service JSON: %w", err)
-		}
-		rows = []windowsServiceInfo{single}
+		return nil, err
 	}
 
 	services := make([]ServiceInfo, 0, len(rows))
@@ -63,12 +44,25 @@ Get-CimInstance -ClassName Win32_Service -ErrorAction Stop |
 			StartupType: normalizeWindowsStartupType(row.StartMode),
 			Account:     strings.TrimSpace(row.StartName),
 		})
+		services[len(services)-1] = sanitizeWindowsServiceInfo(services[len(services)-1])
+		if len(services) >= collectorResultLimit {
+			break
+		}
 	}
 
 	sort.Slice(services, func(i, j int) bool {
 		return services[i].Name < services[j].Name
 	})
 	return services, nil
+}
+
+func sanitizeWindowsServiceInfo(info ServiceInfo) ServiceInfo {
+	info.Name = truncateCollectorString(info.Name)
+	info.DisplayName = truncateCollectorString(info.DisplayName)
+	info.State = truncateCollectorString(info.State)
+	info.StartupType = truncateCollectorString(info.StartupType)
+	info.Account = truncateCollectorString(info.Account)
+	return info
 }
 
 func normalizeWindowsServiceState(value string) string {

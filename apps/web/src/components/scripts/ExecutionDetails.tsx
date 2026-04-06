@@ -11,11 +11,11 @@ type ExecutionDetailsProps = {
 };
 
 const statusConfig: Record<ExecutionStatus, { label: string; color: string; bgColor: string; icon: typeof CheckCircle }> = {
-  pending: { label: 'Pending', color: 'text-gray-700', bgColor: 'bg-gray-500/10', icon: Clock },
-  running: { label: 'Running', color: 'text-blue-700', bgColor: 'bg-blue-500/10', icon: Loader2 },
-  completed: { label: 'Completed', color: 'text-green-700', bgColor: 'bg-green-500/10', icon: CheckCircle },
-  failed: { label: 'Failed', color: 'text-red-700', bgColor: 'bg-red-500/10', icon: XCircle },
-  timeout: { label: 'Timeout', color: 'text-yellow-700', bgColor: 'bg-yellow-500/10', icon: AlertTriangle }
+  pending: { label: 'Pending', color: 'text-muted-foreground', bgColor: 'bg-muted', icon: Clock },
+  running: { label: 'Running', color: 'text-blue-700 dark:text-blue-400', bgColor: 'bg-blue-500/10', icon: Loader2 },
+  completed: { label: 'Completed', color: 'text-success', bgColor: 'bg-success/10', icon: CheckCircle },
+  failed: { label: 'Failed', color: 'text-destructive', bgColor: 'bg-destructive/10', icon: XCircle },
+  timeout: { label: 'Timeout', color: 'text-warning', bgColor: 'bg-warning/10', icon: AlertTriangle }
 };
 
 function formatDuration(seconds?: number): string {
@@ -87,7 +87,7 @@ function OutputSection({
   return (
     <div className={cn(
       'rounded-md border',
-      variant === 'error' && normalized && 'border-red-500/40'
+      variant === 'error' && normalized && 'border-destructive/40'
     )}>
       <button
         type="button"
@@ -95,17 +95,17 @@ function OutputSection({
         className={cn(
           'flex w-full items-center justify-between px-4 py-3 text-left transition',
           isOpen ? 'border-b' : '',
-          variant === 'error' && normalized ? 'bg-red-500/5' : 'bg-muted/20'
+          variant === 'error' && normalized ? 'bg-destructive/5' : 'bg-muted/20'
         )}
       >
         <div className="flex items-center gap-2">
           <Icon className={cn(
             'h-4 w-4',
-            variant === 'error' && normalized ? 'text-red-600' : 'text-muted-foreground'
+            variant === 'error' && normalized ? 'text-destructive' : 'text-muted-foreground'
           )} />
           <span className={cn(
             'text-sm font-medium',
-            variant === 'error' && normalized && 'text-red-700'
+            variant === 'error' && normalized && 'text-destructive'
           )}>
             {title}
           </span>
@@ -125,7 +125,7 @@ function OutputSection({
               title="Copy to clipboard"
             >
               {copied ? (
-                <Check className="h-4 w-4 text-green-600" />
+                <Check className="h-4 w-4 text-success" />
               ) : (
                 <Copy className="h-4 w-4 text-muted-foreground" />
               )}
@@ -145,7 +145,7 @@ function OutputSection({
           ) : (
             <pre className={cn(
               'overflow-x-auto rounded-md p-4 text-sm font-mono whitespace-pre-wrap break-words',
-              variant === 'error' ? 'bg-red-500/5 text-red-800' : 'bg-muted/40 text-foreground'
+              variant === 'error' ? 'bg-destructive/5 text-destructive' : 'bg-muted/40 text-foreground'
             )}>
               {normalized}
             </pre>
@@ -249,8 +249,8 @@ export default function ExecutionDetails({
                   <span className={cn(
                     'inline-flex items-center rounded px-2 py-0.5 font-mono',
                     execution.exitCode === 0
-                      ? 'bg-green-500/20 text-green-700'
-                      : 'bg-red-500/20 text-red-700'
+                      ? 'bg-success/15 text-success'
+                      : 'bg-destructive/15 text-destructive'
                   )}>
                     {execution.exitCode}
                   </span>

@@ -35,12 +35,18 @@ const TIER2_ACTIONS: Record<string, string[]> = {
   manage_deployments: ['pause', 'resume'],
   manage_patches: ['approve', 'decline', 'defer', 'bulk_approve'],
   manage_groups: ['add_devices', 'remove_devices'],
-  manage_maintenance_windows: ['create', 'update'],
+  // manage_maintenance_windows mutations disabled — managed via configuration policies
   manage_automations: ['enable', 'disable'],
-  manage_alert_rules: ['create_rule', 'update_rule'],
+  // manage_alert_rules mutations disabled — managed via configuration policies
+  // manage_service_monitors mutations disabled — managed via configuration policies
   generate_report: ['create', 'update', 'delete', 'generate'],
+  // Policy prerequisite tools — Tier 2 create/update actions
+  manage_update_rings: ['create', 'update'],
+  manage_software_policies: ['create', 'update'],
+  manage_peripheral_policies: ['create', 'update'],
+  manage_backup_configs: ['create', 'update'],
   // Notification channel & saved filter tools — Tier 2 actions
-  manage_notification_channels: ['test'],
+  manage_notification_channels: ['test', 'create', 'update', 'delete'],
   manage_saved_filters: ['create', 'delete'],
 };
 
@@ -63,11 +69,13 @@ const TIER3_ACTIONS: Record<string, string[]> = {
   manage_deployments: ['create', 'start', 'cancel'],
   manage_patches: ['scan', 'install', 'rollback'],
   manage_groups: ['create', 'update', 'delete'],
-  manage_maintenance_windows: ['delete'],
-  manage_automations: ['create', 'update', 'delete', 'run'],
-  manage_alert_rules: ['delete_rule'],
+  manage_automations: ['run'],
   manage_processes: ['kill'],
+  manage_policy_feature_link: ['remove'],
   registry_operations: ['set_value', 'create_key', 'delete_key'],
+  // Backup & DR — Tier 3 actions (require user approval)
+  manage_dr_plan: ['delete_group'],
+  manage_hyperv_checkpoints: ['delete', 'apply'],
   // Monitoring tools — Tier 3 actions (require user approval)
   manage_monitors: ['create', 'update', 'delete'],
 };
@@ -152,6 +160,7 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
     bulk_approve: { resource: 'patches', action: 'approve' },
     install: { resource: 'patches', action: 'execute' },
     rollback: { resource: 'patches', action: 'execute' },
+    setup_auto_approval: { resource: 'patches', action: 'approve' },
   },
   manage_groups: {
     list: { resource: 'groups', action: 'read' },
@@ -184,6 +193,7 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
     run: { resource: 'automations', action: 'execute' },
   },
   manage_alert_rules: {
+    list_templates: { resource: 'alerts', action: 'read' },
     list_rules: { resource: 'alerts', action: 'read' },
     get_rule: { resource: 'alerts', action: 'read' },
     create_rule: { resource: 'alerts', action: 'write' },
@@ -192,6 +202,9 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
     test_rule: { resource: 'alerts', action: 'read' },
     list_channels: { resource: 'alerts', action: 'read' },
     alert_summary: { resource: 'alerts', action: 'read' },
+  },
+  manage_service_monitors: {
+    list: { resource: 'monitoring', action: 'read' },
   },
   generate_report: {
     list: { resource: 'reports', action: 'read' },
@@ -233,6 +246,12 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   },
   get_effective_configuration: { resource: 'devices', action: 'read' },
   preview_configuration_change: { resource: 'devices', action: 'read' },
+  manage_policy_feature_link: {
+    list: { resource: 'policies', action: 'read' },
+    add: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+    remove: { resource: 'policies', action: 'write' },
+  },
   apply_configuration_policy: { resource: 'policies', action: 'write' },
   remove_configuration_policy_assignment: { resource: 'policies', action: 'write' },
   // Playbook tools
@@ -256,6 +275,8 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
     create_key: { resource: 'devices', action: 'execute' },
     delete_key: { resource: 'devices', action: 'execute' },
   },
+  // Documentation tools
+  search_documentation: { resource: 'general', action: 'read' },
   // Script library tools
   search_script_library: { resource: 'scripts', action: 'read' },
   get_script_details: { resource: 'scripts', action: 'read' },
@@ -265,6 +286,38 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   browse_snapshots: { resource: 'devices', action: 'read' },
   trigger_backup: { resource: 'devices', action: 'execute' },
   restore_snapshot: { resource: 'devices', action: 'execute' },
+  restore_as_vm: { resource: 'devices', action: 'execute' },
+  instant_boot_vm: { resource: 'devices', action: 'execute' },
+  get_vm_restore_estimate: { resource: 'devices', action: 'read' },
+  query_mssql_instances: { resource: 'devices', action: 'read' },
+  get_mssql_backup_status: { resource: 'devices', action: 'read' },
+  trigger_mssql_backup: { resource: 'devices', action: 'execute' },
+  restore_mssql_database: { resource: 'devices', action: 'execute' },
+  verify_mssql_backup: { resource: 'devices', action: 'execute' },
+  query_hyperv_vms: { resource: 'devices', action: 'read' },
+  get_hyperv_vm_details: { resource: 'devices', action: 'read' },
+  manage_hyperv_vm: { resource: 'devices', action: 'execute' },
+  trigger_hyperv_backup: { resource: 'devices', action: 'execute' },
+  restore_hyperv_vm: { resource: 'devices', action: 'execute' },
+  manage_hyperv_checkpoints: { resource: 'devices', action: 'execute' },
+  query_vaults: { resource: 'devices', action: 'read' },
+  get_vault_status: { resource: 'devices', action: 'read' },
+  trigger_vault_sync: { resource: 'devices', action: 'execute' },
+  configure_vault: { resource: 'devices', action: 'write' },
+  query_c2c_connections: { resource: 'organizations', action: 'read' },
+  query_c2c_jobs: { resource: 'organizations', action: 'read' },
+  search_c2c_items: { resource: 'organizations', action: 'read' },
+  trigger_c2c_sync: { resource: 'organizations', action: 'write' },
+  restore_c2c_items: { resource: 'organizations', action: 'write' },
+  query_backup_sla: { resource: 'organizations', action: 'read' },
+  get_sla_breaches: { resource: 'organizations', action: 'read' },
+  get_sla_compliance_report: { resource: 'organizations', action: 'read' },
+  configure_backup_sla: { resource: 'organizations', action: 'write' },
+  query_dr_plans: { resource: 'organizations', action: 'read' },
+  get_dr_plan_details: { resource: 'organizations', action: 'read' },
+  get_dr_execution_status: { resource: 'organizations', action: 'read' },
+  execute_dr_plan: { resource: 'devices', action: 'execute' },
+  manage_dr_plan: { resource: 'organizations', action: 'write' },
   // Monitoring tools — RBAC mappings
   query_monitors: { resource: 'devices', action: 'read' },
   manage_monitors: {
@@ -309,6 +362,9 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   get_user_risk_scores: { resource: 'users', action: 'read' },
   get_user_risk_detail: { resource: 'users', action: 'read' },
   assign_security_training: { resource: 'users', action: 'write' },
+  get_backup_health: { resource: 'devices', action: 'read' },
+  run_backup_verification: { resource: 'devices', action: 'execute' },
+  get_recovery_readiness: { resource: 'devices', action: 'read' },
 };
 
 // Per-tool rate limits: { limit, windowSeconds }
@@ -328,6 +384,7 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   take_screenshot: { limit: 10, windowSeconds: 300 },
   analyze_screen: { limit: 10, windowSeconds: 300 },
   computer_control: { limit: 20, windowSeconds: 300 },
+  run_backup_verification: { limit: 10, windowSeconds: 300 },
   // Fleet tools — per-tool rate limits
   manage_deployments: { limit: 10, windowSeconds: 600 },
   manage_patches: { limit: 15, windowSeconds: 300 },
@@ -335,6 +392,7 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   manage_maintenance_windows: { limit: 15, windowSeconds: 300 },
   manage_automations: { limit: 10, windowSeconds: 600 },
   manage_alert_rules: { limit: 15, windowSeconds: 300 },
+  manage_service_monitors: { limit: 15, windowSeconds: 300 },
   generate_report: { limit: 10, windowSeconds: 300 },
   // Brain device context tools
   set_device_context: { limit: 20, windowSeconds: 300 },
@@ -360,6 +418,22 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   // Backup tools
   trigger_backup: { limit: 5, windowSeconds: 600 },
   restore_snapshot: { limit: 3, windowSeconds: 600 },
+  restore_as_vm: { limit: 3, windowSeconds: 900 },
+  instant_boot_vm: { limit: 3, windowSeconds: 900 },
+  trigger_mssql_backup: { limit: 5, windowSeconds: 600 },
+  restore_mssql_database: { limit: 3, windowSeconds: 900 },
+  verify_mssql_backup: { limit: 5, windowSeconds: 600 },
+  manage_hyperv_vm: { limit: 10, windowSeconds: 300 },
+  trigger_hyperv_backup: { limit: 5, windowSeconds: 900 },
+  restore_hyperv_vm: { limit: 3, windowSeconds: 900 },
+  manage_hyperv_checkpoints: { limit: 5, windowSeconds: 600 },
+  trigger_vault_sync: { limit: 10, windowSeconds: 600 },
+  configure_vault: { limit: 10, windowSeconds: 300 },
+  trigger_c2c_sync: { limit: 10, windowSeconds: 300 },
+  restore_c2c_items: { limit: 5, windowSeconds: 600 },
+  configure_backup_sla: { limit: 10, windowSeconds: 300 },
+  execute_dr_plan: { limit: 3, windowSeconds: 900 },
+  manage_dr_plan: { limit: 10, windowSeconds: 300 },
   // Monitoring tools
   query_monitors: { limit: 30, windowSeconds: 300 },
   manage_monitors: { limit: 10, windowSeconds: 300 },
@@ -418,7 +492,7 @@ export function checkGuardrails(
     };
   }
 
-  // Check for action-based tier overrides
+  // Check for action-based tier escalation
   const action = input.action as string | undefined;
 
   // Tier 1 downgrade: read-only actions on otherwise-high-tier tools
@@ -499,7 +573,12 @@ export async function checkToolPermission(
     required = (permDef as Record<string, { resource: string; action: string }>)[action]!;
   } else if (action) {
     // Unknown action for a mapped tool — deny (fail-closed)
-    return `Unknown action "${action}" for tool "${toolName}"`;
+    // Include redirect hints for tools that have been replaced by policy-based management
+    const redirectHints: Record<string, string> = {
+      manage_service_monitors: 'To add, update, or remove monitoring watches, use manage_policy_feature_link with the existing policy\'s featureLinkId and action "update". First call get_configuration_policy to find the monitoring featureLinkId and current inlineSettings.watches array, then update it with the new watch appended.',
+    };
+    const hint = redirectHints[toolName];
+    return `Unknown action "${action}" for tool "${toolName}".${hint ? ` ${hint}` : ''}`;
   } else {
     return null; // No action provided — allow (base tool permission applies)
   }
@@ -613,6 +692,7 @@ function buildApprovalDescription(
       if (action === 'install') parts.push(`Install ${Array.isArray(input.patchIds) ? input.patchIds.length : 0} patch(es) on ${Array.isArray(input.deviceIds) ? input.deviceIds.length : 0} device(s)`);
       else if (action === 'scan') parts.push(`Trigger patch scan on ${Array.isArray(input.deviceIds) ? input.deviceIds.length : 0} device(s)`);
       else if (action === 'rollback') parts.push(`Rollback patch ${(input.patchId as string)?.slice(0, 8)}...`);
+      else if (action === 'setup_auto_approval') parts.push(`Setup auto-approval for ${Array.isArray(input.autoApproveSeverities) ? (input.autoApproveSeverities as string[]).join(', ') : 'critical, important'} patches`);
       else parts.push(`Patch ${action}: ${(input.patchId as string)?.slice(0, 8) ?? ''}...`);
       break;
 
@@ -637,6 +717,12 @@ function buildApprovalDescription(
     case 'manage_alert_rules':
       if (action === 'delete_rule') parts.push(`Delete alert rule ${(input.ruleId as string)?.slice(0, 8)}...`);
       else parts.push(`Alert rule ${action}: ${(input.ruleId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
+      break;
+
+    case 'manage_service_monitors':
+      if (action === 'add') parts.push(`Add ${input.watchType} monitor "${input.displayName || input.name}"`);
+      else if (action === 'remove') parts.push(`Remove monitor ${(input.watchId as string)?.slice(0, 8)}...`);
+      else parts.push(`Service monitors: ${action}`);
       break;
 
     case 'manage_startup_items':
@@ -698,6 +784,13 @@ function buildApprovalDescription(
       else if (action === 'delete') parts.push(`Delete monitor ${(input.monitorId as string)?.slice(0, 8)}...`);
       else parts.push(`Monitor ${action}: ${(input.monitorId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
       break;
+    case 'run_backup_verification': {
+      const verificationType = typeof input.verificationType === 'string' ? input.verificationType : 'integrity';
+      parts.push(`Run ${verificationType} backup verification`);
+      if (input.deviceId) parts.push(`on device ${String(input.deviceId).slice(0, 8)}...`);
+      if (input.backupJobId) parts.push(`job ${String(input.backupJobId).slice(0, 8)}...`);
+      break;
+    }
 
     default:
       parts.push(`${toolName}${action ? `: ${action}` : ''}`);

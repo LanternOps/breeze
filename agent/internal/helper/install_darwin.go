@@ -1,11 +1,15 @@
 package helper
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 )
 
 const plistLabel = "com.breeze.helper"
@@ -83,25 +87,99 @@ func installAutoStart(binaryPath string) error {
 	return nil
 }
 
+func removeAutoStart() error {
+	uid := consoleUID()
+	if uid != "" {
+		if err := runHelperCommand("launchctl", "bootout", "gui/"+uid, plistPath); err != nil {
+			log.Debug("launchctl bootout failed during autostart removal", "uid", uid, "error", err.Error())
+		}
+	}
+	if err := os.Remove(plistPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove plist: %w", err)
+	}
+	return nil
+}
+
+func stopByPID(pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("invalid pid %d", pid)
+	}
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("kill pid %d: %w", pid, err)
+	}
+	return nil
+}
+
+func spawnWithConfig(binaryPath, sessionKey, configPath string) (int, error) {
+	uid, err := strconv.ParseUint(sessionKey, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("invalid uid %q: %w", sessionKey, err)
+	}
+
+	u, err := user.LookupId(sessionKey)
+	if err != nil {
+		return 0, fmt.Errorf("lookup uid %s: %w", sessionKey, err)
+	}
+	gid, err := strconv.ParseUint(u.Gid, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("parse gid %q: %w", u.Gid, err)
+	}
+
+	cmd := exec.Command(binaryPath, "--config", configPath)
+	cmd.Dir = filepath.Dir(binaryPath)
+	if os.Geteuid() == 0 && uint32(uid) != uint32(os.Geteuid()) {
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Credential: &syscall.Credential{
+				Uid: uint32(uid),
+				Gid: uint32(gid),
+			},
+		}
+	}
+	cmd.Env = append(os.Environ(),
+		"HOME="+u.HomeDir,
+		"USER="+u.Username,
+		"LOGNAME="+u.Username,
+	)
+
+	if err := cmd.Start(); err != nil {
+		return 0, fmt.Errorf("start helper for uid %s: %w", sessionKey, err)
+	}
+	pid := cmd.Process.Pid
+	_ = cmd.Process.Release()
+	return pid, nil
+}
+
 func isHelperRunning() bool {
 	// Check for running process directly — the agent starts the helper via
 	// exec.Command, not launchctl bootstrap, so launchctl list won't show it.
-	return exec.Command("pgrep", "-f", "breeze-helper").Run() == nil
+	return runHelperCommand("pgrep", "-f", "breeze-helper") == nil
 }
 
 func stopHelper() error {
-	uid := currentUID()
+	uid := consoleUID()
 	if uid == "" {
-		return fmt.Errorf("could not determine current user ID")
+		return fmt.Errorf("could not determine console user ID")
 	}
-	return exec.Command("launchctl", "bootout", "gui/"+uid, plistPath).Run()
+	return runHelperCommand("launchctl", "bootout", "gui/"+uid, plistPath)
 }
 
-func currentUID() string {
-	out, err := exec.Command("id", "-u").Output()
+// consoleUID returns the UID of the user who owns the macOS console session.
+// When the agent runs as a root daemon, os.Getuid()/id -u returns 0, which
+// is wrong for launchctl bootout gui/<uid>. Use /dev/console ownership instead.
+func consoleUID() string {
+	out, err := outputHelperCommand("stat", "-f", "%u", "/dev/console")
 	if err != nil {
-		log.Warn("failed to get current uid", "error", err.Error())
+		log.Warn("failed to get console user uid", "error", err.Error())
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	uid, err := parseConsoleUIDOutput(out)
+	if err != nil {
+		log.Warn("failed to parse console user uid", "error", err.Error())
+		return ""
+	}
+	if uid == "0" {
+		log.Warn("console owned by root — no user session logged in")
+		return ""
+	}
+	return uid
 }

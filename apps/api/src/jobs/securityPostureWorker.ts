@@ -6,6 +6,7 @@ import { devices } from '../db/schema';
 import { publishEvent } from '../services/eventBus';
 import { getRedisConnection } from '../services/redis';
 import { computeAndPersistOrgSecurityPosture } from '../services/securityPosture';
+import { isReusableState } from '../services/bullmqUtils';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -30,6 +31,10 @@ function parsePositiveIntEnv(name: string, defaultValue: number): number {
 const SCORE_CHANGE_EVENT_LIMIT = parsePositiveIntEnv('SECURITY_SCORE_CHANGE_EVENT_LIMIT', 200);
 const SCORE_CHANGE_PUBLISH_CONCURRENCY = parsePositiveIntEnv('SECURITY_SCORE_CHANGE_PUBLISH_CONCURRENCY', 8);
 const SECURITY_POSTURE_WORKER_CONCURRENCY = parsePositiveIntEnv('SECURITY_POSTURE_WORKER_CONCURRENCY', 3);
+const SECURITY_POSTURE_ON_DEMAND_DEDUPE_WINDOW_MS = parsePositiveIntEnv(
+  'SECURITY_POSTURE_ON_DEMAND_DEDUPE_WINDOW_MS',
+  30 * 1000
+);
 
 type ScanOrgsJobData = {
   type: 'scan-orgs';
@@ -259,6 +264,19 @@ export async function shutdownSecurityPostureWorker(): Promise<void> {
 
 export async function triggerSecurityPostureRecompute(orgId: string): Promise<string> {
   const queue = getSecurityPostureQueue();
+  const slot = Math.floor(Date.now() / SECURITY_POSTURE_ON_DEMAND_DEDUPE_WINDOW_MS).toString(36);
+  const jobId = `security-posture-recompute:${orgId}:${slot}`;
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      return String(existing.id);
+    }
+    await existing.remove().catch((error) => {
+      console.error(`[SecurityPostureWorker] Failed to remove stale recompute job ${jobId}:`, error);
+    });
+  }
+
   const job = await queue.add(
     'compute-org',
     {
@@ -267,6 +285,7 @@ export async function triggerSecurityPostureRecompute(orgId: string): Promise<st
       queuedAt: new Date().toISOString()
     },
     {
+      jobId,
       removeOnComplete: true,
       removeOnFail: { count: 100 }
     }

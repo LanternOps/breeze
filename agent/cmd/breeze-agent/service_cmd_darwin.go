@@ -14,12 +14,14 @@ import (
 )
 
 const (
-	darwinBinaryPath   = "/usr/local/bin/breeze-agent"
-	darwinPlistDst     = "/Library/LaunchDaemons/com.breeze.agent.plist"
-	darwinUserPlistDst = "/Library/LaunchAgents/com.breeze.agent-user.plist"
-	darwinLogDir       = "/Library/Logs/Breeze"
-	darwinConfigDir    = "/Library/Application Support/Breeze"
-	darwinLabel        = "com.breeze.agent"
+	darwinBinaryPath                 = "/usr/local/bin/breeze-agent"
+	darwinDesktopHelperBinaryPath    = "/usr/local/bin/breeze-desktop-helper"
+	darwinPlistDst                   = "/Library/LaunchDaemons/com.breeze.agent.plist"
+	darwinDesktopUserPlistDst        = "/Library/LaunchAgents/com.breeze.desktop-helper-user.plist"
+	darwinDesktopLoginWindowPlistDst = "/Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist"
+	darwinLogDir                     = "/Library/Logs/Breeze"
+	darwinConfigDir                  = "/Library/Application Support/Breeze"
+	darwinLabel                      = "com.breeze.agent"
 )
 
 // Embedded plist — matches agent/service/launchd/com.breeze.agent.plist
@@ -40,10 +42,7 @@ const darwinPlist = `<?xml version="1.0" encoding="UTF-8"?>
     <true/>
 
     <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
+    <true/>
 
     <key>ThrottleInterval</key>
     <integer>5</integer>
@@ -66,33 +65,58 @@ const darwinPlist = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `
 
-// Embedded user-helper plist
-const darwinUserPlist = `<?xml version="1.0" encoding="UTF-8"?>
+const darwinDesktopUserPlist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.breeze.agent-user</string>
+    <string>com.breeze.desktop-helper-user</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/breeze-agent</string>
-        <string>user-helper</string>
-        <string>--role</string>
-        <string>user</string>
+        <string>/usr/local/bin/breeze-desktop-helper</string>
+        <string>--context</string>
+        <string>user_session</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
+    <true/>
     <key>LimitLoadToSessionType</key>
     <string>Aqua</string>
     <key>StandardOutPath</key>
-    <string>/tmp/breeze-agent-user.log</string>
+    <string>/tmp/breeze-desktop-helper-user.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/breeze-agent-user.log</string>
+    <string>/tmp/breeze-desktop-helper-user.log</string>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
+`
+
+const darwinDesktopLoginWindowPlist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.breeze.desktop-helper-loginwindow</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/breeze-desktop-helper</string>
+        <string>--context</string>
+        <string>login_window</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>LimitLoadToSessionType</key>
+    <string>LoginWindow</string>
+    <key>StandardOutPath</key>
+    <string>/tmp/breeze-desktop-helper-loginwindow.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/breeze-desktop-helper-loginwindow.log</string>
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>ProcessType</key>
@@ -174,12 +198,28 @@ var serviceInstallCmd = &cobra.Command{
 		}
 		fmt.Printf("LaunchDaemon plist installed to %s\n", darwinPlistDst)
 
-		// Always install the per-user desktop helper LaunchAgent (provides
-		// user-context operations: run_as_user scripts, Breeze Helper launch).
-		if err := os.WriteFile(darwinUserPlistDst, []byte(darwinUserPlist), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to write user-helper plist: %v\n", err)
+		desktopHelperSource := filepath.Join(filepath.Dir(exePath), "breeze-desktop-helper")
+		desktopHelperBytes, desktopHelperErr := os.ReadFile(desktopHelperSource)
+		if desktopHelperErr != nil {
+			desktopHelperBytes, desktopHelperErr = os.ReadFile(exePath)
+		}
+		if desktopHelperErr != nil {
+			return fmt.Errorf("failed to stage desktop helper binary: %w", desktopHelperErr)
+		}
+		if err := os.WriteFile(darwinDesktopHelperBinaryPath, desktopHelperBytes, 0755); err != nil {
+			return fmt.Errorf("failed to copy desktop helper to %s: %w", darwinDesktopHelperBinaryPath, err)
+		}
+		fmt.Printf("Desktop helper installed to %s\n", darwinDesktopHelperBinaryPath)
+
+		if err := os.WriteFile(darwinDesktopUserPlistDst, []byte(darwinDesktopUserPlist), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to write desktop-helper user plist: %v\n", err)
 		} else {
-			fmt.Printf("LaunchAgent plist installed to %s\n", darwinUserPlistDst)
+			fmt.Printf("LaunchAgent plist installed to %s\n", darwinDesktopUserPlistDst)
+		}
+		if err := os.WriteFile(darwinDesktopLoginWindowPlistDst, []byte(darwinDesktopLoginWindowPlist), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to write desktop-helper loginwindow plist: %v\n", err)
+		} else {
+			fmt.Printf("LaunchAgent plist installed to %s\n", darwinDesktopLoginWindowPlistDst)
 		}
 
 		// Create breeze group for IPC socket access (best-effort)
@@ -196,9 +236,16 @@ var serviceInstallCmd = &cobra.Command{
 		fmt.Println()
 		fmt.Println("Breeze Agent service installed.")
 
-		// If already enrolled, skip the enrollment step in Next Steps.
+		// Show contextual next steps based on enrollment and service state.
 		existingCfg, _ := config.Load(cfgFile)
-		if existingCfg != nil && existingCfg.AgentID != "" {
+		enrolled := existingCfg != nil && existingCfg.AgentID != ""
+		running := isSystemServiceRunning()
+
+		if enrolled && running {
+			// Already enrolled and running — nothing more to do.
+			fmt.Printf("\nAgent is enrolled and the service is running.\n")
+			fmt.Printf("  Logs:    tail -f %s/agent.log\n", darwinLogDir)
+		} else if enrolled {
 			fmt.Println()
 			fmt.Println("Next steps:")
 			fmt.Printf("  1. Start:   sudo breeze-agent service start\n")
@@ -244,13 +291,19 @@ var serviceUninstallCmd = &cobra.Command{
 		if err := os.Remove(darwinPlistDst); err != nil && !os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinPlistDst, err)
 		}
-		if err := os.Remove(darwinUserPlistDst); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinUserPlistDst, err)
+		if err := os.Remove(darwinDesktopUserPlistDst); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinDesktopUserPlistDst, err)
+		}
+		if err := os.Remove(darwinDesktopLoginWindowPlistDst); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinDesktopLoginWindowPlistDst, err)
 		}
 
 		// Remove binary
 		if err := os.Remove(darwinBinaryPath); err != nil && !os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinBinaryPath, err)
+		}
+		if err := os.Remove(darwinDesktopHelperBinaryPath); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinDesktopHelperBinaryPath, err)
 		}
 
 		fmt.Println("Breeze Agent service uninstalled.")
@@ -359,6 +412,41 @@ var serviceStatusCmd = &cobra.Command{
 		fmt.Printf("Logs: %s/agent.log\n", darwinLogDir)
 		return nil
 	},
+}
+
+// healLaunchdPlistsIfNeeded is the darwin implementation.
+func healLaunchdPlistsIfNeeded() { healLaunchdPlists() }
+
+// healLaunchdPlists checks the installed plists for the old SuccessfulExit
+// KeepAlive config and replaces them with KeepAlive=true. This runs on daemon
+// startup so existing installs self-heal after a binary-only auto-update.
+func healLaunchdPlists() {
+	if os.Geteuid() != 0 {
+		return // only root can write to /Library/LaunchDaemons
+	}
+	for _, entry := range []struct {
+		path    string
+		content string
+		label   string
+		domain  string // launchd domain for reload
+	}{
+		{darwinPlistDst, darwinPlist, darwinLabel, "system"},
+		{darwinDesktopUserPlistDst, darwinDesktopUserPlist, "com.breeze.desktop-helper-user", ""},
+		{darwinDesktopLoginWindowPlistDst, darwinDesktopLoginWindowPlist, "com.breeze.desktop-helper-loginwindow", "loginwindow"},
+	} {
+		data, err := os.ReadFile(entry.path)
+		if err != nil {
+			continue // plist doesn't exist, nothing to heal
+		}
+		if !strings.Contains(string(data), "SuccessfulExit") {
+			continue // already has KeepAlive=true
+		}
+		if err := os.WriteFile(entry.path, []byte(entry.content), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to heal plist %s: %v\n", entry.path, err)
+			continue
+		}
+		fmt.Printf("Healed launchd plist %s (KeepAlive=true)\n", entry.path)
+	}
 }
 
 // isLaunchdLoaded checks if the given label is loaded in launchd.

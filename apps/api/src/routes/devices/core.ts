@@ -18,7 +18,67 @@ import { PERMISSIONS } from '../../services/permissions';
 import { getPagination, getDeviceWithOrgCheck } from './helpers';
 import { listDevicesSchema, updateDeviceSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
+import { sendCommandToAgent, isAgentConnected } from '../agentWs';
+import { CommandTypes } from '../../services/commandQueue';
+import { getGlobalEnrollmentSecret } from '../agents/enrollment';
+
+/**
+ * All tables with a direct device_id FK to devices.id, ordered so children come
+ * before parents (to avoid FK violations during cascade delete).
+ *
+ * Tables whose only FK to devices is via an intermediate table with ON DELETE CASCADE
+ * (e.g. vault_snapshot_inventory → local_vaults) don't need to be listed here.
+ *
+ * IMPORTANT: When you add a new table with a device_id FK, add it here.
+ * The test in core.test.ts will fail CI if you forget.
+ */
+export const DEVICE_CASCADE_DELETE_TABLES = [
+  // recovery_tokens & backup_chains FK to backup_snapshots (no cascade),
+  // so delete them first, then restore_jobs → backup_snapshots → backup_jobs
+  'recovery_tokens', 'backup_chains',
+  'restore_jobs', 'backup_verifications', 'backup_snapshots', 'backup_jobs',
+  // Application backup & DR
+  'sql_instances', 'local_vaults', 'hyperv_vms',
+  // Core device tables
+  'device_group_memberships', 'group_membership_log',
+  'device_hardware', 'device_network', 'device_ip_history', 'device_disks',
+  'device_metrics', 'device_software', 'device_registry_state', 'device_config_state',
+  'device_commands', 'device_connections', 'device_boot_metrics',
+  'device_sessions', 'device_change_log', 'device_warranty',
+  // Patches
+  'device_patches', 'patch_job_results', 'patch_rollbacks',
+  // Deployments & software
+  'deployment_devices', 'deployment_results', 'software_inventory',
+  'software_compliance_status', 'software_policy_audit',
+  // Remote access
+  'remote_sessions', 'file_transfers', 'tunnel_sessions',
+  // Monitoring & logs
+  'service_process_check_results', 'alerts', 'agent_logs', 'script_executions',
+  'device_event_logs', 'automation_policy_compliance', 'backup_sla_events',
+  // Security
+  'sensitive_data_scans', 'sensitive_data_findings',
+  'dns_security_events', 'dns_event_aggregations',
+  'security_status', 'security_threats', 'security_scans', 'security_posture_snapshots',
+  'cis_baseline_results', 'cis_remediation_actions',
+  'browser_extensions', 'browser_policy_violations',
+  'audit_baseline_results', 'audit_policy_states',
+  'peripheral_events',
+  's1_agents', 's1_threats', 's1_actions',
+  'huntress_agents', 'huntress_incidents',
+  // AI & context
+  'ai_sessions', 'ai_screenshots', 'brain_device_context',
+  // Analytics & reliability
+  'device_reliability_history', 'device_reliability',
+  'playbook_executions', 'time_series_metrics', 'capacity_predictions',
+  // Portal & integrations
+  'psa_ticket_mappings', 'tickets', 'asset_checkouts',
+  // Filesystem
+  'device_filesystem_snapshots', 'device_filesystem_cleanup_runs', 'device_filesystem_scan_state',
+  // Backup verification
+  'recovery_readiness',
+] as const;
 
 export const coreRoutes = new Hono();
 
@@ -31,7 +91,9 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-// POST /devices/onboarding-token - Generate a short-lived enrollment key
+// POST /devices/onboarding-token - Generate a short-lived enrollment key.
+// If AGENT_ENROLLMENT_SECRET is configured, enrollment also requires that
+// shared secret; otherwise the short-lived key stands on its own.
 coreRoutes.post(
   '/onboarding-token',
   requireScope('organization', 'partner', 'system'),
@@ -87,14 +149,14 @@ coreRoutes.post(
       createdBy: auth.user.id,
     });
 
-    const configuredSecret = process.env.AGENT_ENROLLMENT_SECRET;
-    const secretRequired =
-      (process.env.NODE_ENV ?? 'development') === 'production'
-      && typeof configuredSecret === 'string'
-      && configuredSecret.length > 0;
+    const configuredSecret = getGlobalEnrollmentSecret();
+    const secretRequired = configuredSecret !== null;
 
     return c.json({
       token: key,
+      expiresAt: expiresAt.toISOString(),
+      enrollmentSecretMode: secretRequired ? 'global_env' : 'none',
+      additionalSecretRequired: secretRequired,
       ...(secretRequired && { enrollmentSecret: configuredSecret }),
     });
   }
@@ -179,8 +241,10 @@ coreRoutes.get(
         enrolledAt: devices.enrolledAt,
         tags: devices.tags,
         customFields: devices.customFields,
+        desktopAccess: devices.desktopAccess,
         lastUser: devices.lastUser,
         uptimeSeconds: devices.uptimeSeconds,
+        isHeadless: devices.isHeadless,
         createdAt: devices.createdAt,
         updatedAt: devices.updatedAt,
         // Hardware summary
@@ -265,8 +329,10 @@ coreRoutes.get(
         enrolledAt: d.enrolledAt,
         tags: d.tags,
         customFields: d.customFields,
+        desktopAccess: d.desktopAccess,
         lastUser: d.lastUser,
         uptimeSeconds: d.uptimeSeconds,
+        isHeadless: d.isHeadless,
         createdAt: d.createdAt,
         updatedAt: d.updatedAt,
         cpuPercent: latestMetrics?.cpuPercent ?? 0,
@@ -369,6 +435,22 @@ coreRoutes.get(
       .where(eq(sites.id, device.siteId))
       .limit(1);
 
+    // Resolve remote access policy (non-critical — don't fail the whole response)
+    let remoteAccessPolicy = null;
+    try {
+      const remoteAccess = await resolveRemoteAccessForDevice(deviceId);
+      remoteAccessPolicy = remoteAccess.policyId ? {
+        webrtcDesktop: remoteAccess.settings.webrtcDesktop,
+        vncRelay: remoteAccess.settings.vncRelay,
+        remoteTools: remoteAccess.settings.remoteTools,
+        enableProxy: remoteAccess.settings.enableProxy,
+        policyName: remoteAccess.policyName,
+        policyId: remoteAccess.policyId,
+      } : null;
+    } catch (err) {
+      console.error(`[DeviceDetail] Failed to resolve remote access policy for ${deviceId}:`, err);
+    }
+
     return c.json({
       ...device,
       hardware: hardware || null,
@@ -376,7 +458,8 @@ coreRoutes.get(
       recentMetrics,
       groups: memberships,
       siteName: site?.name || 'Unknown Site',
-      siteTimezone: site?.timezone || 'UTC'
+      siteTimezone: site?.timezone || 'UTC',
+      remoteAccessPolicy,
     });
   }
 );
@@ -503,6 +586,9 @@ coreRoutes.post(
       .update(devices)
       .set({
         agentTokenHash: tokenHash,
+        tokenIssuedAt: new Date(),
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
         updatedAt: new Date()
       })
       .where(eq(devices.id, deviceId))
@@ -617,29 +703,41 @@ coreRoutes.delete(
       return c.json({ error: 'Device must be decommissioned before permanent deletion' }, 400);
     }
 
+    // Best-effort: send self_uninstall command if the agent is online.
+    // We don't block deletion on this succeeding — fire and forget.
+    let uninstallSent = false;
+    if (device.agentId && isAgentConnected(device.agentId)) {
+      try {
+        uninstallSent = sendCommandToAgent(device.agentId, {
+          id: `uninstall-${deviceId}`,
+          type: CommandTypes.SELF_UNINSTALL,
+          payload: { removeConfig: true },
+        });
+      } catch (err) {
+        console.error(`[devices] best-effort self_uninstall failed for ${deviceId}:`, err);
+      }
+    }
+
     // Cascade: remove all FK-referencing records in a transaction.
     // Uses raw SQL to cover all child tables without importing each schema.
+    // When adding new tables with device_id FK, add them here too.
     try {
       await db.transaction(async (tx) => {
-        const tables = [
-          'device_group_memberships', 'device_hardware', 'device_network', 'device_metrics',
-          'device_software', 'device_software_history', 'device_disks', 'device_connections',
-          'device_boot_metrics', 'device_registry_state', 'device_config_state',
-          'device_patches', 'device_patch_history', 'device_patch_state',
-          'device_commands', 'device_event_logs', 'device_analytics',
-          'alerts', 'agent_logs', 'script_executions', 'automation_executions',
-          'sessions', 'remote_sessions', 'remote_desktop_sessions',
-          'changes', 'device_service_processes',
-          'software_policy_device_states', 'sensitive_data_scans',
-          'security_posture_device_details', 'security_scan_history', 'security_findings',
-          'cis_device_results', 'cis_device_scans',
-          'deployment_devices', 'backup_jobs',
-          'browser_security_profiles', 'browser_extension_inventory',
-          'device_filesystem_snapshots', 'device_filesystem_cleanup_runs', 'device_filesystem_scan_state',
-          'audit_baseline_results', 'audit_device_profiles',
-          'peripheral_control_device_policies',
-          'ai_device_contexts', 'brain_device_contexts',
-        ];
+        // Transitive dependencies: tables that reference device-scoped records
+        // but don't have a direct device_id column.
+        const deviceAlertIds = sql`(SELECT id FROM alerts WHERE device_id = ${deviceId})`;
+        const deviceAiSessionIds = sql`(SELECT id FROM ai_sessions WHERE device_id = ${deviceId})`;
+
+        await tx.execute(sql`DELETE FROM ai_tool_executions WHERE session_id IN ${deviceAiSessionIds}`);
+        await tx.execute(sql`DELETE FROM ai_messages WHERE session_id IN ${deviceAiSessionIds}`);
+        await tx.execute(sql`DELETE FROM ai_action_plans WHERE session_id IN ${deviceAiSessionIds}`);
+        await tx.execute(sql`DELETE FROM alert_correlations WHERE parent_alert_id IN ${deviceAlertIds} OR child_alert_id IN ${deviceAlertIds}`);
+        await tx.execute(sql`DELETE FROM alert_notifications WHERE alert_id IN ${deviceAlertIds}`);
+        await tx.execute(sql`UPDATE log_correlations SET alert_id = NULL WHERE alert_id IN ${deviceAlertIds}`);
+        await tx.execute(sql`UPDATE network_change_events SET alert_id = NULL WHERE alert_id IN ${deviceAlertIds}`);
+        await tx.execute(sql`UPDATE network_change_events SET linked_device_id = NULL WHERE linked_device_id = ${deviceId}`);
+
+        const tables = DEVICE_CASCADE_DELETE_TABLES;
         for (const table of tables) {
           await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE device_id = ${deviceId}`);
         }
@@ -648,6 +746,8 @@ coreRoutes.delete(
     } catch (err: unknown) {
       const pgCode = (err as { code?: string })?.code;
       if (pgCode === '23503') {
+        const detail = (err as { detail?: string })?.detail ?? 'unknown constraint';
+        console.error(`[devices] FK violation during cascade delete of ${deviceId}: ${detail}`, err);
         return c.json({ error: 'Cannot delete: device still has related records. Please contact support.' }, 409);
       }
       throw err;
@@ -658,7 +758,8 @@ coreRoutes.delete(
       action: 'device.permanent_delete',
       resourceType: 'device',
       resourceId: deviceId,
-      resourceName: device.hostname ?? device.displayName ?? deviceId
+      resourceName: device.hostname ?? device.displayName ?? deviceId,
+      details: { uninstallCommandSent: uninstallSent }
     });
 
     return c.json({ success: true });

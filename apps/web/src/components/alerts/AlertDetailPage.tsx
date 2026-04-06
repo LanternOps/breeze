@@ -4,9 +4,14 @@ import { fetchWithAuth } from '../../stores/auth';
 import { cn } from '@/lib/utils';
 import { useAiStore } from '@/stores/aiStore';
 import { navigateTo } from '@/lib/navigation';
-
-type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
-type AlertStatus = 'active' | 'acknowledged' | 'resolved' | 'suppressed';
+import Breadcrumbs from '../layout/Breadcrumbs';
+import {
+  severityConfig,
+  statusConfig,
+  formatDateTime,
+  type AlertSeverity,
+  type AlertStatus,
+} from './alertConfig';
 
 type Alert = {
   id: string;
@@ -30,26 +35,12 @@ type AlertDetailPageProps = {
   alertId: string;
 };
 
-const severityConfig: Record<AlertSeverity, { label: string; color: string; bgColor: string }> = {
-  critical: { label: 'Critical', color: 'text-red-700', bgColor: 'bg-red-500/20 border-red-500/40' },
-  high: { label: 'High', color: 'text-orange-700', bgColor: 'bg-orange-500/20 border-orange-500/40' },
-  medium: { label: 'Medium', color: 'text-yellow-700', bgColor: 'bg-yellow-500/20 border-yellow-500/40' },
-  low: { label: 'Low', color: 'text-blue-700', bgColor: 'bg-blue-500/20 border-blue-500/40' },
-  info: { label: 'Info', color: 'text-gray-700', bgColor: 'bg-gray-500/20 border-gray-500/40' }
+const statusIcons: Record<AlertStatus, typeof Bell> = {
+  active: Bell,
+  acknowledged: CheckCircle,
+  resolved: CheckCircle,
+  suppressed: Bell,
 };
-
-const statusConfig: Record<AlertStatus, { label: string; color: string; icon: typeof Bell }> = {
-  active: { label: 'Active', color: 'bg-red-500/20 text-red-700 border-red-500/40', icon: Bell },
-  acknowledged: { label: 'Acknowledged', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40', icon: CheckCircle },
-  resolved: { label: 'Resolved', color: 'bg-green-500/20 text-green-700 border-green-500/40', icon: XCircle },
-  suppressed: { label: 'Suppressed', color: 'bg-gray-500/20 text-gray-700 border-gray-500/40', icon: Bell }
-};
-
-function formatDateTime(dateString: string): string {
-  const date = new Date(dateString);
-  if (Number.isNaN(date.getTime())) return dateString;
-  return date.toLocaleString();
-}
 
 export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
   const [alert, setAlert] = useState<Alert | null>(null);
@@ -176,18 +167,14 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
     );
   }
 
-  const StatusIcon = statusConfig[alert.status].icon;
+  const StatusIcon = statusIcons[alert.status];
 
   return (
     <div className="space-y-6">
-      <button
-        type="button"
-        onClick={handleBack}
-        className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
-      >
-        <ArrowLeft className="h-4 w-4" />
-        Back to alerts
-      </button>
+      <Breadcrumbs items={[
+        { label: 'Alerts', href: '/alerts' },
+        { label: alert.title || 'Alert' }
+      ]} />
 
       {/* Header Card */}
       <div className="rounded-lg border bg-card p-6 shadow-sm">
@@ -196,18 +183,18 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
             <div
               className={cn(
                 'flex h-12 w-12 items-center justify-center rounded-lg',
-                severityConfig[alert.severity].bgColor
+                severityConfig[alert.severity].bg, severityConfig[alert.severity].border
               )}
             >
               <AlertTriangle className={cn('h-6 w-6', severityConfig[alert.severity].color)} />
             </div>
             <div>
-              <h1 className="text-2xl font-bold">{alert.title}</h1>
+              <h1 className="text-xl font-semibold tracking-tight">{alert.title}</h1>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <span
                   className={cn(
                     'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium',
-                    severityConfig[alert.severity].bgColor,
+                    severityConfig[alert.severity].bg, severityConfig[alert.severity].border,
                     severityConfig[alert.severity].color
                   )}
                 >
@@ -246,7 +233,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                 disabled={actionInProgress}
                 className="h-10 rounded-md bg-green-600 px-4 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
               >
-                <XCircle className="mr-2 inline-block h-4 w-4" />
+                <CheckCircle className="mr-2 inline-block h-4 w-4" />
                 Resolve
               </button>
             )}

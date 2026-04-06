@@ -26,6 +26,7 @@ import { roleRoutes } from './routes/roles';
 import { auditLogRoutes } from './routes/auditLogs';
 import { backupRoutes } from './routes/backup';
 import { reportRoutes } from './routes/reports';
+import { incidentRoutes } from './routes/incidents';
 import { searchRoutes } from './routes/search';
 import { logsRoutes } from './routes/logs';
 import { remoteRoutes } from './routes/remote';
@@ -38,7 +39,7 @@ import { webhookRoutes } from './routes/webhooks';
 import { policyRoutes } from './routes/policyManagement';
 import { configPolicyRoutes } from './routes/configurationPolicies';
 import { psaRoutes } from './routes/psa';
-import { patchRoutes } from './routes/patches';
+import { patchRoutes } from './routes/patches/index';
 import { patchPolicyRoutes } from './routes/patchPolicies';
 import { updateRingRoutes } from './routes/updateRings';
 import { mobileRoutes } from './routes/mobile';
@@ -74,6 +75,8 @@ import { deploymentRoutes } from './routes/deployments';
 import { createAgentWsRoutes } from './routes/agentWs';
 import { createTerminalWsRoutes } from './routes/terminalWs';
 import { createDesktopWsRoutes } from './routes/desktopWs';
+import { createTunnelWsRoutes } from './routes/tunnelWs';
+import { tunnelRoutes } from './routes/tunnels';
 import { agentVersionRoutes } from './routes/agentVersions';
 import { viewerRoutes } from './routes/viewers';
 import { aiRoutes } from './routes/ai';
@@ -92,6 +95,8 @@ import { huntressRoutes } from './routes/huntress';
 import { sensitiveDataRoutes } from './routes/sensitiveData';
 import { peripheralControlRoutes } from './routes/peripheralControl';
 import { browserSecurityRoutes } from './routes/browserSecurity';
+import { c2cRoutes, m365CallbackRoute } from './routes/c2c';
+import { drRoutes } from './routes/dr';
 import { captureException } from './services/sentry';
 import { partnerGuard } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
@@ -122,6 +127,7 @@ import { initializePatchComplianceReportWorker, shutdownPatchComplianceReportWor
 import { initializeSoftwareComplianceWorker, shutdownSoftwareComplianceWorker } from './jobs/softwareComplianceWorker';
 import { initializeSoftwareRemediationWorker, shutdownSoftwareRemediationWorker } from './jobs/softwareRemediationWorker';
 import { initializeAuditBaselineJobs, shutdownAuditBaselineJobs } from './jobs/auditBaselineJobs';
+import { initializeBackupVerificationJobs, shutdownBackupVerificationJobs } from './jobs/backupVerificationJobs';
 import { initializeDnsSyncJob, shutdownDnsSyncJob } from './jobs/dnsSyncJob';
 import { initializeS1SyncJob, shutdownS1SyncJob } from './jobs/s1Sync';
 import { initializeLogForwardingWorker, shutdownLogForwardingWorker } from './jobs/logForwardingWorker';
@@ -133,7 +139,22 @@ import { initializeHuntressSyncJob, shutdownHuntressSyncJob } from './jobs/huntr
 import { initializeSensitiveDataWorkers, shutdownSensitiveDataWorkers } from './jobs/sensitiveDataJobs';
 import { initializePeripheralJobs, shutdownPeripheralJobs } from './jobs/peripheralJobs';
 import { initializeBrowserSecurityJobs, shutdownBrowserSecurityJobs } from './jobs/browserSecurityJobs';
+import { initializeC2cBackupWorker, shutdownC2cBackupWorker } from './jobs/c2cBackupWorker';
+import { initializeBackupSlaWorker, shutdownBackupSlaWorker } from './jobs/backupSlaWorker';
+import { initializeDrExecutionWorker, shutdownDrExecutionWorker } from './jobs/drExecutionWorker';
+import { initializeRecoveryMediaWorker, shutdownRecoveryMediaWorker } from './jobs/recoveryMediaWorker';
+import { initializeRecoveryBootMediaWorker, shutdownRecoveryBootMediaWorker } from './jobs/recoveryBootMediaWorker';
 import { initializeWarrantyWorker, shutdownWarrantyWorker } from './services/warrantyWorker';
+import { backfillC2cConnectionSecrets } from './services/c2cSecrets';
+import {
+  initializeIncidentCorrelationWorker,
+  shutdownIncidentCorrelationWorker,
+  initializeIncidentTimelineEnricher,
+  shutdownIncidentTimelineEnricher,
+  initializeIncidentSlaMonitor,
+  shutdownIncidentSlaMonitor,
+} from './jobs/incidentJobs';
+import { initializeStaleCommandReaper, shutdownStaleCommandReaper } from './jobs/staleCommandReaper';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -213,6 +234,14 @@ app.use('*', async (c, next) => {
   // Dev-push uploads agent binaries (~20MB); skip the default 1MB limit.
   if (c.req.path.startsWith('/api/v1/dev/push')) {
     return bodyLimit({ maxSize: 150 * 1024 * 1024, onError: (ctx) => ctx.json({ error: 'Binary too large (max 150MB)' }, 413) })(c, next);
+  }
+  // File transfer chunk uploads can be up to 50MB; route-level bodyLimit handles the real cap.
+  if (c.req.path.match(/^\/api\/v1\/remote\/transfers\/[^/]+\/chunks$/)) {
+    return bodyLimit({ maxSize: 50 * 1024 * 1024, onError: (ctx) => ctx.json({ error: 'Chunk too large (max 50MB)' }, 413) })(c, next);
+  }
+  // File browser uploads send base64-encoded content in JSON body (~33% overhead).
+  if (c.req.path.match(/^\/api\/v1\/system-tools\/devices\/[^/]+\/files\/upload$/)) {
+    return bodyLimit({ maxSize: 50 * 1024 * 1024, onError: (ctx) => ctx.json({ error: 'File too large (max ~37MB)' }, 413) })(c, next);
   }
   return bodyLimit({ maxSize: 1024 * 1024, onError: (ctx) => ctx.json({ error: 'Request body too large' }, 413) })(c, next);
 });
@@ -622,10 +651,13 @@ api.route('/roles', roleRoutes);
 api.route('/audit-logs', auditLogRoutes);
 api.route('/backup', backupRoutes);
 api.route('/reports', reportRoutes);
+api.route('/incidents', incidentRoutes);
 api.route('/search', searchRoutes);
 api.route('/logs', logsRoutes);
 api.route('/remote/sessions', createTerminalWsRoutes(upgradeWebSocket)); // WebSocket routes first (no auth middleware)
 api.route('/desktop-ws', createDesktopWsRoutes(upgradeWebSocket)); // Desktop WebSocket routes (outside /remote to avoid auth middleware)
+api.route('/tunnel-ws', createTunnelWsRoutes(upgradeWebSocket)); // Tunnel WebSocket routes (no auth middleware — uses one-time tickets)
+api.route('/tunnels', tunnelRoutes);
 api.route('/remote', remoteRoutes);
 api.route('/api-keys', apiKeyRoutes);
 api.route('/enrollment-keys', enrollmentKeyRoutes);
@@ -687,6 +719,9 @@ api.route('/software-inventory', softwareInventoryRoutes);
 api.route('/sensitive-data', sensitiveDataRoutes);
 api.route('/peripherals', peripheralControlRoutes);
 api.route('/browser-security', browserSecurityRoutes);
+api.route('/', m365CallbackRoute); // Public callback (no auth) — must precede c2c group
+api.route('/c2c', c2cRoutes);
+api.route('/dr', drRoutes);
 
 app.route('/api/v1', api);
 
@@ -879,6 +914,7 @@ async function initializeWorkers(): Promise<void> {
     ['reliabilityWorker', initializeReliabilityWorker],
     ['userRiskWorker', initializeUserRiskJobs],
     ['userRiskRetention', initializeUserRiskRetention],
+    ['backupVerificationJobs', initializeBackupVerificationJobs],
     ['policyAlertBridge', initializePolicyAlertBridge],
     ['eventLogRetention', initializeEventLogRetention],
     ['logCorrelationWorker', initializeLogCorrelationWorker],
@@ -903,7 +939,16 @@ async function initializeWorkers(): Promise<void> {
     ['sensitiveDataWorker', initializeSensitiveDataWorkers],
     ['peripheralJobs', initializePeripheralJobs],
     ['browserSecurityWorker', initializeBrowserSecurityJobs],
+    ['c2cBackupWorker', initializeC2cBackupWorker],
+    ['backupSlaWorker', initializeBackupSlaWorker],
+    ['drExecutionWorker', initializeDrExecutionWorker],
+    ['recoveryMediaWorker', initializeRecoveryMediaWorker],
+    ['recoveryBootMediaWorker', initializeRecoveryBootMediaWorker],
     ['warrantyWorker', initializeWarrantyWorker],
+    ['incidentCorrelationWorker', initializeIncidentCorrelationWorker],
+    ['incidentTimelineEnricher', initializeIncidentTimelineEnricher],
+    ['incidentSlaMonitor', initializeIncidentSlaMonitor],
+    ['staleCommandReaper', initializeStaleCommandReaper],
   ];
 
   await Promise.allSettled(
@@ -990,15 +1035,24 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownLogForwardingWorker,
     shutdownPatchJobWorkers,
     shutdownBackupWorker,
+    shutdownC2cBackupWorker,
+    shutdownBackupSlaWorker,
+    shutdownDrExecutionWorker,
+    shutdownRecoveryMediaWorker,
+    shutdownRecoveryBootMediaWorker,
     shutdownPatchSchedulerWorker,
     shutdownSensitiveDataWorkers,
     shutdownPeripheralJobs,
     shutdownWarrantyWorker,
     shutdownBrowserSecurityJobs,
+    shutdownIncidentSlaMonitor,
+    shutdownIncidentTimelineEnricher,
+    shutdownIncidentCorrelationWorker,
     shutdownPatchComplianceReportWorker,
     shutdownDnsSyncJob,
     shutdownS1SyncJob,
     shutdownHuntressSyncJob,
+    shutdownBackupVerificationJobs,
     shutdownSnmpRetention,
     shutdownMonitorWorker,
     shutdownSnmpWorker,
@@ -1024,6 +1078,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownNotificationDispatcher,
     shutdownOfflineDetector,
     shutdownAlertWorkers,
+    shutdownStaleCommandReaper,
     async () => getEventBus().close(),
     closeRedis,
     async () => {
@@ -1118,6 +1173,17 @@ async function bootstrap(): Promise<void> {
     });
   } catch (err) {
     console.error('[startup] Failed to seed audit baseline templates:', err);
+  }
+
+  try {
+    await runWithSystemDbAccess(async () => {
+      const result = await backfillC2cConnectionSecrets();
+      if (result.updated > 0) {
+        console.log(`[startup] Encrypted C2C secrets for ${result.updated} connection(s)`);
+      }
+    });
+  } catch (err) {
+    console.error('[startup] Failed to backfill C2C connection secrets:', err);
   }
 
   // Register local agent binaries in DB and optionally sync to S3 (BINARY_SOURCE=local only)

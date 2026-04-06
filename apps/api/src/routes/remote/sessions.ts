@@ -6,10 +6,12 @@ import { db } from '../../db';
 import {
   remoteSessions,
   devices,
+  deviceHardware,
   users
 } from '../../db/schema';
 import { requireScope } from '../../middleware/auth';
 import { sendCommandToAgent } from '../agentWs';
+import { checkRemoteAccess } from '../../services/remoteAccessPolicy';
 import { createDesktopConnectCode, createWsTicket } from '../../services/remoteSessionAuth';
 import {
   createSessionSchema,
@@ -112,6 +114,21 @@ sessionRoutes.post(
     // Check device is online
     if (device.status !== 'online') {
       return c.json({ error: 'Device is not online', deviceStatus: device.status }, 400);
+    }
+
+    // Remote access policy enforcement
+    const capability = data.type === 'desktop' ? 'webrtcDesktop' as const
+      : 'remoteTools' as const; // terminal + file_transfer are both remote tools
+    {
+      const policyCheck = await checkRemoteAccess(data.deviceId, capability);
+      if (!policyCheck.allowed) {
+        return c.json({
+          error: policyCheck.reason,
+          code: 'REMOTE_ACCESS_POLICY_DENIED',
+          capability,
+          policyName: policyCheck.policyName,
+        }, 403);
+      }
     }
 
     // Check rate limit for org
@@ -574,15 +591,7 @@ sessionRoutes.post(
       const code = await createDesktopConnectCode({
         sessionId: session.id,
         userId: auth.user.id,
-        tokenPayload: {
-          sub: auth.user.id,
-          email: auth.user.email,
-          roleId: auth.token.roleId,
-          orgId: auth.token.orgId,
-          partnerId: auth.token.partnerId,
-          scope: auth.token.scope,
-          mfa: auth.token.mfa
-        }
+        email: auth.user.email
       });
 
       return c.json(code);
@@ -657,23 +666,45 @@ sessionRoutes.post(
 
     // Send start_desktop command to agent with the offer and ICE servers
     // The agent will create a pion PeerConnection and return the answer
-    let agentReachable = false;
-    if (device.agentId) {
-      agentReachable = sendCommandToAgent(device.agentId, {
-        id: `desk-${sessionId}`,
-        type: 'start_desktop',
-        payload: { sessionId, offer: data.offer, iceServers: getIceServers(), ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}) }
-      });
-      if (!agentReachable) {
-        console.warn(`[Remote] Agent ${device.agentId} not connected, cannot send start_desktop for session ${sessionId}`);
+    if (!device.agentId) {
+      console.error(`[Remote] Device ${device.id} has no agentId, cannot send start_desktop for session ${sessionId}`);
+      return c.json({ error: 'Device has no agent connection identifier' }, 502);
+    }
+
+    // Look up GPU vendor from device hardware inventory
+    let gpuVendor: string | undefined;
+    try {
+      const [hw] = await db.select({ gpuModel: deviceHardware.gpuModel })
+        .from(deviceHardware)
+        .where(eq(deviceHardware.deviceId, device.id))
+        .limit(1);
+      if (hw?.gpuModel) {
+        const g = hw.gpuModel.toLowerCase();
+        if (g.includes('nvidia') || g.includes('geforce') || g.includes('quadro') || g.includes('rtx')) {
+          gpuVendor = 'nvidia';
+        } else if (g.includes('radeon') || g.includes('amd')) {
+          gpuVendor = 'amd';
+        } else if (g.includes('intel') || g.includes('uhd') || g.includes('iris')) {
+          gpuVendor = 'intel';
+        }
       }
+    } catch { /* non-fatal — encoder auto-detects */ }
+
+    const agentReachable = sendCommandToAgent(device.agentId, {
+      id: `desk-start-${sessionId}`,
+      type: 'start_desktop',
+      payload: { sessionId, offer: data.offer, iceServers: getIceServers(), ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}), ...(data.targetSessionId != null ? { targetSessionId: data.targetSessionId } : {}), ...(gpuVendor ? { gpuVendor } : {}) }
+    });
+
+    if (!agentReachable) {
+      console.warn(`[Remote] Agent ${device.agentId} not connected, cannot send start_desktop for session ${sessionId}`);
+      return c.json({ error: 'Agent is not currently connected. Please verify the device is online and try again.' }, 502);
     }
 
     return c.json({
       id: updated.id,
       status: updated.status,
       webrtcOffer: updated.webrtcOffer,
-      ...(agentReachable ? {} : { warning: 'Agent is not currently connected; the offer will be delivered when it reconnects' })
     });
   }
 );

@@ -67,6 +67,25 @@ func NewScanner(config ScanConfig) *Scanner {
 	}
 }
 
+// TargetCount returns the number of resolved IP targets for the current scan configuration.
+func (s *Scanner) TargetCount() (int, error) {
+	subnets, err := parseSubnets(s.config.Subnets)
+	if err != nil {
+		return 0, err
+	}
+	if len(subnets) == 0 {
+		return 0, fmt.Errorf("no valid subnets provided")
+	}
+
+	exclude := make(map[string]struct{}, len(s.config.ExcludeIPs))
+	for _, ip := range s.config.ExcludeIPs {
+		exclude[ip] = struct{}{}
+	}
+
+	targets := expandTargets(subnets, exclude, s.config.DeepScan)
+	return len(targets), nil
+}
+
 // Scan executes the configured discovery methods and returns discovered hosts.
 func (s *Scanner) Scan() ([]DiscoveredHost, error) {
 	slog.Info("Starting network discovery scan")

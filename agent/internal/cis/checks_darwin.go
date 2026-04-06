@@ -11,7 +11,7 @@ import (
 )
 
 func platformChecks() []Check {
-	return []Check{
+	checks := []Check{
 		{
 			ID:       "2.2.1",
 			Title:    "Ensure FileVault is enabled",
@@ -69,6 +69,7 @@ func platformChecks() []Check {
 			Fn:       checkSafariAutoOpen,
 		},
 	}
+	return append(checks, sharingAndSecurityChecks()...)
 }
 
 // checkFileVaultEnabled validates CIS 2.2.1.

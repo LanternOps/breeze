@@ -39,6 +39,10 @@ export default function OrganizationsPage() {
   const [error, setError] = useState<string>();
   const [modalMode, setModalMode] = useState<ModalMode>('closed');
   const [selectedOrg, setSelectedOrg] = useState<Organization | null>(null);
+  const [initialOrgId] = useState(() => {
+    if (typeof window === 'undefined') return null;
+    return window.location.hash.replace('#', '') || null;
+  });
   const [submitting, setSubmitting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -102,6 +106,14 @@ export default function OrganizationsPage() {
     fetchOrganizations();
   }, [fetchOrganizations]);
 
+  // Auto-select org from URL param on initial load
+  useEffect(() => {
+    if (initialOrgId && organizations.length > 0 && !selectedOrg) {
+      const match = organizations.find(o => o.id === initialOrgId);
+      if (match) setSelectedOrg(match);
+    }
+  }, [initialOrgId, organizations, selectedOrg]);
+
   useEffect(() => {
     if (selectedOrg) {
       fetchSites(selectedOrg.id);
@@ -116,8 +128,7 @@ export default function OrganizationsPage() {
   };
 
   const handleEdit = (org: Organization) => {
-    setSelectedOrg(org);
-    setModalMode('edit');
+    void navigateTo(`/settings/organizations/${org.id}`);
   };
 
   const handleDelete = (org: Organization) => {
@@ -129,6 +140,7 @@ export default function OrganizationsPage() {
     setSelectedOrg(prev => prev?.id === org.id ? prev : org);
     setSiteModalMode('closed');
     setSelectedSite(null);
+    window.location.hash = org.id;
   };
 
   const handleCloseModal = () => {
@@ -138,13 +150,8 @@ export default function OrganizationsPage() {
   const handleSubmit = async (values: OrganizationFormValues) => {
     setSubmitting(true);
     try {
-      const url = modalMode === 'edit' && selectedOrg
-        ? `/orgs/organizations/${selectedOrg.id}`
-        : '/orgs/organizations';
-      const method = modalMode === 'edit' ? 'PATCH' : 'POST';
-
-      const response = await fetchWithAuth(url, {
-        method,
+      const response = await fetchWithAuth('/orgs/organizations', {
+        method: 'POST',
         body: JSON.stringify(values)
       });
 
@@ -316,7 +323,7 @@ export default function OrganizationsPage() {
       {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Organizations & Sites</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Organizations & Sites</h1>
           <p className="text-muted-foreground">Manage organizations and their sites.</p>
         </div>
         <button
@@ -477,6 +484,7 @@ export default function OrganizationsPage() {
                     onAddSite={handleAddSite}
                     onEdit={handleEditSite}
                     onDelete={handleDeleteSite}
+                    onSiteClick={(site) => void navigateTo(`/settings/sites/${site.id}`)}
                   />
                 )}
               </div>
@@ -505,31 +513,19 @@ export default function OrganizationsPage() {
       </div>
 
       {/* Org Add/Edit Modal */}
-      {(modalMode === 'add' || modalMode === 'edit') && (
+      {modalMode === 'add' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
             <div className="mb-4">
-              <h2 className="text-lg font-semibold">
-                {modalMode === 'add' ? 'Add Organization' : 'Edit Organization'}
-              </h2>
+              <h2 className="text-lg font-semibold">Add Organization</h2>
               <p className="text-sm text-muted-foreground">
-                {modalMode === 'add'
-                  ? 'Create a new organization with the details below.'
-                  : 'Update the organization details below.'}
+                Create a new organization with the details below.
               </p>
             </div>
             <OrganizationForm
               onSubmit={handleSubmit}
               onCancel={handleCloseModal}
-              defaultValues={
-                selectedOrg
-                  ? {
-                      name: selectedOrg.name,
-                      status: selectedOrg.status
-                    }
-                  : undefined
-              }
-              submitLabel={modalMode === 'add' ? 'Create organization' : 'Save changes'}
+              submitLabel="Create organization"
               loading={submitting}
             />
           </div>

@@ -32,13 +32,13 @@ type Config struct {
 
 // Transfer represents an active file transfer
 type Transfer struct {
-	ID        string
-	Direction string // "upload" or "download"
-	LocalPath string
+	ID         string
+	Direction  string // "upload" or "download"
+	LocalPath  string
 	RemotePath string
-	Status    string
-	Progress  int
-	Error     string
+	Status     string
+	Progress   int
+	Error      string
 }
 
 // Manager handles file transfers
@@ -124,12 +124,12 @@ func (m *Manager) CancelTransfer(transferID string) {
 
 func (m *Manager) upload(transfer *Transfer) error {
 	// Validate path - prevent directory traversal
-	cleanPath := filepath.Clean(transfer.RemotePath)
+	cleanPath := filepath.Clean(transfer.LocalPath)
 	if strings.Contains(cleanPath, "..") {
 		return fmt.Errorf("invalid path: directory traversal not allowed")
 	}
 
-	file, err := os.Open(transfer.RemotePath)
+	file, err := os.Open(transfer.LocalPath)
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}

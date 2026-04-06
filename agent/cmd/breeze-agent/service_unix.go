@@ -3,13 +3,24 @@
 package main
 
 import (
-	"fmt"
 	"os"
+	"os/signal"
+	"runtime"
 	"syscall"
+
+	"github.com/breeze-rmm/agent/internal/logging"
 )
 
-// isWindowsService always returns false on non-Windows platforms.
-func isWindowsService() bool { return false }
+// isWindowsService reports whether the process is running as a system service.
+// On macOS, returns true when running as a LaunchDaemon (root + no console),
+// which means the process cannot access the user's Quartz session directly
+// and must route desktop capture/input through the user helper via IPC.
+func isWindowsService() bool {
+	if runtime.GOOS == "darwin" {
+		return os.Geteuid() == 0 && !hasConsole()
+	}
+	return false
+}
 
 // hasConsole reports whether stdout is connected to a terminal.
 // Returns false when running as a launchd daemon or systemd service.
@@ -21,10 +32,49 @@ func hasConsole() bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
-// isHeadless returns true when the process has no controlling terminal.
-// This is the case for launchd daemons and systemd services — both of which
-// redirect stdout/stderr to log files, leaving no character device.
-func isHeadless() bool { return !hasConsole() }
+// isHeadless reports whether the machine lacks any graphical display.
+//
+// macOS: always false — even LaunchDaemons can reach user-session displays
+// via the session broker + helper. The desktopAccess heartbeat field provides
+// the detailed capability check (permissions, entitlements, OS version).
+//
+// Linux: check whether any graphical session exists. Headless servers
+// (Ubuntu Core, containers) have no X11/Wayland session; desktop distros do.
+func isHeadless() bool {
+	if runtime.GOOS == "darwin" {
+		return false
+	}
+	return !linuxHasGraphicalSession()
+}
+
+// linuxHasGraphicalSession checks for any active graphical user session.
+// First checks common environment variables, then falls back to scanning
+// /run/user/*/dbus-session for evidence of a desktop session.
+func linuxHasGraphicalSession() bool {
+	// If the agent itself has display env vars (rare for services, but possible)
+	if os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != "" {
+		return true
+	}
+	// Check if any user has an active graphical session by looking for
+	// X11 or Wayland sockets under /tmp/.X11-unix or /run/user/*/
+	if entries, err := os.ReadDir("/tmp/.X11-unix"); err == nil && len(entries) > 0 {
+		return true
+	}
+	// Check for Wayland sockets in any user's runtime dir
+	if userDirs, err := os.ReadDir("/run/user"); err == nil {
+		for _, ud := range userDirs {
+			dirPath := "/run/user/" + ud.Name()
+			if dirEntries, err := os.ReadDir(dirPath); err == nil {
+				for _, e := range dirEntries {
+					if len(e.Name()) > 8 && e.Name()[:8] == "wayland-" {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
 
 // redirectStderr points fd 2 at the given file so that Go runtime panics
 // are captured in the log file.
@@ -32,9 +82,24 @@ func redirectStderr(f *os.File) {
 	syscall.Dup2(int(f.Fd()), 2)
 }
 
-// runAsService is a no-op stub on non-Windows platforms.
-func runAsService(_ func() (*agentComponents, error)) error {
-	return fmt.Errorf("Windows service mode is not available on this platform")
+// runAsService runs the agent as a system daemon on Unix (launchd / systemd).
+// Unlike Windows, there is no SCM handshake — just start components and block
+// on SIGTERM, same as console mode.
+func runAsService(start func() (*agentComponents, error)) error {
+	comps, err := start()
+	if err != nil {
+		return err
+	}
+	defer logging.StopShipper()
+
+	signal.Ignore(syscall.SIGINT)
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM)
+	<-sigChan
+
+	log.Info("shutting down agent (service mode)")
+	shutdownAgent(comps)
+	return nil
 }
 
 // ensureSASPolicy is a no-op on non-Windows platforms.

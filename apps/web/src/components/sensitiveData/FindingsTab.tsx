@@ -159,7 +159,7 @@ export default function FindingsTab() {
                   type="checkbox"
                   checked={findings.length > 0 && selectedIds.size === findings.length}
                   onChange={toggleAll}
-                  className="rounded border-gray-300"
+                  className="rounded border-border"
                 />
               </th>
               <th className="px-4 py-3">File Path</th>
@@ -197,7 +197,7 @@ export default function FindingsTab() {
                       type="checkbox"
                       checked={selectedIds.has(f.id)}
                       onChange={() => toggleSelect(f.id)}
-                      className="rounded border-gray-300"
+                      className="rounded border-border"
                     />
                   </td>
                   <td className="max-w-[200px] truncate px-4 py-3 font-mono text-xs" title={f.filePath}>

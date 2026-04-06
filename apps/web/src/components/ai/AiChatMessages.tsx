@@ -7,6 +7,8 @@ import AiApprovalDialog from './AiApprovalDialog';
 import AiPlanReviewCard from './AiPlanReviewCard';
 import AiPlanProgressBar from './AiPlanProgressBar';
 import type { ActionPlanStep } from '@breeze/shared';
+import { DOCS_BASE_URL } from '@breeze/shared';
+import { useHelpStore } from '@/stores/helpStore';
 
 interface Message {
   id: string;
@@ -29,12 +31,12 @@ interface PendingApproval {
 }
 
 const QUICK_ACTIONS = [
-  { label: 'Check server health', prompt: 'Check the health status of all Windows servers — show CPU, RAM, disk usage and any alerts' },
-  { label: 'Show critical alerts', prompt: 'List all critical and high severity alerts from the last 24 hours with device details' },
-  { label: 'Find offline devices', prompt: 'Show me all devices that are currently offline and when they were last seen' },
-  { label: 'Security overview', prompt: 'Give me a security overview — any active threats, recent scans, and devices needing attention' },
-  { label: 'Disk space report', prompt: 'Which devices are running low on disk space? Show devices with over 80% disk usage' },
-  { label: 'Recent activity', prompt: 'Show me the most recent audit log entries — what actions were taken in the last few hours?' }
+  { label: 'Check server health', prompt: 'Check the health status of all Windows servers — show CPU, RAM, disk usage and any alerts', dotColor: 'bg-success' },
+  { label: 'Show critical alerts', prompt: 'List all critical and high severity alerts from the last 24 hours with device details', dotColor: 'bg-warning' },
+  { label: 'Find offline devices', prompt: 'Show me all devices that are currently offline and when they were last seen', dotColor: 'bg-warning' },
+  { label: 'Security overview', prompt: 'Give me a security overview — any active threats, recent scans, and devices needing attention', dotColor: 'bg-success' },
+  { label: 'Disk space report', prompt: 'Which devices are running low on disk space? Show devices with over 80% disk usage', dotColor: 'bg-primary' },
+  { label: 'Recent activity', prompt: 'Show me the most recent audit log entries — what actions were taken in the last few hours?', dotColor: 'bg-primary' }
 ];
 
 interface PendingPlan {
@@ -77,9 +79,9 @@ export default function AiChatMessages({
   if (messages.length === 0) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center p-6">
-        <Bot className="h-10 w-10 text-gray-400 dark:text-gray-600" />
-        <h3 className="mt-3 text-sm font-medium text-gray-700 dark:text-gray-300">Breeze AI Assistant</h3>
-        <p className="mt-1 text-xs text-gray-500">
+        <Bot className="h-10 w-10 text-muted-foreground" />
+        <h3 className="mt-3 text-sm font-medium text-foreground">Breeze AI Assistant</h3>
+        <p className="mt-1 text-xs text-muted-foreground">
           Ask about your devices, alerts, metrics, or troubleshoot issues.
         </p>
         <div className="mt-4 w-full space-y-1.5">
@@ -87,8 +89,9 @@ export default function AiChatMessages({
             <button
               key={action.label}
               onClick={() => onSendQuickAction?.(action.prompt)}
-              className="w-full rounded-md border border-gray-200 bg-gray-50/50 px-3 py-2 text-left text-xs text-gray-500 transition-colors hover:border-purple-600/50 hover:bg-gray-100 hover:text-gray-900 dark:border-gray-700 dark:bg-gray-800/50 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+              className="flex items-center w-full rounded-md border border-border px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             >
+              <span className={`inline-block h-1.5 w-1.5 rounded-full ${action.dotColor} mr-2 flex-shrink-0`} />
               {action.label}
             </button>
           ))}
@@ -116,7 +119,7 @@ export default function AiChatMessages({
         if (msg.role === 'assistant') {
           return (
             <div key={msg.id} className="flex gap-2">
-              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-purple-600">
+              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary">
                 <Bot className="h-3.5 w-3.5 text-white" />
               </div>
               <div className="min-w-0 flex-1">
@@ -124,15 +127,31 @@ export default function AiChatMessages({
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
                     components={{
-                      a: ({ href, children }) => (
-                        <a
-                          href={href && /^https?:\/\//.test(href) ? href : '#'}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          {children}
-                        </a>
-                      ),
+                      a: ({ href, children }) => {
+                        if (href && DOCS_BASE_URL && href.startsWith(DOCS_BASE_URL)) {
+                          return (
+                            <a
+                              href={href}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                useHelpStore.getState().open(href);
+                              }}
+                              className="cursor-pointer"
+                            >
+                              {children}
+                            </a>
+                          );
+                        }
+                        return (
+                          <a
+                            href={href && /^https?:\/\//.test(href) ? href : '#'}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            {children}
+                          </a>
+                        );
+                      },
                     }}
                   >
                     {msg.content}
@@ -147,12 +166,17 @@ export default function AiChatMessages({
         }
 
         if (msg.role === 'tool_use') {
+          // Find matching tool_result by toolUseId, or fall back to the immediately following tool_result
+          const idx = messages.indexOf(msg);
+          const nextMsg = idx >= 0 && idx + 1 < messages.length ? messages[idx + 1] : undefined;
+          const hasResult = messages.some(m => m.role === 'tool_result' && m.toolUseId && m.toolUseId === msg.toolUseId)
+            || (nextMsg?.role === 'tool_result');
           return (
             <AiToolCallCard
               key={msg.id}
               toolName={msg.toolName ?? 'Unknown tool'}
               input={msg.toolInput}
-              isExecuting={!messages.some(m => m.role === 'tool_result' && m.toolUseId === msg.toolUseId)}
+              isExecuting={!hasResult}
             />
           );
         }

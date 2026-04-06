@@ -5,7 +5,7 @@
  * and processes results when they come back via WebSocket.
  */
 
-import { Queue, Worker, Job } from 'bullmq';
+import { Queue, Worker, Job, type JobsOptions } from 'bullmq';
 import * as dbModule from '../db';
 import {
   discoveryProfiles,
@@ -20,12 +20,22 @@ import {
   deviceNetwork
 } from '../db/schema';
 import type { DiscoveryProfileAlertSettings } from '../db/schema';
-import { eq, and, or, sql, inArray } from 'drizzle-orm';
+import { eq, and, or, sql, inArray, type SQL } from 'drizzle-orm';
 import { normalizeMac, buildApprovalDecision } from '../services/assetApproval';
 import { getRedisConnection } from '../services/redis';
+import { isReusableState } from '../services/bullmqUtils';
 import { sendCommandToAgent, isAgentConnected, type AgentCommand } from '../routes/agentWs';
 import { isCronDue } from '../services/automationRuntime';
 import { lookupMacVendor, inferAssetTypeFromVendor } from '../services/macVendorLookup';
+import { buildEventFingerprint } from '../services/networkBaseline';
+import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
+import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
+import {
+  discoveryQueueJobDataSchema,
+  type DiscoveryQueueJobData,
+  type QueueActorMeta,
+  withQueueMeta,
+} from './queueSchemas';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -95,8 +105,33 @@ export interface DiscoveredHostResult {
   responseTimeMs?: number;
   methods: string[];
 }
+type DiscoveryJobData = DiscoveryQueueJobData;
 
-type DiscoveryJobData = ScheduleProfilesJobData | DispatchScanJobData | ProcessResultsJobData;
+const PRIVILEGED_JOB_OPTIONS = {
+  attempts: 3,
+  backoff: {
+    type: 'exponential' as const,
+    delay: 1_000,
+  },
+};
+
+const DISCOVERY_REPEATABLE_META: QueueActorMeta = {
+  actorType: 'system',
+  actorId: null,
+  source: 'worker:discovery:schedule-profiles',
+};
+
+const DISCOVERY_DISPATCH_META: QueueActorMeta = {
+  actorType: 'system',
+  actorId: null,
+  source: 'worker:discovery:dispatch-scan',
+};
+
+const DISCOVERY_RESULT_META: QueueActorMeta = {
+  actorType: 'agent',
+  actorId: null,
+  source: 'route:agentWs:discovery-result',
+};
 
 /**
  * Create the discovery worker
@@ -106,21 +141,28 @@ export function createDiscoveryWorker(): Worker<DiscoveryJobData> {
     DISCOVERY_QUEUE,
     async (job: Job<DiscoveryJobData>) => {
       return runWithSystemDbAccess(async () => {
-        switch (job.data.type) {
+        const data = parseQueueJobData(DISCOVERY_QUEUE, job, discoveryQueueJobDataSchema);
+        switch (data.type) {
           case 'schedule-profiles':
+            assertQueueJobName(DISCOVERY_QUEUE, job, 'schedule-profiles');
             return await processScheduleProfiles();
           case 'dispatch-scan':
-            return await processDispatchScan(job.data);
+            assertQueueJobName(DISCOVERY_QUEUE, job, 'dispatch-scan');
+            return await processDispatchScan(data);
           case 'process-results':
-            return await processResults(job.data);
+            assertQueueJobName(DISCOVERY_QUEUE, job, 'process-results');
+            return await processResults(data);
           default:
-            throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
+            throw new Error(`Unknown job type: ${(data as { type: string }).type}`);
         }
       });
     },
     {
       connection: getRedisConnection(),
-      concurrency: 5
+      concurrency: 5,
+      lockDuration: 300_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 2,
     }
   );
 }
@@ -163,6 +205,92 @@ function resolveScheduleTimeZone(value?: string): string {
   }
 }
 
+async function validateRequestedAgentForDiscovery(
+  requestedAgentId: string,
+  orgId: string,
+  siteId: string
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const [agentDevice] = await db
+    .select({
+      agentId: devices.agentId,
+      orgId: devices.orgId,
+      siteId: devices.siteId,
+      status: devices.status
+    })
+    .from(devices)
+    .where(eq(devices.agentId, requestedAgentId))
+    .limit(1);
+
+  if (!agentDevice) {
+    return { ok: false, message: 'Requested agent not found' };
+  }
+
+  if (agentDevice.orgId !== orgId) {
+    return { ok: false, message: 'Requested agent does not belong to this organization' };
+  }
+
+  if (agentDevice.siteId !== siteId) {
+    return { ok: false, message: 'Requested agent does not belong to this site' };
+  }
+
+  if (agentDevice.status !== 'online') {
+    return { ok: false, message: 'Requested agent is not online' };
+  }
+
+  return { ok: true };
+}
+
+async function insertDiscoveryChangeEvent(values: typeof networkChangeEvents.$inferInsert): Promise<boolean> {
+  const now = new Date();
+  const profilePredicate = values.profileId
+    ? eq(networkChangeEvents.profileId, values.profileId)
+    : sql`${networkChangeEvents.profileId} IS NULL`;
+  const fingerprint = buildEventFingerprint(values.eventType, values.ipAddress, {
+    macAddress: values.macAddress,
+    hostname: values.hostname,
+    assetType: values.assetType ?? null,
+    previousState: values.previousState,
+    currentState: values.currentState
+  });
+
+  const recentEvents = await db
+    .select({
+      eventType: networkChangeEvents.eventType,
+      ipAddress: networkChangeEvents.ipAddress,
+      macAddress: networkChangeEvents.macAddress,
+      hostname: networkChangeEvents.hostname,
+      assetType: networkChangeEvents.assetType,
+      previousState: networkChangeEvents.previousState,
+      currentState: networkChangeEvents.currentState
+    })
+    .from(networkChangeEvents)
+    .where(and(
+      eq(networkChangeEvents.baselineId, values.baselineId),
+      profilePredicate,
+      eq(networkChangeEvents.eventType, values.eventType),
+      eq(networkChangeEvents.ipAddress, values.ipAddress),
+      sql`${networkChangeEvents.detectedAt} >= ${new Date(now.getTime() - 24 * 60 * 60 * 1000)}`
+    ))
+    .limit(25);
+
+  const duplicate = recentEvents.some((event) => (
+    buildEventFingerprint(event.eventType, event.ipAddress, {
+      macAddress: event.macAddress,
+      hostname: event.hostname,
+      assetType: event.assetType ?? null,
+      previousState: event.previousState,
+      currentState: event.currentState
+    }) === fingerprint
+  ));
+
+  if (duplicate) {
+    return false;
+  }
+
+  await db.insert(networkChangeEvents).values(values);
+  return true;
+}
+
 async function hasActiveJob(profileId: string): Promise<boolean> {
   const [active] = await db
     .select({ id: discoveryJobs.id })
@@ -182,17 +310,19 @@ async function enqueueScheduledProfileRun(
   orgId: string,
   siteId: string
 ): Promise<{ queued: boolean; jobId: string | null }> {
-  const [created] = await db.insert(discoveryJobs).values({
+  const created = await createDiscoveryJobIfIdle({
     profileId,
     orgId,
     siteId,
-    status: 'scheduled',
-    scheduledAt: new Date()
-  }).returning();
+  });
 
-  const createdJobId = created?.id ?? null;
+  const createdJobId = created?.job.id ?? null;
   if (!created || !createdJobId) {
     return { queued: false, jobId: null };
+  }
+
+  if (!created.created) {
+    return { queued: false, jobId: createdJobId };
   }
 
   try {
@@ -210,11 +340,48 @@ async function enqueueScheduledProfileRun(
   }
 }
 
+async function expireStaleRunningJobs(): Promise<number> {
+  const staleThreshold = new Date(Date.now() - 15 * 60 * 1000); // 15 minutes
+  const staleJobs = await db
+    .select({ id: discoveryJobs.id })
+    .from(discoveryJobs)
+    .where(
+      and(
+        eq(discoveryJobs.status, 'running'),
+        sql`${discoveryJobs.updatedAt} < ${staleThreshold.toISOString()}::timestamptz`
+      )
+    );
+
+  if (staleJobs.length === 0) return 0;
+
+  for (const job of staleJobs) {
+    await db
+      .update(discoveryJobs)
+      .set({
+        status: 'failed',
+        completedAt: new Date(),
+        errors: { message: 'Job timed out after 15 minutes without completing' },
+        updatedAt: new Date()
+      })
+      .where(eq(discoveryJobs.id, job.id));
+  }
+
+  console.warn(`[DiscoveryWorker] Expired ${staleJobs.length} stale running job(s)`);
+  return staleJobs.length;
+}
+
 async function processScheduleProfiles(): Promise<{ enqueued: number }> {
   const now = new Date();
   const minuteStart = new Date(now);
   minuteStart.setSeconds(0, 0);
   const minuteEnd = new Date(minuteStart.getTime() + 60 * 1000);
+
+  // Clean up stale running jobs that may be blocking scheduled scans
+  try {
+    await expireStaleRunningJobs();
+  } catch (err) {
+    console.error('[DiscoveryWorker] Failed to expire stale jobs:', err);
+  }
 
   const profiles = await db
     .select({
@@ -320,6 +487,13 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
   let agentId = data.agentId;
   const requestedAgentId = data.agentId ?? null;
   let selectionSource: 'requested' | 'site-auto' = requestedAgentId ? 'requested' : 'site-auto';
+  if (requestedAgentId) {
+    const validation = await validateRequestedAgentForDiscovery(requestedAgentId, data.orgId, data.siteId);
+    if (!validation.ok) {
+      await markJobFailed(data.jobId, validation.message);
+      return { dispatched: false, agentId: null, durationMs: Date.now() - startTime };
+    }
+  }
   if (!agentId) {
     // Pick an online agent from the same site
     const [onlineAgent] = await db
@@ -438,13 +612,19 @@ async function processResults(data: ProcessResultsJobData): Promise<{
     enabled: false, alertOnNew: false, alertOnDisappeared: false, alertOnChanged: false, changeRetentionDays: 90
   };
   let alertSettings: DiscoveryProfileAlertSettings = defaultAlertSettings;
+  let profileSubnets: string[] = [];
   if (profileId) {
     const [profile] = await db
-      .select({ alertSettings: discoveryProfiles.alertSettings, id: discoveryProfiles.id })
+      .select({
+        alertSettings: discoveryProfiles.alertSettings,
+        id: discoveryProfiles.id,
+        subnets: discoveryProfiles.subnets
+      })
       .from(discoveryProfiles)
       .where(eq(discoveryProfiles.id, profileId))
       .limit(1);
     alertSettings = (profile?.alertSettings as DiscoveryProfileAlertSettings | null) ?? defaultAlertSettings;
+    profileSubnets = profile?.subnets ?? [];
   }
 
   // ── Load known guest MACs ─────────────────────────────────────────────
@@ -463,7 +643,7 @@ async function processResults(data: ProcessResultsJobData): Promise<{
 
   // ── Load existing assets for approval comparison ──────────────────────
   const scannedIps = data.hosts.map(h => h.ip).filter(Boolean);
-  const existingAssets = scannedIps.length > 0
+  const scannedExistingAssets = scannedIps.length > 0
     ? await db.select({
         id: discoveredAssets.id,
         ipAddress: discoveredAssets.ipAddress,
@@ -475,7 +655,32 @@ async function processResults(data: ProcessResultsJobData): Promise<{
         and(eq(discoveredAssets.orgId, data.orgId), inArray(discoveredAssets.ipAddress, scannedIps))
       )
     : [];
-  const existingByIp = new Map(existingAssets.map(a => [a.ipAddress, a]));
+  const existingByIp = new Map(scannedExistingAssets.map(a => [a.ipAddress, a]));
+
+  const monitoredAssetConditions: SQL<unknown>[] = [
+    eq(discoveredAssets.orgId, data.orgId),
+    eq(discoveredAssets.siteId, data.siteId),
+    eq(discoveredAssets.approvalStatus, 'approved'),
+    eq(discoveredAssets.isOnline, true)
+  ];
+  const subnetPredicates = profileSubnets
+    .map((subnet) => subnet.trim())
+    .filter(Boolean)
+    .map((subnet) => sql`${discoveredAssets.ipAddress} <<= ${subnet}::inet`);
+  if (subnetPredicates.length > 0) {
+    monitoredAssetConditions.push(or(...subnetPredicates)!);
+  }
+  const monitoredExistingAssets = await db
+    .select({
+      id: discoveredAssets.id,
+      ipAddress: discoveredAssets.ipAddress,
+      macAddress: discoveredAssets.macAddress,
+      hostname: discoveredAssets.hostname,
+      approvalStatus: discoveredAssets.approvalStatus,
+      isOnline: discoveredAssets.isOnline
+    })
+    .from(discoveredAssets)
+    .where(and(...monitoredAssetConditions));
 
   // ── Resolve or auto-create baseline for change event tracking ────────
   let resolvedBaselineId: string | null = null;
@@ -524,10 +729,12 @@ async function processResults(data: ProcessResultsJobData): Promise<{
   let newCount = 0;
   let updatedCount = 0;
   let changeEventsCreated = 0;
+  let hostErrors = 0;
 
   for (const host of data.hosts) {
     if (!host.ip) continue;
 
+    try {
     // Check if asset already exists (by org + IP)
     const [existing] = await db
       .select({ id: discoveredAssets.id })
@@ -572,6 +779,7 @@ async function processResults(data: ProcessResultsJobData): Promise<{
 
     let upsertedAssetId: string | null = null;
     let alreadyLinked = false;
+    let autoLinkedDeviceId: string | null = null;
 
     if (existing) {
       await db
@@ -618,6 +826,7 @@ async function processResults(data: ProcessResultsJobData): Promise<{
               .update(discoveredAssets)
               .set({ linkedDeviceId: match.deviceId, approvalStatus: 'approved' })
               .where(eq(discoveredAssets.id, upsertedAssetId));
+            autoLinkedDeviceId = match.deviceId;
 
             // Propagate asset type to linked device (discovery > auto, but not > manual)
             if (assetData.assetType && assetData.assetType !== 'unknown') {
@@ -645,14 +854,16 @@ async function processResults(data: ProcessResultsJobData): Promise<{
     const guestMac = normalizeMac(host.mac);
     const isGuest = !!guestMac && knownGuestMacs.has(guestMac);
 
-    const decision = buildApprovalDecision({
-      existingAsset: existingForApproval
-        ? { approvalStatus: existingForApproval.approvalStatus, macAddress: existingForApproval.macAddress }
-        : null,
-      incomingMac: host.mac,
-      isKnownGuest: isGuest,
-      alertSettings
-    });
+    const decision = autoLinkedDeviceId || alreadyLinked
+      ? { approvalStatus: 'approved' as const, shouldAlert: false }
+      : buildApprovalDecision({
+          existingAsset: existingForApproval
+            ? { approvalStatus: existingForApproval.approvalStatus, macAddress: existingForApproval.macAddress }
+            : null,
+          incomingMac: host.mac,
+          isKnownGuest: isGuest,
+          alertSettings
+        });
 
     // Update approvalStatus and isOnline
     if (upsertedAssetId) {
@@ -664,7 +875,7 @@ async function processResults(data: ProcessResultsJobData): Promise<{
     // Log change event if needed
     if (decision.shouldAlert && decision.eventType && profileId && resolvedBaselineId) {
       try {
-        await db.insert(networkChangeEvents).values({
+        const inserted = await insertDiscoveryChangeEvent({
           orgId: data.orgId,
           siteId: data.siteId,
           baselineId: resolvedBaselineId,
@@ -679,7 +890,9 @@ async function processResults(data: ProcessResultsJobData): Promise<{
             : null,
           currentState: { macAddress: host.mac, hostname: host.hostname, assetType: host.assetType }
         });
-        changeEventsCreated++;
+        if (inserted) {
+          changeEventsCreated++;
+        }
       } catch (changeErr) {
         console.warn(
           `[DiscoveryWorker] Failed to log change event for ${host.ip}:`,
@@ -687,6 +900,17 @@ async function processResults(data: ProcessResultsJobData): Promise<{
         );
       }
     }
+    } catch (hostErr) {
+      hostErrors++;
+      console.error(
+        `[DiscoveryWorker] Failed to process discovered host ${host.ip}:`,
+        hostErr instanceof Error ? hostErr.message : hostErr
+      );
+    }
+  }
+
+  if (hostErrors > 0) {
+    console.warn(`[DiscoveryWorker] ${hostErrors}/${data.hosts.length} host(s) failed to process for job ${data.jobId}`);
   }
 
   // ── Bootstrap change events when alerts are first enabled ────────────
@@ -714,7 +938,7 @@ async function processResults(data: ProcessResultsJobData): Promise<{
         for (const host of data.hosts) {
           if (!host.ip) continue;
           try {
-            await db.insert(networkChangeEvents).values({
+            const inserted = await insertDiscoveryChangeEvent({
               orgId: data.orgId,
               siteId: data.siteId,
               baselineId: resolvedBaselineId,
@@ -727,7 +951,9 @@ async function processResults(data: ProcessResultsJobData): Promise<{
               previousState: null,
               currentState: { macAddress: host.mac, hostname: host.hostname, assetType: host.assetType }
             });
-            bootstrapped++;
+            if (inserted) {
+              bootstrapped++;
+            }
           } catch (bootstrapErr) {
             console.warn(
               `[DiscoveryWorker] Failed to bootstrap change event for ${host.ip}:`,
@@ -752,7 +978,7 @@ async function processResults(data: ProcessResultsJobData): Promise<{
   // ── Mark approved assets not seen in this scan as offline ─────────────
   if (scannedIps.length > 0) {
     const seenIps = new Set(data.hosts.map(h => h.ip));
-    for (const asset of existingAssets) {
+    for (const asset of monitoredExistingAssets) {
       if (!seenIps.has(asset.ipAddress) && asset.approvalStatus === 'approved' && asset.isOnline) {
         await db.update(discoveredAssets)
           .set({ isOnline: false })
@@ -761,7 +987,7 @@ async function processResults(data: ProcessResultsJobData): Promise<{
         // Log disappeared event if configured
         if (alertSettings.enabled && alertSettings.alertOnDisappeared && profileId && resolvedBaselineId) {
           try {
-            await db.insert(networkChangeEvents).values({
+            await insertDiscoveryChangeEvent({
               orgId: data.orgId,
               siteId: data.siteId,
               baselineId: resolvedBaselineId,
@@ -880,109 +1106,45 @@ function mapMethod(method: string): any {
   return methodMap[method] ?? method;
 }
 
+export async function cleanupSpeculativeTopologyLinks(
+  orgId: string,
+  siteId: string
+): Promise<number> {
+  const deleted = await db
+    .delete(networkTopology)
+    .where(
+      and(
+        eq(networkTopology.orgId, orgId),
+        eq(networkTopology.siteId, siteId),
+        eq(networkTopology.sourceType, 'discovered_asset'),
+        eq(networkTopology.targetType, 'discovered_asset'),
+        or(
+          eq(networkTopology.connectionType, 'ethernet'),
+          eq(networkTopology.connectionType, 'routed')
+        )!
+      )
+    )
+    .returning({ id: networkTopology.id });
+
+  return deleted.length;
+}
+
 /**
- * Enrich network topology by creating links between gateway devices
- * (routers, switches, firewalls) and the hosts they connect.
- *
- * Uses a single batch query to resolve all IP-to-asset-ID mappings
- * instead of querying per host, reducing DB round trips from O(G*E)
- * to O(1) for the lookup phase.
+ * Discovery no longer fabricates gateway-to-endpoint topology.
+ * Instead, each scan removes the older speculative discovered-asset
+ * edges for the current site until the topology model is rebuilt from
+ * real neighbor/interface evidence.
  */
 async function enrichTopology(
   orgId: string,
   siteId: string,
-  hosts: DiscoveredHostResult[]
+  _hosts: DiscoveredHostResult[]
 ): Promise<void> {
-  const gatewayTypes = new Set(['router', 'switch', 'firewall', 'access_point']);
-  const gateways = hosts.filter((h) => gatewayTypes.has(h.assetType));
-  const endpoints = hosts.filter((h) => !gatewayTypes.has(h.assetType) && h.ip);
-
-  if (gateways.length === 0 || endpoints.length === 0) return;
-
-  // Batch-load all relevant asset IDs in one query
-  const allIPs = hosts.filter((h) => h.ip).map((h) => h.ip);
-  const assetRows = await db
-    .select({ id: discoveredAssets.id, ipAddress: discoveredAssets.ipAddress })
-    .from(discoveredAssets)
-    .where(
-      and(
-        eq(discoveredAssets.orgId, orgId),
-        inArray(discoveredAssets.ipAddress, allIPs)
-      )
+  const deletedCount = await cleanupSpeculativeTopologyLinks(orgId, siteId);
+  if (deletedCount > 0) {
+    console.log(
+      `[DiscoveryWorker] Removed ${deletedCount} speculative topology link(s) for org=${orgId} site=${siteId}`
     );
-
-  const ipToAssetId = new Map<string, string>();
-  for (const row of assetRows) {
-    ipToAssetId.set(row.ipAddress, row.id);
-  }
-
-  // Collect all gateway-endpoint pairs that have resolved asset IDs
-  const gwAssetIds = new Set<string>();
-  const pairs: Array<{ sourceId: string; targetId: string; connectionType: string }> = [];
-
-  for (const gw of gateways) {
-    const gwId = ipToAssetId.get(gw.ip);
-    if (!gwId) continue;
-    gwAssetIds.add(gwId);
-
-    const connectionType = gw.assetType === 'switch' ? 'ethernet' : 'routed';
-    for (const ep of endpoints) {
-      const epId = ipToAssetId.get(ep.ip);
-      if (!epId) continue;
-      pairs.push({ sourceId: gwId, targetId: epId, connectionType });
-    }
-  }
-
-  if (pairs.length === 0) return;
-
-  // Batch-load existing topology links for these gateways
-  const existingLinks = await db
-    .select({ id: networkTopology.id, sourceId: networkTopology.sourceId, targetId: networkTopology.targetId })
-    .from(networkTopology)
-    .where(
-      and(
-        eq(networkTopology.orgId, orgId),
-        inArray(networkTopology.sourceId, Array.from(gwAssetIds))
-      )
-    );
-
-  const existingSet = new Map<string, string>();
-  for (const link of existingLinks) {
-    existingSet.set(`${link.sourceId}:${link.targetId}`, link.id);
-  }
-
-  const now = new Date();
-  const toInsert: Array<typeof pairs[number] & { orgId: string; siteId: string; sourceType: string; targetType: string; lastVerifiedAt: Date }> = [];
-  const toUpdateIds: string[] = [];
-
-  for (const pair of pairs) {
-    const key = `${pair.sourceId}:${pair.targetId}`;
-    const existingId = existingSet.get(key);
-    if (existingId) {
-      toUpdateIds.push(existingId);
-    } else {
-      toInsert.push({
-        orgId,
-        siteId,
-        sourceType: 'discovered_asset',
-        sourceId: pair.sourceId,
-        targetType: 'discovered_asset',
-        targetId: pair.targetId,
-        connectionType: pair.connectionType,
-        lastVerifiedAt: now
-      });
-    }
-  }
-
-  if (toUpdateIds.length > 0) {
-    await db
-      .update(networkTopology)
-      .set({ lastVerifiedAt: now, updatedAt: now })
-      .where(inArray(networkTopology.id, toUpdateIds));
-  }
-
-  if (toInsert.length > 0) {
-    await db.insert(networkTopology).values(toInsert);
   }
 }
 
@@ -1006,20 +1168,24 @@ export async function enqueueDiscoveryScan(
   profileId: string,
   orgId: string,
   siteId: string,
-  agentId?: string | null
+  agentId?: string | null,
+  meta: QueueActorMeta = DISCOVERY_DISPATCH_META,
 ): Promise<string> {
   const queue = getDiscoveryQueue();
-  const job = await queue.add(
+  const job = await addUniqueDiscoveryJob(
+    queue,
     'dispatch-scan',
-    {
+    discoveryQueueJobDataSchema.parse(withQueueMeta({
       type: 'dispatch-scan',
       jobId,
       profileId,
       orgId,
       siteId,
       agentId
-    },
+    }, meta)),
+    `discovery-dispatch-${jobId}`,
     {
+      ...PRIVILEGED_JOB_OPTIONS,
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 }
     }
@@ -1037,12 +1203,14 @@ export async function enqueueDiscoveryResults(
   hosts: DiscoveredHostResult[],
   hostsScanned: number,
   hostsDiscovered: number,
-  profileId?: string
+  profileId?: string,
+  meta: QueueActorMeta = DISCOVERY_RESULT_META,
 ): Promise<string> {
   const queue = getDiscoveryQueue();
-  const job = await queue.add(
+  const job = await addUniqueDiscoveryJob(
+    queue,
     'process-results',
-    {
+    discoveryQueueJobDataSchema.parse(withQueueMeta({
       type: 'process-results',
       jobId,
       profileId,
@@ -1051,8 +1219,10 @@ export async function enqueueDiscoveryResults(
       hosts,
       hostsScanned,
       hostsDiscovered
-    },
+    }, meta)),
+    `discovery-result-${jobId}`,
     {
+      ...PRIVILEGED_JOB_OPTIONS,
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 }
     }
@@ -1060,16 +1230,43 @@ export async function enqueueDiscoveryResults(
   return job.id!;
 }
 
+async function addUniqueDiscoveryJob(
+  queue: Queue,
+  name: string,
+  data: DispatchScanJobData | ProcessResultsJobData | ScheduleProfilesJobData,
+  jobId: string,
+  opts: Omit<JobsOptions, 'jobId'> = {},
+) {
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      return existing;
+    }
+    await existing.remove().catch((error) => {
+      console.error(`[DiscoveryWorker] Failed to remove stale job ${jobId}:`, error);
+    });
+  }
+
+  return queue.add(name, data, {
+    jobId,
+    ...opts,
+  });
+}
+
 async function scheduleRecurringProfilePlanner(): Promise<void> {
   const queue = getDiscoveryQueue();
 
   const newJob = await queue.add(
     'schedule-profiles',
-    { type: 'schedule-profiles' as const },
+    discoveryQueueJobDataSchema.parse(
+      withQueueMeta({ type: 'schedule-profiles' as const }, DISCOVERY_REPEATABLE_META)
+    ),
     {
       repeat: {
         every: 60 * 1000
       },
+      attempts: 1,
       removeOnComplete: { count: 10 },
       removeOnFail: { count: 20 }
     }
@@ -1104,8 +1301,9 @@ export async function initializeDiscoveryWorker(): Promise<void> {
       console.error(`[DiscoveryWorker] Job ${job?.id} failed:`, error);
 
       // Update the discoveryJobs row so the UI doesn't show "running" forever
-      if (job?.data?.type === 'process-results') {
-        const jobId = (job.data as ProcessResultsJobData).jobId;
+      const jobType = job?.data?.type;
+      if (jobType === 'process-results' || jobType === 'dispatch-scan') {
+        const jobId = (job!.data as { jobId: string }).jobId;
         runWithSystemDbAccess(async () => {
           await db
             .update(discoveryJobs)

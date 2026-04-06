@@ -61,11 +61,11 @@ type DeviceCompareProps = {
 };
 
 const statusColors: Record<DeviceStatus, string> = {
-  online: 'bg-green-500/20 text-green-700 border-green-500/40',
-  offline: 'bg-red-500/20 text-red-700 border-red-500/40',
-  maintenance: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40',
-  decommissioned: 'bg-slate-500/20 text-slate-700 border-slate-500/40',
-  quarantined: 'bg-orange-500/20 text-orange-700 border-orange-500/40'
+  online: 'bg-success/15 text-success border-success/30',
+  offline: 'bg-destructive/15 text-destructive border-destructive/30',
+  maintenance: 'bg-warning/15 text-warning border-warning/30',
+  decommissioned: 'bg-muted text-muted-foreground border-border',
+  quarantined: 'bg-warning/15 text-warning border-warning/30'
 };
 
 const statusLabels: Record<DeviceStatus, string> = {
@@ -857,7 +857,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Device Comparison</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Device Comparison</h1>
           <p className="text-muted-foreground">
             Compare hardware, software, patches, and configuration across your fleet.
           </p>
@@ -983,7 +983,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
 
           <div className="w-full space-y-4 lg:max-w-sm">
             <div className="flex items-center justify-between">
-              <h3 className="font-semibold">Selected devices</h3>
+              <h3 className="text-sm font-semibold">Selected devices</h3>
               <button
                 type="button"
                 onClick={handleClear}
@@ -1050,11 +1050,11 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
             </div>
             <div className="mt-4 overflow-x-auto">
               <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b">
-                    <th className="py-2 text-left font-medium">Spec</th>
+                <thead className="bg-muted/40">
+                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <th className="py-2">Spec</th>
                     {selectedDevices.map(device => (
-                      <th key={device.id} className="py-2 text-left font-medium">{device.hostname}</th>
+                      <th key={device.id} className="py-2">{device.hostname}</th>
                     ))}
                   </tr>
                 </thead>
@@ -1149,11 +1149,11 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
             </div>
             <div className="mt-6 overflow-x-auto">
               <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b">
-                    <th className="py-2 text-left font-medium">Patch</th>
+                <thead className="bg-muted/40">
+                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <th className="py-2">Patch</th>
                     {selectedDevices.map(device => (
-                      <th key={device.id} className="py-2 text-left font-medium">{device.hostname}</th>
+                      <th key={device.id} className="py-2">{device.hostname}</th>
                     ))}
                   </tr>
                 </thead>
@@ -1215,11 +1215,11 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
             </div>
             <div className="mt-4 overflow-x-auto">
               <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b">
-                    <th className="py-2 text-left font-medium">Key</th>
+                <thead className="bg-muted/40">
+                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <th className="py-2">Key</th>
                     {selectedDevices.map(device => (
-                      <th key={device.id} className="py-2 text-left font-medium">{device.hostname}</th>
+                      <th key={device.id} className="py-2">{device.hostname}</th>
                     ))}
                   </tr>
                 </thead>

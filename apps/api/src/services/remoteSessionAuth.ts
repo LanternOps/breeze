@@ -1,8 +1,7 @@
 import { randomBytes } from 'crypto';
-import type { TokenPayload } from './jwt';
 import { getRedis } from './redis';
 
-type SessionType = 'terminal' | 'desktop';
+type SessionType = 'terminal' | 'desktop' | 'tunnel';
 
 const WS_TICKET_TTL_MS = 60 * 1000; // 60 seconds
 const DESKTOP_CONNECT_CODE_TTL_MS = 2 * 60 * 1000; // 2 minutes
@@ -18,7 +17,7 @@ interface WsTicketRecord {
 interface DesktopConnectCodeRecord {
   sessionId: string;
   userId: string;
-  tokenPayload: Omit<TokenPayload, 'type'>;
+  email: string;
   expiresAt: number;
 }
 
@@ -131,7 +130,7 @@ export async function consumeWsTicket(ticket: string): Promise<WsTicketRecord | 
 export async function createDesktopConnectCode(input: {
   sessionId: string;
   userId: string;
-  tokenPayload: Omit<TokenPayload, 'type'>;
+  email: string;
 }): Promise<{ code: string; expiresInSeconds: number }> {
   purgeExpiredRecords(desktopConnectCodes);
   const code = generateSecret(24);

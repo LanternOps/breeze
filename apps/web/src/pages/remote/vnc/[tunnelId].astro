@@ -1,0 +1,21 @@
+---
+import Layout from '../../../layouts/Layout.astro';
+import VncViewerPage from '../../../components/remote/VncViewerPage';
+
+const { tunnelId } = Astro.params;
+const wsUrl = Astro.url.searchParams.get('ws') || '';
+
+if (!tunnelId || !wsUrl) {
+  return Astro.redirect('/remote');
+}
+---
+
+<Layout title="VNC Remote Desktop">
+  <div class="h-[calc(100vh-1rem)]">
+    <VncViewerPage
+      tunnelId={tunnelId}
+      wsUrl={wsUrl}
+      client:only="react"
+    />
+  </div>
+</Layout>

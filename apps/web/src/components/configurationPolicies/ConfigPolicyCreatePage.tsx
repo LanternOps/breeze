@@ -7,6 +7,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import PolicyLinkSelector from './featureTabs/PolicyLinkSelector';
 import { navigateTo } from '@/lib/navigation';
+import Breadcrumbs from '../layout/Breadcrumbs';
 
 const createPolicySchema = z.object({
   name: z.string().min(1, 'Policy name is required').max(255),
@@ -57,12 +58,20 @@ export default function ConfigPolicyCreatePage() {
     }
   };
 
+  const breadcrumbs = (
+    <Breadcrumbs items={[
+      { label: 'Configuration Policies', href: '/configuration-policies' },
+      { label: 'New Policy' }
+    ]} />
+  );
+
   // Step 1: Choose mode
   if (mode === null) {
     return (
       <div className="space-y-6">
+        {breadcrumbs}
         <div>
-          <h1 className="text-2xl font-bold">New Configuration Policy</h1>
+          <h1 className="text-xl font-semibold tracking-tight">New Configuration Policy</h1>
           <p className="text-muted-foreground">
             How would you like to configure this policy?
           </p>
@@ -112,8 +121,9 @@ export default function ConfigPolicyCreatePage() {
   // Step 2: Fill in details (+ policy selector if linked)
   return (
     <div className="space-y-6">
+      {breadcrumbs}
       <div>
-        <h1 className="text-2xl font-bold">New Configuration Policy</h1>
+        <h1 className="text-xl font-semibold tracking-tight">New Configuration Policy</h1>
         <p className="text-muted-foreground">
           {mode === 'linked'
             ? 'Create a policy linked to an existing master.'

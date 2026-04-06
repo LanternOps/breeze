@@ -16,6 +16,11 @@ export type EventType =
   | 'alert.resolved'
   | 'alert.suppressed'
   | 'alert.escalated'
+  // Incident events
+  | 'incident.created'
+  | 'incident.contained'
+  | 'incident.escalated'
+  | 'incident.closed'
   // Script events
   | 'script.started'
   | 'script.completed'
@@ -38,6 +43,13 @@ export type EventType =
   | 'patch.installed'
   | 'patch.failed'
   | 'patch.rollback'
+  // Backup verification events
+  | 'backup.verification_failed'
+  | 'backup.verification_passed'
+  | 'backup.recovery_readiness_low'
+  // Backup SLA events
+  | 'backup.sla_breach'
+  | 'backup.sla_resolved'
   // Security events
   | 'security.score_changed'
   // CIS compliance events
@@ -197,7 +209,9 @@ class EventBus {
     // Publish to global channel for cross-org subscribers (webhooks, etc.)
     await redis.publish(`${STREAM_PREFIX}:global`, JSON.stringify(event));
 
-    console.log(`[EventBus] Published ${type} for org ${orgId}: ${eventId}`);
+    if (type !== 'monitoring.check_failed' && type !== 'monitoring.check_recovered') {
+      console.log(`[EventBus] Published ${type} for org ${orgId}: ${eventId}`);
+    }
 
     // Invoke local in-process handlers immediately
     // This handles the case where startConsuming() hasn't been called
@@ -510,6 +524,10 @@ export const EVENT_TYPES = {
   PATCH_INSTALLED: 'patch.installed' as const,
   PATCH_FAILED: 'patch.failed' as const,
   PATCH_ROLLBACK: 'patch.rollback' as const,
+  // Backup verification
+  BACKUP_VERIFICATION_FAILED: 'backup.verification_failed' as const,
+  BACKUP_VERIFICATION_PASSED: 'backup.verification_passed' as const,
+  BACKUP_RECOVERY_READINESS_LOW: 'backup.recovery_readiness_low' as const,
   // Security
   SECURITY_SCORE_CHANGED: 'security.score_changed' as const,
   CIS_DEVIATION: 'compliance.cis_deviation' as const,

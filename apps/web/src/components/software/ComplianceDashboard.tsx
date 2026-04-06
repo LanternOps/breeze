@@ -1,16 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   AlertTriangle,
-  CheckCircle,
   Pencil,
   Plus,
   ShieldCheck,
   Trash2,
   Wrench,
   X,
-  XCircle,
 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 import PolicyForm, { type PolicyFormValues } from './PolicyForm';
 
 type Policy = {
@@ -60,12 +59,6 @@ type ViolationRow = {
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
 
-type Toast = {
-  id: string;
-  type: 'success' | 'error';
-  message: string;
-};
-
 type ComplianceDashboardProps = {
   prefill?: { name: string; vendor?: string; mode?: string } | null;
 };
@@ -89,22 +82,13 @@ export default function ComplianceDashboard({ prefill }: ComplianceDashboardProp
   const [modalMode, setModalMode] = useState<ModalMode>('closed');
   const [selectedPolicy, setSelectedPolicy] = useState<Policy | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [toasts, setToasts] = useState<Toast[]>([]);
-
-  const showToast = useCallback((type: 'success' | 'error', message: string) => {
-    const id = Date.now().toString();
-    setToasts((prev) => [...prev, { id, type, message }]);
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 4000);
-  }, []);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const [policiesRes, overviewRes, violationsRes] = await Promise.all([
-        fetchWithAuth('/software-policies?limit=100'),
+        fetchWithAuth('/software-policies?limit=100&isActive=true'),
         fetchWithAuth('/software-policies/compliance/overview'),
         fetchWithAuth('/software-policies/violations?limit=25'),
       ]);
@@ -186,12 +170,12 @@ export default function ComplianceDashboard({ prefill }: ComplianceDashboardProp
         setSelectedPolicy(data.data ?? policy);
       } else {
         console.warn(`[ComplianceDashboard] Failed to load policy ${policy.id}: ${res.status}`);
-        showToast('error', 'Could not load latest policy details. Showing cached data.');
+        showToast({ type: 'error', message: 'Could not load latest policy details. Showing cached data.' });
         setSelectedPolicy(policy);
       }
     } catch (err) {
       console.warn('[ComplianceDashboard] Error fetching policy for edit:', err);
-      showToast('error', 'Could not load policy details. Showing cached data.');
+      showToast({ type: 'error', message: 'Could not load policy details. Showing cached data.' });
       setSelectedPolicy(policy);
     }
     setModalMode('edit');
@@ -239,12 +223,12 @@ export default function ComplianceDashboard({ prefill }: ComplianceDashboardProp
         throw new Error((data as { error?: string }).error || `Failed to ${isEdit ? 'update' : 'create'} policy`);
       }
 
-      showToast('success', `Policy ${isEdit ? 'updated' : 'created'} successfully`);
+      showToast({ type: 'success', message: `Policy ${isEdit ? 'updated' : 'created'} successfully` });
       setModalMode('closed');
       setSelectedPolicy(null);
       await refresh();
     } catch (err) {
-      showToast('error', err instanceof Error ? err.message : 'Failed to save policy');
+      showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to save policy' });
     } finally {
       setSubmitting(false);
     }
@@ -265,12 +249,12 @@ export default function ComplianceDashboard({ prefill }: ComplianceDashboardProp
       if (!res.ok) {
         throw new Error('Failed to deactivate policy');
       }
-      showToast('success', `Policy "${selectedPolicy.name}" deactivated`);
+      showToast({ type: 'success', message: `Policy "${selectedPolicy.name}" deactivated` });
       setModalMode('closed');
       setSelectedPolicy(null);
       await refresh();
     } catch (err) {
-      showToast('error', err instanceof Error ? err.message : 'Failed to deactivate policy');
+      showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to deactivate policy' });
     } finally {
       setSubmitting(false);
     }
@@ -286,9 +270,9 @@ export default function ComplianceDashboard({ prefill }: ComplianceDashboardProp
         throw new Error('Failed to schedule compliance check');
       }
       const data = (await res.json()) as { jobId?: string };
-      showToast('success', `Compliance check scheduled${data.jobId ? ` (Job: ${data.jobId})` : ''}`);
+      showToast({ type: 'success', message: `Compliance check scheduled${data.jobId ? ` (Job: ${data.jobId})` : ''}` });
     } catch (err) {
-      showToast('error', err instanceof Error ? err.message : 'Failed to schedule compliance check');
+      showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to schedule compliance check' });
     }
   };
 
@@ -302,9 +286,9 @@ export default function ComplianceDashboard({ prefill }: ComplianceDashboardProp
       if (!res.ok) {
         throw new Error((data as { error?: string }).error || 'Failed to schedule remediation');
       }
-      showToast('success', `Remediation scheduled for ${(data as { queued?: number }).queued ?? 0} device(s)`);
+      showToast({ type: 'success', message: `Remediation scheduled for ${(data as { queued?: number }).queued ?? 0} device(s)` });
     } catch (err) {
-      showToast('error', err instanceof Error ? err.message : 'Failed to schedule remediation');
+      showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to schedule remediation' });
     }
   };
 
@@ -343,29 +327,6 @@ export default function ComplianceDashboard({ prefill }: ComplianceDashboardProp
 
   return (
     <div className="space-y-6">
-      {/* Toast notifications */}
-      {toasts.length > 0 && (
-        <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
-          {toasts.map((toast) => (
-            <div
-              key={toast.id}
-              className={`flex items-center gap-2 rounded-lg px-4 py-3 shadow-lg ${
-                toast.type === 'success'
-                  ? 'bg-green-600 text-white'
-                  : 'bg-destructive text-destructive-foreground'
-              }`}
-            >
-              {toast.type === 'success' ? (
-                <CheckCircle className="h-5 w-5" />
-              ) : (
-                <XCircle className="h-5 w-5" />
-              )}
-              <span className="text-sm font-medium">{toast.message}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
       <div className="flex items-center justify-end gap-2">
           <button
             type="button"

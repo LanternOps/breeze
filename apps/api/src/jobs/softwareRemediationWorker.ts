@@ -4,6 +4,7 @@ import * as dbModule from '../db';
 import { deviceCommands, softwareComplianceStatus, softwarePolicies, type RemediationError } from '../db/schema';
 import { recordSoftwareRemediationDecision } from '../routes/metrics';
 import { getRedisConnection } from '../services/redis';
+import { isReusableState } from '../services/bullmqUtils';
 import { CommandTypes, queueCommand } from '../services/commandQueue';
 import { recordSoftwarePolicyAudit } from '../services/softwarePolicyService';
 import { captureException } from '../services/sentry';
@@ -340,6 +341,9 @@ export function createSoftwareRemediationWorker(): Worker<SoftwareRemediationJob
     {
       connection: getRedisConnection(),
       concurrency: 5,
+      lockDuration: 300_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 2,
       settings: {
         backoffStrategy: (attemptsMade: number) => Math.min(attemptsMade * 5000, 30000),
       },
@@ -396,7 +400,7 @@ export async function scheduleSoftwareRemediation(
     const existing = await queue.getJob(jobId);
     if (existing) {
       const state = await existing.getState();
-      if (state === 'waiting' || state === 'active' || state === 'delayed') {
+      if (isReusableState(state)) {
         recordSoftwareRemediationDecision('job_deduped');
         continue;
       }

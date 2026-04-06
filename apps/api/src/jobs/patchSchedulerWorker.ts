@@ -11,16 +11,23 @@ import {
   configurationPolicies,
   configPolicyFeatureLinks,
   configPolicyAssignments,
-  patchPolicies,
   patchJobs,
   devices,
   deviceGroupMemberships,
   organizations,
+  sites,
 } from '../db/schema';
-import { and, eq, inArray, gte, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray } from 'drizzle-orm';
 import { getRedisConnection } from '../services/redis';
 import { checkDeviceMaintenanceWindow } from '../services/featureConfigResolver';
 import { enqueuePatchJob } from './patchJobExecutor';
+import {
+  backfillMissingPatchSettings,
+  listAllPatchInventory,
+  loadPolicyLocalPatchConfig,
+  summarizePatchInventory,
+  type PatchInlineSettings,
+} from '../services/configPolicyPatching';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -28,7 +35,6 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
 
-/** Check if a Drizzle/Postgres error is "relation does not exist" (42P01). */
 function isRelationNotFoundError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   const cause = (error as { cause?: { code?: string } }).cause;
@@ -37,11 +43,8 @@ function isRelationNotFoundError(error: unknown): boolean {
 
 let _configPolicyTableWarningLogged = false;
 
-// ============================================
-// Queue
-// ============================================
-
 const QUEUE_NAME = 'patch-scheduler';
+const IDEMPOTENCY_LOOKBACK_MS = 45 * 24 * 60 * 60 * 1000;
 
 let schedulerQueue: Queue | null = null;
 let schedulerWorker: Worker | null = null;
@@ -55,90 +58,107 @@ function getSchedulerQueue(): Queue {
   return schedulerQueue;
 }
 
-// ============================================
-// Schedule checking
-// ============================================
-
-interface ScheduleConfig {
-  scheduleFrequency: string;
-  scheduleTime: string;
-  scheduleDayOfWeek?: string;
-  scheduleDayOfMonth?: number;
+interface LocalTimeParts {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+  weekday: 'sun' | 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat';
 }
 
-/**
- * Check if a schedule is due right now (within 1-minute tolerance).
- */
-function isScheduleDue(config: ScheduleConfig, now: Date): boolean {
-  const { scheduleFrequency, scheduleTime, scheduleDayOfWeek, scheduleDayOfMonth } = config;
+interface DeviceSchedulingContext {
+  deviceId: string;
+  orgId: string;
+  timezone: string;
+}
 
-  // Parse scheduleTime (HH:MM)
-  const parts = (scheduleTime || '02:00').split(':');
-  const targetHour = parseInt(parts[0] ?? '2', 10);
-  const targetMinute = parseInt(parts[1] ?? '0', 10);
+interface DueGroup {
+  orgId: string;
+  timezone: string;
+  occurrenceKey: string;
+  deviceIds: string[];
+}
 
-  const currentHour = now.getUTCHours();
-  const currentMinute = now.getUTCMinutes();
+function parseOrgTimezone(settings: unknown): string | null {
+  if (!settings || typeof settings !== 'object') return null;
+  const timezone = (settings as Record<string, unknown>).timezone;
+  return typeof timezone === 'string' && timezone.length > 0 ? timezone : null;
+}
 
-  // Must match hour and minute (within the 60s poll window)
-  if (currentHour !== targetHour || currentMinute !== targetMinute) {
-    return false;
-  }
-
-  switch (scheduleFrequency) {
-    case 'daily':
-      return true;
-
-    case 'weekly': {
-      const dayMap: Record<string, number> = {
-        sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6,
-      };
-      const targetDay = dayMap[(scheduleDayOfWeek || 'sun').toLowerCase()];
-      return targetDay === undefined || now.getUTCDay() === targetDay;
-    }
-
-    case 'monthly': {
-      const targetDayOfMonth = scheduleDayOfMonth ?? 1;
-      return now.getUTCDate() === targetDayOfMonth;
-    }
-
-    default:
-      return false;
+function normalizeTimezone(timezone: string | null | undefined): string {
+  const candidate = timezone || 'UTC';
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: candidate }).format(new Date());
+    return candidate;
+  } catch (err) {
+    console.warn(`[PatchScheduler] Invalid timezone "${candidate}", falling back to UTC:`, err);
+    return 'UTC';
   }
 }
 
-/**
- * Get the start of the current schedule window for idempotency checks.
- */
-function getWindowStart(frequency: string, now: Date): Date {
-  const d = new Date(now);
-  d.setUTCHours(0, 0, 0, 0);
+function getLocalTimeParts(now: Date, timezone: string): LocalTimeParts {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: normalizeTimezone(timezone),
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    weekday: 'short',
+    hourCycle: 'h23',
+  });
+  const parts = formatter.formatToParts(now);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? '0';
+  const weekday = get('weekday').toLowerCase().slice(0, 3) as LocalTimeParts['weekday'];
 
-  switch (frequency) {
+  return {
+    year: Number.parseInt(get('year'), 10),
+    month: Number.parseInt(get('month'), 10),
+    day: Number.parseInt(get('day'), 10),
+    hour: Number.parseInt(get('hour'), 10),
+    minute: Number.parseInt(get('minute'), 10),
+    second: Number.parseInt(get('second'), 10),
+    weekday,
+  };
+}
+
+function getDueOccurrenceKey(settings: PatchInlineSettings, timezone: string, now: Date): string | null {
+  const parts = getLocalTimeParts(now, timezone);
+  const [targetHourRaw, targetMinuteRaw] = (settings.scheduleTime || '02:00').split(':');
+  const targetHour = Number.parseInt(targetHourRaw ?? '2', 10);
+  const targetMinute = Number.parseInt(targetMinuteRaw ?? '0', 10);
+
+  if (parts.hour !== targetHour || parts.minute !== targetMinute) {
+    return null;
+  }
+
+  switch (settings.scheduleFrequency) {
     case 'daily':
-      // Window = today midnight UTC
-      return d;
-
-    case 'weekly': {
-      // Window = start of current week (Sunday)
-      const day = d.getUTCDay();
-      d.setUTCDate(d.getUTCDate() - day);
-      return d;
-    }
-
+      break;
+    case 'weekly':
+      if (parts.weekday !== (settings.scheduleDayOfWeek ?? 'sun')) {
+        return null;
+      }
+      break;
     case 'monthly':
-      // Window = start of current month
-      d.setUTCDate(1);
-      return d;
-
+      if (parts.day !== (settings.scheduleDayOfMonth ?? 1)) {
+        return null;
+      }
+      break;
     default:
-      return d;
+      return null;
   }
-}
 
-// ============================================
-// Device resolution (mirrors automationWorker pattern)
-// ============================================
+  const yyyy = String(parts.year).padStart(4, '0');
+  const mm = String(parts.month).padStart(2, '0');
+  const dd = String(parts.day).padStart(2, '0');
+  const hh = String(targetHour).padStart(2, '0');
+  const min = String(targetMinute).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
+}
 
 async function resolveDeviceIdsForAssignment(
   assignmentLevel: string,
@@ -197,23 +217,67 @@ async function resolveDeviceIdsForAssignment(
   }
 }
 
-// ============================================
-// Main scan logic
-// ============================================
+async function loadDeviceSchedulingContexts(deviceIds: string[]): Promise<DeviceSchedulingContext[]> {
+  if (deviceIds.length === 0) return [];
+
+  const rows = await db
+    .select({
+      deviceId: devices.id,
+      orgId: devices.orgId,
+      siteTimezone: sites.timezone,
+      orgSettings: organizations.settings,
+    })
+    .from(devices)
+    .innerJoin(organizations, eq(devices.orgId, organizations.id))
+    .leftJoin(sites, eq(devices.siteId, sites.id))
+    .where(inArray(devices.id, deviceIds));
+
+  return rows.map((row) => ({
+    deviceId: row.deviceId,
+    orgId: row.orgId,
+    timezone: normalizeTimezone(row.siteTimezone || parseOrgTimezone(row.orgSettings) || 'UTC'),
+  }));
+}
+
+async function hasExistingOccurrenceJob(
+  configPolicyId: string,
+  orgId: string,
+  timezone: string,
+  occurrenceKey: string,
+  now: Date
+): Promise<boolean> {
+  const jobs = await db
+    .select({
+      id: patchJobs.id,
+      targets: patchJobs.targets,
+    })
+    .from(patchJobs)
+    .where(
+      and(
+        eq(patchJobs.configPolicyId, configPolicyId),
+        eq(patchJobs.orgId, orgId),
+        gte(patchJobs.createdAt, new Date(now.getTime() - IDEMPOTENCY_LOOKBACK_MS))
+      )
+    );
+
+  return jobs.some((job) => {
+    const targets = (job.targets ?? {}) as Record<string, unknown>;
+    return (
+      targets.scheduleOccurrenceKey === occurrenceKey &&
+      targets.resolvedTimezone === timezone
+    );
+  });
+}
 
 async function scanAndCreateJobs(): Promise<{ created: number; scanned: number }> {
   const now = new Date();
   let created = 0;
 
-  // 1. Find active config policies with patch feature links
-  const patchFeatureLinks = await db
+  const patchPoliciesWithSchedules = await db
     .select({
-      featureLinkId: configPolicyFeatureLinks.id,
-      configPolicyId: configPolicyFeatureLinks.configPolicyId,
-      featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
-      inlineSettings: configPolicyFeatureLinks.inlineSettings,
+      configPolicyId: configurationPolicies.id,
       policyName: configurationPolicies.name,
-      policyOrgId: configurationPolicies.orgId,
+      featureLinkId: configPolicyFeatureLinks.id,
     })
     .from(configPolicyFeatureLinks)
     .innerJoin(
@@ -225,43 +289,25 @@ async function scanAndCreateJobs(): Promise<{ created: number; scanned: number }
     )
     .where(eq(configPolicyFeatureLinks.featureType, 'patch'));
 
-  for (const link of patchFeatureLinks) {
+  for (const row of patchPoliciesWithSchedules) {
     try {
-      // 2. Extract schedule from inlineSettings
-      const inline = (link.inlineSettings ?? {}) as Record<string, unknown>;
-      const scheduleConfig: ScheduleConfig = {
-        scheduleFrequency: (inline.scheduleFrequency as string) ?? 'weekly',
-        scheduleTime: (inline.scheduleTime as string) ?? '02:00',
-        scheduleDayOfWeek: inline.scheduleDayOfWeek as string | undefined,
-        scheduleDayOfMonth: inline.scheduleDayOfMonth as number | undefined,
-      };
+      const policyLocal = await loadPolicyLocalPatchConfig(row.configPolicyId);
+      if (!policyLocal) continue;
 
-      // 3. Check if schedule is due
-      if (!isScheduleDue(scheduleConfig, now)) continue;
+      if (!policyLocal.ring.valid) {
+        console.error(
+          `[PatchScheduler] Skipping config policy ${row.configPolicyId}: invalid ring reference (${policyLocal.ring.classification})`
+        );
+        continue;
+      }
 
-      // 4. Idempotency: check if a job already exists for this config policy in the current window
-      const windowStart = getWindowStart(scheduleConfig.scheduleFrequency, now);
-      const [existingJob] = await db
-        .select({ id: patchJobs.id })
-        .from(patchJobs)
-        .where(
-          and(
-            eq(patchJobs.configPolicyId, link.configPolicyId),
-            gte(patchJobs.createdAt, windowStart)
-          )
-        )
-        .limit(1);
-
-      if (existingJob) continue; // Already created this window
-
-      // 5. Resolve target devices from assignments
       const assignments = await db
         .select({
           level: configPolicyAssignments.level,
           targetId: configPolicyAssignments.targetId,
         })
         .from(configPolicyAssignments)
-        .where(eq(configPolicyAssignments.configPolicyId, link.configPolicyId));
+        .where(eq(configPolicyAssignments.configPolicyId, row.configPolicyId));
 
       if (assignments.length === 0) continue;
 
@@ -273,94 +319,100 @@ async function scanAndCreateJobs(): Promise<{ created: number; scanned: number }
 
       if (allDeviceIds.size === 0) continue;
 
-      // 6. Filter maintenance-suppressed devices
-      const deviceIds: string[] = [];
-      for (const deviceId of allDeviceIds) {
-        const maint = await checkDeviceMaintenanceWindow(deviceId);
-        if (!maint.active || !maint.suppressPatching) {
-          deviceIds.push(deviceId);
-        }
+      const schedulingContexts = await loadDeviceSchedulingContexts(Array.from(allDeviceIds));
+      const groupedContexts = new Map<string, { orgId: string; timezone: string; deviceIds: string[] }>();
+
+      for (const context of schedulingContexts) {
+        const key = `${context.orgId}:${context.timezone}`;
+        const group = groupedContexts.get(key) ?? {
+          orgId: context.orgId,
+          timezone: context.timezone,
+          deviceIds: [],
+        };
+        group.deviceIds.push(context.deviceId);
+        groupedContexts.set(key, group);
       }
 
-      if (deviceIds.length === 0) continue;
-
-      // 7. Load ring config if featurePolicyId is set
-      let ringId: string | null = null;
-      let ringName: string | null = null;
-      let categoryRules: unknown[] = [];
-      let autoApprove: unknown = {};
-
-      if (link.featurePolicyId) {
-        const [ring] = await db
-          .select({
-            id: patchPolicies.id,
-            name: patchPolicies.name,
-            categoryRules: patchPolicies.categoryRules,
-            autoApprove: patchPolicies.autoApprove,
-          })
-          .from(patchPolicies)
-          .where(eq(patchPolicies.id, link.featurePolicyId))
-          .limit(1);
-
-        if (ring) {
-          ringId = ring.id;
-          ringName = ring.name;
-          categoryRules = Array.isArray(ring.categoryRules) ? ring.categoryRules : [];
-          autoApprove = ring.autoApprove;
-        }
+      const dueGroups: DueGroup[] = [];
+      for (const group of groupedContexts.values()) {
+        const occurrenceKey = getDueOccurrenceKey(policyLocal.settings, group.timezone, now);
+        if (!occurrenceKey) continue;
+        dueGroups.push({
+          orgId: group.orgId,
+          timezone: group.timezone,
+          occurrenceKey,
+          deviceIds: group.deviceIds,
+        });
       }
 
-      const rebootPolicy = (inline.rebootPolicy as string) ?? 'if_required';
+      for (const group of dueGroups) {
+        if (await hasExistingOccurrenceJob(row.configPolicyId, group.orgId, group.timezone, group.occurrenceKey, now)) {
+          continue;
+        }
 
-      // 8. Create patch job
-      const [job] = await db
-        .insert(patchJobs)
-        .values({
-          orgId: link.policyOrgId,
-          configPolicyId: link.configPolicyId,
-          ringId,
-          name: `Scheduled Patch Job - ${link.policyName}`,
-          patches: {
-            ringId,
-            ringName,
-            categoryRules,
-            autoApprove,
-          },
-          targets: {
-            deviceIds,
-            configPolicyId: link.configPolicyId,
-            configPolicyName: link.policyName,
-            deployment: {
-              scheduleFrequency: scheduleConfig.scheduleFrequency,
-              scheduleTime: scheduleConfig.scheduleTime,
-              scheduleDayOfWeek: scheduleConfig.scheduleDayOfWeek,
-              scheduleDayOfMonth: scheduleConfig.scheduleDayOfMonth,
-              rebootPolicy,
+        const eligibleDeviceIds: string[] = [];
+        for (const deviceId of group.deviceIds) {
+          const maintenance = await checkDeviceMaintenanceWindow(deviceId);
+          if (!maintenance.active || !maintenance.suppressPatching) {
+            eligibleDeviceIds.push(deviceId);
+          }
+        }
+
+        if (eligibleDeviceIds.length === 0) {
+          continue;
+        }
+
+        const [job] = await db
+          .insert(patchJobs)
+          .values({
+            orgId: group.orgId,
+            configPolicyId: row.configPolicyId,
+            ringId: policyLocal.ring.ringId,
+            name: `Scheduled Patch Job - ${row.policyName}`,
+            patches: {
+              ringId: policyLocal.ring.ringId,
+              ringName: policyLocal.ring.ringName,
+              categoryRules: policyLocal.ring.categoryRules,
+              autoApprove: policyLocal.ring.autoApprove,
+              sources: policyLocal.settings.sources,
+              ringValidation: {
+                classification: policyLocal.ring.classification,
+                valid: policyLocal.ring.valid,
+              },
             },
-          },
-          status: 'scheduled',
-          scheduledAt: now,
-          devicesTotal: deviceIds.length,
-          devicesPending: deviceIds.length,
-        })
-        .returning();
+            targets: {
+              deviceIds: eligibleDeviceIds,
+              configPolicyId: row.configPolicyId,
+              configPolicyName: row.policyName,
+              deployment: policyLocal.settings,
+              resolvedTimezone: group.timezone,
+              scheduleOccurrenceKey: group.occurrenceKey,
+            },
+            status: 'scheduled',
+            scheduledAt: now,
+            devicesTotal: eligibleDeviceIds.length,
+            devicesPending: eligibleDeviceIds.length,
+          })
+          .returning();
 
-      if (job) {
-        await enqueuePatchJob(job.id);
-        created++;
-        console.log(`[PatchScheduler] Created job ${job.id} for config policy ${link.configPolicyId} (${deviceIds.length} devices)`);
+        if (job) {
+          await enqueuePatchJob(job.id);
+          created += 1;
+          console.log(
+            `[PatchScheduler] Created job ${job.id} for config policy ${row.configPolicyId} (${eligibleDeviceIds.length} devices, ${group.timezone}, ${group.occurrenceKey})`
+          );
+        }
       }
     } catch (err) {
-      console.error(`[PatchScheduler] Error processing config policy ${link.configPolicyId}:`, err instanceof Error ? err.message : err);
+      console.error(
+        `[PatchScheduler] Error processing config policy ${row.configPolicyId}:`,
+        err instanceof Error ? err.message : err
+      );
     }
   }
 
-  return { created, scanned: patchFeatureLinks.length };
+  return { created, scanned: patchPoliciesWithSchedules.length };
 }
-
-// ============================================
-// Worker
-// ============================================
 
 function createSchedulerWorker(): Worker {
   return new Worker(
@@ -384,15 +436,33 @@ function createSchedulerWorker(): Worker {
     {
       connection: getRedisConnection(),
       concurrency: 1,
+      lockDuration: 300_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 2,
     }
   );
 }
 
-// ============================================
-// Lifecycle
-// ============================================
-
 export async function initializePatchSchedulerWorker(): Promise<void> {
+  await runWithSystemDbAccess(async () => {
+    try {
+      const repair = await backfillMissingPatchSettings();
+      const inventory = await listAllPatchInventory();
+      const summary = summarizePatchInventory(inventory);
+
+      console.log(
+        `[PatchScheduler] Patch config repair: repaired=${repair.repaired}, fromInline=${repair.repairedFromInline}, defaults=${repair.repairedWithDefaults}`
+      );
+      console.log(
+        `[PatchScheduler] Patch inventory: total=${summary.total}, ok=${summary.ok}, needsRepair=${summary.needsRepair}, invalidReference=${summary.invalidReference}`
+      );
+    } catch (error) {
+      if (!isRelationNotFoundError(error)) {
+        throw error;
+      }
+    }
+  });
+
   schedulerWorker = createSchedulerWorker();
 
   schedulerWorker.on('error', (error) => {
@@ -401,13 +471,11 @@ export async function initializePatchSchedulerWorker(): Promise<void> {
 
   const queue = getSchedulerQueue();
 
-  // Remove existing repeatable jobs
   const existingJobs = await queue.getRepeatableJobs();
   for (const job of existingJobs) {
     await queue.removeRepeatableByKey(job.key);
   }
 
-  // Schedule every 60 seconds
   await queue.add(
     'scan-schedules',
     {},

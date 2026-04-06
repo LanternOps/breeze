@@ -26,8 +26,8 @@ func (s *Session) startStreaming() {
 		}
 
 		// Best-effort: request an IDR immediately for fast viewer startup.
-		if s.encoder != nil {
-			_ = s.encoder.ForceKeyframe()
+		if enc := s.encoder.Load(); enc != nil {
+			_ = enc.ForceKeyframe()
 		}
 
 		s.wg.Add(1)
@@ -110,6 +110,9 @@ func (s *Session) cursorStreamLoop(prov CursorProvider) {
 		cursorIdleInterval   = 250 * time.Millisecond
 	)
 
+	// Check if the provider also supports cursor shape detection.
+	shapeProv, hasShape := prov.(CursorShapeProvider)
+
 	enabled := s.cursorStreamEnabled.Load()
 	interval := cursorIdleInterval
 	if enabled {
@@ -120,6 +123,7 @@ func (s *Session) cursorStreamLoop(prov CursorProvider) {
 
 	var lastRelX, lastRelY int32
 	var lastV bool
+	var lastShape string
 	haveLast := false
 
 	for {
@@ -147,24 +151,41 @@ func (s *Session) cursorStreamLoop(prov CursorProvider) {
 			// so viewer can map directly using videoWidth/videoHeight.
 			relX := cx - s.cursorOffsetX.Load()
 			relY := cy - s.cursorOffsetY.Load()
-			if haveLast && relX == lastRelX && relY == lastRelY && cv == lastV {
+
+			// Get cursor shape if the provider supports it.
+			// CursorShape() is cheap — it reads the value already sampled
+			// by CursorPosition() or sampleCursorForCrossThread().
+			var shape string
+			if hasShape {
+				shape = shapeProv.CursorShape()
+			}
+
+			if haveLast && relX == lastRelX && relY == lastRelY && cv == lastV && shape == lastShape {
 				continue
 			}
-			lastRelX, lastRelY, lastV = relX, relY, cv
+			shapeChanged := shape != lastShape
+			lastRelX, lastRelY, lastV, lastShape = relX, relY, cv, shape
 			haveLast = true
 			v := 0
 			if cv {
 				v = 1
 			}
-			payload := make([]byte, 0, 40)
+			payload := make([]byte, 0, 64)
 			payload = append(payload, `{"x":`...)
 			payload = strconv.AppendInt(payload, int64(relX), 10)
 			payload = append(payload, `,"y":`...)
 			payload = strconv.AppendInt(payload, int64(relY), 10)
 			payload = append(payload, `,"v":`...)
 			payload = strconv.AppendInt(payload, int64(v), 10)
+			// Only include shape when it changes or on first message to
+			// minimize per-message overhead on the high-frequency channel.
+			if shapeChanged && shape != "" {
+				payload = append(payload, `,"s":"`...)
+				payload = append(payload, shape...)
+				payload = append(payload, '"')
+			}
 			payload = append(payload, '}')
-			if err := s.cursorDC.Send(payload); err != nil {
+			if err := s.cursorDC.SendText(string(payload)); err != nil {
 				slog.Debug("Failed to send cursor update", "session", s.id, "error", err.Error())
 			}
 		}
@@ -251,23 +272,50 @@ func extractRemoteInboundVideoStats(report webrtc.StatsReport) (rtt time.Duratio
 	return rtt, loss, ok
 }
 
-// describeH264NALUs parses Annex B start codes and returns a summary of NALU types.
-// Used for diagnostics after monitor switch to verify SPS/PPS presence.
-func describeH264NALUs(data []byte) string {
-	types := make(map[string]int)
-	for i := 0; i < len(data)-4; {
-		// Look for start code: 00 00 01 or 00 00 00 01
+// h264ContainsIDR checks if H.264 Annex B data contains an IDR NAL unit (type 5).
+// Used to prevent dropping keyframes — without IDRs the decoder accumulates corruption.
+func h264ContainsIDR(data []byte) bool {
+	for i := 0; i+2 < len(data); {
 		startLen := 0
 		if data[i] == 0 && data[i+1] == 0 {
 			if data[i+2] == 1 {
 				startLen = 3
-			} else if data[i+2] == 0 && i+3 < len(data) && data[i+3] == 1 {
+			} else if i+3 < len(data) && data[i+2] == 0 && data[i+3] == 1 {
 				startLen = 4
 			}
 		}
 		if startLen == 0 {
 			i++
 			continue
+		}
+		if i+startLen < len(data) && data[i+startLen]&0x1f == 5 {
+			return true
+		}
+		i += startLen + 1
+	}
+	return false
+}
+
+// describeH264NALUs parses Annex B start codes and returns a summary of NALU types.
+// Used for diagnostics after monitor switch to verify SPS/PPS presence.
+func describeH264NALUs(data []byte) string {
+	types := make(map[string]int)
+	for i := 0; i+2 < len(data); {
+		// Look for start code: 00 00 01 or 00 00 00 01
+		startLen := 0
+		if data[i] == 0 && data[i+1] == 0 {
+			if data[i+2] == 1 {
+				startLen = 3
+			} else if i+3 < len(data) && data[i+2] == 0 && data[i+3] == 1 {
+				startLen = 4
+			}
+		}
+		if startLen == 0 {
+			i++
+			continue
+		}
+		if i+startLen >= len(data) {
+			break
 		}
 		naluType := data[i+startLen] & 0x1f
 		name := fmt.Sprintf("type%d", naluType)

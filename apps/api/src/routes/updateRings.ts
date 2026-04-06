@@ -12,10 +12,14 @@ import {
   devicePatches,
   devices
 } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { resolveRingDeviceCounts } from './updateRingsHelpers';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import { PERMISSIONS } from '../services/permissions';
 
 export const updateRingRoutes = new Hono();
+const requireUpdateRingRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
+const requireUpdateRingWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
 
 updateRingRoutes.use('*', authMiddleware);
 
@@ -61,6 +65,7 @@ async function ensureDefaultRing(orgId: string, userId?: string): Promise<string
     .where(
       and(
         eq(patchPolicies.orgId, orgId),
+        eq(patchPolicies.kind, 'ring'),
         eq(patchPolicies.ringOrder, 0),
         eq(patchPolicies.name, 'Default')
       )
@@ -74,6 +79,7 @@ async function ensureDefaultRing(orgId: string, userId?: string): Promise<string
     .insert(patchPolicies)
     .values({
       orgId,
+      kind: 'ring',
       name: 'Default',
       description: 'Default update ring — all patches require manual approval',
       enabled: true,
@@ -162,6 +168,7 @@ const ringPatchesQuerySchema = z.object({
 updateRingRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requireUpdateRingRead,
   zValidator('query', listRingsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -194,10 +201,17 @@ updateRingRoutes.get(
         updatedAt: patchPolicies.updatedAt,
       })
       .from(patchPolicies)
-      .where(and(eq(patchPolicies.orgId, orgId), eq(patchPolicies.enabled, true)))
+      .where(and(eq(patchPolicies.orgId, orgId), eq(patchPolicies.kind, 'ring'), eq(patchPolicies.enabled, true)))
       .orderBy(asc(patchPolicies.ringOrder), asc(patchPolicies.createdAt));
 
-    return c.json({ data: rings });
+    const deviceCountMap = await resolveRingDeviceCounts(rings.map(r => r.id));
+
+    const ringsWithCounts = rings.map(r => ({
+      ...r,
+      deviceCount: deviceCountMap.get(r.id) ?? 0,
+    }));
+
+    return c.json({ data: ringsWithCounts });
   }
 );
 
@@ -205,6 +219,8 @@ updateRingRoutes.get(
 updateRingRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requireUpdateRingWrite,
+  requireMfa(),
   zValidator('json', createRingSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -218,6 +234,7 @@ updateRingRoutes.post(
       .insert(patchPolicies)
       .values({
         orgId,
+        kind: 'ring',
         name: data.name,
         description: data.description ?? null,
         enabled: data.enabled ?? true,
@@ -252,6 +269,7 @@ updateRingRoutes.post(
 updateRingRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireUpdateRingRead,
   zValidator('param', ringIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -260,7 +278,7 @@ updateRingRoutes.get(
     const [ring] = await db
       .select()
       .from(patchPolicies)
-      .where(eq(patchPolicies.id, id))
+      .where(and(eq(patchPolicies.id, id), eq(patchPolicies.kind, 'ring')))
       .limit(1);
 
     if (!ring) return c.json({ error: 'Update ring not found' }, 404);
@@ -309,6 +327,8 @@ updateRingRoutes.get(
 updateRingRoutes.patch(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireUpdateRingWrite,
+  requireMfa(),
   zValidator('param', ringIdParamSchema),
   zValidator('json', updateRingSchema),
   async (c) => {
@@ -319,7 +339,7 @@ updateRingRoutes.patch(
     const [existing] = await db
       .select({ id: patchPolicies.id, orgId: patchPolicies.orgId })
       .from(patchPolicies)
-      .where(eq(patchPolicies.id, id))
+      .where(and(eq(patchPolicies.id, id), eq(patchPolicies.kind, 'ring')))
       .limit(1);
 
     if (!existing) return c.json({ error: 'Update ring not found' }, 404);
@@ -343,7 +363,7 @@ updateRingRoutes.patch(
     const [updated] = await db
       .update(patchPolicies)
       .set(updateFields)
-      .where(eq(patchPolicies.id, id))
+      .where(and(eq(patchPolicies.id, id), eq(patchPolicies.kind, 'ring')))
       .returning();
 
     writeRouteAudit(c, {
@@ -362,6 +382,8 @@ updateRingRoutes.patch(
 updateRingRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireUpdateRingWrite,
+  requireMfa(),
   zValidator('param', ringIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -370,7 +392,7 @@ updateRingRoutes.delete(
     const [existing] = await db
       .select({ id: patchPolicies.id, orgId: patchPolicies.orgId, name: patchPolicies.name })
       .from(patchPolicies)
-      .where(eq(patchPolicies.id, id))
+      .where(and(eq(patchPolicies.id, id), eq(patchPolicies.kind, 'ring')))
       .limit(1);
 
     if (!existing) return c.json({ error: 'Update ring not found' }, 404);
@@ -379,7 +401,7 @@ updateRingRoutes.delete(
     await db
       .update(patchPolicies)
       .set({ enabled: false, updatedAt: new Date() })
-      .where(eq(patchPolicies.id, id));
+      .where(and(eq(patchPolicies.id, id), eq(patchPolicies.kind, 'ring')));
 
     writeRouteAudit(c, {
       orgId: existing.orgId,
@@ -397,6 +419,7 @@ updateRingRoutes.delete(
 updateRingRoutes.get(
   '/:id/patches',
   requireScope('organization', 'partner', 'system'),
+  requireUpdateRingRead,
   zValidator('param', ringIdParamSchema),
   zValidator('query', ringPatchesQuerySchema),
   async (c) => {
@@ -407,7 +430,7 @@ updateRingRoutes.get(
     const [ring] = await db
       .select({ id: patchPolicies.id, orgId: patchPolicies.orgId })
       .from(patchPolicies)
-      .where(eq(patchPolicies.id, id))
+      .where(and(eq(patchPolicies.id, id), eq(patchPolicies.kind, 'ring')))
       .limit(1);
 
     if (!ring) return c.json({ error: 'Update ring not found' }, 404);
@@ -484,6 +507,7 @@ updateRingRoutes.get(
 updateRingRoutes.get(
   '/:id/compliance',
   requireScope('organization', 'partner', 'system'),
+  requireUpdateRingRead,
   zValidator('param', ringIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -492,7 +516,7 @@ updateRingRoutes.get(
     const [ring] = await db
       .select({ id: patchPolicies.id, orgId: patchPolicies.orgId, name: patchPolicies.name })
       .from(patchPolicies)
-      .where(eq(patchPolicies.id, id))
+      .where(and(eq(patchPolicies.id, id), eq(patchPolicies.kind, 'ring')))
       .limit(1);
 
     if (!ring) return c.json({ error: 'Update ring not found' }, 404);

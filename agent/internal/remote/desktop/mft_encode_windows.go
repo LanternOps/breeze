@@ -6,8 +6,16 @@ import (
 	"fmt"
 	"log/slog"
 	"syscall"
+	"time"
 	"unsafe"
 )
+
+// mftStallThreshold is the maximum consecutive nil outputs from the MFT before
+// the pipeline is flushed and restarted. Hardware MFTs (Intel Quick Sync, etc.)
+// can stall permanently on certain GPUs. Flushing at 8 frames (~133ms at 60fps)
+// must trigger before the screen goes idle, otherwise the stall counter freezes.
+// breaks the stall with acceptable quality loss (one IDR keyframe).
+const mftStallThreshold = 8
 
 // Encode takes RGBA or BGRA pixel data (per SetPixelFormat), converts to NV12, and encodes to H264.
 // Returns nil, nil when the MFT is buffering (no output yet).
@@ -57,6 +65,13 @@ func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 		_ = m.forceKeyframeLocked()
 	}
 
+	// If the MFT is mid-stall, skip feeding to avoid a blocking ProcessInput.
+	if m.consecutiveNilOutputs >= mftStallThreshold {
+		m.permanentlyStalled = true
+		slog.Warn("MFT stall detected before ProcessInput (CPU path), marking permanently stalled",
+			"consecutiveNil", m.consecutiveNilOutputs, "frameIdx", m.frameIdx, "isHW", m.isHW)
+		return nil, nil
+	}
 	// Feed to encoder
 	ret, _, _ := syscall.SyscallN(
 		m.vtblFn(vtblProcessInput),
@@ -80,9 +95,11 @@ func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 			0,
 		)
 		if int32(ret) < 0 {
+			m.trackNilOutput(out)
 			return out, nil // Return what we drained
 		}
 		if out != nil {
+			m.trackNilOutput(out)
 			return out, nil
 		}
 	} else if int32(ret) < 0 {
@@ -94,23 +111,7 @@ func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 	if err != nil {
 		return out, err
 	}
-	if out == nil {
-		m.consecutiveNilOutputs++
-		if m.consecutiveNilOutputs == 3 || m.consecutiveNilOutputs == 10 {
-			slog.Warn("MFT encoder not producing output (buffering)",
-				"consecutiveNil", m.consecutiveNilOutputs,
-				"frameIdx", m.frameIdx,
-				"isHW", m.isHW,
-				"gpuFailed", m.gpuFailed,
-			)
-		}
-	} else {
-		if m.consecutiveNilOutputs > 2 {
-			slog.Info("MFT encoder resumed output after buffering",
-				"nilCount", m.consecutiveNilOutputs)
-		}
-		m.consecutiveNilOutputs = 0
-	}
+	m.trackNilOutput(out)
 	return out, nil
 }
 
@@ -380,6 +381,18 @@ func (m *mftEncoder) ForceKeyframe() error {
 	return m.forceKeyframeLocked()
 }
 
+// flushLocked drops all buffered frames and restarts streaming. Caller must hold m.mu.
+func (m *mftEncoder) flushLocked() {
+	if !m.inited || m.transform == 0 {
+		return
+	}
+	comCall(m.transform, vtblProcessMessage, mftMessageCommandFlush, 0)
+	comCall(m.transform, vtblProcessMessage, mftMessageNotifyBeginStreaming, 0)
+	comCall(m.transform, vtblProcessMessage, mftMessageNotifyStartOfStream, 0)
+	m.forceKeyframePending = true
+	_ = m.forceKeyframeLocked()
+}
+
 // Flush drops all buffered frames from the MFT encoder pipeline and forces the
 // next output to be an IDR keyframe. Used on mouse clicks so the viewer
 // immediately shows the result of the click instead of displaying stale
@@ -387,24 +400,71 @@ func (m *mftEncoder) ForceKeyframe() error {
 func (m *mftEncoder) Flush() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	if !m.inited || m.transform == 0 {
-		return nil
-	}
-
-	// 1. Flush all buffered input/output from the MFT pipeline.
-	comCall(m.transform, vtblProcessMessage, mftMessageCommandFlush, 0)
-
-	// 2. Restart the streaming session so the MFT accepts new input.
-	comCall(m.transform, vtblProcessMessage, mftMessageNotifyBeginStreaming, 0)
-	comCall(m.transform, vtblProcessMessage, mftMessageNotifyStartOfStream, 0)
-
-	// 3. Force the next output to be an IDR keyframe so the viewer can
-	//    decode immediately without waiting for a reference frame.
-	m.forceKeyframePending = true
-	_ = m.forceKeyframeLocked()
-
+	m.flushLocked()
 	return nil
+}
+
+// trackNilOutput tracks consecutive nil outputs from drainOutput and auto-flushes
+// when the MFT appears stalled. Hardware MFTs (Intel Quick Sync, etc.) can
+// permanently stall on certain GPUs — accepting input but never producing output.
+// Two flush cycles with 2s cooldowns detect this within ~5 seconds, allowing the
+// capture loop to swap to OpenH264 before the viewer gives up. Caller must hold m.mu.
+func (m *mftEncoder) trackNilOutput(out []byte) {
+	if out == nil {
+		m.consecutiveNilOutputs++
+		if m.consecutiveNilOutputs == 3 || m.consecutiveNilOutputs == 10 {
+			slog.Warn("MFT encoder not producing output (buffering)",
+				"consecutiveNil", m.consecutiveNilOutputs,
+				"frameIdx", m.frameIdx,
+				"isHW", m.isHW,
+				"gpuFailed", m.gpuFailed,
+			)
+		}
+		threshold := mftStallThreshold
+		// After a recent flush, use a lower threshold for faster second recovery.
+		if m.lastStallFlush != (time.Time{}) && time.Since(m.lastStallFlush) < 10*time.Second {
+			threshold = mftStallThreshold / 2
+		}
+		if m.consecutiveNilOutputs >= threshold && time.Since(m.lastStallFlush) >= 2*time.Second {
+			// Track consecutive flush cycles without output. If the encoder
+			// never produces output after multiple flushes, it's permanently
+			// broken (common on certain Intel/AMD GPUs with hardware MFTs).
+			if !m.outputSinceFlush && m.stallFlushCount > 0 {
+				m.stallFlushCount++
+			} else {
+				m.stallFlushCount = 1
+			}
+			m.outputSinceFlush = false
+
+			if m.stallFlushCount >= 2 {
+				slog.Error("MFT encoder permanently stalled — flush recovery not working",
+					"stallFlushCount", m.stallFlushCount,
+					"frameIdx", m.frameIdx,
+					"isHW", m.isHW,
+				)
+				m.permanentlyStalled = true
+				return
+			}
+
+			slog.Warn("MFT encoder stalled, flushing pipeline to recover",
+				"consecutiveNil", m.consecutiveNilOutputs,
+				"frameIdx", m.frameIdx,
+				"isHW", m.isHW,
+				"stallFlushCount", m.stallFlushCount,
+			)
+			m.flushLocked()
+			m.consecutiveNilOutputs = 0
+			m.lastStallFlush = time.Now()
+		}
+	} else {
+		if m.consecutiveNilOutputs > 2 {
+			slog.Info("MFT encoder resumed output after buffering",
+				"nilCount", m.consecutiveNilOutputs)
+		}
+		m.consecutiveNilOutputs = 0
+		m.outputSinceFlush = true
+		m.stallFlushCount = 0
+	}
 }
 
 func (m *mftEncoder) forceKeyframeLocked() error {
@@ -474,11 +534,11 @@ func (m *mftEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 		_ = m.forceKeyframeLocked()
 	}
 
-	// 1. GPU BGRA→NV12 conversion + readback to CPU memory.
-	// We use ConvertAndReadback instead of the DXGI surface buffer path because
-	// hardware MFT encoders often have issues reading DXGI surface buffers directly.
-	// The GPU still does the expensive BGRA→NV12 color conversion; the only extra
-	// cost is a ~5.5MB NV12 GPU→CPU readback (fast over PCIe).
+	// GPU BGRA→NV12 conversion + readback to CPU memory.
+	// The GPU does the expensive color conversion via VideoProcessorBlt;
+	// the NV12 result is read back to CPU and fed as a regular memory buffer.
+	// Zero-copy DXGI surface path was tested but hardware MFTs stall on
+	// many GPU/driver combinations. Direct NVENC (Phase 3) is the real fix.
 	nv12, err := m.gpuConv.ConvertAndReadback()
 	if err != nil {
 		return nil, fmt.Errorf("GPU convert: %w", err)
@@ -555,7 +615,16 @@ func (m *mftEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 	}
 	defer comRelease(sample)
 
-	// 3. Feed to encoder
+	// 3. Feed to encoder. If the MFT is mid-stall (accepting input but not
+	// producing output), skip feeding and mark permanently stalled instead
+	// of risking a blocking ProcessInput call.
+	if m.consecutiveNilOutputs >= mftStallThreshold {
+		comRelease(sample)
+		m.permanentlyStalled = true
+		slog.Warn("MFT stall detected before ProcessInput, marking permanently stalled",
+			"consecutiveNil", m.consecutiveNilOutputs, "frameIdx", m.frameIdx, "isHW", m.isHW)
+		return nil, nil
+	}
 	ret, _, _ := syscall.SyscallN(
 		m.vtblFn(vtblProcessInput),
 		m.transform,
@@ -577,14 +646,21 @@ func (m *mftEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 			0,
 		)
 		if int32(ret) < 0 {
+			m.trackNilOutput(out)
 			return out, nil
 		}
 		if out != nil {
+			m.trackNilOutput(out)
 			return out, nil
 		}
 	} else if int32(ret) < 0 {
 		return nil, fmt.Errorf("ProcessInput (GPU): 0x%08X", uint32(ret))
 	}
 
-	return m.drainOutput()
+	out, err := m.drainOutput()
+	if err != nil {
+		return out, err
+	}
+	m.trackNilOutput(out)
+	return out, nil
 }

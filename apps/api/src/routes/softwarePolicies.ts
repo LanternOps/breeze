@@ -8,7 +8,7 @@ import {
   softwareComplianceStatus,
   softwarePolicies,
 } from '../db/schema';
-import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { scheduleSoftwareComplianceCheck } from '../jobs/softwareComplianceWorker';
 import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
@@ -17,8 +17,21 @@ import {
   recordSoftwarePolicyAudit,
 } from '../services/softwarePolicyService';
 import { captureException } from '../services/sentry';
+import { PERMISSIONS } from '../services/permissions';
 
 export const softwarePoliciesRoutes = new Hono();
+const requireSoftwarePolicyRead = requirePermission(
+  PERMISSIONS.DEVICES_READ.resource,
+  PERMISSIONS.DEVICES_READ.action,
+);
+const requireSoftwarePolicyWrite = requirePermission(
+  PERMISSIONS.DEVICES_WRITE.resource,
+  PERMISSIONS.DEVICES_WRITE.action,
+);
+const requireSoftwarePolicyExecute = requirePermission(
+  PERMISSIONS.DEVICES_EXECUTE.resource,
+  PERMISSIONS.DEVICES_EXECUTE.action,
+);
 
 softwarePoliciesRoutes.use('*', authMiddleware);
 softwarePoliciesRoutes.use('*', requireScope('organization', 'partner', 'system'));
@@ -134,6 +147,7 @@ async function getPolicyWithAccess(policyId: string, auth: AuthContext) {
 
 softwarePoliciesRoutes.get(
   '/',
+  requireSoftwarePolicyRead,
   zValidator('query', listPoliciesQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -143,7 +157,7 @@ softwarePoliciesRoutes.get(
     const orgCondition = auth.orgCondition(softwarePolicies.orgId);
     if (orgCondition) conditions.push(orgCondition);
     if (query.mode) conditions.push(eq(softwarePolicies.mode, query.mode));
-    if (query.isActive !== undefined) conditions.push(eq(softwarePolicies.isActive, query.isActive === 'true'));
+    conditions.push(eq(softwarePolicies.isActive, query.isActive === undefined ? true : query.isActive === 'true'));
 
     const where = conditions.length > 0 ? and(...conditions) : undefined;
     const limit = query.limit ?? 50;
@@ -175,6 +189,8 @@ softwarePoliciesRoutes.get(
 
 softwarePoliciesRoutes.post(
   '/',
+  requireSoftwarePolicyWrite,
+  requireMfa(),
   zValidator('json', createPolicySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -247,7 +263,7 @@ softwarePoliciesRoutes.post(
   }
 );
 
-softwarePoliciesRoutes.get('/compliance/overview', async (c) => {
+softwarePoliciesRoutes.get('/compliance/overview', requireSoftwarePolicyRead, async (c) => {
   const auth = c.get('auth');
 
   const conditions: SQL[] = [];
@@ -295,6 +311,7 @@ softwarePoliciesRoutes.get('/compliance/overview', async (c) => {
 
 softwarePoliciesRoutes.get(
   '/violations',
+  requireSoftwarePolicyRead,
   zValidator('query', violationsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -335,6 +352,7 @@ softwarePoliciesRoutes.get(
 
 softwarePoliciesRoutes.get(
   '/:id',
+  requireSoftwarePolicyRead,
   zValidator('param', policyIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -351,6 +369,8 @@ softwarePoliciesRoutes.get(
 
 softwarePoliciesRoutes.patch(
   '/:id',
+  requireSoftwarePolicyWrite,
+  requireMfa(),
   zValidator('param', policyIdParamSchema),
   zValidator('json', updatePolicySchema),
   async (c) => {
@@ -429,6 +449,8 @@ softwarePoliciesRoutes.patch(
 
 softwarePoliciesRoutes.delete(
   '/:id',
+  requireSoftwarePolicyWrite,
+  requireMfa(),
   zValidator('param', policyIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -480,6 +502,8 @@ softwarePoliciesRoutes.delete(
 
 softwarePoliciesRoutes.post(
   '/:id/check',
+  requireSoftwarePolicyExecute,
+  requireMfa(),
   zValidator('param', policyIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -536,6 +560,8 @@ softwarePoliciesRoutes.post(
 
 softwarePoliciesRoutes.post(
   '/:id/remediate',
+  requireSoftwarePolicyExecute,
+  requireMfa(),
   zValidator('param', policyIdParamSchema),
   async (c) => {
     const auth = c.get('auth');

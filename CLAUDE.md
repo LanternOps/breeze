@@ -29,16 +29,21 @@ Partner (MSP) → Organization (Customer) → Site (Location) → Device Group �
 - `apps/api/src/routes/` - Hono route handlers
 - Pattern: Export `xxxRoutes` from each file, mount in `index.ts`
 
-### File Size Rule
-- **No file should exceed 500 lines.** If a file is approaching that limit, split it into focused domain modules before it grows further.
-- **Exception**: Declarative tool/schema definition files (e.g. `aiTools*.ts`) can go up to 800 lines since they're mostly self-contained registration blocks, not complex logic.
+### File Size Guideline
+- **Aim to keep files under 500 lines** as a soft guideline, not a hard rule. Use judgment — if a file is cohesive and readable at 600 lines, that's fine. Split when a file becomes hard to navigate or mixes unrelated concerns, not just because it crossed a line count.
+- **Declarative files** (e.g. `aiTools*.ts`, schema definitions) can naturally run longer since they're mostly self-contained registration blocks.
 - Follow the `aiTools*.ts` pattern: one thin hub file for registry/exports, per-domain files for implementations (e.g. `aiToolsDevice.ts`, `aiToolsNetwork.ts`).
 - For route files, split by resource. For service files, split by domain. Helpers used by multiple files can be duplicated locally or extracted to a shared utils file.
+- **Do not proactively split files** that are working well just to meet a line count target. Only split when it improves clarity or maintainability.
 
 ### Context Preservation
 - **Prefer subagents (Agent tool) for research, exploration, and isolated tasks** to keep the main conversation context lean and avoid hitting context limits during long sessions.
 - Use subagents for: codebase searches, file reading/analysis, PR reviews, build log inspection, and any work that produces large output.
 - Keep the main context for: decision-making, coordinating work, and user interaction.
+
+### URL State in Components
+- Use `window.location.hash` (`#value`) for client-side UI state like selected tabs, selected items in lists, etc. See `DeviceDetails.tsx` and `OrganizationsPage.tsx` for examples.
+- Do **not** use query params (`?key=value`) for transient UI state — keep the pattern consistent.
 
 ### Shared Code
 - `packages/shared/src/types/` - TypeScript interfaces
@@ -242,6 +247,11 @@ docker compose -f docker-compose.yml -f docker-compose.override.yml.local-build 
 ln -sf docker-compose.override.yml.dev docker-compose.override.yml
 docker compose up --build -d
 ```
+
+### PR Merge Process
+- Branch protection requires status checks, but the repo owner uses `--admin` to bypass when CI is green
+- Use `gh pr merge --squash --admin` (merge commits are disabled on this repo)
+- This is the normal workflow — do not wait for branch protection rules to be satisfied
 
 ## Current Status
 

@@ -9,6 +9,7 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
+import { backupToolSchemas } from './aiToolSchemasBackup';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -506,6 +507,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     reason: z.string().min(1).max(500).optional(),
   }),
 
+  // Backup & DR tool modules (extracted to aiToolSchemasBackup.ts)
+  ...backupToolSchemas,
+
   file_operations: z.object({
     deviceId: uuid,
     action: z.enum(['list', 'read', 'write', 'delete', 'mkdir', 'rename']),
@@ -848,6 +852,39 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   remove_configuration_policy_assignment: z.object({
     assignmentId: uuid,
+  }),
+
+  manage_configuration_policy: z.object({
+    action: z.enum(['create', 'update', 'activate', 'deactivate', 'delete']),
+    policyId: uuid.optional(),
+    name: z.string().min(1).max(255).optional(),
+    description: z.string().optional(),
+    status: z.enum(['active', 'inactive', 'archived']).optional(),
+    orgId: uuid.optional(),
+  }),
+
+  get_configuration_policy: z.object({
+    policyId: uuid,
+  }),
+
+  configuration_policy_compliance: z.object({
+    action: z.enum(['summary', 'status']),
+    policyId: uuid.optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  manage_policy_feature_link: z.object({
+    action: z.enum(['add', 'update', 'remove', 'list']),
+    configPolicyId: uuid,
+    featureLinkId: uuid.optional(),
+    featureType: z.enum([
+      'patch', 'alert_rule', 'backup', 'security', 'monitoring',
+      'maintenance', 'compliance', 'automation', 'event_log',
+      'software_policy', 'sensitive_data', 'peripheral_control',
+      'warranty', 'helper',
+    ]).optional(),
+    featurePolicyId: uuid.optional().nullable(),
+    inlineSettings: z.record(z.unknown()).optional().nullable(),
   }),
 
   // Playbook tools

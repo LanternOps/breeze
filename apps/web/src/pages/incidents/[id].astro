@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import IncidentDetailPage from '../../components/incidents/IncidentDetailPage';
+
+const { id } = Astro.params;
+---
+
+<DashboardLayout title="Incident Detail">
+  <IncidentDetailPage incidentId={id!} client:load />
+</DashboardLayout>

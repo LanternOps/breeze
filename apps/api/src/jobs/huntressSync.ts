@@ -15,6 +15,7 @@ import {
 } from '../services/huntressClient';
 import { publishEvent } from '../services/eventBus';
 import { getRedisConnection } from '../services/redis';
+import { isReusableState } from '../services/bullmqUtils';
 import { captureException } from '../services/sentry';
 import { decryptSecret } from '../services/secretCrypto';
 import { HUNTRESS_OFFLINE_STATUSES, HUNTRESS_RESOLVED_STATUSES } from '../services/huntressConstants';
@@ -113,13 +114,7 @@ async function addUniqueJob(
   const existing = await queue.getJob(jobId);
   if (existing) {
     const state = await existing.getState();
-    if (
-      state === 'active'
-      || state === 'waiting'
-      || state === 'delayed'
-      || state === 'waiting-children'
-      || state === 'prioritized'
-    ) {
+    if (isReusableState(state)) {
       return String(existing.id);
     }
     await existing.remove().catch((err) => {

@@ -166,8 +166,9 @@ func (m *Monitor) runChecks() {
 		result.WatchType = w.WatchType
 		result.Name = w.Name
 
-		// Handle auto-restart (maybeAutoRestart sets AutoRestartSucceeded on result directly)
-		if result.Status != StatusRunning && w.AutoRestart {
+		// Handle auto-restart — only for services/processes that exist but are stopped,
+		// not for names that couldn't be resolved (StatusNotFound / StatusError).
+		if result.Status == StatusStopped && w.AutoRestart {
 			attempted, _ := m.maybeAutoRestart(w, &result)
 			result.AutoRestartAttempted = attempted
 		}

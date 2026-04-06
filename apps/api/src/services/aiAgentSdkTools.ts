@@ -70,6 +70,9 @@ export const TOOL_TIERS = {
   get_cis_device_report: 1,
   apply_cis_remediation: 3,
   get_fleet_health: 1,
+  get_backup_health: 1,
+  run_backup_verification: 2,
+  get_recovery_readiness: 1,
   file_operations: 1, // Base tier; write/delete/mkdir/rename escalated to 3 in guardrails
   analyze_disk_usage: 1,
   disk_cleanup: 1, // Base tier; execute escalated to 3 in guardrails
@@ -86,6 +89,7 @@ export const TOOL_TIERS = {
   manage_maintenance_windows: 1, // Action-level escalation in guardrails
   manage_automations: 1,     // Action-level escalation in guardrails
   manage_alert_rules: 1,     // Action-level escalation in guardrails
+  manage_service_monitors: 1, // Action-level escalation in guardrails
   generate_report: 1,        // Action-level escalation in guardrails
   // Brain device context tools
   get_device_context: 1,
@@ -110,6 +114,12 @@ export const TOOL_TIERS = {
   preview_configuration_change: 1,
   apply_configuration_policy: 2,
   remove_configuration_policy_assignment: 2,
+  manage_policy_feature_link: 2,
+  // Policy prerequisite tools (standalone policies linked via featurePolicyId)
+  manage_update_rings: 1,          // Action-level escalation in guardrails
+  manage_software_policies: 1,     // Action-level escalation in guardrails
+  manage_peripheral_policies: 1,   // Action-level escalation in guardrails
+  manage_backup_configs: 1,        // Action-level escalation in guardrails
   // Playbook tools
   list_playbooks: 1,
   execute_playbook: 3,
@@ -351,6 +361,7 @@ export function createBreezeMcpServer(
   getActiveSession?: () => ActiveSession,
 ) {
   const uuid = z.string().uuid();
+  const backupEntityId = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 
   const tools = [
     tool(
@@ -655,6 +666,40 @@ export function createBreezeMcpServer(
     ),
 
     tool(
+      'get_backup_health',
+      'Get backup and verification health summary for an organization, with optional device focus.',
+      {
+        orgId: uuid.optional(),
+        deviceId: backupEntityId.optional(),
+      },
+      makeHandler('get_backup_health', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'run_backup_verification',
+      'Run integrity or restore verification for a device and return updated readiness data.',
+      {
+        orgId: uuid.optional(),
+        deviceId: backupEntityId,
+        backupJobId: backupEntityId.optional(),
+        snapshotId: backupEntityId.optional(),
+        verificationType: z.enum(['integrity', 'test_restore']).optional(),
+      },
+      makeHandler('run_backup_verification', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_recovery_readiness',
+      'Get per-device recovery readiness with estimated RTO/RPO and risk factors.',
+      {
+        orgId: uuid.optional(),
+        deviceId: backupEntityId.optional(),
+        includeRiskFactors: z.boolean().optional(),
+      },
+      makeHandler('get_recovery_readiness', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
       'file_operations',
       'Perform file operations on a device. Read/list are safe; write/delete require approval.',
       {
@@ -800,9 +845,9 @@ export function createBreezeMcpServer(
 
     tool(
       'manage_patches',
-      'Manage patches: list, compliance, scan, approve, decline, defer, bulk approve, install, rollback.',
+      'Manage patches: list, compliance, scan, approve, decline, defer, bulk approve, install, rollback, or setup auto-approval policies.',
       {
-        action: z.enum(['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback']),
+        action: z.enum(['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback', 'setup_auto_approval']),
         patchId: uuid.optional(),
         patchIds: z.array(uuid).max(50).optional(),
         deviceIds: z.array(uuid).max(50).optional(),
@@ -811,6 +856,13 @@ export function createBreezeMcpServer(
         status: z.enum(['pending', 'approved', 'rejected', 'deferred']).optional(),
         deferUntil: z.string().optional(),
         notes: z.string().max(1000).optional(),
+        configPolicyId: uuid.optional(),
+        autoApprove: z.boolean().optional(),
+        autoApproveSeverities: z.array(z.enum(['critical', 'important', 'moderate', 'low'])).optional(),
+        scheduleFrequency: z.enum(['daily', 'weekly', 'monthly']).optional(),
+        scheduleTime: z.string().optional(),
+        rebootPolicy: z.enum(['if_required', 'always', 'never']).optional(),
+        sources: z.array(z.enum(['os', 'third_party', 'custom'])).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('manage_patches', getAuth, onPreToolUse, onPostToolUse)
@@ -878,20 +930,42 @@ export function createBreezeMcpServer(
 
     tool(
       'manage_alert_rules',
-      'Manage alert rules: list/get/create/update/delete rules, test rules, list channels, alert summary. Supports condition types including service_stopped, process_stopped, process_cpu_high, and process_memory_high for service/process monitoring alerts.',
+      'Manage alert rules, templates, and notification channels. Use list_templates FIRST to discover available alert template UUIDs, then create_rule to bind a template to targets.',
       {
-        action: z.enum(['list_rules', 'get_rule', 'create_rule', 'update_rule', 'delete_rule', 'test_rule', 'list_channels', 'alert_summary']),
+        action: z.enum(['list_templates', 'list_rules', 'get_rule', 'create_rule', 'update_rule', 'delete_rule', 'test_rule', 'list_channels', 'alert_summary']),
         ruleId: uuid.optional(),
         name: z.string().max(200).optional(),
         templateId: uuid.optional(),
-        targetType: z.string().max(50).optional(),
+        targetType: z.enum(['device', 'group', 'site', 'org', 'all']).optional(),
         targetId: uuid.optional(),
         overrideSettings: z.record(z.unknown()).optional(),
         isActive: z.boolean().optional(),
+        category: z.string().max(100).optional(),
         severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('manage_alert_rules', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_service_monitors',
+      'Manage service and process monitoring watches. List existing monitors, add new service/process watches that alert when stopped or exceed thresholds, or remove monitors.',
+      {
+        action: z.enum(['list', 'add', 'remove']),
+        configPolicyId: uuid.optional(),
+        watchId: uuid.optional(),
+        watchType: z.enum(['service', 'process']).optional(),
+        name: z.string().max(255).optional(),
+        displayName: z.string().max(255).optional(),
+        alertOnStop: z.boolean().optional(),
+        alertSeverity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
+        cpuThresholdPercent: z.number().min(0).max(100).optional(),
+        memoryThresholdMb: z.number().min(0).optional(),
+        autoRestart: z.boolean().optional(),
+        maxRestartAttempts: z.number().int().min(1).max(10).optional(),
+        checkIntervalSeconds: z.number().int().min(10).max(3600).optional(),
+      },
+      makeHandler('manage_service_monitors', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

@@ -3,53 +3,70 @@ title: Breeze RMM Documentation
 description: Deploy and manage Breeze RMM — a fast, modern Remote Monitoring and Management platform.
 template: splash
 hero:
-  tagline: Fast, secure RMM for MSPs and IT teams. From zero to 10,000+ agents.
-  image:
-    file: ../../assets/logo.svg
+  tagline: Open-source RMM that scales from 1 to 10,000+ endpoints. Cross-platform agent, real-time monitoring, and AI-powered diagnostics — deployed in minutes.
   actions:
     - text: Quickstart
       link: /getting-started/quickstart/
       icon: right-arrow
       variant: primary
-    - text: Security
+    - text: Security Architecture
       link: /security/overview/
-    - text: View on GitHub
+    - text: GitHub
       link: https://github.com/LanternOps/breeze
       icon: external
 ---
 
 import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { Image } from 'astro:assets';
+import dashboard from '../../assets/screenshots/dashboard.png';
+import devices from '../../assets/screenshots/devices.png';
 
-## Deploy in Minutes
+## See it in action
+
+<Image src={dashboard} alt="Breeze RMM dashboard showing device status, alerts, and activity" />
+
+## Core Capabilities
 
 <CardGrid stagger>
-  <Card title="One-Command Deploy" icon="rocket">
-    `./scripts/prod/deploy.sh` brings up the full stack with auto-TLS, monitoring, and health checks.
-  </Card>
-  <Card title="Docker Compose" icon="seti:docker">
-    Production-hardened containers with read-only rootfs, resource limits, and non-root users.
-  </Card>
   <Card title="Cross-Platform Agent" icon="laptop">
-    Single Go binary for Linux, macOS, and Windows. Install as a system service in one command.
+    Single Go binary for Linux, macOS, and Windows. Install as a system service in one command. Built for fleets of any size.
   </Card>
-  <Card title="Zero-Trust Ready" icon="shield">
-    Optional Cloudflare mTLS client certificates, SHA-256 token hashing, RBAC, and audit logging.
+  <Card title="Zero-Trust Security" icon="shield">
+    Cloudflare mTLS certificates, SHA-256 token hashing, RBAC, SOC 2 control mapping, and full audit logging. Security isn't an add-on.
+  </Card>
+  <Card title="AI-Powered Diagnostics" icon="star">
+    Built-in AI assistant with MCP tools for fleet intelligence, automated remediation, and natural-language device queries.
+  </Card>
+  <Card title="Real-Time Monitoring" icon="pulse">
+    Live CPU, memory, disk, and network telemetry. SNMP polling, network discovery, and configurable alert rules with instant notifications.
   </Card>
 </CardGrid>
 
-## Features
+## Remote Management
 
 <CardGrid>
-  <LinkCard title="Remote Access" description="Terminal, file transfer, and WebRTC remote desktop." href="/features/remote-access/" />
-  <LinkCard title="Patch Management" description="Scan, approve, and deploy OS patches across your fleet." href="/features/patch-management/" />
+  <LinkCard title="Remote Desktop" description="WebRTC-powered remote access with multi-display support." href="/features/remote-access/" />
+  <LinkCard title="Scripts" description="Execute PowerShell, Bash, and Python across your fleet." href="/features/scripts/" />
   <LinkCard title="Automations" description="Event-driven, scheduled, and webhook-triggered workflows." href="/features/automations/" />
-  <LinkCard title="Scripts" description="Execute PowerShell, Bash, and Python scripts on any device." href="/features/scripts/" />
-  <LinkCard title="AI Assistant" description="AI-powered diagnostics, remediation, and fleet intelligence." href="/features/ai/" />
-  <LinkCard title="Security Monitoring" description="Endpoint posture scoring, threat detection, and compliance." href="/features/security/" />
-  <LinkCard title="Deployments" description="Staggered rollouts with failure thresholds and per-device tracking." href="/features/deployments/" />
-  <LinkCard title="Reports & Analytics" description="Fleet reports, dashboards, SLA tracking, and capacity planning." href="/features/reports/" />
-  <LinkCard title="Discovery" description="Scan networks for unmanaged devices with port and service detection." href="/features/discovery/" />
-  <LinkCard title="Integrations" description="Connect to PSA platforms, Slack, Teams, and monitoring tools." href="/features/integrations/" />
+  <LinkCard title="Deployments" description="Staggered rollouts with failure thresholds and tracking." href="/features/deployments/" />
+</CardGrid>
+
+## Security & Compliance
+
+<CardGrid>
+  <LinkCard title="CIS Benchmarks" description="Automated hardening checks against CIS standards." href="/features/cis-hardening/" />
+  <LinkCard title="Patch Management" description="Update rings, approvals, and fleet-wide compliance." href="/features/patch-management/" />
+  <LinkCard title="EDR Integrations" description="Connect endpoint detection tools for unified visibility." href="/features/edr-integrations/" />
+  <LinkCard title="Sensitive Data" description="Discover and classify sensitive data across endpoints." href="/features/sensitive-data/" />
+</CardGrid>
+
+## Fleet Operations
+
+<Image src={devices} alt="Breeze RMM device list showing cross-platform fleet with status and metrics" />
+
+<CardGrid>
+  <LinkCard title="Network Discovery" description="Scan networks for unmanaged devices with port detection." href="/features/discovery/" />
   <LinkCard title="Configuration Policies" description="Hierarchical policy management across your tenant structure." href="/features/configuration-policies/" />
-  <LinkCard title="SNMP Monitoring" description="Monitor network devices with SNMP v1/v2c/v3 polling and traps." href="/features/snmp/" />
+  <LinkCard title="Reports & Analytics" description="Fleet reports, SLA tracking, and capacity planning." href="/features/reports/" />
+  <LinkCard title="Integrations" description="Connect to PSA platforms, Slack, Teams, and more." href="/features/integrations/" />
 </CardGrid>

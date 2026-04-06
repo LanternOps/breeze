@@ -28,6 +28,10 @@ func handleNetworkDiscovery(_ *Heartbeat, cmd Command) tools.CommandResult {
 		ResolveHostnames: tools.GetPayloadBool(cmd.Payload, "resolveHostnames", false),
 	}
 	scanner := discovery.NewScanner(scanConfig)
+	targetCount, err := scanner.TargetCount()
+	if err != nil {
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
 	hosts, err := scanner.Scan()
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
@@ -35,7 +39,7 @@ func handleNetworkDiscovery(_ *Heartbeat, cmd Command) tools.CommandResult {
 	return tools.NewSuccessResult(map[string]any{
 		"jobId":           tools.GetPayloadString(cmd.Payload, "jobId", ""),
 		"hosts":           hosts,
-		"hostsScanned":    0,
+		"hostsScanned":    targetCount,
 		"hostsDiscovered": len(hosts),
 	}, time.Since(start).Milliseconds())
 }

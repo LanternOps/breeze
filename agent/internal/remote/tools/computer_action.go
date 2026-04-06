@@ -38,6 +38,10 @@ func ComputerActionWithCapture(payload map[string]any, capFn CaptureFunc) Comman
 	monitor := GetPayloadInt(payload, "monitor", 0)
 	captureAfter := GetPayloadBool(payload, "captureAfter", true)
 	captureDelayMs := GetPayloadInt(payload, "captureDelayMs", 500)
+	text, key, modifiers, err := validateComputerActionInput(text, key, modifiers)
+	if err != nil {
+		return NewErrorResult(err, time.Since(start).Milliseconds())
+	}
 
 	// The AI sends coordinates in screenshot image space (e.g., 1920x1080
 	// after scaling). If the actual screen is larger (e.g., 2560x1440),
@@ -100,8 +104,32 @@ func ComputerActionWithCapture(payload map[string]any, capFn CaptureFunc) Comman
 	return NewSuccessResult(resp, time.Since(start).Milliseconds())
 }
 
+func validateComputerActionInput(text, key string, modifiers []string) (string, string, []string, error) {
+	var truncated bool
+	if text, truncated = truncateStringBytes(text, maxComputerActionTextBytes); truncated {
+		return "", "", nil, fmt.Errorf("computer action text exceeds maximum size of %d bytes", maxComputerActionTextBytes)
+	}
+	if key, truncated = truncateStringBytes(key, maxComputerActionKeyBytes); truncated {
+		return "", "", nil, fmt.Errorf("computer action key exceeds maximum size of %d bytes", maxComputerActionKeyBytes)
+	}
+	if len(modifiers) > maxComputerActionModifiers {
+		return "", "", nil, fmt.Errorf("computer action has too many modifiers: %d (max %d)", len(modifiers), maxComputerActionModifiers)
+	}
+
+	validated := make([]string, 0, len(modifiers))
+	for _, modifier := range modifiers {
+		v, changed := truncateStringBytes(modifier, maxComputerActionKeyBytes)
+		if changed {
+			return "", "", nil, fmt.Errorf("computer action modifier exceeds maximum size of %d bytes", maxComputerActionKeyBytes)
+		}
+		validated = append(validated, v)
+	}
+
+	return text, key, validated, nil
+}
+
 func executeInputAction(action string, x, y int, text, key string, modifiers []string, scrollDelta int) error {
-	input := desktop.NewInputHandler()
+	input := desktop.NewInputHandler("user_session")
 
 	switch action {
 	case "left_click":
@@ -207,4 +235,3 @@ func captureScreenshotWithFn(monitor int, capFn CaptureFunc) (*ScreenshotRespons
 
 	return encodeScreenshotResponse(img, width, height, monitor)
 }
-

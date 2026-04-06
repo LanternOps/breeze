@@ -5,17 +5,16 @@ package desktop
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc
 #cgo LDFLAGS: -framework CoreGraphics -framework CoreFoundation -framework AppKit
-// NOTE: ScreenCaptureKit is intentionally NOT linked here. All SCK classes are
-// resolved at runtime via NSClassFromString/objc_getClass to avoid dyld crashes
-// on macOS 12-13 where SCK doesn't exist. If a CI build produces a binary with
-// hard _OBJC_CLASS_$_SC* references, set CGO_LDFLAGS_ALLOW='-weak_framework'
-// and add '-weak_framework ScreenCaptureKit' to these LDFLAGS.
+// ScreenCaptureKit is resolved entirely at runtime. We intentionally do not
+// weak-link the framework so local builds do not depend on CGO_LDFLAGS_ALLOW.
 
 #include <CoreGraphics/CoreGraphics.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <AppKit/AppKit.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <sys/sysctl.h>
+#include <dlfcn.h>
 #include <objc/runtime.h>
 #include <objc/message.h>
 
@@ -50,8 +49,66 @@ int darwinMajorVersion(void) {
 static id g_filter = nil;
 static id g_config = nil;
 
+static int loadDisplayFromShareableContent(id content, int displayIndex, id *outDisplay) {
+    if (content == nil || outDisplay == nil) return 2;
+
+    NSArray *displays = [content valueForKey:@"displays"];
+    if (displays == nil || displays.count == 0) {
+        return 2;
+    }
+
+    NSUInteger idx = (NSUInteger)displayIndex;
+    if (idx >= displays.count) idx = 0;
+    *outDisplay = displays[idx];
+    return 0;
+}
+
+static int fetchShareableContentDisplay(id shareableContentClass, SEL sel, BOOL useFlags, BOOL excludeDesktopWindows, BOOL onScreenWindowsOnly, int displayIndex, id *outDisplay) {
+    if (shareableContentClass == nil || sel == NULL || outDisplay == nil) return 8;
+
+    __block int error = 0;
+    __block id content = nil;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+
+    if (useFlags) {
+        void (*sendMsg)(id, SEL, BOOL, BOOL, void(^)(id, NSError*)) = (void*)objc_msgSend;
+        sendMsg(shareableContentClass, sel, excludeDesktopWindows, onScreenWindowsOnly, ^(id shareableContent, NSError* err) {
+            if (err != nil || shareableContent == nil) {
+                error = 2;
+            } else {
+                content = shareableContent;
+            }
+            dispatch_semaphore_signal(sem);
+        });
+    } else {
+        void (*sendMsg)(id, SEL, void(^)(id, NSError*)) = (void*)objc_msgSend;
+        sendMsg(shareableContentClass, sel, ^(id shareableContent, NSError* err) {
+            if (err != nil || shareableContent == nil) {
+                error = 2;
+            } else {
+                content = shareableContent;
+            }
+            dispatch_semaphore_signal(sem);
+        });
+    }
+
+    long timedOut = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 10LL * NSEC_PER_SEC));
+    if (timedOut != 0) return 7;
+    if (error != 0) return error;
+
+    return loadDisplayFromShareableContent(content, displayIndex, outDisplay);
+}
+
 // isSCKAvailable checks if ScreenCaptureKit classes can be loaded at runtime.
+static void ensureSCKLoaded(void) {
+    static int attempted = 0;
+    if (attempted) return;
+    attempted = 1;
+    dlopen("/System/Library/Frameworks/ScreenCaptureKit.framework/ScreenCaptureKit", RTLD_LAZY | RTLD_LOCAL);
+}
+
 static int isSCKAvailable(void) {
+    ensureSCKLoaded();
     return NSClassFromString(@"SCShareableContent") != nil;
 }
 
@@ -64,33 +121,24 @@ int initCapture(int displayIndex) {
     if (!isSCKAvailable()) return 8; // SCK not available on this macOS version
 
     Class SCShareableContentClass = NSClassFromString(@"SCShareableContent");
-    __block id targetDisplay = nil;
-    __block int error = 0;
-    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    id targetDisplay = nil;
+    int error = 2;
 
-    // [SCShareableContent getShareableContentExcludingDesktopWindows:onScreenWindowsOnly:completionHandler:]
-    SEL sel = NSSelectorFromString(@"getShareableContentExcludingDesktopWindows:onScreenWindowsOnly:completionHandler:");
-    void (*sendMsg)(id, SEL, BOOL, BOOL, void(^)(id, NSError*)) = (void*)objc_msgSend;
-    sendMsg(SCShareableContentClass, sel, NO, YES, ^(id content, NSError* err) {
-        if (err != nil || content == nil) {
-            error = 2;
-            dispatch_semaphore_signal(sem);
-            return;
-        }
-        NSArray *displays = [content valueForKey:@"displays"];
-        if (displays.count == 0) {
-            error = 2;
-            dispatch_semaphore_signal(sem);
-            return;
-        }
-        NSUInteger idx = (NSUInteger)displayIndex;
-        if (idx >= displays.count) idx = 0;
-        targetDisplay = displays[idx];
-        dispatch_semaphore_signal(sem);
-    });
+    SEL currentProcessSel = NSSelectorFromString(@"getCurrentProcessShareableContentWithCompletionHandler:");
+    if ([(id)SCShareableContentClass respondsToSelector:currentProcessSel]) {
+        error = fetchShareableContentDisplay(SCShareableContentClass, currentProcessSel, NO, NO, NO, displayIndex, &targetDisplay);
+    }
 
-    long timedOut = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 10LL * NSEC_PER_SEC));
-    if (timedOut != 0) return 7;
+    if (targetDisplay == nil) {
+        SEL filteredSel = NSSelectorFromString(@"getShareableContentExcludingDesktopWindows:onScreenWindowsOnly:completionHandler:");
+        error = fetchShareableContentDisplay(SCShareableContentClass, filteredSel, YES, NO, YES, displayIndex, &targetDisplay);
+    }
+
+    if (targetDisplay == nil) {
+        SEL currentSel = NSSelectorFromString(@"getShareableContentWithCompletionHandler:");
+        error = fetchShareableContentDisplay(SCShareableContentClass, currentSel, NO, NO, NO, displayIndex, &targetDisplay);
+    }
+
     if (error != 0 || targetDisplay == nil) return error != 0 ? error : 2;
 
     CGFloat scaleFactor = 1.0;
@@ -245,6 +293,7 @@ import "C"
 import (
 	"fmt"
 	"image"
+	"log/slog"
 	"sync"
 )
 
@@ -275,9 +324,23 @@ type darwinCapturer struct {
 // newPlatformCapturer creates a new macOS screen capturer.
 // On macOS 14+, uses ScreenCaptureKit (SCScreenshotManager).
 // On macOS 12-13, falls back to CGWindowListCreateImage.
+// Also falls back to CG if SCK init fails at runtime (e.g., classes don't load).
 func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
+	if config.DesktopContext == "login_window" {
+		return newDisplayStreamCapturer(config)
+	}
 	if hasSCScreenshotManager() {
-		return newSCKCapturer(config)
+		cap, sckErr := newSCKCapturer(config)
+		if sckErr != nil {
+			slog.Warn("ScreenCaptureKit init failed, falling back to CoreGraphics",
+				"error", sckErr.Error(), "darwinVersion", macOSMajorVersion)
+			cgCap, cgErr := newCGCapturer(config)
+			if cgErr != nil {
+				return nil, fmt.Errorf("SCK failed (%v); CG fallback also failed: %w", sckErr, cgErr)
+			}
+			return cgCap, nil
+		}
+		return cap, nil
 	}
 	return newCGCapturer(config)
 }
@@ -420,6 +483,12 @@ func translateDarwinError(code int) error {
 		return fmt.Errorf("capturer not initialized — call initCapture first")
 	case 7:
 		return fmt.Errorf("ScreenCaptureKit timed out — process may lack Screen Recording permission (check System Settings > Privacy > Screen Recording)")
+	case 8:
+		return fmt.Errorf("macOS capture backend not available")
+	case 9:
+		return fmt.Errorf("failed to create CGDisplayStream")
+	case 10:
+		return fmt.Errorf("failed to start CGDisplayStream")
 	default:
 		return fmt.Errorf("unknown error: %d", code)
 	}

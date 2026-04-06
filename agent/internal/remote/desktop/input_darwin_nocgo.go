@@ -9,7 +9,7 @@ import "fmt"
 type darwinInputHandlerNoCgo struct{}
 
 // NewInputHandler creates a stub input handler when built without CGO.
-func NewInputHandler() InputHandler {
+func NewInputHandler(_ string) InputHandler {
 	return &darwinInputHandlerNoCgo{}
 }
 

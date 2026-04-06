@@ -1,8 +1,13 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
 import DeviceCompare from '../../components/devices/DeviceCompare';
+import Breadcrumbs from '../../components/layout/Breadcrumbs';
 ---
 
 <DashboardLayout title="Device Comparison">
+  <Breadcrumbs client:load items={[
+    { label: 'Devices', href: '/devices' },
+    { label: 'Compare' }
+  ]} />
   <DeviceCompare client:load />
 </DashboardLayout>

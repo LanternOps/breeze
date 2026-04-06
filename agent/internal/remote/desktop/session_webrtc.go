@@ -15,6 +15,7 @@ import (
 // StartSession creates and starts a new remote desktop session.
 // iceServers is optional; if nil, falls back to Google STUN.
 func (m *SessionManager) StartSession(sessionID string, offer string, iceServers []ICEServerConfig, displayIndex ...int) (answer string, err error) {
+	sessionStart := time.Now()
 	// Desktop Duplication and GPU pipelines get unstable with multiple concurrent
 	// sessions in one process. Enforce single active desktop session per agent.
 	var toStop []*Session
@@ -29,10 +30,18 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	for _, s := range toStop {
 		s.Stop()
 	}
+	if elapsed := time.Since(sessionStart); elapsed > 500*time.Millisecond {
+		slog.Info("StartSession: stop existing sessions took long", "session", sessionID, "elapsed", elapsed)
+	}
 
 	// Create WebRTC configuration
+	parsedICE := parseICEServers(iceServers)
+	for _, s := range parsedICE {
+		hasCreds := s.Username != ""
+		slog.Info("ICE server configured", "session", sessionID, "urls", s.URLs, "hasCreds", hasCreds)
+	}
 	config := webrtc.Configuration{
-		ICEServers: parseICEServers(iceServers),
+		ICEServers: parsedICE,
 	}
 
 	// Register playout-delay RTP header extension for low-latency screen sharing.
@@ -49,9 +58,21 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	); regErr != nil {
 		slog.Warn("Failed to register playout-delay extension (non-fatal)", "error", regErr.Error())
 	}
-	api := webrtc.NewAPI(webrtc.WithMediaEngine(mediaEngine))
 
-	// Create peer connection with custom API (playout-delay extension)
+	// ICE timeout tuning: keep NAT bindings alive and detect failures faster.
+	se := webrtc.SettingEngine{}
+	se.SetICETimeouts(
+		5*time.Second,  // disconnectedTimeout — detect no-media quickly
+		15*time.Second, // failedTimeout — reduced from 25s default for faster recovery
+		2*time.Second,  // keepAliveInterval — refresh STUN bindings when no media
+	)
+
+	api := webrtc.NewAPI(
+		webrtc.WithMediaEngine(mediaEngine),
+		webrtc.WithSettingEngine(se),
+	)
+
+	// Create peer connection with custom API (playout-delay + ICE tuning)
 	peerConn, err := api.NewPeerConnection(config)
 	if err != nil {
 		return "", fmt.Errorf("failed to create peer connection: %w", err)
@@ -62,7 +83,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	session := &Session{
 		id:           sessionID,
 		peerConn:     peerConn,
-		inputHandler: NewInputHandler(),
+		inputHandler: NewInputHandler(m.config.DesktopContext),
 		done:         make(chan struct{}),
 		isActive:     true,
 		fps:          defaultFrameRate,
@@ -111,6 +132,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		rtcpBuf := make([]byte, 1500)
 		var lastKF time.Time
 		firstKF := true
+		var lastEnc *VideoEncoder
 		for {
 			n, _, readErr := sender.Read(rtcpBuf)
 			if readErr != nil {
@@ -123,6 +145,14 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			for _, p := range pkts {
 				switch p.(type) {
 				case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
+					enc := session.encoder.Load()
+					// Reset PLI rate-limit when the encoder pointer changes
+					// (e.g. after swapToSoftwareEncoder) so the new encoder
+					// gets an immediate keyframe.
+					if enc != lastEnc {
+						firstKF = true
+						lastEnc = enc
+					}
 					// Allow the first PLI immediately for fast startup,
 					// then rate-limit subsequent ones to 500ms apart.
 					if !firstKF && time.Since(lastKF) < 500*time.Millisecond {
@@ -130,8 +160,8 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 					}
 					firstKF = false
 					lastKF = time.Now()
-					if session.encoder != nil {
-						_ = session.encoder.ForceKeyframe()
+					if enc != nil {
+						_ = enc.ForceKeyframe()
 					}
 				}
 			}
@@ -139,16 +169,19 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	}()
 
 	// Create screen capturer (optionally targeting a specific display)
-	capConfig := DefaultConfig()
+	capConfig := m.CaptureConfig()
 	if len(displayIndex) > 0 && displayIndex[0] > 0 {
 		capConfig.DisplayIndex = displayIndex[0]
 	}
+	capturerStart := time.Now()
 	capturer, err := NewScreenCapturer(capConfig)
 	if err != nil {
 		return "", fmt.Errorf("failed to create screen capturer: %w", err)
 	}
+	slog.Info("StartSession: capturer created", "session", sessionID, "elapsed", time.Since(capturerStart))
 	session.capturer = capturer
 	session.displayIndex = capConfig.DisplayIndex
+	session.captureConfig = capConfig
 
 	// Set display offset so input handler translates viewer-relative coords
 	// to virtual screen coords (required for multi-monitor setups).
@@ -167,6 +200,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	if err != nil {
 		return "", fmt.Errorf("failed to get screen bounds: %w", err)
 	}
+	probeStart := time.Now()
 	if probeImg, probeErr := capturer.Capture(); probeErr == nil && probeImg != nil {
 		pw, ph := probeImg.Rect.Dx(), probeImg.Rect.Dy()
 		if pw != w || ph != h {
@@ -184,6 +218,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		// The defer at line 80 calls StopSession which closes the capturer.
 		return "", fmt.Errorf("screen capture failed (display may be unavailable): %w", probeErr)
 	}
+	slog.Info("StartSession: probe capture done", "session", sessionID, "elapsed", time.Since(probeStart))
 
 	// Start at 2.5Mbps — matches the viewer's default max-bitrate slider.
 	// Adaptive ramps from here. Too low and the MFT encoder can't produce
@@ -193,17 +228,20 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	// Create H264 encoder via factory (will use MFT on Windows).
 	// Always configure the encoder for maxFrameRate so hardware MFT rate control
 	// is correct from first frame. The capture loop throttles if needed.
+	encoderStart := time.Now()
 	enc, err := NewVideoEncoder(EncoderConfig{
 		Codec:          CodecH264,
 		Quality:        QualityAuto,
 		Bitrate:        initBitrate,
 		FPS:            maxFrameRate,
 		PreferHardware: true,
+		GPUVendor:      m.gpuVendor,
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to create H264 encoder: %w", err)
 	}
-	session.encoder = enc
+	slog.Info("StartSession: encoder created", "session", sessionID, "backend", enc.BackendName(), "elapsed", time.Since(encoderStart))
+	session.encoder.Store(enc)
 
 	if enc.BackendIsPlaceholder() {
 		return "", fmt.Errorf("no H264 encoder available (backend=%s)", enc.BackendName())
@@ -260,7 +298,9 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			session.mu.Lock()
 			session.fps = fps
 			session.mu.Unlock()
-			session.encoder.SetFPS(fps)
+			if enc := session.encoder.Load(); enc != nil {
+				enc.SetFPS(fps)
+			}
 		},
 	})
 	if err == nil {
@@ -342,13 +382,40 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		}
 	})
 
-	// Handle connection state changes
+	// Handle connection state changes.
+	// On "disconnected", wait a grace period for ICE to recover (NAT rebinding,
+	// TURN fallback) before tearing down. This prevents premature session kills
+	// on transient network blips.
+	var disconnectTimer *time.Timer
 	peerConn.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		slog.Info("Desktop WebRTC connection state", "session", sessionID, "state", state.String())
-		if state == webrtc.PeerConnectionStateConnected {
-			session.startStreaming()
+
+		// Cancel any pending disconnect timer when state changes
+		if disconnectTimer != nil {
+			disconnectTimer.Stop()
+			disconnectTimer = nil
 		}
-		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
+
+		switch state {
+		case webrtc.PeerConnectionStateConnected:
+			session.startStreaming()
+
+		case webrtc.PeerConnectionStateDisconnected:
+			// Grace period: ICE may recover via keepalive or TURN fallback.
+			// If still disconnected after 8s, stop the session.
+			disconnectTimer = time.AfterFunc(8*time.Second, func() {
+				currentState := peerConn.ConnectionState()
+				if currentState != webrtc.PeerConnectionStateConnected {
+					slog.Warn("Desktop WebRTC did not recover from disconnected state, stopping",
+						"session", sessionID, "finalState", currentState.String())
+					m.StopSession(sessionID)
+					if m.OnSessionStopped != nil {
+						go m.OnSessionStopped(sessionID)
+					}
+				}
+			})
+
+		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
 			m.StopSession(sessionID)
 			if m.OnSessionStopped != nil {
 				go m.OnSessionStopped(sessionID)
@@ -387,6 +454,14 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	firstCandidate := make(chan struct{}, 1)
 	peerConn.OnICECandidate(func(c *webrtc.ICECandidate) {
 		if c != nil {
+			slog.Info("ICE candidate gathered",
+				"session", sessionID,
+				"type", c.Typ.String(),
+				"protocol", c.Protocol.String(),
+				"address", c.Address,
+				"port", c.Port,
+				"relatedAddr", c.RelatedAddress,
+			)
 			select {
 			case firstCandidate <- struct{}{}:
 			default:
@@ -429,6 +504,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	if ld == nil {
 		return "", fmt.Errorf("local description not available")
 	}
+	slog.Info("StartSession: complete", "session", sessionID, "totalElapsed", time.Since(sessionStart))
 	return ld.SDP, nil
 }
 

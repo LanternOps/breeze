@@ -49,13 +49,14 @@ export async function createWebRTCSession(
   params: AuthenticatedConnectionParams,
   videoEl: HTMLVideoElement,
   displayIndex?: number,
+  targetSessionId?: number,
 ): Promise<WebRTCSession> {
   // Fetch ICE servers (includes TURN credentials if configured)
   let iceServers: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
   try {
     const iceResp = await apiFetch(
       params.apiUrl,
-      '/api/v1/remote/ice-servers',
+      `/api/v1/desktop-ws/${params.sessionId}/viewer/ice-servers`,
       params.accessToken,
     );
     if (iceResp.ok) {
@@ -118,11 +119,11 @@ export async function createWebRTCSession(
     // POST offer to API — this triggers the agent to create a pion session
     const offerResp = await apiFetch(
       params.apiUrl,
-      `/api/v1/remote/sessions/${params.sessionId}/offer`,
+      `/api/v1/desktop-ws/${params.sessionId}/viewer/offer`,
       params.accessToken,
       {
         method: 'POST',
-        body: JSON.stringify({ offer: localDesc.sdp, ...(displayIndex != null ? { displayIndex } : {}) }),
+        body: JSON.stringify({ offer: localDesc.sdp, ...(displayIndex != null ? { displayIndex } : {}), ...(targetSessionId != null ? { targetSessionId } : {}) }),
       },
     );
 
@@ -185,7 +186,7 @@ async function pollForAnswer(params: AuthenticatedConnectionParams, timeoutMs: n
   while (Date.now() - start < timeoutMs) {
     const resp = await apiFetch(
       params.apiUrl,
-      `/api/v1/remote/sessions/${params.sessionId}`,
+      `/api/v1/desktop-ws/${params.sessionId}/viewer/session`,
       params.accessToken,
     );
 

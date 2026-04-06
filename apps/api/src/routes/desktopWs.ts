@@ -5,13 +5,16 @@ import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { remoteSessions, devices, users } from '../db/schema';
-import { createAccessToken } from '../services/jwt';
-import { consumeDesktopConnectCode, consumeWsTicket, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
+import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
+import { createWsTicket, consumeDesktopConnectCode, consumeWsTicket, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
+import { getIceServers, logSessionAudit } from './remote/helpers';
+import { webrtcOfferSchema } from './remote/schemas';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
+import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 
 // Brief cache for exchange results so duplicate calls (e.g. React effect re-fire)
 // return the same token instead of 401 after the one-time code is consumed.
-const exchangeCache = new Map<string, { result: { accessToken: string; expiresInSeconds: number }; expiresAt: number }>();
+const exchangeCache = new Map<string, { result: { accessToken: string; expiresInSeconds: number; hostname: string | null; osType: string | null }; expiresAt: number }>();
 const EXCHANGE_CACHE_TTL_MS = 30_000; // 30 seconds
 
 // Zod validation for desktop user messages
@@ -119,6 +122,78 @@ const desktopConnectExchangeSchema = z.object({
   code: z.string().min(1)
 });
 
+const desktopSessionIdParamSchema = z.object({
+  id: z.string().uuid()
+});
+
+type ViewerAccessResult =
+  | {
+      valid: true;
+      session: typeof remoteSessions.$inferSelect;
+      device: typeof devices.$inferSelect;
+      user: Pick<typeof users.$inferSelect, 'id' | 'email' | 'status'>;
+    }
+  | {
+      valid: false;
+      status: 400 | 401 | 403 | 404;
+      error: string;
+    };
+
+async function validateViewerSessionAccess(
+  authorizationHeader: string | undefined,
+  sessionId: string
+): Promise<ViewerAccessResult> {
+  if (!authorizationHeader?.startsWith('Bearer ')) {
+    return { valid: false, status: 401, error: 'Missing viewer token' };
+  }
+
+  const token = authorizationHeader.slice(7);
+  const payload = await verifyViewerAccessToken(token);
+  if (!payload) {
+    return { valid: false, status: 401, error: 'Invalid or expired viewer token' };
+  }
+
+  if (payload.sessionId !== sessionId) {
+    return { valid: false, status: 403, error: 'Viewer token does not match session' };
+  }
+
+  const [result] = await db
+    .select({
+      session: remoteSessions,
+      device: devices,
+      user: {
+        id: users.id,
+        email: users.email,
+        status: users.status,
+      },
+    })
+    .from(remoteSessions)
+    .innerJoin(devices, eq(remoteSessions.deviceId, devices.id))
+    .innerJoin(users, eq(remoteSessions.userId, users.id))
+    .where(eq(remoteSessions.id, sessionId))
+    .limit(1);
+
+  if (!result) {
+    return { valid: false, status: 404, error: 'Session not found' };
+  }
+
+  const { session, device, user } = result;
+
+  if (session.type !== 'desktop') {
+    return { valid: false, status: 400, error: 'Session is not a desktop session' };
+  }
+
+  if (session.userId !== payload.sub || user.id !== payload.sub || user.email !== payload.email) {
+    return { valid: false, status: 403, error: 'Viewer token does not match session owner' };
+  }
+
+  if (user.status !== 'active') {
+    return { valid: false, status: 403, error: 'User not found or inactive' };
+  }
+
+  return { valid: true, session, device, user };
+}
+
 /**
  * Validate one-time WS ticket and desktop session access
  */
@@ -179,6 +254,12 @@ async function validateDesktopAccess(
 
   if (device.status !== 'online') {
     return { valid: false, error: 'Device is not online' };
+  }
+
+  // Remote access policy enforcement (defense-in-depth)
+  const policyCheck = await checkRemoteAccess(device.id, 'webrtcDesktop');
+  if (!policyCheck.allowed) {
+    return { valid: false, error: policyCheck.reason ?? 'Remote desktop disabled by policy' };
   }
 
   return { valid: true, session, device, userId: user.id };
@@ -545,12 +626,17 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
         return c.json({ error: 'Invalid or expired connect code' }, 401);
       }
 
+      if (!codeRecord.email) {
+        return c.json({ error: 'Invalid or expired connect code' }, 401); // Reject pre-deployment codes missing email field
+      }
+
       const [session] = await db
         .select({
           id: remoteSessions.id,
           userId: remoteSessions.userId,
           type: remoteSessions.type,
-          status: remoteSessions.status
+          status: remoteSessions.status,
+          deviceId: remoteSessions.deviceId,
         })
         .from(remoteSessions)
         .where(eq(remoteSessions.id, sessionId))
@@ -564,16 +650,178 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
         return c.json({ error: 'Session is not available for connection' }, 400);
       }
 
-      const accessToken = await createAccessToken(codeRecord.tokenPayload);
+      // Look up device hostname + OS for the viewer window title and OS-specific UI
+      let hostname: string | undefined;
+      let osType: string | undefined;
+      if (session.deviceId) {
+        try {
+          const [device] = await db
+            .select({ hostname: devices.hostname, osType: devices.osType })
+            .from(devices)
+            .where(eq(devices.id, session.deviceId))
+            .limit(1);
+          hostname = device?.hostname ?? undefined;
+          osType = device?.osType ?? undefined;
+        } catch (err) {
+          console.error('Failed to look up device hostname for viewer title:', err);
+        }
+      }
+
+      const accessToken = await createViewerAccessToken({
+        sub: codeRecord.userId,
+        email: codeRecord.email,
+        sessionId: session.id,
+      });
       const result = {
         accessToken,
-        expiresInSeconds: getViewerAccessTokenExpirySeconds()
+        expiresInSeconds: getViewerAccessTokenExpirySeconds(),
+        hostname: hostname ?? null,
+        osType: osType ?? null,
       };
 
       // Cache the result briefly for duplicate requests
       exchangeCache.set(cacheKey, { result, expiresAt: Date.now() + EXCHANGE_CACHE_TTL_MS });
 
       return c.json(result);
+    }
+  );
+
+  app.get(
+    '/:id/viewer/ice-servers',
+    zValidator('param', desktopSessionIdParamSchema),
+    async (c) => {
+      const { id: sessionId } = c.req.valid('param');
+      const access = await validateViewerSessionAccess(c.req.header('Authorization'), sessionId);
+      if (!access.valid) {
+        return c.json({ error: access.error }, access.status);
+      }
+
+      if (!['pending', 'connecting', 'active', 'disconnected'].includes(access.session.status)) {
+        return c.json({
+          error: 'Cannot fetch ICE servers for session in current state',
+          status: access.session.status
+        }, 400);
+      }
+
+      return c.json({ iceServers: getIceServers() });
+    }
+  );
+
+  app.post(
+    '/:id/viewer/ws-ticket',
+    zValidator('param', desktopSessionIdParamSchema),
+    async (c) => {
+      const { id: sessionId } = c.req.valid('param');
+      const access = await validateViewerSessionAccess(c.req.header('Authorization'), sessionId);
+      if (!access.valid) {
+        return c.json({ error: access.error }, access.status);
+      }
+
+      if (!['pending', 'connecting', 'active'].includes(access.session.status)) {
+        return c.json({
+          error: 'Cannot mint WebSocket ticket for session in current state',
+          status: access.session.status
+        }, 400);
+      }
+
+      try {
+        const ticket = await createWsTicket({
+          sessionId: access.session.id,
+          sessionType: 'desktop',
+          userId: access.user.id
+        });
+        return c.json(ticket);
+      } catch (error) {
+        console.error('[desktop-ws] Failed to create viewer WebSocket ticket:', error);
+        return c.json({ error: 'Unable to create WebSocket ticket. Please try again later.' }, 503);
+      }
+    }
+  );
+
+  app.post(
+    '/:id/viewer/offer',
+    zValidator('param', desktopSessionIdParamSchema),
+    zValidator('json', webrtcOfferSchema),
+    async (c) => {
+      const { id: sessionId } = c.req.valid('param');
+      const data = c.req.valid('json');
+      const access = await validateViewerSessionAccess(c.req.header('Authorization'), sessionId);
+      if (!access.valid) {
+        return c.json({ error: access.error }, access.status);
+      }
+
+      if (!['pending', 'connecting', 'active', 'disconnected'].includes(access.session.status)) {
+        return c.json({
+          error: 'Cannot submit offer for session in current state',
+          status: access.session.status
+        }, 400);
+      }
+
+      const [updated] = await db
+        .update(remoteSessions)
+        .set({
+          webrtcOffer: data.offer,
+          webrtcAnswer: null,
+          status: 'connecting',
+          ...(access.session.status === 'disconnected' || access.session.status === 'active' ? { endedAt: null } : {}),
+        })
+        .where(eq(remoteSessions.id, sessionId))
+        .returning();
+
+      if (!updated) {
+        return c.json({ error: 'Failed to update session' }, 500);
+      }
+
+      await logSessionAudit(
+        'session_offer_submitted',
+        access.user.id,
+        access.device.orgId,
+        { sessionId, type: access.session.type, via: 'viewer_token' },
+        c.req.header('X-Forwarded-For') || c.req.header('X-Real-IP')
+      );
+
+      if (!access.device.agentId) {
+        console.error(`[desktop-ws] Device ${access.device.id} has no agentId, cannot send start_desktop for session ${sessionId}`);
+        return c.json({ error: 'Device has no agent connection identifier' }, 502);
+      }
+
+      const agentReachable = sendCommandToAgent(access.device.agentId, {
+        id: `desk-start-${sessionId}`,
+        type: 'start_desktop',
+        payload: { sessionId, offer: data.offer, iceServers: getIceServers(), ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}), ...(data.targetSessionId != null ? { targetSessionId: data.targetSessionId } : {}) }
+      });
+
+      if (!agentReachable) {
+        console.warn(`[desktop-ws] Agent ${access.device.agentId} not connected, cannot send start_desktop for session ${sessionId}`);
+        return c.json({ error: 'Agent is not currently connected. Please verify the device is online and try again.' }, 502);
+      }
+
+      return c.json({
+        id: updated.id,
+        status: updated.status,
+        webrtcOffer: updated.webrtcOffer,
+      });
+    }
+  );
+
+  app.get(
+    '/:id/viewer/session',
+    zValidator('param', desktopSessionIdParamSchema),
+    async (c) => {
+      const { id: sessionId } = c.req.valid('param');
+      const access = await validateViewerSessionAccess(c.req.header('Authorization'), sessionId);
+      if (!access.valid) {
+        return c.json({ error: access.error }, access.status);
+      }
+
+      return c.json({
+        id: access.session.id,
+        status: access.session.status,
+        webrtcAnswer: access.session.webrtcAnswer,
+        errorMessage: access.session.errorMessage,
+        startedAt: access.session.startedAt,
+        endedAt: access.session.endedAt,
+      });
     }
   );
 

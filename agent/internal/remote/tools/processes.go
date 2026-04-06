@@ -22,6 +22,7 @@ func ListProcesses(payload map[string]any) CommandResult {
 	search := GetPayloadString(payload, "search", "")
 	sortBy := GetPayloadString(payload, "sortBy", "cpu")
 	sortDesc := GetPayloadBool(payload, "sortDesc", true)
+	search, _ = truncateStringBytes(search, maxProcessFieldBytes)
 
 	if page < 1 {
 		page = 1
@@ -108,6 +109,7 @@ func ListProcesses(payload map[string]any) CommandResult {
 
 	// Sort processes
 	sortProcesses(processList, sortBy, sortDesc)
+	processList, truncated := sanitizeProcessList(processList)
 
 	// Paginate
 	total := len(processList)
@@ -128,6 +130,7 @@ func ListProcesses(payload map[string]any) CommandResult {
 		Page:       page,
 		Limit:      limit,
 		TotalPages: totalPages,
+		Truncated:  truncated,
 	}
 
 	return NewSuccessResult(response, time.Since(startTime).Milliseconds())
@@ -151,8 +154,9 @@ func GetProcess(payload map[string]any) CommandResult {
 	if info == nil {
 		return NewErrorResult(fmt.Errorf("failed to get process info"), time.Since(startTime).Milliseconds())
 	}
+	infoValue, _ := sanitizeProcessInfo(*info)
 
-	return NewSuccessResult(info, time.Since(startTime).Milliseconds())
+	return NewSuccessResult(infoValue, time.Since(startTime).Milliseconds())
 }
 
 // KillProcess terminates a process by PID

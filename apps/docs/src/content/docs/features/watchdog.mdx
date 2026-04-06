@@ -1,0 +1,185 @@
+---
+title: Agent Watchdog
+description: A companion service that monitors the Breeze agent process, performs escalating recovery, and provides failover connectivity when the agent is down.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+The **Breeze Watchdog** is a lightweight companion service that runs alongside the Breeze agent on every managed device. It continuously monitors the agent process, automatically recovers it when it becomes unhealthy, and maintains a fallback connection to the Breeze server when the agent is completely down.
+
+The watchdog is installed automatically alongside the agent during normal installation — no separate setup is required.
+
+---
+
+## How It Works
+
+The watchdog runs as a separate system service (`breeze-watchdog`) and monitors the agent through three independent health checks:
+
+1. **Process liveness** — Is the agent process still running? Detects crashes and unexpected exits.
+2. **IPC connectivity** — Can the watchdog reach the agent over its local IPC socket? Detects hangs and deadlocks.
+3. **Heartbeat freshness** — Has the agent sent a heartbeat to the server recently? Detects networking failures and stuck loops.
+
+When a check fails, the watchdog transitions through escalating states — from monitoring to recovery to failover — to bring the agent back to a healthy state.
+
+---
+
+## States
+
+The watchdog operates as a state machine with five states:
+
+| State | Description |
+|-------|-------------|
+| **Connecting** | Starting up, attempting to establish IPC connection to the agent |
+| **Monitoring** | Agent is healthy; running periodic health checks |
+| **Recovering** | Agent is unhealthy; performing escalating restart attempts |
+| **Standby** | Agent signaled a graceful shutdown (e.g., for an update); waiting for it to come back |
+| **Failover** | Recovery attempts exhausted; watchdog is communicating directly with the Breeze server on behalf of the device |
+
+### State transitions
+
+```
+CONNECTING ──ipc connected──→ MONITORING
+CONNECTING ──agent not found─→ RECOVERING
+
+MONITORING ──agent unhealthy─→ RECOVERING
+MONITORING ──shutdown intent─→ STANDBY
+
+RECOVERING ──agent recovered─→ MONITORING
+RECOVERING ──recovery exhausted──→ FAILOVER
+
+STANDBY ────agent recovered──→ MONITORING
+STANDBY ────standby timeout──→ FAILOVER
+STANDBY ────start agent──────→ RECOVERING
+
+FAILOVER ───agent recovered──→ MONITORING
+```
+
+<Aside>
+  The **Standby** state handles planned agent downtime — for example, when the agent shuts itself down to apply a self-update. The watchdog waits for the configured standby timeout before escalating to failover, giving the update time to complete.
+</Aside>
+
+---
+
+## Recovery
+
+When the agent is detected as unhealthy, the watchdog performs escalating recovery actions:
+
+<Steps>
+
+1. **Graceful restart** — asks the system service manager to restart the agent service cleanly.
+
+2. **Force-kill + restart** — terminates the agent process, then starts the service. Used when the agent process is hung and not responding to service stop requests.
+
+3. **Start only** — assumes the previous process is already gone and attempts a fresh service start.
+
+</Steps>
+
+Recovery attempts are tracked within a cooldown window. If the window elapses without exhausting all attempts, the counter resets. If all attempts are exhausted within the window, the watchdog transitions to **Failover**.
+
+---
+
+## Failover
+
+When recovery is exhausted, the watchdog enters **Failover** mode and takes over communication with the Breeze server. In this state the watchdog:
+
+- Sends periodic heartbeats so the device remains visible in the dashboard
+- Polls for commands from the server (restart agent, collect diagnostics, update agent, update watchdog)
+- Ships watchdog health journal excerpts for remote diagnosis
+- Accepts and applies agent or watchdog binary updates pushed from the server
+
+Failover keeps the device manageable even when the agent process is completely down. Once the agent is successfully restarted (either via a server command or manual intervention), the watchdog transitions back to **Monitoring**.
+
+<Aside type="tip">
+  If a device shows `watchdog_status: failover` in the dashboard, it means the agent on that device has crashed and could not be automatically recovered. Use the **Restart Agent** action from the device detail page — the watchdog will receive and execute this command.
+</Aside>
+
+---
+
+## Health Journal
+
+The watchdog maintains a local rotating log file called the **health journal**. Each entry records a timestamped event (state transition, health check result, recovery action, IPC message) in structured JSON format.
+
+Journal files rotate by size and count, keeping recent history available for diagnosis without consuming excessive disk space.
+
+You can export the journal locally:
+
+```bash
+breeze-watchdog health-journal
+```
+
+The watchdog also ships journal entries to the Breeze server as diagnostic logs (component prefix `watchdog.*`), which you can query via the API — see [Watchdog Logs](#watchdog-logs-api) below.
+
+---
+
+## Configuration
+
+The watchdog reads its configuration from the same config directory as the agent. Default values are tuned for production use — most deployments do not need to change them.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Process check interval | 10 s | How often to check if the agent process is alive |
+| IPC probe interval | 15 s | How often to ping the agent over IPC |
+| Heartbeat stale threshold | 5 min | How long since the last heartbeat before the agent is considered stale |
+| Max recovery attempts | 3 | Number of escalating recovery tries before entering failover |
+| Recovery cooldown | 10 min | Window in which recovery attempts are counted; resets after expiry |
+| Standby timeout | 5 min | How long to wait in standby before escalating to failover |
+| Failover poll interval | 30 s | How often to poll the server for commands during failover |
+
+---
+
+## Watchdog Logs API
+
+Watchdog diagnostic logs are queryable through a dedicated API endpoint that filters specifically for watchdog-component logs.
+
+```
+GET /devices/:id/watchdog-logs
+```
+
+### Query parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `level` | string | Comma-separated levels: `debug`, `info`, `warn`, `error` |
+| `component` | string | Filter to a specific watchdog sub-component (e.g., `watchdog.recovery`) |
+| `since` | ISO 8601 | Include only logs at or after this datetime |
+| `until` | ISO 8601 | Include only logs at or before this datetime |
+| `search` | string | Full-text search across message and structured fields |
+| `page` | number | Page number (1-based) |
+| `limit` | number | Results per page (max 500) |
+
+### Example
+
+```bash
+# Get recent watchdog error logs for a device
+GET /api/v1/devices/DEVICE_ID/watchdog-logs?level=warn,error&limit=50
+```
+
+---
+
+## Dashboard Indicators
+
+The devices table includes three watchdog-specific fields:
+
+| Field | Description |
+|-------|-------------|
+| `watchdog_status` | Current watchdog state: `connected` (monitoring), `failover`, or `offline` |
+| `watchdog_last_seen` | Timestamp of the last watchdog heartbeat or check-in |
+| `watchdog_version` | Installed watchdog binary version |
+
+These fields update as the watchdog reports its state through heartbeats and failover polling.
+
+---
+
+## Troubleshooting
+
+**Watchdog status shows `failover`.**
+The agent process crashed and could not be automatically recovered after the configured number of attempts. Use the **Restart Agent** action from the device detail page, or SSH into the device and manually restart the agent service. Check the watchdog logs for recovery failure details: `GET /devices/:id/watchdog-logs?level=error`.
+
+**Watchdog status shows `offline`.**
+The watchdog service itself is not running. Check the system service manager on the device (`systemctl status breeze-watchdog` on Linux, `launchctl list | grep breeze-watchdog` on macOS, `Get-Service breeze-watchdog` on Windows).
+
+**Agent keeps restarting in a loop.**
+The watchdog recovers the agent, but it immediately crashes again. This is usually caused by a bad configuration file or a corrupted binary. Check the agent's own diagnostic logs for startup errors. The watchdog will eventually exhaust its recovery attempts and enter failover, preventing an infinite restart loop.
+
+**No watchdog logs appearing.**
+The watchdog ships logs through the same diagnostic log pipeline as the agent. Verify the watchdog service is running and the device is online. Watchdog logs use the `watchdog.*` component prefix — they do not appear in the standard agent logs filter unless you query the dedicated endpoint.

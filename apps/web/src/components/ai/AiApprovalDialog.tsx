@@ -139,21 +139,39 @@ export default function AiApprovalDialog({ toolName, description, input, deviceC
   const visibleInput = filterInput(input);
   const hasVisibleInput = Object.keys(visibleInput).length > 0;
 
+  const isUrgent = remainingMs < 30_000;
+
   return (
-    <div className="my-2 rounded-lg border border-amber-600/50 bg-amber-100/30 p-3 dark:bg-amber-950/30">
+    <div
+      role="alertdialog"
+      aria-label={`Tool approval required: ${toolName}`}
+      className="my-2 rounded-lg border border-amber-600/50 bg-amber-100/30 p-3 dark:bg-amber-950/30"
+    >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <ShieldAlert className="h-4 w-4 text-amber-400" />
           <span className="text-sm font-medium text-amber-700 dark:text-amber-300">Approval Required</span>
         </div>
-        <div className="flex items-center gap-1.5 text-xs text-gray-500">
+        <div className="flex items-center gap-1.5 text-xs text-gray-500" role="timer" aria-label={`${minutes} minutes ${seconds} seconds remaining`}>
           <Clock className="h-3 w-3" />
           <span>{countdown}</span>
         </div>
       </div>
+      {isUrgent && (
+        <span className="sr-only" role="alert">
+          Less than 30 seconds remaining. This request will be auto-rejected.
+        </span>
+      )}
 
       {/* Countdown progress bar */}
-      <div className="mt-2 h-0.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800">
+      <div
+        className="mt-2 h-0.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800"
+        role="progressbar"
+        aria-valuenow={Math.round(progressPct)}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label="Time remaining before auto-rejection"
+      >
         <div
           className={cn(
             'h-full rounded-full bg-amber-500/60 transition-all duration-1000 ease-linear',
@@ -179,6 +197,7 @@ export default function AiApprovalDialog({ toolName, description, input, deviceC
 
       <div className="mt-3 flex gap-2">
         <button
+          type="button"
           onClick={onApprove}
           className="flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-green-500"
         >
@@ -186,6 +205,7 @@ export default function AiApprovalDialog({ toolName, description, input, deviceC
           Approve
         </button>
         <button
+          type="button"
           onClick={onReject}
           className="flex items-center gap-1.5 rounded-md bg-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
         >

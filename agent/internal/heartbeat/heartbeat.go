@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -21,14 +23,13 @@ import (
 	"github.com/shirou/gopsutil/v3/host"
 
 	"github.com/breeze-rmm/agent/internal/audit"
-	"github.com/breeze-rmm/agent/internal/backup"
-	"github.com/breeze-rmm/agent/internal/helper"
-	"github.com/breeze-rmm/agent/internal/backup/providers"
+	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/filetransfer"
 	"github.com/breeze-rmm/agent/internal/health"
+	"github.com/breeze-rmm/agent/internal/helper"
 	"github.com/breeze-rmm/agent/internal/httputil"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
@@ -43,7 +44,10 @@ import (
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/security"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
+	"github.com/breeze-rmm/agent/internal/state"
+	"github.com/breeze-rmm/agent/internal/tcc"
 	"github.com/breeze-rmm/agent/internal/terminal"
+	"github.com/breeze-rmm/agent/internal/tunnel"
 	"github.com/breeze-rmm/agent/internal/updater"
 	"github.com/breeze-rmm/agent/internal/websocket"
 	"github.com/breeze-rmm/agent/internal/workerpool"
@@ -51,6 +55,7 @@ import (
 )
 
 var log = logging.L("heartbeat")
+var desktopSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
 type HeartbeatPayload struct {
 	Metrics          *collectors.SystemMetrics `json:"metrics,omitempty"`
@@ -66,16 +71,28 @@ type HeartbeatPayload struct {
 	DroppedLogs      int64                     `json:"droppedLogs,omitempty"`
 	HelperVersion    string                    `json:"helperVersion,omitempty"`
 	TCCPermissions   *ipc.TCCStatus            `json:"tccPermissions,omitempty"`
-Hostname         string                    `json:"hostname,omitempty"`
+	DesktopAccess    *DesktopAccessState       `json:"desktopAccess,omitempty"`
+	Hostname         string                    `json:"hostname,omitempty"`
 	OSVersion        string                    `json:"osVersion,omitempty"`
 	OSBuild          string                    `json:"osBuild,omitempty"`
+	IsHeadless       bool                      `json:"isHeadless"`
+}
+
+type DesktopAccessState struct {
+	Mode                    string    `json:"mode"`
+	LoginUIReachable        bool      `json:"loginUiReachable"`
+	VirtualDisplayReady     bool      `json:"virtualDisplayReady"`
+	Reason                  string    `json:"reason,omitempty"`
+	RemoteDesktopPermission *bool     `json:"remoteDesktopPermission,omitempty"`
+	CheckedAt               time.Time `json:"checkedAt"`
 }
 
 type HeartbeatResponse struct {
-	Commands       []Command       `json:"commands"`
-	ConfigUpdate   map[string]any  `json:"configUpdate,omitempty"`
-	UpgradeTo      string          `json:"upgradeTo,omitempty"`
-	RenewCert      bool            `json:"renewCert,omitempty"`
+	Commands        []Command       `json:"commands"`
+	ConfigUpdate    map[string]any  `json:"configUpdate,omitempty"`
+	UpgradeTo       string          `json:"upgradeTo,omitempty"`
+	RenewCert       bool            `json:"renewCert,omitempty"`
+	RotateToken     bool            `json:"rotateToken,omitempty"`
 	HelperEnabled   bool            `json:"helperEnabled,omitempty"`
 	HelperSettings  *HelperSettings `json:"helperSettings,omitempty"`
 	HelperUpgradeTo string          `json:"helperUpgradeTo,omitempty"`
@@ -99,6 +116,7 @@ type Heartbeat struct {
 	config                *config.Config
 	secureToken           *secmem.SecureString
 	client                *http.Client
+	clientMu              sync.RWMutex
 	stopChan              chan struct{}
 	metricsCol            *collectors.MetricsCollector
 	hardwareCol           *collectors.HardwareCollector
@@ -118,8 +136,9 @@ type Heartbeat struct {
 	desktopMgr            *desktop.SessionManager
 	wsDesktopMgr          *desktop.WsSessionManager
 	terminalMgr           *terminal.Manager
+	tunnelMgr             *tunnel.Manager
 	executor              *executor.Executor
-	backupMgr             *backup.BackupManager
+	backupBinaryPath      string
 	rebootMgr             *patching.RebootManager
 	securityScanner       *security.SecurityScanner
 	wsClient              *websocket.Client
@@ -132,10 +151,15 @@ type Heartbeat struct {
 	lastReliabilityUpdate time.Time
 
 	// User session helper (IPC)
-	sessionBroker *sessionbroker.Broker
-	isService     bool
-	isHeadless    bool
-	scmSessionCh  chan sessionbroker.SCMSessionEvent // fed by SCM handler
+	sessionBroker    *sessionbroker.Broker
+	isService        bool
+	isHeadless       bool
+	scmSessionCh     chan sessionbroker.SCMSessionEvent // fed by SCM handler
+	helperFinder     func(targetSession string) *sessionbroker.Session
+	spawnHelper      func(targetSession string) error
+	killStaleHelpers func(staleKey string)
+	wsDesktopStart   func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
+	desktopOwners    sync.Map // desktop session ID -> helper session ID
 
 	// Resilience & observability
 	pool        *workerpool.Pool
@@ -153,7 +177,9 @@ type Heartbeat struct {
 	seenCommandsMu sync.Mutex
 
 	// Guard against concurrent cert renewals from successive heartbeats
-	certRenewing atomic.Bool
+	certRenewing      atomic.Bool
+	tokenRotating     atomic.Bool
+	upgradeInProgress atomic.Bool
 
 	// Helper chat enabled flag from org settings
 	helperEnabled atomic.Bool
@@ -168,10 +194,24 @@ type Heartbeat struct {
 	// Cached system info (hostname, OS version) — refreshed every 10 min
 	cachedSysInfo      *collectors.SystemInfo
 	lastSysInfoRefresh time.Time
+
+	// Tracks whether the read-only FS error has been logged (prevents log spam)
+	updateReadOnlyLogged bool
+
+	// Path to the agent state file, set by main after startup.
+	statePath string
 }
 
 func New(cfg *config.Config) *Heartbeat {
 	return NewWithVersion(cfg, "0.1.0", nil, nil)
+}
+
+func newHeartbeatHTTPClient(tlsCfg *tls.Config) *http.Client {
+	client := &http.Client{Timeout: 30 * time.Second}
+	if tlsCfg != nil {
+		client.Transport = &http.Transport{TLSClientConfig: tlsCfg}
+	}
+	return client
 }
 
 func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureString, tlsCfg *tls.Config) *Heartbeat {
@@ -187,10 +227,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	}
 
 	// Build HTTP client with optional mTLS transport
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	if tlsCfg != nil {
-		httpClient.Transport = &http.Transport{TLSClientConfig: tlsCfg}
-	}
+	httpClient := newHeartbeatHTTPClient(tlsCfg)
 
 	h := &Heartbeat{
 		config:       cfg,
@@ -218,6 +255,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		desktopMgr:      desktop.NewSessionManager(),
 		wsDesktopMgr:    desktop.NewWsSessionManager(),
 		terminalMgr:     terminal.NewManager(),
+		tunnelMgr:       tunnel.NewManager(),
 		securityScanner: &security.SecurityScanner{Config: cfg},
 		pool:            workerpool.New(cfg.MaxConcurrentCommands, cfg.CommandQueueSize),
 		healthMon:       health.NewMonitor(),
@@ -247,63 +285,42 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 
 	if runtime.GOOS == "windows" && cfg.IsService {
 		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID,
-			helper.WithSpawnFunc(func(binaryPath string) error {
+			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
+			helper.WithSpawnFunc(func(sessionKey, binaryPath string, args ...string) (int, error) {
 				// Try launching via connected user-role helper first (runs as
 				// the logged-in user, so the Tauri app inherits user identity).
 				if h.sessionBroker != nil {
-					if err := h.sessionBroker.LaunchProcessViaUserHelper(binaryPath); err == nil {
-						return nil
+					if err := h.sessionBroker.LaunchProcessViaUserHelperForSession(sessionKey, binaryPath, args...); err == nil {
+						return 0, nil // PID unknown when launched via IPC; refreshPID will reconcile
 					} else {
 						log.Debug("user helper launch failed, falling back to direct spawn",
 							"error", err.Error())
 					}
 				}
 
-				// Fallback: spawn directly in each user session.
-				detector := sessionbroker.NewSessionDetector()
-				sessions, err := detector.ListSessions()
+				sessionNum, err := strconv.ParseUint(sessionKey, 10, 32)
 				if err != nil {
-					return fmt.Errorf("list sessions: %w", err)
+					return 0, fmt.Errorf("invalid session key %q: %w", sessionKey, err)
 				}
-				var launched int
-				for _, s := range sessions {
-					if s.Session == "0" || s.Type == "services" {
-						continue
-					}
-					if s.State != "active" && s.State != "connected" {
-						continue
-					}
-					sessionNum, parseErr := strconv.ParseUint(s.Session, 10, 32)
-					if parseErr != nil {
-						log.Warn("invalid session id", "session", s.Session, "error", parseErr.Error())
-						continue
-					}
-					if spawnErr := sessionbroker.SpawnProcessInSession(binaryPath, uint32(sessionNum)); spawnErr != nil {
-						log.Warn("failed to spawn breeze assist in session",
-							"sessionId", sessionNum, "error", spawnErr.Error())
-						continue
-					}
-					launched++
-				}
-				if launched == 0 {
-					return helper.ErrNoActiveSession
-				}
-				return nil
+				return 0, sessionbroker.SpawnProcessInSessionWithArgs(binaryPath, args, uint32(sessionNum))
 			}),
 		)
 	} else if cfg.IsHeadless && h.sessionBroker != nil {
 		// macOS/Linux headless daemons: launch Breeze Helper via user-role
 		// IPC helper (LaunchAgent) so the Tauri app runs in the user session.
 		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID,
-			helper.WithSpawnFunc(func(binaryPath string) error {
-				if err := h.sessionBroker.LaunchProcessViaUserHelper(binaryPath); err == nil {
-					return nil
+			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
+			helper.WithSpawnFunc(func(sessionKey, binaryPath string, args ...string) (int, error) {
+				if err := h.sessionBroker.LaunchProcessViaUserHelperForSession(sessionKey, binaryPath, args...); err == nil {
+					return 0, nil // PID unknown when launched via IPC; refreshPID will reconcile
 				}
-				return helper.ErrNoActiveSession
+				return 0, helper.ErrNoActiveSession
 			}),
 		)
 	} else {
-		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID)
+		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID,
+			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
+		)
 	}
 
 	// Initialize service & process monitoring
@@ -335,9 +352,10 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			socketPath = ipc.DefaultSocketPath()
 		}
 		h.sessionBroker = sessionbroker.New(socketPath, h.handleUserHelperMessage)
+		h.sessionBroker.SetSessionClosedHandler(h.handleHelperSessionClosed)
 		reason := "config"
 		if cfg.IsService {
-			reason = "windows-service"
+			reason = "system-service"
 		} else if cfg.IsHeadless {
 			reason = "headless-daemon"
 		}
@@ -367,44 +385,8 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		}
 	}, cfg.PatchRebootMaxPerDay)
 
-	// Initialize backup manager if enabled
-	if cfg.BackupEnabled && len(cfg.BackupPaths) > 0 {
-		var backupProvider providers.BackupProvider
-		switch cfg.BackupProvider {
-		case "s3":
-			backupProvider = providers.NewS3Provider(
-				cfg.BackupS3Bucket,
-				cfg.BackupS3Region,
-				cfg.BackupS3AccessKey,
-				cfg.BackupS3SecretKey,
-				"",
-			)
-		default:
-			localPath := cfg.BackupLocalPath
-			if localPath == "" {
-				localPath = config.GetDataDir() + "/backups"
-			}
-			backupProvider = providers.NewLocalProvider(localPath)
-		}
-		schedule, parseErr := time.ParseDuration(cfg.BackupSchedule)
-		if parseErr != nil && cfg.BackupSchedule != "" {
-			log.Warn("invalid backup schedule, using default 24h",
-				"schedule", cfg.BackupSchedule, "error", parseErr)
-		}
-		if schedule <= 0 {
-			schedule = 24 * time.Hour
-		}
-		retention := cfg.BackupRetention
-		if retention <= 0 {
-			retention = 7
-		}
-		h.backupMgr = backup.NewBackupManager(backup.BackupConfig{
-			Provider:  backupProvider,
-			Paths:     cfg.BackupPaths,
-			Schedule:  schedule,
-			Retention: retention,
-		})
-	}
+	// Set backup binary path for IPC forwarding to breeze-backup helper
+	h.backupBinaryPath = cfg.BackupBinaryPath
 
 	// For direct mode (non-service), notify API when WebRTC peer drops.
 	// In service/headless mode this is handled via IPC from the user helper.
@@ -414,12 +396,32 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		}
 	}
 
+	// Clean up any orphaned Screen Sharing left running from a previous crash.
+	h.tunnelMgr.CleanupOrphanedVNC()
+
 	return h
 }
 
 // SetWebSocketClient sets the WebSocket client for terminal output streaming
 func (h *Heartbeat) SetWebSocketClient(ws *websocket.Client) {
 	h.wsClient = ws
+}
+
+// SetStatePath sets the path to the agent state file for heartbeat updates.
+func (h *Heartbeat) SetStatePath(path string) {
+	h.statePath = path
+}
+
+func (h *Heartbeat) httpClient() *http.Client {
+	h.clientMu.RLock()
+	defer h.clientMu.RUnlock()
+	return h.client
+}
+
+func (h *Heartbeat) setHTTPClient(client *http.Client) {
+	h.clientMu.Lock()
+	h.client = client
+	h.clientMu.Unlock()
 }
 
 // AuditLog returns the audit logger for use by other components.
@@ -460,7 +462,61 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 			log.Warn("invalid desktop peer disconnect payload", "error", err.Error())
 			return
 		}
+		if !desktopSessionIDPattern.MatchString(notice.SessionID) {
+			log.Warn("dropping desktop peer disconnect with invalid session ID",
+				"sessionId", notice.SessionID, "helperSession", session.SessionID)
+			return
+		}
+		if owner := h.desktopOwnerSession(notice.SessionID); owner == nil || owner.SessionID != session.SessionID {
+			log.Warn("dropping desktop peer disconnect for non-owned session",
+				"sessionId", notice.SessionID, "helperSession", session.SessionID)
+			return
+		}
+		h.forgetDesktopOwner(notice.SessionID)
 		go h.sendDesktopDisconnectNotification(notice.SessionID)
+	case backupipc.TypeBackupResult:
+		if h.wsClient == nil {
+			return
+		}
+		var backupResult backupipc.BackupCommandResult
+		if err := json.Unmarshal(env.Payload, &backupResult); err != nil {
+			log.Warn("invalid backup result payload", "error", err.Error())
+			return
+		}
+
+		result := websocket.CommandResult{
+			Type:      "command_result",
+			CommandID: backupResult.CommandID,
+			Status:    "failed",
+		}
+		if backupResult.Success {
+			result.Status = "completed"
+		}
+		if backupResult.Stderr != "" {
+			result.Error = backupResult.Stderr
+		} else if backupResult.Stdout != "" {
+			var parsed any
+			if err := json.Unmarshal([]byte(backupResult.Stdout), &parsed); err == nil {
+				result.Result = parsed
+			} else {
+				result.Result = backupResult.Stdout
+			}
+		}
+		if err := h.wsClient.SendResult(result); err != nil {
+			log.Warn("failed to send backup result", "commandId", backupResult.CommandID, "error", err.Error())
+		}
+	case backupipc.TypeBackupProgress:
+		if h.wsClient == nil {
+			return
+		}
+		var progress backupipc.BackupProgress
+		if err := json.Unmarshal(env.Payload, &progress); err != nil {
+			log.Warn("invalid backup progress payload", "error", err.Error())
+			return
+		}
+		if err := h.wsClient.SendBackupProgress(progress.CommandID, progress); err != nil {
+			log.Warn("failed to send backup progress", "commandId", progress.CommandID, "error", err.Error())
+		}
 	default:
 		log.Debug("unhandled user helper message", "type", env.Type, "uid", session.UID)
 	}
@@ -470,7 +526,7 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 func (h *Heartbeat) sendTerminalOutput(sessionId string, data []byte) {
 	if h.wsClient != nil {
 		if err := h.wsClient.SendTerminalOutput(sessionId, data); err != nil {
-			log.Warn("terminal output dropped", "sessionId", sessionId, "error", err.Error())
+			log.Warn("terminal output streaming failed", "sessionId", sessionId, "error", err.Error())
 		}
 	}
 }
@@ -480,6 +536,10 @@ func (h *Heartbeat) sendTerminalOutput(sessionId string, data []byte) {
 // the viewer to reconnect.
 func (h *Heartbeat) sendDesktopDisconnectNotification(sessionID string) {
 	if h.wsClient == nil {
+		return
+	}
+	if !desktopSessionIDPattern.MatchString(sessionID) {
+		log.Warn("refusing to send desktop disconnect notification with invalid session ID", "sessionId", sessionID)
 		return
 	}
 	result := websocket.CommandResult{
@@ -510,6 +570,7 @@ func (h *Heartbeat) Start() {
 	// Start session broker for user helpers
 	if h.sessionBroker != nil {
 		go h.sessionBroker.Listen(h.stopChan)
+		h.startDarwinDesktopWatcher()
 	}
 	if h.sessionCol != nil {
 		h.sessionCol.Start(h.stopChan)
@@ -526,13 +587,6 @@ func (h *Heartbeat) Start() {
 		go func() { <-h.stopChan; cancel() }()
 		lm := sessionbroker.NewHelperLifecycleManager(h.sessionBroker, h.scmSessionCh)
 		go lm.Start(ctx)
-	}
-
-	// Start backup scheduler if configured
-	if h.backupMgr != nil {
-		if err := h.backupMgr.Start(); err != nil {
-			log.Error("failed to start backup manager", "error", err.Error())
-		}
 	}
 
 	// Jitter: random delay before first heartbeat to avoid thundering herd
@@ -680,8 +734,9 @@ func (h *Heartbeat) Stop() {
 		if h.rebootMgr != nil {
 			h.rebootMgr.Stop()
 		}
-		if h.backupMgr != nil {
-			h.backupMgr.Stop()
+		// Stop backup helper if running
+		if h.sessionBroker != nil {
+			h.sessionBroker.StopBackupHelper()
 		}
 		if h.monitor != nil {
 			h.monitor.Stop()
@@ -692,6 +747,9 @@ func (h *Heartbeat) Stop() {
 		}
 		if h.helperMgr != nil {
 			h.helperMgr.Shutdown()
+		}
+		if h.tunnelMgr != nil {
+			h.tunnelMgr.Stop()
 		}
 		// Close stopChan first — this signals broker.Listen() to call broker.Close()
 		// internally. The broker's Close() is idempotent via its closed flag.
@@ -724,7 +782,7 @@ func (h *Heartbeat) sendMonitoringResults(results []monitoring.CheckResult) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	resp, err := httputil.Do(ctx, h.client, "PUT", url, body, headers, h.retryCfg)
+	resp, err := httputil.Do(ctx, h.httpClient(), "PUT", url, body, headers, h.retryCfg)
 	if err != nil {
 		log.Warn("failed to send monitoring results", "error", err.Error(), "count", len(results))
 		return
@@ -792,7 +850,7 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	resp, err := httputil.Do(ctx, h.client, "PUT", url, body, headers, h.retryCfg)
+	resp, err := httputil.Do(ctx, h.httpClient(), "PUT", url, body, headers, h.retryCfg)
 	if err != nil {
 		log.Error("failed to send inventory", "label", label, "error", err.Error())
 		return
@@ -822,7 +880,7 @@ func (h *Heartbeat) submitPeripheralEvents(events []peripheral.PeripheralEvent) 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	resp, err := httputil.Do(ctx, h.client, "PUT", url, body, headers, h.retryCfg)
+	resp, err := httputil.Do(ctx, h.httpClient(), "PUT", url, body, headers, h.retryCfg)
 	if err != nil {
 		return fmt.Errorf("PUT peripheral events: %w", err)
 	}
@@ -1277,21 +1335,23 @@ func (h *Heartbeat) applyEventLogConfig(raw any) {
 	}
 
 	if maxEvents > 0 || len(categories) > 0 || minLevel != "" || interval > 0 {
-		h.eventLogCol.UpdateConfig(maxEvents, categories, minLevel, interval)
-		logFields := []any{}
-		if maxEvents > 0 {
-			logFields = append(logFields, "maxEventsPerCycle", maxEvents)
+		changed := h.eventLogCol.UpdateConfig(maxEvents, categories, minLevel, interval)
+		if changed {
+			logFields := []any{}
+			if maxEvents > 0 {
+				logFields = append(logFields, "maxEventsPerCycle", maxEvents)
+			}
+			if len(categories) > 0 {
+				logFields = append(logFields, "collectCategories", categories)
+			}
+			if minLevel != "" {
+				logFields = append(logFields, "minimumLevel", minLevel)
+			}
+			if interval > 0 {
+				logFields = append(logFields, "collectionIntervalMinutes", interval)
+			}
+			log.Info("applied event log config update", logFields...)
 		}
-		if len(categories) > 0 {
-			logFields = append(logFields, "collectCategories", categories)
-		}
-		if minLevel != "" {
-			logFields = append(logFields, "minimumLevel", minLevel)
-		}
-		if interval > 0 {
-			logFields = append(logFields, "collectionIntervalMinutes", interval)
-		}
-		log.Info("applied event log config update", logFields...)
 	} else if len(m) > 0 {
 		keys := make([]string, 0, len(m))
 		for k := range m {
@@ -1638,7 +1698,7 @@ func (h *Heartbeat) sendBootPerformance(metrics *collectors.BootPerformanceMetri
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	resp, err := httputil.Do(ctx, h.client, "POST", url, body, headers, h.retryCfg)
+	resp, err := httputil.Do(ctx, h.httpClient(), "POST", url, body, headers, h.retryCfg)
 	if err != nil {
 		log.Error("failed to send boot performance", "error", err.Error())
 		return
@@ -1680,7 +1740,7 @@ func (h *Heartbeat) sendReliabilityMetrics() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	resp, err := httputil.Do(ctx, h.client, "POST", url, body, headers, h.retryCfg)
+	resp, err := httputil.Do(ctx, h.httpClient(), "POST", url, body, headers, h.retryCfg)
 	if err != nil {
 		log.Error("failed to send reliability metrics", "error", err.Error())
 		return
@@ -1735,6 +1795,7 @@ func (h *Heartbeat) sendHeartbeat() {
 		HelperVersion: h.helperMgr.InstalledVersion(),
 		HealthStatus:  h.healthMon.Summary(),
 		DeviceRole:    h.cachedDeviceRole,
+		IsHeadless:    h.isHeadless,
 	}
 
 	// Include hostname/OS version so the server can detect changes
@@ -1778,9 +1839,20 @@ func (h *Heartbeat) sendHeartbeat() {
 
 	// Include TCC permission status for macOS devices
 	if runtime.GOOS == "darwin" && h.sessionBroker != nil {
-		if tcc := h.sessionBroker.TCCStatus(); tcc != nil {
-			payload.TCCPermissions = tcc
+		if tccStatus := h.sessionBroker.TCCStatus(); tccStatus != nil {
+			// On macOS 12, the helper's os.Open probe for FDA always returns
+			// false even when FDA is granted, because user-context processes
+			// cannot open the system TCC database. Fall back to a daemon-side
+			// query (running as root) which can read the TCC database directly.
+			if !tccStatus.FullDiskAccess {
+				if tcc.CheckFDA() {
+					log.Debug("FDA helper probe false but daemon check true — overriding")
+					tccStatus.FullDiskAccess = true
+				}
+			}
+			payload.TCCPermissions = tccStatus
 		}
+		payload.DesktopAccess = h.computeDesktopAccess(sysInfo)
 	}
 
 	// Include user helper session info in heartbeat
@@ -1798,6 +1870,12 @@ func (h *Heartbeat) sendHeartbeat() {
 				}
 				if s.Capabilities != nil {
 					helpers[i]["capabilities"] = s.Capabilities
+				}
+				if s.BinaryKind != "" {
+					helpers[i]["binaryKind"] = s.BinaryKind
+				}
+				if s.DesktopContext != "" {
+					helpers[i]["desktopContext"] = s.DesktopContext
 				}
 			}
 			payload.HealthStatus["userHelpers"] = helpers
@@ -1819,7 +1897,7 @@ func (h *Heartbeat) sendHeartbeat() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	resp, err := httputil.Do(ctx, h.client, "POST", url, body, headers, h.retryCfg)
+	resp, err := httputil.Do(ctx, h.httpClient(), "POST", url, body, headers, h.retryCfg)
 	if err != nil {
 		log.Error("failed to send heartbeat", "error", err.Error())
 		h.healthMon.Update("heartbeat", health.Unhealthy, err.Error())
@@ -1834,6 +1912,18 @@ func (h *Heartbeat) sendHeartbeat() {
 	}
 
 	h.healthMon.Update("heartbeat", health.Healthy, "")
+
+	// Update state file with latest heartbeat timestamp so the watchdog
+	// can detect stale heartbeats.
+	now := time.Now()
+	if h.statePath != "" {
+		if err := state.UpdateHeartbeat(h.statePath, now); err != nil {
+			log.Warn("failed to update state file heartbeat", "error", err.Error())
+		}
+	}
+
+	// Send state_sync to the watchdog so it has current connectivity info.
+	h.sendWatchdogStateSync(now)
 
 	// Heartbeat succeeded — commit (clear) the dropped log counter so it is
 	// not re-reported. If the POST had failed, the count would be preserved
@@ -1865,7 +1955,11 @@ func (h *Heartbeat) sendHeartbeat() {
 	// Handle upgrade if requested and auto-update is enabled
 	if response.UpgradeTo != "" && response.UpgradeTo != h.agentVersion {
 		if h.config.AutoUpdate {
-			go h.handleUpgrade(response.UpgradeTo)
+			if h.upgradeInProgress.CompareAndSwap(false, true) {
+				go h.handleUpgrade(response.UpgradeTo)
+			} else {
+				log.Debug("upgrade already in progress", "targetVersion", response.UpgradeTo)
+			}
 		} else {
 			log.Info("upgrade available but auto_update is disabled", "targetVersion", response.UpgradeTo)
 		}
@@ -1874,6 +1968,11 @@ func (h *Heartbeat) sendHeartbeat() {
 	// Handle mTLS cert renewal if signaled by server
 	if response.RenewCert {
 		go h.handleCertRenewal()
+	}
+
+	// Handle proactive bearer-token rotation before the token becomes stale.
+	if response.RotateToken {
+		go h.handleTokenRotation()
 	}
 
 	// Handle helper upgrade if requested
@@ -1953,10 +2052,14 @@ func (h *Heartbeat) handleCertRenewal() {
 		return
 	}
 
+	tlsCfg, err := mtls.BuildTLSConfig(renewResp.Mtls.Certificate, renewResp.Mtls.PrivateKey)
+	if err != nil {
+		log.Error("failed to build TLS config from renewed cert", "error", err.Error())
+		return
+	}
+
 	// Update config in memory (hold mutex to prevent races with heartbeat reads)
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	h.config.MtlsCertPEM = renewResp.Mtls.Certificate
 	h.config.MtlsKeyPEM = renewResp.Mtls.PrivateKey
 	h.config.MtlsCertExpires = renewResp.Mtls.ExpiresAt
@@ -1970,11 +2073,99 @@ func (h *Heartbeat) handleCertRenewal() {
 		log.Error("failed to save renewed mTLS cert -- renewal will be re-attempted", "error", err.Error())
 		// Clear expires so next heartbeat re-triggers renewal
 		h.config.MtlsCertExpires = ""
+		h.mu.Unlock()
 		return
+	}
+	h.mu.Unlock()
+
+	h.setHTTPClient(newHeartbeatHTTPClient(tlsCfg))
+	if h.wsClient != nil {
+		h.wsClient.UpdateTLSConfig(tlsCfg)
+		h.wsClient.ForceReconnect()
 	}
 
 	log.Info("mTLS certificate renewed", "expires", renewResp.Mtls.ExpiresAt)
-	// New cert will be used on next WebSocket reconnect
+	log.Info("mTLS clients refreshed with renewed certificate")
+}
+
+func (h *Heartbeat) handleTokenRotation() {
+	if !h.tokenRotating.CompareAndSwap(false, true) {
+		return
+	}
+	defer h.tokenRotating.Store(false)
+
+	if h.secureToken == nil || h.secureToken.IsZeroed() {
+		log.Error("token rotation requested but no active auth token is available")
+		return
+	}
+
+	log.Info("agent token rotation requested by server")
+
+	currentToken := h.secureToken.Reveal()
+	rotateClient := api.NewClient(h.config.ServerURL, currentToken, h.config.AgentID)
+	rotateResp, err := rotateClient.RotateToken()
+	if err != nil {
+		log.Error("agent token rotation failed", "error", err.Error())
+		return
+	}
+
+	if rotateResp.AuthToken == "" {
+		log.Error("agent token rotation response missing auth token")
+		return
+	}
+
+	h.mu.Lock()
+	h.secureToken.Replace(rotateResp.AuthToken)
+	h.config.AuthToken = rotateResp.AuthToken
+	saveErr := config.Save(h.config)
+	h.config.AuthToken = ""
+	h.mu.Unlock()
+
+	if saveErr != nil {
+		log.Error("agent token rotated in memory but failed to persist new token", "error", saveErr.Error())
+	} else {
+		log.Info("agent token rotated", "rotatedAt", rotateResp.RotatedAt)
+	}
+
+	// Notify the watchdog of the new token so it can use it for failover heartbeats.
+	h.sendWatchdogTokenUpdate(rotateResp.AuthToken)
+
+	if h.wsClient != nil {
+		h.wsClient.ForceReconnect()
+	}
+}
+
+// sendWatchdogStateSync sends a state_sync IPC message to the watchdog
+// so it knows the agent's current connectivity and version.
+func (h *Heartbeat) sendWatchdogStateSync(lastHeartbeat time.Time) {
+	if h.sessionBroker == nil {
+		return
+	}
+	sess := h.sessionBroker.PreferredSessionWithScope("watchdog")
+	if sess == nil {
+		return
+	}
+	_ = sess.SendNotify("", ipc.TypeStateSync, ipc.StateSync{
+		AgentVersion:  h.agentVersion,
+		ConfigHash:    "", // TODO: populate when config hashing is implemented
+		Connected:     true,
+		LastHeartbeat: lastHeartbeat.Format(time.RFC3339),
+	})
+}
+
+// sendWatchdogTokenUpdate notifies the watchdog that the agent token was rotated
+// so it can update its own copy for failover heartbeats.
+func (h *Heartbeat) sendWatchdogTokenUpdate(newToken string) {
+	if h.sessionBroker == nil {
+		return
+	}
+	sess := h.sessionBroker.PreferredSessionWithScope("watchdog")
+	if sess == nil {
+		return
+	}
+	_ = sess.SendNotify("", ipc.TypeTokenUpdate, ipc.TokenUpdate{
+		Token: newToken,
+	})
 }
 
 func (h *Heartbeat) processCommand(cmd Command) {
@@ -2005,7 +2196,7 @@ func (h *Heartbeat) submitCommandResult(commandID string, result tools.CommandRe
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	resp, err := httputil.Do(ctx, h.client, "POST", url, body, headers, h.retryCfg)
+	resp, err := httputil.Do(ctx, h.httpClient(), "POST", url, body, headers, h.retryCfg)
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
@@ -2035,7 +2226,7 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 		Payload: wsCmd.Payload,
 	}
 
-	result := h.executeCommand(cmd)
+	result := h.executeCommandViaPool(cmd)
 
 	wsResult := websocket.CommandResult{
 		CommandID: cmd.ID,
@@ -2058,6 +2249,37 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 	}
 
 	return wsResult
+}
+
+func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
+	if h.pool == nil {
+		return h.executeCommand(cmd)
+	}
+
+	resultCh := make(chan tools.CommandResult, 1)
+	if !h.pool.Submit(func() {
+		resultCh <- h.executeCommand(cmd)
+	}) {
+		return tools.CommandResult{
+			Status: "failed",
+			Error:  "command rejected, worker pool full",
+		}
+	}
+
+	select {
+	case result := <-resultCh:
+		return result
+	case <-h.stopChan:
+		return tools.CommandResult{
+			Status: "failed",
+			Error:  "agent is shutting down",
+		}
+	case <-h.pool.Context().Done():
+		return tools.CommandResult{
+			Status: "failed",
+			Error:  "command execution interrupted during shutdown",
+		}
+	}
 }
 
 func isEphemeralCommand(cmdType string) bool {
@@ -2461,8 +2683,32 @@ func errorString(err error) string {
 	return err.Error()
 }
 
-// handleUpgrade performs an auto-update to the specified version
+// handleUpgrade performs an auto-update to the specified version.
+// A 30-minute watchdog context prevents the upgradeInProgress flag from
+// being stuck indefinitely if the update hangs.
 func (h *Heartbeat) handleUpgrade(targetVersion string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.doUpgrade(targetVersion)
+	}()
+
+	select {
+	case <-done:
+		// Upgrade goroutine finished normally.
+		h.upgradeInProgress.Store(false)
+	case <-ctx.Done():
+		log.Error("upgrade watchdog timeout exceeded; upgrade goroutine still running, blocking new attempts", "targetVersion", targetVersion)
+		// Do NOT clear upgradeInProgress -- the goroutine is still alive.
+		// It will remain blocked until the process restarts.
+	}
+}
+
+// doUpgrade contains the actual upgrade logic, called by handleUpgrade.
+func (h *Heartbeat) doUpgrade(targetVersion string) {
 	log.Info("upgrade requested", "targetVersion", targetVersion)
 
 	binaryPath, err := os.Executable()
@@ -2494,6 +2740,23 @@ func (h *Heartbeat) handleUpgrade(targetVersion string) {
 
 	u := updater.New(updaterCfg)
 	if err := u.UpdateTo(targetVersion); err != nil {
+		// If the filesystem is read-only, stop retrying — this is permanent
+		// until the service unit is fixed or the filesystem is remounted.
+		// Intentionally NOT persisted to disk (unlike dev_push in handlers_devupdate.go)
+		// so that fixing ReadWritePaths + restarting the service auto-recovers.
+		if errors.Is(err, updater.ErrReadOnlyFS) {
+			if !h.updateReadOnlyLogged {
+				log.Error("auto-update disabled: binary path is read-only — update the systemd unit to add the binary path to ReadWritePaths, then restart the service", "targetVersion", targetVersion, "error", err.Error())
+				h.updateReadOnlyLogged = true
+			}
+			h.config.AutoUpdate = false
+			return
+		}
+		// File locked by another process is transient — log and retry next heartbeat.
+		if errors.Is(err, updater.ErrFileLocked) {
+			log.Warn("update deferred: binary locked by another process, will retry", "targetVersion", targetVersion, "error", err.Error())
+			return
+		}
 		log.Error("failed to update", "targetVersion", targetVersion, "error", err.Error())
 		return
 	}
@@ -2510,19 +2773,9 @@ func (h *Heartbeat) makeUserExecFunc() patching.UserExecFunc {
 			return "", "", -1, fmt.Errorf("no session broker available")
 		}
 
-		// Find first available user helper session
-		sessions := h.sessionBroker.AllSessions()
-		if len(sessions) == 0 {
-			return "", "", -1, fmt.Errorf("no user helper connected")
-		}
-
-		session := h.sessionBroker.SessionForUser(sessions[0].Username)
+		session := h.sessionBroker.PreferredSessionWithScope("run_as_user")
 		if session == nil {
-			return "", "", -1, fmt.Errorf("user helper session not found")
-		}
-
-		if !session.HasScope("run_as_user") {
-			return "", "", -1, fmt.Errorf("user helper does not have run_as_user scope")
+			return "", "", -1, fmt.Errorf("no user helper connected")
 		}
 
 		// Build a script execution command payload
@@ -2562,10 +2815,10 @@ func (h *Heartbeat) makeUserExecFunc() patching.UserExecFunc {
 			var nested map[string]any
 			if err := json.Unmarshal(result.Result, &nested); err == nil {
 				if s, ok := nested["stdout"].(string); ok {
-					stdout = s
+					stdout = executor.SanitizeOutput(s)
 				}
 				if s, ok := nested["stderr"].(string); ok {
-					stderr = s
+					stderr = executor.SanitizeOutput(s)
 				}
 				if c, ok := nested["exitCode"].(float64); ok {
 					exitCode = int(c)

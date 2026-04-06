@@ -11,8 +11,9 @@ import {
   softwareInventory,
   devices,
 } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import { resolveDeploymentTargets } from '../services/deploymentTargetResolver';
 import { uploadBinary, getPresignedUrl, isS3Configured } from '../services/s3Storage';
 import { sendCommandToAgent, type AgentCommand } from './agentWs';
 import { createHash } from 'node:crypto';
@@ -20,8 +21,12 @@ import { writeFile, unlink, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { PERMISSIONS } from '../services/permissions';
 
 export const softwareRoutes = new Hono();
+const requireSoftwareRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
+const requireSoftwareWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
+const requireSoftwareExecute = requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -49,10 +54,155 @@ function getPagination(query: { page?: string; limit?: string }) {
 
 const ALLOWED_EXTENSIONS = new Set(['.msi', '.exe', '.dmg', '.deb', '.pkg']);
 const MAX_UPLOAD_SIZE = 500 * 1024 * 1024; // 500 MB
+type SoftwareDeploymentAggregateStatus =
+  | 'pending'
+  | 'in_progress'
+  | 'completed'
+  | 'completed_with_errors'
+  | 'failed'
+  | 'cancelled';
+
+type SoftwareVersionInsert = Omit<typeof softwareVersions.$inferInsert, 'catalogId' | 'isLatest'>;
+type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 function getFileExtension(filename: string): string {
   const dot = filename.lastIndexOf('.');
   return dot >= 0 ? filename.slice(dot).toLowerCase() : '';
+}
+
+async function setLatestSoftwareVersion(
+  tx: DbTransaction,
+  catalogId: string,
+  versionId: string,
+) {
+  await tx.update(softwareVersions)
+    .set({ isLatest: false })
+    .where(eq(softwareVersions.catalogId, catalogId));
+
+  const [version] = await tx.update(softwareVersions)
+    .set({ isLatest: true })
+    .where(and(
+      eq(softwareVersions.catalogId, catalogId),
+      eq(softwareVersions.id, versionId),
+    ))
+    .returning();
+
+  return version ?? null;
+}
+
+export function computeSoftwareDeploymentAggregateStatus(
+  results: Array<{ status: string; count: number }>,
+): SoftwareDeploymentAggregateStatus {
+  const counts = new Map(results.map((result) => [result.status, Number(result.count)]));
+  const total = [...counts.values()].reduce((sum, count) => sum + count, 0);
+
+  if (total === 0) return 'pending';
+
+  const pendingCount = counts.get('pending') ?? 0;
+  const completedCount = counts.get('completed') ?? 0;
+  const failedCount = counts.get('failed') ?? 0;
+  const cancelledCount = counts.get('cancelled') ?? 0;
+  const inProgressCount = (
+    (counts.get('running') ?? 0) +
+    (counts.get('paused') ?? 0) +
+    (counts.get('downloading') ?? 0) +
+    (counts.get('installing') ?? 0) +
+    (counts.get('rollback') ?? 0)
+  );
+
+  if (inProgressCount > 0) return 'in_progress';
+  if (failedCount > 0) {
+    return completedCount > 0 ? 'completed_with_errors' : 'failed';
+  }
+  if (cancelledCount === total) return 'cancelled';
+  if (completedCount === total) return 'completed';
+  if (pendingCount === total) return 'pending';
+  if (pendingCount > 0 && completedCount > 0) return 'in_progress';
+
+  return 'in_progress';
+}
+
+async function getDeploymentStatusMap(deploymentIds: string[]) {
+  if (deploymentIds.length === 0) {
+    return new Map<string, SoftwareDeploymentAggregateStatus>();
+  }
+
+  const rows = await db
+    .select({
+      deploymentId: deploymentResults.deploymentId,
+      status: deploymentResults.status,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(deploymentResults)
+    .where(inArray(deploymentResults.deploymentId, deploymentIds))
+    .groupBy(deploymentResults.deploymentId, deploymentResults.status);
+
+  const grouped = new Map<string, Array<{ status: string; count: number }>>();
+  for (const row of rows) {
+    const bucket = grouped.get(row.deploymentId) ?? [];
+    bucket.push({ status: row.status, count: Number(row.count) });
+    grouped.set(row.deploymentId, bucket);
+  }
+
+  const statusMap = new Map<string, SoftwareDeploymentAggregateStatus>();
+  for (const deploymentId of deploymentIds) {
+    statusMap.set(
+      deploymentId,
+      computeSoftwareDeploymentAggregateStatus(grouped.get(deploymentId) ?? []),
+    );
+  }
+
+  return statusMap;
+}
+
+async function resolveSoftwareTargetDeviceIds(
+  orgId: string,
+  payload: {
+    targetType: 'devices' | 'groups' | 'sites' | 'all' | 'filter';
+    targetIds?: string[];
+    targetFilter?: unknown;
+  },
+) {
+  if (payload.targetType === 'sites') {
+    return {
+      error: 'Site targeting is not implemented for software deployments',
+      deviceIds: [] as string[],
+    };
+  }
+
+  const targetConfig =
+    payload.targetType === 'devices'
+      ? { type: 'devices' as const, deviceIds: payload.targetIds ?? [] }
+      : payload.targetType === 'groups'
+        ? { type: 'groups' as const, groupIds: payload.targetIds ?? [] }
+        : payload.targetType === 'filter'
+          ? { type: 'filter' as const, filter: payload.targetFilter as never }
+          : { type: 'all' as const };
+
+  const deviceIds = await resolveDeploymentTargets({ orgId, targetConfig });
+  if (deviceIds.length === 0) {
+    return {
+      error: 'No devices resolved for the selected target scope',
+      deviceIds,
+    };
+  }
+
+  return { deviceIds };
+}
+
+async function insertLatestSoftwareVersion(
+  catalogId: string,
+  values: SoftwareVersionInsert,
+) {
+  return db.transaction(async (tx) => {
+    const [inserted] = await tx.insert(softwareVersions)
+      .values({ ...values, catalogId, isLatest: false })
+      .returning();
+
+    if (!inserted) return null;
+
+    return setLatestSoftwareVersion(tx, catalogId, inserted.id);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -120,7 +270,7 @@ const createVersionSchema = z.object({
 });
 
 const listDeploymentsSchema = z.object({
-  status: z.enum(['pending', 'running', 'completed', 'failed', 'cancelled', 'draft']).optional(),
+  status: z.enum(['pending', 'in_progress', 'completed', 'completed_with_errors', 'failed', 'cancelled']).optional(),
   page: z.string().optional(),
   limit: z.string().optional()
 });
@@ -131,8 +281,9 @@ const createDeploymentSchema = z.object({
   name: z.string().min(1).max(255),
   softwareVersionId: z.string().uuid(),
   deploymentType: z.enum(['install', 'uninstall', 'update']),
-  targetType: z.enum(['devices', 'groups', 'sites', 'all']),
+  targetType: z.enum(['devices', 'groups', 'sites', 'all', 'filter']),
   targetIds: z.array(z.string().uuid()).optional(),
+  targetFilter: z.unknown().optional(),
   scheduleType: z.enum(['immediate', 'scheduled', 'maintenance']),
   scheduledAt: z.string().datetime().optional(),
   maintenanceWindowId: z.string().uuid().optional(),
@@ -163,6 +314,7 @@ softwareRoutes.use('*', authMiddleware);
 softwareRoutes.get(
   '/catalog',
   requireScope('organization', 'partner', 'system'),
+  requireSoftwareRead,
   zValidator('query', listCatalogSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -209,6 +361,8 @@ softwareRoutes.get(
 softwareRoutes.post(
   '/catalog',
   requireScope('organization', 'partner', 'system'),
+  requireSoftwareWrite,
+  requireMfa(),
   zValidator('json', createCatalogSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -244,6 +398,7 @@ softwareRoutes.post(
 softwareRoutes.get(
   '/catalog/search',
   requireScope('organization', 'partner', 'system'),
+  requireSoftwareRead,
   zValidator('query', catalogSearchSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -273,6 +428,7 @@ softwareRoutes.get(
 softwareRoutes.get(
   '/catalog/:id',
   requireScope('organization', 'partner', 'system'),
+  requireSoftwareRead,
   zValidator('param', catalogIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -295,6 +451,8 @@ softwareRoutes.get(
 softwareRoutes.patch(
   '/catalog/:id',
   requireScope('organization', 'partner', 'system'),
+  requireSoftwareWrite,
+  requireMfa(),
   zValidator('param', catalogIdParamSchema),
   zValidator('json', updateCatalogSchema),
   async (c) => {
@@ -331,6 +489,8 @@ softwareRoutes.patch(
 softwareRoutes.delete(
   '/catalog/:id',
   requireScope('organization', 'partner', 'system'),
+  requireSoftwareWrite,
+  requireMfa(),
   zValidator('param', catalogIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -366,6 +526,7 @@ softwareRoutes.delete(
 softwareRoutes.get(
   '/catalog/:id/versions',
   requireScope('organization', 'partner', 'system'),
+  requireSoftwareRead,
   zValidator('param', versionParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -379,7 +540,7 @@ softwareRoutes.get(
 
     const versions = await db.select().from(softwareVersions)
       .where(eq(softwareVersions.catalogId, id))
-      .orderBy(desc(softwareVersions.releaseDate));
+      .orderBy(desc(softwareVersions.isLatest), desc(softwareVersions.releaseDate));
 
     return c.json({ data: versions });
   }
@@ -389,6 +550,8 @@ softwareRoutes.get(
 softwareRoutes.post(
   '/catalog/:id/versions',
   requireScope('organization', 'partner', 'system'),
+  requireSoftwareWrite,
+  requireMfa(),
   zValidator('param', versionParamSchema),
   zValidator('json', createVersionSchema),
   async (c) => {
@@ -403,13 +566,7 @@ softwareRoutes.post(
       .where(and(eq(softwareCatalog.id, id), eq(softwareCatalog.orgId, orgId)));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
 
-    // Clear previous isLatest
-    await db.update(softwareVersions)
-      .set({ isLatest: false })
-      .where(and(eq(softwareVersions.catalogId, id), eq(softwareVersions.isLatest, true)));
-
-    const [version] = await db.insert(softwareVersions).values({
-      catalogId: id,
+    const version = await insertLatestSoftwareVersion(id, {
       version: payload.version,
       releaseDate: payload.releaseDate ? new Date(payload.releaseDate) : new Date(),
       releaseNotes: payload.releaseNotes ?? null,
@@ -422,14 +579,17 @@ softwareRoutes.post(
       silentUninstallArgs: payload.silentUninstallArgs ?? null,
       preInstallScript: payload.preInstallScript ?? null,
       postInstallScript: payload.postInstallScript ?? null,
-      isLatest: true,
-    }).returning();
+    });
+
+    if (!version) {
+      return c.json({ error: 'Failed to create software version' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId,
       action: 'software.catalog.version.create',
       resourceType: 'software_version',
-      resourceId: version!.id,
+      resourceId: version.id,
       resourceName: catalogItem.name,
       details: { version: payload.version },
     });
@@ -442,6 +602,8 @@ softwareRoutes.post(
 softwareRoutes.post(
   '/catalog/:id/versions/upload',
   requireScope('organization', 'partner', 'system'),
+  requireSoftwareWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const orgId = resolveScopedOrgId(auth);
@@ -518,15 +680,8 @@ softwareRoutes.post(
       // Upload to S3
       await uploadBinary(tempPath, s3Key, checksum);
 
-      // Clear previous isLatest
-      await db.update(softwareVersions)
-        .set({ isLatest: false })
-        .where(and(eq(softwareVersions.catalogId, catalogId), eq(softwareVersions.isLatest, true)));
-
-      // Insert version record
-      const [versionRecord] = await db.insert(softwareVersions).values({
+      const versionRecord = await insertLatestSoftwareVersion(catalogId, {
         id: versionId,
-        catalogId,
         version,
         releaseDate: new Date(),
         releaseNotes,
@@ -541,14 +696,17 @@ softwareRoutes.post(
         silentUninstallArgs,
         preInstallScript,
         postInstallScript,
-        isLatest: true,
-      }).returning();
+      });
+
+      if (!versionRecord) {
+        return c.json({ error: 'Failed to create uploaded software version' }, 500);
+      }
 
       writeRouteAudit(c, {
         orgId,
         action: 'software.catalog.version.upload',
         resourceType: 'software_version',
-        resourceId: versionRecord!.id,
+        resourceId: versionRecord.id,
         resourceName: catalogItem.name,
         details: { version, fileType, fileSize: buffer.length, checksum },
       });
@@ -561,10 +719,56 @@ softwareRoutes.post(
   }
 );
 
+// POST /catalog/:id/versions/:versionId/promote - Mark an existing version as latest
+softwareRoutes.post(
+  '/catalog/:id/versions/:versionId/promote',
+  requireScope('organization', 'partner', 'system'),
+  requireSoftwareWrite,
+  requireMfa(),
+  zValidator('param', versionIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+
+    const { id, versionId } = c.req.valid('param');
+    const [catalogItem] = await db.select().from(softwareCatalog)
+      .where(and(eq(softwareCatalog.id, id), eq(softwareCatalog.orgId, orgId)));
+    if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+
+    const [existingVersion] = await db.select().from(softwareVersions)
+      .where(and(
+        eq(softwareVersions.id, versionId),
+        eq(softwareVersions.catalogId, id),
+      ));
+    if (!existingVersion) return c.json({ error: 'Version not found' }, 404);
+
+    const promotedVersion = await db.transaction(async (tx) => {
+      return setLatestSoftwareVersion(tx, id, versionId);
+    });
+
+    if (!promotedVersion) {
+      return c.json({ error: 'Failed to promote software version' }, 500);
+    }
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'software.catalog.version.promote',
+      resourceType: 'software_version',
+      resourceId: promotedVersion.id,
+      resourceName: catalogItem.name,
+      details: { version: promotedVersion.version },
+    });
+
+    return c.json({ data: promotedVersion });
+  }
+);
+
 // GET /catalog/:id/versions/:versionId/download-url - Get presigned download URL
 softwareRoutes.get(
   '/catalog/:id/versions/:versionId/download-url',
   requireScope('organization', 'partner', 'system'),
+  requireSoftwareRead,
   async (c) => {
     const auth = c.get('auth');
     const orgId = resolveScopedOrgId(auth);
@@ -603,6 +807,7 @@ softwareRoutes.get(
 softwareRoutes.get(
   '/deployments',
   requireScope('organization', 'partner', 'system'),
+  requireSoftwareRead,
   zValidator('query', listDeploymentsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -611,25 +816,23 @@ softwareRoutes.get(
 
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
+    const items = await db.select().from(softwareDeployments)
+      .where(eq(softwareDeployments.orgId, orgId))
+      .orderBy(desc(softwareDeployments.createdAt));
 
-    const conditions = [eq(softwareDeployments.orgId, orgId)];
-    if (query.status) {
-      conditions.push(eq(softwareDeployments.deploymentType, query.status));
-    }
-
-    const [items, countResult] = await Promise.all([
-      db.select().from(softwareDeployments)
-        .where(and(...conditions))
-        .orderBy(desc(softwareDeployments.createdAt))
-        .limit(limit)
-        .offset(offset),
-      db.select({ count: sql<number>`count(*)` }).from(softwareDeployments)
-        .where(and(...conditions))
-    ]);
+    const statusMap = await getDeploymentStatusMap(items.map((item) => item.id));
+    const enrichedItems = items.map((item) => ({
+      ...item,
+      status: statusMap.get(item.id) ?? 'pending',
+    }));
+    const filteredItems = query.status
+      ? enrichedItems.filter((item) => item.status === query.status)
+      : enrichedItems;
+    const paginatedItems = filteredItems.slice(offset, offset + limit);
 
     return c.json({
-      data: items,
-      pagination: { page, limit, total: Number(countResult[0]?.count ?? 0) }
+      data: paginatedItems,
+      pagination: { page, limit, total: filteredItems.length }
     });
   }
 );
@@ -638,6 +841,8 @@ softwareRoutes.get(
 softwareRoutes.post(
   '/deployments',
   requireScope('organization', 'partner', 'system'),
+  requireSoftwareExecute,
+  requireMfa(),
   zValidator('json', createDeploymentSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -655,15 +860,12 @@ softwareRoutes.post(
       .where(and(eq(softwareCatalog.id, versionRecord.catalogId), eq(softwareCatalog.orgId, orgId)));
     if (!catalogItem) return c.json({ error: 'Catalog item not found or access denied' }, 404);
 
-    // Resolve target device IDs
-    let targetDeviceIds: string[] = [];
-    if (payload.targetType === 'devices' && payload.targetIds) {
-      targetDeviceIds = payload.targetIds;
-    } else if (payload.targetType === 'all') {
-      const allDevices = await db.select({ id: devices.id }).from(devices)
-        .where(eq(devices.orgId, orgId));
-      targetDeviceIds = allDevices.map(d => d.id);
+    const resolvedTargets = await resolveSoftwareTargetDeviceIds(orgId, payload);
+    if (resolvedTargets.error) {
+      const status = payload.targetType === 'sites' ? 400 : 400;
+      return c.json({ error: resolvedTargets.error }, status);
     }
+    const targetDeviceIds = resolvedTargets.deviceIds;
 
     // Insert deployment
     const [deployment] = await db.insert(softwareDeployments).values({
@@ -676,7 +878,12 @@ softwareRoutes.post(
       scheduleType: payload.scheduleType,
       scheduledAt: payload.scheduledAt ? new Date(payload.scheduledAt) : null,
       maintenanceWindowId: payload.maintenanceWindowId ?? null,
-      options: payload.options ?? null,
+      options: payload.targetType === 'filter'
+        ? {
+            ...(payload.options ?? {}),
+            targetFilter: payload.targetFilter ?? null,
+          }
+        : payload.options ?? null,
       createdBy: auth.user?.id ?? null,
     }).returning();
 
@@ -706,7 +913,10 @@ softwareRoutes.post(
         // Get agentIds for target devices
         const targetDevices = await db.select({ id: devices.id, agentId: devices.agentId })
           .from(devices)
-          .where(inArray(devices.id, targetDeviceIds));
+          .where(and(
+            eq(devices.orgId, orgId),
+            inArray(devices.id, targetDeviceIds),
+          ));
 
         for (const device of targetDevices) {
           const command: AgentCommand = {
@@ -749,6 +959,8 @@ softwareRoutes.post(
 softwareRoutes.post(
   '/deploy',
   requireScope('organization', 'partner', 'system'),
+  requireSoftwareExecute,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const orgId = resolveScopedOrgId(auth);
@@ -774,6 +986,17 @@ softwareRoutes.post(
 
     if (!versionRecord) return c.json({ error: 'Version not found' }, 404);
 
+    const resolvedDeviceIds = await resolveDeploymentTargets({
+      orgId,
+      targetConfig: {
+        type: 'devices',
+        deviceIds: Array.isArray(deviceIds) ? deviceIds : [],
+      },
+    });
+    if (resolvedDeviceIds.length === 0) {
+      return c.json({ error: 'No devices resolved for the selected targets' }, 400);
+    }
+
     // Insert deployment
     const [deployment] = await db.insert(softwareDeployments).values({
       orgId,
@@ -781,15 +1004,15 @@ softwareRoutes.post(
       softwareVersionId: versionRecord.id,
       deploymentType: 'install',
       targetType: 'devices',
-      targetIds: deviceIds,
+      targetIds: resolvedDeviceIds,
       scheduleType,
       createdBy: auth.user?.id ?? null,
     }).returning();
 
     // Insert per-device results
-    if (Array.isArray(deviceIds) && deviceIds.length > 0) {
+    if (resolvedDeviceIds.length > 0) {
       await db.insert(deploymentResults).values(
-        deviceIds.map((deviceId: string) => ({
+        resolvedDeviceIds.map((deviceId: string) => ({
           deploymentId: deployment!.id,
           deviceId,
           status: 'pending' as const,
@@ -807,7 +1030,10 @@ softwareRoutes.post(
         if (downloadUrl) {
           const targetDevices = await db.select({ id: devices.id, agentId: devices.agentId })
             .from(devices)
-            .where(inArray(devices.id, deviceIds));
+            .where(and(
+              eq(devices.orgId, orgId),
+              inArray(devices.id, resolvedDeviceIds),
+            ));
 
           for (const device of targetDevices) {
             const command: AgentCommand = {
@@ -836,7 +1062,7 @@ softwareRoutes.post(
       resourceType: 'software_deployment',
       resourceId: deployment!.id,
       resourceName: catalogItem.name,
-      details: { version, deviceCount: deviceIds.length },
+      details: { version, deviceCount: resolvedDeviceIds.length, deprecated: true },
     });
 
     return c.json({ data: deployment, id: deployment!.id }, 201);
@@ -847,6 +1073,7 @@ softwareRoutes.post(
 softwareRoutes.get(
   '/deployments/:id',
   requireScope('organization', 'partner', 'system'),
+  requireSoftwareRead,
   zValidator('param', deploymentIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -858,7 +1085,14 @@ softwareRoutes.get(
       .where(and(eq(softwareDeployments.id, id), eq(softwareDeployments.orgId, orgId)));
     if (!deployment) return c.json({ error: 'Deployment not found' }, 404);
 
-    return c.json({ data: deployment });
+    const statusMap = await getDeploymentStatusMap([deployment.id]);
+
+    return c.json({
+      data: {
+        ...deployment,
+        status: statusMap.get(deployment.id) ?? 'pending',
+      },
+    });
   }
 );
 
@@ -866,6 +1100,8 @@ softwareRoutes.get(
 softwareRoutes.post(
   '/deployments/:id/cancel',
   requireScope('organization', 'partner', 'system'),
+  requireSoftwareExecute,
+  requireMfa(),
   zValidator('param', deploymentIdParamSchema),
   zValidator('json', cancelDeploymentSchema),
   async (c) => {
@@ -894,7 +1130,9 @@ softwareRoutes.post(
       resourceName: deployment.name,
     });
 
-    return c.json({ data: { ...deployment, status: 'cancelled' } });
+    const statusMap = await getDeploymentStatusMap([id]);
+
+    return c.json({ data: { ...deployment, status: statusMap.get(id) ?? 'cancelled' } });
   }
 );
 
@@ -902,6 +1140,7 @@ softwareRoutes.post(
 softwareRoutes.get(
   '/deployments/:id/results',
   requireScope('organization', 'partner', 'system'),
+  requireSoftwareRead,
   zValidator('param', deploymentIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -928,6 +1167,7 @@ softwareRoutes.get(
 softwareRoutes.get(
   '/inventory',
   requireScope('organization', 'partner', 'system'),
+  requireSoftwareRead,
   zValidator('query', listInventorySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -965,6 +1205,7 @@ softwareRoutes.get(
 softwareRoutes.get(
   '/inventory/:deviceId',
   requireScope('organization', 'partner', 'system'),
+  requireSoftwareRead,
   zValidator('param', inventoryParamSchema),
   async (c) => {
     const auth = c.get('auth');

@@ -109,6 +109,8 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
+  requireMfa: vi.fn(() => async (_c: unknown, next: () => Promise<unknown>) => next()),
+  requirePermission: vi.fn(() => async (_c: unknown, next: () => Promise<unknown>) => next()),
   requireScope: vi.fn(() => async (_c: unknown, next: () => Promise<unknown>) => next()),
 }));
 

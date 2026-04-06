@@ -53,6 +53,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [maxFps, setMaxFps] = useState(60);
   const [bitrate, setBitrate] = useState(2500);
   const [hostname, setHostname] = useState('');
+  const [remoteOs, setRemoteOs] = useState<string | null>(null);
   const [connectedAt, setConnectedAt] = useState<Date | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [pasteProgress, setPasteProgress] = useState<{ current: number; total: number } | null>(null);
@@ -60,11 +61,18 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [cursorStreamActive, setCursorStreamActive] = useState(false);
   const [monitors, setMonitors] = useState<Array<{ index: number; name: string; width: number; height: number; isPrimary: boolean }>>([]);
   const [activeMonitor, setActiveMonitor] = useState(0);
+  const [sessions, setSessions] = useState<Array<{ sessionId: number; username: string; state: string; type: string; helperConnected: boolean }>>([]);
+  const [activeSessionId, setActiveSessionId] = useState<number | null>(params.targetSessionId ?? null);
+  const [switchingSession, setSwitchingSession] = useState<string | null>(null);
+  const switchingSessionRef = useRef(false);
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [hasAudioTrack, setHasAudioTrack] = useState(false);
   const [showRemoteCursor, setShowRemoteCursor] = useState(false);
   const cursorOverlayRef = useRef<HTMLDivElement>(null);
   const showRemoteCursorRef = useRef(false);
+  // Tracks the current remote cursor CSS shape (e.g. "default", "pointer", "text").
+  // Updated from the cursor data channel; applied to the video element style.
+  const remoteCursorShapeRef = useRef<string>('default');
 
   const setTransportState = useCallback((t: Transport | null) => {
     transportRef.current = t;
@@ -75,6 +83,16 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     showRemoteCursorRef.current = showRemoteCursor;
     if (!showRemoteCursor && cursorOverlayRef.current) {
       cursorOverlayRef.current.style.display = 'none';
+    }
+    // When switching between cursor modes, update the video element's CSS cursor.
+    // In overlay mode the local cursor is hidden; otherwise show the remote shape.
+    const videoEl = videoRef.current;
+    if (videoEl) {
+      if (showRemoteCursor) {
+        videoEl.style.cursor = 'none';
+      } else {
+        videoEl.style.cursor = remoteCursorShapeRef.current || 'default';
+      }
     }
   }, [showRemoteCursor]);
 
@@ -92,12 +110,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
   // ── WebRTC connection ──────────────────────────────────────────────
 
-  const connectWebRTC = useCallback(async (auth: AuthenticatedConnectionParams): Promise<boolean> => {
+  const connectWebRTC = useCallback(async (auth: AuthenticatedConnectionParams, targetSessionId?: number): Promise<boolean> => {
     const videoEl = videoRef.current;
     if (!videoEl) return false;
 
 	    try {
-	      const session = await createWebRTCSession(auth, videoEl);
+	      const session = await createWebRTCSession(auth, videoEl, undefined, targetSessionId ?? params.targetSessionId);
 	      webrtcRef.current = session;
 
 	      // Reduce input lag under loss: coalesce mouse moves, and avoid unbounded buffering.
@@ -163,13 +181,33 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             const overlay = cursorOverlayRef.current;
             const videoEl = videoRef.current;
             if (!overlay || !videoEl) return;
-            if (!showRemoteCursorRef.current) {
-              overlay.style.display = 'none';
-              return;
-            }
 
             try {
-              const { x, y, v } = JSON.parse(msg.data);
+              const data = JSON.parse(msg.data);
+              const { x, y, v, s } = data;
+
+              // Update cursor shape when the agent sends a new shape.
+              // "s" is only included when it differs from the last sent value.
+              const VALID_CURSORS = new Set([
+                'default', 'pointer', 'text', 'crosshair', 'move', 'grab', 'grabbing',
+                'ew-resize', 'ns-resize', 'nwse-resize', 'nesw-resize', 'not-allowed',
+                'wait', 'progress', 'help', 'context-menu', 'cell', 'none',
+              ]);
+              if (s && typeof s === 'string' && VALID_CURSORS.has(s)) {
+                remoteCursorShapeRef.current = s;
+                // Apply CSS cursor to the video element immediately. When the
+                // remote cursor overlay is hidden, the user's OS cursor adopts
+                // the remote shape (text beam, pointer hand, resize arrows, etc.).
+                if (!showRemoteCursorRef.current) {
+                  videoEl.style.cursor = s;
+                }
+              }
+
+              if (!showRemoteCursorRef.current) {
+                overlay.style.display = 'none';
+                return;
+              }
+
               if (!v) {
                 overlay.style.display = 'none';
                 return;
@@ -232,7 +270,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       };
 
       setTransportState('webrtc');
-      setHostname('Remote Desktop');
+      // Hostname is already set from the exchange response before connectWebRTC is called.
       // Connection state will flip to 'connected' via onconnectionstatechange
       return true;
     } catch (err) {
@@ -303,7 +341,15 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         switch (msg.type) {
           case 'connected':
             setStatus('connected');
-            setHostname(msg.device?.hostname || 'Unknown');
+            const deviceHostname = msg.device?.hostname || 'Unknown';
+            setHostname(deviceHostname);
+            if (msg.device?.osType) {
+              setRemoteOs(msg.device.osType);
+            }
+            // Window title set from Rust in update_session_hostname
+            invoke('update_session_hostname', { hostname: deviceHostname }).catch((err) => {
+              console.warn('Failed to update session hostname:', err);
+            });
             setConnectedAt(new Date());
             setErrorMessage(null);
             // Auto-focus the canvas so keyboard events are captured immediately
@@ -526,6 +572,18 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           accessToken: exchange.accessToken
         };
         authRef.current = authParams;
+
+        // Set hostname + OS from exchange response (available for all transports)
+        if (exchange.hostname) {
+          setHostname(exchange.hostname);
+          // Window title set from Rust in update_session_hostname
+          invoke('update_session_hostname', { hostname: exchange.hostname }).catch((err) => {
+            console.warn('Failed to update session hostname:', err);
+          });
+        }
+        if (exchange.osType) {
+          setRemoteOs(exchange.osType);
+        }
 
         // Try WebRTC first
         const webrtcOk = await connectWebRTC(authParams);
@@ -763,6 +821,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
 	    const onOpen = () => {
 	      ch.send(JSON.stringify({ type: 'list_monitors' }));
+	      ch.send(JSON.stringify({ type: 'list_sessions' }));
 	    };
     const onMessage = (e: MessageEvent) => {
       try {
@@ -770,6 +829,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         switch (msg.type) {
           case 'monitors':
             if (Array.isArray(msg.monitors)) setMonitors(msg.monitors);
+            break;
+          case 'sessions':
+            if (Array.isArray(msg.sessions)) setSessions(msg.sessions);
             break;
           case 'monitor_switched':
             setActiveMonitor(msg.index ?? 0);
@@ -797,9 +859,17 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }
     ch.addEventListener('open', onOpen);
     ch.addEventListener('message', onMessage);
+
+    const sessionPollInterval = setInterval(() => {
+      if (ch.readyState === 'open') {
+        ch.send(JSON.stringify({ type: 'list_sessions' }));
+      }
+    }, 30_000);
+
 	    return () => {
 	      ch.removeEventListener('open', onOpen);
 	      ch.removeEventListener('message', onMessage);
+	      clearInterval(sessionPollInterval);
 	    };
 	  }, [transport]);
 
@@ -1030,9 +1100,17 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const handlePasteAsKeystrokes = useCallback(async () => {
     let text: string;
     try {
-      text = await navigator.clipboard.readText();
-    } catch {
-      return;
+      // Use Tauri native clipboard to bypass macOS "Allow Paste" prompt
+      const { readText } = await import('@tauri-apps/plugin-clipboard-manager');
+      text = await readText();
+    } catch (tauriErr) {
+      console.warn('Tauri clipboard read failed, trying browser API:', tauriErr);
+      try {
+        text = await navigator.clipboard.readText();
+      } catch (browserErr) {
+        console.warn('Browser clipboard read also failed:', browserErr);
+        return;
+      }
     }
     if (!text) return;
 
@@ -1075,7 +1153,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (ne.code === 'KeyV' && !ne.shiftKey && (ne.ctrlKey || ne.metaKey)) {
       const dc = clipboardDCRef.current;
       if (dc && dc.readyState === 'open') {
-        navigator.clipboard.readText().then((text) => {
+        import('@tauri-apps/plugin-clipboard-manager').then(({ readText }) =>
+          readText()
+        ).catch(() =>
+          navigator.clipboard.readText()
+        ).then((text) => {
           if (text && text !== lastClipboardHashRef.current) {
             lastClipboardHashRef.current = text;
             dc.send(JSON.stringify({ type: 'text', text }));
@@ -1159,6 +1241,65 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       ch.send(JSON.stringify({ type: 'switch_monitor', value: index }));
     }
   }, []);
+
+  const handleSwitchSession = useCallback(async (sessionId: number) => {
+    if (switchingSessionRef.current) return;
+    const auth = authRef.current;
+    if (!auth) return;
+    const target = sessions.find(s => s.sessionId === sessionId);
+    const label = target?.username || `Session ${sessionId}`;
+
+    switchingSessionRef.current = true;
+    setSwitchingSession(label);
+    stopReconnect();
+
+    // Tear down current WebRTC session
+    releaseAllKeys();
+
+    if (webrtcMouseMoveRafRef.current !== null) {
+      cancelAnimationFrame(webrtcMouseMoveRafRef.current);
+      webrtcMouseMoveRafRef.current = null;
+    }
+    webrtcMouseMovePendingRef.current = null;
+
+    const prevSession = webrtcRef.current;
+    webrtcRef.current = null;
+    const audioEl = (prevSession as any)?._audioEl as HTMLAudioElement | undefined;
+    if (audioEl) {
+      audioEl.pause();
+      audioEl.srcObject = null;
+    }
+    prevSession?.close();
+
+    // Reset display state
+    setMonitors([]);
+    setActiveMonitor(0);
+    setTransportState(null);
+
+    try {
+      const ok = await connectWebRTC(auth, sessionId);
+      if (!ok) throw new Error('WebRTC connection failed');
+      setActiveSessionId(sessionId);
+    } catch (err) {
+      // Try to reconnect to the previous session so the viewer isn't dead
+      const prevId = activeSessionId ?? undefined;
+      try {
+        const recovered = await connectWebRTC(auth, prevId);
+        if (recovered) {
+          setErrorMessage(`Failed to switch to ${label}. Restored previous session.`);
+        } else {
+          setErrorMessage(`Failed to switch to ${label} and could not restore previous session`);
+          startReconnectRef.current();
+        }
+      } catch {
+        setErrorMessage(`Failed to switch to ${label} and could not restore previous session`);
+        startReconnectRef.current();
+      }
+    } finally {
+      switchingSessionRef.current = false;
+      setSwitchingSession(null);
+    }
+  }, [sessions, activeSessionId, connectWebRTC, releaseAllKeys, setTransportState, stopReconnect]);
 
   const handleToggleAudio = useCallback(() => {
     const newEnabled = !audioEnabled;
@@ -1260,9 +1401,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         remapCmdCtrl={remapCmdCtrl}
         monitors={monitors}
         activeMonitor={activeMonitor}
+        sessions={sessions}
+        activeSessionId={activeSessionId}
+        onSwitchSession={handleSwitchSession}
         audioEnabled={audioEnabled}
         hasAudioTrack={hasAudioTrack}
         showRemoteCursor={showRemoteCursor}
+        remoteOs={remoteOs}
         onRemapCmdCtrlChange={setRemapCmdCtrl}
         onShowRemoteCursorChange={setShowRemoteCursor}
         onConfigChange={handleConfigChange}
@@ -1274,7 +1419,6 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         onLockWorkstation={handleLockWorkstation}
         onPasteAsKeystrokes={handlePasteAsKeystrokes}
         onCancelPaste={handleCancelPaste}
-        onDisconnect={handleDisconnect}
         reconnectSecondsLeft={reconnectSecondsLeft}
       />
       <div className="flex-1 overflow-hidden flex items-center justify-center bg-black relative">
@@ -1285,9 +1429,20 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           autoPlay
           playsInline
           muted
-          className={`max-w-full max-h-full object-contain outline-none ${cursorStreamActive && showRemoteCursor ? 'cursor-none' : 'cursor-default'} ${transport !== 'webrtc' ? 'hidden' : ''}`}
+          className={`max-w-full max-h-full object-contain outline-none ${transport !== 'webrtc' ? 'hidden' : ''}`}
+          style={{ cursor: cursorStreamActive && showRemoteCursor ? 'none' : 'default' }}
           {...interactionProps}
         />
+
+        {/* Session switching overlay */}
+        {switchingSession && (
+          <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-20">
+            <div className="text-center">
+              <div className="animate-spin w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full mx-auto mb-3" />
+              <p className="text-white text-sm">Switching to {switchingSession}...</p>
+            </div>
+          </div>
+        )}
 
         {/* Remote cursor overlay — streamed at 120Hz independent of video frame rate */}
         <div

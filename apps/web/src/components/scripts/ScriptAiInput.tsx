@@ -59,7 +59,7 @@ export default function ScriptAiInput() {
             type="button"
             onClick={handleSend}
             disabled={!input.trim() || !sessionId}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             title="Send message"
           >
             <Send className="h-4 w-4" />

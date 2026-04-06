@@ -465,11 +465,11 @@ export default function SecurityIntegration() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b text-left text-muted-foreground">
-                  <th className="pb-2 pr-4 font-medium">S1 Site</th>
-                  <th className="pb-2 pr-4 font-medium">Agents</th>
-                  <th className="pb-2 pr-4 font-medium">Breeze Organization</th>
-                  <th className="pb-2 font-medium">Status</th>
+                <tr className="border-b text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  <th className="pb-2 pr-4">S1 Site</th>
+                  <th className="pb-2 pr-4">Agents</th>
+                  <th className="pb-2 pr-4">Breeze Organization</th>
+                  <th className="pb-2">Status</th>
                 </tr>
               </thead>
               <tbody>

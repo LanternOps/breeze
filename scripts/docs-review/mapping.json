@@ -177,6 +177,88 @@
       "docs": [
         "reference/api-keys.mdx"
       ]
+    },
+    {
+      "pattern": "agent/internal/backup/**",
+      "docs": [
+        "backup/overview.mdx",
+        "security/backup.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/incidents.ts",
+      "docs": [
+        "features/incident-response.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/incidentActions.ts",
+      "docs": [
+        "features/incident-response.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiToolsIncident.ts",
+      "docs": [
+        "features/ai.mdx",
+        "features/incident-response.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiToolsBackup.ts",
+      "docs": [
+        "features/ai.mdx",
+        "backup/overview.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiToolsPlaybook.ts",
+      "docs": [
+        "features/ai.mdx",
+        "features/playbooks.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/staleCommandReaper.ts",
+      "docs": [
+        "agents/commands.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/commandTimeouts.ts",
+      "docs": [
+        "agents/commands.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/backup*.ts",
+      "docs": [
+        "backup/overview.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/configurationPolicies.ts",
+      "docs": [
+        "features/configuration-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/c2c/**",
+      "docs": [
+        "backup/overview.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/c2cM365.ts",
+      "docs": [
+        "backup/overview.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/dr*.ts",
+      "docs": [
+        "backup/overview.mdx"
+      ]
     }
   ]
 }

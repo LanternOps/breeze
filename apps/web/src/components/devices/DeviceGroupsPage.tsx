@@ -723,7 +723,7 @@ export default function DeviceGroupsPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Device Groups</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Device Groups</h1>
           <p className="text-muted-foreground">
             Organize devices into static and dynamic groups for targeted actions.
           </p>

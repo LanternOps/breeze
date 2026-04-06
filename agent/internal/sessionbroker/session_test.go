@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
@@ -168,6 +169,28 @@ func TestSendCommandSessionClosed(t *testing.T) {
 	}
 }
 
+func TestCloseDoesNotClosePendingResponseChannel(t *testing.T) {
+	session, clientIPC := createTestSession(t)
+	defer clientIPC.Close()
+
+	ch := make(chan *ipc.Envelope, 1)
+	session.mu.Lock()
+	session.pending["cmd-close"] = pendingResponse{ch: ch}
+	session.mu.Unlock()
+
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("send on pending response channel panicked after Close: %v", r)
+		}
+	}()
+
+	ch <- &ipc.Envelope{ID: "cmd-close"}
+}
+
 func TestHandleResponseUnknownID(t *testing.T) {
 	session, clientIPC := createTestSession(t)
 	defer session.Close()
@@ -181,6 +204,156 @@ func TestHandleResponseUnknownID(t *testing.T) {
 	matched := session.HandleResponse(env)
 	if matched {
 		t.Error("HandleResponse should return false for unknown command ID")
+	}
+}
+
+func TestHandleResponseRejectsMismatchedType(t *testing.T) {
+	session, clientIPC := createTestSession(t)
+	defer session.Close()
+	defer clientIPC.Close()
+
+	ch := make(chan *ipc.Envelope, 1)
+	session.mu.Lock()
+	session.pending["cmd-1"] = pendingResponse{
+		ch:           ch,
+		expectedType: ipc.TypeCommandResult,
+	}
+	session.mu.Unlock()
+
+	matched := session.HandleResponse(&ipc.Envelope{
+		ID:   "cmd-1",
+		Type: ipc.TypeNotifyResult,
+	})
+	if !matched {
+		t.Fatal("expected pending command ID to be recognized")
+	}
+
+	select {
+	case <-ch:
+		t.Fatal("expected mismatched response type not to be delivered")
+	default:
+	}
+}
+
+func TestHandleResponseRejectsMismatchedCommandResultPayloadID(t *testing.T) {
+	session, clientIPC := createTestSession(t)
+	defer session.Close()
+	defer clientIPC.Close()
+
+	ch := make(chan *ipc.Envelope, 1)
+	session.mu.Lock()
+	session.pending["cmd-1"] = pendingResponse{
+		ch:           ch,
+		expectedType: ipc.TypeCommandResult,
+		validate: responseValidator(ipc.TypeCommand, ipc.IPCCommand{
+			CommandID: "cmd-expected",
+			Type:      "exec",
+		}),
+	}
+	session.mu.Unlock()
+
+	payload, err := json.Marshal(ipc.IPCCommandResult{
+		CommandID: "cmd-other",
+		Status:    "completed",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	matched := session.HandleResponse(&ipc.Envelope{
+		ID:      "cmd-1",
+		Type:    ipc.TypeCommandResult,
+		Payload: payload,
+	})
+	if !matched {
+		t.Fatal("expected pending command ID to be recognized")
+	}
+
+	select {
+	case <-ch:
+		t.Fatal("expected mismatched command result payload not to be delivered")
+	default:
+	}
+}
+
+func TestHandleResponseRejectsMismatchedDesktopStartSessionID(t *testing.T) {
+	session, clientIPC := createTestSession(t)
+	defer session.Close()
+	defer clientIPC.Close()
+
+	ch := make(chan *ipc.Envelope, 1)
+	session.mu.Lock()
+	session.pending["desk-1"] = pendingResponse{
+		ch:           ch,
+		expectedType: ipc.TypeDesktopStart,
+		validate: responseValidator(ipc.TypeDesktopStart, ipc.DesktopStartRequest{
+			SessionID: "session-expected",
+		}),
+	}
+	session.mu.Unlock()
+
+	payload, err := json.Marshal(ipc.DesktopStartResponse{
+		SessionID: "session-other",
+		Answer:    "fake-answer",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	matched := session.HandleResponse(&ipc.Envelope{
+		ID:      "desk-1",
+		Type:    ipc.TypeDesktopStart,
+		Payload: payload,
+	})
+	if !matched {
+		t.Fatal("expected pending command ID to be recognized")
+	}
+
+	select {
+	case <-ch:
+		t.Fatal("expected mismatched desktop response payload not to be delivered")
+	default:
+	}
+}
+
+func TestHandleResponseRejectsMismatchedBackupCommandResultPayloadID(t *testing.T) {
+	session, clientIPC := createTestSession(t)
+	defer session.Close()
+	defer clientIPC.Close()
+
+	ch := make(chan *ipc.Envelope, 1)
+	session.mu.Lock()
+	session.pending["backup-1"] = pendingResponse{
+		ch:           ch,
+		expectedType: backupipc.TypeBackupResult,
+		validate: responseValidator(backupipc.TypeBackupCommand, backupipc.BackupCommandRequest{
+			CommandID:   "backup-expected",
+			CommandType: "run_backup",
+		}),
+	}
+	session.mu.Unlock()
+
+	payload, err := json.Marshal(backupipc.BackupCommandResult{
+		CommandID: "backup-other",
+		Success:   true,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	matched := session.HandleResponse(&ipc.Envelope{
+		ID:      "backup-1",
+		Type:    backupipc.TypeBackupResult,
+		Payload: payload,
+	})
+	if !matched {
+		t.Fatal("expected pending command ID to be recognized")
+	}
+
+	select {
+	case <-ch:
+		t.Fatal("expected mismatched backup response payload not to be delivered")
+	default:
 	}
 }
 
@@ -232,4 +405,60 @@ func TestInfo(t *testing.T) {
 	if info.SessionID != "test-session-1" {
 		t.Errorf("expected sessionId test-session-1, got %s", info.SessionID)
 	}
+}
+
+func TestTCCStatusPrefersDesktopHelper(t *testing.T) {
+	broker := &Broker{
+		sessions: make(map[string]*Session),
+	}
+
+	userHelper := &Session{
+		SessionID:     "helper-user",
+		AllowedScopes: []string{"desktop"},
+		Capabilities:  &ipc.Capabilities{CanCapture: true},
+		BinaryKind:    ipc.HelperBinaryUserHelper,
+		TCCStatus: &ipc.TCCStatus{
+			ScreenRecording: true,
+			Accessibility:   true,
+		},
+	}
+	loginWindow := &Session{
+		SessionID:      "desktop-login",
+		AllowedScopes:  []string{"desktop"},
+		Capabilities:   &ipc.Capabilities{CanCapture: true},
+		BinaryKind:     ipc.HelperBinaryDesktopHelper,
+		DesktopContext: ipc.DesktopContextLoginWindow,
+		TCCStatus: &ipc.TCCStatus{
+			ScreenRecording: true,
+			Accessibility:   true,
+		},
+	}
+	userSession := &Session{
+		SessionID:      "desktop-user",
+		AllowedScopes:  []string{"desktop"},
+		Capabilities:   &ipc.Capabilities{CanCapture: true},
+		BinaryKind:     ipc.HelperBinaryDesktopHelper,
+		DesktopContext: ipc.DesktopContextUserSession,
+		TCCStatus: &ipc.TCCStatus{
+			ScreenRecording: true,
+			Accessibility:   true,
+			RemoteDesktop:   ptrBool(true),
+		},
+	}
+
+	broker.sessions[userHelper.SessionID] = userHelper
+	broker.sessions[loginWindow.SessionID] = loginWindow
+	broker.sessions[userSession.SessionID] = userSession
+
+	status := broker.TCCStatus()
+	if status == nil {
+		t.Fatal("expected TCC status")
+	}
+	if status.RemoteDesktop == nil || !*status.RemoteDesktop {
+		t.Fatalf("expected preferred desktop helper TCC status, got %+v", status)
+	}
+}
+
+func ptrBool(v bool) *bool {
+	return &v
 }

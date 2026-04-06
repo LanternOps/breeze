@@ -1,16 +1,104 @@
 ---
 title: Scripts
 description: Create, manage, and execute scripts across your fleet in PowerShell, Bash, Python, and Cmd.
-sidebar:
-  order: 4
-  label: Scripts
 ---
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Image } from 'astro:assets';
+import scriptsScreenshot from '../../../assets/screenshots/scripts.png';
+
+<Image src={scriptsScreenshot} alt="Breeze Script Library showing scripts with language, category, OS, and status" />
 
 Scripts let you define reusable code that runs on managed devices across your fleet. Each script has a language, a set of compatible operating systems, optional parameters, and a configurable execution context. Scripts can be triggered manually, on a schedule via [Automations](/features/automations/), in response to alerts, or through configuration policies.
 
-The Breeze agent's executor writes the script to a temporary file on the target device, runs it through the appropriate shell, captures stdout and stderr (up to 1 MB each), and reports the result back to the API over WebSocket. Scripts are cleaned up from disk immediately after execution.
+The Breeze agent writes the script to a temporary file on the target device, runs it through the appropriate shell, captures stdout and stderr (up to 1 MB each), and reports the result back. Scripts are cleaned up from disk immediately after execution.
+
+---
+
+## Script Library
+
+The **Scripts** page in the sidebar opens the Script Library, where you manage all your organization's scripts and import shared system scripts.
+
+### Browsing and searching
+
+The Script Library displays your scripts in a searchable list with columns for name, language, category, target OS, and last run time. Use the search bar and filters to find scripts by name, language, category, or OS type.
+
+### Importing from the system library
+
+Breeze provides a shared system library of pre-built scripts available to all organizations. To import one:
+
+<Steps>
+
+1. **Open the library.** On the Scripts page, click **Import from Library** in the top-right corner.
+
+2. **Browse and search.** The System Script Library modal shows all available scripts with their name, description, language, category, and compatible OS types. Use the search bar and category filter to find what you need.
+
+3. **Import a script.** Click the **Import** button next to a script. It is copied into your organization's library where you can customize it. Already-imported scripts show an "Imported" badge.
+
+4. **Close and customize.** Click **Done** to close the library. The imported script now appears in your Scripts list and can be edited to fit your environment.
+
+</Steps>
+
+### Creating a script
+
+<Steps>
+
+1. **Start a new script.** On the Scripts page, click **New Script**. The script editor opens.
+
+2. **Enter script details.** Fill in the script name, select a category, choose the language (PowerShell, Bash, Python, or CMD), and toggle the target operating systems (Windows, macOS, Linux).
+
+3. **Write the script.** Use the built-in Monaco code editor with syntax highlighting. The **AI Assistant** button (or keyboard shortcut) opens a side panel where the Breeze AI can help generate, explain, or refine your script.
+
+4. **Add parameters (optional).** Expand the **Parameters** section and click **Add parameter** to define runtime variables. Each parameter has a name, type (string, number, boolean, or select), default value, and required flag. Reference parameters in your script as `{{paramName}}`.
+
+5. **Configure execution settings (optional).** Expand **Execution Settings** to set a custom timeout (default 300 seconds) and the run-as context (System, Logged-in User, or Elevated).
+
+6. **Save.** Click **Create Script**. The script is now available for execution. You can use keyboard shortcut Cmd+S (or Ctrl+S) to save quickly.
+
+</Steps>
+
+<Aside type="caution">
+  Creating and updating scripts requires MFA verification. The save action returns an error if the authenticated session has not completed MFA.
+</Aside>
+
+### Version history and rollback
+
+When you edit a script's content, the version number increments automatically. From the script editor, click **Execution History** to navigate to the script's execution page, or view the **Version History** panel to compare changes between versions using a side-by-side diff view. You can roll back to a previous version by clicking the **Rollback** button next to any earlier version.
+
+---
+
+## Running a Script
+
+<Steps>
+
+1. **Select a script.** On the Scripts page, click the play button next to the script you want to run. The execution modal opens.
+
+2. **Review script info.** The modal shows the script's language, category, target OS, and description.
+
+3. **Choose the run-as context.** Select **System** (runs as the agent service account) or **Logged-in user** (runs in the active user session).
+
+4. **Fill in parameters.** If the script defines parameters, fill in the values. Required parameters are marked with an asterisk. Boolean parameters show as checkboxes; select parameters show as dropdowns.
+
+5. **Select target devices.** The device list shows only devices with a compatible OS. Filter by hostname search, site, or status (online/offline/maintenance). Click checkboxes to select individual devices, or click **Select all online** to target all compatible online devices. An **Advanced Filters** button opens the full filter builder for complex targeting.
+
+6. **Confirm and execute.** Click **Execute**. A confirmation banner appears showing the script name, device count, and run-as context. Click **Confirm Execute** to dispatch the script. A progress indicator shows submission status across all targeted devices.
+
+</Steps>
+
+<Aside type="tip">
+  Devices in an active maintenance window with script suppression enabled are automatically excluded from execution.
+</Aside>
+
+---
+
+## Viewing Execution History
+
+Navigate to **Scripts** and click a script name to open the editor, then click **Execution History** in the top-right corner. The Execution History page shows all past runs for the script.
+
+- **Search and filter.** Filter by status (Pending, Running, Completed, Failed, Timeout), time range (Last Hour, Last 24 Hours, Last 7 Days, Last 30 Days), or search by script name or device hostname.
+- **Sort columns.** Click column headers (Script, Device, Status, Started, Duration, Exit Code) to sort ascending or descending.
+- **View details.** Click any execution row to open the detail view with full stdout, stderr, exit code, error messages, and timing information.
+- **Paginate.** Results are paginated with 10 per page by default.
 
 ---
 
@@ -60,9 +148,9 @@ The Breeze agent's executor writes the script to a temporary file on the target 
 
 ---
 
-## Creating Scripts
+## Creating Scripts via API
 
-Scripts belong to an organization and are scoped by the multi-tenant hierarchy. System-scope users can create **system scripts** that are available to all organizations as a shared library.
+Scripts can also be created and managed programmatically. Scripts belong to an organization and are scoped by the multi-tenant hierarchy.
 
 ```bash
 POST /scripts
@@ -91,39 +179,13 @@ Authorization: Bearer <token>
 
 The response includes the full script object with an auto-generated `id` and `version: 1`.
 
-<Aside type="caution">
-  Creating and updating scripts requires MFA verification. The API returns `403` if the authenticated session has not completed MFA.
-</Aside>
-
-### Version tracking
-
-When you update a script's `content` field, the `version` number increments automatically. Metadata-only changes (name, description, category, timeout, etc.) do not increment the version. Previous versions are stored in the `script_versions` table for audit and rollback.
-
-### System script library
-
-System scripts are shared across all organizations. Organization-scope users can browse the system library and import scripts into their own org:
-
-<Steps>
-
-1. **Browse the library** -- `GET /scripts/system-library` returns all system scripts with their name, description, category, language, and compatible OS types.
-
-2. **Import a script** -- `POST /scripts/import/:id` clones the system script into your organization. The cloned copy is independent and can be modified without affecting the original.
-
-3. **Customize** -- Edit the imported script to fit your environment using `PUT /scripts/:id`.
-
-</Steps>
-
-<Aside>
-  Importing a system script with the same name as an existing org script returns `409 Conflict`. Rename the existing script first or choose a different system script.
-</Aside>
-
 ---
 
-## Executing Scripts
+## Executing Scripts via API
 
 ### Single device execution
 
-To execute a script on one device, pass a single-element `deviceIds` array:
+To execute a script on one device via the API, pass a single-element `deviceIds` array:
 
 ```bash
 POST /scripts/:scriptId/execute
@@ -238,7 +300,7 @@ echo "Threshold is $BREEZE_PARAM_THRESHOLD"
 
 ---
 
-## Execution History
+## Execution History API
 
 ### Listing executions for a script
 
@@ -299,6 +361,47 @@ The agent's security validator operates at the **Strict** level by default, scan
 ### Output sanitization
 
 Script output is scanned for sensitive information before being stored. The agent redacts API keys, tokens, AWS credentials, private keys, connection strings, bearer tokens, and JWTs from stdout and stderr.
+
+---
+
+## Script Approval (AI Assistant)
+
+When the Breeze AI assistant needs to run a script on a device, it goes through a tiered approval system. Script execution via the AI is classified as a **Tier 3** operation, meaning it always requires explicit user approval before it can proceed.
+
+### How approval works
+
+<Steps>
+
+1. **AI proposes a script action.** During an AI chat session, the assistant may determine that running a script is necessary (for example, executing a disk cleanup or restarting a service). Rather than running it immediately, the action is flagged for approval.
+
+2. **Approval request appears.** A pending approval notification appears in the AI Risk Dashboard under the **Tier 3 Approval History** feed. The request shows the tool name, a description of the action, the target device, and the input parameters.
+
+3. **Review and decide.** An administrator reviews the proposed action and either:
+   - **Approves** -- the AI proceeds with execution. The action is logged to the audit trail.
+   - **Rejects** -- the AI does not execute the action. The rejection is logged with the reason.
+
+4. **Execution proceeds (if approved).** The approved script runs on the target device and the AI monitors the result, reporting back in the chat conversation.
+
+</Steps>
+
+### Which actions require approval
+
+The following script-related AI actions require Tier 3 approval:
+- **Run Script** -- executing a script on up to 10 devices
+- **Execute Command** -- running a system command on a device
+- **Execute Playbook** -- running a self-healing playbook
+- **Disk Cleanup (execute)** -- performing actual file deletion
+- **Create Automation** -- creating a new automation rule
+
+Read-only script operations (searching the library, viewing script details, checking execution history) run automatically at Tier 1 without approval.
+
+### MFA enforcement
+
+All script write and execute operations require MFA verification, whether triggered by a user directly or approved through the AI workflow. If the current session has not completed MFA, the API returns a `403` error. Complete MFA verification in your account settings before approving or executing scripts.
+
+### Viewing approval history
+
+Navigate to the **AI Risk** section in the dashboard to see the full approval history. The **Tier 3 Approval History** feed shows all pending, approved, and rejected actions with timestamps, tool names, and who initiated the request. Use the status filter buttons (All, Pending, Approved, Rejected) to narrow the view.
 
 ---
 

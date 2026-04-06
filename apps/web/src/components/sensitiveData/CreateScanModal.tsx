@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { X } from 'lucide-react';
+import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { DETECTION_CLASSES } from './constants';
 
@@ -81,8 +82,7 @@ export default function CreateScanModal({ onClose, onCreated }: CreateScanModalP
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
+    <Dialog open={true} onClose={onClose} title="Create Scan" className="p-6">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">Create Scan</h2>
           <button type="button" onClick={onClose} className="rounded-md p-1 hover:bg-muted">
@@ -158,7 +158,6 @@ export default function CreateScanModal({ onClose, onCreated }: CreateScanModalP
             </button>
           </div>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

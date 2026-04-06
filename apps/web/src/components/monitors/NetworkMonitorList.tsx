@@ -20,6 +20,8 @@ import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import CreateMonitorForm from './CreateMonitorForm';
 import MonitorDetailModal from './MonitorDetailModal';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { showToast } from '../shared/Toast';
 
 type NetworkMonitor = {
   id: string;
@@ -98,6 +100,7 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
   const [filterType, setFilterType] = useState<string>('');
   const [filterStatus, setFilterStatus] = useState<string>('');
   const [filterAssetId, setFilterAssetId] = useState<string | null>(assetId ?? null);
+  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
 
   useEffect(() => {
     setFilterAssetId(assetId ?? null);
@@ -144,13 +147,20 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
     }
   };
 
-  const handleDelete = async (monitorId: string) => {
-    if (!confirm('Delete this monitor? This will also remove all results and alert rules.')) return;
+  const handleDelete = (monitorId: string) => {
+    setDeleteTargetId(monitorId);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTargetId) return;
+    const monitorId = deleteTargetId;
+    setDeleteTargetId(null);
     setActionLoading(monitorId);
     try {
       const res = await fetchWithAuth(`/monitors/${monitorId}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Failed to delete monitor');
       await fetchMonitors();
+      showToast({ message: 'Monitor deleted', type: 'success' });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -369,6 +379,16 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
           onUpdated={fetchMonitors}
         />
       )}
+      <ConfirmDialog
+        open={deleteTargetId !== null}
+        onClose={() => setDeleteTargetId(null)}
+        onConfirm={handleConfirmDelete}
+        title="Delete Network Monitor"
+        message={`Are you sure you want to delete this monitor? This will also remove all results and alert rules. This action cannot be undone.`}
+        confirmLabel="Delete Monitor"
+        variant="destructive"
+        isLoading={actionLoading !== null}
+      />
     </div>
   );
 }

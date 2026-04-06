@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { desc, eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { deviceDisks, deviceFilesystemCleanupRuns } from '../../db/schema';
-import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
+import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { CommandTypes, executeCommand, queueCommandForExecution } from '../../services/commandQueue';
 import {
@@ -137,6 +137,7 @@ filesystemRoutes.post(
   '/:id/filesystem/scan',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('param', deviceIdParamSchema),
   zValidator('json', scanFilesystemBodySchema),
   async (c) => {
@@ -250,6 +251,7 @@ filesystemRoutes.post(
   '/:id/filesystem/cleanup-preview',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('param', deviceIdParamSchema),
   zValidator('json', cleanupPreviewBodySchema),
   async (c) => {
@@ -310,6 +312,7 @@ filesystemRoutes.post(
   '/:id/filesystem/cleanup-execute',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('param', deviceIdParamSchema),
   zValidator('json', cleanupExecuteBodySchema),
   async (c) => {

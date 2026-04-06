@@ -2,11 +2,12 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, like, desc, sql, gte, lte, or } from 'drizzle-orm';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { db } from '../db';
 import { snmpTemplates, snmpDevices, snmpMetrics, snmpAlertThresholds } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
 import { buildTopInterfaces } from '../services/snmpDashboardTopInterfaces';
+import { PERMISSIONS } from '../services/permissions';
 
 // --- Helpers ---
 
@@ -164,6 +165,8 @@ function isNumericOid(value: string): boolean {
 // --- Router ---
 
 const snmpRoutes = new Hono();
+const requireSnmpRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
+const requireSnmpWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
 snmpRoutes.use('*', authMiddleware);
 
 // ==================== DEVICE ROUTES ====================
@@ -173,19 +176,20 @@ const snmpDevicesDeprecationResponse = {
   message: 'Manage SNMP monitoring via /monitoring/assets and /monitoring/assets/:id/snmp. On-demand poll and test operations are not yet available in the new API.'
 } as const;
 
-snmpRoutes.get('/devices', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpDevicesDeprecationResponse, 410));
-snmpRoutes.post('/devices', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpDevicesDeprecationResponse, 410));
-snmpRoutes.get('/devices/:id', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpDevicesDeprecationResponse, 410));
-snmpRoutes.patch('/devices/:id', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpDevicesDeprecationResponse, 410));
-snmpRoutes.delete('/devices/:id', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpDevicesDeprecationResponse, 410));
-snmpRoutes.post('/devices/:id/poll', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpDevicesDeprecationResponse, 410));
-snmpRoutes.post('/devices/:id/test', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpDevicesDeprecationResponse, 410));
+snmpRoutes.get('/devices', requireScope('organization', 'partner', 'system'), requireSnmpRead, (c) => c.json(snmpDevicesDeprecationResponse, 410));
+snmpRoutes.post('/devices', requireScope('organization', 'partner', 'system'), requireSnmpWrite, requireMfa(), (c) => c.json(snmpDevicesDeprecationResponse, 410));
+snmpRoutes.get('/devices/:id', requireScope('organization', 'partner', 'system'), requireSnmpRead, (c) => c.json(snmpDevicesDeprecationResponse, 410));
+snmpRoutes.patch('/devices/:id', requireScope('organization', 'partner', 'system'), requireSnmpWrite, requireMfa(), (c) => c.json(snmpDevicesDeprecationResponse, 410));
+snmpRoutes.delete('/devices/:id', requireScope('organization', 'partner', 'system'), requireSnmpWrite, requireMfa(), (c) => c.json(snmpDevicesDeprecationResponse, 410));
+snmpRoutes.post('/devices/:id/poll', requireScope('organization', 'partner', 'system'), requireSnmpWrite, requireMfa(), (c) => c.json(snmpDevicesDeprecationResponse, 410));
+snmpRoutes.post('/devices/:id/test', requireScope('organization', 'partner', 'system'), requireSnmpWrite, requireMfa(), (c) => c.json(snmpDevicesDeprecationResponse, 410));
 
 // ==================== TEMPLATE ROUTES ====================
 
 snmpRoutes.get(
   '/templates',
   requireScope('organization', 'partner', 'system'),
+  requireSnmpRead,
   zValidator('query', listTemplatesSchema),
   async (c) => {
     const query = c.req.valid('query');
@@ -227,6 +231,8 @@ snmpRoutes.get(
 snmpRoutes.post(
   '/templates',
   requireScope('organization', 'partner', 'system'),
+  requireSnmpWrite,
+  requireMfa(),
   zValidator('json', createTemplateSchema),
   async (c) => {
     const payload = c.req.valid('json');
@@ -272,6 +278,7 @@ snmpRoutes.post(
 snmpRoutes.get(
   '/templates/:id',
   requireScope('organization', 'partner', 'system'),
+  requireSnmpRead,
   async (c) => {
     const templateId = c.req.param('id')!;
     const [template] = await db.select().from(snmpTemplates)
@@ -296,6 +303,8 @@ snmpRoutes.get(
 snmpRoutes.patch(
   '/templates/:id',
   requireScope('organization', 'partner', 'system'),
+  requireSnmpWrite,
+  requireMfa(),
   zValidator('json', updateTemplateSchema),
   async (c) => {
     const templateId = c.req.param('id')!;
@@ -350,6 +359,8 @@ snmpRoutes.patch(
 snmpRoutes.delete(
   '/templates/:id',
   requireScope('organization', 'partner', 'system'),
+  requireSnmpWrite,
+  requireMfa(),
   async (c) => {
     const templateId = c.req.param('id')!;
 
@@ -379,6 +390,7 @@ snmpRoutes.delete(
 snmpRoutes.get(
   '/oids/browse',
   requireScope('organization', 'partner', 'system'),
+  requireSnmpRead,
   zValidator('query', browseOidsSchema),
   async (c) => {
     const { query = '', limit = 25 } = c.req.valid('query');
@@ -446,6 +458,7 @@ snmpRoutes.get(
 snmpRoutes.post(
   '/oids/validate',
   requireScope('organization', 'partner', 'system'),
+  requireSnmpRead,
   zValidator('json', validateOidsSchema),
   async (c) => {
     const payload = c.req.valid('json');
@@ -508,9 +521,9 @@ const snmpMetricsDeprecationResponse = {
   message: 'The /monitoring/assets/:id endpoint returns the 20 most recent metrics. Full metric history and per-OID queries are not yet available in the new API.'
 } as const;
 
-snmpRoutes.get('/metrics/:deviceId', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpMetricsDeprecationResponse, 410));
-snmpRoutes.get('/metrics/:deviceId/history', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpMetricsDeprecationResponse, 410));
-snmpRoutes.get('/metrics/:deviceId/:oid', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpMetricsDeprecationResponse, 410));
+snmpRoutes.get('/metrics/:deviceId', requireScope('organization', 'partner', 'system'), requireSnmpRead, (c) => c.json(snmpMetricsDeprecationResponse, 410));
+snmpRoutes.get('/metrics/:deviceId/history', requireScope('organization', 'partner', 'system'), requireSnmpRead, (c) => c.json(snmpMetricsDeprecationResponse, 410));
+snmpRoutes.get('/metrics/:deviceId/:oid', requireScope('organization', 'partner', 'system'), requireSnmpRead, (c) => c.json(snmpMetricsDeprecationResponse, 410));
 
 // ==================== THRESHOLD ROUTES ====================
 
@@ -519,16 +532,17 @@ const snmpThresholdDeprecationResponse = {
   message: 'Thresholds have been deprecated. Manage SNMP polling via /monitoring/assets/:id/snmp. Use alert rules on network monitors via /monitors/alerts as an alternative.'
 } as const;
 
-snmpRoutes.get('/thresholds/:deviceId', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpThresholdDeprecationResponse, 410));
-snmpRoutes.post('/thresholds', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpThresholdDeprecationResponse, 410));
-snmpRoutes.patch('/thresholds/:id', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpThresholdDeprecationResponse, 410));
-snmpRoutes.delete('/thresholds/:id', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpThresholdDeprecationResponse, 410));
+snmpRoutes.get('/thresholds/:deviceId', requireScope('organization', 'partner', 'system'), requireSnmpRead, (c) => c.json(snmpThresholdDeprecationResponse, 410));
+snmpRoutes.post('/thresholds', requireScope('organization', 'partner', 'system'), requireSnmpWrite, requireMfa(), (c) => c.json(snmpThresholdDeprecationResponse, 410));
+snmpRoutes.patch('/thresholds/:id', requireScope('organization', 'partner', 'system'), requireSnmpWrite, requireMfa(), (c) => c.json(snmpThresholdDeprecationResponse, 410));
+snmpRoutes.delete('/thresholds/:id', requireScope('organization', 'partner', 'system'), requireSnmpWrite, requireMfa(), (c) => c.json(snmpThresholdDeprecationResponse, 410));
 
 // ==================== DASHBOARD ROUTE ====================
 
 snmpRoutes.get(
   '/dashboard',
   requireScope('organization', 'partner', 'system'),
+  requireSnmpRead,
   zValidator('query', dashboardQuerySchema),
   async (c) => {
     const auth = c.get('auth');

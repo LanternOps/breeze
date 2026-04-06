@@ -7,19 +7,23 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
 )
 
 const (
-	installTimeout    = 30 * time.Minute
-	downloadTimeout   = 15 * time.Minute
+	installTimeout     = 30 * time.Minute
+	downloadTimeout    = 15 * time.Minute
 	maxInstallFileSize = 500 * 1024 * 1024 // 500 MB
 )
+
+var checksumHexPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
 
 // InstallSoftware downloads a package from a presigned URL, verifies its checksum,
 // and executes it with the provided silent install arguments.
@@ -36,10 +40,13 @@ func InstallSoftware(payload map[string]any) CommandResult {
 	silentInstallArgs := GetPayloadString(payload, "silentInstallArgs", "")
 	softwareName := GetPayloadString(payload, "softwareName", "")
 	version := GetPayloadString(payload, "version", "")
+	fileName, fileType, checksum, silentInstallArgs, softwareName, version, err := validateInstallInputs(fileName, fileType, checksum, silentInstallArgs, softwareName, version)
+	if err != nil {
+		return NewErrorResult(err, time.Since(startTime).Milliseconds())
+	}
 
-	// Validate URL scheme
-	if !strings.HasPrefix(downloadUrl, "https://") && !strings.HasPrefix(downloadUrl, "http://") {
-		return NewErrorResult(fmt.Errorf("downloadUrl must use HTTPS or HTTP scheme"), time.Since(startTime).Milliseconds())
+	if err := validateDownloadURL(downloadUrl); err != nil {
+		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
 
 	// Download to temp directory
@@ -71,14 +78,20 @@ func InstallSoftware(payload map[string]any) CommandResult {
 
 	// Execute installer
 	exitCode, output, err := executeInstaller(localPath, fileType, silentInstallArgs)
+	output, outputTruncated := sanitizeInstallerOutput(output)
 	if err != nil {
-		return CommandResult{
+		errMsg := err.Error()
+		if outputTruncated {
+			errMsg += " (installer output truncated)"
+		}
+		result := CommandResult{
 			Status:     "failed",
 			ExitCode:   exitCode,
 			Stdout:     output,
-			Error:      err.Error(),
+			Error:      errMsg,
 			DurationMs: time.Since(startTime).Milliseconds(),
 		}
+		return result
 	}
 
 	result := map[string]any{
@@ -90,7 +103,132 @@ func InstallSoftware(payload map[string]any) CommandResult {
 		"action":       "install",
 		"success":      true,
 	}
+	if outputTruncated {
+		result["outputTruncated"] = true
+	}
 	return NewSuccessResult(result, time.Since(startTime).Milliseconds())
+}
+
+func validateInstallInputs(fileName, fileType, checksum, silentInstallArgs, softwareName, version string) (string, string, string, string, string, string, error) {
+	var truncated bool
+	if fileName, truncated = truncateStringBytes(fileName, maxInstallMetadataBytes); truncated {
+		return "", "", "", "", "", "", fmt.Errorf("fileName exceeds maximum size of %d bytes", maxInstallMetadataBytes)
+	}
+	if fileType, truncated = truncateStringBytes(fileType, maxInstallMetadataBytes); truncated {
+		return "", "", "", "", "", "", fmt.Errorf("fileType exceeds maximum size of %d bytes", maxInstallMetadataBytes)
+	}
+	if !isSupportedInstallFileType(fileType) {
+		return "", "", "", "", "", "", fmt.Errorf("unsupported fileType %q", fileType)
+	}
+	if err := validateInstallFileName(fileName, fileType); err != nil {
+		return "", "", "", "", "", "", err
+	}
+	if checksum, truncated = truncateStringBytes(checksum, maxInstallMetadataBytes); truncated {
+		return "", "", "", "", "", "", fmt.Errorf("checksum exceeds maximum size of %d bytes", maxInstallMetadataBytes)
+	}
+	if checksum != "" && !checksumHexPattern.MatchString(checksum) {
+		return "", "", "", "", "", "", fmt.Errorf("checksum must be a 64-character SHA-256 hex string")
+	}
+	if softwareName, truncated = truncateStringBytes(softwareName, maxInstallMetadataBytes); truncated {
+		return "", "", "", "", "", "", fmt.Errorf("softwareName exceeds maximum size of %d bytes", maxInstallMetadataBytes)
+	}
+	if version, truncated = truncateStringBytes(version, maxInstallMetadataBytes); truncated {
+		return "", "", "", "", "", "", fmt.Errorf("version exceeds maximum size of %d bytes", maxInstallMetadataBytes)
+	}
+	if silentInstallArgs, truncated = truncateStringBytes(silentInstallArgs, maxInstallArgBytes); truncated {
+		return "", "", "", "", "", "", fmt.Errorf("silentInstallArgs exceeds maximum size of %d bytes", maxInstallArgBytes)
+	}
+	if err := validateSilentInstallArgs(silentInstallArgs); err != nil {
+		return "", "", "", "", "", "", err
+	}
+	if strings.EqualFold(strings.TrimSpace(fileType), "msi") {
+		if err := validateMSIInstallArgs(silentInstallArgs); err != nil {
+			return "", "", "", "", "", "", err
+		}
+	}
+
+	return fileName, fileType, checksum, silentInstallArgs, softwareName, version, nil
+}
+
+func isSupportedInstallFileType(fileType string) bool {
+	switch strings.ToLower(strings.TrimSpace(fileType)) {
+	case "exe", "msi", "deb", "pkg", "dmg":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateInstallFileName(fileName, fileType string) error {
+	fileName = strings.TrimSpace(fileName)
+	if fileName == "" {
+		return fmt.Errorf("fileName is required")
+	}
+	if strings.Contains(fileName, "\x00") {
+		return fmt.Errorf("fileName contains invalid null byte")
+	}
+
+	ext := strings.ToLower(filepath.Ext(fileName))
+	expected := "." + strings.ToLower(strings.TrimSpace(fileType))
+	if ext != expected {
+		return fmt.Errorf("fileName extension %q does not match fileType %q", ext, fileType)
+	}
+	return nil
+}
+
+func validateSilentInstallArgs(args string) error {
+	if strings.ContainsAny(args, "\x00\r\n") {
+		return fmt.Errorf("silentInstallArgs contains invalid control characters")
+	}
+	if strings.Count(args, "\"")%2 != 0 {
+		return fmt.Errorf("silentInstallArgs contains unmatched quotes")
+	}
+	return nil
+}
+
+func validateMSIInstallArgs(args string) error {
+	parts := splitCommandLine(args)
+	if len(parts) > 0 && strings.EqualFold(filepath.Base(parts[0]), "msiexec") {
+		parts = parts[1:]
+	}
+	for _, part := range parts {
+		switch strings.ToLower(strings.TrimSpace(part)) {
+		case "/x", "-x", "/uninstall", "-uninstall", "/a", "-a", "/f", "-f":
+			return fmt.Errorf("silentInstallArgs contains unsupported MSI action %q", part)
+		}
+	}
+	return nil
+}
+
+func validateDownloadURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("downloadUrl is invalid: %w", err)
+	}
+	if !strings.EqualFold(parsed.Scheme, "https") {
+		return fmt.Errorf("downloadUrl must use HTTPS")
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("downloadUrl must include a host")
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("downloadUrl must not include userinfo")
+	}
+	return nil
+}
+
+func newInstallerHTTPClient() *http.Client {
+	return &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after too many redirects")
+			}
+			if err := validateDownloadURL(req.URL.String()); err != nil {
+				return fmt.Errorf("redirect blocked: %w", err)
+			}
+			return nil
+		},
+	}
 }
 
 func downloadFile(url, destPath string) error {
@@ -102,7 +240,7 @@ func downloadFile(url, destPath string) error {
 		return fmt.Errorf("create request: %w", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := newInstallerHTTPClient().Do(req)
 	if err != nil {
 		return fmt.Errorf("HTTP request: %w", err)
 	}
@@ -153,22 +291,7 @@ func executeInstaller(localPath, fileType, silentInstallArgs string) (int, strin
 
 	switch {
 	case fileType == "msi" && runtime.GOOS == "windows":
-		// Replace {file} placeholder with actual path
-		args := strings.ReplaceAll(silentInstallArgs, "{file}", localPath)
-		if args == "" {
-			args = fmt.Sprintf(`msiexec /i "%s" /qn /norestart`, localPath)
-		}
-		// Parse msiexec args: if args starts with "msiexec", use it directly
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(args)), "msiexec") {
-			parts := splitCommandLine(args)
-			if len(parts) > 1 {
-				cmd = exec.CommandContext(ctx, parts[0], parts[1:]...)
-			} else {
-				cmd = exec.CommandContext(ctx, parts[0])
-			}
-		} else {
-			cmd = exec.CommandContext(ctx, "msiexec", splitCommandLine(args)...)
-		}
+		cmd = exec.CommandContext(ctx, "msiexec", buildMSIExecArgs(localPath, silentInstallArgs)...)
 
 	case fileType == "exe" && runtime.GOOS == "windows":
 		if silentInstallArgs != "" {
@@ -213,6 +336,33 @@ func executeInstaller(localPath, fileType, silentInstallArgs string) (int, strin
 	}
 
 	return 0, string(output), nil
+}
+
+func buildMSIExecArgs(localPath, silentInstallArgs string) []string {
+	args := strings.ReplaceAll(silentInstallArgs, "{file}", localPath)
+	if strings.TrimSpace(args) == "" {
+		return []string{"/i", localPath, "/qn", "/norestart"}
+	}
+
+	parts := splitCommandLine(args)
+	if len(parts) > 0 && strings.EqualFold(filepath.Base(parts[0]), "msiexec") {
+		parts = parts[1:]
+	}
+
+	referencesFile := false
+	for _, part := range parts {
+		if part == localPath {
+			referencesFile = true
+			break
+		}
+	}
+	if !referencesFile {
+		parts = append([]string{"/i", localPath}, parts...)
+	}
+	if len(parts) == 0 {
+		return []string{"/i", localPath, "/qn", "/norestart"}
+	}
+	return parts
 }
 
 func installDMG(ctx context.Context, dmgPath string) (int, string, error) {

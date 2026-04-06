@@ -311,8 +311,8 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
               <div className="rounded-lg border bg-card shadow-sm">
                 <table className="w-full text-sm">
                   <thead className="bg-muted/40">
-                    <tr className="border-b">
-                      <th className="px-4 py-3 text-left">
+                    <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      <th className="px-4 py-3">
                         <input
                           type="checkbox"
                           checked={selectedDeviceIds.size === devices.length && devices.length > 0}
@@ -320,9 +320,9 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
                           className="h-4 w-4 rounded border"
                         />
                       </th>
-                      <th className="px-4 py-3 text-left font-medium text-muted-foreground">Hostname</th>
-                      <th className="px-4 py-3 text-left font-medium text-muted-foreground">OS</th>
-                      <th className="px-4 py-3 text-left font-medium text-muted-foreground">Status</th>
+                      <th className="px-4 py-3">Hostname</th>
+                      <th className="px-4 py-3">OS</th>
+                      <th className="px-4 py-3">Status</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -475,15 +475,15 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
       <div className="rounded-lg border bg-card shadow-sm">
         <table className="w-full text-sm">
           <thead className="bg-muted/40">
-            <tr className="border-b">
+            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               {mode === 'approvals-only' && (
-                <th className="px-4 py-3 text-left font-medium text-muted-foreground">Baseline</th>
+                <th className="px-4 py-3">Baseline</th>
               )}
-              <th className="px-4 py-3 text-left font-medium text-muted-foreground">Status</th>
-              <th className="px-4 py-3 text-right font-medium text-muted-foreground">Devices</th>
-              <th className="px-4 py-3 text-left font-medium text-muted-foreground">Created</th>
-              <th className="px-4 py-3 text-left font-medium text-muted-foreground">Expires</th>
-              <th className="px-4 py-3 text-right font-medium text-muted-foreground">Actions</th>
+              <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3 text-right">Devices</th>
+              <th className="px-4 py-3">Created</th>
+              <th className="px-4 py-3">Expires</th>
+              <th className="px-4 py-3 text-right">Actions</th>
             </tr>
           </thead>
           <tbody>

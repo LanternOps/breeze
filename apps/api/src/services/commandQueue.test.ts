@@ -18,18 +18,27 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn())
 }));
 
-vi.mock('../db/schema', () => ({
-  deviceCommands: {
-    id: 'id',
-    deviceId: 'deviceId',
-    status: 'status',
-    createdAt: 'createdAt'
-  },
-  devices: {
-    id: 'id',
-    status: 'status'
-  }
+vi.mock('./backupMetrics', () => ({
+  recordBackupCommandTimeout: vi.fn(),
+  recordRestoreTimeout: vi.fn(),
 }));
+
+vi.mock('../db/schema', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../db/schema')>();
+  return {
+    ...actual,
+    deviceCommands: {
+      id: 'id',
+      deviceId: 'deviceId',
+      status: 'status',
+      createdAt: 'createdAt'
+    },
+    devices: {
+      id: 'id',
+      status: 'status'
+    }
+  };
+});
 
 describe('command queue service', () => {
   beforeEach(() => {
@@ -100,7 +109,7 @@ describe('command queue service', () => {
 
   it('should mark commands as failed on timeout', async () => {
     vi.useFakeTimers();
-    const pending = { id: 'cmd-3', status: 'pending' };
+    const pending = { id: 'cmd-3', status: 'pending', type: 'mssql_backup' };
     const timedOut = {
       id: 'cmd-3',
       status: 'failed',
@@ -114,7 +123,9 @@ describe('command queue service', () => {
       .mockResolvedValueOnce([timedOut]);
 
     const updateSet = vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue(undefined)
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'cmd-3', status: 'failed' }])
+      })
     });
 
     vi.mocked(db.select).mockReturnValue({

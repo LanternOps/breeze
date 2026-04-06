@@ -8,9 +8,11 @@ import {
   configPolicyComplianceRules,
   configPolicyPatchSettings,
   configPolicyMaintenanceSettings,
+  configPolicyBackupSettings,
   devices,
   organizations,
   deviceGroupMemberships,
+  sites,
   softwarePolicies,
 } from '../db/schema';
 import { and, eq, sql, inArray, asc, SQL } from 'drizzle-orm';
@@ -324,6 +326,45 @@ export async function resolveAutomationsForDevice(
 export async function resolvePatchConfigForDevice(
   deviceId: string
 ): Promise<typeof configPolicyPatchSettings.$inferSelect | null> {
+  const resolved = await resolvePatchConfigDetailsForDevice(deviceId);
+  return resolved?.settings ?? null;
+}
+
+export interface ResolvedPatchConfigDetails {
+  settings: typeof configPolicyPatchSettings.$inferSelect;
+  featureLinkId: string;
+  configPolicyId: string;
+  configPolicyName: string;
+  featurePolicyId: string | null;
+  assignmentLevel: string;
+  assignmentTargetId: string;
+  assignmentPriority: number;
+  resolvedTimezone: string;
+}
+
+export async function resolveDeviceTimezone(deviceId: string): Promise<string> {
+  const [row] = await db
+    .select({
+      timezone: sites.timezone,
+      orgSettings: organizations.settings,
+    })
+    .from(devices)
+    .innerJoin(organizations, eq(devices.orgId, organizations.id))
+    .leftJoin(sites, eq(devices.siteId, sites.id))
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+
+  const orgTimezone =
+    row?.orgSettings && typeof row.orgSettings === 'object'
+      ? (row.orgSettings as Record<string, unknown>).timezone
+      : null;
+
+  return row?.timezone || (typeof orgTimezone === 'string' && orgTimezone.length > 0 ? orgTimezone : 'UTC');
+}
+
+export async function resolvePatchConfigDetailsForDevice(
+  deviceId: string
+): Promise<ResolvedPatchConfigDetails | null> {
   const hierarchy = await loadDeviceHierarchy(deviceId);
   if (!hierarchy) return null;
 
@@ -333,6 +374,11 @@ export async function resolvePatchConfigForDevice(
   const rows = await db
     .select({
       patchSettings: configPolicyPatchSettings,
+      featureLinkId: configPolicyFeatureLinks.id,
+      configPolicyId: configurationPolicies.id,
+      configPolicyName: configurationPolicies.name,
+      featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
+      assignmentTargetId: configPolicyAssignments.targetId,
       assignmentLevel: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
       assignmentCreatedAt: configPolicyAssignments.createdAt,
@@ -367,7 +413,88 @@ export async function resolvePatchConfigForDevice(
   if (rows.length === 0) return null;
 
   const sorted = sortByHierarchy(rows);
-  return sorted[0]!.patchSettings;
+  const winner = sorted[0]!;
+
+  return {
+    settings: winner.patchSettings,
+    featureLinkId: winner.featureLinkId,
+    configPolicyId: winner.configPolicyId,
+    configPolicyName: winner.configPolicyName,
+    featurePolicyId: winner.featurePolicyId,
+    assignmentLevel: winner.assignmentLevel,
+    assignmentTargetId: winner.assignmentTargetId,
+    assignmentPriority: winner.assignmentPriority,
+    resolvedTimezone: await resolveDeviceTimezone(deviceId),
+  };
+}
+
+/**
+ * Resolves backup settings for a device via the hierarchy.
+ * Returns the single backup settings row + metadata from the WINNING assignment, or null.
+ */
+export async function resolveBackupConfigForDevice(
+  deviceId: string
+): Promise<{
+  settings: typeof configPolicyBackupSettings.$inferSelect | null;
+  featureLinkId: string;
+  configId: string | null;
+  inlineSettings: Record<string, unknown> | null;
+  resolvedTimezone: string;
+} | null> {
+  const hierarchy = await loadDeviceHierarchy(deviceId);
+  if (!hierarchy) return null;
+
+  const targetConditions = buildTargetConditions(hierarchy);
+  const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
+
+  const rows = await db
+    .select({
+      backupSettings: configPolicyBackupSettings,
+      featureLinkId: configPolicyFeatureLinks.id,
+      configId: configPolicyFeatureLinks.featurePolicyId,
+      inlineSettings: configPolicyFeatureLinks.inlineSettings,
+      assignmentLevel: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      assignmentCreatedAt: configPolicyAssignments.createdAt,
+      assignmentId: configPolicyAssignments.id,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active')
+      )
+    )
+    .innerJoin(
+      configPolicyFeatureLinks,
+      and(
+        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyFeatureLinks.featureType, 'backup')
+      )
+    )
+    .leftJoin(
+      configPolicyBackupSettings,
+      eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id)
+    )
+    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+    .orderBy(
+      configPolicyAssignments.level,
+      configPolicyAssignments.priority,
+      configPolicyAssignments.createdAt
+    );
+
+  if (rows.length === 0) return null;
+
+  const sorted = sortByHierarchy(rows);
+  const winner = sorted[0]!;
+  return {
+    settings: winner.backupSettings,
+    featureLinkId: winner.featureLinkId,
+    configId: winner.configId,
+    inlineSettings: winner.inlineSettings as Record<string, unknown> | null,
+    resolvedTimezone: await resolveDeviceTimezone(deviceId),
+  };
 }
 
 /**
@@ -767,6 +894,270 @@ export async function scanDueComplianceChecks(): Promise<ComplianceRuleWithTarge
     );
 
   return rows;
+}
+
+// ============================================
+// Backup: All Assigned Devices for an Org
+// ============================================
+
+export interface BackupAssignedDevice {
+  deviceId: string;
+  featureLinkId: string;
+  configId: string | null;
+  settings: typeof configPolicyBackupSettings.$inferSelect | null;
+  resolvedTimezone: string;
+}
+
+export type ResolvedBackupProtection = {
+  legalHold: boolean;
+  legalHoldReason: string | null;
+  immutabilityMode: 'application' | 'provider' | null;
+  immutableDays: number | null;
+  sourceFeatureLinkIds: string[];
+};
+
+function parseBackupRetentionObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function getRetentionLegalHoldReason(retention: Record<string, unknown> | null): string | null {
+  if (!retention) return null;
+  const reason = retention.legalHoldReason;
+  return typeof reason === 'string' && reason.trim().length > 0 ? reason.trim() : null;
+}
+
+function getRetentionImmutabilityMode(retention: Record<string, unknown> | null): 'application' | 'provider' | null {
+  if (!retention) return null;
+  return retention.immutabilityMode === 'application' || retention.immutabilityMode === 'provider'
+    ? retention.immutabilityMode
+    : null;
+}
+
+function getRetentionImmutableDays(retention: Record<string, unknown> | null): number | null {
+  if (!retention) return null;
+  const value = retention.immutableDays;
+  return typeof value === 'number' && value > 0 ? value : null;
+}
+
+/**
+ * Finds ALL devices with backup config policy assignments for an org.
+ * Used by the backup scheduler (to know which devices to back up) and the run-all endpoint.
+ *
+ * Steps:
+ * 1. Query all active backup feature links for the org
+ * 2. For each, resolve assignment targets to device IDs
+ * 3. Deduplicate: first (highest priority) assignment wins per device
+ */
+export async function resolveAllBackupAssignedDevices(
+  orgId: string
+): Promise<BackupAssignedDevice[]> {
+  // 1. Load all active backup feature links + settings + assignments for this org
+  // LEFT JOIN backup settings so devices are still found even when the
+  // normalized settings row is missing (e.g. feature link predates migration).
+  const rows = await db
+    .select({
+      backupSettings: configPolicyBackupSettings,
+      featureLinkId: configPolicyFeatureLinks.id,
+      configId: configPolicyFeatureLinks.featurePolicyId,
+      assignmentLevel: configPolicyAssignments.level,
+      assignmentTargetId: configPolicyAssignments.targetId,
+      assignmentPriority: configPolicyAssignments.priority,
+      assignmentCreatedAt: configPolicyAssignments.createdAt,
+    })
+    .from(configPolicyFeatureLinks)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active'),
+        eq(configurationPolicies.orgId, orgId)
+      )
+    )
+    .innerJoin(
+      configPolicyAssignments,
+      eq(configPolicyAssignments.configPolicyId, configurationPolicies.id)
+    )
+    .leftJoin(
+      configPolicyBackupSettings,
+      eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id)
+    )
+    .where(eq(configPolicyFeatureLinks.featureType, 'backup'));
+
+  if (rows.length === 0) return [];
+
+  // Sort by hierarchy priority (device > group > site > org > partner)
+  const sorted = sortByHierarchy(rows);
+
+  // 2. Resolve each assignment to device IDs and collect results
+  // Track which devices we've already seen — first (highest priority) wins
+  const seen = new Map<string, BackupAssignedDevice>();
+
+  for (const row of sorted) {
+    let deviceIds: string[];
+
+    switch (row.assignmentLevel) {
+      case 'device': {
+        deviceIds = [row.assignmentTargetId];
+        break;
+      }
+      case 'device_group': {
+        const members = await db
+          .select({ deviceId: deviceGroupMemberships.deviceId })
+          .from(deviceGroupMemberships)
+          .where(eq(deviceGroupMemberships.groupId, row.assignmentTargetId));
+        deviceIds = members.map((m) => m.deviceId);
+        break;
+      }
+      case 'site': {
+        const siteDevices = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .where(and(eq(devices.siteId, row.assignmentTargetId), eq(devices.orgId, orgId)));
+        deviceIds = siteDevices.map((d) => d.id);
+        break;
+      }
+      case 'organization': {
+        const orgDevices = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .where(eq(devices.orgId, row.assignmentTargetId));
+        deviceIds = orgDevices.map((d) => d.id);
+        break;
+      }
+      case 'partner': {
+        const partnerDevices = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .innerJoin(organizations, eq(devices.orgId, organizations.id))
+          .where(
+            and(
+              eq(organizations.partnerId, row.assignmentTargetId),
+              eq(devices.orgId, orgId),
+            )
+          );
+        deviceIds = partnerDevices.map((d) => d.id);
+        break;
+      }
+      default:
+        deviceIds = [];
+    }
+
+    // First assignment wins per device (sorted is already highest-priority-first)
+    for (const deviceId of deviceIds) {
+      if (!seen.has(deviceId)) {
+        seen.set(deviceId, {
+          deviceId,
+          featureLinkId: row.featureLinkId,
+          configId: row.configId,
+          settings: row.backupSettings,
+          resolvedTimezone: 'UTC',
+        });
+      }
+    }
+  }
+
+  const resolved = await Promise.all(
+    Array.from(seen.values()).map(async (entry) => ({
+      ...entry,
+      resolvedTimezone: await resolveDeviceTimezone(entry.deviceId),
+    }))
+  );
+
+  return resolved;
+}
+
+export async function resolveBackupProtectionForDevice(
+  deviceId: string
+): Promise<ResolvedBackupProtection | null> {
+  const hierarchy = await loadDeviceHierarchy(deviceId);
+  if (!hierarchy) return null;
+
+  const targetConditions = buildTargetConditions(hierarchy);
+  const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
+
+  const rows = await db
+    .select({
+      featureLinkId: configPolicyFeatureLinks.id,
+      retention: configPolicyBackupSettings.retention,
+      assignmentLevel: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      assignmentCreatedAt: configPolicyAssignments.createdAt,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active')
+      )
+    )
+    .innerJoin(
+      configPolicyFeatureLinks,
+      and(
+        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyFeatureLinks.featureType, 'backup')
+      )
+    )
+    .leftJoin(
+      configPolicyBackupSettings,
+      eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id)
+    )
+    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+    .orderBy(
+      configPolicyAssignments.level,
+      configPolicyAssignments.priority,
+      configPolicyAssignments.createdAt
+    );
+
+  if (rows.length === 0) return null;
+
+  const sorted = sortByHierarchy(rows);
+  const legalHoldRows = sorted.filter((row) => parseBackupRetentionObject(row.retention)?.legalHold === true);
+  const legalHoldReason = legalHoldRows
+    .map((row) => getRetentionLegalHoldReason(parseBackupRetentionObject(row.retention)))
+    .find((reason) => reason !== null) ?? null;
+
+  const immutabilityRows = sorted
+    .map((row) => {
+      const retention = parseBackupRetentionObject(row.retention);
+      return {
+        featureLinkId: row.featureLinkId,
+        mode: getRetentionImmutabilityMode(retention),
+        immutableDays: getRetentionImmutableDays(retention),
+      };
+    })
+    .filter((row): row is { featureLinkId: string; mode: 'application' | 'provider'; immutableDays: number } =>
+      row.mode !== null && row.immutableDays !== null
+    );
+
+  const maxImmutableDays = immutabilityRows.reduce<number | null>(
+    (current, row) => current === null ? row.immutableDays : Math.max(current, row.immutableDays),
+    null,
+  );
+
+  const maxDurationRows = maxImmutableDays === null
+    ? []
+    : immutabilityRows.filter((row) => row.immutableDays === maxImmutableDays);
+
+  const immutabilityMode =
+    maxDurationRows.some((row) => row.mode === 'provider')
+      ? 'provider'
+      : maxDurationRows.some((row) => row.mode === 'application')
+        ? 'application'
+        : null;
+
+  return {
+    legalHold: legalHoldRows.length > 0,
+    legalHoldReason,
+    immutabilityMode,
+    immutableDays: maxImmutableDays,
+    sourceFeatureLinkIds: Array.from(new Set([
+      ...legalHoldRows.map((row) => row.featureLinkId),
+      ...maxDurationRows.map((row) => row.featureLinkId),
+    ])),
+  };
 }
 
 // ============================================

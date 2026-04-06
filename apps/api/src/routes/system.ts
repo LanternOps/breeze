@@ -2,10 +2,15 @@ import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { users } from '../db/schema';
-import { authMiddleware } from '../middleware/auth';
+import { authMiddleware, requirePermission } from '../middleware/auth';
 import { API_VERSION } from '../version';
+import { PERMISSIONS } from '../services/permissions';
 
 export const systemRoutes = new Hono();
+const requireSystemConfigRead = requirePermission(
+  PERMISSIONS.ORGS_READ.resource,
+  PERMISSIONS.ORGS_READ.action,
+);
 
 systemRoutes.use('*', authMiddleware);
 
@@ -15,7 +20,7 @@ systemRoutes.get('/version', async (c) => {
 });
 
 // GET /system/config-status — read-only view of env-driven feature status (no secrets)
-systemRoutes.get('/config-status', async (c) => {
+systemRoutes.get('/config-status', requireSystemConfigRead, async (c) => {
   const auth = c.get('auth');
   if (auth.scope !== 'partner' && auth.scope !== 'system') {
     return c.json({ error: 'Forbidden' }, 403);

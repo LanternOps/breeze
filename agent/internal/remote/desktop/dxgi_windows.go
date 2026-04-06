@@ -4,6 +4,7 @@ package desktop
 
 import (
 	"fmt"
+	"image"
 	"log/slog"
 	"runtime"
 	"sync"
@@ -62,6 +63,8 @@ const (
 	dxgiOutput1DuplicateOutput = 22  // IDXGIOutput1
 	dxgiDuplGetDesc            = 7   // IDXGIOutputDuplication
 	dxgiDuplAcquireNextFrame   = 8   // IDXGIOutputDuplication
+	dxgiDuplGetFrameDirtyRects = 9   // IDXGIOutputDuplication::GetFrameDirtyRects
+	dxgiDuplGetFrameMoveRects  = 10  // IDXGIOutputDuplication::GetFrameMoveRects
 	dxgiDuplReleaseFrame       = 14  // IDXGIOutputDuplication
 	d3d11DeviceCreateTexture2D = 5   // ID3D11Device
 	d3d11CtxMap                = 14  // ID3D11DeviceContext
@@ -121,6 +124,11 @@ type dxgiOutDuplDesc struct {
 	DesktopImageInSystemMemory int32 // BOOL
 }
 
+// dxgiRECT matches the Win32 RECT structure used by GetFrameDirtyRects.
+type dxgiRECT struct {
+	Left, Top, Right, Bottom int32
+}
+
 // dxgiOutDuplFrameInfo matches DXGI_OUTDUPL_FRAME_INFO.
 type dxgiOutDuplFrameInfo struct {
 	LastPresentTime           int64
@@ -170,6 +178,9 @@ type dxgiCapturer struct {
 	// Last AcquireNextFrame accumulated count
 	lastAccumulatedFrames uint32
 
+	// Dirty rects from the last successful AcquireNextFrame
+	lastDirtyRects []image.Rectangle
+
 	// Failure tracking for GDI fallback
 	consecutiveFailures int
 	gdiFallback         *gdiCapturer
@@ -194,9 +205,10 @@ type dxgiCapturer struct {
 	// Cross-thread cursor state: updated by the capture thread (which has the
 	// correct desktop via SetThreadDesktop), read by the cursor stream goroutine
 	// whose GetCursorInfo would fail on a different-desktop thread.
-	cursorX   atomic.Int32
-	cursorY   atomic.Int32
-	cursorVis atomic.Bool
+	cursorX     atomic.Int32
+	cursorY     atomic.Int32
+	cursorVis   atomic.Bool
+	cursorShape atomic.Value // string: CSS cursor name (e.g. "default", "pointer", "text")
 }
 
 // newPlatformCapturer tries DXGI Desktop Duplication first, falls back to GDI.
@@ -394,6 +406,7 @@ func (c *dxgiCapturer) initDXGI() error {
 
 	// Create GPU-only texture for zero-copy pipeline (video processor input).
 	// Must have DEFAULT usage and RENDER_TARGET bind for CreateVideoProcessorInputView.
+	// SHADER_RESOURCE bind is needed for AMF/NVENC to read the texture for encoding.
 	// Uses native (pre-rotation) dimensions to match acquired DXGI textures.
 	gpuDesc := d3d11Texture2DDesc{
 		Width:          uint32(texW),
@@ -404,7 +417,7 @@ func (c *dxgiCapturer) initDXGI() error {
 		SampleCount:    1,
 		SampleQuality:  0,
 		Usage:          0, // D3D11_USAGE_DEFAULT
-		BindFlags:      d3d11BindRenderTarget,
+		BindFlags:      d3d11BindRenderTarget | d3d11BindShaderResource,
 		CPUAccessFlags: 0,
 		MiscFlags:      0,
 	}
@@ -493,9 +506,10 @@ func (c *dxgiCapturer) releaseDXGI() {
 }
 
 var (
-	_ ScreenCapturer  = (*dxgiCapturer)(nil)
-	_ BGRAProvider    = (*dxgiCapturer)(nil)
-	_ TightLoopHint   = (*dxgiCapturer)(nil)
-	_ FrameChangeHint = (*dxgiCapturer)(nil)
-	_ TextureProvider = (*dxgiCapturer)(nil)
+	_ ScreenCapturer   = (*dxgiCapturer)(nil)
+	_ BGRAProvider     = (*dxgiCapturer)(nil)
+	_ TightLoopHint    = (*dxgiCapturer)(nil)
+	_ FrameChangeHint  = (*dxgiCapturer)(nil)
+	_ TextureProvider  = (*dxgiCapturer)(nil)
+	_ DirtyRectProvider = (*dxgiCapturer)(nil)
 )

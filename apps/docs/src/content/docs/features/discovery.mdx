@@ -1,16 +1,13 @@
 ---
 title: Network Discovery
 description: Scan your network to discover devices, hosts, and services using ARP, ICMP, and port scanning.
-sidebar:
-  order: 9
-  label: Network Discovery
 ---
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Network Discovery lets you scan subnets across your managed sites to find devices, identify their type and manufacturer, map open services, and build a topology of how hosts connect through routers and switches. Scans are executed by the Breeze agent running on a device within the target network. The agent performs ARP resolution, ICMP ping sweeps, TCP port scans, and SNMP queries, then reports results back to the API via WebSocket. Discovered assets are stored per-organization and automatically linked to enrolled devices when a MAC or IP address match is found.
 
-Discovery profiles define what to scan and how. A profile is scoped to a single site and contains target subnets, scan methods, port ranges, SNMP communities, and a schedule. When a scan is triggered, a discovery job is created and dispatched through BullMQ to an online agent at the profile's site. Results are processed asynchronously — assets are upserted, topology edges are enriched, and the job record is updated with summary statistics.
+Discovery profiles define what to scan and how. A profile is scoped to a single site and contains target subnets, scan methods, port ranges, SNMP communities, and a schedule. When a scan is triggered, a discovery job is created and dispatched through a background queue to an online agent at the profile's site. Results are processed asynchronously — assets are created or updated, topology edges are enriched, and the job record is updated with summary statistics.
 
 ---
 
@@ -231,7 +228,7 @@ Authorization: Bearer <token>
 }
 ```
 
-If `agentId` is omitted, the system automatically selects an online agent from the profile's site. The scan is dispatched through BullMQ to the discovery worker, which sends a `network_discovery` command to the agent via WebSocket.
+If `agentId` is omitted, the system automatically selects an online agent from the profile's site. The scan is dispatched through a background queue to the discovery worker, which sends a `network_discovery` command to the agent via WebSocket.
 
 <Aside type="tip">
   The response returns a discovery job object with status `scheduled`. The scan transitions to `running` once the agent receives the command, and to `completed` when results have been processed.
@@ -240,7 +237,7 @@ If `agentId` is omitted, the system automatically selects an online agent from t
 ### Scan Execution Flow
 
 <Steps>
-1. **API creates a discovery job** with status `scheduled` and enqueues a `dispatch-scan` task in BullMQ.
+1. **API creates a discovery job** with status `scheduled` and enqueues a dispatch-scan task in the background queue.
 
 2. **Discovery worker picks up the task**, loads the profile, finds an online agent at the site, and sends a `network_discovery` command via WebSocket.
 
@@ -248,7 +245,7 @@ If `agentId` is omitted, the system automatically selects an online agent from t
 
 4. **Agent returns results** via WebSocket as a `command_result` message containing the list of discovered hosts.
 
-5. **API enqueues a `process-results` task** in BullMQ. The worker upserts discovered assets, auto-links matches to enrolled devices by MAC/IP, enriches the network topology, and marks the job as `completed`.
+5. **API enqueues a process-results task** in the background queue. The worker creates or updates discovered assets, auto-links matches to enrolled devices by MAC/IP, enriches the network topology, and marks the job as `completed`.
 </Steps>
 
 ### Monitoring Job Status
@@ -275,7 +272,7 @@ Jobs with status `scheduled` or `running` can be cancelled:
 POST /discovery/jobs/:id/cancel
 ```
 
-The job status is set to `cancelled` and the system attempts to remove it from the BullMQ queue. If the scan is already in progress on the agent, cancellation takes effect when results arrive — cancelled jobs skip result processing.
+The job status is set to `cancelled` and the system attempts to remove it from the background queue. If the scan is already in progress on the agent, cancellation takes effect when results arrive — cancelled jobs skip result processing.
 
 ### Job Statuses
 
@@ -464,7 +461,7 @@ The asset list endpoint (`GET /discovery/assets`) includes `snmpMonitoringEnable
 ARP scanning requires root/Administrator privileges and the libpcap library. ICMP ping also requires raw socket access. If the agent runs as a non-privileged user, both methods are skipped. Check agent logs for messages like "ARP scan unavailable (built without CGO/pcap)" or "ICMP ping unavailable (requires root/elevated privileges)". Port scanning works without elevated privileges and can be used as an alternative.
 
 **Scan job stays in `scheduled` status.**
-The discovery worker requires Redis and BullMQ to dispatch scan commands. Verify Redis is running and accessible. If Redis is unavailable, the job is immediately marked as `failed` with the message "Background job service unavailable." Also confirm at least one agent at the profile's site is online — the worker selects an online agent from the same site to execute the scan.
+The discovery worker requires Redis and the background queue to dispatch scan commands. Verify Redis is running and accessible. If Redis is unavailable, the job is immediately marked as `failed` with the message "Background job service unavailable." Also confirm at least one agent at the profile's site is online — the worker selects an online agent from the same site to execute the scan.
 
 **Large subnets are skipped.**
 Subnets larger than /16 (65,536+ hosts) are skipped by default to prevent excessive scan times and network traffic. Set `deepScan: true` on the profile to allow scanning of large subnets. Monitor the agent's resource usage when scanning large address ranges.

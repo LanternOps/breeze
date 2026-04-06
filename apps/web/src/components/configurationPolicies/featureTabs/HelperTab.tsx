@@ -119,7 +119,7 @@ export default function HelperTab({ policyId, existingLink, onLinkChanged, linke
                 type="checkbox"
                 checked={settings.showOpenPortal}
                 onChange={(e) => update('showOpenPortal', e.target.checked)}
-                className="h-4 w-4 rounded border-gray-300"
+                className="h-4 w-4 rounded border-border"
               />
               <div>
                 <p className="text-sm font-medium">Open Breeze Portal</p>
@@ -133,7 +133,7 @@ export default function HelperTab({ policyId, existingLink, onLinkChanged, linke
                 type="checkbox"
                 checked={settings.showDeviceInfo}
                 onChange={(e) => update('showDeviceInfo', e.target.checked)}
-                className="h-4 w-4 rounded border-gray-300"
+                className="h-4 w-4 rounded border-border"
               />
               <div>
                 <p className="text-sm font-medium">Device Info</p>
@@ -147,7 +147,7 @@ export default function HelperTab({ policyId, existingLink, onLinkChanged, linke
                 type="checkbox"
                 checked={settings.showRequestSupport}
                 onChange={(e) => update('showRequestSupport', e.target.checked)}
-                className="h-4 w-4 rounded border-gray-300"
+                className="h-4 w-4 rounded border-border"
               />
               <div>
                 <p className="text-sm font-medium">Request Support</p>

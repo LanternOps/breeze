@@ -41,7 +41,7 @@ type Session struct {
 	dataChannel     *webrtc.DataChannel
 	inputHandler    InputHandler
 	capturer        ScreenCapturer
-	encoder         *VideoEncoder
+	encoder         atomic.Pointer[VideoEncoder]
 	encoderPF       PixelFormat // cached encoder input format for CPU Encode() path
 	clipboardSync   *clipboard.ClipboardSync
 	fileDropHandler *filedrop.FileDropHandler
@@ -93,6 +93,11 @@ type Session struct {
 	// MFT to warm up after a monitor switch (first frame often fails).
 	gpuEncodeErrors int
 
+	// cpuEncodeErrors tracks consecutive CPU encode failures. After 5+
+	// failures (e.g., VideoToolbox stalling on older Intel Macs), the
+	// encoder is swapped to software (OpenH264) mid-session.
+	cpuEncodeErrors int
+
 	// cursorOffsetX/Y store the active monitor's virtual desktop origin so
 	// cursorStreamLoop can convert absolute GetCursorInfo coords to
 	// display-relative coords before sending to the viewer.
@@ -106,6 +111,8 @@ type Session struct {
 
 	// displayIndex is the monitor index this session was started on.
 	displayIndex int
+	// captureConfig stores the context needed to recreate capturers on monitor switches.
+	captureConfig CaptureConfig
 
 	// Cached encoded H264 frame used as a fallback resend source when secure
 	// desktop capture yields temporary no-frame periods.
@@ -113,13 +120,14 @@ type Session struct {
 	lastEncodedFrame []byte
 	// Nanoseconds since epoch of the last successful video sample write.
 	lastVideoWriteUnixNano atomic.Int64
-
 }
 
 // SessionManager manages remote desktop sessions
 type SessionManager struct {
-	sessions map[string]*Session
-	mu       sync.RWMutex
+	sessions  map[string]*Session
+	mu        sync.RWMutex
+	config    CaptureConfig
+	gpuVendor string // "nvidia", "amd", "intel", or "" for auto-detect
 
 	// OnSASRequest is called when a viewer requests Ctrl+Alt+Del. In service
 	// mode the helper sets this to route the request via IPC to the SCM service
@@ -132,11 +140,50 @@ type SessionManager struct {
 	OnSessionStopped func(sessionID string)
 }
 
-// NewSessionManager creates a new session manager
+// NewSessionManager creates a new session manager.
+// Eagerly loads OpenH264 in the background so the DLL is ready before
+// the first desktop session (avoids download timeout during IPC).
 func NewSessionManager() *SessionManager {
+	go PreloadOpenH264()
 	return &SessionManager{
 		sessions: make(map[string]*Session),
+		config:   DefaultConfig(),
 	}
+}
+
+func (m *SessionManager) SetCaptureConfig(config CaptureConfig) {
+	m.mu.Lock()
+	m.config = config
+	m.mu.Unlock()
+}
+
+func (m *SessionManager) CaptureConfig() CaptureConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.config
+}
+
+// SetGPUVendor sets the GPU vendor hint used when creating the video encoder.
+// Valid values: "nvidia", "amd", "intel", or "" for auto-detect.
+func (m *SessionManager) SetGPUVendor(vendor string) {
+	m.mu.Lock()
+	m.gpuVendor = vendor
+	m.mu.Unlock()
+}
+
+// HasActiveSessions reports whether any desktop session is currently active.
+func (m *SessionManager) HasActiveSessions() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, s := range m.sessions {
+		s.mu.RLock()
+		active := s.isActive
+		s.mu.RUnlock()
+		if active {
+			return true
+		}
+	}
+	return false
 }
 
 // ICEServerConfig represents an ICE server from the API payload.
@@ -347,8 +394,8 @@ func (s *Session) doCleanup() {
 			s.cursorDC.Close()
 		}
 		s.clearCachedEncodedFrame()
-		if s.encoder != nil {
-			s.encoder.Close()
+		if enc := s.encoder.Load(); enc != nil {
+			enc.Close()
 		}
 		for _, oc := range s.oldCapturers {
 			oc.Close()

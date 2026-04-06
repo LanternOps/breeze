@@ -10,10 +10,34 @@ package userhelper
 #include <stdbool.h>
 
 // checkScreenRecording returns true if screen capture access is granted.
-// CGPreflightScreenCaptureAccess() checks without triggering a system prompt.
-// Available since macOS 10.15 (Catalina). Linking will fail on older SDKs.
+// First tries CGPreflightScreenCaptureAccess() (available since macOS 10.15).
+// On macOS 26 (Tahoe) this API may return false even when permission is granted,
+// so we fall back to a real capture probe via CGWindowListCreateImage (resolved
+// at runtime via dlsym since the SDK marks it unavailable in macOS 15+).
+#include <dlfcn.h>
+typedef CGImageRef (*CGWindowListCreateImageFunc)(CGRect, CGWindowListOption, CGWindowID, CGWindowImageOption);
 static bool checkScreenRecording(void) {
-	return CGPreflightScreenCaptureAccess();
+	if (CGPreflightScreenCaptureAccess()) {
+		return true;
+	}
+	// Preflight returned false — probe with a real capture to handle macOS 26+.
+	// Resolve CGWindowListCreateImage at runtime (marked unavailable in SDK 15+).
+	static CGWindowListCreateImageFunc fn = NULL;
+	static bool resolved = false;
+	if (!resolved) {
+		fn = (CGWindowListCreateImageFunc)dlsym(RTLD_DEFAULT, "CGWindowListCreateImage");
+		resolved = true;
+	}
+	if (fn == NULL) {
+		return false;
+	}
+	CGRect onePixel = CGRectMake(0, 0, 1, 1);
+	CGImageRef img = fn(onePixel, kCGWindowListOptionOnScreenOnly, kCGNullWindowID, kCGWindowImageDefault);
+	if (img != NULL) {
+		CGImageRelease(img);
+		return true;
+	}
+	return false;
 }
 
 // requestScreenRecording triggers the macOS system prompt asking the user
@@ -54,6 +78,7 @@ static bool checkAccessibilityNoPrompt(void) {
 import "C"
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -65,6 +90,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/remote/desktop"
 )
 
 // accessibilityPrompted tracks whether we have already triggered the
@@ -88,12 +114,25 @@ const tccFastCheckInterval = 2 * time.Minute
 // tccFastCheckDuration is how long to use the fast interval after startup.
 const tccFastCheckDuration = 30 * time.Minute
 
+const tccHelperCommandTimeout = 15 * time.Second
+
 // CheckTCCPermissions probes macOS TCC permissions. On the first call,
 // triggers the accessibility system prompt; subsequent calls check silently.
-func CheckTCCPermissions() *ipc.TCCStatus {
+func CheckTCCPermissions(desktopContext string) *ipc.TCCStatus {
+	return checkTCCPermissions(desktopContext, true, true, nil)
+}
+
+// ProbeTCCPermissions returns the current macOS TCC state for the selected
+// desktop context. When allowPrompt is false the check is read-only and will
+// not trigger the Accessibility consent flow.
+func ProbeTCCPermissions(desktopContext string, allowPrompt bool, allowCaptureProbe bool) *ipc.TCCStatus {
+	return checkTCCPermissions(desktopContext, allowPrompt, allowCaptureProbe, nil)
+}
+
+func checkTCCPermissions(desktopContext string, allowPrompt bool, allowCaptureProbe bool, lastRemoteDesktop *bool) *ipc.TCCStatus {
 	accessibilityPromptedMu.Lock()
 	var accessibility bool
-	if !accessibilityPrompted {
+	if allowPrompt && !accessibilityPrompted {
 		accessibility = bool(C.checkAccessibilityWithPrompt())
 		accessibilityPrompted = true
 	} else {
@@ -101,10 +140,16 @@ func CheckTCCPermissions() *ipc.TCCStatus {
 	}
 	accessibilityPromptedMu.Unlock()
 
+	remoteDesktop := cloneBoolPtr(lastRemoteDesktop)
+	if allowCaptureProbe {
+		remoteDesktop = probeRemoteDesktopPermission(desktopContext)
+	}
+
 	return &ipc.TCCStatus{
 		ScreenRecording: bool(C.checkScreenRecording()),
 		Accessibility:   accessibility,
 		FullDiskAccess:  probeFullDiskAccess(),
+		RemoteDesktop:   remoteDesktop,
 		CheckedAt:       time.Now().UTC(),
 	}
 }
@@ -138,14 +183,20 @@ func probeFullDiskAccess() bool {
 // It runs an immediate check on start (triggering the Screen Recording prompt
 // if not yet granted), then re-checks at a fast interval while permissions are
 // missing, switching to the slower interval once all are granted.
-func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}) {
+func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext string, canProbe func() bool) {
 	startedAt := time.Now()
 	var seq uint64
 	var consecutiveFailures int
 	allGranted := false
+	var lastRemoteDesktop *bool
 
 	check := func() {
-		status := CheckTCCPermissions()
+		allowProbe := true
+		if canProbe != nil {
+			allowProbe = canProbe()
+		}
+		status := checkTCCPermissions(desktopContext, true, allowProbe, lastRemoteDesktop)
+		lastRemoteDesktop = cloneBoolPtr(status.RemoteDesktop)
 		allGranted = len(missingPermissions(status)) == 0
 		if err := sendTCCStatus(conn, status, &seq); err != nil {
 			consecutiveFailures++
@@ -254,6 +305,42 @@ func missingPermissions(status *ipc.TCCStatus) []string {
 	return missing
 }
 
+func normalizedDesktopContext(desktopContext string) string {
+	if desktopContext == ipc.DesktopContextLoginWindow {
+		return ipc.DesktopContextLoginWindow
+	}
+	return ipc.DesktopContextUserSession
+}
+
+func probeRemoteDesktopPermission(desktopContext string) *bool {
+	granted, err := desktop.ProbeCaptureAccess(desktop.CaptureConfig{
+		DesktopContext: normalizedDesktopContext(desktopContext),
+	})
+	if err == nil {
+		return boolPtr(granted)
+	}
+	if errors.Is(err, desktop.ErrPermissionDenied) {
+		return boolPtr(false)
+	}
+
+	log.Debug("desktop capture probe inconclusive",
+		"context", normalizedDesktopContext(desktopContext),
+		"error", err.Error())
+	return nil
+}
+
+func boolPtr(v bool) *bool {
+	return &v
+}
+
+func cloneBoolPtr(v *bool) *bool {
+	if v == nil {
+		return nil
+	}
+	copied := *v
+	return &copied
+}
+
 // tccPromptFilePath returns the path to the marker file that tracks whether
 // we've already shown the first-run TCC dialog to this user. Uses the user's
 // Application Support directory to prevent other processes from tampering.
@@ -296,18 +383,20 @@ func showTCCDialog(missing []string) {
 		script = fmt.Sprintf(
 			`display dialog "%s" `+
 				`buttons {"Later", "Open Settings"} default button "Open Settings" with title "Breeze: Permissions Required" giving up after 60`,
-			msg,
+			escapeAppleScript(msg),
 		)
 	} else {
 		msg = "Screen Recording and Accessibility are being configured automatically.\\n\\nThis should resolve within a few minutes. If this persists, check agent logs or restart the agent."
 		script = fmt.Sprintf(
 			`display dialog "%s" `+
 				`buttons {"OK"} default button "OK" with title "Breeze: Permissions Configuring" giving up after 60`,
-			msg,
+			escapeAppleScript(msg),
 		)
 	}
 
-	cmd := exec.Command("osascript", "-e", script)
+	ctx, cancel := context.WithTimeout(context.Background(), tccHelperCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
 	output, err := cmd.Output()
 	if err != nil {
 		log.Debug("TCC dialog dismissed or timed out", "error", err.Error())
@@ -349,18 +438,14 @@ func showTCCNotification(missing []string) {
 // macOS Ventura+ redirects them to System Settings. If Apple drops the redirect,
 // update to the x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension format.
 func openSettingsForPermission(permission string) {
-	var url string
-	switch permission {
-	case "Screen Recording":
-		url = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
-	case "Accessibility":
-		url = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-	case "Full Disk Access":
-		url = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
-	default:
+	url, err := systemSettingsURLForPermission(permission)
+	if err != nil {
+		log.Warn("refusing to open unknown System Settings permission", "permission", permission)
 		return
 	}
-	cmd := exec.Command("open", url)
+	ctx, cancel := context.WithTimeout(context.Background(), tccHelperCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "open", url)
 	if err := cmd.Run(); err != nil {
 		log.Warn("failed to open System Settings", "permission", permission, "error", err.Error())
 	}

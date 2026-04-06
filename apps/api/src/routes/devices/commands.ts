@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { eq, sql, desc, and } from 'drizzle-orm';
 import { db } from '../../db';
 import { deviceCommands, devices } from '../../db/schema';
-import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
+import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { getPagination, getDeviceWithOrgCheck } from './helpers';
 import { createCommandSchema, bulkCommandSchema, maintenanceModeSchema } from './schemas';
@@ -25,6 +25,7 @@ commandsRoutes.post(
   '/bulk/commands',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('json', bulkCommandSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -99,6 +100,7 @@ commandsRoutes.post(
   '/:id/commands',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('json', createCommandSchema),
   async (c) => {
     const auth = c.get('auth');

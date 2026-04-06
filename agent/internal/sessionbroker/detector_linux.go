@@ -3,7 +3,6 @@
 package sessionbroker
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"os/exec"
@@ -21,13 +20,15 @@ func NewSessionDetector() SessionDetector {
 }
 
 func (d *linuxDetector) ListSessions() ([]DetectedSession, error) {
-	out, err := exec.Command("loginctl", "list-sessions", "--no-legend", "--no-pager").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), detectorCommandTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "loginctl", "list-sessions", "--no-legend", "--no-pager").Output()
 	if err != nil {
 		return nil, fmt.Errorf("loginctl list-sessions: %w", err)
 	}
 
 	var sessions []DetectedSession
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+	scanner := newDetectorScanner(string(out))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -54,10 +55,14 @@ func (d *linuxDetector) ListSessions() ([]DetectedSession, error) {
 		}
 
 		// Query session properties
-		if propOut, err := exec.Command("loginctl", "show-session", sessionID,
-			"--property=Type,Remote,Display,Seat,State").Output(); err == nil {
-			for _, propLine := range strings.Split(string(propOut), "\n") {
-				parts := strings.SplitN(strings.TrimSpace(propLine), "=", 2)
+		propCtx, propCancel := context.WithTimeout(context.Background(), detectorCommandTimeout)
+		propOut, propErr := exec.CommandContext(propCtx, "loginctl", "show-session", sessionID,
+			"--property=Type,Remote,Display,Seat,State").Output()
+		propCancel()
+		if propErr == nil {
+			propScanner := newDetectorScanner(string(propOut))
+			for propScanner.Scan() {
+				parts := strings.SplitN(strings.TrimSpace(propScanner.Text()), "=", 2)
 				if len(parts) != 2 {
 					continue
 				}
@@ -74,9 +79,23 @@ func (d *linuxDetector) ListSessions() ([]DetectedSession, error) {
 					sess.State = parts[1]
 				}
 			}
+			if err := propScanner.Err(); err != nil {
+				return nil, fmt.Errorf("parse loginctl show-session output for %s: %w", sessionID, err)
+			}
+		}
+
+		sess, err = sanitizeDetectedSession(sess)
+		if err != nil {
+			continue
 		}
 
 		sessions = append(sessions, sess)
+		if len(sessions) >= maxDetectedSessions {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("parse loginctl list-sessions output: %w", err)
 	}
 
 	return sessions, nil

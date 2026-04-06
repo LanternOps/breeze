@@ -5,6 +5,7 @@ import { devices, peripheralEvents, peripheralPolicies } from '../db/schema';
 import { publishEvent } from '../services/eventBus';
 import { CommandTypes, queueCommand, queueCommandForExecution } from '../services/commandQueue';
 import { getRedisConnection } from '../services/redis';
+import { isReusableState } from '../services/bullmqUtils';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -289,13 +290,7 @@ export async function schedulePeripheralPolicyDistribution(
   const existing = await queue.getJob(jobId);
   if (existing) {
     const state = await existing.getState();
-    if (
-      state === 'active'
-      || state === 'waiting'
-      || state === 'delayed'
-      || state === 'waiting-children'
-      || state === 'prioritized'
-    ) {
+    if (isReusableState(state)) {
       const existingData = existing.data;
       if (existingData.type === 'policy-distribution') {
         const mergedPolicyIds = Array.from(

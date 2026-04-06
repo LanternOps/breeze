@@ -35,12 +35,14 @@ func handleDevUpdate(h *Heartbeat, cmd Command) tools.CommandResult {
 		"downloadUrl", downloadURL,
 	)
 
-	// Disable auto-update in memory to prevent heartbeat from overwriting
-	// the dev binary during this run. We intentionally do NOT call
-	// config.Save here — SaveTo would need the auth token which is cleared
-	// from the config struct at startup, and writing the file risks wiping it.
+	// Disable auto-update so the heartbeat doesn't overwrite the dev binary
+	// after the agent restarts. Persisted to disk via viper so it survives
+	// the restart triggered by the update.
 	h.config.AutoUpdate = false
-	log.Info("auto_update disabled in memory for dev push")
+	if err := config.SetAndPersist("auto_update", false); err != nil {
+		log.Warn("failed to persist auto_update=false — dev build may revert after restart", "error", err.Error())
+	}
+	log.Info("auto_update disabled and persisted for dev push")
 
 	// Resolve current binary path
 	binaryPath, err := os.Executable()

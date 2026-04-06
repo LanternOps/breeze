@@ -3,8 +3,6 @@
 package collectors
 
 import (
-	"bufio"
-	"bytes"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -38,8 +36,7 @@ func (c *PatchCollector) collectAptUpdates() ([]PatchInfo, error) {
 	}
 
 	// Run apt list --upgradable
-	cmd := exec.Command("apt", "list", "--upgradable")
-	output, err := cmd.Output()
+	output, err := runCollectorOutput(collectorLongCommandTimeout, "apt", "list", "--upgradable")
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +49,7 @@ func (c *PatchCollector) collectAptUpdates() ([]PatchInfo, error) {
 func (c *PatchCollector) parseAptOutput(output []byte) []PatchInfo {
 	var patches []PatchInfo
 
-	scanner := bufio.NewScanner(bytes.NewReader(output))
+	scanner := newCollectorScanner(output)
 	// Skip header line "Listing..."
 	scanner.Scan()
 
@@ -79,6 +76,10 @@ func (c *PatchCollector) parseAptOutput(output []byte) []PatchInfo {
 				Category:   category,
 				Source:     "apt",
 			})
+			patches[len(patches)-1] = sanitizeLinuxPatchInfo(patches[len(patches)-1])
+			if len(patches) >= collectorResultLimit {
+				break
+			}
 		}
 	}
 
@@ -97,8 +98,7 @@ func (c *PatchCollector) collectYumUpdates() ([]PatchInfo, error) {
 	}
 
 	// Run check-update
-	cmd := exec.Command(pkgManager, "check-update", "-q")
-	output, _ := cmd.Output() // Exit code 100 means updates available
+	output, _ := runCollectorOutput(collectorLongCommandTimeout, pkgManager, "check-update", "-q") // Exit code 100 means updates available
 
 	return c.parseYumOutput(output, pkgManager), nil
 }
@@ -108,7 +108,7 @@ func (c *PatchCollector) collectYumUpdates() ([]PatchInfo, error) {
 func (c *PatchCollector) parseYumOutput(output []byte, source string) []PatchInfo {
 	var patches []PatchInfo
 
-	scanner := bufio.NewScanner(bytes.NewReader(output))
+	scanner := newCollectorScanner(output)
 	pattern := regexp.MustCompile(`^(\S+?)\.(\S+)\s+(\S+)\s+(\S+)`)
 
 	for scanner.Scan() {
@@ -129,8 +129,25 @@ func (c *PatchCollector) parseYumOutput(output []byte, source string) []PatchInf
 				Category: category,
 				Source:   source,
 			})
+			patches[len(patches)-1] = sanitizeLinuxPatchInfo(patches[len(patches)-1])
+			if len(patches) >= collectorResultLimit {
+				break
+			}
 		}
 	}
 
 	return patches
+}
+
+func sanitizeLinuxPatchInfo(patch PatchInfo) PatchInfo {
+	patch.Name = truncateCollectorString(patch.Name)
+	patch.Version = truncateCollectorString(patch.Version)
+	patch.CurrentVer = truncateCollectorString(patch.CurrentVer)
+	patch.Category = truncateCollectorString(patch.Category)
+	patch.Severity = truncateCollectorString(patch.Severity)
+	patch.KBNumber = truncateCollectorString(patch.KBNumber)
+	patch.ReleaseDate = truncateCollectorString(patch.ReleaseDate)
+	patch.Description = truncateCollectorString(patch.Description)
+	patch.Source = truncateCollectorString(patch.Source)
+	return patch
 }

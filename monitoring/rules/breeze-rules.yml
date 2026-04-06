@@ -139,6 +139,36 @@ groups:
           summary: "Alert processing backlog detected"
           description: "{{ $value }} alerts waiting to be processed"
 
+      - alert: BackupDispatchFailuresDetected
+        expr: |
+          increase(breeze_backup_dispatch_failures_total{job="breeze-api"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backup or restore start failures detected"
+          description: "{{ $value }} backup, restore, or verification start failure(s) occurred in the last 15 minutes"
+
+      - alert: RestoreTimeoutsDetected
+        expr: |
+          increase(breeze_restore_timeouts_total{job="breeze-api"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Restore commands are timing out"
+          description: "{{ $value }} restore command timeout(s) occurred in the last 15 minutes"
+
+      - alert: ScheduledVerificationSkipsDetected
+        expr: |
+          increase(breeze_backup_verification_skips_total{job="breeze-api"}[1h]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Scheduled backup verification runs are being skipped"
+          description: "{{ $value }} scheduled verification skip(s) occurred in the last hour"
+
   - name: breeze-recording-rules
     interval: 30s
     rules:
@@ -171,6 +201,15 @@ groups:
 
       - record: breeze:devices:active_count
         expr: sum(breeze_active_devices)
+
+      - record: breeze:backup_dispatch_failures:increase15m
+        expr: sum(increase(breeze_backup_dispatch_failures_total{job="breeze-api"}[15m])) by (operation, reason)
+
+      - record: breeze:restore_timeouts:increase15m
+        expr: sum(increase(breeze_restore_timeouts_total{job="breeze-api"}[15m])) by (command_type)
+
+      - record: breeze:backup_verification_skips:increase1h
+        expr: sum(increase(breeze_backup_verification_skips_total{job="breeze-api"}[1h])) by (verification_type, reason)
 
       - record: breeze:http_requests:rate5m_by_org
         expr: sum(rate(http_requests_total{job="breeze-api"}[5m])) by (org_id)

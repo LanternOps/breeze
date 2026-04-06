@@ -5,6 +5,10 @@ import { hashPassword } from '../services/password';
 
 // Default permissions
 const DEFAULT_PERMISSIONS = [
+  // Backup / recovery
+  { resource: 'backup', action: 'read', description: 'View backup and recovery resources' },
+  { resource: 'backup', action: 'write', description: 'Create and manage backup and recovery resources' },
+
   // Devices
   { resource: 'devices', action: 'read', description: 'View devices and their details' },
   { resource: 'devices', action: 'write', description: 'Create and update devices' },
@@ -62,6 +66,7 @@ const SYSTEM_ROLES = [
     scope: 'partner' as const,
     description: 'Access to assigned organizations, can execute scripts',
     permissions: [
+      'backup:read', 'backup:write',
       'devices:read', 'devices:execute',
       'scripts:read', 'scripts:execute',
       'alerts:read', 'alerts:acknowledge',
@@ -86,6 +91,7 @@ const SYSTEM_ROLES = [
     scope: 'organization' as const,
     description: 'Full access within organization',
     permissions: [
+      'backup:read', 'backup:write',
       'devices:read', 'devices:write', 'devices:delete', 'devices:execute',
       'scripts:read', 'scripts:write', 'scripts:delete', 'scripts:execute',
       'alerts:read', 'alerts:write', 'alerts:acknowledge',

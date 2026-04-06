@@ -1,8 +1,10 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import type { AuthContext } from '../../middleware/auth';
-import { requireScope } from '../../middleware/auth';
+import { hasSatisfiedMfa, requirePermission, requireScope } from '../../middleware/auth';
+import { backupInlineSettingsSchema, patchInlineSettingsSchema } from '@breeze/shared/validators';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { PERMISSIONS } from '../../services/permissions';
 import {
   getConfigPolicy,
   addFeatureLink,
@@ -19,11 +21,14 @@ import {
 } from './schemas';
 
 export const featureLinkRoutes = new Hono();
+const requireConfigPolicyRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
+const requireConfigPolicyWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
 
 // GET /:id/features — list feature links for a policy
 featureLinkRoutes.get(
   '/:id/features',
   requireScope('organization', 'partner', 'system'),
+  requireConfigPolicyRead,
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -41,6 +46,7 @@ featureLinkRoutes.get(
 featureLinkRoutes.post(
   '/:id/features',
   requireScope('organization', 'partner', 'system'),
+  requireConfigPolicyWrite,
   zValidator('param', idParamSchema),
   zValidator('json', addFeatureLinkSchema),
   async (c) => {
@@ -50,6 +56,10 @@ featureLinkRoutes.post(
 
     const policy = await getConfigPolicy(id, auth);
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
+
+    if (data.featureType === 'patch' && !hasSatisfiedMfa(auth)) {
+      return c.json({ error: 'MFA required' }, 403);
+    }
 
     // Validate the referenced feature policy exists (only when a policy ID is provided)
     if (data.featurePolicyId) {
@@ -61,6 +71,22 @@ featureLinkRoutes.post(
       if (!validation.valid) {
         return c.json({ error: validation.error }, 400);
       }
+    }
+
+    if (data.featureType === 'patch') {
+      const parsed = patchInlineSettingsSchema.safeParse(data.inlineSettings ?? {});
+      if (!parsed.success) {
+        return c.json({ error: 'Invalid patch settings', details: parsed.error.flatten() }, 400);
+      }
+      data.inlineSettings = parsed.data;
+    }
+
+    if (data.featureType === 'backup' && data.inlineSettings) {
+      const parsed = backupInlineSettingsSchema.safeParse(data.inlineSettings);
+      if (!parsed.success) {
+        return c.json({ error: 'Invalid backup settings', details: parsed.error.flatten() }, 400);
+      }
+      data.inlineSettings = parsed.data;
     }
 
     try {
@@ -94,6 +120,7 @@ featureLinkRoutes.post(
 featureLinkRoutes.patch(
   '/:id/features/:linkId',
   requireScope('organization', 'partner', 'system'),
+  requireConfigPolicyWrite,
   zValidator('param', linkIdParamSchema),
   zValidator('json', updateFeatureLinkSchema),
   async (c) => {
@@ -103,18 +130,41 @@ featureLinkRoutes.patch(
 
     const policy = await getConfigPolicy(id, auth);
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
+    const existingLink = policy.featureLinks.find((l: any) => l.id === linkId);
+
+    if (!existingLink) {
+      return c.json({ error: 'Feature link not found' }, 404);
+    }
+
+    if (existingLink.featureType === 'patch' && !hasSatisfiedMfa(auth)) {
+      return c.json({ error: 'MFA required' }, 403);
+    }
 
     if (data.featurePolicyId !== undefined && data.featurePolicyId !== null) {
-      const existingLink = policy.featureLinks.find((l) => l.id === linkId);
-      if (existingLink) {
-        const validation = await validateFeaturePolicyExists(
-          existingLink.featureType as any,
-          data.featurePolicyId,
-          policy.orgId
-        );
-        if (!validation.valid) {
-          return c.json({ error: validation.error }, 400);
+      const validation = await validateFeaturePolicyExists(
+        existingLink.featureType as any,
+        data.featurePolicyId,
+        policy.orgId
+      );
+      if (!validation.valid) {
+        return c.json({ error: validation.error }, 400);
+      }
+    }
+
+    if (data.inlineSettings) {
+      if (existingLink.featureType === 'patch') {
+        const parsed = patchInlineSettingsSchema.safeParse(data.inlineSettings ?? {});
+        if (!parsed.success) {
+          return c.json({ error: 'Invalid patch settings', details: parsed.error.flatten() }, 400);
         }
+        data.inlineSettings = parsed.data;
+      }
+      if (existingLink.featureType === 'backup') {
+        const parsed = backupInlineSettingsSchema.safeParse(data.inlineSettings);
+        if (!parsed.success) {
+          return c.json({ error: 'Invalid backup settings', details: parsed.error.flatten() }, 400);
+        }
+        data.inlineSettings = parsed.data;
       }
     }
 
@@ -138,6 +188,7 @@ featureLinkRoutes.patch(
 featureLinkRoutes.delete(
   '/:id/features/:linkId',
   requireScope('organization', 'partner', 'system'),
+  requireConfigPolicyWrite,
   zValidator('param', linkIdParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -145,6 +196,11 @@ featureLinkRoutes.delete(
 
     const policy = await getConfigPolicy(id, auth);
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
+    const existingLink = policy.featureLinks.find((l: any) => l.id === linkId);
+    if (!existingLink) return c.json({ error: 'Feature link not found' }, 404);
+    if (existingLink.featureType === 'patch' && !hasSatisfiedMfa(auth)) {
+      return c.json({ error: 'MFA required' }, 403);
+    }
 
     const deleted = await removeFeatureLink(linkId, id);
     if (!deleted) return c.json({ error: 'Feature link not found' }, 404);

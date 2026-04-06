@@ -3,6 +3,7 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { browserExtensions, browserPolicies, browserPolicyViolations, devices } from '../db/schema';
 import { getRedisConnection } from '../services/redis';
+import { isReusableState } from '../services/bullmqUtils';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -12,6 +13,7 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 
 const BROWSER_POLICY_EVAL_QUEUE = 'browser-policy-evaluation';
 const EVAL_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+const ON_DEMAND_EVAL_DEDUPE_WINDOW_MS = 30 * 1000;
 
 interface PolicyEvalJobData {
   type: 'evaluate';
@@ -92,6 +94,22 @@ export async function triggerBrowserPolicyEvaluation(
   policyId?: string
 ): Promise<string> {
   const queue = getEvalQueue();
+  const slot = Math.floor(Date.now() / ON_DEMAND_EVAL_DEDUPE_WINDOW_MS).toString(36);
+  const jobId = ['browser-policy-eval', orgId, policyId ?? 'all', slot].join(':');
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      return String(existing.id);
+    }
+    await existing.remove().catch((error) => {
+      console.error(
+        `[BrowserSecurityJobs] Failed to remove stale evaluation job ${jobId}:`,
+        error
+      );
+    });
+  }
+
   const job = await queue.add(
     'evaluate',
     {
@@ -101,6 +119,7 @@ export async function triggerBrowserPolicyEvaluation(
       queuedAt: new Date().toISOString(),
     },
     {
+      jobId,
       removeOnComplete: { count: 100 },
       removeOnFail: { count: 200 },
     }

@@ -1,3 +1,13 @@
+// Tauri origins are always allowed — the Breeze Viewer desktop app needs CORS
+// access in every environment (dev, staging, production).
+export const TAURI_ORIGINS = [
+  'tauri://localhost',
+  'http://tauri.localhost'
+] as const;
+
+// Dev-only origins for local development servers.
+// Tauri origins are NOT included here — they're added unconditionally
+// in createCorsOriginResolver() via TAURI_ORIGINS.
 export const DEFAULT_ALLOWED_ORIGINS = [
   'http://localhost:4321',
   'http://127.0.0.1:4321',
@@ -5,8 +15,6 @@ export const DEFAULT_ALLOWED_ORIGINS = [
   'http://127.0.0.1:4322',
   'http://localhost:1420',
   'http://127.0.0.1:1420',
-  'tauri://localhost',
-  'http://tauri.localhost'
 ] as const;
 
 type OriginResolverOptions = {
@@ -38,6 +46,7 @@ export function createCorsOriginResolver(options: OriginResolverOptions = {}): (
     .filter((value) => value.length > 0);
 
   const allowedOrigins = new Set<string>([
+    ...TAURI_ORIGINS,
     ...defaultOrigins,
     ...configuredOrigins
   ]);

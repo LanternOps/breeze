@@ -3,7 +3,6 @@
 package tools
 
 import (
-	"bufio"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -19,7 +18,7 @@ func listServicesOS(search, statusFilter string) ([]ServiceInfo, error) {
 
 	var services []ServiceInfo
 	searchLower := strings.ToLower(search)
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	scanner := newBoundedScanner(string(output))
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -66,6 +65,9 @@ func listServicesOS(search, statusFilter string) ([]ServiceInfo, error) {
 
 		services = append(services, info)
 	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("failed to parse systemctl list output: %w", err)
+	}
 
 	return services, nil
 }
@@ -79,7 +81,10 @@ func getServiceOS(name string) (*ServiceInfo, error) {
 		return nil, fmt.Errorf("service not found: %w", err)
 	}
 
-	props := parseSystemctlProperties(string(output))
+	props, err := parseSystemctlProperties(string(output))
+	if err != nil {
+		return nil, err
+	}
 
 	status := "Unknown"
 	switch props["ActiveState"] {
@@ -144,9 +149,9 @@ func getServiceStartType(name string) string {
 	}
 }
 
-func parseSystemctlProperties(output string) map[string]string {
+func parseSystemctlProperties(output string) (map[string]string, error) {
 	props := make(map[string]string)
-	scanner := bufio.NewScanner(strings.NewReader(output))
+	scanner := newBoundedScanner(output)
 	for scanner.Scan() {
 		line := scanner.Text()
 		parts := strings.SplitN(line, "=", 2)
@@ -154,5 +159,8 @@ func parseSystemctlProperties(output string) map[string]string {
 			props[parts[0]] = parts[1]
 		}
 	}
-	return props
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("failed to parse systemctl properties: %w", err)
+	}
+	return props, nil
 }

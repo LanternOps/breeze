@@ -18,7 +18,8 @@ type uninstallAttempt struct {
 }
 
 const (
-	maxSoftwareNameLength = 200
+	maxSoftwareNameLength    = 200
+	maxSoftwareVersionLength = 100
 )
 
 var (
@@ -73,8 +74,31 @@ func validateSoftwareName(name string) error {
 	if strings.Contains(trimmed, "..") {
 		return fmt.Errorf("software name contains invalid traversal sequence")
 	}
+	if strings.HasPrefix(trimmed, "-") {
+		return fmt.Errorf("software name must not start with '-'")
+	}
 	if invalidSoftwareNamePattern.MatchString(trimmed) || shellMetaPattern.MatchString(trimmed) {
 		return fmt.Errorf("software name contains unsafe characters")
+	}
+	return nil
+}
+
+func validateSoftwareVersion(version string) error {
+	trimmed := strings.TrimSpace(version)
+	if trimmed == "" {
+		return nil
+	}
+	if len(trimmed) > maxSoftwareVersionLength {
+		return fmt.Errorf("software version exceeds %d characters", maxSoftwareVersionLength)
+	}
+	if strings.HasPrefix(trimmed, "-") {
+		return fmt.Errorf("software version must not start with '-'")
+	}
+	if strings.Contains(trimmed, "..") {
+		return fmt.Errorf("software version contains invalid traversal sequence")
+	}
+	if invalidSoftwareNamePattern.MatchString(trimmed) || shellMetaPattern.MatchString(trimmed) {
+		return fmt.Errorf("software version contains unsafe characters")
 	}
 	return nil
 }
@@ -87,6 +111,9 @@ func UninstallSoftware(payload map[string]any) CommandResult {
 	version := strings.TrimSpace(GetPayloadString(payload, "version", ""))
 
 	if err := validateSoftwareName(name); err != nil {
+		return NewErrorResult(err, time.Since(startTime).Milliseconds())
+	}
+	if err := validateSoftwareVersion(version); err != nil {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
 
@@ -260,7 +287,8 @@ func runUninstallAttempts(softwareName string, attempts []uninstallAttempt) erro
 		cmd := exec.CommandContext(ctx, attempt.command, attempt.args...)
 		output, err := cmd.CombinedOutput()
 		cancel()
-		lowerOutput := strings.ToLower(string(output))
+		sanitizedOutput, outputTruncated := sanitizeUninstallOutput(string(output))
+		lowerOutput := strings.ToLower(sanitizedOutput)
 
 		if err == nil {
 			return nil
@@ -275,12 +303,20 @@ func runUninstallAttempts(softwareName string, attempts []uninstallAttempt) erro
 			return nil
 		}
 
-		errors = append(errors, fmt.Sprintf("%s %v: %v (%s)", attempt.command, attempt.args, err, strings.TrimSpace(string(output))))
+		errLine := fmt.Sprintf("%s %v: %v (%s)", attempt.command, attempt.args, err, strings.TrimSpace(sanitizedOutput))
+		if outputTruncated {
+			errLine += " [output truncated]"
+		}
+		errors = append(errors, errLine)
 	}
 
 	if attempted == 0 {
 		return fmt.Errorf("no supported uninstall command found on this endpoint for %q", softwareName)
 	}
 
-	return fmt.Errorf("failed to uninstall %q after %d attempt(s): %s", softwareName, attempted, strings.Join(errors, "; "))
+	joined, truncated := truncateStringBytes(strings.Join(errors, "; "), maxUninstallErrorBytes)
+	if truncated {
+		joined += " [error summary truncated]"
+	}
+	return fmt.Errorf("failed to uninstall %q after %d attempt(s): %s", softwareName, attempted, joined)
 }

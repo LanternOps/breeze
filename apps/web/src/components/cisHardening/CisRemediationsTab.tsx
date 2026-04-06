@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { cn, friendlyFetchError, formatRelativeTime } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
+import HelpTooltip from '../shared/HelpTooltip';
 
 type Remediation = {
   id: string;
@@ -88,7 +89,10 @@ export default function CisRemediationsTab({ refreshKey }: CisRemediationsTabPro
       )}
 
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold">Remediations</h3>
+        <h3 className="text-lg font-semibold">
+          Remediations
+          <HelpTooltip text="Automated fixes for failed CIS checks. Each must be approved before execution on the target device." />
+        </h3>
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}

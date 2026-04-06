@@ -6,6 +6,7 @@ import { devices } from '../db/schema';
 import { getRedisConnection } from '../services/redis';
 import { computeAndPersistDeviceReliability, computeAndPersistOrgReliability } from '../services/reliabilityScoring';
 import { captureException } from '../services/sentry';
+import { isReusableState } from '../services/bullmqUtils';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -16,6 +17,7 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 };
 
 const RELIABILITY_QUEUE = 'reliability-scoring';
+const ON_DEMAND_RELIABILITY_DEDUPE_WINDOW_MS = 30 * 1000;
 
 type ScanOrgsJobData = {
   type: 'scan-orgs';
@@ -106,6 +108,9 @@ export function createReliabilityWorker(): Worker<ReliabilityJobData> {
     {
       connection: getRedisConnection(),
       concurrency: 5,
+      lockDuration: 300_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 2,
     }
   );
 }
@@ -162,6 +167,19 @@ export async function shutdownReliabilityWorker(): Promise<void> {
 
 export async function enqueueDeviceReliabilityComputation(deviceId: string): Promise<string> {
   const queue = getReliabilityQueue();
+  const slot = Math.floor(Date.now() / ON_DEMAND_RELIABILITY_DEDUPE_WINDOW_MS).toString(36);
+  const jobId = `reliability-device:${deviceId}:${slot}`;
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      return String(existing.id);
+    }
+    await existing.remove().catch((error) => {
+      console.error(`[ReliabilityWorker] Failed to remove stale device computation job ${jobId}:`, error);
+    });
+  }
+
   const job = await queue.add(
     'compute-device',
     {
@@ -170,6 +188,7 @@ export async function enqueueDeviceReliabilityComputation(deviceId: string): Pro
       queuedAt: new Date().toISOString(),
     },
     {
+      jobId,
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 200 },
     }

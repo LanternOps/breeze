@@ -4,15 +4,88 @@ package desktop
 
 import (
 	"image"
+	"sync"
 	"unsafe"
 )
 
 var (
 	procGetCursorInfo = user32.NewProc("GetCursorInfo")
 	procGetIconInfo   = user32.NewProc("GetIconInfo")
+	procLoadCursorW   = user32.NewProc("LoadCursorW")
 )
 
 const cursorShowing = 0x00000001
+
+// Standard Windows cursor resource IDs (MAKEINTRESOURCE values).
+const (
+	idcArrow       = 32512
+	idcIBeam       = 32513
+	idcWait        = 32514
+	idcCross       = 32515
+	idcSizeNWSE    = 32642
+	idcSizeNESW    = 32643
+	idcSizeWE      = 32644
+	idcSizeNS      = 32645
+	idcSizeAll     = 32646
+	idcNo          = 32648
+	idcHand        = 32649
+	idcAppStarting = 32650
+	idcHelp        = 32651
+)
+
+// cursorShapeEntry maps a system cursor handle to its CSS cursor name.
+type cursorShapeEntry struct {
+	handle uintptr
+	css    string
+}
+
+// stdCursors is lazily initialized with system cursor handles.
+var (
+	stdCursors     []cursorShapeEntry
+	stdCursorsOnce sync.Once
+)
+
+// loadStdCursors populates the stdCursors table by loading each standard
+// Windows cursor via LoadCursorW(NULL, IDC_*). Called once on first use.
+func loadStdCursors() {
+	type pair struct {
+		id  uintptr
+		css string
+	}
+	pairs := []pair{
+		{idcArrow, "default"},
+		{idcIBeam, "text"},
+		{idcWait, "wait"},
+		{idcCross, "crosshair"},
+		{idcSizeNWSE, "nwse-resize"},
+		{idcSizeNESW, "nesw-resize"},
+		{idcSizeWE, "ew-resize"},
+		{idcSizeNS, "ns-resize"},
+		{idcSizeAll, "move"},
+		{idcNo, "not-allowed"},
+		{idcHand, "pointer"},
+		{idcAppStarting, "progress"},
+		{idcHelp, "help"},
+	}
+	for _, p := range pairs {
+		h, _, _ := procLoadCursorW.Call(0, p.id)
+		if h != 0 {
+			stdCursors = append(stdCursors, cursorShapeEntry{handle: h, css: p.css})
+		}
+	}
+}
+
+// cursorShapeFromHandle returns the CSS cursor name for a system cursor handle.
+// Returns "default" if the handle doesn't match any known standard cursor.
+func cursorShapeFromHandle(hCursor uintptr) string {
+	stdCursorsOnce.Do(loadStdCursors)
+	for _, entry := range stdCursors {
+		if entry.handle == hCursor {
+			return entry.css
+		}
+	}
+	return "default"
+}
 
 type cursorInfoW struct {
 	CbSize      uint32
@@ -42,6 +115,8 @@ func (c *dxgiCapturer) CursorPosition() (x, y int32, visible bool) {
 	ci.CbSize = uint32(unsafe.Sizeof(ci))
 	ret, _, _ := procGetCursorInfo.Call(uintptr(unsafe.Pointer(&ci)))
 	if ret != 0 {
+		// Also update shape for CursorShape() — avoids a second syscall.
+		c.cursorShape.Store(cursorShapeFromHandle(ci.HCursor))
 		return ci.PtScreenPos.X, ci.PtScreenPos.Y, ci.Flags&cursorShowing != 0
 	}
 	// GetCursorInfo failed — cursor goroutine is on a different desktop
@@ -49,7 +124,19 @@ func (c *dxgiCapturer) CursorPosition() (x, y int32, visible bool) {
 	return c.cursorX.Load(), c.cursorY.Load(), c.cursorVis.Load()
 }
 
+// CursorShape implements CursorShapeProvider. Returns the CSS cursor name
+// matching the current system cursor (e.g. "default", "pointer", "text").
+// The shape is updated as a side effect of CursorPosition() or
+// sampleCursorForCrossThread(), so callers should call CursorPosition first.
+func (c *dxgiCapturer) CursorShape() string {
+	if v := c.cursorShape.Load(); v != nil {
+		return v.(string)
+	}
+	return "default"
+}
+
 var _ CursorProvider = (*dxgiCapturer)(nil)
+var _ CursorShapeProvider = (*dxgiCapturer)(nil)
 
 type cursorOverlay struct{}
 

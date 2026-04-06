@@ -6,6 +6,12 @@ param(
     [string]$AgentExePath = "",
 
     [Parameter(Mandatory = $false)]
+    [string]$BackupExePath = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$WatchdogExePath = "",
+
+    [Parameter(Mandatory = $false)]
     [string]$OutputPath = ""
 )
 
@@ -21,6 +27,12 @@ $enrollAgentScriptPath = Join-Path $PSScriptRoot "enroll-agent.ps1"
 if ([string]::IsNullOrWhiteSpace($AgentExePath)) {
     $AgentExePath = Join-Path $repoRoot "breeze-agent-windows-amd64.exe"
 }
+if ([string]::IsNullOrWhiteSpace($BackupExePath)) {
+    $BackupExePath = Join-Path $repoRoot "breeze-backup-windows-amd64.exe"
+}
+if ([string]::IsNullOrWhiteSpace($WatchdogExePath)) {
+    $WatchdogExePath = Join-Path $repoRoot "breeze-watchdog-windows-amd64.exe"
+}
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     $OutputPath = Join-Path $repoRoot "..\\dist\\breeze-agent.msi"
 }
@@ -34,6 +46,12 @@ if (-not (Test-Path $installerPath)) {
 }
 if (-not (Test-Path $AgentExePath)) {
     throw "Agent executable not found: $AgentExePath"
+}
+if (-not (Test-Path $BackupExePath)) {
+    throw "Backup executable not found: $BackupExePath"
+}
+if (-not (Test-Path $WatchdogExePath)) {
+    throw "Watchdog executable not found: $WatchdogExePath"
 }
 if (-not (Test-Path $taskXmlPath)) {
     throw "Task XML not found: $taskXmlPath"
@@ -64,6 +82,8 @@ $wixArgs = @(
     "-arch", "x64",
     "-d", "Version=$msiVersion",
     "-d", "AgentExePath=$AgentExePath",
+    "-d", "BackupExePath=$BackupExePath",
+    "-d", "WatchdogExePath=$WatchdogExePath",
     "-d", "UserTaskXmlPath=$taskXmlPath",
     "-d", "InstallUserHelperScriptPath=$installUserHelperScriptPath",
     "-d", "RemoveUserHelperScriptPath=$removeUserHelperScriptPath",

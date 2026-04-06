@@ -7,14 +7,14 @@ import (
 
 // Message type constants for IPC communication.
 const (
-	TypeAuthRequest  = "auth_request"
-	TypeAuthResponse = "auth_response"
-	TypeCommand      = "command"
+	TypeAuthRequest   = "auth_request"
+	TypeAuthResponse  = "auth_response"
+	TypeCommand       = "command"
 	TypeCommandResult = "command_result"
-	TypePing         = "ping"
-	TypePong         = "pong"
-	TypeCapabilities = "capabilities"
-	TypeDisconnect   = "disconnect"
+	TypePing          = "ping"
+	TypePong          = "pong"
+	TypeCapabilities  = "capabilities"
+	TypeDisconnect    = "disconnect"
 
 	// Phase 2: Notifications + Tray
 	TypeNotify       = "notify"
@@ -39,11 +39,25 @@ const (
 	TypeDesktopPeerDisconnected = "desktop_peer_disconnected"
 
 	// Launch a process as the logged-in user (sent to user-role helper)
-	TypeLaunchProcess  = "launch_process"
-	TypeLaunchResult   = "launch_result"
+	TypeLaunchProcess = "launch_process"
+	TypeLaunchResult  = "launch_result"
 
 	// TCC (Transparency, Consent, Control) permission status from macOS helpers
 	TypeTCCStatus = "tcc_status"
+
+	// Watchdog
+	TypeWatchdogPing          = "watchdog_ping"
+	TypeWatchdogPong          = "watchdog_pong"
+	TypeShutdownIntent        = "shutdown_intent"
+	TypeTokenUpdate           = "token_update"
+	TypeWatchdogCommand       = "watchdog_command"
+	TypeWatchdogCommandResult = "watchdog_command_result"
+	TypeStateSync             = "state_sync"
+
+	// Tamper protection (v2 — defined, not implemented)
+	TypeIntegrityCheck  = "integrity_check"
+	TypeIntegrityResult = "integrity_result"
+	TypeTamperAlert     = "tamper_alert"
 )
 
 // MaxMessageSize is the maximum size of a JSON IPC message (16MB).
@@ -68,8 +82,19 @@ type Envelope struct {
 // Helper role constants distinguish SYSTEM helpers (desktop capture) from
 // user-token helpers (script execution as the logged-in user).
 const (
-	HelperRoleSystem = "system"
-	HelperRoleUser   = "user"
+	HelperRoleSystem   = "system"
+	HelperRoleUser     = "user"
+	HelperRoleWatchdog = "watchdog"
+)
+
+const (
+	HelperBinaryUserHelper    = "user_helper"
+	HelperBinaryDesktopHelper = "desktop_helper"
+)
+
+const (
+	DesktopContextUserSession = "user_session"
+	DesktopContextLoginWindow = "login_window"
 )
 
 // AuthRequest is sent by the user helper to the root daemon after connecting.
@@ -84,6 +109,8 @@ type AuthRequest struct {
 	BinaryHash      string `json:"binaryHash"`
 	WinSessionID    uint32 `json:"winSessionId,omitempty"` // Windows session ID (1, 2, etc.)
 	HelperRole      string `json:"helperRole,omitempty"`   // "system" or "user" (default: "system")
+	BinaryKind      string `json:"binaryKind,omitempty"`   // "user_helper" or "desktop_helper"
+	DesktopContext  string `json:"desktopContext,omitempty"`
 }
 
 // AuthResponse is sent by the root daemon back to the user helper.
@@ -161,6 +188,7 @@ type DesktopStartRequest struct {
 	Offer        string          `json:"offer"`
 	ICEServers   json.RawMessage `json:"iceServers,omitempty"`
 	DisplayIndex int             `json:"displayIndex"`
+	GPUVendor    string          `json:"gpuVendor,omitempty"`
 }
 
 // DesktopStartResponse is returned by the user helper after creating the
@@ -199,8 +227,14 @@ type DesktopPeerDisconnectedNotice struct {
 // LaunchProcessRequest asks the user-role helper to launch a binary.
 // The helper is already running as the logged-in user, so no token
 // manipulation is needed.
+//
+// Security: handlers MUST validate BinaryPath against an allowlist of
+// permitted executables before launching. Args should be bounded to a
+// reasonable length to prevent resource exhaustion. Validation is the
+// responsibility of the handler, not this message type.
 type LaunchProcessRequest struct {
-	BinaryPath string `json:"binaryPath"`
+	BinaryPath string   `json:"binaryPath"`
+	Args       []string `json:"args,omitempty"`
 }
 
 // LaunchProcessResult is the response from the user helper.
@@ -216,6 +250,7 @@ type TCCStatus struct {
 	ScreenRecording bool      `json:"screenRecording"`
 	Accessibility   bool      `json:"accessibility"`
 	FullDiskAccess  bool      `json:"fullDiskAccess"`
+	RemoteDesktop   *bool     `json:"remoteDesktop,omitempty"`
 	CheckedAt       time.Time `json:"checkedAt"`
 }
 
@@ -227,4 +262,62 @@ type SessionInfoItem struct {
 	State           string `json:"state"`
 	Type            string `json:"type"`
 	HelperConnected bool   `json:"helperConnected"`
+}
+
+// WatchdogPing is sent by the watchdog to the agent to request a liveness check.
+type WatchdogPing struct {
+	RequestHealthSummary bool `json:"requestHealthSummary"`
+}
+
+// WatchdogPong is the agent's response to a WatchdogPing.
+type WatchdogPong struct {
+	Healthy       bool           `json:"healthy"`
+	HealthSummary map[string]any `json:"healthSummary,omitempty"`
+	Uptime        int64          `json:"uptimeSeconds"`
+}
+
+// ShutdownIntent is sent by the agent to the watchdog before a graceful shutdown.
+type ShutdownIntent struct {
+	Reason           string `json:"reason"`
+	ExpectedDuration int    `json:"expectedDurationSeconds,omitempty"`
+}
+
+// TokenUpdate is sent by the watchdog to the agent when the agent token changes.
+type TokenUpdate struct {
+	Token string `json:"token"`
+}
+
+// WatchdogCommand is a command forwarded from the watchdog to the agent.
+type WatchdogCommand struct {
+	CommandID string         `json:"commandId"`
+	Type      string         `json:"type"`
+	Payload   map[string]any `json:"payload,omitempty"`
+}
+
+// WatchdogCommandResult is the agent's response to a WatchdogCommand.
+type WatchdogCommandResult struct {
+	CommandID string `json:"commandId"`
+	Status    string `json:"status"`
+	Result    any    `json:"result,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// StateSync is sent by the agent to the watchdog to synchronize key state.
+type StateSync struct {
+	AgentVersion  string `json:"agentVersion"`
+	ConfigHash    string `json:"configHash"`
+	Connected     bool   `json:"connected"`
+	LastHeartbeat string `json:"lastHeartbeat"`
+}
+
+// IntegrityCheck asks the agent to verify the integrity of the given targets.
+// Tamper protection v2 — defined, not yet implemented.
+type IntegrityCheck struct {
+	Targets []string `json:"targets"`
+}
+
+// IntegrityResult is the agent's response to an IntegrityCheck.
+// Tamper protection v2 — defined, not yet implemented.
+type IntegrityResult struct {
+	Results map[string]string `json:"results"`
 }

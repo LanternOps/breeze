@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { deployments, deploymentDevices, devices } from '../db/schema';
-import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import {
   initializeDeployment,
   getDeploymentProgress,
@@ -14,8 +14,12 @@ import {
   incrementRetryCount
 } from '../services/deploymentEngine';
 import { writeRouteAudit } from '../services/auditEvents';
+import { PERMISSIONS } from '../services/permissions';
 
 export const deploymentRoutes = new Hono();
+const requireDeploymentRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
+const requireDeploymentWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
+const requireDeploymentExecute = requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action);
 
 // ============================================
 // Types
@@ -218,6 +222,7 @@ function mapDeploymentRow(deployment: typeof deployments.$inferSelect): Deployme
 deploymentRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requireDeploymentRead,
   zValidator('query', listDeploymentsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -268,6 +273,7 @@ deploymentRoutes.get(
 deploymentRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requireDeploymentWrite,
   zValidator('json', createDeploymentSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -336,6 +342,7 @@ deploymentRoutes.post(
 deploymentRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireDeploymentRead,
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -369,6 +376,7 @@ deploymentRoutes.get(
 deploymentRoutes.put(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireDeploymentWrite,
   zValidator('param', idParamSchema),
   zValidator('json', updateDeploymentSchema),
   async (c) => {
@@ -427,6 +435,7 @@ deploymentRoutes.put(
 deploymentRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireDeploymentWrite,
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -463,6 +472,8 @@ deploymentRoutes.delete(
 deploymentRoutes.post(
   '/:id/initialize',
   requireScope('organization', 'partner', 'system'),
+  requireDeploymentExecute,
+  requireMfa(),
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -514,6 +525,8 @@ deploymentRoutes.post(
 deploymentRoutes.post(
   '/:id/start',
   requireScope('organization', 'partner', 'system'),
+  requireDeploymentExecute,
+  requireMfa(),
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -566,6 +579,8 @@ deploymentRoutes.post(
 deploymentRoutes.post(
   '/:id/pause',
   requireScope('organization', 'partner', 'system'),
+  requireDeploymentExecute,
+  requireMfa(),
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -614,6 +629,8 @@ deploymentRoutes.post(
 deploymentRoutes.post(
   '/:id/resume',
   requireScope('organization', 'partner', 'system'),
+  requireDeploymentExecute,
+  requireMfa(),
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -662,6 +679,8 @@ deploymentRoutes.post(
 deploymentRoutes.post(
   '/:id/cancel',
   requireScope('organization', 'partner', 'system'),
+  requireDeploymentExecute,
+  requireMfa(),
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -715,6 +734,7 @@ deploymentRoutes.post(
 deploymentRoutes.get(
   '/:id/devices',
   requireScope('organization', 'partner', 'system'),
+  requireDeploymentRead,
   zValidator('param', idParamSchema),
   zValidator('query', listDevicesQuerySchema),
   async (c) => {
@@ -791,6 +811,8 @@ deploymentRoutes.get(
 deploymentRoutes.post(
   '/:id/devices/:deviceId/retry',
   requireScope('organization', 'partner', 'system'),
+  requireDeploymentExecute,
+  requireMfa(),
   zValidator('param', deviceRetryParamSchema),
   async (c) => {
     const auth = c.get('auth');

@@ -1,7 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const { getJobMock, addMock, closeMock } = vi.hoisted(() => ({
+  getJobMock: vi.fn(),
+  addMock: vi.fn(),
+  closeMock: vi.fn(),
+}));
+
 vi.mock('bullmq', () => ({
-  Queue: class {},
+  Queue: class {
+    getJob = getJobMock;
+    add = addMock;
+    close = closeMock;
+  },
   Worker: class {},
   Job: class {},
 }));
@@ -38,7 +48,11 @@ vi.mock('../services/automationRuntime', () => ({
 }));
 
 import { isCronDue } from '../services/automationRuntime';
-import { shouldSchedulePolicy } from './sensitiveDataJobs';
+import {
+  enqueueSensitiveDataScan,
+  shouldSchedulePolicy,
+  shutdownSensitiveDataWorkers,
+} from './sensitiveDataJobs';
 
 describe('shouldSchedulePolicy', () => {
   beforeEach(() => {
@@ -88,5 +102,36 @@ describe('shouldSchedulePolicy', () => {
       lastRunAt: '2026-02-26T12:00:25.000Z'
     }, now)).toBe(false);
     expect(isCronDue).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('enqueueSensitiveDataScan', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    getJobMock.mockResolvedValue(null);
+    addMock.mockResolvedValue({ id: 'queue-job-1' });
+    await shutdownSensitiveDataWorkers();
+  });
+
+  it('uses a stable BullMQ job id for scan dispatch', async () => {
+    await enqueueSensitiveDataScan('scan-123');
+
+    expect(addMock).toHaveBeenCalledWith(
+      'dispatch-scan',
+      { type: 'dispatch-scan', scanId: 'scan-123' },
+      expect.objectContaining({ jobId: 'sensitive-scan-scan-123' }),
+    );
+  });
+
+  it('reuses an active scan dispatch job for the same scan id', async () => {
+    getJobMock.mockResolvedValue({
+      id: 'existing-job',
+      getState: vi.fn().mockResolvedValue('delayed'),
+    });
+
+    const jobId = await enqueueSensitiveDataScan('scan-123');
+
+    expect(addMock).not.toHaveBeenCalled();
+    expect(jobId).toBe('existing-job');
   });
 });

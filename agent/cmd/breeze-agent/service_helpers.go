@@ -35,6 +35,9 @@ func isSystemServiceRunning() bool {
 	case "linux":
 		out, err := exec.CommandContext(ctx, "systemctl", "is-active", "breeze-agent").Output()
 		return err == nil && strings.TrimSpace(string(out)) == "active"
+	case "windows":
+		out, err := exec.CommandContext(ctx, "sc", "query", "BreezeAgent").Output()
+		return err == nil && strings.Contains(string(out), "RUNNING")
 	default:
 		return false
 	}

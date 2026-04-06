@@ -3,6 +3,7 @@ import { Database, Save, Key, Link, ScrollText, Info } from 'lucide-react';
 import { useOrgStore } from '../../stores/orgStore';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { showToast } from '../shared/Toast';
 
 type LogForwardingData = {
   enabled: boolean;
@@ -36,7 +37,6 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
-  const [success, setSuccess] = useState(false);
 
   useEffect(() => {
     if (!currentOrgId) return;
@@ -86,7 +86,6 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
 
     setSaving(true);
     setError(undefined);
-    setSuccess(false);
 
     try {
       const body: Record<string, unknown> = {
@@ -112,8 +111,7 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
         throw new Error(data.error || 'Failed to save log forwarding settings');
       }
 
-      setSuccess(true);
-      setTimeout(() => setSuccess(false), 3000);
+      showToast({ message: 'Log forwarding settings saved', type: 'success' });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save settings');
     } finally {
@@ -157,12 +155,6 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
         {error ? (
           <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
             {error}
-          </div>
-        ) : null}
-
-        {success ? (
-          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">
-            Log forwarding settings saved successfully.
           </div>
         ) : null}
 

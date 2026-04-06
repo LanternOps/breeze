@@ -124,7 +124,7 @@ export default function DeviceFilters({
                     type="checkbox"
                     checked={statusFilter.includes(option.value)}
                     onChange={() => handleStatusToggle(option.value)}
-                    className="h-4 w-4 rounded border-gray-300"
+                    className="h-4 w-4 rounded border-border"
                   />
                   <span className={`h-2 w-2 rounded-full ${option.color}`} />
                   <span className="text-sm">{option.label}</span>
@@ -153,7 +153,7 @@ export default function DeviceFilters({
                     type="checkbox"
                     checked={osFilter.includes(option.value)}
                     onChange={() => handleOsToggle(option.value)}
-                    className="h-4 w-4 rounded border-gray-300"
+                    className="h-4 w-4 rounded border-border"
                   />
                   <span className="text-sm">{option.label}</span>
                 </label>
@@ -184,7 +184,7 @@ export default function DeviceFilters({
                         type="checkbox"
                         checked={roleFilter.includes(option.value)}
                         onChange={() => handleRoleToggle(option.value)}
-                        className="h-4 w-4 rounded border-gray-300"
+                        className="h-4 w-4 rounded border-border"
                       />
                       <RoleIcon className="h-3.5 w-3.5 text-muted-foreground" />
                       <span className="text-sm">{option.label}</span>
@@ -231,7 +231,7 @@ export default function DeviceFilters({
                       type="checkbox"
                       checked={tagsFilter.includes(tag)}
                       onChange={() => handleTagToggle(tag)}
-                      className="h-4 w-4 rounded border-gray-300"
+                      className="h-4 w-4 rounded border-border"
                     />
                     <span className="text-sm">{tag}</span>
                   </label>
@@ -260,7 +260,7 @@ export default function DeviceFilters({
   return (
     <div className="w-64 rounded-lg border bg-card p-4 shadow-sm">
       <div className="flex items-center justify-between">
-        <h3 className="font-semibold">Filters</h3>
+        <h3 className="text-sm font-semibold">Filters</h3>
         {hasActiveFilters && (
           <button
             type="button"
@@ -294,7 +294,7 @@ export default function DeviceFilters({
                   type="checkbox"
                   checked={statusFilter.includes(option.value)}
                   onChange={() => handleStatusToggle(option.value)}
-                  className="h-4 w-4 rounded border-gray-300"
+                  className="h-4 w-4 rounded border-border"
                 />
                 <span className={`h-2 w-2 rounded-full ${option.color}`} />
                 <span className="text-sm">{option.label}</span>
@@ -326,7 +326,7 @@ export default function DeviceFilters({
                   type="checkbox"
                   checked={osFilter.includes(option.value)}
                   onChange={() => handleOsToggle(option.value)}
-                  className="h-4 w-4 rounded border-gray-300"
+                  className="h-4 w-4 rounded border-border"
                 />
                 <span className="text-sm">{option.label}</span>
               </label>
@@ -360,7 +360,7 @@ export default function DeviceFilters({
                       type="checkbox"
                       checked={roleFilter.includes(option.value)}
                       onChange={() => handleRoleToggle(option.value)}
-                      className="h-4 w-4 rounded border-gray-300"
+                      className="h-4 w-4 rounded border-border"
                     />
                     <RoleIcon className="h-3.5 w-3.5 text-muted-foreground" />
                     <span className="text-sm">{option.label}</span>
@@ -427,7 +427,7 @@ export default function DeviceFilters({
                     type="checkbox"
                     checked={tagsFilter.includes(tag)}
                     onChange={() => handleTagToggle(tag)}
-                    className="h-4 w-4 rounded border-gray-300"
+                    className="h-4 w-4 rounded border-border"
                   />
                   <span className="text-sm">{tag}</span>
                 </label>

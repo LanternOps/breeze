@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Search, ChevronLeft, ChevronRight, Eye, Clock, CheckCircle, XCircle, Loader2, AlertTriangle } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Eye, Clock, CheckCircle, XCircle, Loader2, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 export type ExecutionStatus = 'pending' | 'running' | 'completed' | 'failed' | 'timeout';
 
@@ -27,11 +27,11 @@ type ExecutionHistoryProps = {
 };
 
 const statusConfig: Record<ExecutionStatus, { label: string; color: string; icon: typeof CheckCircle }> = {
-  pending: { label: 'Pending', color: 'bg-gray-500/20 text-gray-700 border-gray-500/40', icon: Clock },
+  pending: { label: 'Pending', color: 'bg-muted text-muted-foreground border-border', icon: Clock },
   running: { label: 'Running', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40', icon: Loader2 },
-  completed: { label: 'Completed', color: 'bg-green-500/20 text-green-700 border-green-500/40', icon: CheckCircle },
-  failed: { label: 'Failed', color: 'bg-red-500/20 text-red-700 border-red-500/40', icon: XCircle },
-  timeout: { label: 'Timeout', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40', icon: AlertTriangle }
+  completed: { label: 'Completed', color: 'bg-success/15 text-success border-success/30', icon: CheckCircle },
+  failed: { label: 'Failed', color: 'bg-destructive/15 text-destructive border-destructive/30', icon: XCircle },
+  timeout: { label: 'Timeout', color: 'bg-warning/15 text-warning border-warning/30', icon: AlertTriangle }
 };
 
 function formatDuration(seconds?: number): string {
@@ -84,6 +84,18 @@ export default function ExecutionHistory({
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [dateFilter, setDateFilter] = useState<string>('all');
   const [currentPage, setCurrentPage] = useState(1);
+  const [sortColumn, setSortColumn] = useState<string | null>(null);
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+
+  const toggleSort = (column: string) => {
+    if (sortColumn === column) {
+      setSortDirection(d => d === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortColumn(column);
+      setSortDirection('asc');
+    }
+    setCurrentPage(1);
+  };
 
   const filteredExecutions = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -124,20 +136,42 @@ export default function ExecutionHistory({
     });
   }, [executions, query, statusFilter, dateFilter]);
 
-  const totalPages = Math.ceil(filteredExecutions.length / pageSize);
+  const sortedExecutions = useMemo(() => {
+    if (!sortColumn) return filteredExecutions;
+    return [...filteredExecutions].sort((a, b) => {
+      let cmp = 0;
+      switch (sortColumn) {
+        case 'scriptName':
+          cmp = a.scriptName.localeCompare(b.scriptName);
+          break;
+        case 'device':
+          cmp = a.deviceHostname.localeCompare(b.deviceHostname);
+          break;
+        case 'status':
+          cmp = a.status.localeCompare(b.status);
+          break;
+        case 'startedAt':
+          cmp = a.startedAt.localeCompare(b.startedAt);
+          break;
+        case 'duration':
+          cmp = (a.duration ?? 0) - (b.duration ?? 0);
+          break;
+        case 'exitCode':
+          cmp = (a.exitCode ?? -1) - (b.exitCode ?? -1);
+          break;
+      }
+      return sortDirection === 'asc' ? cmp : -cmp;
+    });
+  }, [filteredExecutions, sortColumn, sortDirection]);
+
+  const totalPages = Math.ceil(sortedExecutions.length / pageSize);
   const startIndex = (currentPage - 1) * pageSize;
-  const paginatedExecutions = filteredExecutions.slice(startIndex, startIndex + pageSize);
+  const paginatedExecutions = sortedExecutions.slice(startIndex, startIndex + pageSize);
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-lg font-semibold">Execution History</h2>
-          <p className="text-sm text-muted-foreground">
-            {filteredExecutions.length} of {executions.length} executions
-          </p>
-        </div>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center flex-wrap">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className="flex flex-1 flex-col gap-2 sm:flex-row sm:items-center flex-wrap">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
@@ -181,19 +215,54 @@ export default function ExecutionHistory({
             <option value="month">Last 30 Days</option>
           </select>
         </div>
+        <span className="text-xs text-muted-foreground tabular-nums whitespace-nowrap">
+          {filteredExecutions.length} of {executions.length}
+        </span>
       </div>
 
-      <div className="mt-6 overflow-hidden rounded-md border">
+      <div className="mt-4 overflow-x-auto rounded-md border">
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              {showScriptName && <th className="px-4 py-3">Script</th>}
-              <th className="px-4 py-3">Device</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Started</th>
-              <th className="px-4 py-3">Duration</th>
-              <th className="px-4 py-3">Exit Code</th>
-              <th className="px-4 py-3 text-right">Actions</th>
+              {showScriptName && (
+                <th className="px-4 py-2.5 cursor-pointer select-none transition-colors hover:text-foreground" onClick={() => toggleSort('scriptName')}>
+                  <span className="inline-flex items-center gap-1">
+                    Script
+                    {sortColumn === 'scriptName' && (sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
+                  </span>
+                </th>
+              )}
+              <th className="px-4 py-2.5 cursor-pointer select-none transition-colors hover:text-foreground" onClick={() => toggleSort('device')}>
+                <span className="inline-flex items-center gap-1">
+                  Device
+                  {sortColumn === 'device' && (sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
+                </span>
+              </th>
+              <th className="px-4 py-2.5 cursor-pointer select-none transition-colors hover:text-foreground" onClick={() => toggleSort('status')}>
+                <span className="inline-flex items-center gap-1">
+                  Status
+                  {sortColumn === 'status' && (sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
+                </span>
+              </th>
+              <th className="px-4 py-2.5 cursor-pointer select-none transition-colors hover:text-foreground" onClick={() => toggleSort('startedAt')}>
+                <span className="inline-flex items-center gap-1">
+                  Started
+                  {sortColumn === 'startedAt' && (sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
+                </span>
+              </th>
+              <th className="px-4 py-2.5 cursor-pointer select-none transition-colors hover:text-foreground" onClick={() => toggleSort('duration')}>
+                <span className="inline-flex items-center gap-1">
+                  Duration
+                  {sortColumn === 'duration' && (sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
+                </span>
+              </th>
+              <th className="px-4 py-2.5 cursor-pointer select-none transition-colors hover:text-foreground" onClick={() => toggleSort('exitCode')}>
+                <span className="inline-flex items-center gap-1">
+                  Exit Code
+                  {sortColumn === 'exitCode' && (sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
+                </span>
+              </th>
+              <th className="px-4 py-2.5 text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -209,8 +278,13 @@ export default function ExecutionHistory({
                 return (
                   <tr
                     key={execution.id}
-                    className="transition hover:bg-muted/40 cursor-pointer"
+                    tabIndex={0}
+                    role="button"
+                    className="transition hover:bg-muted/40 cursor-pointer focus-visible:bg-muted/40 focus-visible:outline-none"
                     onClick={() => onViewDetails?.(execution)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onViewDetails?.(execution); }
+                    }}
                   >
                     {showScriptName && (
                       <td className="px-4 py-3 text-sm font-medium">{execution.scriptName}</td>
@@ -246,8 +320,8 @@ export default function ExecutionHistory({
                         <span className={cn(
                           'inline-flex items-center rounded px-2 py-0.5 text-xs font-mono',
                           execution.exitCode === 0
-                            ? 'bg-green-500/20 text-green-700'
-                            : 'bg-red-500/20 text-red-700'
+                            ? 'bg-success/15 text-success'
+                            : 'bg-destructive/15 text-destructive'
                         )}>
                           {execution.exitCode}
                         </span>

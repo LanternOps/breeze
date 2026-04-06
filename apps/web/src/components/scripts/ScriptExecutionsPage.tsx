@@ -7,6 +7,7 @@ import type { Script } from './ScriptList';
 import type { ScriptParameter } from './ScriptForm';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import Breadcrumbs from '../layout/Breadcrumbs';
 
 type ScriptExecutionsPageProps = {
   scriptId: string;
@@ -156,7 +157,7 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
               fetchScript();
               fetchExecutions();
             }}
-            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
             Try again
           </button>
@@ -167,6 +168,11 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
 
   return (
     <div className="space-y-6">
+      <Breadcrumbs items={[
+        { label: 'Scripts', href: '/scripts' },
+        { label: script?.name || 'Script', href: `/scripts/${scriptId}` },
+        { label: 'Executions' }
+      ]} />
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
           <a
@@ -176,7 +182,7 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
             <ArrowLeft className="h-5 w-5" />
           </a>
           <div>
-            <h1 className="text-2xl font-bold">Execution History</h1>
+            <h1 className="text-xl font-semibold tracking-tight">Execution History</h1>
             <p className="text-muted-foreground">
               {script?.name || 'Loading...'}
             </p>
@@ -186,7 +192,7 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
           <button
             type="button"
             onClick={() => setShowExecuteModal(true)}
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:bg-primary/90"
           >
             <Play className="h-4 w-4" />
             Run Script

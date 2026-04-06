@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { Monitor, ExternalLink, Download, X } from 'lucide-react';
+import { Monitor, MonitorOff, ExternalLink, Download, X } from 'lucide-react';
+import type { DesktopAccessState, RemoteAccessPolicy } from '@breeze/shared';
 import { fetchWithAuth } from '@/stores/auth';
 import { getViewerDownloadInfo, getAllViewerDownloads } from '@/lib/viewerDownload';
 
@@ -9,6 +10,9 @@ interface Props {
   compact?: boolean;
   iconOnly?: boolean;
   disabled?: boolean;
+  isHeadless?: boolean;
+  desktopAccess?: DesktopAccessState | null;
+  remoteAccessPolicy?: RemoteAccessPolicy | null;
 }
 
 /**
@@ -24,16 +28,46 @@ function tryDeepLink(url: string) {
   setTimeout(() => a.remove(), 100);
 }
 
-export default function ConnectDesktopButton({ deviceId, className = '', compact = false, iconOnly = false, disabled = false }: Props) {
+function desktopAccessUnavailableReason(
+  desktopAccess: DesktopAccessState | null | undefined,
+  remoteAccessPolicy?: RemoteAccessPolicy | null,
+): string | null {
+  if (!desktopAccess || desktopAccess.mode !== 'unavailable') {
+    return null;
+  }
+
+  switch (desktopAccess.reason) {
+    case 'unsupported_os':
+      return remoteAccessPolicy?.vncRelay
+        ? null  // VNC fallback available — don't show unavailable message
+        : 'Login-window desktop requires macOS 14 (Sonoma) or later. Enable VNC Relay in the device\'s configuration policy to connect at the login screen.';
+    case 'missing_entitlement':
+      return 'Login-window desktop is blocked until the required Apple entitlement is approved';
+    case 'manual_install':
+      return 'Login-window desktop is only supported for managed installs';
+    case 'missing_permission':
+      return 'macOS permissions required for unattended desktop access are still missing';
+    case 'virtual_display_unavailable':
+      return 'No capturable display is available for this Mac';
+    case 'helper_not_connected':
+      return 'The macOS desktop helper is not connected yet';
+    default:
+      return 'Desktop is unavailable on this device';
+  }
+}
+
+export default function ConnectDesktopButton({ deviceId, className = '', compact = false, iconOnly = false, disabled = false, isHeadless = false, desktopAccess = null, remoteAccessPolicy = null }: Props) {
   const [status, setStatus] = useState<'idle' | 'creating' | 'launching' | 'fallback'>('idle');
   const [error, setError] = useState<string | null>(null);
-  const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const autoDismissTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const sessionIdRef = useRef<string | null>(null);
 
-  // Clean up timer on unmount
+  // Clean up timers on unmount
   useEffect(() => {
     return () => {
-      if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+      if (autoDismissTimerRef.current) clearTimeout(autoDismissTimerRef.current);
     };
   }, []);
 
@@ -46,6 +80,52 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
     setError(null);
 
     try {
+      // Auto-detect: fall back to VNC for older macOS at login screen
+      const needsVNC = desktopAccess?.mode === 'unavailable'
+        && desktopAccess?.reason === 'unsupported_os'
+        && remoteAccessPolicy?.vncRelay === true;
+
+      if (needsVNC) {
+        // Create VNC tunnel — API generates ephemeral password
+        const tunnelRes = await fetchWithAuth('/tunnels', {
+          method: 'POST',
+          body: JSON.stringify({ deviceId, type: 'vnc' }),
+        });
+
+        if (!tunnelRes.ok) {
+          const err = await tunnelRes.json().catch(() => ({ error: 'Failed to create VNC tunnel' }));
+          throw new Error(err.error || 'Failed to create VNC tunnel');
+        }
+
+        const tunnel = await tunnelRes.json();
+        const vncPassword = tunnel.vncPassword || '';
+
+        // Get WS ticket for the tunnel
+        const ticketRes = await fetchWithAuth(`/tunnels/${tunnel.id}/ws-ticket`, {
+          method: 'POST',
+        });
+        if (!ticketRes.ok) {
+          fetchWithAuth(`/tunnels/${tunnel.id}`, { method: 'DELETE' }).catch(() => {});
+          throw new Error('Failed to obtain VNC tunnel ticket');
+        }
+        const ticketData = await ticketRes.json();
+        const ticket = ticketData.ticket?.ticket;
+        if (!ticket) {
+          fetchWithAuth(`/tunnels/${tunnel.id}`, { method: 'DELETE' }).catch(() => {});
+          throw new Error('Invalid ticket response from server');
+        }
+
+        // Pass password via sessionStorage (not URL) to avoid browser history exposure
+        const wsUrl = `wss://${window.location.host}/api/v1/tunnel-ws/${tunnel.id}/ws?ticket=${ticket}`;
+        if (vncPassword) {
+          sessionStorage.setItem(`vnc-pwd-${tunnel.id}`, vncPassword);
+        }
+        window.location.href = `/remote/vnc/${tunnel.id}?ws=${encodeURIComponent(wsUrl)}`;
+
+        setStatus('idle');
+        return;
+      }
+
       // Clean up stale sessions in parallel with creating new one
       const [, response] = await Promise.all([
         fetchWithAuth('/remote/sessions/stale', { method: 'DELETE' }).catch(() => {}),
@@ -90,16 +170,50 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       // Use hidden iframe to trigger protocol handler without affecting the page
       tryDeepLink(deepLink);
 
-      // Always show fallback after 3 seconds — if the viewer opened, the user
-      // simply ignores it; if it didn't, they get the download link immediately.
-      fallbackTimerRef.current = setTimeout(() => {
-        setStatus((current) => current === 'launching' ? 'fallback' : current);
-      }, 3000);
+      // Poll session status to detect whether the viewer actually opened.
+      // The session starts as 'pending'; the viewer exchanges the connect code
+      // almost immediately, moving it to 'connecting' then 'active'.
+      // If it stays 'pending' after ~8s the viewer likely didn't launch.
+      const pollSessionId = session.id;
+      let pollCount = 0;
+      const maxPolls = 5; // 5 polls × ~1.5s = ~7.5s window
+
+      const poll = async () => {
+        pollCount++;
+        try {
+          const res = await fetchWithAuth(`/remote/sessions/${pollSessionId}`);
+          if (res.ok) {
+            const data = await res.json();
+            const sessionStatus = data.status ?? data.data?.status;
+            if (sessionStatus && sessionStatus !== 'pending') {
+              // Viewer connected — silently go back to idle
+              setStatus((cur) => cur === 'launching' || cur === 'fallback' ? 'idle' : cur);
+              return;
+            }
+          }
+        } catch { /* network error — keep polling */ }
+
+        if (pollCount >= maxPolls) {
+          // Timed out still pending — viewer didn't open, show fallback
+          setStatus((cur) => cur === 'launching' ? 'fallback' : cur);
+
+          // Auto-dismiss fallback after 20s so it doesn't linger
+          if (autoDismissTimerRef.current) clearTimeout(autoDismissTimerRef.current);
+          autoDismissTimerRef.current = setTimeout(() => {
+            setStatus((cur) => cur === 'fallback' ? 'idle' : cur);
+          }, 20000);
+          return;
+        }
+
+        pollTimerRef.current = setTimeout(poll, 1500);
+      };
+
+      pollTimerRef.current = setTimeout(poll, 1500);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Connection failed');
       setStatus('idle');
     }
-  }, [deviceId, endSession]);
+  }, [deviceId, desktopAccess, remoteAccessPolicy, endSession]);
 
   const handleDismiss = useCallback(() => {
     setStatus('idle');
@@ -116,7 +230,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
 
   // Shared fallback content for both compact and full modes
   const fallbackContent = status === 'fallback' ? (
-    <div className="absolute right-0 bottom-full z-50 mb-2 w-72 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm shadow-lg dark:border-amber-800 dark:bg-amber-950">
+    <div className="absolute right-0 top-full z-50 mt-2 w-72 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm shadow-lg dark:border-amber-800 dark:bg-amber-950">
       <div className="flex items-start gap-2.5">
         <Monitor className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
         <div className="flex-1">
@@ -190,6 +304,61 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
     </div>
   ) : null;
 
+  const headlessTitle = 'This device has no display \u2014 remote desktop is unavailable';
+  const desktopAccessUnavailable = desktopAccessUnavailableReason(desktopAccess, remoteAccessPolicy);
+  const policyDisabled = remoteAccessPolicy?.webrtcDesktop === false;
+  const policyTitle = policyDisabled
+    ? `Remote desktop is disabled by policy${remoteAccessPolicy?.policyName ? ` "${remoteAccessPolicy.policyName}"` : ''}`
+    : null;
+  const unavailableTitle = policyTitle ?? desktopAccessUnavailable ?? headlessTitle;
+
+  if (policyDisabled || isHeadless || desktopAccessUnavailable) {
+    if (iconOnly) {
+      return (
+        <div className={`relative ${className}`}>
+          <button
+            type="button"
+            disabled
+            title={unavailableTitle}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground cursor-not-allowed opacity-50"
+          >
+            <MonitorOff className="h-4 w-4" />
+          </button>
+        </div>
+      );
+    }
+
+    if (compact) {
+      return (
+        <div className="relative">
+          <button
+            type="button"
+            disabled
+            title={unavailableTitle}
+            className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-muted-foreground cursor-not-allowed opacity-50"
+          >
+            <MonitorOff className="h-4 w-4" />
+            Desktop Unavailable
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <div className={`relative ${className}`}>
+        <button
+          type="button"
+          disabled
+          title={unavailableTitle}
+          className="flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground cursor-not-allowed opacity-50"
+        >
+          <MonitorOff className="h-4 w-4" />
+          Desktop Unavailable
+        </button>
+      </div>
+    );
+  }
+
   if (iconOnly) {
     return (
       <div className={`relative ${className}`}>
@@ -197,8 +366,8 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           type="button"
           onClick={handleConnect}
           disabled={disabled || status === 'creating' || status === 'launching'}
-          title="Connect Desktop"
-          className="flex h-8 w-8 items-center justify-center rounded-md transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+          title={error || 'Connect Desktop'}
+          className={`flex h-8 w-8 items-center justify-center rounded-md transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 ${error ? 'text-red-500' : ''}`}
         >
           {status === 'creating' || status === 'launching' ? (
             <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
@@ -206,9 +375,6 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
             <Monitor className="h-4 w-4" />
           )}
         </button>
-        {error && (
-          <p className="absolute left-0 top-full mt-1 whitespace-nowrap text-xs text-red-500">{error}</p>
-        )}
         {fallbackContent}
       </div>
     );
@@ -221,10 +387,12 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           type="button"
           onClick={handleConnect}
           disabled={status === 'creating' || status === 'launching'}
-          className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+          title={error || undefined}
+          className={`flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 ${error ? 'text-red-500' : ''}`}
         >
           <Monitor className="h-4 w-4" />
-          {status === 'creating' ? 'Connecting...' :
+          {error ? 'Connection failed' :
+           status === 'creating' ? 'Connecting...' :
            status === 'launching' ? 'Launching...' :
            'Connect Desktop'}
         </button>
@@ -239,18 +407,16 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
         type="button"
         onClick={handleConnect}
         disabled={status === 'creating' || status === 'launching'}
-        className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+        title={error || undefined}
+        className={`flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${error ? 'border-red-300 bg-red-50 text-red-600 hover:bg-red-100 dark:border-red-800 dark:bg-red-950 dark:text-red-400 dark:hover:bg-red-900' : 'bg-background hover:bg-muted'}`}
       >
         <Monitor className="h-4 w-4" />
-        {status === 'creating' ? 'Creating session...' :
+        {error ? 'Connection failed' :
+         status === 'creating' ? 'Creating session...' :
          status === 'launching' ? 'Launching viewer...' :
          'Connect Desktop'}
-        {status === 'idle' && <ExternalLink className="w-3.5 h-3.5 opacity-60" />}
+        {status === 'idle' && !error && <ExternalLink className="w-3.5 h-3.5 opacity-60" />}
       </button>
-
-      {error && (
-        <p className="absolute left-0 top-full mt-2 text-sm text-red-500 dark:text-red-400">{error}</p>
-      )}
 
       {fallbackContent}
     </div>

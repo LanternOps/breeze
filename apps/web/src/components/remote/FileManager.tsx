@@ -36,6 +36,7 @@ import FolderPickerDialog from './FolderPickerDialog';
 import DeleteConfirmDialog from './DeleteConfirmDialog';
 import TrashView from './TrashView';
 import FileActivityPanel from './FileActivityPanel';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import type { FileActivity } from './FileActivityPanel';
 
 export type FileEntry = {
@@ -286,6 +287,7 @@ export default function FileManager({
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showTrash, setShowTrash] = useState(false);
   const [showActivity, setShowActivity] = useState(false);
+  const [showCleanupConfirm, setShowCleanupConfirm] = useState(false);
   const [operationLoading, setOperationLoading] = useState(false);
   const [activities, setActivities] = useState<FileActivity[]>([]);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: FileEntry } | null>(null);
@@ -483,14 +485,23 @@ export default function FileManager({
         // Upload file content to agent via system tools API
         const remotePath = joinRemotePath(currentPath, file.name);
 
-        const response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files/upload`, {
-          method: 'POST',
-          body: JSON.stringify({
-            path: remotePath,
-            content,
-            encoding: 'base64'
-          })
-        });
+        // Large files transit API → DB → WS → agent → disk; allow up to 2 minutes.
+        const uploadController = new AbortController();
+        const uploadTimeout = setTimeout(() => uploadController.abort(), 120_000);
+        let response: Response;
+        try {
+          response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files/upload`, {
+            method: 'POST',
+            body: JSON.stringify({
+              path: remotePath,
+              content,
+              encoding: 'base64'
+            }),
+            signal: uploadController.signal
+          });
+        } finally {
+          clearTimeout(uploadTimeout);
+        }
 
         if (!response.ok) {
           const err = await response.json().catch(() => ({ error: 'Upload failed' }));
@@ -866,15 +877,18 @@ export default function FileManager({
     });
   }, []);
 
-  const executeCleanup = useCallback(async () => {
+  const executeCleanup = useCallback(() => {
     const paths = Array.from(selectedCleanupPaths);
     if (paths.length === 0) {
       return;
     }
-    const confirmed = window.confirm(`Delete ${paths.length} selected cleanup targets?`);
-    if (!confirmed) {
-      return;
-    }
+    setShowCleanupConfirm(true);
+  }, [selectedCleanupPaths]);
+
+  const handleConfirmCleanup = useCallback(async () => {
+    setShowCleanupConfirm(false);
+    const paths = Array.from(selectedCleanupPaths);
+    if (paths.length === 0) return;
 
     setDiskLoadingAction('execute');
     setDiskError(null);
@@ -942,7 +956,7 @@ export default function FileManager({
         <div className="flex items-center gap-3">
           <Folder className="h-5 w-5 text-muted-foreground" />
           <div>
-            <h3 className="font-semibold">{deviceHostname}</h3>
+            <h3 className="text-sm font-semibold">{deviceHostname}</h3>
             <p className="text-xs text-muted-foreground">File Manager</p>
           </div>
         </div>
@@ -1577,6 +1591,16 @@ export default function FileManager({
         items={entries.filter(e => selectedItems.has(e.path)).map(e => ({ name: e.name, path: e.path, size: e.size, type: e.type }))}
         onConfirm={handleDelete}
         onClose={() => setShowDeleteConfirm(false)}
+      />
+      <ConfirmDialog
+        open={showCleanupConfirm}
+        onClose={() => setShowCleanupConfirm(false)}
+        onConfirm={handleConfirmCleanup}
+        title="Delete Cleanup Targets"
+        message={`Delete ${selectedCleanupPaths.size} selected cleanup target(s)? These files will be permanently removed from the device.`}
+        confirmLabel="Delete Files"
+        variant="destructive"
+        isLoading={diskLoadingAction === 'execute'}
       />
     </div>
   );

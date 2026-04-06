@@ -216,7 +216,7 @@ export default function VulnerabilitiesPage() {
                   checked={allSelected}
                   ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
                   onChange={(e) => toggleAll(e.target.checked)}
-                  className="h-4 w-4 rounded border-gray-300"
+                  className="h-4 w-4 rounded border-border"
                 />
               </th>
               <th className="px-4 py-3">Device</th>
@@ -242,7 +242,7 @@ export default function VulnerabilitiesPage() {
                       type="checkbox"
                       checked={selectedIds.has(t.id)}
                       onChange={(e) => toggleOne(t.id, e.target.checked)}
-                      className="h-4 w-4 rounded border-gray-300"
+                      className="h-4 w-4 rounded border-border"
                     />
                   </td>
                   <td className="px-4 py-3 text-sm font-medium">{t.deviceName}</td>

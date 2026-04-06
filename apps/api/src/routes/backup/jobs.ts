@@ -1,16 +1,35 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { eq, and, desc, gte, lte, sql } from 'drizzle-orm';
+import { eq, and, desc, gte, lte, sql, inArray } from 'drizzle-orm';
 import { db } from '../../db';
-import { backupJobs, backupConfigs, backupPolicies } from '../../db/schema';
+import { backupJobs, backupConfigs, devices } from '../../db/schema';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { createManualBackupJobIfIdle } from '../../services/backupJobCreation';
+import { removeQueuedBackupDispatch } from '../../jobs/backupEnqueue';
+import { recordBackupDispatchFailure } from '../../services/backupMetrics';
+import { resolveBackupConfigForDevice, resolveAllBackupAssignedDevices } from '../../services/featureConfigResolver';
+import { queueBackupStopCommand } from '../../services/commandQueue';
+import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import { jobListSchema } from './schemas';
-import type { BackupPolicyTargets } from './types';
 
 export const jobsRoutes = new Hono();
 
-jobsRoutes.get('/jobs', zValidator('query', jobListSchema), async (c) => {
+async function markBackupJobDispatchFailed(jobId: string, error: string) {
+  const now = new Date();
+  await db
+    .update(backupJobs)
+    .set({
+      status: 'failed',
+      completedAt: now,
+      updatedAt: now,
+      errorLog: error,
+    })
+    .where(eq(backupJobs.id, jobId));
+}
+
+jobsRoutes.get('/jobs', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('query', jobListSchema), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -52,86 +71,125 @@ jobsRoutes.get('/jobs', zValidator('query', jobListSchema), async (c) => {
   }
 
   const rows = await db
-    .select()
+    .select({
+      job: backupJobs,
+      deviceName: devices.displayName,
+      deviceHostname: devices.hostname,
+      configName: backupConfigs.name,
+    })
     .from(backupJobs)
+    .leftJoin(devices, eq(backupJobs.deviceId, devices.id))
+    .leftJoin(backupConfigs, eq(backupJobs.configId, backupConfigs.id))
     .where(and(...conditions))
     .orderBy(desc(backupJobs.createdAt));
 
-  return c.json({ data: rows.map(toJobResponse) });
+  return c.json({
+    data: rows.map((r) => ({
+      ...toJobResponse(r.job),
+      deviceName: r.deviceName ?? r.deviceHostname ?? null,
+      configName: r.configName ?? null,
+    })),
+  });
 });
 
-jobsRoutes.get('/jobs/:id', async (c) => {
+jobsRoutes.get('/jobs/:id', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
 
-  const jobId = c.req.param('id');
+  const jobId = c.req.param('id')!;
   const [row] = await db
-    .select()
+    .select({
+      job: backupJobs,
+      deviceName: devices.displayName,
+      deviceHostname: devices.hostname,
+      configName: backupConfigs.name,
+    })
     .from(backupJobs)
+    .leftJoin(devices, eq(backupJobs.deviceId, devices.id))
+    .leftJoin(backupConfigs, eq(backupJobs.configId, backupConfigs.id))
     .where(and(eq(backupJobs.id, jobId), eq(backupJobs.orgId, orgId)))
     .limit(1);
 
   if (!row) {
     return c.json({ error: 'Job not found' }, 404);
   }
-  return c.json(toJobResponse(row));
+  return c.json({
+    ...toJobResponse(row.job),
+    deviceName: row.deviceName ?? row.deviceHostname ?? null,
+    configName: row.configName ?? null,
+  });
 });
 
-jobsRoutes.post('/jobs/run/:deviceId', async (c) => {
+jobsRoutes.post(
+  '/jobs/run/:deviceId',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
+  async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
 
-  const deviceId = c.req.param('deviceId');
+  const deviceId = c.req.param('deviceId')!;
+  const [targetDevice] = await db
+    .select({ id: devices.id, status: devices.status })
+    .from(devices)
+    .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
+    .limit(1);
 
-  // Find a policy targeting this device, or a default config
-  const policies = await db
-    .select()
-    .from(backupPolicies)
-    .where(eq(backupPolicies.orgId, orgId));
+  if (!targetDevice) {
+    return c.json({ error: 'Device not found' }, 404);
+  }
 
-  const policy = policies.find((p) => {
-    const targets = p.targets as BackupPolicyTargets;
-    return targets?.deviceIds?.includes(deviceId);
-  });
+  if (targetDevice.status !== 'online') {
+    recordBackupDispatchFailure('manual_backup', 'device_offline');
+    return c.json({ error: `Device is ${targetDevice.status}, cannot execute backup` }, 409);
+  }
 
-  let configId = policy?.configId;
+  // Resolve backup config via configuration policy system
+  const resolved = await resolveBackupConfigForDevice(deviceId);
+  let configId = resolved?.configId ?? null;
+  let featureLinkId = resolved?.featureLinkId ?? null;
+
+  if (resolved && !configId) {
+    return c.json({ error: 'Backup policy assigned but no backup config linked. Update the configuration policy.' }, 400);
+  }
+
+  // Only fallback if NO policy assignment at all
   if (!configId) {
     const [fallbackConfig] = await db
       .select({ id: backupConfigs.id })
       .from(backupConfigs)
       .where(eq(backupConfigs.orgId, orgId))
       .limit(1);
-    configId = fallbackConfig?.id;
+    configId = fallbackConfig?.id ?? null;
   }
 
   if (!configId) {
     return c.json({ error: 'No backup config available' }, 400);
   }
 
-  const now = new Date();
-  const [row] = await db
-    .insert(backupJobs)
-    .values({
-      orgId,
-      configId,
-      policyId: policy?.id ?? null,
-      deviceId,
-      status: 'pending',
-      type: 'manual',
-      createdAt: now,
-      updatedAt: now,
-    })
-    .returning();
+  const result = await createManualBackupJobIfIdle({
+    orgId,
+    configId,
+    featureLinkId,
+    deviceId,
+  });
 
-  if (!row) {
-    return c.json({ error: 'Failed to create job' }, 500);
+  if (!result) {
+    return c.json({ error: 'Failed to create backup job' }, 500);
   }
+
+  if (!result.created) {
+    return c.json({ error: 'A backup job is already pending or running for this device' }, 409);
+  }
+
+  const row = result.job;
 
   // Enqueue BullMQ job to dispatch to agent
   try {
@@ -140,7 +198,19 @@ jobsRoutes.post('/jobs/run/:deviceId', async (c) => {
     );
     await enqueueBackupDispatch(row.id, row.configId, orgId, deviceId);
   } catch (err) {
+    const error = err instanceof Error ? err.message : 'Failed to enqueue backup dispatch';
     console.error('[BackupJobs] Failed to enqueue dispatch:', err);
+    recordBackupDispatchFailure('manual_backup', 'enqueue_failed');
+    await markBackupJobDispatchFailed(row.id, error);
+    writeRouteAudit(c, {
+      orgId,
+      action: 'backup.job.run',
+      resourceType: 'backup_job',
+      resourceId: row.id,
+      details: { deviceId, configId, featureLinkId, error },
+      result: 'failure',
+    });
+    return c.json({ error }, 502);
   }
 
   writeRouteAudit(c, {
@@ -148,20 +218,176 @@ jobsRoutes.post('/jobs/run/:deviceId', async (c) => {
     action: 'backup.job.run',
     resourceType: 'backup_job',
     resourceId: row.id,
-    details: { deviceId, configId, policyId: policy?.id ?? null },
+    details: { deviceId, configId, featureLinkId },
   });
 
   return c.json(toJobResponse(row), 201);
 });
 
-jobsRoutes.post('/jobs/:id/cancel', async (c) => {
+jobsRoutes.get('/jobs/run-all/preview', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
 
-  const jobId = c.req.param('id');
+  const assigned = await resolveAllBackupAssignedDevices(orgId);
+  const deviceIds = new Set(assigned.filter((a) => a.configId).map((a) => a.deviceId));
+
+  if (deviceIds.size === 0) {
+    return c.json({ data: { deviceCount: 0, deviceIds: [], alreadyRunning: 0 } });
+  }
+
+  const onlineDevices = await db
+    .select({ id: devices.id })
+    .from(devices)
+    .where(
+      and(
+        eq(devices.orgId, orgId),
+        inArray(devices.id, Array.from(deviceIds)),
+        eq(devices.status, 'online')
+      )
+    );
+  const onlineDeviceIds = new Set(onlineDevices.map((device) => device.id));
+
+  // Check which devices already have a running/pending job
+  const activeJobs = await db
+    .select({ deviceId: backupJobs.deviceId })
+    .from(backupJobs)
+    .where(
+      and(
+        eq(backupJobs.orgId, orgId),
+        sql`${backupJobs.status} IN ('running', 'pending')`
+      )
+    );
+  const activeDeviceIds = new Set(activeJobs.map((j) => j.deviceId));
+
+  const eligibleIds = Array.from(deviceIds).filter((id) => onlineDeviceIds.has(id) && !activeDeviceIds.has(id));
+  const offlineDeviceIds = Array.from(deviceIds).filter((id) => !onlineDeviceIds.has(id));
+  const alreadyRunningDeviceIds = Array.from(deviceIds).filter((id) => onlineDeviceIds.has(id) && activeDeviceIds.has(id));
+
+  return c.json({
+    data: {
+      deviceCount: eligibleIds.length,
+      deviceIds: eligibleIds,
+      alreadyRunning: alreadyRunningDeviceIds.length,
+      offline: offlineDeviceIds.length,
+    },
+  });
+});
+
+jobsRoutes.post(
+  '/jobs/run-all',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
+  async (c) => {
+  const auth = c.get('auth');
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
+  const assigned = await resolveAllBackupAssignedDevices(orgId);
+  const deviceConfigMap = new Map(
+    assigned.filter((a) => a.configId).map((a) => [a.deviceId, { configId: a.configId!, featureLinkId: a.featureLinkId }])
+  );
+
+  if (deviceConfigMap.size === 0) {
+    return c.json({ error: 'No devices have backup policies configured' }, 400);
+  }
+
+  const created: string[] = [];
+  const skippedOffline: string[] = [];
+  const skippedRunning: string[] = [];
+  const failed: string[] = [];
+  const deviceIds = Array.from(deviceConfigMap.keys());
+  const onlineDevices = await db
+    .select({ id: devices.id })
+    .from(devices)
+    .where(
+      and(
+        eq(devices.orgId, orgId),
+        inArray(devices.id, deviceIds),
+        eq(devices.status, 'online')
+      )
+    );
+  const onlineDeviceIds = new Set(onlineDevices.map((device) => device.id));
+
+  for (const [deviceId, { configId, featureLinkId }] of deviceConfigMap) {
+    if (!onlineDeviceIds.has(deviceId)) {
+      recordBackupDispatchFailure('manual_backup', 'device_offline');
+      skippedOffline.push(deviceId);
+      continue;
+    }
+
+    const result = await createManualBackupJobIfIdle({
+      orgId,
+      configId,
+      featureLinkId,
+      deviceId,
+    });
+
+    if (result?.created) {
+      try {
+        const { enqueueBackupDispatch } = await import('../../jobs/backupWorker');
+        await enqueueBackupDispatch(result.job.id, configId, orgId, deviceId);
+        created.push(result.job.id);
+      } catch (err) {
+        const error = err instanceof Error ? err.message : 'Failed to enqueue backup dispatch';
+        console.error('[BackupJobs] Failed to enqueue dispatch:', err);
+        recordBackupDispatchFailure('manual_backup', 'enqueue_failed');
+        await markBackupJobDispatchFailed(result.job.id, error);
+        failed.push(result.job.id);
+      }
+    } else {
+      skippedRunning.push(deviceId);
+    }
+  }
+
+  const skipped = skippedOffline.length + skippedRunning.length;
+
+  writeRouteAudit(c, {
+    orgId,
+    action: 'backup.job.run_all',
+    resourceType: 'backup_job',
+    resourceId: null,
+    details: {
+      created: created.length,
+      skipped,
+      skippedOffline: skippedOffline.length,
+      skippedRunning: skippedRunning.length,
+      failed: failed.length,
+    },
+    result: failed.length > 0 && created.length === 0 ? 'failure' : 'success',
+  });
+
+  return c.json({
+    data: {
+      created: created.length,
+      skipped,
+      skippedOffline: skippedOffline.length,
+      skippedRunning: skippedRunning.length,
+      failed: failed.length,
+      jobIds: created,
+      failedJobIds: failed,
+    },
+  }, 201);
+});
+
+jobsRoutes.post(
+  '/jobs/:id/cancel',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
+  async (c) => {
+  const auth = c.get('auth');
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
+  const jobId = c.req.param('id')!;
   const [current] = await db
     .select()
     .from(backupJobs)
@@ -183,13 +409,38 @@ jobsRoutes.post('/jobs/:id/cancel', async (c) => {
       status: 'cancelled',
       completedAt: now,
       updatedAt: now,
-      errorLog: 'Canceled by user',
+      errorLog: 'Cancelled by user',
     })
-    .where(eq(backupJobs.id, jobId))
+    .where(and(
+      eq(backupJobs.id, jobId),
+      inArray(backupJobs.status, ['pending', 'running'])
+    ))
     .returning();
 
   if (!row) {
-    return c.json({ error: 'Job not found' }, 404);
+    return c.json({ error: 'Job is not cancelable' }, 409);
+  }
+
+  let dispatchRemoved = false;
+  try {
+    dispatchRemoved = await removeQueuedBackupDispatch(row.id);
+  } catch (err) {
+    console.warn(`[BackupJobs] Failed to remove queued dispatch for job ${row.id}:`, err);
+  }
+
+  let stopQueued = false;
+  if (current.status === 'running' || (current.status === 'pending' && !dispatchRemoved)) {
+    try {
+      const { error } = await queueBackupStopCommand(row.deviceId, {
+        userId: auth?.user?.id ?? undefined,
+      });
+      stopQueued = !error;
+      if (error) {
+        console.warn(`[BackupJobs] Failed to queue backup_stop for job ${row.id}: ${error}`);
+      }
+    } catch (err) {
+      console.warn(`[BackupJobs] Failed to queue backup_stop for job ${row.id}:`, err);
+    }
   }
 
   writeRouteAudit(c, {
@@ -197,10 +448,18 @@ jobsRoutes.post('/jobs/:id/cancel', async (c) => {
     action: 'backup.job.cancel',
     resourceType: 'backup_job',
     resourceId: row.id,
-    details: { deviceId: row.deviceId },
+    details: {
+      deviceId: row.deviceId,
+      dispatchRemoved,
+      stopQueued,
+    },
   });
 
-  return c.json(toJobResponse(row));
+  const response = toJobResponse(row);
+  if (current.status === 'running' && !stopQueued) {
+    return c.json({ ...response, warning: 'Job marked as cancelled but the stop signal could not be delivered to the agent. The backup may still be running on the device.' });
+  }
+  return c.json(response);
 });
 
 function toJobResponse(row: typeof backupJobs.$inferSelect) {
@@ -210,6 +469,7 @@ function toJobResponse(row: typeof backupJobs.$inferSelect) {
     deviceId: row.deviceId,
     configId: row.configId,
     policyId: row.policyId ?? null,
+    featureLinkId: row.featureLinkId ?? null,
     snapshotId: row.snapshotId ?? null,
     status: row.status,
     startedAt: row.startedAt?.toISOString() ?? null,

@@ -187,7 +187,7 @@ export default function ApiKeysPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold">API Keys</h1>
+          <h1 className="text-xl font-semibold tracking-tight">API Keys</h1>
           <p className="text-muted-foreground">
             Manage API keys for programmatic access to your account.
           </p>

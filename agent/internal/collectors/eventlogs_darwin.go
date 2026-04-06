@@ -3,12 +3,10 @@
 package collectors
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -114,13 +112,16 @@ func (c *EventLogCollector) queryUnifiedLog(predicate, category string, since ti
 		lastMinutes = 60
 	}
 
-	cmd := exec.Command("log", "show",
-		"--predicate", predicate,
+	// Wrap predicate with messageType filter so macOS filters at the source.
+	// The Go code below only keeps error/fault entries anyway, so this avoids
+	// downloading megabytes of info/debug JSON that would be discarded.
+	filteredPredicate := fmt.Sprintf(`(%s) AND (messageType >= error)`, predicate)
+
+	output, err := runCollectorOutput(collectorLongCommandTimeout, "log", "show",
+		"--predicate", filteredPredicate,
 		"--style", "json",
 		"--last", fmt.Sprintf("%dm", lastMinutes),
 	)
-
-	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("log show failed: %w", err)
 	}
@@ -151,15 +152,18 @@ func (c *EventLogCollector) queryUnifiedLog(predicate, category string, since ti
 			Timestamp: e.Timestamp,
 			Level:     level,
 			Category:  category,
-			Source:    source,
-			EventID:   fmt.Sprintf("%s:%d", source, e.ProcessID),
+			Source:    truncateCollectorString(source),
+			EventID:   truncateCollectorString(fmt.Sprintf("%s:%d", source, e.ProcessID)),
 			Message:   truncateString(e.EventMessage, 500),
 			Details: map[string]any{
-				"subsystem":  e.Subsystem,
-				"processId":  e.ProcessID,
+				"subsystem":   truncateCollectorString(e.Subsystem),
+				"processId":   e.ProcessID,
 				"logCategory": e.Category,
 			},
 		})
+		if len(results) >= collectorResultLimit {
+			break
+		}
 	}
 
 	return results, nil
@@ -232,6 +236,14 @@ type crashInfo struct {
 }
 
 func parseCrashReport(path string) (*crashInfo, error) {
+	statInfo, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if statInfo.Size() > collectorFileReadLimit {
+		return nil, fmt.Errorf("crash report too large")
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -243,16 +255,16 @@ func parseCrashReport(path string) (*crashInfo, error) {
 	var ipsData map[string]any
 	if err := json.Unmarshal(data, &ipsData); err == nil {
 		if name, ok := ipsData["procName"].(string); ok {
-			info.processName = name
+			info.processName = truncateCollectorString(name)
 		}
 		if exc, ok := ipsData["exception"].(map[string]any); ok {
 			if t, ok := exc["type"].(string); ok {
-				info.exceptionType = t
+				info.exceptionType = truncateCollectorString(t)
 			}
 		}
 		if v, ok := ipsData["bundleInfo"].(map[string]any); ok {
 			if ver, ok := v["CFBundleShortVersionString"].(string); ok {
-				info.version = ver
+				info.version = truncateCollectorString(ver)
 			}
 		}
 		return info, nil
@@ -266,18 +278,19 @@ func parseCrashReport(path string) (*crashInfo, error) {
 			parts := strings.SplitN(line, ":", 2)
 			if len(parts) == 2 {
 				info.processName = strings.TrimSpace(strings.Split(parts[1], "[")[0])
+				info.processName = truncateCollectorString(info.processName)
 			}
 		}
 		if strings.HasPrefix(line, "Exception Type:") {
 			parts := strings.SplitN(line, ":", 2)
 			if len(parts) == 2 {
-				info.exceptionType = strings.TrimSpace(parts[1])
+				info.exceptionType = truncateCollectorString(strings.TrimSpace(parts[1]))
 			}
 		}
 		if strings.HasPrefix(line, "Version:") {
 			parts := strings.SplitN(line, ":", 2)
 			if len(parts) == 2 {
-				info.version = strings.TrimSpace(parts[1])
+				info.version = truncateCollectorString(strings.TrimSpace(parts[1]))
 			}
 		}
 	}
@@ -287,14 +300,13 @@ func parseCrashReport(path string) (*crashInfo, error) {
 
 // collectPowerEvents parses `pmset -g log` for sleep/wake/shutdown events
 func (c *EventLogCollector) collectPowerEvents(since time.Time) ([]EventLogEntry, error) {
-	cmd := exec.Command("pmset", "-g", "log")
-	output, err := cmd.Output()
+	output, err := runCollectorLimitedOutput(collectorLongCommandTimeout, "pmset", "-g", "log")
 	if err != nil {
 		return nil, fmt.Errorf("pmset -g log failed: %w", err)
 	}
 
 	var results []EventLogEntry
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	scanner := newCollectorScanner(output)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -351,6 +363,12 @@ func (c *EventLogCollector) collectPowerEvents(since time.Time) ([]EventLogEntry
 				"eventType": eventType,
 			},
 		})
+		if len(results) >= collectorResultLimit {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("pmset log parse failed: %w", err)
 	}
 
 	return results, nil

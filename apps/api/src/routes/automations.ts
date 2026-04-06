@@ -8,8 +8,9 @@ import {
   automations,
   automationRuns,
 } from '../db/schema';
-import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import { PERMISSIONS } from '../services/permissions';
 import {
   AutomationValidationError,
   createAutomationRunRecord,
@@ -22,6 +23,8 @@ import { enqueueAutomationRun } from '../jobs/automationWorker';
 
 export const automationRoutes = new Hono();
 export const automationWebhookRoutes = new Hono();
+const requireAutomationRead = requirePermission(PERMISSIONS.AUTOMATIONS_READ.resource, PERMISSIONS.AUTOMATIONS_READ.action);
+const requireAutomationWrite = requirePermission(PERMISSIONS.AUTOMATIONS_WRITE.resource, PERMISSIONS.AUTOMATIONS_WRITE.action);
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -221,6 +224,7 @@ automationRoutes.use('*', authMiddleware);
 automationRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requireAutomationRead,
   zValidator('query', listAutomationsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -285,6 +289,7 @@ automationRoutes.get(
 automationRoutes.get(
   '/runs/:runId',
   requireScope('organization', 'partner', 'system'),
+  requireAutomationRead,
   async (c) => {
     const auth = c.get('auth');
     const runId = c.req.param('runId')!;
@@ -332,6 +337,7 @@ automationRoutes.get(
 automationRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAutomationRead,
   async (c) => {
     const auth = c.get('auth');
     const automationId = c.req.param('id')!;
@@ -382,6 +388,7 @@ automationRoutes.get(
 automationRoutes.get(
   '/:id/runs',
   requireScope('organization', 'partner', 'system'),
+  requireAutomationRead,
   zValidator('query', listRunsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -436,6 +443,8 @@ automationRoutes.get(
 automationRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requireAutomationWrite,
+  requireMfa(),
   zValidator('json', createAutomationSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -639,6 +648,8 @@ async function handleUpdateAutomation(c: Context) {
 automationRoutes.put(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAutomationWrite,
+  requireMfa(),
   zValidator('json', updateAutomationSchema),
   handleUpdateAutomation,
 );
@@ -647,6 +658,8 @@ automationRoutes.put(
 automationRoutes.patch(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAutomationWrite,
+  requireMfa(),
   zValidator('json', updateAutomationSchema),
   handleUpdateAutomation,
 );
@@ -655,6 +668,8 @@ automationRoutes.patch(
 automationRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAutomationWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const automationId = c.req.param('id')!;
@@ -753,6 +768,8 @@ async function triggerAutomationRun(
 automationRoutes.post(
   '/:id/trigger',
   requireScope('organization', 'partner', 'system'),
+  requireAutomationWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const automationId = c.req.param('id')!;
@@ -763,6 +780,8 @@ automationRoutes.post(
 automationRoutes.post(
   '/:id/run',
   requireScope('organization', 'partner', 'system'),
+  requireAutomationWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const automationId = c.req.param('id')!;

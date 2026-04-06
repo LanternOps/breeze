@@ -4,9 +4,9 @@ package collectors
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -34,11 +34,14 @@ func (c *ChangeTrackerCollector) collectStartupItems(_ context.Context) ([]Track
 				continue
 			}
 			items = append(items, TrackedStartupItem{
-				Name:    name,
+				Name:    truncateCollectorString(name),
 				Type:    path.kind,
-				Path:    match,
+				Path:    truncateCollectorString(match),
 				Enabled: true,
 			})
+			if len(items) >= collectorResultLimit {
+				return items, nil
+			}
 		}
 	}
 
@@ -48,11 +51,9 @@ func (c *ChangeTrackerCollector) collectStartupItems(_ context.Context) ([]Track
 func (c *ChangeTrackerCollector) collectScheduledTasks(ctx context.Context) ([]TrackedScheduledTask, error) {
 	tasks := make([]TrackedScheduledTask, 0)
 
-	cmd := exec.CommandContext(ctx, "crontab", "-l")
-	output, err := cmd.Output()
+	output, err := runCollectorOutputWithContext(ctx, collectorShortCommandTimeout, "crontab", "-l")
 	if err != nil {
-		// "no crontab for <user>" exits non-zero; that is expected.
-		if exitErr, ok := err.(*exec.ExitError); ok && strings.Contains(string(exitErr.Stderr), "no crontab") {
+		if strings.Contains(strings.ToLower(err.Error()), "no crontab") {
 			return tasks, nil
 		}
 		return nil, fmt.Errorf("crontab -l failed: %w", err)
@@ -65,21 +66,20 @@ func (c *ChangeTrackerCollector) collectScheduledTasks(ctx context.Context) ([]T
 }
 
 func (c *ChangeTrackerCollector) collectUserAccounts(ctx context.Context) ([]TrackedUserAccount, error) {
-	cmd := exec.CommandContext(ctx, "dscl", ".", "-list", "/Users", "UniqueID")
-	output, err := cmd.Output()
+	output, err := runCollectorOutputWithContext(ctx, collectorShortCommandTimeout, "dscl", ".", "-list", "/Users", "UniqueID")
 	if err != nil {
 		return nil, fmt.Errorf("dscl user query failed: %w", err)
 	}
 
 	users := make([]TrackedUserAccount, 0)
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	scanner := newCollectorScanner(output)
 	for scanner.Scan() {
 		fields := strings.Fields(strings.TrimSpace(scanner.Text()))
 		if len(fields) < 2 {
 			continue
 		}
 		username := fields[0]
-		if username == "" || strings.HasPrefix(username, "_") {
+		if username == "" || strings.HasPrefix(username, "_") || len(username) > collectorStringLimit || strings.ContainsAny(username, " \t\r\n/\\") {
 			continue
 		}
 		uid := fields[1]
@@ -97,10 +97,13 @@ func (c *ChangeTrackerCollector) collectUserAccounts(ctx context.Context) ([]Tra
 			}
 		}
 		users = append(users, TrackedUserAccount{
-			Username: username,
+			Username: truncateCollectorString(username),
 			Disabled: false,
 			Locked:   false,
 		})
+		if len(users) >= collectorResultLimit {
+			break
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -111,7 +114,8 @@ func (c *ChangeTrackerCollector) collectUserAccounts(ctx context.Context) ([]Tra
 
 func parseDarwinCrontab(output string) []TrackedScheduledTask {
 	tasks := make([]TrackedScheduledTask, 0)
-	scanner := bufio.NewScanner(strings.NewReader(output))
+	scanner := bufio.NewScanner(bytes.NewReader([]byte(output)))
+	scanner.Buffer(make([]byte, 0, 64*1024), collectorScannerLimit)
 	lineNumber := 0
 
 	for scanner.Scan() {
@@ -134,12 +138,15 @@ func parseDarwinCrontab(output string) []TrackedScheduledTask {
 		}
 
 		tasks = append(tasks, TrackedScheduledTask{
-			Name:     name,
-			Path:     fmt.Sprintf("user-crontab:%d", lineNumber),
+			Name:     truncateCollectorString(name),
+			Path:     truncateCollectorString(fmt.Sprintf("user-crontab:%d", lineNumber)),
 			Status:   "active",
-			Schedule: schedule,
-			Command:  command,
+			Schedule: truncateCollectorString(schedule),
+			Command:  truncateCollectorString(command),
 		})
+		if len(tasks) >= collectorResultLimit {
+			break
+		}
 	}
 
 	return tasks

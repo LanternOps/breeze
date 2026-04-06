@@ -15,8 +15,10 @@ import (
 )
 
 const (
-	defaultChunkSize  = 64 * 1024
-	maxTransferSize   = 500 * 1024 * 1024 // 500MB max file transfer
+	defaultChunkSize       = 64 * 1024
+	maxChunkPayloadSize    = 1 * 1024 * 1024
+	maxTransferSize        = 500 * 1024 * 1024 // 500MB max file transfer
+	maxConcurrentTransfers = 8
 )
 
 type ReceivedFile struct {
@@ -39,6 +41,7 @@ type FileDropHandler struct {
 
 type incomingTransfer struct {
 	name     string
+	path     string
 	size     int64
 	received int64
 	file     *os.File
@@ -120,6 +123,9 @@ func (h *FileDropHandler) SendFile(path string) error {
 	if chunkSize <= 0 {
 		chunkSize = defaultChunkSize
 	}
+	if chunkSize > maxChunkPayloadSize {
+		chunkSize = maxChunkPayloadSize
+	}
 
 	buffer := make([]byte, chunkSize)
 	var offset int64
@@ -170,9 +176,31 @@ func (h *FileDropHandler) Close() {
 	h.closed = true
 	for _, transfer := range h.transfers {
 		_ = transfer.file.Close()
+		if transfer.path != "" {
+			_ = os.Remove(transfer.path)
+		}
 	}
 	h.transfers = make(map[string]*incomingTransfer)
 	close(h.completed)
+}
+
+func (h *FileDropHandler) ensureReceiveDir() (string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.receiveDir != "" {
+		if err := os.MkdirAll(h.receiveDir, 0o700); err != nil {
+			return "", err
+		}
+		return h.receiveDir, nil
+	}
+
+	receiveDir, err := os.MkdirTemp("", "breeze-filedrop-*")
+	if err != nil {
+		return "", err
+	}
+	h.receiveDir = receiveDir
+	return receiveDir, nil
 }
 
 func (h *FileDropHandler) handleStart(message Message) error {
@@ -198,11 +226,8 @@ func (h *FileDropHandler) handleStart(message Message) error {
 		return fmt.Errorf("filedrop: file size %d exceeds maximum %d", message.Size, maxTransferSize)
 	}
 
-	receiveDir := h.receiveDir
-	if receiveDir == "" {
-		receiveDir = os.TempDir()
-	}
-	if err := os.MkdirAll(receiveDir, 0o755); err != nil {
+	receiveDir, err := h.ensureReceiveDir()
+	if err != nil {
 		return err
 	}
 	filePath := filepath.Join(receiveDir, safeName)
@@ -220,18 +245,34 @@ func (h *FileDropHandler) handleStart(message Message) error {
 		return fmt.Errorf("filedrop: path traversal detected for %q", message.Name)
 	}
 
-	file, err := os.Create(filePath)
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
 
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		_ = file.Close()
+		_ = os.Remove(filePath)
+		return errors.New("filedrop: handler closed")
+	}
+	if _, exists := h.transfers[message.TransferID]; exists {
+		_ = file.Close()
+		_ = os.Remove(filePath)
+		return errors.New("filedrop: duplicate transfer id")
+	}
+	if len(h.transfers) >= maxConcurrentTransfers {
+		_ = file.Close()
+		_ = os.Remove(filePath)
+		return fmt.Errorf("filedrop: too many active transfers (max %d)", maxConcurrentTransfers)
+	}
 	h.transfers[message.TransferID] = &incomingTransfer{
 		name: safeName,
+		path: filePath,
 		size: message.Size,
 		file: file,
 	}
-	h.mu.Unlock()
 
 	return nil
 }
@@ -240,9 +281,15 @@ func (h *FileDropHandler) handleChunk(message Message) error {
 	if message.TransferID == "" {
 		return errors.New("filedrop: missing transfer id")
 	}
+	if len(message.Data) > maxBase64EncodedLen(maxChunkPayloadSize) {
+		return fmt.Errorf("filedrop: chunk exceeds maximum %d bytes", maxChunkPayloadSize)
+	}
 	data, err := DecodeChunk(message.Data)
 	if err != nil {
 		return err
+	}
+	if len(data) > maxChunkPayloadSize {
+		return fmt.Errorf("filedrop: chunk exceeds maximum %d bytes", maxChunkPayloadSize)
 	}
 
 	h.mu.Lock()
@@ -287,15 +334,15 @@ func (h *FileDropHandler) handleComplete(message Message) error {
 	if err := transfer.file.Close(); err != nil {
 		return err
 	}
-
-	receiveDir := h.receiveDir
-	if receiveDir == "" {
-		receiveDir = os.TempDir()
+	if transfer.received != transfer.size {
+		_ = os.Remove(transfer.path)
+		return fmt.Errorf("filedrop: incomplete transfer %s: received %d of %d bytes", message.TransferID, transfer.received, transfer.size)
 	}
+
 	result := ReceivedFile{
 		TransferID: message.TransferID,
 		Name:       transfer.name,
-		Path:       filepath.Join(receiveDir, transfer.name),
+		Path:       transfer.path,
 		Size:       transfer.size,
 	}
 
@@ -321,4 +368,8 @@ func randomID() (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%x", buf), nil
+}
+
+func maxBase64EncodedLen(decodedLen int) int {
+	return ((decodedLen + 2) / 3) * 4
 }

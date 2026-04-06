@@ -661,7 +661,7 @@ export default function DashboardCustomizer() {
         <div className="space-y-4">
           <div className="rounded-lg border bg-card p-4 shadow-sm">
             <div className="mb-4">
-              <h3 className="font-semibold">Widget Library</h3>
+              <h3 className="text-sm font-semibold">Widget Library</h3>
               <p className="text-xs text-muted-foreground">
                 Drag widgets onto the grid or tap to add.
               </p>
@@ -743,7 +743,7 @@ export default function DashboardCustomizer() {
         <div className="rounded-lg border bg-card p-4 shadow-sm">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
             <div>
-              <h3 className="font-semibold">Dashboard Grid</h3>
+              <h3 className="text-sm font-semibold">Dashboard Grid</h3>
               <p className="text-xs text-muted-foreground">
                 {activeWidgets.length} widgets placed
               </p>
@@ -842,7 +842,7 @@ export default function DashboardCustomizer() {
         <div className="space-y-4">
           <div className="rounded-lg border bg-card p-4 shadow-sm">
             <div className="mb-4 flex items-center justify-between">
-              <h3 className="font-semibold">Dashboard Settings</h3>
+              <h3 className="text-sm font-semibold">Dashboard Settings</h3>
               <span className="text-xs text-muted-foreground">Layout</span>
             </div>
             <div className="space-y-3">
@@ -863,7 +863,7 @@ export default function DashboardCustomizer() {
 
           <div className="rounded-lg border bg-card p-4 shadow-sm">
             <div className="mb-4 flex items-center justify-between">
-              <h3 className="font-semibold">Widget Settings</h3>
+              <h3 className="text-sm font-semibold">Widget Settings</h3>
               {selectedWidget && (
                 <span className="rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground">
                   {selectedWidget.type}
@@ -998,7 +998,7 @@ export default function DashboardCustomizer() {
           <div className="rounded-lg border bg-card p-4 shadow-sm">
             <div className="mb-4 flex items-center gap-2">
               <LayoutDashboard className="h-4 w-4 text-muted-foreground" />
-              <h3 className="font-semibold">Default dashboard per role</h3>
+              <h3 className="text-sm font-semibold">Default dashboard per role</h3>
             </div>
             <div className="space-y-3">
               {ROLE_OPTIONS.map((role) => (

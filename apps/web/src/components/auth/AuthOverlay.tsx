@@ -8,6 +8,7 @@ export default function AuthOverlay() {
   const [isChecking, setIsChecking] = useState(true);
   const [isRecovering, setIsRecovering] = useState(false);
   const [recoverAttempted, setRecoverAttempted] = useState(false);
+  const [fadeState, setFadeState] = useState<'visible' | 'fading' | 'hidden'>('visible');
 
   useEffect(() => {
     // Give the store time to rehydrate from localStorage
@@ -69,9 +70,27 @@ export default function AuthOverlay() {
     return () => { cancelled = true; };
   }, [isAuthenticated, isLoading, isChecking, tokens, recoverAttempted, isRecovering]);
 
-  // Authenticated with token — render nothing, page is visible immediately
-  if (!isChecking && !isLoading && isAuthenticated && tokens?.accessToken) {
+  // Authenticated with token — fade out then unmount
+  const shouldHide = !isChecking && !isLoading && isAuthenticated && !!tokens?.accessToken;
+
+  useEffect(() => {
+    if (shouldHide && fadeState === 'visible') {
+      // Start fade-out on next frame so the browser paints opacity:1 first
+      requestAnimationFrame(() => setFadeState('fading'));
+    }
+  }, [shouldHide, fadeState]);
+
+  if (fadeState === 'hidden') {
     return null;
+  }
+
+  if (shouldHide) {
+    return (
+      <div
+        className={`fixed inset-0 z-50 flex items-center justify-center bg-background transition-opacity duration-300 pointer-events-none ${fadeState === 'fading' ? 'opacity-0' : 'opacity-100'}`}
+        onTransitionEnd={() => setFadeState('hidden')}
+      />
+    );
   }
 
   // Still initializing or recovering — show overlay

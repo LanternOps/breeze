@@ -413,13 +413,43 @@ export const updateConfigPolicySchema = z.object({
 });
 
 export const addFeatureLinkSchema = z.object({
-  featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper']),
+  featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper', 'remote_access']),
   featurePolicyId: z.string().uuid().optional(),
   inlineSettings: z.record(z.unknown()).optional(),
 }).refine(
   (data) => data.featurePolicyId || data.inlineSettings,
   { message: 'At least one of featurePolicyId or inlineSettings is required' }
 );
+
+const patchSourceValueSchema = z.enum([
+  'os',
+  'third_party',
+  'custom',
+  'firmware',
+  'drivers',
+  'microsoft',
+  'apple',
+  'linux',
+]);
+
+export const patchInlineSettingsSchema = z.object({
+  sources: z.array(patchSourceValueSchema).min(1).default(['os']),
+  autoApprove: z.boolean().default(false),
+  autoApproveSeverities: z.array(z.enum(['critical', 'important', 'moderate', 'low'])).default([]),
+  scheduleFrequency: z.enum(['daily', 'weekly', 'monthly']).default('weekly'),
+  scheduleTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/).default('02:00'),
+  scheduleDayOfWeek: z.enum(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']).default('sun'),
+  scheduleDayOfMonth: z.number().int().min(1).max(28).default(1),
+  rebootPolicy: z.enum(['never', 'if_required', 'always', 'maintenance_window']).default('if_required'),
+}).superRefine((data, ctx) => {
+  if (data.autoApprove && data.autoApproveSeverities.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['autoApproveSeverities'],
+      message: 'Select at least one severity for auto-approval.',
+    });
+  }
+});
 
 export const eventLogInlineSettingsSchema = z.object({
   retentionDays: z.number().int().min(7).max(365).default(30),
@@ -538,3 +568,23 @@ export const configPolicyDeviceIdParamSchema = z.object({ deviceId: z.string().u
 // ============================================
 
 export * from './ai';
+
+// ============================================
+// Backup Target Validators
+// ============================================
+
+export {
+  fileTargetsSchema,
+  hypervTargetsSchema,
+  mssqlTargetsSchema,
+  systemImageTargetsSchema,
+  backupModeSchema,
+  backupScheduleSchema,
+  backupRetentionSchema,
+  backupRetentionUpdateSchema,
+  backupInlineSettingsSchema,
+  type BackupMode,
+  type BackupSchedule,
+  type BackupRetention,
+  type BackupInlineSettings,
+} from './backupTargets';

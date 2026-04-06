@@ -47,6 +47,7 @@ type EncoderConfig struct {
 	Bitrate        int
 	FPS            int
 	PreferHardware bool
+	GPUVendor      string // "nvidia", "amd", "intel", or "" for auto-detect
 }
 
 func DefaultEncoderConfig() EncoderConfig {
@@ -71,6 +72,16 @@ type optionalKeyframeForcer interface {
 	ForceKeyframe() error
 }
 
+// optionalStallDetector is implemented by encoder backends that can detect
+// permanent stall conditions (e.g., MFT Quality VBR on certain GPUs).
+type optionalStallDetector interface {
+	IsPermanentlyStalled() bool
+	// AdvanceStallDetection progresses the stall state machine without
+	// requiring a new frame. Called from the capture loop during idle
+	// periods when no Encode() calls happen but the encoder may be stalled.
+	AdvanceStallDetection()
+}
+
 type encoderBackend interface {
 	Encode(frame []byte) ([]byte, error)
 	SetCodec(codec Codec) error
@@ -92,15 +103,24 @@ type encoderBackend interface {
 
 type backendFactory func(cfg EncoderConfig) (encoderBackend, error)
 
+type taggedFactory struct {
+	vendor  string // "" means universal (e.g., MFT works on all GPUs)
+	factory backendFactory
+}
+
 var (
 	hardwareFactoriesMu sync.Mutex
-	hardwareFactories   []backendFactory
+	hardwareFactories   []taggedFactory
 )
 
 func registerHardwareFactory(factory backendFactory) {
+	registerHardwareFactoryForVendor("", factory)
+}
+
+func registerHardwareFactoryForVendor(vendor string, factory backendFactory) {
 	hardwareFactoriesMu.Lock()
 	defer hardwareFactoriesMu.Unlock()
-	hardwareFactories = append(hardwareFactories, factory)
+	hardwareFactories = append(hardwareFactories, taggedFactory{vendor: vendor, factory: factory})
 }
 
 func NewVideoEncoder(cfg EncoderConfig) (*VideoEncoder, error) {
@@ -238,6 +258,28 @@ func (v *VideoEncoder) ForceKeyframe() error {
 	return nil
 }
 
+// IsPermanentlyStalled returns true if the encoder backend has detected an
+// unrecoverable stall (e.g., MFT flush recovery repeatedly failed).
+func (v *VideoEncoder) IsPermanentlyStalled() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if sd, ok := v.backend.(optionalStallDetector); ok {
+		return sd.IsPermanentlyStalled()
+	}
+	return false
+}
+
+// AdvanceStallDetection progresses the stall state machine without a new frame.
+// Call during idle periods when no Encode() calls happen but the encoder may
+// be mid-stall (consecutiveNilOutputs > 0).
+func (v *VideoEncoder) AdvanceStallDetection() {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if sd, ok := v.backend.(optionalStallDetector); ok {
+		sd.AdvanceStallDetection()
+	}
+}
+
 func (v *VideoEncoder) BackendName() string {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -353,10 +395,24 @@ func newBackend(cfg EncoderConfig) (encoderBackend, error) {
 
 func tryHardware(cfg EncoderConfig) encoderBackend {
 	hardwareFactoriesMu.Lock()
-	factories := append([]backendFactory(nil), hardwareFactories...)
+	factories := append([]taggedFactory(nil), hardwareFactories...)
 	hardwareFactoriesMu.Unlock()
-	for _, factory := range factories {
-		backend, err := factory(cfg)
+
+	// First pass: try vendor-specific factories matching GPUVendor
+	if cfg.GPUVendor != "" {
+		for _, tf := range factories {
+			if tf.vendor == cfg.GPUVendor {
+				backend, err := tf.factory(cfg)
+				if err == nil && backend != nil {
+					return backend
+				}
+			}
+		}
+	}
+
+	// Second pass: try all factories in registration order
+	for _, tf := range factories {
+		backend, err := tf.factory(cfg)
 		if err == nil && backend != nil {
 			return backend
 		}

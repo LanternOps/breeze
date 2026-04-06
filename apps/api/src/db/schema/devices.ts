@@ -1,13 +1,14 @@
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique } from 'drizzle-orm/pg-core';
 import { organizations, sites } from './orgs';
 import { users } from './users';
-import type { InterfaceBandwidth, TCCPermissions } from '@breeze/shared';
+import type { DesktopAccessState, InterfaceBandwidth, TCCPermissions } from '@breeze/shared';
 
 export const osTypeEnum = pgEnum('os_type', ['windows', 'macos', 'linux']);
 export const deviceStatusEnum = pgEnum('device_status', ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined']);
 export const deviceGroupTypeEnum = pgEnum('device_group_type', ['static', 'dynamic']);
 export const membershipSourceEnum = pgEnum('membership_source', ['manual', 'dynamic_rule', 'policy']);
 export const ipAssignmentTypeEnum = pgEnum('ip_assignment_type', ['dhcp', 'static', 'vpn', 'link-local', 'unknown']);
+export const watchdogStatusEnum = pgEnum('watchdog_status', ['connected', 'failover', 'offline']);
 
 export const devices = pgTable('devices', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -15,6 +16,9 @@ export const devices = pgTable('devices', {
   siteId: uuid('site_id').notNull().references(() => sites.id),
   agentId: varchar('agent_id', { length: 64 }).notNull().unique(),
   agentTokenHash: varchar('agent_token_hash', { length: 64 }),
+  tokenIssuedAt: timestamp('token_issued_at', { withTimezone: true }),
+  previousTokenHash: varchar('previous_token_hash', { length: 64 }),
+  previousTokenExpiresAt: timestamp('previous_token_expires_at', { withTimezone: true }),
   mtlsCertSerialNumber: varchar('mtls_cert_serial_number', { length: 128 }),
   mtlsCertExpiresAt: timestamp('mtls_cert_expires_at'),
   mtlsCertIssuedAt: timestamp('mtls_cert_issued_at'),
@@ -38,8 +42,13 @@ export const devices = pgTable('devices', {
   customFields: jsonb('custom_fields').default({}),
   managementPosture: jsonb('management_posture'),
   tccPermissions: jsonb('tcc_permissions').$type<TCCPermissions | null>(),
+  desktopAccess: jsonb('desktop_access').$type<DesktopAccessState | null>(),
   lastUser: varchar('last_user', { length: 255 }),
   uptimeSeconds: integer('uptime_seconds'),
+  isHeadless: boolean('is_headless').notNull().default(false),
+  watchdogStatus: watchdogStatusEnum('watchdog_status'),
+  watchdogLastSeen: timestamp('watchdog_last_seen'),
+  watchdogVersion: varchar('watchdog_version', { length: 50 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
@@ -223,6 +232,7 @@ export const deviceCommands = pgTable('device_commands', {
   type: varchar('type', { length: 50 }).notNull(),
   payload: jsonb('payload'),
   status: varchar('status', { length: 20 }).notNull().default('pending'),
+  targetRole: varchar('target_role', { length: 20 }).notNull().default('agent'),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   executedAt: timestamp('executed_at'),

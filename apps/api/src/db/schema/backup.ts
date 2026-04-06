@@ -10,11 +10,14 @@ import {
   integer,
   bigint,
   index,
+  uniqueIndex,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import { organizations } from './orgs';
-import { devices } from './devices';
+import { devices, deviceCommands } from './devices';
 import { users } from './users';
+import { configPolicyFeatureLinks } from './configurationPolicies';
+import { storageEncryptionKeys } from './storageEncryption';
 
 export const backupProviderEnum = pgEnum('backup_provider', [
   'local',
@@ -65,6 +68,8 @@ export const backupConfigs = pgTable(
     providerConfig: jsonb('provider_config').notNull(),
     schedule: jsonb('schedule'),
     retention: jsonb('retention'),
+    providerCapabilities: jsonb('provider_capabilities'),
+    providerCapabilitiesCheckedAt: timestamp('provider_capabilities_checked_at'),
     compression: boolean('compression').notNull().default(true),
     encryption: boolean('encryption').notNull().default(true),
     encryptionKey: text('encryption_key'),
@@ -95,6 +100,13 @@ export const backupPolicies = pgTable(
     schedule: jsonb('schedule').notNull(),
     retention: jsonb('retention').notNull(),
     targets: jsonb('targets').notNull(),
+    gfsConfig: jsonb('gfs_config'),
+    legalHold: boolean('legal_hold').default(false),
+    legalHoldReason: text('legal_hold_reason'),
+    bandwidthLimitMbps: integer('bandwidth_limit_mbps'),
+    backupWindowStart: varchar('backup_window_start', { length: 5 }),
+    backupWindowEnd: varchar('backup_window_end', { length: 5 }),
+    priority: integer('priority').default(50),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
@@ -116,6 +128,7 @@ export const backupJobs = pgTable(
       .notNull()
       .references(() => backupConfigs.id),
     policyId: uuid('policy_id').references(() => backupPolicies.id),
+    featureLinkId: uuid('feature_link_id').references(() => configPolicyFeatureLinks.id),
     deviceId: uuid('device_id')
       .notNull()
       .references(() => devices.id),
@@ -129,6 +142,8 @@ export const backupJobs = pgTable(
     errorCount: integer('error_count'),
     errorLog: text('error_log'),
     snapshotId: varchar('snapshot_id', { length: 200 }),
+    vssMetadata: jsonb('vss_metadata'),
+    backupType: backupTypeEnum('backup_type').default('file'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
@@ -169,6 +184,20 @@ export const backupSnapshots = pgTable(
     ),
     expiresAt: timestamp('expires_at'),
     metadata: jsonb('metadata'),
+    storageTier: varchar('storage_tier', { length: 30 }),
+    isImmutable: boolean('is_immutable').default(false),
+    immutableUntil: timestamp('immutable_until'),
+    legalHold: boolean('legal_hold').default(false),
+    legalHoldReason: text('legal_hold_reason'),
+    immutabilityEnforcement: varchar('immutability_enforcement', { length: 20 }),
+    requestedImmutabilityEnforcement: varchar('requested_immutability_enforcement', { length: 20 }),
+    immutabilityFallbackReason: text('immutability_fallback_reason'),
+    encryptionKeyId: uuid('encryption_key_id').references(() => storageEncryptionKeys.id),
+    checksumSha256: varchar('checksum_sha256', { length: 64 }),
+    gfsTags: jsonb('gfs_tags'),
+    backupType: backupTypeEnum('backup_type').default('file'),
+    hardwareProfile: jsonb('hardware_profile'),
+    systemStateManifest: jsonb('system_state_manifest'),
   },
   (table) => ({
     orgIdIdx: index('backup_snapshots_org_id_idx').on(table.orgId),
@@ -180,6 +209,25 @@ export const backupSnapshots = pgTable(
     parentSnapshotIdIdx: index('backup_snapshots_parent_snapshot_id_idx').on(
       table.parentSnapshotId
     ),
+  })
+);
+
+export const backupSnapshotFiles = pgTable(
+  'backup_snapshot_files',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    snapshotDbId: uuid('snapshot_db_id')
+      .notNull()
+      .references(() => backupSnapshots.id, { onDelete: 'cascade' }),
+    sourcePath: text('source_path').notNull(),
+    backupPath: text('backup_path').notNull(),
+    size: bigint('size', { mode: 'number' }),
+    modifiedAt: timestamp('modified_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    snapshotIdx: index('backup_snapshot_files_snapshot_idx').on(table.snapshotDbId),
+    snapshotSourceIdx: index('backup_snapshot_files_snapshot_source_idx').on(table.snapshotDbId, table.sourcePath),
   })
 );
 
@@ -205,6 +253,9 @@ export const restoreJobs = pgTable(
     restoredSize: bigint('restored_size', { mode: 'number' }),
     restoredFiles: integer('restored_files'),
     initiatedBy: uuid('initiated_by').references(() => users.id),
+    targetConfig: jsonb('target_config'),
+    recoveryTokenId: uuid('recovery_token_id'),
+    commandId: uuid('command_id').references(() => deviceCommands.id),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
@@ -213,5 +264,7 @@ export const restoreJobs = pgTable(
     snapshotIdIdx: index('restore_jobs_snapshot_id_idx').on(table.snapshotId),
     deviceIdIdx: index('restore_jobs_device_id_idx').on(table.deviceId),
     statusIdx: index('restore_jobs_status_idx').on(table.status),
+    commandIdIdx: index('restore_jobs_command_id_idx').on(table.commandId),
+    recoveryTokenUniqueIdx: uniqueIndex('restore_jobs_recovery_token_id_uniq').on(table.recoveryTokenId),
   })
 );

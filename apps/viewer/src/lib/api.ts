@@ -58,7 +58,7 @@ export async function exchangeDesktopConnectCode(
   apiUrl: string,
   sessionId: string,
   code: string
-): Promise<{ accessToken: string; expiresInSeconds: number } | null> {
+): Promise<{ accessToken: string; expiresInSeconds: number; hostname?: string | null; osType?: string | null } | null> {
   const resp = await fetch(buildApiUrl(apiUrl, '/api/v1/desktop-ws/connect/exchange'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -76,7 +76,7 @@ export async function createDesktopWsTicket(
 ): Promise<string | null> {
   const resp = await apiFetch(
     apiUrl,
-    `/api/v1/remote/sessions/${sessionId}/ws-ticket`,
+    `/api/v1/desktop-ws/${sessionId}/viewer/ws-ticket`,
     token,
     { method: 'POST' }
   );

@@ -1,0 +1,97 @@
+---
+title: Disaster Recovery Plans
+description: Define recovery groups, set RTO/RPO targets, and rehearse coordinated failover across your fleet.
+sidebar:
+  order: 14
+  label: "Disaster Recovery"
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Disaster Recovery (DR) plans let you define how to bring your systems back online after a major incident. You organize devices into ordered recovery groups, set overall RTO/RPO targets, and rehearse the plan before you need it.
+
+---
+
+## Creating a DR Plan
+
+<Steps>
+1. Navigate to the **Disaster Recovery** section.
+2. Click **Create Plan**.
+3. Enter the plan details:
+   - **Name** — descriptive label (e.g., "Primary site failover")
+   - **Description** — operator notes explaining the plan's scope and assumptions
+   - **RPO target** — maximum acceptable data loss in minutes
+   - **RTO target** — maximum acceptable recovery time in minutes
+4. Click **Save**.
+</Steps>
+
+---
+
+## Adding Recovery Groups
+
+Recovery groups define which devices to recover and in what order. Groups execute sequentially — group 1 completes before group 2 starts.
+
+<Steps>
+1. Open your DR plan.
+2. Click **Add Recovery Group**.
+3. Configure the group:
+   - **Name** — e.g., "Domain Controllers", "Database Servers", "Application Tier"
+   - **Devices** — select which devices belong to this group
+   - **Restore configuration** — how to restore each device (snapshot, target path, etc.)
+   - **Sequence order** — execution priority (lower numbers run first)
+   - **Dependencies** — optionally set a group to depend on another group completing first
+4. Repeat for each recovery tier.
+</Steps>
+
+### Example Recovery Order
+
+| Order | Group | Devices | Why |
+|-------|-------|---------|-----|
+| 1 | Domain Controllers | DC01, DC02 | Authentication must be online first |
+| 2 | Database Servers | SQL01, SQL02 | Applications need their data layer |
+| 3 | Application Servers | APP01–APP04 | Now that auth and data are up |
+| 4 | File Servers | FS01 | Lower priority, can wait |
+
+<Aside type="tip">
+  Model your recovery groups after your service dependency chain. If Application Server depends on Database Server, put the database in an earlier group.
+</Aside>
+
+---
+
+## Execution Types
+
+| Type | What happens | When to use |
+|------|-------------|-------------|
+| **Rehearsal** | Validates recovery steps without modifying production systems | Regular DR testing (quarterly recommended) |
+| **Failover** | Live execution — actually restores systems according to the plan | Real disaster or planned migration |
+| **Failback** | Returns services to the primary environment after a failover | After the original site is repaired |
+
+---
+
+## Running a DR Plan
+
+<Steps>
+1. Open the plan and click **Execute**.
+2. Select the execution type: **Rehearsal**, **Failover**, or **Failback**.
+3. Confirm to start.
+4. Recovery groups execute in sequence order. Track progress in the execution detail view.
+5. To stop a running execution, click **Abort**.
+</Steps>
+
+### Viewing Execution History
+
+Past executions are listed on the plan detail page, showing:
+- Execution type (rehearsal/failover/failback)
+- Start and end times
+- Status (running, completed, failed, aborted)
+- Per-group results
+
+---
+
+## DR Testing Best Practices
+
+- **Rehearse quarterly** at minimum. Real disasters are not the time to discover your plan doesn't work.
+- **Start with a rehearsal** before relying on a plan for production failover.
+- **Review after each rehearsal** — update device assignments, sequence orders, and targets based on what you learned.
+- **Keep plans current** — when you add or decommission servers, update the recovery groups.
+- **Combine with SLA monitoring** — your [SLA policies](/backup/sla/) track whether RPO/RTO targets are achievable day-to-day, giving you confidence before a DR event.

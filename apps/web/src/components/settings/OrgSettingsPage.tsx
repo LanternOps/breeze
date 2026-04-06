@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowLeft,
   Bell,
   Building2,
   CheckCircle2,
+  Copy,
+  Check,
+  Monitor,
   Paintbrush,
   ScrollText,
   Shield
@@ -13,6 +17,7 @@ import OrgDefaultsEditor from './OrgDefaultsEditor';
 import OrgNotificationSettings from './OrgNotificationSettings';
 import OrgSecuritySettings from './OrgSecuritySettings';
 import OrgEventLogSettings from './OrgEventLogSettings';
+import OrgRemoteAccessSettings from './OrgRemoteAccessSettings';
 import { useOrgStore } from '../../stores/orgStore';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
@@ -47,10 +52,25 @@ const tabs = [
     label: 'Event Logs',
     description: 'Forwarding and retention',
     icon: ScrollText
+  },
+  {
+    id: 'remote-access',
+    label: 'Remote Access',
+    description: 'VNC, proxy, and tunnel settings',
+    icon: Monitor
   }
 ] as const;
 
 type TabKey = (typeof tabs)[number]['id'];
+
+const VALID_TABS = tabs.map(t => t.id) as unknown as TabKey[];
+
+function getTabFromHash(): TabKey {
+  if (typeof window === 'undefined') return 'general';
+  const hash = window.location.hash.replace('#', '');
+  if (VALID_TABS.includes(hash as TabKey)) return hash as TabKey;
+  return 'general';
+}
 
 type SaveState = {
   hasUnsavedChanges: boolean;
@@ -138,8 +158,24 @@ const REFERENCE_TIME = '12:00 PM';
 const formatTime = (date: Date) =>
   date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 
-export default function OrgSettingsPage() {
-  const [activeTab, setActiveTab] = useState<TabKey>('general');
+type OrgSettingsPageProps = {
+  orgId?: string;
+};
+
+export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPageProps) {
+  const [activeTab, setActiveTab] = useState<TabKey>(getTabFromHash);
+
+  useEffect(() => {
+    const onHashChange = () => setActiveTab(getTabFromHash());
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  const switchTab = (tab: TabKey) => {
+    window.location.hash = tab;
+    setActiveTab(tab);
+  };
+
   const [saveState, setSaveState] = useState<SaveState>({
     hasUnsavedChanges: false,
     lastSavedAt: REFERENCE_TIME
@@ -148,12 +184,13 @@ export default function OrgSettingsPage() {
   const [locked, setLocked] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [copiedOrgId, setCopiedOrgId] = useState(false);
 
   const { currentOrgId, organizations } = useOrgStore();
-  const currentOrg = organizations.find(org => org.id === currentOrgId);
+  const effectiveOrgId = propOrgId || currentOrgId;
 
   const fetchOrgDetails = useCallback(async () => {
-    if (!currentOrgId) {
+    if (!effectiveOrgId) {
       setLoading(false);
       return;
     }
@@ -161,7 +198,7 @@ export default function OrgSettingsPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetchWithAuth(`/orgs/organizations/${currentOrgId}`);
+      const response = await fetchWithAuth(`/orgs/organizations/${effectiveOrgId}`);
       if (!response.ok) {
         if (response.status === 401) {
           void navigateTo('/login', { replace: true });
@@ -173,7 +210,7 @@ export default function OrgSettingsPage() {
       setOrgDetails(data);
 
       // Fetch effective settings to determine partner-locked fields
-      const effRes = await fetchWithAuth(`/orgs/organizations/${currentOrgId}/effective-settings`);
+      const effRes = await fetchWithAuth(`/orgs/organizations/${effectiveOrgId}/effective-settings`);
       if (effRes.ok) {
         const effData = await effRes.json();
         setLocked(effData.locked || []);
@@ -185,14 +222,14 @@ export default function OrgSettingsPage() {
     } finally {
       setLoading(false);
     }
-  }, [currentOrgId]);
+  }, [effectiveOrgId]);
 
   useEffect(() => {
     fetchOrgDetails();
   }, [fetchOrgDetails]);
 
   const handleSaveSettings = useCallback(async (section: string, data: Record<string, unknown>) => {
-    if (!currentOrgId) return;
+    if (!effectiveOrgId) return;
 
     try {
       const currentSettings = orgDetails?.settings || {};
@@ -201,7 +238,7 @@ export default function OrgSettingsPage() {
         [section]: data
       };
 
-      const response = await fetchWithAuth(`/orgs/organizations/${currentOrgId}`, {
+      const response = await fetchWithAuth(`/orgs/organizations/${effectiveOrgId}`, {
         method: 'PATCH',
         body: JSON.stringify({ settings: updatedSettings })
       });
@@ -219,10 +256,11 @@ export default function OrgSettingsPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save settings');
     }
-  }, [currentOrgId, orgDetails, fetchOrgDetails]);
+  }, [effectiveOrgId, orgDetails, fetchOrgDetails]);
 
-  // Fallback display data
-  const displayOrg = orgDetails || currentOrg;
+  // Fallback display data — prefer fetched orgDetails; when accessed via URL prop the org
+  // might not be in the store's organizations array, so fall back to a minimal object.
+  const displayOrg = orgDetails || organizations.find(org => org.id === effectiveOrgId) || { id: effectiveOrgId, name: 'Organization' } as OrgDetails;
 
   const statusLabel = useMemo(() => {
     if (saveState.hasUnsavedChanges) {
@@ -260,7 +298,7 @@ export default function OrgSettingsPage() {
   }
 
   // No organization selected
-  if (!currentOrgId || !displayOrg) {
+  if (!effectiveOrgId || !displayOrg) {
     return (
       <div className="rounded-lg border border-amber-200 bg-amber-50 p-6 text-center dark:border-amber-800 dark:bg-amber-950">
         <Building2 className="mx-auto h-12 w-12 text-amber-500" />
@@ -326,6 +364,13 @@ export default function OrgSettingsPage() {
             locked={locked}
           />
         );
+      case 'remote-access':
+        return effectiveOrgId ? (
+          <OrgRemoteAccessSettings
+            orgId={effectiveOrgId}
+            onDirty={handleDirty}
+          />
+        ) : null;
       case 'general':
       default:
         return (
@@ -374,6 +419,27 @@ export default function OrgSettingsPage() {
                       : 'No contract dates set'}
                   </p>
                 </div>
+                <div className="rounded-md border bg-muted/40 p-4 sm:col-span-2">
+                  <dt className="text-xs uppercase text-muted-foreground">Organization ID</dt>
+                  <dd className="mt-2 flex items-center gap-2">
+                    <code className="rounded bg-muted px-2 py-1 font-mono text-sm">{displayOrg.id}</code>
+                    <button
+                      type="button"
+                      className="inline-flex items-center rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                      title="Copy Organization ID"
+                      onClick={() => {
+                        navigator.clipboard.writeText(displayOrg.id);
+                        setCopiedOrgId(true);
+                        setTimeout(() => setCopiedOrgId(false), 2000);
+                      }}
+                    >
+                      {copiedOrgId ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+                    </button>
+                  </dd>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Use this ID when inviting users or configuring integrations.
+                  </p>
+                </div>
               </dl>
             </section>
             <OrgDefaultsEditor
@@ -389,9 +455,24 @@ export default function OrgSettingsPage() {
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-6">
+      {propOrgId && (
+        <>
+          <nav className="mb-1 flex items-center gap-1 text-xs text-muted-foreground">
+            <a href="/settings" className="hover:text-foreground">Settings</a>
+            <span>/</span>
+            <a href="/settings/organizations" className="hover:text-foreground">Organizations</a>
+            <span>/</span>
+            <span className="text-foreground">{displayOrg.name}</span>
+          </nav>
+          <a href="/settings/organizations" className="mb-4 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
+            <ArrowLeft className="h-4 w-4" />
+            Back to Organizations
+          </a>
+        </>
+      )}
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold">Organization settings</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Organization settings</h1>
           <p className="text-sm text-muted-foreground">
             Configure preferences for {displayOrg.name}.
           </p>
@@ -432,7 +513,7 @@ export default function OrgSettingsPage() {
                 <button
                   key={tab.id}
                   type="button"
-                  onClick={() => setActiveTab(tab.id)}
+                  onClick={() => switchTab(tab.id)}
                   className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-sm transition ${
                     isActive
                       ? 'bg-muted font-semibold text-foreground'

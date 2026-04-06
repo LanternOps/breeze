@@ -133,7 +133,7 @@ export default function AiRiskDashboard() {
             <BrainCircuit className="h-6 w-6 text-primary" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold">AI Risk Engine</h1>
+            <h1 className="text-xl font-semibold tracking-tight">AI Risk Engine</h1>
             <p className="text-sm text-muted-foreground">
               Tool execution guardrails, approval history, and analytics
             </p>

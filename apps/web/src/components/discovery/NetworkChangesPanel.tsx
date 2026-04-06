@@ -560,8 +560,8 @@ export default function NetworkChangesPanel({
                         <span
                           className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${
                             change.acknowledged
-                              ? 'bg-green-500/20 text-green-700 border-green-500/40'
-                              : 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40'
+                              ? 'bg-success/15 text-success border-success/30'
+                              : 'bg-warning/15 text-warning border-warning/30'
                           }`}
                         >
                           {change.acknowledged ? 'Acknowledged' : 'Unacknowledged'}

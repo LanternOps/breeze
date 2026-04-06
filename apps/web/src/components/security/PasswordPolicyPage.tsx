@@ -201,7 +201,7 @@ export default function PasswordPolicyPage() {
                         <div className="border-t bg-muted/20 px-12 py-3">
                           <table className="w-full text-sm">
                             <thead>
-                              <tr className="text-left text-xs font-semibold uppercase text-muted-foreground">
+                              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                                 <th className="pb-2">Rule</th>
                                 <th className="pb-2">Result</th>
                                 <th className="pb-2">Current</th>

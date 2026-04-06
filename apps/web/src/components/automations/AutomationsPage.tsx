@@ -245,7 +245,7 @@ export default function AutomationsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Automations</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Automations</h1>
           <p className="text-muted-foreground">Create and manage automated workflows.</p>
         </div>
         <a

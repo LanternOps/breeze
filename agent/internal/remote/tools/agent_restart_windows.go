@@ -15,8 +15,8 @@ func isAgentService(name string) bool {
 }
 
 func spawnDelayedRestart() error {
-	cmd := exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
-		"Start-Sleep -Seconds 3; Restart-Service BreezeAgent")
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command",
+		"Start-Sleep -Seconds 3; Restart-Service -Name BreezeAgent")
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
 	}
@@ -26,4 +26,9 @@ func spawnDelayedRestart() error {
 	// Detach so the child survives service stop
 	_ = cmd.Process.Release()
 	return nil
+}
+
+func runAgentRestartNow() error {
+	return exec.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command",
+		"Restart-Service -Name BreezeAgent").Run()
 }

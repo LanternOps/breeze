@@ -2,20 +2,23 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { eq, and, sql, gte, desc } from 'drizzle-orm';
 import { db } from '../../db';
+import { requirePermission } from '../../middleware/auth';
 import {
   backupConfigs,
-  backupPolicies,
   backupJobs,
   backupSnapshots,
+  devices,
 } from '../../db/schema';
+import { PERMISSIONS } from '../../services/permissions';
+import { resolveBackupConfigForDevice, resolveAllBackupAssignedDevices } from '../../services/featureConfigResolver';
 import { getNextRun, resolveScopedOrgId } from './helpers';
 import { usageHistoryQuerySchema } from './schemas';
-import type { BackupPolicySchedule, BackupPolicyTargets } from './types';
 
 export const dashboardRoutes = new Hono();
 
 dashboardRoutes.get(
   '/usage-history',
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   zValidator('query', usageHistoryQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -111,7 +114,7 @@ dashboardRoutes.get(
   }
 );
 
-dashboardRoutes.get('/dashboard', async (c) => {
+dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -121,17 +124,12 @@ dashboardRoutes.get('/dashboard', async (c) => {
   const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
   // Run aggregation queries in parallel
-  const [configCount, policyCount, jobCount, snapshotCount, last24hStats, storageStats, policies, recentJobs] =
+  const [configCount, jobCount, snapshotCount, last24hStats, storageStats, assignedDevices, recentJobs] =
     await Promise.all([
       db
         .select({ count: sql<number>`count(*)::int` })
         .from(backupConfigs)
         .where(eq(backupConfigs.orgId, orgId))
-        .then((r) => r[0]?.count ?? 0),
-      db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(backupPolicies)
-        .where(eq(backupPolicies.orgId, orgId))
         .then((r) => r[0]?.count ?? 0),
       db
         .select({ count: sql<number>`count(*)::int` })
@@ -166,45 +164,48 @@ dashboardRoutes.get('/dashboard', async (c) => {
         .from(backupSnapshots)
         .where(eq(backupSnapshots.orgId, orgId))
         .then((r) => r[0] ?? { totalBytes: 0, count: 0 }),
+      resolveAllBackupAssignedDevices(orgId).catch((err) => {
+        console.error(`[BackupDashboard] Failed to resolve assigned devices:`, err instanceof Error ? err.message : err);
+        return [];
+      }),
       db
-        .select()
-        .from(backupPolicies)
-        .where(eq(backupPolicies.orgId, orgId)),
-      db
-        .select()
+        .select({
+          job: backupJobs,
+          deviceName: devices.displayName,
+          deviceHostname: devices.hostname,
+          configName: backupConfigs.name,
+        })
         .from(backupJobs)
+        .leftJoin(devices, eq(backupJobs.deviceId, devices.id))
+        .leftJoin(backupConfigs, eq(backupJobs.configId, backupConfigs.id))
         .where(eq(backupJobs.orgId, orgId))
         .orderBy(desc(backupJobs.createdAt))
         .limit(5),
     ]);
 
-  const protectedDevices = new Set(
-    policies.flatMap((p) => {
-      const targets = p.targets as BackupPolicyTargets;
-      return targets?.deviceIds ?? [];
-    })
-  );
+  const protectedDevices = new Set(assignedDevices.map((a) => a.deviceId));
 
-  const latestJobs = recentJobs.map((row) => ({
-    id: row.id,
-    type: row.type,
-    deviceId: row.deviceId,
-    configId: row.configId,
-    policyId: row.policyId ?? null,
-    snapshotId: row.snapshotId ?? null,
-    status: row.status,
-    startedAt: row.startedAt?.toISOString() ?? null,
-    completedAt: row.completedAt?.toISOString() ?? null,
-    createdAt: row.createdAt.toISOString(),
-    updatedAt: row.updatedAt.toISOString(),
-    totalSize: row.totalSize ?? null,
+  const latestJobs = recentJobs.map((r) => ({
+    id: r.job.id,
+    type: r.job.type,
+    deviceId: r.job.deviceId,
+    deviceName: r.deviceName ?? r.deviceHostname ?? null,
+    configId: r.job.configId,
+    configName: r.configName ?? null,
+    status: r.job.status,
+    startedAt: r.job.startedAt?.toISOString() ?? null,
+    completedAt: r.job.completedAt?.toISOString() ?? null,
+    createdAt: r.job.createdAt.toISOString(),
+    totalSize: r.job.totalSize ?? null,
+    errorCount: r.job.errorCount ?? null,
+    errorLog: r.job.errorLog ?? null,
   }));
 
   return c.json({
     data: {
       totals: {
         configs: configCount,
-        policies: policyCount,
+        policies: assignedDevices.length,
         jobs: jobCount,
         snapshots: snapshotCount,
       },
@@ -226,25 +227,17 @@ dashboardRoutes.get('/dashboard', async (c) => {
   });
 });
 
-dashboardRoutes.get('/status/:deviceId', async (c) => {
+dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
 
-  const deviceId = c.req.param('deviceId');
+  const deviceId = c.req.param('deviceId')!;
 
-  // Find policy targeting this device
-  const policies = await db
-    .select()
-    .from(backupPolicies)
-    .where(eq(backupPolicies.orgId, orgId));
-
-  const policy = policies.find((p) => {
-    const targets = p.targets as BackupPolicyTargets;
-    return targets?.deviceIds?.includes(deviceId);
-  });
+  // Resolve backup config via configuration policy system
+  const resolved = await resolveBackupConfigForDevice(deviceId);
 
   // Get recent jobs for this device
   const jobs = await db
@@ -261,13 +254,12 @@ dashboardRoutes.get('/status/:deviceId', async (c) => {
   const lastFailure =
     jobs.find((j) => j.status === 'failed') ?? null;
 
-  const policySchedule = policy?.schedule as BackupPolicySchedule | null;
-
   return c.json({
     data: {
       deviceId,
-      protected: Boolean(policy),
-      policyId: policy?.id ?? null,
+      protected: Boolean(resolved),
+      featureLinkId: resolved?.featureLinkId ?? null,
+      configId: resolved?.configId ?? null,
       lastJob: lastJob
         ? {
             id: lastJob.id,
@@ -278,9 +270,17 @@ dashboardRoutes.get('/status/:deviceId', async (c) => {
         : null,
       lastSuccessAt: lastSuccess?.completedAt?.toISOString() ?? null,
       lastFailureAt: lastFailure?.completedAt?.toISOString() ?? null,
-      nextScheduledAt: policySchedule
-        ? getNextRun(policySchedule)
-        : null,
+      lastFailureError: lastFailure?.errorLog ?? null,
+      nextScheduledAt: (() => {
+        // Prefer normalized settings; fall back to inline_settings on the feature link
+        const schedule = (resolved?.settings?.schedule ?? resolved?.inlineSettings) as Record<string, unknown> | null;
+        if (!schedule) return null;
+        // Normalized settings use { frequency, time }; inline uses { scheduleFrequency, scheduleTime }
+        const frequency = (schedule.frequency ?? schedule.scheduleFrequency) as string | undefined;
+        const time = (schedule.time ?? schedule.scheduleTime) as string | undefined;
+        if (typeof frequency !== 'string' || typeof time !== 'string') return null;
+        return getNextRun({ ...schedule, frequency, time } as any, resolved?.resolvedTimezone);
+      })(),
     },
   });
 });

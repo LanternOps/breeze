@@ -4,9 +4,10 @@ import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { agentVersions } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { syncFromGitHub } from '../services/binarySync';
+import { PERMISSIONS } from '../services/permissions';
 
 // Map Go GOOS / user-facing platform names to DB platform names
 const PLATFORM_MAP: Record<string, string> = {
@@ -16,6 +17,10 @@ const PLATFORM_MAP: Record<string, string> = {
 };
 
 export const agentVersionRoutes = new Hono();
+const requireAgentVersionAdmin = requirePermission(
+  PERMISSIONS.ORGS_WRITE.resource,
+  PERMISSIONS.ORGS_WRITE.action,
+);
 
 // Validation schemas
 const platformEnum = z.enum(['windows', 'macos', 'linux', 'darwin']);
@@ -135,6 +140,8 @@ agentVersionRoutes.post(
   '/',
   authMiddleware,
   requireScope('system'),
+  requireAgentVersionAdmin,
+  requireMfa(),
   zValidator('json', createVersionSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -207,6 +214,8 @@ agentVersionRoutes.post(
   '/sync-github',
   authMiddleware,
   requireScope('system'),
+  requireAgentVersionAdmin,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const requestedVersion = c.req.query('version');

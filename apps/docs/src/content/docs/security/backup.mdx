@@ -22,6 +22,9 @@ import { Tabs, TabItem, Aside } from '@astrojs/starlight/components';
 # PostgreSQL client tools
 sudo apt-get install postgresql-client-16
 
+# psql is used by the restore verification step
+psql --version
+
 # MinIO Client (for --storage)
 curl -O https://dl.min.io/client/mc/release/linux-amd64/mc
 chmod +x mc && sudo mv mc /usr/local/bin/
@@ -76,10 +79,9 @@ Backups are stored in `$BACKUP_DIR` with timestamps:
 
 ```
 /var/backups/breeze/
-├── 2026-02-11T12:00:00Z/
-│   ├── breeze-db.dump
-│   ├── breeze-storage.tar.gz
-│   └── breeze-config.tar.gz.enc
+├── db_20260211_120000.dump
+├── storage_20260211_120000/
+└── config_20260211_120000.tar.gz.enc
 ```
 
 ## Automated Backups
@@ -98,13 +100,13 @@ crontab -e
 
 ```bash
 # Restore database
-./scripts/restore.sh --db /var/backups/breeze/2026-02-11T12:00:00Z/breeze-db.dump
+./scripts/restore.sh --db /var/backups/breeze/db_20260211_120000.dump
 
-# Restore storage
-./scripts/restore.sh --storage /var/backups/breeze/2026-02-11T12:00:00Z/breeze-storage.tar.gz
+# Restore storage directory
+./scripts/restore.sh --storage /var/backups/breeze/storage_20260211_120000
 
 # Restore configuration (prompts for encryption key)
-./scripts/restore.sh --config /var/backups/breeze/2026-02-11T12:00:00Z/breeze-config.tar.gz.enc
+./scripts/restore.sh --config /var/backups/breeze/config_20260211_120000.tar.gz.enc
 ```
 
 ## Retention

@@ -1,12 +1,14 @@
 package userhelper
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
+	"io"
 	"net"
 	"os"
 	osexec "os/exec"
@@ -14,28 +16,41 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/executor"
+	"github.com/breeze-rmm/agent/internal/helper"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/remote/clipboard"
+	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
 
 var log = logging.L("userhelper")
 
+const (
+	maxLaunchBinaryPathBytes = 4096
+	maxLaunchArgs            = 32
+	maxLaunchArgBytes        = 4096
+)
+
 // Client is the user-helper side of the IPC connection to the root daemon.
 type Client struct {
 	socketPath string
 	role       string // "system" or "user"
+	binaryKind string
+	context    string
 	conn       *ipc.Conn
 	sessionKey []byte
 	agentID    string
 	scopes     []string
 	stopChan   chan struct{}
 	desktopMgr *helperDesktopManager
+	executor   *executor.Executor
 	pendingMu  sync.Mutex
 	pending    map[string]chan *ipc.Envelope
 	sasReqSeq  atomic.Uint64
@@ -44,14 +59,24 @@ type Client struct {
 // New creates a new user helper client with the given role.
 // Role should be ipc.HelperRoleSystem or ipc.HelperRoleUser.
 func New(socketPath, role string) *Client {
+	return NewWithOptions(socketPath, role, "", "")
+}
+
+func NewWithOptions(socketPath, role, binaryKind, context string) *Client {
 	if role == "" {
 		role = ipc.HelperRoleSystem
+	}
+	if binaryKind == "" {
+		binaryKind = ipc.HelperBinaryUserHelper
 	}
 	return &Client{
 		socketPath: socketPath,
 		role:       role,
+		binaryKind: binaryKind,
+		context:    context,
 		stopChan:   make(chan struct{}),
-		desktopMgr: newHelperDesktopManager(),
+		desktopMgr: newHelperDesktopManager(context),
+		executor:   executor.New(nil),
 		pending:    make(map[string]chan *ipc.Envelope),
 	}
 }
@@ -87,8 +112,14 @@ func (c *Client) Run() error {
 		}
 	}
 
-	// Start TCC permission check loop (macOS only; no-op on other platforms)
-	safeGo("tcc_check", func() { RunTCCCheckLoop(c.conn, c.stopChan) })
+	// Start TCC permission check loop (macOS only; no-op on other platforms).
+	// Skip capture probes while a live session is active to avoid contending
+	// with the streaming capturer in the same helper process.
+	safeGo("tcc_check", func() {
+		RunTCCCheckLoop(c.conn, c.stopChan, c.context, func() bool {
+			return !c.desktopMgr.hasActiveSessions()
+		})
+	})
 
 	log.Info("user helper connected and authenticated", "agentId", c.agentID)
 
@@ -152,6 +183,8 @@ func (c *Client) authenticate() error {
 		BinaryHash:      binaryHash,
 		WinSessionID:    currentWinSessionID(),
 		HelperRole:      c.role,
+		BinaryKind:      c.binaryKind,
+		DesktopContext:  c.context,
 	}
 
 	if err := c.conn.SendTyped("auth", ipc.TypeAuthRequest, authReq); err != nil {
@@ -191,7 +224,7 @@ func (c *Client) authenticate() error {
 }
 
 func (c *Client) sendCapabilities() error {
-	caps := detectCapabilities()
+	caps := detectCapabilities(c.binaryKind, c.context)
 	// On Windows, user-role helpers cannot capture desktop (no SYSTEM token
 	// for UAC/lock screen). On macOS, the user-role helper is the only process
 	// that CAN capture — the root daemon lacks GUI session access.
@@ -199,6 +232,35 @@ func (c *Client) sendCapabilities() error {
 		caps.CanCapture = false
 	}
 	return c.conn.SendTyped("caps", ipc.TypeCapabilities, caps)
+}
+
+func (c *Client) hasScope(scope string) bool {
+	for _, allowed := range c.scopes {
+		if allowed == scope || allowed == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) authorizeCommand(cmdType string) error {
+	switch cmdType {
+	case tools.CmdScript, tools.CmdRunScript, tools.CmdScriptCancel, tools.CmdScriptListRunning, "exec":
+		if !c.hasScope("run_as_user") {
+			return fmt.Errorf("command %s requires run_as_user scope", cmdType)
+		}
+	case tools.CmdTakeScreenshot, tools.CmdComputerAction:
+		if c.hasScope("desktop") {
+			return nil
+		}
+		if runtime.GOOS == "darwin" && c.hasScope("run_as_user") {
+			return nil
+		}
+		return fmt.Errorf("command %s requires desktop scope", cmdType)
+	default:
+		return fmt.Errorf("unsupported command type: %s", cmdType)
+	}
+	return nil
 }
 
 func (c *Client) commandLoop() error {
@@ -363,6 +425,17 @@ func (c *Client) handleCommand(env *ipc.Envelope) {
 		return
 	}
 
+	if err := c.authorizeCommand(cmd.Type); err != nil {
+		if sendErr := c.conn.SendTyped(env.ID, ipc.TypeCommandResult, ipc.IPCCommandResult{
+			CommandID: cmd.CommandID,
+			Status:    "failed",
+			Error:     err.Error(),
+		}); sendErr != nil {
+			log.Warn("failed to send unauthorized command response", "id", env.ID, "error", sendErr)
+		}
+		return
+	}
+
 	// Dispatch based on command type. Screenshot/computer_action need to run
 	// in the user session (this process) since the service runs in Session 0
 	// and has no display for DXGI/GDI/SendInput.
@@ -370,8 +443,16 @@ func (c *Client) handleCommand(env *ipc.Envelope) {
 	switch cmd.Type {
 	case tools.CmdTakeScreenshot, tools.CmdComputerAction:
 		result = c.executeToolCommand(cmd)
-	default:
+	case "exec":
+		result = c.executeProcess(cmd)
+	case tools.CmdScript, tools.CmdRunScript, tools.CmdScriptCancel, tools.CmdScriptListRunning:
 		result = c.executeScript(cmd)
+	default:
+		result = ipc.IPCCommandResult{
+			CommandID: cmd.CommandID,
+			Status:    "failed",
+			Error:     fmt.Sprintf("unsupported command type: %s", cmd.Type),
+		}
 	}
 	if err := c.conn.SendTyped(env.ID, ipc.TypeCommandResult, result); err != nil {
 		log.Warn("failed to send command result", "id", env.ID, "error", err)
@@ -387,9 +468,15 @@ func (c *Client) handleLaunchProcess(env *ipc.Envelope) {
 		return
 	}
 
-	if req.BinaryPath == "" {
+	if err := validateLaunchProcessRequest(&req); err != nil {
 		c.conn.SendTyped(env.ID, ipc.TypeLaunchResult, ipc.LaunchProcessResult{
-			Error: "binaryPath is required",
+			Error: err.Error(),
+		})
+		return
+	}
+	if !c.hasScope("run_as_user") {
+		c.conn.SendTyped(env.ID, ipc.TypeLaunchResult, ipc.LaunchProcessResult{
+			Error: "launch_process requires run_as_user scope",
 		})
 		return
 	}
@@ -398,31 +485,27 @@ func (c *Client) handleLaunchProcess(env *ipc.Envelope) {
 	// Prevents arbitrary code execution if the IPC channel is compromised.
 	selfPath, err := os.Executable()
 	if err == nil {
-		selfPath, _ = filepath.EvalSymlinks(selfPath)
-		candidate, _ := filepath.EvalSymlinks(req.BinaryPath)
-		selfDir := filepath.Dir(filepath.Clean(selfPath))
-		candidateDir := filepath.Dir(filepath.Clean(candidate))
-		if selfDir != candidateDir {
+		if !isAllowedLaunchBinary(selfPath, req.BinaryPath) {
 			log.Warn("launch_process rejected: binary not in agent directory",
-				"requested", req.BinaryPath, "agentDir", selfDir)
+				"requested", req.BinaryPath, "agentDir", filepath.Dir(filepath.Clean(selfPath)))
 			c.conn.SendTyped(env.ID, ipc.TypeLaunchResult, ipc.LaunchProcessResult{
-				Error: "binary path not in agent directory",
+				Error: "binary path not in allowed launch directory",
 			})
 			return
 		}
 	}
 
-	cmd := osexec.Command(req.BinaryPath)
+	cmd := osexec.Command(req.BinaryPath, req.Args...)
 	cmd.Dir = filepath.Dir(req.BinaryPath)
 	if err := cmd.Start(); err != nil {
-		log.Warn("failed to launch process", "binary", req.BinaryPath, "error", err.Error())
+		log.Warn("failed to launch process", "binary", req.BinaryPath, "args", req.Args, "error", err.Error())
 		c.conn.SendTyped(env.ID, ipc.TypeLaunchResult, ipc.LaunchProcessResult{
 			Error: err.Error(),
 		})
 		return
 	}
 
-	log.Info("launched process as user", "binary", req.BinaryPath, "pid", cmd.Process.Pid)
+	log.Info("launched process as user", "binary", req.BinaryPath, "args", req.Args, "pid", cmd.Process.Pid)
 	c.conn.SendTyped(env.ID, ipc.TypeLaunchResult, ipc.LaunchProcessResult{
 		OK:  true,
 		PID: cmd.Process.Pid,
@@ -430,6 +513,63 @@ func (c *Client) handleLaunchProcess(env *ipc.Envelope) {
 
 	// Don't wait for the process — release it so it runs independently.
 	cmd.Process.Release()
+}
+
+func validateLaunchProcessRequest(req *ipc.LaunchProcessRequest) error {
+	req.BinaryPath = strings.TrimSpace(req.BinaryPath)
+	if req.BinaryPath == "" {
+		return fmt.Errorf("binaryPath is required")
+	}
+	if len(req.BinaryPath) > maxLaunchBinaryPathBytes {
+		return fmt.Errorf("binaryPath too large")
+	}
+	if containsControlChar(req.BinaryPath) {
+		return fmt.Errorf("binaryPath contains invalid control characters")
+	}
+	if len(req.Args) > maxLaunchArgs {
+		return fmt.Errorf("too many launch arguments")
+	}
+	for i := range req.Args {
+		req.Args[i] = strings.TrimSpace(req.Args[i])
+		if len(req.Args[i]) > maxLaunchArgBytes {
+			return fmt.Errorf("launch argument too large")
+		}
+		if containsControlChar(req.Args[i]) {
+			return fmt.Errorf("launch argument contains invalid control characters")
+		}
+	}
+	return nil
+}
+
+func containsControlChar(value string) bool {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+func isAllowedLaunchBinary(selfPath, requestedPath string) bool {
+	candidateDir := filepath.Dir(resolveLaunchPath(requestedPath))
+	allowedDirs := []string{
+		filepath.Dir(resolveLaunchPath(selfPath)),
+		filepath.Dir(resolveLaunchPath(helper.DefaultBinaryPath())),
+	}
+	for _, dir := range allowedDirs {
+		if candidateDir == dir {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveLaunchPath(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(path)
 }
 
 func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
@@ -442,7 +582,64 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 		}
 	}
 
-	exec := executor.New(nil)
+	switch cmd.Type {
+	case tools.CmdScriptCancel:
+		executionID := getStringOrDefault(payload, "executionId", "")
+		if executionID == "" {
+			return ipc.IPCCommandResult{
+				CommandID: cmd.CommandID,
+				Status:    "failed",
+				Error:     "executionId is required",
+			}
+		}
+
+		if err := c.executor.Cancel(executionID); err != nil {
+			return ipc.IPCCommandResult{
+				CommandID: cmd.CommandID,
+				Status:    "failed",
+				Error:     err.Error(),
+			}
+		}
+
+		resultJSON, err := json.Marshal(map[string]any{
+			"executionId": executionID,
+			"cancelled":   true,
+		})
+		if err != nil {
+			return ipc.IPCCommandResult{
+				CommandID: cmd.CommandID,
+				Status:    "failed",
+				Error:     fmt.Sprintf("marshal result: %v", err),
+			}
+		}
+
+		return ipc.IPCCommandResult{
+			CommandID: cmd.CommandID,
+			Status:    "completed",
+			Result:    resultJSON,
+		}
+
+	case tools.CmdScriptListRunning:
+		running := c.executor.ListRunning()
+		resultJSON, err := json.Marshal(map[string]any{
+			"running": running,
+			"count":   len(running),
+		})
+		if err != nil {
+			return ipc.IPCCommandResult{
+				CommandID: cmd.CommandID,
+				Status:    "failed",
+				Error:     fmt.Sprintf("marshal result: %v", err),
+			}
+		}
+
+		return ipc.IPCCommandResult{
+			CommandID: cmd.CommandID,
+			Status:    "completed",
+			Result:    resultJSON,
+		}
+	}
+
 	script := executor.ScriptExecution{
 		ID:         cmd.CommandID,
 		ScriptType: getStringOrDefault(payload, "language", "bash"),
@@ -450,7 +647,7 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 		Timeout:    getIntOrDefault(payload, "timeoutSeconds", 300),
 	}
 
-	result, err := exec.Execute(script)
+	result, err := c.executor.Execute(script)
 	if err != nil && result == nil {
 		return ipc.IPCCommandResult{
 			CommandID: cmd.CommandID,
@@ -466,8 +663,8 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 
 	resultJSON, err := json.Marshal(map[string]any{
 		"exitCode": result.ExitCode,
-		"stdout":   result.Stdout,
-		"stderr":   result.Stderr,
+		"stdout":   executor.SanitizeOutput(result.Stdout),
+		"stderr":   executor.SanitizeOutput(result.Stderr),
 	})
 	if err != nil {
 		return ipc.IPCCommandResult{
@@ -482,6 +679,74 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 		Status:    status,
 		Result:    resultJSON,
 		Error:     result.Error,
+	}
+}
+
+// executeProcess runs a direct command+args in user context (e.g. winget).
+// Unlike executeScript, this does not go through the script executor — it runs
+// the named binary directly and returns stdout/stderr/exitCode.
+func (c *Client) executeProcess(cmd ipc.IPCCommand) ipc.IPCCommandResult {
+	var payload map[string]any
+	if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+		return ipc.IPCCommandResult{CommandID: cmd.CommandID, Status: "failed", Error: "invalid payload"}
+	}
+
+	name := getStringOrDefault(payload, "command", "")
+	if name == "" {
+		return ipc.IPCCommandResult{CommandID: cmd.CommandID, Status: "failed", Error: "command is required"}
+	}
+
+	var args []string
+	if raw, ok := payload["args"].([]any); ok {
+		for _, a := range raw {
+			if s, ok := a.(string); ok {
+				args = append(args, s)
+			}
+		}
+	}
+
+	timeoutSec := getIntOrDefault(payload, "timeoutSeconds", 300)
+	proc := osexec.Command(name, args...)
+
+	var stdout, stderr bytes.Buffer
+	proc.Stdout = &stdout
+	proc.Stderr = &stderr
+
+	done := make(chan error, 1)
+	if err := proc.Start(); err != nil {
+		return ipc.IPCCommandResult{CommandID: cmd.CommandID, Status: "failed", Error: fmt.Sprintf("start: %v", err)}
+	}
+	go func() { done <- proc.Wait() }()
+
+	select {
+	case err := <-done:
+		exitCode := 0
+		if err != nil {
+			if exitErr, ok := err.(*osexec.ExitError); ok {
+				exitCode = exitErr.ExitCode()
+			} else {
+				return ipc.IPCCommandResult{CommandID: cmd.CommandID, Status: "failed", Error: fmt.Sprintf("wait: %v", err)}
+			}
+		}
+		resultJSON, err := json.Marshal(map[string]any{
+			"exitCode": exitCode,
+			"stdout":   executor.SanitizeOutput(stdout.String()),
+			"stderr":   executor.SanitizeOutput(stderr.String()),
+		})
+		if err != nil {
+			return ipc.IPCCommandResult{CommandID: cmd.CommandID, Status: "failed", Error: fmt.Sprintf("marshal result: %v", err)}
+		}
+		status := "completed"
+		if exitCode != 0 {
+			status = "failed"
+		}
+		return ipc.IPCCommandResult{CommandID: cmd.CommandID, Status: status, Result: resultJSON}
+	case <-time.After(time.Duration(timeoutSec) * time.Second):
+		if err := proc.Process.Kill(); err != nil {
+			log.Warn("failed to kill timed-out process", "command", name, "error", err.Error())
+		}
+		<-done // reap the process
+		return ipc.IPCCommandResult{CommandID: cmd.CommandID, Status: "failed", Error: fmt.Sprintf("timeout after %ds", timeoutSec)}
 	}
 }
 
@@ -578,6 +843,13 @@ func (c *Client) handleDesktopStart(env *ipc.Envelope) {
 		}
 		return
 	}
+	if err := validateDesktopStartRequest(&req); err != nil {
+		log.Warn("invalid desktop_start request", "error", err.Error())
+		if sendErr := c.conn.SendError(env.ID, ipc.TypeDesktopStart, err.Error()); sendErr != nil {
+			log.Warn("failed to send desktop_start error", "error", sendErr)
+		}
+		return
+	}
 
 	log.Info("starting desktop session via IPC",
 		"sessionId", req.SessionID,
@@ -586,7 +858,7 @@ func (c *Client) handleDesktopStart(env *ipc.Envelope) {
 
 	resp, err := c.desktopMgr.startSession(&req)
 	if err != nil {
-		log.Warn("desktop session start failed", "sessionId", req.SessionID, "error", err)
+		log.Warn("desktop session start failed", "sessionId", req.SessionID, "error", err.Error())
 		if sendErr := c.conn.SendError(env.ID, ipc.TypeDesktopStart, err.Error()); sendErr != nil {
 			log.Warn("failed to send desktop_start error", "error", sendErr)
 		}
@@ -605,6 +877,10 @@ func (c *Client) handleDesktopStop(env *ipc.Envelope) {
 		log.Warn("invalid desktop_stop payload", "error", err)
 		return
 	}
+	if err := validateDesktopStopRequest(&req); err != nil {
+		log.Warn("invalid desktop_stop request", "error", err.Error())
+		return
+	}
 
 	log.Info("stopping desktop session via IPC", "sessionId", req.SessionID)
 	c.desktopMgr.stopSession(req.SessionID)
@@ -620,12 +896,83 @@ func (c *Client) handleDesktopInput(env *ipc.Envelope) {
 }
 
 func (c *Client) handleClipboardGet(env *ipc.Envelope) {
-	// Phase 4: Clipboard delegation
-	log.Debug("clipboard_get received (not yet implemented)")
+	c.handleClipboardGetWithProvider(env, clipboard.NewSystemClipboard())
 }
 
 func (c *Client) handleClipboardSet(env *ipc.Envelope) {
-	log.Debug("clipboard_set received (not yet implemented)")
+	c.handleClipboardSetWithProvider(env, clipboard.NewSystemClipboard())
+}
+
+func (c *Client) handleClipboardGetWithProvider(env *ipc.Envelope, provider clipboard.Provider) {
+	content, err := provider.GetContent()
+	if err != nil {
+		log.Warn("clipboard_get failed", "error", err.Error())
+		if sendErr := c.conn.SendError(env.ID, ipc.TypeClipboardData, err.Error()); sendErr != nil {
+			log.Warn("failed to send clipboard_get error", "error", sendErr)
+		}
+		return
+	}
+	if err := clipboard.ValidateContent(content); err != nil {
+		log.Warn("clipboard_get rejected oversized content", "error", err.Error())
+		if sendErr := c.conn.SendError(env.ID, ipc.TypeClipboardData, err.Error()); sendErr != nil {
+			log.Warn("failed to send clipboard_get error", "error", sendErr)
+		}
+		return
+	}
+
+	payload := map[string]any{
+		"type":        string(content.Type),
+		"text":        content.Text,
+		"rtf":         content.RTF,
+		"image":       content.Image,
+		"imageFormat": content.ImageFormat,
+	}
+	if err := c.conn.SendTyped(env.ID, ipc.TypeClipboardData, payload); err != nil {
+		log.Warn("failed to send clipboard_get response", "error", err)
+	}
+}
+
+func (c *Client) handleClipboardSetWithProvider(env *ipc.Envelope, provider clipboard.Provider) {
+	var payload struct {
+		Type        string `json:"type"`
+		Text        string `json:"text,omitempty"`
+		RTF         []byte `json:"rtf,omitempty"`
+		Image       []byte `json:"image,omitempty"`
+		ImageFormat string `json:"imageFormat,omitempty"`
+	}
+	if err := json.Unmarshal(env.Payload, &payload); err != nil {
+		log.Warn("invalid clipboard_set payload", "error", err)
+		if sendErr := c.conn.SendError(env.ID, ipc.TypeClipboardSet, fmt.Sprintf("invalid payload: %v", err)); sendErr != nil {
+			log.Warn("failed to send clipboard_set error", "error", sendErr)
+		}
+		return
+	}
+
+	content := clipboard.Content{
+		Type:        clipboard.ContentType(payload.Type),
+		Text:        payload.Text,
+		RTF:         payload.RTF,
+		Image:       payload.Image,
+		ImageFormat: payload.ImageFormat,
+	}
+	if err := clipboard.ValidateContent(content); err != nil {
+		log.Warn("clipboard_set rejected oversized content", "error", err.Error())
+		if sendErr := c.conn.SendError(env.ID, ipc.TypeClipboardSet, err.Error()); sendErr != nil {
+			log.Warn("failed to send clipboard_set error", "error", sendErr)
+		}
+		return
+	}
+	if err := provider.SetContent(content); err != nil {
+		log.Warn("clipboard_set failed", "error", err.Error())
+		if sendErr := c.conn.SendError(env.ID, ipc.TypeClipboardSet, err.Error()); sendErr != nil {
+			log.Warn("failed to send clipboard_set error", "error", sendErr)
+		}
+		return
+	}
+
+	if err := c.conn.SendTyped(env.ID, ipc.TypeClipboardSet, map[string]any{"ok": true}); err != nil {
+		log.Warn("failed to send clipboard_set response", "error", err)
+	}
 }
 
 // requestSASViaIPC sends a sas_request to the service process via IPC.
@@ -682,12 +1029,20 @@ func computeSelfHash() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(exePath)
+	file, err := os.Open(exePath)
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
+	defer file.Close()
+	return hashReaderSHA256(file)
+}
+
+func hashReaderSHA256(r io.Reader) (string, error) {
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, r); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 func detectDisplayEnv() string {
@@ -706,16 +1061,38 @@ func detectDisplayEnv() string {
 	return ""
 }
 
-func detectCapabilities() ipc.Capabilities {
+func detectCapabilities(binaryKind, desktopContext string) ipc.Capabilities {
 	display := detectDisplayEnv()
 	hasDisplay := display != ""
-	return ipc.Capabilities{
+
+	caps := ipc.Capabilities{
 		CanNotify:     hasDisplay,
 		CanTray:       hasDisplay,
 		CanCapture:    hasDisplay,
-		CanClipboard:  hasDisplay,
+		CanClipboard:  hasDisplay && clipboardSupported(),
 		DisplayServer: display,
 	}
+
+	if binaryKind == ipc.HelperBinaryDesktopHelper {
+		caps.CanNotify = false
+		caps.CanTray = false
+		caps.CanClipboard = false
+		if runtime.GOOS == "darwin" {
+			granted, err := desktop.ProbeCaptureAccess(desktop.CaptureConfig{
+				DesktopContext: desktopContext,
+			})
+			if err != nil {
+				log.Warn("desktop helper capability probe failed",
+					"context", desktopContext,
+					"error", err.Error())
+				caps.CanCapture = false
+			} else {
+				caps.CanCapture = granted
+			}
+		}
+	}
+
+	return caps
 }
 
 func isTimeout(err error) bool {

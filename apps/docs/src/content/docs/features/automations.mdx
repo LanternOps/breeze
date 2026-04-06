@@ -1,18 +1,80 @@
 ---
 title: Automations
 description: Define event-driven, scheduled, and webhook-triggered automations that execute actions across your fleet.
-sidebar:
-  order: 5
-  label: Automations
 ---
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Automations let you define rules that execute automatically when something happens across your managed environment. A trigger — a scheduled time, a platform event, an inbound webhook from an external system, or an explicit manual request — causes the automation to run one or more actions against a set of target devices or platform services.
 
-Automation *configurations* — which triggers fire, which actions run, and how failures are handled — are managed through [Configuration Policies](/features/configuration-policies/). Each automation is defined as an `automation` feature linked to a configuration policy and inherits the policy's scope across the management hierarchy. Standalone CRUD routes exist for backwards compatibility but Configuration Policies is the recommended approach for all new integrations.
+You manage automations from the **Automations** page in the Breeze dashboard. From there you can create new automations, enable or disable existing ones, run them on demand, and review their execution history.
 
-The standalone `/automations` endpoints remain the primary interface for **viewing automations, querying run history, triggering runs, and receiving inbound webhooks**.
+---
+
+## Creating an Automation
+
+<Steps>
+
+1. **Open the Automations page.** Navigate to **Automations** in the sidebar. Click **New Automation** in the top-right corner.
+
+2. **Enter a name and description.** Give the automation a descriptive name (e.g., "Daily maintenance check") and an optional description explaining its purpose.
+
+3. **Choose a trigger type.** Select one of the four trigger cards:
+   - **Schedule** -- runs on a recurring cron schedule. Use the cron expression field or click a quick preset (Every 15 min, Every hour, Daily 9 AM, Weekdays 9 AM, Weekly Sunday). A plain-language description of the schedule appears below the field.
+   - **Event** -- runs when a platform event occurs. Select the event type from the dropdown (Device Online, Device Offline, Alert Triggered, Alert Resolved, Script Completed, Script Failed, Policy Violation).
+   - **Webhook** -- runs when an external system sends an HTTP POST to the automation's generated URL. After saving, the webhook URL appears and can be copied with one click. Optionally set a webhook secret for authentication.
+   - **Manual** -- runs only when you trigger it from the UI or API.
+
+4. **Configure device targeting (optional).** Expand the **Device Targeting** section to filter which devices the automation applies to. Use **Simple** mode to add conditions (Site is, Group is not, OS contains, Tag is) or switch to **Advanced** mode for the full filter builder with live device preview.
+
+5. **Add actions.** Under **Actions**, click **Add Action** and choose the action type:
+   - **Run Script** -- select a script from the library.
+   - **Send Notification** -- select a notification channel.
+   - **Create Alert** -- set a severity level and message.
+   - **Execute Command** -- enter a raw shell command.
+
+   Actions execute in order. Add multiple actions by clicking **Add Action** again. Each action is numbered and can be removed individually.
+
+6. **Set the failure policy.** Choose what happens if an action fails:
+   - **Stop Execution** -- abort immediately.
+   - **Continue** -- proceed with remaining actions.
+   - **Notify & Continue** -- send a failure notification to a selected channel and continue.
+
+7. **Save.** Click **Create Automation** to save and enable the automation.
+
+</Steps>
+
+---
+
+## Managing Automations
+
+The Automations list page displays all automations in a table with columns for name, trigger type, last run time, status, and an enabled toggle.
+
+- **Search and filter.** Use the search bar to find automations by name or description. Filter by trigger type (Schedule, Event, Webhook, Manual) or by status (Enabled / Disabled).
+- **Enable or disable.** Toggle the switch in the Enabled column. Disabled automations do not fire on schedule or in response to events.
+- **Run manually.** Click the play button next to any enabled automation to trigger it immediately.
+- **Edit.** Click the pencil icon to open the automation editor and modify triggers, conditions, actions, or failure policies.
+- **Delete.** Open the three-dot menu and select **Delete**. A confirmation dialog appears before the automation is removed.
+- **View run history.** Open the three-dot menu and select **Run History**, or click "View history" under the status column.
+
+---
+
+## Viewing Run History
+
+To see past executions for an automation, click **Run History** from the three-dot menu on the automations list. A modal opens with a chronological list of runs.
+
+Each run entry shows:
+- **Status badge** -- Running (blue), Success (green), Failed (red), or Partial (yellow).
+- **Trigger source** -- Scheduled, Event Triggered, Webhook, Manual, or API Call.
+- **Device counts** -- how many devices passed, failed, or were skipped.
+- **Duration** -- total run time.
+
+Click a run to expand it and view:
+- **Device results** -- per-device status with hostname, duration, and error messages.
+- **Logs** -- click **View Logs** to see a terminal-style log output showing action dispatches and results.
+- **Timestamps** -- exact start and completion times.
+
+Use the status filter dropdown to narrow results to Success, Failed, Partial, or Running.
 
 ---
 
@@ -46,7 +108,7 @@ The standalone `/automations` endpoints remain the primary interface for **viewi
 | `partial` | Some device targets succeeded and some failed; at least one of each |
 
 <Aside>
-  The internal database status `completed` is returned as `success` in all API responses. When filtering runs via `GET /automations/:id/runs?status=`, use the database value `completed` — not `success`.
+  When filtering runs by status in the API, use `completed` (not `success`).
 </Aside>
 
 ### onFailure Policy
@@ -61,7 +123,11 @@ The standalone `/automations` endpoints remain the primary interface for **viewi
 
 ## Configuring Automations via Configuration Policies
 
-Automation configurations are defined as `automation` features on a Configuration Policy. They inherit the policy's scope — a single automation definition can apply across all devices in an organization, site, or device group without creating separate automations per target.
+For organizations that manage automations as part of broader device policy, automations can also be defined as features on a [Configuration Policy](/features/configuration-policies/). Policy-managed automations inherit the policy's scope -- a single automation definition can apply across all devices in an organization, site, or device group without creating separate automations per target.
+
+<Aside>
+  Most technicians will create automations through the Automations page described above. Configuration Policies are useful when you need to bundle automation rules alongside other policy features (monitoring, patching, etc.) and deploy them as a unit.
+</Aside>
 
 ### Adding an automation feature to a policy
 
@@ -99,7 +165,7 @@ Content-Type: application/json
 }
 ```
 
-You can define multiple automations per feature link by adding additional items to the `automations` array. Each item is stored as a row in `configPolicyAutomations`, linked to the feature link by ID.
+You can define multiple automations per feature link by adding additional items to the `automations` array.
 
 ### Automation configuration fields
 
@@ -270,9 +336,9 @@ Runs a raw shell command on each target device.
 
 ---
 
-## Viewing Runs
+## Viewing Runs via API
 
-All run history is queryable through the API. Runs are returned newest-first.
+Run history is also available through the API for integrations and reporting. Runs are returned newest-first.
 
 **List all runs for an automation:**
 

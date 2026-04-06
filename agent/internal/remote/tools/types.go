@@ -43,9 +43,10 @@ const (
 	CmdRegistryKeyDelete = "registry_key_delete"
 
 	// System
-	CmdReboot   = "reboot"
-	CmdShutdown = "shutdown"
-	CmdLock     = "lock"
+	CmdReboot         = "reboot"
+	CmdShutdown       = "shutdown"
+	CmdLock           = "lock"
+	CmdRebootSafeMode = "reboot_safe_mode"
 
 	// Software inventory
 	CmdCollectSoftware   = "collect_software"
@@ -138,10 +139,30 @@ const (
 	CmdScriptListRunning = "script_list_running"
 
 	// Backup management
-	CmdBackupRun     = "backup_run"
-	CmdBackupList    = "backup_list"
-	CmdBackupStop    = "backup_stop"
-	CmdBackupRestore = "backup_restore"
+	CmdBackupRun         = "backup_run"
+	CmdBackupList        = "backup_list"
+	CmdBackupStop        = "backup_stop"
+	CmdBackupRestore     = "backup_restore"
+	CmdBackupVerify      = "backup_verify"
+	CmdBackupTestRestore = "backup_test_restore"
+	CmdBackupCleanup     = "backup_cleanup"
+
+	// VSS backup management
+	CmdVSSStatus     = "vss_status"
+	CmdVSSWriterList = "vss_writer_list"
+
+	// MSSQL backup management
+	CmdMSSQLDiscover = "mssql_discover"
+	CmdMSSQLBackup   = "mssql_backup"
+	CmdMSSQLRestore  = "mssql_restore"
+	CmdMSSQLVerify   = "mssql_verify"
+
+	// System state & bare metal recovery
+	CmdSystemStateCollect  = "system_state_collect"
+	CmdHardwareProfile     = "hardware_profile"
+	CmdVMRestoreFromBackup = "vm_restore_from_backup"
+	CmdVMRestoreEstimate   = "vm_restore_estimate"
+	CmdBMRRecover          = "bmr_recover"
 
 	// Log shipping
 	CmdSetLogLevel = "set_log_level"
@@ -164,6 +185,25 @@ const (
 
 	// Peripheral control
 	CmdPeripheralPolicySync = "peripheral_policy_sync"
+
+	// Self-uninstall (remote wipe)
+	CmdSelfUninstall = "self_uninstall"
+
+	// Hyper-V VM backup management
+	CmdHypervDiscover   = "hyperv_discover"
+	CmdHypervBackup     = "hyperv_backup"
+	CmdHypervRestore    = "hyperv_restore"
+	CmdHypervCheckpoint = "hyperv_checkpoint"
+	CmdHypervVMState    = "hyperv_vm_state"
+
+	// Incident response
+	CmdCollectEvidence    = "collect_evidence"
+	CmdExecuteContainment = "execute_containment"
+
+	// TCP tunnel relay (VNC + network proxy)
+	CmdTunnelOpen  = "tunnel_open"
+	CmdTunnelData  = "tunnel_data"
+	CmdTunnelClose = "tunnel_close"
 )
 
 // CommandResult represents the result of a command execution
@@ -225,6 +265,7 @@ type ProcessListResponse struct {
 	Page       int           `json:"page"`
 	Limit      int           `json:"limit"`
 	TotalPages int           `json:"totalPages"`
+	Truncated  bool          `json:"truncated,omitempty"`
 }
 
 // Service information types
@@ -244,6 +285,7 @@ type ServiceListResponse struct {
 	Page       int           `json:"page"`
 	Limit      int           `json:"limit"`
 	TotalPages int           `json:"totalPages"`
+	Truncated  bool          `json:"truncated,omitempty"`
 }
 
 // Event log types
@@ -268,7 +310,8 @@ type EventLogEntry struct {
 }
 
 type EventLogListResponse struct {
-	Logs []EventLog `json:"logs"`
+	Logs      []EventLog `json:"logs"`
+	Truncated bool       `json:"truncated,omitempty"`
 }
 
 type EventLogQueryResponse struct {
@@ -277,6 +320,7 @@ type EventLogQueryResponse struct {
 	Page       int             `json:"page"`
 	Limit      int             `json:"limit"`
 	TotalPages int             `json:"totalPages"`
+	Truncated  bool            `json:"truncated,omitempty"`
 }
 
 // Scheduled task types
@@ -299,6 +343,7 @@ type TaskListResponse struct {
 	Page       int             `json:"page"`
 	Limit      int             `json:"limit"`
 	TotalPages int             `json:"totalPages"`
+	Truncated  bool            `json:"truncated,omitempty"`
 }
 
 type TaskHistoryEntry struct {
@@ -311,9 +356,10 @@ type TaskHistoryEntry struct {
 }
 
 type TaskHistoryResponse struct {
-	History []TaskHistoryEntry `json:"history"`
-	Path    string             `json:"path"`
-	Total   int                `json:"total"`
+	History   []TaskHistoryEntry `json:"history"`
+	Path      string             `json:"path"`
+	Total     int                `json:"total"`
+	Truncated bool               `json:"truncated,omitempty"`
 }
 
 // Registry types
@@ -332,15 +378,17 @@ type RegistryValue struct {
 }
 
 type RegistryKeysResponse struct {
-	Keys []RegistryKey `json:"keys"`
-	Path string        `json:"path"`
-	Hive string        `json:"hive"`
+	Keys      []RegistryKey `json:"keys"`
+	Path      string        `json:"path"`
+	Hive      string        `json:"hive"`
+	Truncated bool          `json:"truncated,omitempty"`
 }
 
 type RegistryValuesResponse struct {
-	Values []RegistryValue `json:"values"`
-	Path   string          `json:"path"`
-	Hive   string          `json:"hive"`
+	Values    []RegistryValue `json:"values"`
+	Path      string          `json:"path"`
+	Hive      string          `json:"hive"`
+	Truncated bool            `json:"truncated,omitempty"`
 }
 
 // FileEntry represents a file or directory in file listing responses
@@ -355,8 +403,10 @@ type FileEntry struct {
 
 // FileListResponse represents the response for file listing
 type FileListResponse struct {
-	Path    string      `json:"path"`
-	Entries []FileEntry `json:"entries"`
+	Path      string      `json:"path"`
+	Entries   []FileEntry `json:"entries"`
+	Limit     int         `json:"limit"`
+	Truncated bool        `json:"truncated,omitempty"`
 }
 
 // TrashMetadata stores info about a trashed item for restore/audit purposes.
@@ -371,8 +421,9 @@ type TrashMetadata struct {
 
 // TrashListResponse is the response for listing trash contents.
 type TrashListResponse struct {
-	Items []TrashMetadata `json:"items"`
-	Path  string          `json:"path"`
+	Items     []TrashMetadata `json:"items"`
+	Path      string          `json:"path"`
+	Truncated bool            `json:"truncated,omitempty"`
 }
 
 // DriveInfo represents a logical drive (Windows) or mount point (Unix).
@@ -388,7 +439,8 @@ type DriveInfo struct {
 
 // DriveListResponse is the response for listing drives/mount points.
 type DriveListResponse struct {
-	Drives []DriveInfo `json:"drives"`
+	Drives    []DriveInfo `json:"drives"`
+	Truncated bool        `json:"truncated,omitempty"`
 }
 
 // FilesystemLargestFile captures one large file candidate.

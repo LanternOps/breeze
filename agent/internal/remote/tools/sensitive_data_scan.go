@@ -23,6 +23,12 @@ const (
 	maxSensitiveWorkers              = 32
 	maxSensitiveFindings             = 5000
 	maxSensitiveErrors               = 200
+	maxSensitiveScopePaths           = 256
+	maxSensitiveSuppressionRegexes   = 64
+	maxSensitiveRegexPatternBytes    = 512
+	maxSensitiveRuleToggles          = 128
+	maxSensitiveFileTypes            = 128
+	maxSensitivePatternSuppressions  = 128
 	sensitiveStreamChunkBytes        = 64 * 1024
 	sensitiveBoundaryOverlapBytes    = 256
 )
@@ -120,25 +126,25 @@ func parseSensitiveScope(payload map[string]any) sensitiveScopeConfig {
 	rawScope, hasScope := payload["scope"].(map[string]any)
 	if hasScope {
 		if includes := toStringSlice(rawScope["includePaths"]); len(includes) > 0 {
-			scope.includePaths = normalizePaths(includes)
+			scope.includePaths = normalizePaths(limitStringSlice(includes, maxSensitiveScopePaths))
 		}
 		if _, hasExcludes := rawScope["excludePaths"]; hasExcludes {
 			excludes := toStringSlice(rawScope["excludePaths"])
-			scope.excludePaths = normalizePaths(excludes)
+			scope.excludePaths = normalizePaths(limitStringSlice(excludes, maxSensitiveScopePaths))
 		}
 		if suppressPaths := toStringSlice(rawScope["suppressPaths"]); len(suppressPaths) > 0 {
-			scope.suppressPaths = normalizePaths(suppressPaths)
+			scope.suppressPaths = normalizePaths(limitStringSlice(suppressPaths, maxSensitiveScopePaths))
 		}
-		if suppressPatternIDs := toLowerStringSet(rawScope["suppressPatternIds"]); len(suppressPatternIDs) > 0 {
+		if suppressPatternIDs := toLowerStringSet(rawScope["suppressPatternIds"], maxSensitivePatternSuppressions); len(suppressPatternIDs) > 0 {
 			scope.suppressPatternIDs = suppressPatternIDs
 		}
-		if suppressRegex := compileRegexSlice(rawScope["suppressFilePathRegex"]); len(suppressRegex) > 0 {
+		if suppressRegex := compileRegexSlice(rawScope["suppressFilePathRegex"], maxSensitiveSuppressionRegexes); len(suppressRegex) > 0 {
 			scope.suppressFilePathRegex = suppressRegex
 		}
-		if toggles := toLowerStringBoolMap(rawScope["ruleToggles"]); len(toggles) > 0 {
+		if toggles := toLowerStringBoolMap(rawScope["ruleToggles"], maxSensitiveRuleToggles); len(toggles) > 0 {
 			scope.ruleToggles = toggles
 		}
-		if fileTypes := toFileTypeSet(rawScope["fileTypes"]); len(fileTypes) > 0 {
+		if fileTypes := toFileTypeSet(rawScope["fileTypes"], maxSensitiveFileTypes); len(fileTypes) > 0 {
 			scope.fileTypes = fileTypes
 		}
 		if v := toInt64(rawScope["maxFileSizeBytes"]); v > 0 {
@@ -275,6 +281,13 @@ func toStringSlice(value any) []string {
 	return out
 }
 
+func limitStringSlice(items []string, limit int) []string {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[:limit]
+}
+
 func toInt(value any) int {
 	switch n := value.(type) {
 	case int:
@@ -301,11 +314,12 @@ func toInt64(value any) int64 {
 	}
 }
 
-func toFileTypeSet(value any) map[string]struct{} {
+func toFileTypeSet(value any, limit int) map[string]struct{} {
 	items := toStringSlice(value)
 	if len(items) == 0 {
 		return nil
 	}
+	items = limitStringSlice(items, limit)
 	out := make(map[string]struct{}, len(items))
 	for _, item := range items {
 		ext := strings.ToLower(strings.TrimSpace(item))
@@ -320,11 +334,12 @@ func toFileTypeSet(value any) map[string]struct{} {
 	return out
 }
 
-func toLowerStringSet(value any) map[string]struct{} {
+func toLowerStringSet(value any, limit int) map[string]struct{} {
 	items := toStringSlice(value)
 	if len(items) == 0 {
 		return nil
 	}
+	items = limitStringSlice(items, limit)
 	out := make(map[string]struct{}, len(items))
 	for _, item := range items {
 		key := strings.ToLower(strings.TrimSpace(item))
@@ -336,13 +351,17 @@ func toLowerStringSet(value any) map[string]struct{} {
 	return out
 }
 
-func toLowerStringBoolMap(value any) map[string]bool {
+func toLowerStringBoolMap(value any, limit int) map[string]bool {
 	raw, ok := value.(map[string]any)
 	if !ok {
 		return nil
 	}
 	out := make(map[string]bool, len(raw))
+	count := 0
 	for k, v := range raw {
+		if limit > 0 && count >= limit {
+			break
+		}
 		key := strings.ToLower(strings.TrimSpace(k))
 		if key == "" {
 			continue
@@ -352,17 +371,22 @@ func toLowerStringBoolMap(value any) map[string]bool {
 			continue
 		}
 		out[key] = enabled
+		count++
 	}
 	return out
 }
 
-func compileRegexSlice(value any) []*regexp.Regexp {
+func compileRegexSlice(value any, limit int) []*regexp.Regexp {
 	items := toStringSlice(value)
 	if len(items) == 0 {
 		return nil
 	}
+	items = limitStringSlice(items, limit)
 	out := make([]*regexp.Regexp, 0, len(items))
 	for _, item := range items {
+		if len(item) > maxSensitiveRegexPatternBytes {
+			continue
+		}
 		re, err := regexp.Compile(item)
 		if err != nil {
 			continue

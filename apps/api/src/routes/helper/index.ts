@@ -11,7 +11,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { streamSSE } from 'hono/streaming';
 import { createHash } from 'crypto';
-import { eq, and, desc, sql, asc } from 'drizzle-orm';
+import { eq, and, desc, sql, asc, or } from 'drizzle-orm';
 import { db, withSystemDbAccessContext, withDbAccessContext } from '../../db';
 import { aiSessions, aiMessages, aiToolExecutions, devices } from '../../db/schema';
 import { approveToolSchema } from '@breeze/shared/validators/ai';
@@ -24,6 +24,7 @@ import { checkBudget, getRemainingBudgetUsd } from '../../services/aiCostTracker
 import { getRedis, rateLimiter } from '../../services';
 import { createSessionPreToolUse, createSessionPostToolUse } from '../../services/aiAgentSdk';
 import type { AuthContext } from '../../middleware/auth';
+import { matchAgentTokenHash } from '../../middleware/agentAuth';
 import type { ActiveSession } from '../../services/streamingSessionManager';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -84,15 +85,26 @@ async function helperAuth(c: import('hono').Context, next: import('hono').Next) 
         osVersion: devices.osVersion,
         agentVersion: devices.agentVersion,
         agentTokenHash: devices.agentTokenHash,
+        previousTokenHash: devices.previousTokenHash,
+        previousTokenExpiresAt: devices.previousTokenExpiresAt,
         status: devices.status,
       })
       .from(devices)
-      .where(eq(devices.agentTokenHash, tokenHash))
+      .where(or(eq(devices.agentTokenHash, tokenHash), eq(devices.previousTokenHash, tokenHash)))
       .limit(1);
     return row ?? null;
   });
 
-  if (!device) {
+  const match = device
+    ? matchAgentTokenHash({
+        agentTokenHash: device.agentTokenHash,
+        previousTokenHash: device.previousTokenHash,
+        previousTokenExpiresAt: device.previousTokenExpiresAt,
+        tokenHash,
+      })
+    : null;
+
+  if (!device || !match) {
     return c.json({ error: 'Invalid agent credentials' }, 401);
   }
 

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle, GitBranch, Link2, Network, TreePine } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
-import type { AlertSeverity } from './AlertList';
+import { severityConfig, type AlertSeverity } from './alertConfig';
 import { navigateTo } from '@/lib/navigation';
 
 type AlertSummary = {
@@ -35,14 +35,6 @@ type CorrelationData = {
     rootCauseConfidence: number;
     lastUpdate: string;
   };
-};
-
-const severityDot: Record<AlertSeverity, string> = {
-  critical: 'bg-red-500',
-  high: 'bg-orange-500',
-  medium: 'bg-yellow-500',
-  low: 'bg-blue-500',
-  info: 'bg-gray-500'
 };
 
 export default function AlertCorrelationView() {
@@ -271,7 +263,7 @@ export default function AlertCorrelationView() {
                 <div className="mt-4 space-y-4">
                   {selectedAlert && (
                     <div className="flex items-start gap-3">
-                      <div className={cn('mt-1 h-2.5 w-2.5 rounded-full', severityDot[selectedAlert.severity])} />
+                      <div className={cn('mt-1 h-2.5 w-2.5 rounded-full', severityConfig[selectedAlert.severity].dotColor)} />
                       <div>
                         <p className="text-sm font-medium">{selectedAlert.title}</p>
                         <p className="text-xs text-muted-foreground">Root cause alert</p>
@@ -348,7 +340,7 @@ export default function AlertCorrelationView() {
                   <div className="absolute left-4 right-4 top-1/2 h-px bg-border" />
                   {timeline.map(event => (
                     <div key={event.id} className="relative z-10 flex flex-col items-center gap-2">
-                      <span className={cn('h-3 w-3 rounded-full', severityDot[event.severity])} />
+                      <span className={cn('h-3 w-3 rounded-full', severityConfig[event.severity].dotColor)} />
                       <span className="text-xs font-medium">{event.time}</span>
                       <span className="text-[11px] text-muted-foreground text-center w-20">{event.label}</span>
                     </div>

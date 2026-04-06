@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { deviceRoutes } from './devices';
 
@@ -74,7 +74,8 @@ vi.mock('../db/schema', () => ({
   deviceCommands: { id: 'id', deviceId: 'deviceId', type: 'type', status: 'status', createdAt: 'createdAt' },
   sites: { id: 'id', orgId: 'orgId' },
   organizations: { id: 'id' },
-  enrollmentKeys: { id: 'id', key: 'key', orgId: 'orgId' }
+  enrollmentKeys: { id: 'id', key: 'key', orgId: 'orgId' },
+  discoveredAssetTypeEnum: { enumValues: ['workstation', 'server', 'printer', 'unknown'] },
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -150,6 +151,10 @@ describe('device routes', () => {
     app.route('/devices', deviceRoutes);
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   describe('POST /devices/onboarding-token', () => {
     it('should require orgId for partner/system contexts with multiple accessible orgs', async () => {
       const { authMiddleware } = await import('../middleware/auth');
@@ -177,6 +182,8 @@ describe('device routes', () => {
     });
 
     it('should use explicit orgId when provided and accessible', async () => {
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+
       const { authMiddleware } = await import('../middleware/auth');
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
@@ -210,7 +217,37 @@ describe('device routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.token).toContain('enroll_');
+      expect(body.expiresAt).toBeTypeOf('string');
+      expect(body.enrollmentSecretMode).toBe('none');
+      expect(body.additionalSecretRequired).toBe(false);
+      expect(body.enrollmentSecret).toBeUndefined();
       expect(vi.mocked(db.insert)).toHaveBeenCalled();
+    });
+
+    it('returns the configured global enrollment secret when one is active', async () => {
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', 'global-secret');
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+          })
+        })
+      } as any);
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockResolvedValue(undefined)
+      } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.enrollmentSecretMode).toBe('global_env');
+      expect(body.additionalSecretRequired).toBe(true);
+      expect(body.enrollmentSecret).toBe('global-secret');
     });
   });
 

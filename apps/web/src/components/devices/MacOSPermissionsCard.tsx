@@ -41,7 +41,10 @@ export default function MacOSPermissionsCard({ deviceId, tccPermissions: initial
 
   // Derive a stable boolean so the polling effect only resets when the
   // polling rate actually needs to change, not on every response.
-  const hasMissing = !tccPermissions.fullDiskAccess || !tccPermissions.screenRecording || !tccPermissions.accessibility;
+  const hasMissing = !tccPermissions.fullDiskAccess
+    || !tccPermissions.screenRecording
+    || !tccPermissions.accessibility
+    || tccPermissions.remoteDesktop === false;
 
   // Poll while any permission is missing; slow poll when all granted
   useEffect(() => {
@@ -54,7 +57,7 @@ export default function MacOSPermissionsCard({ deviceId, tccPermissions: initial
     <div className="rounded-lg border bg-card p-6 shadow-sm">
       <div className="flex items-center gap-2 mb-4">
         <ShieldCheck className="h-4 w-4 text-muted-foreground" />
-        <h3 className="font-semibold">macOS Permissions</h3>
+        <h3 className="text-sm font-semibold">macOS Permissions</h3>
       </div>
       {hasMissing && (
         <div className="mb-4 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
@@ -62,6 +65,8 @@ export default function MacOSPermissionsCard({ deviceId, tccPermissions: initial
           <p className="text-sm text-amber-700 dark:text-amber-400">
             {!tccPermissions.fullDiskAccess
               ? 'Full Disk Access must be granted in System Settings > Privacy & Security. Screen Recording and Accessibility will be configured automatically.'
+              : tccPermissions.remoteDesktop === false
+                ? 'Remote Desktop permission is required for unattended login-window access on macOS 14+.'
               : 'Screen Recording and Accessibility are being configured automatically. If this persists, check agent logs or restart the agent.'}
           </p>
         </div>
@@ -84,17 +89,22 @@ export default function MacOSPermissionsCard({ deviceId, tccPermissions: initial
         {([
           ['Screen Recording', tccPermissions.screenRecording],
           ['Accessibility', tccPermissions.accessibility],
+          ['Remote Desktop', tccPermissions.remoteDesktop],
         ] as const).map(([label, granted]) => (
           <div key={label} className="flex justify-between py-2">
             <dt className="text-sm text-muted-foreground">{label}</dt>
             <dd className="text-sm font-medium">
-              {granted ? (
+              {granted === true ? (
                 <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400">
                   <CheckCircle2 className="h-4 w-4" /> Granted
                 </span>
+              ) : granted === false ? (
+                <span className="inline-flex items-center gap-1 text-red-600 dark:text-red-400">
+                  <XCircle className="h-4 w-4" /> Missing
+                </span>
               ) : tccPermissions.fullDiskAccess ? (
                 <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
-                  <AlertTriangle className="h-4 w-4" /> Configuring...
+                  <AlertTriangle className="h-4 w-4" /> Unknown
                 </span>
               ) : (
                 <span className="inline-flex items-center gap-1 text-muted-foreground">

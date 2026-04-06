@@ -22,12 +22,14 @@ const (
 	writeWait      = 10 * time.Second
 	pongWait       = 60 * time.Second
 	pingPeriod     = (pongWait * 9) / 10
-	maxMessageSize = 512 * 1024
+	maxMessageSize = 64 * 1024 * 1024 // 64MB — file_write commands carry base64 content
 	initialBackoff = 1 * time.Second
 	maxBackoff     = 60 * time.Second
 	backoffFactor  = 2.0
 	jitterFactor   = 0.3
 )
+
+var terminalOutputEnqueueTimeout = 5 * time.Second
 
 // Config holds WebSocket client configuration
 type Config struct {
@@ -59,6 +61,7 @@ type CommandHandler func(cmd Command) CommandResult
 // Client manages the WebSocket connection to the server
 type Client struct {
 	config          *Config
+	tlsConfigMu     sync.RWMutex
 	conn            *websocket.Conn
 	connMu          sync.RWMutex
 	cmdHandler      CommandHandler
@@ -102,21 +105,47 @@ func (c *Client) Stop() {
 		c.runningMu.Unlock()
 
 		close(c.done)
-
-		c.connMu.Lock()
-		if c.conn != nil {
-			c.conn.WriteControl(
-				websocket.CloseMessage,
-				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
-				time.Now().Add(writeWait),
-			)
-			c.conn.Close()
-			c.conn = nil
-		}
-		c.connMu.Unlock()
+		c.closeCurrentConn(true)
 
 		log.Info("client stopped")
 	})
+}
+
+func (c *Client) closeCurrentConn(sendClose bool) {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+
+	if c.conn == nil {
+		return
+	}
+
+	if sendClose {
+		_ = c.conn.WriteControl(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+			time.Now().Add(writeWait),
+		)
+	}
+	_ = c.conn.Close()
+	c.conn = nil
+}
+
+func (c *Client) currentTLSConfig() *tls.Config {
+	c.tlsConfigMu.RLock()
+	defer c.tlsConfigMu.RUnlock()
+	return c.config.TLSConfig
+}
+
+// UpdateTLSConfig swaps the TLS config used for future dials.
+func (c *Client) UpdateTLSConfig(tlsCfg *tls.Config) {
+	c.tlsConfigMu.Lock()
+	c.config.TLSConfig = tlsCfg
+	c.tlsConfigMu.Unlock()
+}
+
+// ForceReconnect closes the active connection so the reconnect loop re-dials.
+func (c *Client) ForceReconnect() {
+	c.closeCurrentConn(false)
 }
 
 func (c *Client) connect() error {
@@ -131,7 +160,7 @@ func (c *Client) connect() error {
 
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
-		TLSClientConfig:  c.config.TLSConfig,
+		TLSClientConfig:  c.currentTLSConfig(),
 	}
 	headers := http.Header{
 		"Authorization": {"Bearer " + c.config.AuthToken.Reveal()},
@@ -204,9 +233,12 @@ func (c *Client) reconnectLoop() {
 		// Run read/write pumps — track how long the connection lasted
 		connStart := time.Now()
 		pumpDone := make(chan struct{})
-		go c.writePump(pumpDone)
+		writerDone := make(chan struct{})
+		go c.writePump(pumpDone, writerDone)
 		c.readPump()
 		close(pumpDone)
+		<-writerDone
+		c.closeCurrentConn(false)
 
 		// Only reset backoff if connection was stable (lasted > 30s).
 		// Immediate disconnects (e.g. auth rejection) keep exponential backoff
@@ -288,9 +320,10 @@ func (c *Client) readPump() {
 	}
 }
 
-func (c *Client) writePump(done chan struct{}) {
+func (c *Client) writePump(done <-chan struct{}, exited chan<- struct{}) {
 	ticker := time.NewTicker(pingPeriod)
 	defer ticker.Stop()
+	defer close(exited)
 
 	for {
 		select {
@@ -395,6 +428,25 @@ func (c *Client) SendDesktopFrame(sessionId string, data []byte) error {
 	}
 }
 
+// SendTunnelData sends binary tunnel data to the server.
+// Format: [0x03][36-byte tunnelId UTF-8][payload]
+// Non-blocking: drops data if channel is full.
+func (c *Client) SendTunnelData(tunnelId string, data []byte) error {
+	msg := make([]byte, 1+36+len(data))
+	msg[0] = 0x03
+	copy(msg[1:37], []byte(tunnelId))
+	copy(msg[37:], data)
+
+	select {
+	case c.binaryFrameChan <- msg:
+		return nil
+	case <-c.done:
+		return fmt.Errorf("client is stopped")
+	default:
+		return fmt.Errorf("tunnel data channel full, dropping data")
+	}
+}
+
 // SendPatchProgress sends a patch download/install progress event to the server.
 // Non-blocking: drops if send channel is full.
 func (c *Client) SendPatchProgress(commandID string, event any) error {
@@ -406,6 +458,52 @@ func (c *Client) SendPatchProgress(commandID string, event any) error {
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal patch progress: %w", err)
+	}
+
+	select {
+	case c.sendChan <- msgBytes:
+		return nil
+	case <-c.done:
+		return fmt.Errorf("client is stopped")
+	default:
+		return fmt.Errorf("send channel full, dropping progress")
+	}
+}
+
+// SendVerificationProgress sends a backup verification progress event to the server.
+// Non-blocking: drops if send channel is full.
+func (c *Client) SendVerificationProgress(commandID string, event any) error {
+	msg := map[string]any{
+		"type":      "verification_progress",
+		"commandId": commandID,
+		"progress":  event,
+	}
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal verification progress: %w", err)
+	}
+
+	select {
+	case c.sendChan <- msgBytes:
+		return nil
+	case <-c.done:
+		return fmt.Errorf("client is stopped")
+	default:
+		return fmt.Errorf("send channel full, dropping progress")
+	}
+}
+
+// SendBackupProgress sends a backup restore/operation progress event to the server.
+// Non-blocking: drops if send channel is full.
+func (c *Client) SendBackupProgress(commandID string, event any) error {
+	msg := map[string]any{
+		"type":      "backup_progress",
+		"commandId": commandID,
+		"progress":  event,
+	}
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal backup progress: %w", err)
 	}
 
 	select {
@@ -430,12 +528,15 @@ func (c *Client) SendTerminalOutput(sessionId string, data []byte) error {
 		return fmt.Errorf("failed to marshal terminal output: %w", err)
 	}
 
+	timer := time.NewTimer(terminalOutputEnqueueTimeout)
+	defer timer.Stop()
+
 	select {
 	case c.sendChan <- msgBytes:
 		return nil
 	case <-c.done:
 		return fmt.Errorf("client is stopped")
-	default:
-		return fmt.Errorf("send channel full")
+	case <-timer.C:
+		return fmt.Errorf("timed out waiting for terminal output queue")
 	}
 }

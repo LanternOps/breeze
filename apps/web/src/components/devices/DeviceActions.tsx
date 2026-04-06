@@ -23,7 +23,7 @@ type DeviceActionsProps = {
   compact?: boolean;
 };
 
-type ModalType = 'none' | 'reboot' | 'shutdown' | 'maintenance' | 'decommission' | 'clear-sessions';
+type ModalType = 'none' | 'reboot' | 'reboot_safe_mode' | 'shutdown' | 'maintenance' | 'decommission' | 'clear-sessions';
 
 export default function DeviceActions({ device, onAction, compact = false }: DeviceActionsProps) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -31,7 +31,7 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
   const [loading, setLoading] = useState(false);
 
   const handleAction = async (action: string) => {
-    if (action === 'reboot' || action === 'shutdown' || action === 'maintenance' || action === 'decommission' || action === 'clear-sessions') {
+    if (action === 'reboot' || action === 'reboot_safe_mode' || action === 'shutdown' || action === 'maintenance' || action === 'decommission' || action === 'clear-sessions') {
       setModalType(action);
       setMenuOpen(false);
       return;
@@ -86,11 +86,12 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
                 <Play className="h-4 w-4" />
                 Run Script
               </button>
-              <ConnectDesktopButton deviceId={device.id} compact />
+              <ConnectDesktopButton deviceId={device.id} compact disabled={device.status === 'offline'} isHeadless={device.isHeadless} desktopAccess={device.desktopAccess} remoteAccessPolicy={device.remoteAccessPolicy} />
               <button
                 type="button"
                 onClick={() => handleAction('remote-tools')}
-                disabled={device.status === 'offline'}
+                disabled={device.status === 'offline' || device.remoteAccessPolicy?.remoteTools === false}
+                title={device.remoteAccessPolicy?.remoteTools === false ? `Remote tools disabled by policy${device.remoteAccessPolicy?.policyName ? ` "${device.remoteAccessPolicy.policyName}"` : ''}` : undefined}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Wrench className="h-4 w-4" />
@@ -105,6 +106,17 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
                 <RotateCcw className="h-4 w-4" />
                 Reboot
               </button>
+              {device.os === 'windows' && (
+                <button
+                  type="button"
+                  onClick={() => handleAction('reboot_safe_mode')}
+                  disabled={device.status === 'offline'}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-yellow-600 hover:bg-yellow-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Shield className="h-4 w-4" />
+                  Reboot to Safe Mode
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => handleAction('deploy-software')}
@@ -169,11 +181,12 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
           <Play className="h-4 w-4" />
           Run Script
         </button>
-        <ConnectDesktopButton deviceId={device.id} />
+        <ConnectDesktopButton deviceId={device.id} disabled={device.status === 'offline'} isHeadless={device.isHeadless} desktopAccess={device.desktopAccess} remoteAccessPolicy={device.remoteAccessPolicy} />
         <button
           type="button"
           onClick={() => handleAction('remote-tools')}
-          disabled={device.status === 'offline' || loading}
+          disabled={device.status === 'offline' || loading || device.remoteAccessPolicy?.remoteTools === false}
+          title={device.remoteAccessPolicy?.remoteTools === false ? `Remote tools disabled by policy${device.remoteAccessPolicy?.policyName ? ` "${device.remoteAccessPolicy.policyName}"` : ''}` : undefined}
           className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
         >
           <Wrench className="h-4 w-4" />
@@ -225,6 +238,17 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
                 <Power className="h-4 w-4" />
                 Shutdown
               </button>
+              {device.os === 'windows' && (
+                <button
+                  type="button"
+                  onClick={() => handleAction('reboot_safe_mode')}
+                  disabled={device.status === 'offline'}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-yellow-600 hover:bg-yellow-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Shield className="h-4 w-4" />
+                  Reboot to Safe Mode
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => handleAction('clear-sessions')}
@@ -283,6 +307,12 @@ function ConfirmationModal({ type, device, loading, onConfirm, onCancel }: Confi
       title: 'Reboot Device',
       description: `Are you sure you want to reboot ${device.hostname}? This will temporarily disconnect the device and any active sessions.`,
       confirmLabel: 'Reboot',
+      confirmClass: 'bg-yellow-600 text-white hover:bg-yellow-700'
+    },
+    reboot_safe_mode: {
+      title: 'Reboot to Safe Mode',
+      description: `Are you sure you want to reboot ${device.hostname} into Safe Mode with Networking? The device will boot into a minimal Windows environment with network access. The agent will automatically clear the safe mode flag so the next reboot returns to normal mode.`,
+      confirmLabel: 'Reboot to Safe Mode',
       confirmClass: 'bg-yellow-600 text-white hover:bg-yellow-700'
     },
     shutdown: {

@@ -13,6 +13,7 @@ import { getRedisConnection } from '../services/redis';
 import { publishEvent } from '../services/eventBus';
 import { createAlert } from '../services/alertService';
 import { interpolateTemplate } from '../services/alertConditions';
+import { isReusableState } from '../services/bullmqUtils';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -22,6 +23,7 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 
 // Queue name
 const OFFLINE_QUEUE = 'offline-detection';
+const ON_DEMAND_OFFLINE_DEDUPE_WINDOW_MS = 30 * 1000;
 
 // Singleton queue instance
 let offlineQueue: Queue | null = null;
@@ -78,7 +80,9 @@ export function createOfflineWorker(): Worker<OfflineJobData> {
     },
     {
       connection: getRedisConnection(),
-      concurrency: 5
+      concurrency: 5,
+      lockDuration: 120_000,
+      lockRenewTime: 60_000,
     }
   );
 }
@@ -361,6 +365,19 @@ async function scheduleOfflineJobs(): Promise<void> {
  */
 export async function triggerOfflineDetection(thresholdMinutes?: number): Promise<string> {
   const queue = getOfflineQueue();
+  const normalizedThreshold = typeof thresholdMinutes === 'number' ? thresholdMinutes : 'default';
+  const slot = Math.floor(Date.now() / ON_DEMAND_OFFLINE_DEDUPE_WINDOW_MS).toString(36);
+  const jobId = `offline-detect:${normalizedThreshold}:${slot}`;
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      return String(existing.id);
+    }
+    await existing.remove().catch((error) => {
+      console.error(`[OfflineDetector] Failed to remove stale offline detection job ${jobId}:`, error);
+    });
+  }
 
   const job = await queue.add(
     'detect-offline',
@@ -369,6 +386,7 @@ export async function triggerOfflineDetection(thresholdMinutes?: number): Promis
       thresholdMinutes
     },
     {
+      jobId,
       removeOnComplete: true,
       removeOnFail: false
     }

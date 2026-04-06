@@ -133,7 +133,7 @@ export default function DeviceMetricsChart({ compact = false, deviceId }: Device
     return (
       <div className="rounded-lg border bg-card p-4 shadow-sm">
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="font-semibold">Performance</h3>
+          <h3 className="text-sm font-semibold">Performance</h3>
           <select
             value={timeRange}
             onChange={e => setTimeRange(e.target.value as TimeRange)}

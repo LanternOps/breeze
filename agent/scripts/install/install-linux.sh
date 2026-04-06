@@ -40,6 +40,28 @@ else
 fi
 chmod 755 "$BINARY"
 
+# Install watchdog
+if [ -f "bin/breeze-watchdog" ]; then
+    echo "Installing watchdog..."
+    cp bin/breeze-watchdog /usr/local/bin/breeze-watchdog
+    chmod 755 /usr/local/bin/breeze-watchdog
+elif [ -f "breeze-watchdog" ]; then
+    echo "Installing watchdog..."
+    cp breeze-watchdog /usr/local/bin/breeze-watchdog
+    chmod 755 /usr/local/bin/breeze-watchdog
+fi
+
+# Install watchdog systemd unit if not already present
+if [ -f "/usr/local/bin/breeze-watchdog" ]; then
+    if [ ! -f "/etc/systemd/system/breeze-watchdog.service" ]; then
+        echo "Registering watchdog service..."
+        /usr/local/bin/breeze-watchdog service install
+    else
+        echo "Restarting watchdog service..."
+        systemctl restart breeze-watchdog || true
+    fi
+fi
+
 # Install systemd unit
 if [ -f "$SERVICE_SRC" ]; then
     cp "$SERVICE_SRC" "$SERVICE_DST"
@@ -80,9 +102,9 @@ if [ -f "$XDG_SRC" ]; then
     echo "XDG autostart desktop file installed."
 fi
 
-# Create breeze group for IPC socket access
+# Create breeze group for IPC socket access (idempotent)
 if ! getent group breeze &>/dev/null; then
-    groupadd --system breeze
+    groupadd --system breeze 2>/dev/null || true
     echo "Created 'breeze' group for IPC socket access."
 fi
 

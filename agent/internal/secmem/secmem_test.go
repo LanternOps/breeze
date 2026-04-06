@@ -129,6 +129,22 @@ func TestZeroWipesData(t *testing.T) {
 	}
 }
 
+func TestReplaceSwapsValueAndClearsZeroedState(t *testing.T) {
+	s := NewSecureString("old-token")
+	s.Zero()
+	s.Replace("new-token")
+
+	if got := s.Reveal(); got != "new-token" {
+		t.Fatalf("Reveal() after Replace = %q, want %q", got, "new-token")
+	}
+	if s.IsZeroed() {
+		t.Fatal("IsZeroed() should be false after Replace")
+	}
+	if s.warnedOnce.Load() {
+		t.Fatal("warnedOnce should reset after Replace")
+	}
+}
+
 func TestConcurrentRevealAndZero(t *testing.T) {
 	s := NewSecureString("concurrent-test")
 	var wg sync.WaitGroup

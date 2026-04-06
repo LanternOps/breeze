@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useCallback } from 'react';
 import {
   Search,
   ChevronLeft,
@@ -8,9 +8,13 @@ import {
   Clock,
   Eye,
   Download,
-  Loader2
+  Loader2,
+  CheckSquare,
+  Square,
+  Minus
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { usePatchSelection } from './usePatchSelection';
 
 export type PatchSeverity = 'critical' | 'important' | 'moderate' | 'low';
 export type PatchApprovalStatus = 'pending' | 'approved' | 'declined' | 'deferred';
@@ -31,6 +35,8 @@ type PatchListProps = {
   onReview?: (patch: Patch) => void;
   onDeploy?: (patch: Patch) => void;
   onView?: (patch: Patch) => void;
+  onBulkApprove?: (patchIds: string[]) => Promise<void>;
+  onBulkDecline?: (patchIds: string[]) => Promise<void>;
   pageSize?: number;
   loading?: boolean;
   error?: string;
@@ -45,9 +51,9 @@ const severityConfig: Record<PatchSeverity, { label: string; color: string }> = 
 };
 
 const approvalConfig: Record<PatchApprovalStatus, { label: string; color: string; icon: typeof CheckCircle }> = {
-  pending: { label: 'Pending', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40', icon: Clock },
-  approved: { label: 'Approved', color: 'bg-green-500/20 text-green-700 border-green-500/40', icon: CheckCircle },
-  declined: { label: 'Declined', color: 'bg-red-500/20 text-red-700 border-red-500/40', icon: XCircle },
+  pending: { label: 'Pending', color: 'bg-warning/15 text-warning border-warning/30', icon: Clock },
+  approved: { label: 'Approved', color: 'bg-success/15 text-success border-success/30', icon: CheckCircle },
+  declined: { label: 'Declined', color: 'bg-destructive/15 text-destructive border-destructive/30', icon: XCircle },
   deferred: { label: 'Deferred', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40', icon: Clock }
 };
 
@@ -62,6 +68,8 @@ export default function PatchList({
   onReview,
   onDeploy,
   onView,
+  onBulkApprove,
+  onBulkDecline,
   pageSize = 8,
   loading,
   error,
@@ -72,7 +80,9 @@ export default function PatchList({
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [osFilter, setOsFilter] = useState<string>('all');
   const [sourceFilter, setSourceFilter] = useState<string>('all');
+  const [showMoreFilters, setShowMoreFilters] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
+  const [bulkLoading, setBulkLoading] = useState(false);
 
   const availableSources = useMemo(() => {
     const sources = new Set(patches.map(patch => patch.source));
@@ -105,6 +115,54 @@ export default function PatchList({
   const totalPages = Math.ceil(filteredPatches.length / pageSize);
   const startIndex = (currentPage - 1) * pageSize;
   const paginatedPatches = filteredPatches.slice(startIndex, startIndex + pageSize);
+
+  const paginatedIds = useMemo(() => paginatedPatches.map(p => p.id), [paginatedPatches]);
+  const { selectedIds, allPageSelected, somePageSelected, toggleSelect, toggleSelectAll, clearSelection } = usePatchSelection(paginatedIds);
+
+  const selectedPatches = useMemo(
+    () => patches.filter(p => selectedIds.has(p.id)),
+    [patches, selectedIds]
+  );
+
+  const selectedPendingIds = useMemo(
+    () => selectedPatches.filter(p => p.approvalStatus !== 'approved' && p.approvalStatus !== 'declined').map(p => p.id),
+    [selectedPatches]
+  );
+
+  const selectedApprovedIds = useMemo(
+    () => selectedPatches.filter(p => p.approvalStatus === 'approved').map(p => p.id),
+    [selectedPatches]
+  );
+
+  const [bulkError, setBulkError] = useState<string>();
+
+  const handleBulkApprove = useCallback(async () => {
+    if (!onBulkApprove || selectedPendingIds.length === 0) return;
+    setBulkLoading(true);
+    setBulkError(undefined);
+    try {
+      await onBulkApprove(selectedPendingIds);
+      clearSelection();
+    } catch (err) {
+      setBulkError(err instanceof Error ? err.message : 'Failed to approve patches');
+    } finally {
+      setBulkLoading(false);
+    }
+  }, [onBulkApprove, selectedPendingIds, clearSelection]);
+
+  const handleBulkDecline = useCallback(async () => {
+    if (!onBulkDecline || selectedPendingIds.length === 0) return;
+    setBulkLoading(true);
+    setBulkError(undefined);
+    try {
+      await onBulkDecline(selectedPendingIds);
+      clearSelection();
+    } catch (err) {
+      setBulkError(err instanceof Error ? err.message : 'Failed to decline patches');
+    } finally {
+      setBulkLoading(false);
+    }
+  }, [onBulkDecline, selectedPendingIds, clearSelection]);
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
@@ -157,38 +215,119 @@ export default function PatchList({
             <option value="declined">Declined</option>
             <option value="deferred">Deferred</option>
           </select>
-          <select
-            value={sourceFilter}
-            onChange={event => {
-              setSourceFilter(event.target.value);
-              setCurrentPage(1);
-            }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-40"
+          <button
+            type="button"
+            onClick={() => setShowMoreFilters(prev => !prev)}
+            className={cn(
+              'h-10 rounded-md px-3 text-sm font-medium',
+              showMoreFilters || sourceFilter !== 'all' || osFilter !== 'all'
+                ? 'text-foreground'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
           >
-            <option value="all">All Sources</option>
-            {availableSources.map(source => (
-              <option key={source} value={source}>
-                {source}
-              </option>
-            ))}
-          </select>
-          <select
-            value={osFilter}
-            onChange={event => {
-              setOsFilter(event.target.value);
-              setCurrentPage(1);
-            }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-32"
-          >
-            <option value="all">All OS</option>
-            {availableOs.map(os => (
-              <option key={os} value={os}>
-                {os}
-              </option>
-            ))}
-          </select>
+            {showMoreFilters ? 'Less filters' : 'More filters'}
+            {(sourceFilter !== 'all' || osFilter !== 'all') && !showMoreFilters && (
+              <span className="ml-1 inline-flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
+                {(sourceFilter !== 'all' ? 1 : 0) + (osFilter !== 'all' ? 1 : 0)}
+              </span>
+            )}
+          </button>
+          {showMoreFilters && (
+            <>
+              <select
+                value={sourceFilter}
+                onChange={event => {
+                  setSourceFilter(event.target.value);
+                  setCurrentPage(1);
+                }}
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-40"
+              >
+                <option value="all">All Sources</option>
+                {availableSources.map(source => (
+                  <option key={source} value={source}>
+                    {source}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={osFilter}
+                onChange={event => {
+                  setOsFilter(event.target.value);
+                  setCurrentPage(1);
+                }}
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-32"
+              >
+                <option value="all">All OS</option>
+                {availableOs.map(os => (
+                  <option key={os} value={os}>
+                    {os}
+                  </option>
+                ))}
+              </select>
+            </>
+          )}
         </div>
       </div>
+
+      {/* Bulk action toolbar */}
+      {selectedIds.size > 0 && (
+        <div className="mt-4 flex flex-wrap items-center gap-3 rounded-lg border bg-muted/50 px-4 py-3">
+          <span className="text-sm font-medium">
+            {selectedIds.size} selected
+          </span>
+          <div className="h-4 w-px bg-border" />
+          {onBulkApprove && selectedPendingIds.length > 0 && (
+            <button
+              type="button"
+              onClick={handleBulkApprove}
+              disabled={bulkLoading}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+            >
+              {bulkLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle className="h-3.5 w-3.5" />}
+              Approve {selectedPendingIds.length}
+            </button>
+          )}
+          {onBulkDecline && selectedPendingIds.length > 0 && (
+            <button
+              type="button"
+              onClick={handleBulkDecline}
+              disabled={bulkLoading}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-destructive/40 bg-destructive/10 px-3 text-xs font-medium text-destructive hover:bg-destructive/20 disabled:opacity-50"
+            >
+              {bulkLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <XCircle className="h-3.5 w-3.5" />}
+              Decline {selectedPendingIds.length}
+            </button>
+          )}
+          {onDeploy && selectedApprovedIds.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                for (const p of selectedPatches.filter(p => p.approvalStatus === 'approved')) {
+                  onDeploy(p);
+                }
+              }}
+              disabled={bulkLoading}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border px-3 text-xs font-medium hover:bg-muted disabled:opacity-50"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Deploy {selectedApprovedIds.length}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={clearSelection}
+            className="ml-auto h-8 rounded-md px-3 text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            Clear selection
+          </button>
+        </div>
+      )}
+
+      {bulkError && (
+        <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-2 text-sm text-destructive">
+          {bulkError}
+        </div>
+      )}
 
       {loading ? (
         <div className="flex items-center justify-center py-12">
@@ -215,6 +354,23 @@ export default function PatchList({
           <table className="min-w-full divide-y">
             <thead className="bg-muted/40">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="w-10 px-4 py-3">
+                  <button
+                    type="button"
+                    onClick={toggleSelectAll}
+                    className="flex items-center justify-center text-muted-foreground hover:text-foreground"
+                    title={allPageSelected ? 'Deselect all' : 'Select all'}
+                    aria-label={allPageSelected ? 'Deselect all patches' : 'Select all patches'}
+                  >
+                    {allPageSelected ? (
+                      <CheckSquare className="h-4 w-4" />
+                    ) : somePageSelected ? (
+                      <Minus className="h-4 w-4" />
+                    ) : (
+                      <Square className="h-4 w-4" />
+                    )}
+                  </button>
+                </th>
                 <th className="px-4 py-3">Patch</th>
                 <th className="px-4 py-3">Severity</th>
                 <th className="px-4 py-3">Source</th>
@@ -227,7 +383,7 @@ export default function PatchList({
             <tbody className="divide-y">
               {paginatedPatches.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                  <td colSpan={8} className="px-4 py-6 text-center text-sm text-muted-foreground">
                     No patches found. Try adjusting your search or filters.
                   </td>
                 </tr>
@@ -236,9 +392,24 @@ export default function PatchList({
                   const severity = severityConfig[patch.severity];
                   const approval = approvalConfig[patch.approvalStatus];
                   const ApprovalIcon = approval.icon;
+                  const isSelected = selectedIds.has(patch.id);
 
                   return (
-                    <tr key={patch.id} className="text-sm">
+                    <tr key={patch.id} className={cn('text-sm', isSelected && 'bg-primary/5')}>
+                      <td className="w-10 px-4 py-3">
+                        <button
+                          type="button"
+                          onClick={() => toggleSelect(patch.id)}
+                          className="flex items-center justify-center text-muted-foreground hover:text-foreground"
+                          aria-label={isSelected ? `Deselect ${patch.title}` : `Select ${patch.title}`}
+                        >
+                          {isSelected ? (
+                            <CheckSquare className="h-4 w-4 text-primary" />
+                          ) : (
+                            <Square className="h-4 w-4" />
+                          )}
+                        </button>
+                      </td>
                       <td className="px-4 py-3">
                         <div className="font-medium text-foreground">{patch.title}</div>
                         {patch.description && (

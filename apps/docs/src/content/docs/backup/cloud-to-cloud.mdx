@@ -1,0 +1,102 @@
+---
+title: Cloud-to-Cloud Backup
+description: Back up Microsoft 365 and Google Workspace data — mailboxes, OneDrive, SharePoint, and Google Drive.
+sidebar:
+  order: 13
+  label: "Cloud-to-Cloud (C2C)"
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Cloud-to-Cloud (C2C) backup protects your organization's SaaS data — Microsoft 365 mailboxes, OneDrive files, SharePoint sites, and Google Workspace Drive content. C2C uses delta sync for incremental updates, so only changes since the last backup are transferred.
+
+---
+
+## Connecting Microsoft 365
+
+Two authentication modes are available depending on your Breeze deployment:
+
+<Tabs>
+  <TabItem label="Multi-tenant app (recommended)">
+    If your Breeze instance has `C2C_M365_CLIENT_ID` and `C2C_M365_CLIENT_SECRET` configured, the one-click consent flow is available.
+
+    <Steps>
+    1. Go to the **C2C** section in Breeze.
+    2. Click **Grant Access** (or **Connect Microsoft 365**).
+    3. You're redirected to Microsoft's admin consent screen.
+    4. Sign in with a Microsoft 365 admin account and grant the requested permissions.
+    5. Microsoft redirects back to Breeze. The connection is created automatically.
+    </Steps>
+  </TabItem>
+  <TabItem label="Manual credentials">
+    If the platform app isn't configured, the connection wizard prompts you to register an Azure AD app manually.
+
+    <Steps>
+    1. In the Azure portal, register a new app and grant the required Graph API permissions.
+    2. In Breeze, open the C2C connection wizard.
+    3. Enter the **Client ID**, **Client Secret**, and **Tenant ID** from your Azure AD app.
+    4. Click **Connect**.
+    </Steps>
+  </TabItem>
+</Tabs>
+
+---
+
+## Connecting Google Workspace
+
+Google Workspace backup requires a service account with domain-wide delegation.
+
+<Steps>
+1. In the Google Cloud Console, create a service account and enable domain-wide delegation.
+2. In your Google Workspace admin console, authorize the service account's client ID with the required scopes.
+3. In Breeze, open the C2C connection wizard and select **Google Workspace**.
+4. Upload the service account key file.
+5. Click **Connect**.
+</Steps>
+
+---
+
+## Managing Connections
+
+Once connected, your C2C connections appear in the connections list showing:
+- Provider (Microsoft 365 or Google Workspace)
+- Connection status
+- Last sync time
+- Number of accounts/sites backed up
+
+---
+
+## Configuring Backup Scope
+
+After connecting, create a backup configuration to define what gets backed up:
+
+<Steps>
+1. Click **Add Backup Config** in the C2C section.
+2. Select the connection to use.
+3. Choose what to include:
+   - **Mailboxes** — select specific users or all users
+   - **OneDrive / Google Drive** — file storage for selected users
+   - **SharePoint sites** — select specific sites (Microsoft 365 only)
+4. Set a sync schedule (how often to pull changes).
+5. Click **Save**.
+</Steps>
+
+---
+
+## Running a Sync
+
+Syncs run automatically on schedule. To trigger an immediate sync:
+
+<Steps>
+1. Find the backup configuration in the C2C list.
+2. Click **Run Now**.
+3. The sync job starts and appears in the backup job list.
+</Steps>
+
+C2C uses **delta sync** — only items that changed since the last sync are transferred. Initial syncs may take longer depending on the amount of data.
+
+---
+
+## Restoring C2C Data
+
+C2C snapshots can be browsed and restored the same way as device backups. Use the Snapshot Browser to navigate mailbox contents, files, or site data, then select what to restore.

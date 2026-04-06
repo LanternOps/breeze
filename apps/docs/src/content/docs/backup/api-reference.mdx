@@ -1,0 +1,193 @@
+---
+title: Backup API Reference
+description: REST API endpoints for backup configurations, jobs, snapshots, restores, and enterprise features.
+sidebar:
+  order: 16
+  label: "API Reference"
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+This page lists all backup API endpoints for teams building integrations or automations against the Breeze Backup system. For UI-based workflows, see the other pages in the Backup section.
+
+<Aside type="note">
+  All backup endpoints require authentication and are scoped to the caller's organization. Organization-scoped tokens are automatically restricted to their own data. Partner-scoped tokens work when the partner has access to exactly one organization.
+</Aside>
+
+---
+
+## Storage Configurations
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/backup/configs` | List all configurations |
+| POST | `/backup/configs` | Create a configuration |
+| GET | `/backup/configs/:id` | Get configuration details |
+| PATCH | `/backup/configs/:id` | Update configuration fields (shallow-merged) |
+| DELETE | `/backup/configs/:id` | Delete a configuration |
+| POST | `/backup/configs/:id/test` | Test storage connectivity |
+
+---
+
+## Backup Jobs
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/backup/jobs` | List jobs (filter: `status`, `deviceId`, `date`, `from`, `to`) |
+| GET | `/backup/jobs/:id` | Get job details |
+| POST | `/backup/jobs/run/:deviceId` | Trigger manual backup |
+| POST | `/backup/jobs/:id/cancel` | Cancel a running/queued job |
+
+---
+
+## Snapshots
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/backup/snapshots` | List snapshots (filter: `deviceId`, `configId`) |
+| GET | `/backup/snapshots/:id` | Get snapshot metadata |
+| GET | `/backup/snapshots/:id/browse` | Browse snapshot file tree |
+
+---
+
+## Restore Operations
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/backup/restore` | Initiate a restore (`snapshotId`, optional `deviceId`, `targetPath`) |
+| GET | `/backup/restore` | List restore jobs (filter: `deviceId`, `snapshotId`, `status`, `from`, `to`) |
+| GET | `/backup/restore/:id` | Get a single restore job with status and result details |
+
+---
+
+## Dashboard & Metrics
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/backup/dashboard` | Organization backup summary |
+| GET | `/backup/status/:deviceId` | Per-device backup status and next scheduled run |
+| GET | `/backup/usage-history` | Storage usage time series (query: `days`, 3–90) |
+
+---
+
+## VSS (Windows)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/backup/vss/status/:deviceId` | VSS writer status for a device |
+
+---
+
+## SQL Server
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/backup/mssql/instances` | List all discovered instances (org-wide) |
+| GET | `/backup/mssql/instances/:deviceId` | List instances on a device |
+| POST | `/backup/mssql/backup` | Back up a database (`deviceId`, `instance`, `database`, `backupType`, `outputPath`) |
+| POST | `/backup/mssql/restore` | Restore a database (`deviceId`, `instance`, `backupFile`, `targetDatabase`, optional `noRecovery`) |
+
+---
+
+## Hyper-V
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/backup/hyperv/vms` | List VMs (org-wide) |
+| GET | `/backup/hyperv/vms/:deviceId` | List VMs on a host |
+| POST | `/backup/hyperv/backup` | Export a VM (`deviceId`, `vmName`, `exportPath`, optional `consistencyType`) |
+| POST | `/backup/hyperv/restore` | Import a VM from backup |
+| POST | `/backup/hyperv/checkpoint` | Manage VM checkpoints |
+| POST | `/backup/hyperv/vm-state` | Control VM power state |
+
+---
+
+## VM Restore
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/backup/restore/as-vm` | Restore a snapshot as a new VM |
+| POST | `/backup/restore/instant-boot` | Instant boot a VM from snapshot |
+
+---
+
+## Bare Metal Recovery
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/backup/bmr/token` | Generate recovery token (`snapshotId`, optional `expiresInHours`, `restoreType`, `targetConfig`) |
+| GET | `/backup/bmr/token/:id` | Get recovery token metadata |
+
+---
+
+## Verification & Recovery
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/backup/verify` | Run verification (`deviceId`, `verificationType`: integrity/test_restore) |
+| GET | `/backup/verifications` | List verification results (filter: `deviceId`, `verificationType`, `status`, `from`, `to`) |
+| GET | `/backup/health` | Organization backup health summary (query: `refresh`) |
+| GET | `/backup/recovery-readiness` | Per-device readiness scores (query: `deviceId`, `refresh`) |
+
+---
+
+## Encryption Keys
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/backup/encryption/keys` | List encryption keys |
+| POST | `/backup/encryption/keys` | Create encryption key |
+| GET | `/backup/encryption/keys/:id` | Get key metadata |
+| POST | `/backup/encryption/keys/:id/rotate` | Rotate key |
+
+---
+
+## Local Vaults
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/backup/vault` | List vaults |
+| POST | `/backup/vault` | Create vault |
+| PATCH | `/backup/vault/:id` | Update vault |
+| POST | `/backup/vault/:id/sync` | Trigger sync |
+
+---
+
+## SLA Management
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/backup/sla/configs` | Create SLA configuration |
+| GET | `/backup/sla/configs` | List SLA configurations |
+| GET | `/backup/sla/events` | Query SLA events and breaches |
+
+---
+
+## Cloud-to-Cloud (C2C)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/c2c/m365/config` | Check if platform M365 app is configured |
+| GET | `/c2c/m365/consent-url` | Generate Microsoft admin consent URL |
+| GET | `/c2c/m365/callback` | OAuth callback (public, CSRF-protected) |
+| GET | `/c2c/connections` | List C2C connections |
+| POST | `/c2c/connections` | Create connection (manual mode) |
+| GET | `/c2c/connections/:id` | Get connection details |
+| GET | `/c2c/configs` | List C2C backup configs |
+| POST | `/c2c/configs` | Create/update backup scope and schedule |
+| POST | `/c2c/configs/:id/run` | Trigger immediate sync |
+
+---
+
+## Disaster Recovery
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/dr/plans` | Create DR plan |
+| GET | `/dr/plans` | List plans |
+| GET | `/dr/plans/:id` | Get plan details |
+| POST | `/dr/plans/:id/groups` | Add recovery group |
+| POST | `/dr/plans/:id/execute` | Execute plan (`executionType`: rehearsal/failover/failback) |
+| GET | `/dr/executions` | List executions (query: `planId`) |
+| GET | `/dr/executions/:id` | Get execution details |
+| POST | `/dr/executions/:id/abort` | Abort running execution |

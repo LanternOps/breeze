@@ -1,9 +1,6 @@
 ---
 title: Remote Access
 description: Remote Desktop, Remote Terminal, and File Transfer for managed devices over WebRTC.
-sidebar:
-  order: 7
-  label: Remote Access
 ---
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
@@ -70,17 +67,20 @@ Breeze solves this with a **session broker** architecture:
 
 3. When a remote desktop session is requested, the broker spawns a **SYSTEM-level helper process** into the target user's session using `CreateProcessAsUser` with session ID override.
 
-4. The helper process owns the entire WebRTC pipeline — DXGI screen capture, H264 encoding via Media Foundation, and pion/webrtc for streaming. The service only relays signaling messages (SDP offer/answer) over IPC.
+4. The helper process owns the entire WebRTC pipeline — DXGI screen capture, H264 encoding via Media Foundation, and WebRTC for streaming. The service only relays signaling messages (SDP offer/answer) over IPC.
 
 5. When the session ends, the helper process is torn down.
 
 </Steps>
 
-<Aside type="tip">
-  The helper uses a SYSTEM token (not `WTSQueryUserToken`) intentionally. SYSTEM can call `OpenInputDesktop(GENERIC_ALL)` which grants access to the UAC consent desktop and lock screen — something a user-level token cannot do.
-</Aside>
+<details>
+<summary>Windows implementation details</summary>
+
+The helper uses a SYSTEM token (not `WTSQueryUserToken`) intentionally. SYSTEM can call `OpenInputDesktop(GENERIC_ALL)` which grants access to the UAC consent desktop and lock screen — something a user-level token cannot do.
 
 The `list_sessions` command returns available user sessions by merging the WTS session detector output with the broker's helper state, showing which sessions have active remote desktop connections.
+
+</details>
 
 ### macOS and Linux Headless Support
 

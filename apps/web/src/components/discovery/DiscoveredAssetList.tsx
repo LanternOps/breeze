@@ -87,7 +87,7 @@ export const typeConfig: Record<DiscoveredAssetType, { label: string; color: str
 
 export const approvalStatusConfig: Record<DiscoveredAssetApprovalStatus, { label: string; color: string }> = {
   pending:   { label: 'Pending',   color: 'bg-amber-500/20 text-amber-700 border-amber-500/40' },
-  approved:  { label: 'Approved',  color: 'bg-green-500/20 text-green-700 border-green-500/40' },
+  approved:  { label: 'Approved',  color: 'bg-success/15 text-success border-success/30' },
   dismissed: { label: 'Dismissed', color: 'bg-muted text-muted-foreground border-muted' }
 };
 

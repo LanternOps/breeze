@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import SiteDetailPage from '../../../components/settings/SiteDetailPage';
+
+const { id } = Astro.params;
+---
+
+<DashboardLayout title="Site Settings">
+  <SiteDetailPage siteId={id} client:load />
+</DashboardLayout>

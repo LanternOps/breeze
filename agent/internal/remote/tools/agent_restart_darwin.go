@@ -3,6 +3,7 @@
 package tools
 
 import (
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -15,12 +16,19 @@ func isAgentService(name string) bool {
 }
 
 func spawnDelayedRestart() error {
-	cmd := exec.Command("bash", "-c",
-		"sleep 3 && launchctl kickstart -k system/com.breeze.agent")
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(self, delayedRestartHelperCommand)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 	_ = cmd.Process.Release()
 	return nil
+}
+
+func runAgentRestartNow() error {
+	return exec.Command("launchctl", "kickstart", "-k", "system/"+agentServiceName).Run()
 }

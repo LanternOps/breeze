@@ -41,6 +41,7 @@ e2e-tests/doc-verify/assertions.json
 
 # Go
 agent/breeze-agent
+agent/breeze-watchdog
 agent/bin/
 viewer/bin/
 agent/*.exe
@@ -73,6 +74,7 @@ CLAUDE.md
 !docs/assets/breeze-logo.png
 !apps/viewer/src-tauri/icons/**/*.png
 !apps/helper/src-tauri/icons/**/*.png
+!apps/docs/src/assets/screenshots/**/*.png
 .worktrees/
 
 # Monitoring secrets (keep .gitkeep only)

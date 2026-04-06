@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Plus } from 'lucide-react';
 import AlertRuleList, { type AlertRule } from './AlertRuleList';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'delete' | 'test';
@@ -115,27 +116,42 @@ export default function AlertRulesPage() {
   const handleConfirmDelete = async () => {
     if (!selectedRule) return;
 
-    setSubmitting(true);
-    try {
-      const response = await fetchWithAuth(`/alerts/rules/${selectedRule.id}`, {
-        method: 'DELETE'
-      });
+    const ruleToDelete = selectedRule;
+    handleCloseModal();
 
-      if (!response.ok) {
-        if (response.status === 401) {
-          void navigateTo('/login', { replace: true });
-          return;
-        }
-        throw new Error('Failed to delete rule');
+    // Deferred execution with undo — gives the user 5 seconds to cancel
+    let cancelled = false;
+    showToast({
+      type: 'undo',
+      message: `Deleting alert rule "${ruleToDelete.name}"...`,
+      duration: 5000,
+      onUndo: () => {
+        cancelled = true;
+        showToast({ type: 'success', message: 'Alert rule deletion cancelled', duration: 2000 });
       }
+    });
 
-      await fetchRules();
-      handleCloseModal();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
-    } finally {
-      setSubmitting(false);
-    }
+    setTimeout(async () => {
+      if (cancelled) return;
+      try {
+        const response = await fetchWithAuth(`/alerts/rules/${ruleToDelete.id}`, {
+          method: 'DELETE'
+        });
+
+        if (!response.ok) {
+          if (response.status === 401) {
+            void navigateTo('/login', { replace: true });
+            return;
+          }
+          throw new Error('Failed to delete rule');
+        }
+
+        showToast({ type: 'success', message: `"${ruleToDelete.name}" deleted` });
+        await fetchRules();
+      } catch (err) {
+        showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to delete alert rule. Please try again.' });
+      }
+    }, 5000);
   };
 
   if (loading) {
@@ -168,7 +184,7 @@ export default function AlertRulesPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Alert Rules</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Alert Rules</h1>
           <p className="text-muted-foreground">Configure when and how alerts are triggered.</p>
         </div>
         <div className="flex items-center gap-3">

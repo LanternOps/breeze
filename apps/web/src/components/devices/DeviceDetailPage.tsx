@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { ArrowLeft, CheckCircle, XCircle } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
+import { showToast } from '../shared/Toast';
 import DeviceDetails from './DeviceDetails';
 import DeviceSettingsModal from './DeviceSettingsModal';
 import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
@@ -8,33 +9,19 @@ import { fetchWithAuth } from '../../stores/auth';
 import { sendDeviceCommand, executeScript, toggleMaintenanceMode, decommissionDevice, clearDeviceSessions, restoreDevice, permanentDeleteDevice } from '../../services/deviceActions';
 import { useAiStore } from '@/stores/aiStore';
 import { navigateTo } from '@/lib/navigation';
+import Breadcrumbs from '../layout/Breadcrumbs';
 
 type DeviceDetailPageProps = {
   deviceId: string;
-};
-
-type Toast = {
-  id: string;
-  type: 'success' | 'error';
-  message: string;
 };
 
 export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
   const [device, setDevice] = useState<Device | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-  const [toasts, setToasts] = useState<Toast[]>([]);
   const [actionInProgress, setActionInProgress] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
-
-  const showToast = useCallback((type: 'success' | 'error', message: string) => {
-    const id = Date.now().toString();
-    setToasts(prev => [...prev, { id, type, message }]);
-    setTimeout(() => {
-      setToasts(prev => prev.filter(t => t.id !== id));
-    }, 5000);
-  }, []);
 
   const fetchDevice = useCallback(async () => {
     try {
@@ -71,7 +58,12 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         agentVersion: data.agentVersion ?? '',
         tags: data.tags ?? [],
         lastUser: data.lastUser ?? undefined,
-        uptimeSeconds: typeof data.uptimeSeconds === 'number' ? data.uptimeSeconds : (latestMetrics?.uptimeSeconds ?? undefined)
+        uptimeSeconds: typeof data.uptimeSeconds === 'number' ? data.uptimeSeconds : (latestMetrics?.uptimeSeconds ?? undefined),
+        deviceRole: data.deviceRole ?? undefined,
+        displayName: data.displayName ?? undefined,
+        isHeadless: data.isHeadless ?? undefined,
+        desktopAccess: data.desktopAccess ?? undefined,
+        remoteAccessPolicy: data.remoteAccessPolicy ?? undefined,
       };
 
       setDevice(transformedDevice);
@@ -114,16 +106,19 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
 
       switch (action) {
         case 'reboot':
+        case 'reboot_safe_mode':
         case 'shutdown':
-        case 'lock':
+        case 'lock': {
           await sendDeviceCommand(device.id, action);
-          showToast('success', `${action.charAt(0).toUpperCase() + action.slice(1)} command sent to ${device.hostname}`);
+          const label = action === 'reboot_safe_mode' ? 'Reboot to Safe Mode' : action.charAt(0).toUpperCase() + action.slice(1);
+          showToast({ type: 'success', message: `${label} command sent to ${device.hostname}` });
           break;
+        }
 
         case 'maintenance': {
           const isCurrentlyMaintenance = device.status === 'maintenance';
           await toggleMaintenanceMode(device.id, !isCurrentlyMaintenance);
-          showToast('success', `${device.hostname} ${isCurrentlyMaintenance ? 'taken out of' : 'put into'} maintenance mode`);
+          showToast({ type: 'success', message: `${device.hostname} ${isCurrentlyMaintenance ? 'taken out of' : 'put into'} maintenance mode` });
           await fetchDevice();
           break;
         }
@@ -150,33 +145,71 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
 
         case 'clear-sessions': {
           const result = await clearDeviceSessions(device.id);
-          showToast('success', `Cleared ${result.cleaned} session${result.cleaned !== 1 ? 's' : ''} for ${device.hostname}`);
+          showToast({ type: 'success', message: `Cleared ${result.cleaned} session${result.cleaned !== 1 ? 's' : ''} for ${device.hostname}` });
           break;
         }
 
-        case 'decommission':
-          await decommissionDevice(device.id);
-          showToast('success', `${device.hostname} has been decommissioned`);
-          void navigateTo('/devices');
+        case 'decommission': {
+          // Deferred execution with undo — gives the user 5 seconds to cancel
+          let cancelled = false;
+          showToast({
+            type: 'undo',
+            message: `Decommissioning "${device.hostname}"...`,
+            duration: 5000,
+            onUndo: () => {
+              cancelled = true;
+              showToast({ type: 'success', message: 'Decommission cancelled', duration: 2000 });
+            }
+          });
+          setTimeout(async () => {
+            if (cancelled) return;
+            try {
+              await decommissionDevice(device.id);
+              showToast({ type: 'success', message: `${device.hostname} has been decommissioned` });
+              void navigateTo('/devices');
+            } catch (err) {
+              showToast({ type: 'error', message: err instanceof Error ? err.message : `Failed to decommission ${device.hostname}` });
+            }
+          }, 5000);
           return;
+        }
 
         case 'restore':
           await restoreDevice(device.id);
-          showToast('success', `${device.hostname} has been restored`);
+          showToast({ type: 'success', message: `${device.hostname} has been restored` });
           await fetchDevice();
           break;
 
-        case 'permanent-delete':
-          await permanentDeleteDevice(device.id);
-          showToast('success', `${device.hostname} has been permanently deleted`);
-          void navigateTo('/devices');
+        case 'permanent-delete': {
+          // Deferred execution with undo — gives the user 5 seconds to cancel
+          let pdCancelled = false;
+          showToast({
+            type: 'undo',
+            message: `Permanently deleting "${device.hostname}"...`,
+            duration: 5000,
+            onUndo: () => {
+              pdCancelled = true;
+              showToast({ type: 'success', message: 'Permanent delete cancelled', duration: 2000 });
+            }
+          });
+          setTimeout(async () => {
+            if (pdCancelled) return;
+            try {
+              await permanentDeleteDevice(device.id);
+              showToast({ type: 'success', message: `${device.hostname} has been permanently deleted` });
+              void navigateTo('/devices');
+            } catch (err) {
+              showToast({ type: 'error', message: err instanceof Error ? err.message : `Failed to delete ${device.hostname}` });
+            }
+          }, 5000);
           return;
+        }
 
         default:
-          showToast('error', `Unknown action: ${action}`);
+          showToast({ type: 'error', message: `Unknown action: ${action}` });
       }
     } catch (err) {
-      showToast('error', err instanceof Error ? err.message : `Failed to ${action} ${device.hostname}`);
+      showToast({ type: 'error', message: err instanceof Error ? err.message : `Failed to ${action} ${device.hostname}` });
     } finally {
       setActionInProgress(false);
     }
@@ -188,9 +221,9 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
     try {
       setActionInProgress(true);
       await executeScript(script.id, [device.id], undefined, runAs);
-      showToast('success', `Script "${script.name}" queued for ${device.hostname}`);
+      showToast({ type: 'success', message: `Script "${script.name}" queued for ${device.hostname}` });
     } catch (err) {
-      showToast('error', err instanceof Error ? err.message : 'Failed to queue script');
+      showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to queue script' });
     } finally {
       setActionInProgress(false);
     }
@@ -234,35 +267,10 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
 
   return (
     <div className="space-y-6">
-      {toasts.length > 0 && (
-        <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
-          {toasts.map(toast => (
-            <div
-              key={toast.id}
-              className={`flex items-center gap-2 rounded-lg px-4 py-3 shadow-lg ${
-                toast.type === 'success'
-                  ? 'bg-green-600 text-white'
-                  : 'bg-destructive text-destructive-foreground'
-              }`}
-            >
-              {toast.type === 'success' ? (
-                <CheckCircle className="h-5 w-5" />
-              ) : (
-                <XCircle className="h-5 w-5" />
-              )}
-              <span className="text-sm font-medium">{toast.message}</span>
-            </div>
-          ))}
-        </div>
-      )}
-      <button
-        type="button"
-        onClick={handleBack}
-        className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
-      >
-        <ArrowLeft className="h-4 w-4" />
-        Back to devices
-      </button>
+      <Breadcrumbs items={[
+        { label: 'Devices', href: '/devices' },
+        { label: device.hostname || 'Device' }
+      ]} />
       <DeviceDetails device={device} onBack={handleBack} onAction={handleAction} />
       <DeviceSettingsModal
         device={device}

@@ -2,11 +2,14 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import { PERMISSIONS } from '../services/permissions';
 
 export const scriptLibraryRoutes = new Hono();
 const DEFAULT_SCRIPT_LIBRARY_ORG_ID = 'org-123';
+const requireScriptLibraryRead = requirePermission(PERMISSIONS.SCRIPTS_READ.resource, PERMISSIONS.SCRIPTS_READ.action);
+const requireScriptLibraryWrite = requirePermission(PERMISSIONS.SCRIPTS_WRITE.resource, PERMISSIONS.SCRIPTS_WRITE.action);
 
 type OsType = 'windows' | 'macos' | 'linux';
 type ScriptLanguage = 'powershell' | 'bash' | 'python' | 'cmd';
@@ -428,6 +431,7 @@ scriptLibraryRoutes.use('*', authMiddleware);
 scriptLibraryRoutes.get(
   '/categories',
   requireScope('organization', 'partner', 'system'),
+  requireScriptLibraryRead,
   async (c) => {
     try {
       const auth = c.get('auth');
@@ -446,6 +450,8 @@ scriptLibraryRoutes.get(
 scriptLibraryRoutes.post(
   '/categories',
   requireScope('organization', 'partner', 'system'),
+  requireScriptLibraryWrite,
+  requireMfa(),
   zValidator('json', createCategorySchema),
   async (c) => {
     try {
@@ -495,6 +501,7 @@ scriptLibraryRoutes.post(
 scriptLibraryRoutes.get(
   '/categories/:id',
   requireScope('organization', 'partner', 'system'),
+  requireScriptLibraryRead,
   async (c) => {
     try {
       const auth = c.get('auth');
@@ -520,6 +527,8 @@ scriptLibraryRoutes.get(
 scriptLibraryRoutes.patch(
   '/categories/:id',
   requireScope('organization', 'partner', 'system'),
+  requireScriptLibraryWrite,
+  requireMfa(),
   zValidator('json', updateCategorySchema),
   async (c) => {
     try {
@@ -587,6 +596,8 @@ scriptLibraryRoutes.patch(
 scriptLibraryRoutes.delete(
   '/categories/:id',
   requireScope('organization', 'partner', 'system'),
+  requireScriptLibraryWrite,
+  requireMfa(),
   async (c) => {
     try {
       const auth = c.get('auth');
@@ -641,6 +652,7 @@ scriptLibraryRoutes.delete(
 scriptLibraryRoutes.get(
   '/tags',
   requireScope('organization', 'partner', 'system'),
+  requireScriptLibraryRead,
   async (c) => {
     try {
       const auth = c.get('auth');
@@ -659,6 +671,8 @@ scriptLibraryRoutes.get(
 scriptLibraryRoutes.post(
   '/tags',
   requireScope('organization', 'partner', 'system'),
+  requireScriptLibraryWrite,
+  requireMfa(),
   zValidator('json', createTagSchema),
   async (c) => {
     try {
@@ -704,6 +718,8 @@ scriptLibraryRoutes.post(
 scriptLibraryRoutes.delete(
   '/tags/:id',
   requireScope('organization', 'partner', 'system'),
+  requireScriptLibraryWrite,
+  requireMfa(),
   async (c) => {
     try {
       const auth = c.get('auth');
@@ -758,6 +774,7 @@ scriptLibraryRoutes.delete(
 scriptLibraryRoutes.get(
   '/scripts/:id/versions',
   requireScope('organization', 'partner', 'system'),
+  requireScriptLibraryRead,
   async (c) => {
     try {
       const auth = c.get('auth');
@@ -783,6 +800,8 @@ scriptLibraryRoutes.get(
 scriptLibraryRoutes.post(
   '/scripts/:id/versions',
   requireScope('organization', 'partner', 'system'),
+  requireScriptLibraryWrite,
+  requireMfa(),
   zValidator('json', createVersionSchema),
   async (c) => {
     try {
@@ -843,6 +862,8 @@ scriptLibraryRoutes.post(
 scriptLibraryRoutes.post(
   '/scripts/:id/rollback/:versionId',
   requireScope('organization', 'partner', 'system'),
+  requireScriptLibraryWrite,
+  requireMfa(),
   async (c) => {
     try {
       const auth = c.get('auth');
@@ -912,6 +933,7 @@ scriptLibraryRoutes.post(
 scriptLibraryRoutes.get(
   '/templates',
   requireScope('organization', 'partner', 'system'),
+  requireScriptLibraryRead,
   zValidator('query', listTemplatesSchema),
   async (c) => {
     try {
@@ -939,6 +961,8 @@ scriptLibraryRoutes.get(
 scriptLibraryRoutes.post(
   '/from-template/:templateId',
   requireScope('organization', 'partner', 'system'),
+  requireScriptLibraryWrite,
+  requireMfa(),
   zValidator('json', createFromTemplateSchema),
   async (c) => {
     try {
@@ -999,6 +1023,7 @@ scriptLibraryRoutes.post(
 scriptLibraryRoutes.get(
   '/scripts/:id/usage-stats',
   requireScope('organization', 'partner', 'system'),
+  requireScriptLibraryRead,
   async (c) => {
     try {
       const auth = c.get('auth');

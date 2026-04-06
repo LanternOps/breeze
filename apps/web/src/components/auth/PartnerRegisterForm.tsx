@@ -2,7 +2,6 @@ import { useMemo } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Building2 } from 'lucide-react';
 import { cn, widthPercentClass } from '@/lib/utils';
 
 const partnerRegisterSchema = z
@@ -62,9 +61,11 @@ export default function PartnerRegisterForm({
     register,
     handleSubmit,
     watch,
-    formState: { errors, isSubmitting }
+    trigger,
+    formState: { errors, isSubmitting, touchedFields }
   } = useForm<PartnerRegisterFormValues>({
     resolver: zodResolver(partnerRegisterSchema),
+    mode: 'onBlur',
     defaultValues: {
       companyName: '',
       name: '',
@@ -92,6 +93,8 @@ export default function PartnerRegisterForm({
     };
   }, [passwordValue]);
 
+  const inputClass = 'h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring';
+
   return (
     <form
       onSubmit={handleSubmit(async values => {
@@ -99,14 +102,12 @@ export default function PartnerRegisterForm({
       })}
       className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
     >
-      <div className="flex items-center gap-3 border-b pb-4">
-        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-          <Building2 className="h-5 w-5 text-primary" />
-        </div>
-        <div>
-          <h2 className="text-lg font-semibold">Register your company</h2>
-          <p className="text-sm text-muted-foreground">Start managing your IT infrastructure</p>
-        </div>
+      {/* Company section */}
+      <div>
+        <h2 className="text-base font-semibold">Your company</h2>
+        <p className="mt-0.5 text-sm text-muted-foreground">
+          This creates your MSP account in Breeze
+        </p>
       </div>
 
       <div className="space-y-2">
@@ -117,95 +118,115 @@ export default function PartnerRegisterForm({
           id="companyName"
           type="text"
           placeholder="Acme IT Services"
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className={inputClass}
           {...register('companyName')}
         />
-        {errors.companyName && (
+        {errors.companyName && touchedFields.companyName && (
           <p className="text-sm text-destructive">{errors.companyName.message}</p>
         )}
       </div>
 
-      <div className="space-y-2">
-        <label htmlFor="name" className="text-sm font-medium">
-          Your name
-        </label>
-        <input
-          id="name"
-          type="text"
-          autoComplete="name"
-          placeholder="Jane Doe"
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          {...register('name')}
-        />
-        {errors.name && <p className="text-sm text-destructive">{errors.name.message}</p>}
+      {/* Account section */}
+      <div className="border-t pt-6">
+        <h2 className="text-base font-semibold">Your account</h2>
+        <p className="mt-0.5 text-sm text-muted-foreground">
+          You'll be the first admin for this company
+        </p>
       </div>
 
-      <div className="space-y-2">
-        <label htmlFor="email" className="text-sm font-medium">
-          Work email
-        </label>
-        <input
-          id="email"
-          type="email"
-          autoComplete="email"
-          placeholder="you@company.com"
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          {...register('email')}
-        />
-        {errors.email && <p className="text-sm text-destructive">{errors.email.message}</p>}
-      </div>
-
-      <div className="space-y-2">
-        <label htmlFor="password" className="text-sm font-medium">
-          Password
-        </label>
-        <input
-          id="password"
-          type="password"
-          autoComplete="new-password"
-          placeholder="Create a password"
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          {...register('password')}
-        />
-        {errors.password && <p className="text-sm text-destructive">{errors.password.message}</p>}
+      <div className="space-y-4">
         <div className="space-y-2">
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>Password strength</span>
-            <span>{strength.label}</span>
+          <label htmlFor="name" className="text-sm font-medium">
+            Full name
+          </label>
+          <input
+            id="name"
+            type="text"
+            autoComplete="name"
+            placeholder="Jane Doe"
+            className={inputClass}
+            {...register('name')}
+          />
+          {errors.name && touchedFields.name && (
+            <p className="text-sm text-destructive">{errors.name.message}</p>
+          )}
+        </div>
+
+        <div className="space-y-2">
+          <label htmlFor="email" className="text-sm font-medium">
+            Work email
+          </label>
+          <input
+            id="email"
+            type="email"
+            autoComplete="email"
+            placeholder="you@company.com"
+            className={inputClass}
+            {...register('email')}
+          />
+          {errors.email && touchedFields.email && (
+            <p className="text-sm text-destructive">{errors.email.message}</p>
+          )}
+        </div>
+
+        <div className="space-y-2">
+          <label htmlFor="password" className="text-sm font-medium">
+            Password
+          </label>
+          <input
+            id="password"
+            type="password"
+            autoComplete="new-password"
+            placeholder="Create a password"
+            className={inputClass}
+            {...register('password', {
+              onChange: () => {
+                if (touchedFields.confirmPassword) trigger('confirmPassword');
+              }
+            })}
+          />
+          {errors.password && touchedFields.password && (
+            <p className="text-sm text-destructive">{errors.password.message}</p>
+          )}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span>Password strength</span>
+              <span>{strength.label}</span>
+            </div>
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+              <div
+                className={cn('h-full transition-all', strength.className, widthPercentClass(strength.percent))}
+              />
+            </div>
           </div>
-          <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
-            <div
-              className={cn('h-full transition-all', strength.className, widthPercentClass(strength.percent))}
-            />
-          </div>
+        </div>
+
+        <div className="space-y-2">
+          <label htmlFor="confirmPassword" className="text-sm font-medium">
+            Confirm password
+          </label>
+          <input
+            id="confirmPassword"
+            type="password"
+            autoComplete="new-password"
+            placeholder="Re-enter your password"
+            className={inputClass}
+            {...register('confirmPassword')}
+          />
+          {errors.confirmPassword && touchedFields.confirmPassword && (
+            <p className="text-sm text-destructive">{errors.confirmPassword.message}</p>
+          )}
         </div>
       </div>
 
-      <div className="space-y-2">
-        <label htmlFor="confirmPassword" className="text-sm font-medium">
-          Confirm password
-        </label>
-        <input
-          id="confirmPassword"
-          type="password"
-          autoComplete="new-password"
-          placeholder="Re-enter your password"
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          {...register('confirmPassword')}
-        />
-        {errors.confirmPassword && (
-          <p className="text-sm text-destructive">{errors.confirmPassword.message}</p>
-        )}
-      </div>
-
-      <div className="flex items-start gap-2">
+      <div className="flex items-start gap-3">
         <input
           id="acceptTerms"
           type="checkbox"
-          className="mt-1 h-4 w-4 rounded border-gray-300"
+          className="mt-0.5 h-4 w-4 rounded border-input accent-primary"
           {...register('acceptTerms')}
         />
-        <label htmlFor="acceptTerms" className="text-sm text-muted-foreground">
+        <label htmlFor="acceptTerms" className="text-sm leading-snug text-muted-foreground">
           I agree to the{' '}
           <a href="/terms" className="text-primary hover:underline">
             Terms of Service
@@ -221,7 +242,7 @@ export default function PartnerRegisterForm({
       )}
 
       {errorMessage && (
-        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {errorMessage}
         </div>
       )}

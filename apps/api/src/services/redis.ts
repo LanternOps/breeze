@@ -2,6 +2,55 @@ import Redis from 'ioredis';
 
 let redisClient: Redis | null = null;
 let redisAvailable = true;
+let warnedAboutInsecureProdRedis = false;
+
+function isProductionEnv(): boolean {
+  return (process.env.NODE_ENV ?? 'development') === 'production';
+}
+
+function hasPasswordInRedisUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.password.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function warnAboutInsecureRedis(message: string): void {
+  if (!isProductionEnv() || warnedAboutInsecureProdRedis) {
+    return;
+  }
+
+  warnedAboutInsecureProdRedis = true;
+  console.warn(`[Redis] ${message}`);
+}
+
+function resolveRedisUrl(): string {
+  const explicitUrl = process.env.REDIS_URL?.trim();
+  if (explicitUrl) {
+    if (!hasPasswordInRedisUrl(explicitUrl)) {
+      warnAboutInsecureRedis(
+        'REDIS_URL in production does not include authentication; security-sensitive features may fail closed during Redis outages'
+      );
+    }
+    return explicitUrl;
+  }
+
+  const host = process.env.REDIS_HOST?.trim() || 'localhost';
+  const port = process.env.REDIS_PORT?.trim() || '6379';
+  const password = process.env.REDIS_PASSWORD?.trim();
+
+  if (password) {
+    return `redis://:${encodeURIComponent(password)}@${host}:${port}`;
+  }
+
+  warnAboutInsecureRedis(
+    'REDIS_URL/REDIS_PASSWORD not configured in production; falling back to unauthenticated Redis'
+  );
+
+  return `redis://${host}:${port}`;
+}
 
 export function getRedis(): Redis | null {
   if (!redisAvailable) {
@@ -9,7 +58,7 @@ export function getRedis(): Redis | null {
   }
 
   if (!redisClient) {
-    const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
+    const url = resolveRedisUrl();
     redisClient = new Redis(url, {
       maxRetriesPerRequest: 3,
       retryStrategy(times) {
@@ -75,7 +124,7 @@ export function getRedisConnection(): Redis {
   }
 
   if (!bullmqConnection) {
-    const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
+    const url = resolveRedisUrl();
 
     bullmqConnection = new Redis(url, {
       maxRetriesPerRequest: null,

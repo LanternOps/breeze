@@ -112,11 +112,11 @@ vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'organization',
-      orgId: ORG_UUID,
+      orgId: '00000000-0000-4000-8000-000000000010',
       partnerId: null,
-      accessibleOrgIds: [ORG_UUID],
+      accessibleOrgIds: ['00000000-0000-4000-8000-000000000010'],
       canAccessOrg: () => true,
-      user: { id: USER_UUID, email: 'test@example.com' }
+      user: { id: '00000000-0000-4000-8000-000000000020', email: 'test@example.com' }
     });
     return next();
   }),

@@ -23,6 +23,7 @@ vi.mock('./aiTools', () => ({
       query_devices: 1,
       query_change_log: 1,
       execute_command: 3,
+      run_backup_verification: 2,
     };
     return tiers[toolName];
   }),
@@ -71,6 +72,17 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
       ['manage_alert_rules', 'test_rule'],
       ['manage_alert_rules', 'list_channels'],
       ['manage_alert_rules', 'alert_summary'],
+      // Disabled mutation actions — tools return policy redirect before guardrails apply,
+      // but checkGuardrails resolves them at base tier since they're not in TIER2/TIER3 maps.
+      ['manage_maintenance_windows', 'create'],
+      ['manage_maintenance_windows', 'update'],
+      ['manage_maintenance_windows', 'delete'],
+      ['manage_alert_rules', 'create_rule'],
+      ['manage_alert_rules', 'update_rule'],
+      ['manage_alert_rules', 'delete_rule'],
+      ['manage_automations', 'create'],
+      ['manage_automations', 'update'],
+      ['manage_automations', 'delete'],
       ['generate_report', 'list'],
       ['generate_report', 'data'],
       ['generate_report', 'history'],
@@ -98,12 +110,8 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
       ['manage_patches', 'bulk_approve'],
       ['manage_groups', 'add_devices'],
       ['manage_groups', 'remove_devices'],
-      ['manage_maintenance_windows', 'create'],
-      ['manage_maintenance_windows', 'update'],
       ['manage_automations', 'enable'],
       ['manage_automations', 'disable'],
-      ['manage_alert_rules', 'create_rule'],
-      ['manage_alert_rules', 'update_rule'],
       ['generate_report', 'create'],
       ['generate_report', 'update'],
       ['generate_report', 'delete'],
@@ -134,12 +142,7 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
       ['manage_groups', 'create'],
       ['manage_groups', 'update'],
       ['manage_groups', 'delete'],
-      ['manage_maintenance_windows', 'delete'],
-      ['manage_automations', 'create'],
-      ['manage_automations', 'update'],
-      ['manage_automations', 'delete'],
       ['manage_automations', 'run'],
-      ['manage_alert_rules', 'delete_rule'],
     ];
 
     it.each(t3Cases)('%s:%s → Tier 3, approval required', (tool, action) => {
@@ -189,6 +192,15 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
   it('treats query_change_log as Tier 1 read-only', () => {
     const result = checkGuardrails('query_change_log', {});
     expect(result.tier).toBe(1);
+    expect(result.allowed).toBe(true);
+    expect(result.requiresApproval).toBe(false);
+  });
+
+  it('does not require a special full recovery approval path for backup verification', () => {
+    const result = checkGuardrails('run_backup_verification', {
+      deviceId: '11111111-1111-1111-1111-111111111111',
+      verificationType: 'test_restore',
+    });
     expect(result.allowed).toBe(true);
     expect(result.requiresApproval).toBe(false);
   });

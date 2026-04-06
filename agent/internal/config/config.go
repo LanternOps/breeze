@@ -5,9 +5,24 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/spf13/viper"
 )
+
+// WatchdogConfig holds settings for the breeze-watchdog service.
+type WatchdogConfig struct {
+	Enabled                 bool          `mapstructure:"enabled" yaml:"enabled"`
+	ProcessCheckInterval    time.Duration `mapstructure:"process_check_interval" yaml:"process_check_interval"`
+	IPCProbeInterval        time.Duration `mapstructure:"ipc_probe_interval" yaml:"ipc_probe_interval"`
+	HeartbeatStaleThreshold time.Duration `mapstructure:"heartbeat_stale_threshold" yaml:"heartbeat_stale_threshold"`
+	MaxRecoveryAttempts     int           `mapstructure:"max_recovery_attempts" yaml:"max_recovery_attempts"`
+	RecoveryCooldown        time.Duration `mapstructure:"recovery_cooldown" yaml:"recovery_cooldown"`
+	StandbyTimeout          time.Duration `mapstructure:"standby_timeout" yaml:"standby_timeout"`
+	FailoverPollInterval    time.Duration `mapstructure:"failover_poll_interval" yaml:"failover_poll_interval"`
+	HealthJournalMaxSizeMB  int           `mapstructure:"health_journal_max_size_mb" yaml:"health_journal_max_size_mb"`
+	HealthJournalMaxFiles   int           `mapstructure:"health_journal_max_files" yaml:"health_journal_max_files"`
+}
 
 type PolicyRegistryStateProbe struct {
 	RegistryPath string `mapstructure:"registry_path"`
@@ -38,6 +53,15 @@ type Config struct {
 	BackupS3Region           string   `mapstructure:"backup_s3_region"`
 	BackupS3AccessKey        string   `mapstructure:"backup_s3_access_key"`
 	BackupS3SecretKey        string   `mapstructure:"backup_s3_secret_key"`
+	BackupVSSEnabled         bool     `mapstructure:"backup_vss_enabled"`          // Windows: VSS shadow copy before backup
+	BackupSystemStateEnabled bool     `mapstructure:"backup_system_state_enabled"` // Collect system state alongside file backup
+	BackupBinaryPath         string   `mapstructure:"backup_binary_path"`          // Path to breeze-backup helper binary
+	BackupStagingDir         string   `mapstructure:"backup_staging_dir"`          // Staging directory for Hyper-V exports, MSSQL backups, etc. (empty = OS temp dir)
+
+	// Local vault (SMB share / USB drive) configuration
+	VaultEnabled        bool   `mapstructure:"vault_enabled"`
+	VaultPath           string `mapstructure:"vault_path"`
+	VaultRetentionCount int    `mapstructure:"vault_retention_count"`
 
 	// Logging configuration
 	LogLevel         string `mapstructure:"log_level"`
@@ -83,6 +107,9 @@ type Config struct {
 	MtlsKeyPEM      string `mapstructure:"mtls_key_pem"`
 	MtlsCertExpires string `mapstructure:"mtls_cert_expires"`
 
+	// Watchdog configuration for the breeze-watchdog service.
+	Watchdog WatchdogConfig `mapstructure:"watchdog" yaml:"watchdog"`
+
 	// IsService is a runtime flag set when the agent is running as a system service
 	// (Windows SCM, macOS launchd, Linux systemd). It is not persisted to config.
 	IsService bool `mapstructure:"-"`
@@ -102,6 +129,16 @@ func defaultLogFile() string {
 	default:
 		return "/var/log/breeze/agent.log"
 	}
+}
+
+// LogDir returns the platform-specific directory where agent logs are written.
+func LogDir() string {
+	return filepath.Dir(defaultLogFile())
+}
+
+// ConfigDir returns the platform-specific configuration directory.
+func ConfigDir() string {
+	return configDir()
 }
 
 func Default() *Config {
@@ -127,8 +164,21 @@ func Default() *Config {
 		PatchRequireACPower:        true,
 		PatchRebootMaxPerDay:       3,
 		PatchAutoAcceptEula:        false,
-		PolicyRegistryStateProbes:  []PolicyRegistryStateProbe{},
-		PolicyConfigStateProbes:    []PolicyConfigStateProbe{},
+		PolicyRegistryStateProbes: []PolicyRegistryStateProbe{},
+		PolicyConfigStateProbes:   []PolicyConfigStateProbe{},
+
+		Watchdog: WatchdogConfig{
+			Enabled:                 true,
+			ProcessCheckInterval:    5 * time.Second,
+			IPCProbeInterval:        30 * time.Second,
+			HeartbeatStaleThreshold: 3 * time.Minute,
+			MaxRecoveryAttempts:     3,
+			RecoveryCooldown:        10 * time.Minute,
+			StandbyTimeout:          30 * time.Minute,
+			FailoverPollInterval:    30 * time.Second,
+			HealthJournalMaxSizeMB:  10,
+			HealthJournalMaxFiles:   3,
+		},
 	}
 }
 
@@ -160,7 +210,7 @@ func Load(cfgFile string) (*Config, error) {
 	// Merge secrets from the separate secrets file if it exists.
 	// Old-format configs with inline secrets still work via the unmarshal
 	// above; the secrets file values take precedence when present.
-	secretsPath := secretsFilePath()
+	secretsPath := secretsFilePathFor(viper.ConfigFileUsed())
 	if _, err := os.Stat(secretsPath); err == nil {
 		sv := viper.New()
 		sv.SetConfigFile(secretsPath)
@@ -194,6 +244,21 @@ func Load(cfgFile string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// SetAndPersist updates a single config key in viper and writes it to the
+// existing config file. Uses viper.WriteConfig (not WriteConfigAs) to write
+// back to the file viper originally read, preserving all existing keys
+// including sensitive fields that may have been cleared from the Config struct.
+func SetAndPersist(key string, value any) error {
+	viper.Set(key, value)
+	return viper.WriteConfig()
+}
+
+// Reload reloads the currently bound config file, or the default config path
+// when no explicit file has been loaded yet.
+func Reload() (*Config, error) {
+	return Load(viper.ConfigFileUsed())
 }
 
 func Save(cfg *Config) error {
@@ -273,7 +338,7 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	}
 
 	// Write secrets to a separate root-only file.
-	secretsPath := secretsFilePath()
+	secretsPath := secretsFilePathFor(cfgPath)
 	sv := viper.New()
 	// Only overwrite auth_token if non-empty. At runtime the token may be
 	// cleared from the config struct for security; writing "" would wipe
@@ -358,6 +423,13 @@ func FixConfigPermissions() {
 }
 
 func secretsFilePath() string {
+	return secretsFilePathFor(viper.ConfigFileUsed())
+}
+
+func secretsFilePathFor(cfgFile string) string {
+	if cfgFile != "" {
+		return filepath.Join(filepath.Dir(cfgFile), "secrets.yaml")
+	}
 	return filepath.Join(configDir(), "secrets.yaml")
 }
 

@@ -12,6 +12,7 @@ import {
   configPolicySensitiveDataSettings,
   configPolicyMonitoringSettings,
   configPolicyMonitoringWatches,
+  configPolicyBackupSettings,
   devices,
   organizations,
   deviceGroupMemberships,
@@ -28,12 +29,13 @@ import {
 import { and, eq, desc, sql, inArray, asc, SQL } from 'drizzle-orm';
 import { eventLogInlineSettingsSchema, monitoringInlineSettingsSchema } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
+import { normalizePatchInlineSettings } from './configPolicyPatching';
 
 // ============================================
 // Types
 // ============================================
 
-type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data' | 'peripheral_control' | 'warranty' | 'helper';
+type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data' | 'peripheral_control' | 'warranty' | 'helper' | 'remote_access';
 type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
 
 const LEVEL_PRIORITY: Record<ConfigAssignmentLevel, number> = {
@@ -106,12 +108,9 @@ export async function getConfigPolicy(id: string, auth: AuthContext) {
 
   if (!policy) return null;
 
-  const links = await db
-    .select()
-    .from(configPolicyFeatureLinks)
-    .where(eq(configPolicyFeatureLinks.configPolicyId, id));
+  const featureLinks = await listFeatureLinks(id);
 
-  return { ...policy, featureLinks: links };
+  return { ...policy, featureLinks };
 }
 
 export async function listConfigPolicies(
@@ -296,16 +295,17 @@ async function decomposeInlineSettings(
     }
 
     case 'patch': {
+      const parsed = normalizePatchInlineSettings(s);
       await tx.insert(configPolicyPatchSettings).values({
         featureLinkId: linkId,
-        sources: Array.isArray(s.sources) ? s.sources as string[] : ['os'],
-        autoApprove: typeof s.autoApprove === 'boolean' ? s.autoApprove : false,
-        autoApproveSeverities: Array.isArray(s.autoApproveSeverities) ? s.autoApproveSeverities as string[] : [],
-        scheduleFrequency: typeof s.scheduleFrequency === 'string' ? s.scheduleFrequency : 'weekly',
-        scheduleTime: typeof s.scheduleTime === 'string' ? s.scheduleTime : '02:00',
-        scheduleDayOfWeek: typeof s.scheduleDayOfWeek === 'string' ? s.scheduleDayOfWeek : 'sun',
-        scheduleDayOfMonth: typeof s.scheduleDayOfMonth === 'number' ? s.scheduleDayOfMonth : 1,
-        rebootPolicy: typeof s.rebootPolicy === 'string' ? s.rebootPolicy : 'if_required',
+        sources: parsed.sources,
+        autoApprove: parsed.autoApprove,
+        autoApproveSeverities: parsed.autoApproveSeverities,
+        scheduleFrequency: parsed.scheduleFrequency,
+        scheduleTime: parsed.scheduleTime,
+        scheduleDayOfWeek: parsed.scheduleDayOfWeek,
+        scheduleDayOfMonth: parsed.scheduleDayOfMonth,
+        rebootPolicy: parsed.rebootPolicy,
       });
       break;
     }
@@ -430,13 +430,35 @@ async function decomposeInlineSettings(
       break;
     }
 
+    case 'backup': {
+      // Look up orgId via feature link → policy join
+      const [policyRow] = await tx
+        .select({ orgId: configurationPolicies.orgId })
+        .from(configPolicyFeatureLinks)
+        .innerJoin(configurationPolicies, eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id))
+        .where(eq(configPolicyFeatureLinks.id, linkId))
+        .limit(1);
+      if (!policyRow) throw new Error(`Cannot resolve orgId for feature link ${linkId}`);
+      await tx.insert(configPolicyBackupSettings).values({
+        featureLinkId: linkId,
+        orgId: policyRow.orgId,
+        schedule: (s.schedule ?? {}) as Record<string, unknown>,
+        retention: (s.retention ?? {}) as Record<string, unknown>,
+        paths: (Array.isArray(s.paths) ? s.paths : []) as unknown[],
+        backupMode: (s.backupMode ?? 'file') as 'file' | 'hyperv' | 'mssql' | 'system_image',
+        targets: (s.targets ?? {}) as Record<string, unknown>,
+      });
+      break;
+    }
+
     case 'warranty':
     case 'helper':
+    case 'remote_access':
       // Pure JSONB — no normalized table needed
       break;
 
     default:
-      // backup, security — no normalized tables yet
+      // security — no normalized tables yet
       break;
   }
 }
@@ -479,8 +501,12 @@ async function deleteNormalizedRows(
       await tx.delete(configPolicyAlertRules).where(eq(configPolicyAlertRules.featureLinkId, linkId));
       break;
     }
+    case 'backup':
+      await tx.delete(configPolicyBackupSettings).where(eq(configPolicyBackupSettings.featureLinkId, linkId));
+      break;
     case 'warranty':
     case 'helper':
+    case 'remote_access':
       // Pure JSONB — no normalized table to delete
       break;
     default:
@@ -720,8 +746,25 @@ async function assembleInlineSettings(
       };
     }
 
+    case 'backup': {
+      const [row] = await db
+        .select()
+        .from(configPolicyBackupSettings)
+        .where(eq(configPolicyBackupSettings.featureLinkId, linkId))
+        .limit(1);
+      if (!row) return null;
+      return {
+        schedule: row.schedule,
+        retention: row.retention,
+        paths: row.paths,
+        backupMode: row.backupMode,
+        targets: row.targets,
+      };
+    }
+
     case 'warranty':
     case 'helper':
+    case 'remote_access':
       // Pure JSONB — settings stored directly on feature link
       return null;
 
@@ -741,21 +784,27 @@ export async function addFeatureLink(
   inlineSettings?: unknown
 ) {
   return db.transaction(async (tx) => {
+    const effectiveInlineSettings =
+      featureType === 'patch'
+        ? normalizePatchInlineSettings(inlineSettings)
+        : inlineSettings;
+
     const [link] = await tx
       .insert(configPolicyFeatureLinks)
       .values({
         configPolicyId,
         featureType,
         featurePolicyId: featurePolicyId ?? null,
-        inlineSettings: inlineSettings ?? null,
+        // Keep JSONB as a compatibility/UI mirror; runtime must read normalized settings.
+        inlineSettings: effectiveInlineSettings ?? null,
       })
       .returning();
 
     if (!link) throw new Error('Failed to create feature link');
 
     // Decompose inlineSettings into normalized per-feature table
-    if (inlineSettings) {
-      await decomposeInlineSettings(link.id, featureType, inlineSettings, tx);
+    if (featureType === 'patch' || effectiveInlineSettings) {
+      await decomposeInlineSettings(link.id, featureType, effectiveInlineSettings, tx);
     }
 
     return link;
@@ -781,8 +830,15 @@ export async function updateFeatureLink(
     if (!existing) return null;
 
     const setValues: Record<string, unknown> = { updatedAt: new Date() };
+    const normalizedInlineSettings =
+      existing.featureType === 'patch' && updates.inlineSettings !== undefined
+        ? normalizePatchInlineSettings(updates.inlineSettings)
+        : updates.inlineSettings;
     if (updates.featurePolicyId !== undefined) setValues.featurePolicyId = updates.featurePolicyId;
-    if (updates.inlineSettings !== undefined) setValues.inlineSettings = updates.inlineSettings;
+    if (updates.inlineSettings !== undefined) {
+      // Keep JSONB as a compatibility/UI mirror; runtime must read normalized settings.
+      setValues.inlineSettings = normalizedInlineSettings;
+    }
 
     const [updated] = await tx
       .update(configPolicyFeatureLinks)
@@ -794,8 +850,8 @@ export async function updateFeatureLink(
     if (updates.inlineSettings !== undefined) {
       const featureType = existing.featureType as ConfigFeatureType;
       await deleteNormalizedRows(linkId, featureType, tx);
-      if (updates.inlineSettings) {
-        await decomposeInlineSettings(linkId, featureType, updates.inlineSettings, tx);
+      if (featureType === 'patch' || normalizedInlineSettings) {
+        await decomposeInlineSettings(linkId, featureType, normalizedInlineSettings, tx);
       }
     }
 
@@ -827,10 +883,14 @@ export async function listFeatureLinks(configPolicyId: string) {
     links.map(async (link) => {
       const featureType = link.featureType as ConfigFeatureType;
       const assembled = await assembleInlineSettings(featureType, link.id);
+      const effectiveInlineSettings =
+        featureType === 'patch'
+          ? normalizePatchInlineSettings(assembled ?? link.inlineSettings)
+          : assembled ?? link.inlineSettings;
       return {
         ...link,
         // Prefer assembled normalized data; fall back to stored JSONB
-        inlineSettings: assembled ?? link.inlineSettings,
+        inlineSettings: effectiveInlineSettings,
       };
     })
   );
@@ -1137,6 +1197,30 @@ export async function validateFeaturePolicyExists(
   featurePolicyId: string | undefined | null,
   orgId: string
 ): Promise<{ valid: boolean; error?: string }> {
+  if (featureType === 'patch') {
+    if (!featurePolicyId) {
+      return { valid: true };
+    }
+
+    const [ring] = await db
+      .select({ id: patchPolicies.id })
+      .from(patchPolicies)
+      .where(
+        and(
+          eq(patchPolicies.id, featurePolicyId),
+          eq(patchPolicies.orgId, orgId),
+          eq(patchPolicies.kind, 'ring')
+        )
+      )
+      .limit(1);
+
+    if (!ring) {
+      return { valid: false, error: `Update ring "${featurePolicyId}" not found in this organization` };
+    }
+
+    return { valid: true };
+  }
+
   if (featureType === 'monitoring' || featureType === 'event_log') {
     // Monitoring and event_log have no policy table — requires inlineSettings
     if (featurePolicyId) {

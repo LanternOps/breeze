@@ -1,114 +1,47 @@
 import { useMemo, useState, useEffect, useCallback } from 'react';
 import { Layers, FileCog, BarChart3, Plus, Loader2, RefreshCw } from 'lucide-react';
-import type { FilterConditionGroup } from '@breeze/shared';
-import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import PatchList, {
   type Patch,
   type PatchApprovalStatus,
-  type PatchSeverity
 } from './PatchList';
 import PatchApprovalModal, { type PatchApprovalAction } from './PatchApprovalModal';
-import PatchComplianceDashboard from './PatchComplianceDashboard';
+import PatchComplianceView from './PatchComplianceView';
 import UpdateRingList, { type UpdateRingItem } from './UpdateRingList';
 import UpdateRingForm, { type UpdateRingFormValues } from './UpdateRingForm';
 import RingSelector, { type UpdateRing } from './RingSelector';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
-
-const severityMap: Record<string, PatchSeverity> = {
-  critical: 'critical',
-  high: 'important',
-  important: 'important',
-  medium: 'moderate',
-  moderate: 'moderate',
-  low: 'low',
-  info: 'low'
-};
-
-const approvalMap: Record<string, PatchApprovalStatus> = {
-  approved: 'approved',
-  approve: 'approved',
-  declined: 'declined',
-  decline: 'declined',
-  rejected: 'declined',
-  reject: 'declined',
-  deferred: 'deferred',
-  defer: 'deferred',
-  pending: 'pending'
-};
-
-const osLabels: Record<string, string> = {
-  windows: 'Windows',
-  macos: 'macOS',
-  linux: 'Linux'
-};
-
-function formatSourceLabel(value: unknown): string {
-  if (typeof value !== 'string') {
-    return value ? String(value) : 'Unknown';
-  }
-  if (!value.trim()) return 'Unknown';
-  return value
-    .replace(/_/g, ' ')
-    .split(' ')
-    .map(part => (part ? part[0].toUpperCase() + part.slice(1) : part))
-    .join(' ');
-}
-
-function normalizeSeverity(value?: string): PatchSeverity {
-  if (!value) return 'low';
-  return severityMap[value.toLowerCase()] ?? 'low';
-}
-
-function normalizeApprovalStatus(value?: string): PatchApprovalStatus {
-  if (!value) return 'pending';
-  return approvalMap[value.toLowerCase()] ?? 'pending';
-}
-
-function normalizeOs(value?: string): string {
-  if (!value) return 'Unknown';
-  return osLabels[value.toLowerCase()] ?? value;
-}
-
-function normalizePatch(raw: Record<string, unknown>, index: number): Patch {
-  const id = raw.id ?? raw.patchId ?? raw.patch_id ?? `patch-${index}`;
-  const title = raw.title ?? raw.name ?? raw.patchTitle ?? 'Untitled patch';
-  const source = raw.sourceName ?? raw.source_label ?? raw.source;
-  const os = raw.os ?? raw.osType ?? raw.os_type ?? raw.platform;
-  const releaseDate = raw.releaseDate ?? raw.releasedAt ?? raw.release_date ?? raw.createdAt ?? '';
-  const approvalStatus = raw.approvalStatus ?? raw.approval_status ?? raw.status;
-
-  return {
-    id: String(id),
-    title: String(title),
-    severity: normalizeSeverity(raw.severity ? String(raw.severity) : undefined),
-    source: formatSourceLabel(source),
-    os: normalizeOs(os ? String(os) : undefined),
-    releaseDate: String(releaseDate),
-    approvalStatus: normalizeApprovalStatus(approvalStatus ? String(approvalStatus) : undefined),
-    description: raw.description ? String(raw.description) : undefined
-  };
-}
-
-function normalizeRing(raw: Record<string, unknown>): UpdateRingItem {
-  return {
-    id: String(raw.id ?? ''),
-    name: String(raw.name ?? 'Untitled'),
-    description: raw.description ? String(raw.description) : null,
-    enabled: raw.enabled !== false,
-    ringOrder: Number(raw.ringOrder ?? 0),
-    deferralDays: Number(raw.deferralDays ?? 0),
-    deadlineDays: raw.deadlineDays != null ? Number(raw.deadlineDays) : null,
-    gracePeriodHours: Number(raw.gracePeriodHours ?? 4),
-    categoryRules: Array.isArray(raw.categoryRules) ? raw.categoryRules as UpdateRingItem['categoryRules'] : [],
-    updatedAt: raw.updatedAt ? String(raw.updatedAt) : undefined,
-  };
-}
+import { normalizePatch, normalizeRing } from './patchHelpers';
 
 type TabKey = 'rings' | 'patches' | 'compliance';
+const validTabs: TabKey[] = ['rings', 'patches', 'compliance'];
+
+function getTabFromUrl(): TabKey {
+  if (typeof window === 'undefined') return 'compliance';
+  const params = new URLSearchParams(window.location.search);
+  const tab = params.get('tab');
+  return tab && validTabs.includes(tab as TabKey) ? (tab as TabKey) : 'compliance';
+}
+
+function setTabInUrl(tab: TabKey) {
+  if (typeof window === 'undefined') return;
+  const url = new URL(window.location.href);
+  if (tab === 'compliance') {
+    url.searchParams.delete('tab');
+  } else {
+    url.searchParams.set('tab', tab);
+  }
+  window.history.replaceState({}, '', url.toString());
+}
+
+const DEVICE_SCAN_PAGE_LIMIT = 100;
 
 export default function PatchesPage() {
-  const [activeTab, setActiveTab] = useState<TabKey>('rings');
+  const [activeTab, setActiveTabState] = useState<TabKey>(getTabFromUrl);
+  const setActiveTab = useCallback((tab: TabKey) => {
+    setActiveTabState(tab);
+    setTabInUrl(tab);
+  }, []);
   const [selectedRingId, setSelectedRingId] = useState<string | null>(null);
   const [selectedPatch, setSelectedPatch] = useState<Patch | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -125,13 +58,13 @@ export default function PatchesPage() {
   const [patchesError, setPatchesError] = useState<string>();
   const [scanLoading, setScanLoading] = useState(false);
   const [scanError, setScanError] = useState<string>();
-  const [deviceFilter, setDeviceFilter] = useState<FilterConditionGroup | null>(null);
+  const [scanSuccess, setScanSuccess] = useState<string>();
 
   const tabs = useMemo(
     () => [
-      { id: 'rings' as TabKey, label: 'Update Rings', icon: <Layers className="h-4 w-4" /> },
+      { id: 'compliance' as TabKey, label: 'Compliance', icon: <BarChart3 className="h-4 w-4" /> },
       { id: 'patches' as TabKey, label: 'Patches', icon: <FileCog className="h-4 w-4" /> },
-      { id: 'compliance' as TabKey, label: 'Compliance', icon: <BarChart3 className="h-4 w-4" /> }
+      { id: 'rings' as TabKey, label: 'Update Rings', icon: <Layers className="h-4 w-4" /> }
     ],
     []
   );
@@ -224,31 +157,104 @@ export default function PatchesPage() {
     setSelectedPatch(null);
   };
 
+  const handleBulkApprove = async (patchIds: string[]) => {
+    const response = await fetchWithAuth('/patches/bulk-approve', {
+      method: 'POST',
+      body: JSON.stringify({
+        patchIds,
+        ringId: selectedRingId ?? undefined
+      })
+    });
+    if (!response.ok) {
+      if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
+      throw new Error('Failed to approve patches');
+    }
+    const body = await response.json().catch(() => ({})) as {
+      approved?: string[];
+      failed?: string[];
+    };
+    const approvedIds = Array.isArray(body.approved) ? body.approved : patchIds;
+    const failedIds = Array.isArray(body.failed) ? body.failed : [];
+    setPatches(prev =>
+      prev.map(patch =>
+        approvedIds.includes(patch.id) ? { ...patch, approvalStatus: 'approved' as PatchApprovalStatus } : patch
+      )
+    );
+    if (failedIds.length > 0) {
+      throw new Error(`Failed to approve ${failedIds.length} ${failedIds.length === 1 ? 'patch' : 'patches'}`);
+    }
+  };
+
+  const handleBulkDecline = async (patchIds: string[]) => {
+    const failed: string[] = [];
+    for (const id of patchIds) {
+      const response = await fetchWithAuth(`/patches/${id}/decline`, {
+        method: 'POST',
+        body: JSON.stringify({ ringId: selectedRingId ?? undefined })
+      });
+      if (!response.ok) {
+        if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
+        failed.push(id);
+      }
+    }
+    const declined = patchIds.filter(id => !failed.includes(id));
+    setPatches(prev =>
+      prev.map(patch =>
+        declined.includes(patch.id) ? { ...patch, approvalStatus: 'declined' as PatchApprovalStatus } : patch
+      )
+    );
+    if (failed.length > 0) throw new Error(`Failed to decline ${failed.length} patches`);
+  };
+
   const handleScan = async () => {
     try {
       setScanLoading(true);
       setScanError(undefined);
-      const devResponse = await fetchWithAuth('/devices?limit=100');
-      if (!devResponse.ok) {
-        if (devResponse.status === 401) { void navigateTo('/login', { replace: true }); return; }
-        throw new Error('Failed to load devices for scan');
+      setScanSuccess(undefined);
+      const ids = new Set<string>();
+      let page = 1;
+      let totalPages = 1;
+
+      while (page <= totalPages) {
+        const devResponse = await fetchWithAuth(`/devices?limit=${DEVICE_SCAN_PAGE_LIMIT}&page=${page}`);
+        if (!devResponse.ok) {
+          if (devResponse.status === 401) { void navigateTo('/login', { replace: true }); return; }
+          throw new Error('Failed to load devices for scan');
+        }
+
+        const devBody = await devResponse.json();
+        const devices = devBody.devices ?? devBody.data ?? devBody.items ?? devBody ?? [];
+        for (const device of Array.isArray(devices) ? devices : []) {
+          const rawDevice = device && typeof device === 'object' ? device as Record<string, unknown> : null;
+          const rawId = rawDevice?.id ?? rawDevice?.deviceId;
+          const id = rawId ? String(rawId) : '';
+          if (id) {
+            ids.add(id);
+          }
+        }
+
+        const total = Number(devBody?.pagination?.total ?? ids.size);
+        totalPages = total > 0 ? Math.ceil(total / DEVICE_SCAN_PAGE_LIMIT) : page;
+        page += 1;
       }
-      const devData = await devResponse.json();
-      const devices = devData.devices ?? devData.data ?? devData.items ?? devData ?? [];
-      const ids = (Array.isArray(devices) ? devices : [])
-        .map((d: Record<string, unknown>) => d.id ?? d.deviceId)
-        .map((id: unknown) => (id ? String(id) : ''))
-        .filter((id: string) => id.length > 0);
-      if (ids.length === 0) throw new Error('No devices available for scanning');
+
+      const deviceIds = [...ids];
+      if (deviceIds.length === 0) throw new Error('No devices available for scanning');
 
       const response = await fetchWithAuth('/patches/scan', {
         method: 'POST',
-        body: JSON.stringify({ deviceIds: ids })
+        body: JSON.stringify({ deviceIds })
       });
       if (!response.ok) {
         if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
         throw new Error('Failed to start patch scan');
       }
+      const body = await response.json().catch(() => ({}));
+      const dispatched = Array.isArray(body?.dispatchedCommandIds) ? body.dispatchedCommandIds.length : 0;
+      const queued = Array.isArray(body?.queuedCommandIds) ? body.queuedCommandIds.length : deviceIds.length;
+      setScanSuccess(
+        `Patch scan queued for ${queued} devices${dispatched > 0 ? `, ${dispatched} dispatched immediately` : ''}.`
+      );
       await fetchPatches();
     } catch (err) {
       setScanError(err instanceof Error ? err.message : 'Failed to start patch scan');
@@ -307,31 +313,35 @@ export default function PatchesPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Patch Management</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Patch Management</h1>
           <p className="text-muted-foreground">Manage update rings, approvals, compliance, and patch deployments.</p>
         </div>
         <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={handleScan}
-            disabled={scanLoading}
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted disabled:opacity-50"
-          >
-            {scanLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            {scanLoading ? 'Scanning...' : 'Run Scan'}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setEditingRing(null);
-              setRingsError(undefined);
-              setRingModalOpen(true);
-            }}
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
-          >
-            <Plus className="h-4 w-4" />
-            New Ring
-          </button>
+          {(activeTab === 'compliance' || activeTab === 'patches') && (
+            <button
+              type="button"
+              onClick={handleScan}
+              disabled={scanLoading}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted disabled:opacity-50"
+            >
+              {scanLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              {scanLoading ? 'Scanning...' : 'Run Scan'}
+            </button>
+          )}
+          {activeTab === 'rings' && (
+            <button
+              type="button"
+              onClick={() => {
+                setEditingRing(null);
+                setRingsError(undefined);
+                setRingModalOpen(true);
+              }}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+            >
+              <Plus className="h-4 w-4" />
+              New Ring
+            </button>
+          )}
         </div>
       </div>
 
@@ -347,6 +357,11 @@ export default function PatchesPage() {
               Retry scan
             </button>
           </div>
+        </div>
+      )}
+      {scanSuccess && (
+        <div className="rounded-lg border border-success/40 bg-success/10 p-4 text-sm text-success">
+          {scanSuccess}
         </div>
       )}
 
@@ -379,12 +394,6 @@ export default function PatchesPage() {
             selectedRingId={selectedRingId}
             onChange={setSelectedRingId}
             loading={ringsLoading}
-          />
-          <DeviceFilterBar
-            value={deviceFilter}
-            onChange={setDeviceFilter}
-            collapsible
-            defaultExpanded={false}
           />
         </div>
       )}
@@ -436,11 +445,13 @@ export default function PatchesPage() {
           error={patchesError}
           onRetry={fetchPatches}
           onReview={handleReview}
+          onBulkApprove={handleBulkApprove}
+          onBulkDecline={handleBulkDecline}
         />
       )}
 
-      {/* Compliance tab */}
-      {activeTab === 'compliance' && <PatchComplianceDashboard ringId={selectedRingId} />}
+      {/* Compliance tab — merged device view with summary */}
+      {activeTab === 'compliance' && <PatchComplianceView ringId={selectedRingId} />}
 
       {/* Approval modal — passes ringId */}
       <PatchApprovalModal

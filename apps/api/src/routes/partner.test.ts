@@ -36,6 +36,7 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
+  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
   requireScope: vi.fn(() => async (_c: any, next: any) => next())
 }));
 

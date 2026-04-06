@@ -8,7 +8,7 @@ sidebar:
 
 import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-The Breeze agent supports **60+ commands** organized into 17 categories. Commands are sent from the API to agents over WebSocket, each with an `action` string and an optional JSON `payload`.
+The Breeze agent supports **120+ commands** organized into 30+ categories. Commands are sent from the API to agents over WebSocket, each with an `action` string and an optional JSON `payload`.
 
 ## Command Flow
 
@@ -238,6 +238,7 @@ Power management and session locking. Cross-platform.
 | `reboot` | Schedule a system reboot | `delay` |
 | `shutdown` | Schedule a system shutdown | `delay` |
 | `lock` | Lock the current user session | -- |
+| `reboot_safe_mode` | Reboot into Safe Mode with Networking (Windows only) | `delay` |
 
 <Aside type="danger">
 The `reboot` and `shutdown` commands will immediately affect the target device. There is no confirmation prompt on the agent side. Use the `delay` parameter to give users time to save work.
@@ -259,6 +260,18 @@ No payload parameters. Locks the active session:
 - **Windows**: `rundll32.exe user32.dll,LockWorkStation`
 - **macOS**: `CGSession -suspend`
 - **Linux**: `loginctl lock-session` (falls back to `dm-tool lock`)
+
+### `reboot_safe_mode`
+
+Reboot a Windows device into Safe Mode with Networking. Uses `bcdedit` to set the safe boot flag before initiating a shutdown. If the shutdown command fails, the safe boot flag is automatically cleared to prevent accidental safe mode boots.
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `delay` | int | `0` | Delay in minutes before rebooting (0-1440) |
+
+<Aside>
+  Windows only. Not available on macOS or Linux. The agent automatically clears the BCD safe boot flag if the shutdown command fails, preventing the device from booting into safe mode on the next organic restart.
+</Aside>
 
 ---
 
@@ -733,17 +746,24 @@ Returns `{ status, statusCode, responseMs }` plus `{ sslExpiry, sslDaysRemaining
 
 ## Backup Management
 
-Run, list, and stop backups using the configured backup provider.
+Run, list, stop, and verify backups using the configured backup provider.
 
 | Action | Description | Key Payload Fields |
 |---|---|---|
 | `backup_run` | Start a backup job | -- |
 | `backup_list` | List backup snapshots | -- |
 | `backup_stop` | Stop a running backup | -- |
+| `backup_verify` | Verify backup integrity | `verificationType` |
+| `backup_test_restore` | Test-restore a snapshot | `snapshotId`, `targetPath` |
+| `backup_cleanup` | Clean up expired snapshots | -- |
 
 ### `backup_run`
 
 No payload parameters. Requires backup to be configured on the agent. Returns `{ jobId, status, snapshotId, filesBackedUp, bytesBackedUp }`.
+
+```json
+{ "action": "backup_run", "payload": {} }
+```
 
 ### `backup_list`
 
@@ -752,6 +772,40 @@ No payload parameters. Returns `{ snapshots[], count }`.
 ### `backup_stop`
 
 No payload parameters. Stops the currently running backup job.
+
+### `backup_verify`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `verificationType` | string | `"integrity"` | `integrity` (checksum) or `test_restore` (extract to temp) |
+
+```json
+{
+  "action": "backup_verify",
+  "payload": { "verificationType": "test_restore" }
+}
+```
+
+### `backup_test_restore`
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `snapshotId` | string | Yes | Snapshot to test-restore |
+| `targetPath` | string | No | Temporary restore destination |
+
+```json
+{
+  "action": "backup_test_restore",
+  "payload": {
+    "snapshotId": "snap-20260329-0200",
+    "targetPath": "/tmp/restore-test"
+  }
+}
+```
+
+### `backup_cleanup`
+
+No payload parameters. Removes snapshots that exceed the configured retention policy.
 
 ---
 
@@ -778,11 +832,29 @@ Transfer files to/from managed devices.
 
 Payload is passed directly to the file transfer manager. Key fields include the transfer direction and file path.
 
+```json
+{
+  "action": "file_transfer",
+  "payload": {
+    "direction": "download",
+    "path": "/var/log/application.log",
+    "transferId": "xfer-a1b2c3d4"
+  }
+}
+```
+
 ### `cancel_transfer`
 
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `transferId` | string | Yes | Transfer ID to cancel |
+
+```json
+{
+  "action": "cancel_transfer",
+  "payload": { "transferId": "xfer-a1b2c3d4" }
+}
+```
 
 ---
 
@@ -851,6 +923,23 @@ Get-Service breeze-agent
 # View logs
 Get-EventLog -LogName Application -Source breeze-agent -Newest 50
 ```
+
+---
+
+## Command Timeouts
+
+The API runs a **stale command reaper** every 2 minutes that cleans up commands stuck in `pending` or `sent` status. Each command type has a timeout tier that determines how long the system waits before marking it as failed:
+
+| Tier | Duration | Command types |
+|------|----------|---------------|
+| **Short** | 5 min | Process management, service management, event logs, scheduled tasks, registry, file operations, screenshots, computer actions, security status collection |
+| **Medium** | 30 min | Security scans, patch scans, software uninstall, filesystem analysis, safe mode reboot, self-uninstall, evidence collection, containment actions, reliability metrics, CIS remediation |
+| **Long** | 2 hours | Patch installation, backup verify/test-restore/cleanup, CIS benchmarks, sensitive data scans, file encryption/secure delete/quarantine |
+| **Excluded** | Never reaped | Terminal sessions (`terminal_start`, `terminal_data`, `terminal_resize`, `terminal_stop`) |
+
+Script commands use the script's own `timeoutSeconds` value (default 300s) plus a 5-minute grace buffer, so the server timeout is always slightly longer than the agent-side timeout.
+
+When a command times out, it is marked `failed` with `timedOutBy: 'server'` in the error message.
 
 ---
 

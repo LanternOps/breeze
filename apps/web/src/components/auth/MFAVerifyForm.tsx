@@ -105,7 +105,7 @@ export default function MFAVerifyForm({
   return (
     <form
       onSubmit={handleSubmit}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="space-y-6"
     >
       <div className="space-y-2">
         <h2 className="text-lg font-semibold">Enter your verification code</h2>

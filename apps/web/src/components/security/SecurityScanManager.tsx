@@ -3,6 +3,7 @@ import { Activity, CheckCircle2, HardDrive, Loader2, Play, Timer } from 'lucide-
 
 import { fetchWithAuth } from '@/stores/auth';
 import { friendlyFetchError } from '@/lib/utils';
+import ProgressBar, { ProgressItemList, type ProgressItem } from '../shared/ProgressBar';
 
 type DeviceStatus = {
   deviceId: string;
@@ -32,6 +33,7 @@ export default function SecurityScanManager() {
   const [scans, setScans] = useState<ScanRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [runningScan, setRunningScan] = useState(false);
+  const [scanProgress, setScanProgress] = useState<{ completed: number; failed: number; total: number; items: Map<string, 'running' | 'success' | 'failed'> }>({ completed: 0, failed: 0, total: 0, items: new Map() });
   const [error, setError] = useState<string>();
   const abortRef = useRef<AbortController | null>(null);
 
@@ -135,24 +137,54 @@ export default function SecurityScanManager() {
     setRunningScan(true);
     setError(undefined);
 
+    const total = selectedDevices.length;
+    const itemMap = new Map<string, 'running' | 'success' | 'failed'>();
+    selectedDevices.forEach((d) => itemMap.set(d.deviceId, 'running'));
+    setScanProgress({ completed: 0, failed: 0, total, items: new Map(itemMap) });
+
+    let completedCount = 0;
+    let failedCount = 0;
+
     try {
-      const requests = selectedDevices.map((device) => {
-        const body = {
-          scanType,
-          ...(scanType === 'custom' && customPath.trim() ? { paths: [customPath.trim()] } : {})
-        };
+      const body = {
+        scanType,
+        ...(scanType === 'custom' && customPath.trim() ? { paths: [customPath.trim()] } : {})
+      };
 
-        return fetchWithAuth(`/security/scan/${device.deviceId}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
-        });
-      });
+      await Promise.all(
+        selectedDevices.map(async (device) => {
+          try {
+            const result = await fetchWithAuth(`/security/scan/${device.deviceId}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body)
+            });
 
-      const results = await Promise.all(requests);
-      const failed = results.find((result) => !result.ok);
-      if (failed) {
-        throw new Error(`${failed.status} ${failed.statusText}`);
+            if (!result.ok) {
+              failedCount++;
+              itemMap.set(device.deviceId, 'failed');
+            } else {
+              completedCount++;
+              itemMap.set(device.deviceId, 'success');
+            }
+          } catch {
+            failedCount++;
+            itemMap.set(device.deviceId, 'failed');
+          }
+
+          setScanProgress({
+            completed: completedCount,
+            failed: failedCount,
+            total,
+            items: new Map(itemMap),
+          });
+        })
+      );
+
+      if (failedCount > 0 && completedCount === 0) {
+        setError(`All ${failedCount} scan requests failed`);
+      } else if (failedCount > 0) {
+        setError(`${failedCount} of ${total} scan requests failed`);
       }
 
       await fetchData();
@@ -238,7 +270,7 @@ export default function SecurityScanManager() {
                       type="checkbox"
                       checked={selectedIds.has(device.deviceId)}
                       onChange={() => handleSelectDevice(device.deviceId)}
-                      className="h-4 w-4 rounded border-gray-300"
+                      className="h-4 w-4 rounded border-border"
                     />
                   </label>
                 ))}
@@ -286,6 +318,29 @@ export default function SecurityScanManager() {
               </button>
               <div className="text-sm text-muted-foreground">Scans are queued immediately on selected devices.</div>
             </div>
+
+            {/* Scan submission progress */}
+            {runningScan && scanProgress.total > 1 && (
+              <div className="mt-4 rounded-md border bg-background p-4 space-y-3">
+                <ProgressBar
+                  current={scanProgress.completed + scanProgress.failed}
+                  total={scanProgress.total}
+                  label={`Submitting scans to ${scanProgress.total} devices...`}
+                  variant={scanProgress.failed > 0 ? 'warning' : 'default'}
+                />
+                <ProgressItemList
+                  items={Array.from(scanProgress.items.entries()).map(([deviceId, status]): ProgressItem => {
+                    const device = devices.find((d) => d.deviceId === deviceId);
+                    return {
+                      id: deviceId,
+                      label: device?.deviceName ?? deviceId,
+                      status: status === 'running' ? 'running' : status === 'success' ? 'success' : 'failed',
+                    };
+                  })}
+                  maxVisible={6}
+                />
+              </div>
+            )}
           </div>
         </div>
       </div>

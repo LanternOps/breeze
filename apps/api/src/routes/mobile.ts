@@ -14,12 +14,18 @@ import {
   scriptExecutions,
   scripts
 } from '../db/schema';
-import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { setCooldown, markConfigPolicyRuleCooldown } from '../services/alertCooldown';
 import { writeRouteAudit } from '../services/auditEvents';
 import { publishEvent } from '../services/eventBus';
+import { PERMISSIONS } from '../services/permissions';
 
 export const mobileRoutes = new Hono();
+const requireMobileAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
+const requireMobileAlertAcknowledge = requirePermission(PERMISSIONS.ALERTS_ACKNOWLEDGE.resource, PERMISSIONS.ALERTS_ACKNOWLEDGE.action);
+const requireMobileAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
+const requireMobileDeviceRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
+const requireMobileDeviceExecute = requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action);
 
 // Helper functions
 function getPagination(query: { page?: string; limit?: string }) {
@@ -427,6 +433,7 @@ mobileRoutes.delete(
 mobileRoutes.get(
   '/alerts/inbox',
   requireScope('organization', 'partner', 'system'),
+  requireMobileAlertRead,
   zValidator('query', inboxQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -510,6 +517,7 @@ mobileRoutes.get(
 mobileRoutes.post(
   '/alerts/:id/acknowledge',
   requireScope('organization', 'partner', 'system'),
+  requireMobileAlertAcknowledge,
   async (c) => {
     const auth = c.get('auth');
     const alertId = c.req.param('id')!;
@@ -566,6 +574,7 @@ mobileRoutes.post(
 mobileRoutes.post(
   '/alerts/:id/resolve',
   requireScope('organization', 'partner', 'system'),
+  requireMobileAlertWrite,
   zValidator('json', resolveAlertSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -656,6 +665,7 @@ mobileRoutes.post(
 mobileRoutes.get(
   '/devices',
   requireScope('organization', 'partner', 'system'),
+  requireMobileDeviceRead,
   zValidator('query', listDevicesSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -723,6 +733,8 @@ mobileRoutes.get(
 mobileRoutes.post(
   '/devices/:id/actions',
   requireScope('organization', 'partner', 'system'),
+  requireMobileDeviceExecute,
+  requireMfa(),
   zValidator('json', deviceActionSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -861,6 +873,8 @@ mobileRoutes.post(
 mobileRoutes.get(
   '/summary',
   requireScope('organization', 'partner', 'system'),
+  requireMobileDeviceRead,
+  requireMobileAlertRead,
   zValidator('query', summaryQuerySchema),
   async (c) => {
     const auth = c.get('auth');

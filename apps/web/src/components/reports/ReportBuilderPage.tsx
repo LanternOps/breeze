@@ -3,6 +3,7 @@ import { ArrowLeft, FileText } from 'lucide-react';
 import ReportBuilder, { type ReportBuilderFormValues } from './ReportBuilder';
 import ReportPreview from './ReportPreview';
 import type { ReportType } from './ReportsList';
+import { exportReport, getBrowserTimezone } from './reportExport';
 import { fetchWithAuth } from '../../stores/auth';
 
 type ReportData = {
@@ -15,17 +16,6 @@ type ReportData = {
 type ReportBuilderPageProps = {
   timezone?: string;
 };
-
-const getBrowserTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
 
 export default function ReportBuilderPage({ timezone }: ReportBuilderPageProps = {}) {
   const effectiveTimezone = timezone || getBrowserTimezone();
@@ -67,110 +57,14 @@ export default function ReportBuilderPage({ timezone }: ReportBuilderPageProps =
     await handlePreview(values);
   }, [handlePreview]);
 
-  const handleExport = useCallback(async (format: 'csv' | 'pdf' | 'excel') => {
+  const handleExport = useCallback((format: 'csv' | 'pdf' | 'excel') => {
     if (!previewData) return;
 
     try {
-      // Get report data for export
       const rows = (previewData.data as { rows?: unknown[] })?.rows ?? [];
-
-      if (format === 'csv') {
-        // Convert data to CSV format
-        if (rows.length === 0) {
-          throw new Error('No data to export');
-        }
-
-        const headers = Object.keys(rows[0] as Record<string, unknown>);
-        const csvContent = [
-          headers.join(','),
-          ...rows.map(row => {
-            const record = row as Record<string, unknown>;
-            return headers.map(header => {
-              const value = record[header];
-              // Escape values containing commas or quotes
-              const stringValue = value === null || value === undefined ? '' : String(value);
-              return stringValue.includes(',') || stringValue.includes('"')
-                ? `"${stringValue.replace(/"/g, '""')}"`
-                : stringValue;
-            }).join(',');
-          })
-        ].join('\n');
-
-        // Create blob and download
-        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `${previewData.type}-report-${new Date().toISOString().split('T')[0]}.csv`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-      } else if (format === 'excel') {
-        // For Excel, we'll export as CSV with .xls extension (basic compatibility)
-        if (rows.length === 0) {
-          throw new Error('No data to export');
-        }
-
-        const headers = Object.keys(rows[0] as Record<string, unknown>);
-        const csvContent = [
-          headers.join('\t'),
-          ...rows.map(row => {
-            const record = row as Record<string, unknown>;
-            return headers.map(header => {
-              const value = record[header];
-              return value === null || value === undefined ? '' : String(value);
-            }).join('\t');
-          })
-        ].join('\n');
-
-        const blob = new Blob([csvContent], { type: 'application/vnd.ms-excel' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `${previewData.type}-report-${new Date().toISOString().split('T')[0]}.xls`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-      } else if (format === 'pdf') {
-        // PDF export - generate HTML content and open print dialog
-        const reportTitle = previewData.type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-        const generatedAt = new Date().toLocaleString([], { timeZone: effectiveTimezone });
-        const escapedReportTitle = escapeHtml(reportTitle);
-        const escapedGeneratedAt = escapeHtml(generatedAt);
-
-        let tableHtml = '<p>No data available</p>';
-        if (rows.length > 0) {
-          const headers = Object.keys(rows[0] as Record<string, unknown>);
-          const headerRow = headers.map(h => `<th>${escapeHtml(h)}</th>`).join('');
-          const bodyRows = rows.map(row => {
-            const record = row as Record<string, unknown>;
-            return `<tr>${headers.map((header) => {
-              const value = record[header];
-              return `<td>${escapeHtml(value === null || value === undefined ? '' : String(value))}</td>`;
-            }).join('')}</tr>`;
-          }).join('');
-          tableHtml = `<table><thead><tr>${headerRow}</tr></thead><tbody>${bodyRows}</tbody></table>`;
-        }
-
-        const htmlContent = `<!DOCTYPE html><html><head><title>${escapedReportTitle} Report</title></head><body><h1>${escapedReportTitle} Report</h1><p>Generated: ${escapedGeneratedAt}</p>${tableHtml}</body></html>`;
-
-        // Create blob URL and open in new window for printing
-        const blob = new Blob([htmlContent], { type: 'text/html' });
-        const url = URL.createObjectURL(blob);
-        const printWindow = window.open(url, '_blank');
-        if (!printWindow) {
-          URL.revokeObjectURL(url);
-          throw new Error('Unable to open print preview');
-        }
-        printWindow.onload = () => {
-          printWindow.print();
-          URL.revokeObjectURL(url);
-        };
-      }
+      exportReport(rows, { format, reportType: previewData.type, timezone: effectiveTimezone });
     } catch (err) {
-      console.error('Export failed:', err);
+      setError(err instanceof Error ? err.message : 'Export failed. Please try again.');
     }
   }, [previewData, effectiveTimezone]);
 
@@ -185,7 +79,7 @@ export default function ReportBuilderPage({ timezone }: ReportBuilderPageProps =
           <ArrowLeft className="h-4 w-4" />
         </a>
         <div>
-          <h1 className="text-2xl font-bold">Ad-hoc Report Builder</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Ad-hoc Report Builder</h1>
           <p className="text-muted-foreground">
             Generate a one-time report without saving it.
           </p>

@@ -1,0 +1,255 @@
+---
+title: Incident Response
+description: Create, investigate, contain, and close security incidents with automated evidence collection and AI-assisted response.
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Incident Response provides a structured workflow for handling security incidents — from initial detection through containment, evidence collection, and closure. Every action is recorded in an immutable timeline, and the AI assistant can create incidents, execute containment actions, and generate reports on your behalf.
+
+---
+
+## Incident Lifecycle
+
+Incidents progress through five statuses with enforced transitions:
+
+| Status | Meaning | Allowed transitions |
+|--------|---------|---------------------|
+| `detected` | Incident discovered and triaged | `analyzing`, `contained` |
+| `analyzing` | Investigation in progress | `contained`, `recovering` |
+| `contained` | Containment actions executed | `recovering`, `closed` |
+| `recovering` | System recovery underway | `contained`, `closed` |
+| `closed` | Incident resolved | (terminal) |
+
+### Classifications
+
+| Classification | Description |
+|----------------|-------------|
+| `malware` | Malware infection |
+| `ransomware` | Ransomware attack |
+| `phishing` | Phishing or social engineering |
+| `data_breach` | Data exfiltration or exposure |
+| `unauthorized_access` | Unauthorized system access |
+| `denial_of_service` | Service disruption attack |
+| `insider_threat` | Internal threat actor |
+| `other` | Unclassified incident |
+
+### Severity Levels
+
+| Level | Description |
+|-------|-------------|
+| `p1` | Critical — immediate response required |
+| `p2` | High — respond within hours |
+| `p3` | Medium — respond within business day |
+| `p4` | Low — respond within normal workflow |
+
+---
+
+## Creating an Incident
+
+```bash
+POST /incidents
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "title": "Suspicious process on web-server-01",
+  "classification": "malware",
+  "severity": "p2",
+  "summary": "Agent detected unknown process communicating with external IP.",
+  "relatedAlerts": ["alert-uuid-1"],
+  "affectedDevices": ["device-uuid-1"],
+  "assignedTo": "user-uuid"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `title` | string | Yes | Short description |
+| `classification` | string | Yes | Incident type (see classifications above) |
+| `severity` | string | Yes | `p1`, `p2`, `p3`, or `p4` |
+| `summary` | string | No | Detailed description |
+| `relatedAlerts` | UUID[] | No | Related alert IDs |
+| `affectedDevices` | UUID[] | No | Affected device IDs |
+| `assignedTo` | UUID | No | User to assign |
+
+The incident is created with status `detected` and an initial timeline entry.
+
+---
+
+## Containment Actions
+
+Execute containment actions to isolate threats during an active incident.
+
+```bash
+POST /incidents/:id/contain
+Content-Type: application/json
+
+{
+  "actionType": "process_kill",
+  "description": "Killing suspicious svchost.exe (PID 4832)",
+  "executedBy": "user-uuid",
+  "approvalRef": "approval-123"
+}
+```
+
+### Action Types
+
+| Action | Description | Requires Approval |
+|--------|-------------|-------------------|
+| `process_kill` | Terminate a process by PID | Yes |
+| `network_isolation` | Isolate device from network | Yes |
+| `account_disable` | Disable a compromised user account | Yes |
+| `usb_block` | Block USB device access | Yes |
+
+All containment actions require an `approvalRef` parameter. Actions are dispatched as agent commands and their results are recorded in the incident timeline.
+
+### Action Statuses
+
+| Status | Meaning |
+|--------|---------|
+| `pending` | Awaiting execution |
+| `in_progress` | Executing on device |
+| `completed` | Successfully executed |
+| `failed` | Execution failed |
+| `cancelled` | Cancelled before execution |
+
+---
+
+## Evidence Collection
+
+Attach forensic evidence to an incident for investigation and compliance.
+
+```bash
+POST /incidents/:id/evidence
+Content-Type: application/json
+
+{
+  "evidenceType": "log",
+  "description": "System event logs from 2026-03-28",
+  "collectedAt": "2026-03-28T14:00:00Z",
+  "collectedBy": "user-uuid",
+  "hash": "sha256-hash-of-content",
+  "storagePath": "s3://evidence-bucket/incident-001/logs.tar.gz"
+}
+```
+
+### Evidence Types
+
+| Type | Description |
+|------|-------------|
+| `file` | File artifacts |
+| `log` | System or application logs |
+| `screenshot` | Device screenshots |
+| `memory` | Memory snapshots |
+| `network` | Network connection data |
+
+Evidence integrity is validated using SHA-256 hashes. Storage paths must use approved URI schemes (`s3://`, `gs://`, `r2://`, `azblob://`, `immutable://`, `https://`). Path traversal sequences are blocked.
+
+---
+
+## Incident Timeline
+
+Every incident maintains an immutable timeline that records all events:
+
+| Entry Type | Description |
+|------------|-------------|
+| `incident_created` | Incident was opened |
+| `containment_executed` | Containment action completed successfully |
+| `containment_attempted` | Containment action was attempted but failed |
+| `evidence_collected` | Evidence was attached |
+| `incident_closed` | Incident was closed with summary |
+
+Each entry includes a timestamp, actor (`user`, `brain`, or `system`), summary, and type-specific metadata.
+
+View the full timeline:
+
+```bash
+GET /incidents/:id
+```
+
+The response includes the incident details, timeline array, all containment actions, and all collected evidence.
+
+---
+
+## Closing an Incident
+
+```bash
+POST /incidents/:id/close
+
+{
+  "summary": "Malware removed, device re-imaged, credentials rotated.",
+  "lessonsLearned": "Detection delay was 4 hours. Adding process monitoring rule.",
+  "resolvedAt": "2026-03-28T18:00:00Z"
+}
+```
+
+Closing records a `resolvedAt` timestamp, updates the status to `closed`, and adds a closure entry to the timeline.
+
+---
+
+## Incident Reports
+
+Generate a structured report for an incident:
+
+```bash
+GET /incidents/:id/report
+```
+
+Returns:
+- **Report metadata** — title, classification, severity, duration
+- **Actions summary** — total, completed, failed, pending, action types used
+- **Evidence summary** — total count, breakdown by type
+- **Full timeline** — chronological event list
+
+---
+
+## AI-Assisted Incident Response
+
+The AI assistant provides five tools for incident management:
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `create_incident` | Tier 2 | Create a new incident with classification and severity |
+| `execute_containment` | Tier 3 | Run a containment action on a device (requires approval) |
+| `collect_evidence` | Tier 2 | Collect forensic evidence from a device |
+| `get_incident_timeline` | Tier 1 | View the full incident timeline |
+| `generate_incident_report` | Tier 1 | Generate a structured incident report |
+
+The AI can also trigger playbooks as part of incident response. Ask the AI to run a playbook against an affected device, and it will execute the playbook with the incident ID in the execution context for traceability.
+
+<Aside>
+  `execute_containment` is Tier 3 and requires human approval before execution. The AI will create a pending approval request that must be reviewed in the AI Risk Engine dashboard.
+</Aside>
+
+---
+
+## API Reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/incidents` | Create a new incident |
+| GET | `/incidents` | List incidents (`?status=&severity=&classification=&assignedTo=&startDate=&endDate=&page=&limit=`) |
+| GET | `/incidents/:id` | Get incident with timeline, actions, and evidence |
+| POST | `/incidents/:id/close` | Close an incident |
+| GET | `/incidents/:id/report` | Generate incident report |
+| POST | `/incidents/:id/contain` | Execute containment action |
+| POST | `/incidents/:id/evidence` | Collect and attach evidence |
+
+All endpoints require authentication and are scoped to the caller's organization.
+
+---
+
+## Troubleshooting
+
+**Containment action stuck in pending.**
+Containment actions are dispatched as agent commands. If the target device is offline, the action remains pending until the device reconnects. Check device connectivity.
+
+**Evidence upload rejected.**
+The storage path must use an approved URI scheme (`s3://`, `gs://`, `r2://`, `azblob://`, `immutable://`, `https://`). Path traversal sequences (`..`) are blocked.
+
+**Cannot close incident.**
+Only incidents in `contained` or `recovering` status can be closed. Progress the incident through containment before closing.
+
+**AI containment not executing.**
+`execute_containment` is Tier 3 and requires human approval. Check **Monitoring → AI Risk Engine → Approval History** for pending requests.

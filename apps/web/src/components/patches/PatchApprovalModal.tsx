@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle, XCircle, Clock, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Patch } from './PatchList';
+import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 
@@ -20,22 +21,29 @@ const actionConfig: Record<PatchApprovalAction, { label: string; description: st
   approve: {
     label: 'Approve',
     description: 'Allow this patch to be deployed automatically or in the next maintenance window.',
-    color: 'border-green-500/40 bg-green-500/10 text-green-700',
+    color: 'border-success/30 bg-success/10 text-success',
     icon: CheckCircle
   },
   decline: {
     label: 'Decline',
     description: 'Block this patch from deploying until it is reviewed again.',
-    color: 'border-red-500/40 bg-red-500/10 text-red-700',
+    color: 'border-destructive/30 bg-destructive/10 text-destructive',
     icon: XCircle
   },
   defer: {
     label: 'Defer',
     description: 'Postpone the decision and revisit later.',
-    color: 'border-yellow-500/40 bg-yellow-500/10 text-yellow-700',
+    color: 'border-warning/30 bg-warning/10 text-warning',
     icon: Clock
   }
 };
+
+function getDefaultDeferUntil(): string {
+  const date = new Date();
+  date.setDate(date.getDate() + 7);
+  date.setHours(9, 0, 0, 0);
+  return date.toISOString().slice(0, 16);
+}
 
 export default function PatchApprovalModal({
   open,
@@ -47,6 +55,7 @@ export default function PatchApprovalModal({
 }: PatchApprovalModalProps) {
   const [action, setAction] = useState<PatchApprovalAction>('approve');
   const [notes, setNotes] = useState('');
+  const [deferUntil, setDeferUntil] = useState(getDefaultDeferUntil());
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string>();
 
@@ -54,14 +63,20 @@ export default function PatchApprovalModal({
     if (open) {
       setAction('approve');
       setNotes('');
+      setDeferUntil(getDefaultDeferUntil());
       setSubmitting(false);
       setSubmitError(undefined);
     }
   }, [open, patch?.id]);
 
   const isSubmitting = useMemo(() => loading ?? submitting, [loading, submitting]);
+  const canSubmit = useMemo(() => {
+    if (isSubmitting) return false;
+    if (action !== 'defer') return true;
+    return deferUntil.trim().length > 0;
+  }, [action, deferUntil, isSubmitting]);
 
-  if (!open || !patch) return null;
+  if (!patch) return null;
 
   const handleSubmit = async () => {
     if (isSubmitting) return;
@@ -73,6 +88,12 @@ export default function PatchApprovalModal({
       const endpoint = action === 'approve' ? 'approve' : action === 'decline' ? 'decline' : 'defer';
       const body: Record<string, unknown> = { note: notes };
       if (ringId) body.ringId = ringId;
+      if (action === 'defer') {
+        if (!deferUntil.trim()) {
+          throw new Error('Choose when the patch should be deferred until');
+        }
+        body.deferUntil = new Date(deferUntil).toISOString();
+      }
 
       const response = await fetchWithAuth(`/patches/${patch.id}/${endpoint}`, {
         method: 'POST',
@@ -84,7 +105,8 @@ export default function PatchApprovalModal({
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error('Failed to update patch approval');
+        const errorBody = await response.json().catch(() => ({})) as { error?: string; message?: string };
+        throw new Error(errorBody.error || errorBody.message || 'Failed to update patch approval');
       }
 
       await onSubmit?.(patch.id, action, notes);
@@ -96,8 +118,7 @@ export default function PatchApprovalModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-sm">
+    <Dialog open={open} onClose={onClose} title="Review Patch" className="p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 className="text-lg font-semibold">Review Patch</h2>
@@ -150,6 +171,22 @@ export default function PatchApprovalModal({
           />
         </div>
 
+        {action === 'defer' && (
+          <div className="mt-6">
+            <label htmlFor="patch-defer-until" className="text-sm font-medium">
+              Defer Until
+            </label>
+            <input
+              id="patch-defer-until"
+              type="datetime-local"
+              value={deferUntil}
+              onChange={(event) => setDeferUntil(event.target.value)}
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              disabled={isSubmitting}
+            />
+          </div>
+        )}
+
         {submitError && (
           <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
             {submitError}
@@ -168,7 +205,7 @@ export default function PatchApprovalModal({
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={isSubmitting}
+            disabled={!canSubmit}
             className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
             <span className="inline-flex items-center gap-2">
@@ -177,7 +214,6 @@ export default function PatchApprovalModal({
             </span>
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

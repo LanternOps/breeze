@@ -1,9 +1,6 @@
 ---
 title: User Risk Scoring
 description: AI-powered risk scoring, behavior analytics, access reviews, and automated security training for users.
-sidebar:
-  order: 47
-  label: User Risk Scoring
 ---
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
@@ -53,15 +50,46 @@ Each risk score includes a trend indicator showing how the score has changed ove
 
 ### Factor Breakdown
 
-Each risk score includes a `factors` object that breaks down the score by contributing category. The keys are factor names and the values are the weighted contribution of each factor to the total score.
+Each risk score includes a `factors` object that breaks down the score by contributing category. The total score is a weighted sum of all factor scores. Both the individual factor scores and the weights are visible in the risk detail view.
 
-Common factor categories include:
-- Failed login attempts
-- Access from unusual locations
-- Privilege escalation events
-- Policy violations
-- Overdue security training
-- Stale credentials
+---
+
+## What Drives a Risk Score
+
+Breeze evaluates eight distinct risk factors for every user. Each factor produces a score from 0 to 100, and the final composite score is a weighted average of all eight. The table below describes each factor, what data feeds it, and its default weight.
+
+| Factor | What increases it | Default weight |
+|--------|-------------------|----------------|
+| **MFA risk** | User does not have MFA enabled (score jumps to 90 if MFA is off, 10 if on) | 14% |
+| **Auth failure risk** | Failed logins or denied access attempts in the last 30 days. Each failure adds 18 points | 20% |
+| **Session anomaly risk** | Logins from many distinct IP addresses, or an unusually high number of sessions in 30 days | 10% |
+| **Threat exposure risk** | Active security threats on devices the user is associated with. Critical threats contribute 35 points each, high 22, medium 12, low 5 | 20% |
+| **Software violation risk** | Devices with software compliance violations (e.g., unapproved or outdated software) | 15% |
+| **Device security risk** | Low security posture scores on the user's associated devices (calculated from the latest security posture snapshot) | 10% |
+| **Stale access risk** | Time since the user last logged in. Less than 7 days = low risk; over 90 days = high risk | 6% |
+| **Recent impact risk** | Cumulative score impact from risk events recorded in the last 14 days | 5% |
+
+<Aside>
+  Weights are **configurable per organization** through the risk policy. The values above are the defaults. Weights are automatically normalized so they always sum to 100%, meaning you can adjust relative importance without worrying about the math.
+</Aside>
+
+### How users are linked to devices
+
+Breeze matches users to devices using the **last logged-in user** reported by each device. The matching is case-insensitive and supports several identity formats: email address, username, `DOMAIN\user` notation, and name variants. A single user can be associated with multiple devices.
+
+### Threshold configuration
+
+The score boundaries between risk levels are configurable:
+
+| Threshold | Default | Description |
+|-----------|---------|-------------|
+| Medium | 50 | Score at or above this level is considered medium risk |
+| High | 70 | Score at or above this level triggers high-risk notifications |
+| Critical | 85 | Score at or above this level requires immediate attention |
+| Spike delta | 15 | A score increase of this many points in one calculation cycle triggers a spike notification |
+| Auto-assign training | 80 | Score at or above this level triggers automatic training assignment (if enabled) |
+
+To change these thresholds, navigate to **Settings > User Risk > Policy** and adjust the values under the **Thresholds** tab.
 
 ---
 
@@ -315,48 +343,6 @@ All endpoints require authentication. Mounted at `/api/v1/access-reviews`.
 | `GET` | `/:id` | `users:read` | Get review details with all items, roles, and permissions |
 | `PATCH` | `/:id/items/:itemId` | `users:write` | Update the decision on a review item |
 | `POST` | `/:id/complete` | `users:write` | Complete the review and apply revocations |
-
----
-
-## Database Schema
-
-### Risk Score Table
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | UUID | Primary key |
-| `orgId` | UUID | Organization reference |
-| `userId` | UUID | User reference |
-| `score` | Integer | Composite risk score (0-100) |
-| `factors` | JSONB | Breakdown of contributing factors and their values |
-| `trendDirection` | String | Score trend: `up`, `down`, or `stable` |
-| `calculatedAt` | Timestamp | When this score was computed |
-
-### Risk Event Table
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | UUID | Primary key |
-| `orgId` | UUID | Organization reference |
-| `userId` | UUID | User reference |
-| `eventType` | String | Event category identifier |
-| `severity` | String | `low`, `medium`, `high`, or `critical` |
-| `scoreImpact` | Integer | Points added to the user's score |
-| `description` | Text | Human-readable event description |
-| `details` | JSONB | Structured event data |
-| `occurredAt` | Timestamp | When the event happened |
-
-### Risk Policy Table
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | UUID | Primary key |
-| `orgId` | UUID | Organization reference (unique) |
-| `weights` | JSONB | Factor weight multipliers |
-| `thresholds` | JSONB | Score thresholds for risk levels |
-| `interventions` | JSONB | Automated intervention settings |
-| `updatedBy` | UUID | User who last updated the policy |
-| `updatedAt` | Timestamp | Last update timestamp |
 
 ---
 

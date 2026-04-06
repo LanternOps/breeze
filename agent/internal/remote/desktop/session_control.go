@@ -5,6 +5,14 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
+)
+
+const (
+	maxInputMessageBytes   = 8 * 1024
+	maxControlMessageBytes = 32 * 1024
 )
 
 // verifySecureDesktopTransition checks whether the session moved to a secure
@@ -34,6 +42,11 @@ func (s *Session) verifySecureDesktopTransition(timeout time.Duration) (supporte
 
 // handleInputMessage processes input events from the data channel
 func (s *Session) handleInputMessage(data []byte) {
+	if len(data) > maxInputMessageBytes {
+		slog.Warn("Rejected oversized input event", "session", s.id, "size", len(data))
+		return
+	}
+
 	var event InputEvent
 	if err := json.Unmarshal(data, &event); err != nil {
 		slog.Warn("Failed to parse input event", "session", s.id, "error", err.Error())
@@ -57,6 +70,11 @@ func (s *Session) handleInputMessage(data []byte) {
 
 // handleControlMessage processes control messages (bitrate, quality changes)
 func (s *Session) handleControlMessage(data []byte) {
+	if len(data) > maxControlMessageBytes {
+		slog.Warn("Rejected oversized control message", "session", s.id, "size", len(data))
+		return
+	}
+
 	var msg struct {
 		Type  string `json:"type"`
 		Value int    `json:"value"`
@@ -75,8 +93,10 @@ func (s *Session) handleControlMessage(data []byte) {
 			if s.adaptive != nil {
 				s.adaptive.SetMaxBitrate(msg.Value)
 			} else {
-				if err := s.encoder.SetBitrate(msg.Value); err != nil {
-					slog.Warn("Failed to set bitrate", "session", s.id, "bitrate", msg.Value, "error", err.Error())
+				if enc := s.encoder.Load(); enc != nil {
+					if err := enc.SetBitrate(msg.Value); err != nil {
+						slog.Warn("Failed to set bitrate", "session", s.id, "bitrate", msg.Value, "error", err.Error())
+					}
 				}
 			}
 		}
@@ -88,14 +108,51 @@ func (s *Session) handleControlMessage(data []byte) {
 			s.mu.Lock()
 			s.fps = msg.Value
 			s.mu.Unlock()
-			if err := s.encoder.SetFPS(msg.Value); err != nil {
-				slog.Warn("Failed to set fps", "session", s.id, "fps", msg.Value, "error", err.Error())
+			if enc := s.encoder.Load(); enc != nil {
+				if err := enc.SetFPS(msg.Value); err != nil {
+					slog.Warn("Failed to set fps", "session", s.id, "fps", msg.Value, "error", err.Error())
+				}
 			}
 		}
 	case "request_keyframe":
 		// Viewer window regained focus — force IDR so picture is immediately sharp.
-		if s.encoder != nil {
-			_ = s.encoder.ForceKeyframe()
+		if enc := s.encoder.Load(); enc != nil {
+			_ = enc.ForceKeyframe()
+		}
+	case "list_sessions":
+		detector := sessionbroker.NewSessionDetector()
+		detected, err := detector.ListSessions()
+		if err != nil {
+			slog.Warn("Failed to list sessions", "session", s.id, "error", err.Error())
+			return
+		}
+		items := make([]ipc.SessionInfoItem, 0, len(detected))
+		for _, ds := range detected {
+			if ds.Type == "services" {
+				continue
+			}
+			sessionNum, parseErr := sessionbroker.ParseWindowsSessionIDForHeartbeat(ds.Session)
+			if parseErr != nil {
+				slog.Debug("Skipping session with unparseable ID", "session", s.id, "winSession", ds.Session, "error", parseErr.Error())
+				continue
+			}
+			items = append(items, ipc.SessionInfoItem{
+				SessionID:       sessionNum,
+				Username:        ds.Username,
+				State:           ds.State,
+				Type:            ds.Type,
+				HelperConnected: false,
+			})
+		}
+		resp, _ := json.Marshal(map[string]any{
+			"type":     "sessions",
+			"sessions": items,
+		})
+		s.mu.RLock()
+		dc := s.controlDC
+		s.mu.RUnlock()
+		if dc != nil {
+			dc.SendText(string(resp))
 		}
 	case "list_monitors":
 		monitors, err := ListMonitors()
@@ -260,6 +317,12 @@ func (s *Session) handleControlMessage(data []byte) {
 			if s.adaptive != nil {
 				rtt := time.Duration(vs.RTTMs) * time.Millisecond
 				s.adaptive.Update(rtt, effectiveLoss)
+				// Feed encoder throughput so ABR can cap FPS when the
+				// encoder can't keep up (common with software MFT).
+				s.adaptive.UpdateEncoderThroughput(
+					s.metrics.FramesCaptured.Load(),
+					s.metrics.FramesEncoded.Load(),
+				)
 			}
 		}
 	case "switch_monitor":
@@ -267,7 +330,7 @@ func (s *Session) handleControlMessage(data []byte) {
 			return
 		}
 		slog.Info("Switching monitor", "session", s.id, "display", msg.Value)
-		cfg := DefaultConfig()
+		cfg := s.captureConfig
 		cfg.DisplayIndex = msg.Value
 		newCap, capErr := NewScreenCapturer(cfg)
 		if capErr != nil {
@@ -286,6 +349,7 @@ func (s *Session) handleControlMessage(data []byte) {
 		s.oldCapturers = append(s.oldCapturers, s.capturer)
 		s.capturer = newCap
 		s.displayIndex = msg.Value
+		s.captureConfig = cfg
 		s.mu.Unlock()
 		s.capturerSwapped.Store(true)
 		applyDisplayOffset(s.inputHandler, msg.Value, &s.cursorOffsetX, &s.cursorOffsetY)

@@ -10,14 +10,20 @@ import { db } from '../db';
 import {
   backupConfigs,
   backupJobs,
+  backupSnapshotFiles,
   backupSnapshots,
-  backupPolicies,
+  configPolicyFeatureLinks,
+  configurationPolicies,
+  configPolicyBackupSettings,
   restoreJobs,
   devices,
 } from '../db/schema';
 import { eq, and, desc, sql, gte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { CommandTypes, queueCommandForExecution } from './commandQueue';
+import { createManualBackupJobIfIdle } from './backupJobCreation';
+import { enqueueBackupDispatch } from '../jobs/backupEnqueue';
 
 type BackupHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -43,6 +49,72 @@ function safeHandler(toolName: string, fn: BackupHandler): BackupHandler {
       console.error(`[backup:${toolName}]`, message, err);
       return JSON.stringify({ error: 'Operation failed. Check server logs for details.' });
     }
+  };
+}
+
+async function markBackupJobDispatchFailed(jobId: string, error: string): Promise<void> {
+  await db
+    .update(backupJobs)
+    .set({
+      status: 'failed',
+      completedAt: new Date(),
+      updatedAt: new Date(),
+      errorLog: error,
+    })
+    .where(eq(backupJobs.id, jobId));
+}
+
+async function markRestoreJobFailed(restoreJobId: string, error: string): Promise<void> {
+  await db
+    .update(restoreJobs)
+    .set({
+      status: 'failed',
+      completedAt: new Date(),
+      updatedAt: new Date(),
+      targetConfig: sql`coalesce(${restoreJobs.targetConfig}, '{}'::jsonb) || jsonb_build_object(
+        'error', ${error},
+        'result', jsonb_build_object(
+          'status', 'failed',
+          'error', ${error}
+        )
+      )`,
+    })
+    .where(eq(restoreJobs.id, restoreJobId));
+}
+
+function toAiBackupJobResponse(row: typeof backupJobs.$inferSelect) {
+  return {
+    id: row.id,
+    type: row.type,
+    deviceId: row.deviceId,
+    configId: row.configId,
+    featureLinkId: row.featureLinkId ?? null,
+    status: row.status,
+    startedAt: row.startedAt?.toISOString() ?? null,
+    completedAt: row.completedAt?.toISOString() ?? null,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    errorLog: row.errorLog ?? null,
+  };
+}
+
+function toAiRestoreJobResponse(row: typeof restoreJobs.$inferSelect) {
+  return {
+    id: row.id,
+    snapshotId: row.snapshotId,
+    deviceId: row.deviceId,
+    restoreType: row.restoreType,
+    selectedPaths: row.selectedPaths ?? [],
+    status: row.status,
+    targetPath: row.targetPath ?? null,
+    targetConfig: row.targetConfig ?? null,
+    createdAt: row.createdAt.toISOString(),
+    startedAt: row.startedAt?.toISOString() ?? null,
+    completedAt: row.completedAt?.toISOString() ?? null,
+    updatedAt: row.updatedAt.toISOString(),
+    restoredSize: row.restoredSize ?? null,
+    restoredFiles: row.restoredFiles ?? null,
+    commandId: row.commandId ?? null,
   };
 }
 
@@ -141,27 +213,38 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'list_policies') {
-        const conditions: SQL[] = [];
-        const oc = orgWhere(auth, backupPolicies.orgId);
-        if (oc) conditions.push(oc);
+        const orgId = getOrgId(auth);
+        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
 
-        const rows = await db.select({
-          id: backupPolicies.id,
-          configId: backupPolicies.configId,
-          configName: backupConfigs.name,
-          name: backupPolicies.name,
-          enabled: backupPolicies.enabled,
-          schedule: backupPolicies.schedule,
-          retention: backupPolicies.retention,
-          targets: backupPolicies.targets,
-          createdAt: backupPolicies.createdAt,
-        }).from(backupPolicies)
-          .leftJoin(backupConfigs, eq(backupPolicies.configId, backupConfigs.id))
-          .where(conditions.length > 0 ? and(...conditions) : undefined)
-          .orderBy(desc(backupPolicies.createdAt))
+        const links = await db
+          .select({
+            featureLinkId: configPolicyFeatureLinks.id,
+            configId: configPolicyFeatureLinks.featurePolicyId,
+            policyName: configurationPolicies.name,
+            schedule: configPolicyBackupSettings.schedule,
+            retention: configPolicyBackupSettings.retention,
+          })
+          .from(configPolicyFeatureLinks)
+          .innerJoin(configurationPolicies, eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id))
+          .leftJoin(configPolicyBackupSettings, eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id))
+          .where(
+            and(
+              eq(configPolicyFeatureLinks.featureType, 'backup'),
+              eq(configurationPolicies.orgId, orgId),
+              eq(configurationPolicies.status, 'active')
+            )
+          )
           .limit(limit);
 
-        return JSON.stringify({ policies: rows, showing: rows.length });
+        const policies = links.map((link) => ({
+          featureLinkId: link.featureLinkId,
+          configId: link.configId,
+          name: link.policyName,
+          schedule: link.schedule,
+          retention: link.retention,
+        }));
+
+        return JSON.stringify({ policies, showing: policies.length });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });
@@ -200,6 +283,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
 
         // Latest backup job for device
+        const jobOrgCond = orgWhere(auth, backupJobs.orgId);
         const [latestJob] = await db.select({
           id: backupJobs.id,
           status: backupJobs.status,
@@ -208,7 +292,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
           totalSize: backupJobs.totalSize,
           errorCount: backupJobs.errorCount,
         }).from(backupJobs)
-          .where(eq(backupJobs.deviceId, deviceId))
+          .where(and(eq(backupJobs.deviceId, deviceId), ...(jobOrgCond ? [jobOrgCond] : [])))
           .orderBy(desc(backupJobs.startedAt))
           .limit(1);
 
@@ -219,16 +303,18 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
           .where(and(
             eq(backupJobs.deviceId, deviceId),
             eq(backupJobs.status, 'completed'),
+            ...(jobOrgCond ? [jobOrgCond] : []),
           ))
           .orderBy(desc(backupJobs.completedAt))
           .limit(1);
 
         // Total snapshot count and size
+        const snapOrgCond = orgWhere(auth, backupSnapshots.orgId);
         const [snapshotStats] = await db.select({
           count: sql<number>`count(*)`,
           totalSize: sql<number>`coalesce(sum(${backupSnapshots.size}), 0)`,
         }).from(backupSnapshots)
-          .where(eq(backupSnapshots.deviceId, deviceId));
+          .where(and(eq(backupSnapshots.deviceId, deviceId), ...(snapOrgCond ? [snapOrgCond] : [])));
 
         return JSON.stringify({
           deviceId,
@@ -325,6 +411,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
 
       const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
+      const snapshotOrgCond = orgWhere(auth, backupSnapshots.orgId);
 
       const rows = await db.select({
         id: backupSnapshots.id,
@@ -341,7 +428,10 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         jobStatus: backupJobs.status,
       }).from(backupSnapshots)
         .leftJoin(backupJobs, eq(backupSnapshots.jobId, backupJobs.id))
-        .where(eq(backupSnapshots.deviceId, deviceId))
+        .where(and(
+          eq(backupSnapshots.deviceId, deviceId),
+          ...(snapshotOrgCond ? [snapshotOrgCond] : []),
+        ))
         .orderBy(desc(backupSnapshots.timestamp))
         .limit(limit);
 
@@ -384,9 +474,12 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       const deviceConditions: SQL[] = [eq(devices.id, deviceId)];
       const dc = orgWhere(auth, devices.orgId);
       if (dc) deviceConditions.push(dc);
-      const [device] = await db.select({ id: devices.id }).from(devices)
+      const [device] = await db.select({ id: devices.id, status: devices.status }).from(devices)
         .where(and(...deviceConditions)).limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
+      if (device.status !== 'online') {
+        return JSON.stringify({ error: `Device is ${device.status}, cannot execute backup` });
+      }
 
       // Verify config belongs to org
       const configConditions: SQL[] = [eq(backupConfigs.id, configId)];
@@ -398,19 +491,42 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         .limit(1);
       if (!config) return JSON.stringify({ error: 'Backup config not found or access denied' });
 
-      // Insert new backup job
-      const [job] = await db.insert(backupJobs).values({
+      const result = await createManualBackupJobIfIdle({
         orgId,
         configId,
+        featureLinkId: null,
         deviceId,
-        status: 'pending',
-        type: 'manual',
-      }).returning({ id: backupJobs.id, status: backupJobs.status, createdAt: backupJobs.createdAt });
+      });
+
+      if (!result) {
+        return JSON.stringify({ error: 'Failed to create backup job' });
+      }
+
+      if (!result.created) {
+        return JSON.stringify({
+          success: true,
+          jobId: result.job.id,
+          status: result.job.status,
+          job: toAiBackupJobResponse(result.job),
+          created: false,
+          message: 'A backup job is already pending or running for this device',
+        });
+      }
+
+      try {
+        await enqueueBackupDispatch(result.job.id, configId, orgId, deviceId);
+      } catch (err) {
+        const error = err instanceof Error ? err.message : 'Failed to dispatch backup command to agent';
+        await markBackupJobDispatchFailed(result.job.id, error);
+        return JSON.stringify({ error: 'Failed to dispatch backup command to agent' });
+      }
 
       return JSON.stringify({
         success: true,
-        jobId: job?.id,
-        status: job?.status,
+        created: true,
+        jobId: result.job.id,
+        status: result.job.status,
+        job: toAiBackupJobResponse(result.job),
         configName: config.name,
         deviceId,
         message: `On-demand backup job created for config "${config.name}"`,
@@ -475,6 +591,34 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       const selectedPaths = Array.isArray(input.selectedPaths) ? input.selectedPaths as string[] : undefined;
       const restoreType = selectedPaths && selectedPaths.length > 0 ? 'selective' : 'full';
 
+      if (restoreType === 'selective') {
+        const snapshotFiles = await db
+          .select({ sourcePath: backupSnapshotFiles.sourcePath })
+          .from(backupSnapshotFiles)
+          .where(eq(backupSnapshotFiles.snapshotDbId, snapshot.id));
+
+        if (snapshotFiles.length === 0) {
+          return JSON.stringify({ error: 'Selective restore is unavailable for snapshots without indexed files' });
+        }
+
+        const availablePaths = new Set(snapshotFiles.map((row) => row.sourcePath));
+        const invalidPath = selectedPaths?.find((path) => !availablePaths.has(path));
+        if (invalidPath) {
+          return JSON.stringify({ error: `Selected path is not available in this snapshot: ${invalidPath}` });
+        }
+      }
+
+      const deviceOrgCond = orgWhere(auth, devices.orgId);
+      const [targetDevice] = await db
+        .select({ id: devices.id, status: devices.status })
+        .from(devices)
+        .where(and(eq(devices.id, deviceId), ...(deviceOrgCond ? [deviceOrgCond] : [])))
+        .limit(1);
+      if (!targetDevice) return JSON.stringify({ error: 'Target device not found or access denied' });
+      if (targetDevice.status !== 'online') {
+        return JSON.stringify({ error: `Device is ${targetDevice.status}, cannot execute command` });
+      }
+
       // Insert restore job
       const [restoreJob] = await db.insert(restoreJobs).values({
         orgId,
@@ -484,18 +628,66 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         targetPath: (input.targetPath as string) ?? null,
         selectedPaths: selectedPaths ?? [],
         status: 'pending',
-        initiatedBy: auth.user.id,
-      }).returning({ id: restoreJobs.id, status: restoreJobs.status, createdAt: restoreJobs.createdAt });
+        initiatedBy: auth.user?.id ?? null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }).returning();
 
-      return JSON.stringify({
-        success: true,
-        restoreJobId: restoreJob?.id,
-        status: restoreJob?.status,
-        restoreType,
-        snapshotId: snapshot.snapshotId,
-        deviceId,
-        message: `Restore job created (${restoreType} restore from snapshot ${snapshot.snapshotId})`,
-      });
+      if (!restoreJob) return JSON.stringify({ error: 'Failed to create restore job' });
+
+      try {
+        const { command, error } = await queueCommandForExecution(
+          restoreJob.deviceId,
+          CommandTypes.BACKUP_RESTORE,
+          {
+            restoreJobId: restoreJob.id,
+            snapshotId: snapshot.snapshotId,
+            targetPath: restoreJob.targetPath ?? '',
+            selectedPaths: restoreType === 'selective' ? (selectedPaths ?? []) : [],
+          },
+          { userId: auth.user?.id ?? undefined }
+        );
+
+        if (error) {
+          await markRestoreJobFailed(restoreJob.id, error);
+          return JSON.stringify({ error });
+        }
+
+        if (!command?.id) {
+          const fallbackError = 'Restore command was queued without a command ID';
+          await markRestoreJobFailed(restoreJob.id, fallbackError);
+          return JSON.stringify({ error: fallbackError });
+        }
+
+        const now = new Date();
+        const [updatedRestoreJob] = await db
+          .update(restoreJobs)
+          .set({
+            commandId: command.id,
+            status: command.status === 'sent' ? 'running' : restoreJob.status,
+            startedAt: command.status === 'sent' ? now : restoreJob.startedAt,
+            updatedAt: now,
+          })
+          .where(eq(restoreJobs.id, restoreJob.id))
+          .returning();
+
+        return JSON.stringify({
+          success: true,
+          restoreJobId: updatedRestoreJob?.id ?? restoreJob.id,
+          restoreJob: toAiRestoreJobResponse(updatedRestoreJob ?? restoreJob),
+          commandId: command.id,
+          status: updatedRestoreJob?.status ?? restoreJob.status,
+          restoreType,
+          snapshotId: snapshot.snapshotId,
+          deviceId,
+          message: `Restore job created (${restoreType} restore from snapshot ${snapshot.snapshotId})`,
+        });
+      } catch (err) {
+        const error = err instanceof Error ? err.message : 'Failed to dispatch restore command to agent';
+        await markRestoreJobFailed(restoreJob.id, error);
+        return JSON.stringify({ error: 'Failed to dispatch restore command to agent' });
+      }
     }),
   });
+
 }

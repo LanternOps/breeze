@@ -318,7 +318,11 @@ export default function MonitoringTab({ policyId, existingLink, onLinkChanged, l
       ...stored,
       watches: stored?.watches?.map((w) => ({ ...defaultWatch, ...w })) ?? [],
       eventLogAlerts: stored?.eventLogAlerts?.map((a) => ({ ...defaultEventLogAlert, ...a })) ?? [],
-      alertRules: stored?.alertRules?.map((r) => ({ ...defaultAlertRuleItem, ...r })) ?? [],
+      alertRules: stored?.alertRules?.map((r) => {
+        const merged = { ...defaultAlertRuleItem, ...r };
+        if (!Array.isArray(merged.conditions)) merged.conditions = [...defaultAlertRuleItem.conditions];
+        return merged;
+      }) ?? [],
     };
   });
 
@@ -352,7 +356,11 @@ export default function MonitoringTab({ policyId, existingLink, onLinkChanged, l
         ...stored,
         watches: stored?.watches?.map((w) => ({ ...defaultWatch, ...w })) ?? prev.watches,
         eventLogAlerts: stored?.eventLogAlerts?.map((a) => ({ ...defaultEventLogAlert, ...a })) ?? prev.eventLogAlerts,
-        alertRules: stored?.alertRules?.map((r) => ({ ...defaultAlertRuleItem, ...r })) ?? prev.alertRules,
+        alertRules: stored?.alertRules?.map((r) => {
+          const merged = { ...defaultAlertRuleItem, ...r };
+          if (!Array.isArray(merged.conditions)) merged.conditions = [...defaultAlertRuleItem.conditions];
+          return merged;
+        }) ?? prev.alertRules,
       }));
     }
   }, [existingLink, parentLink]);

@@ -40,6 +40,7 @@ export const configFeatureTypeEnum = pgEnum('config_feature_type', [
   'peripheral_control',
   'warranty',
   'helper',
+  'remote_access',
 ]);
 
 export const configAssignmentLevelEnum = pgEnum('config_assignment_level', [
@@ -48,6 +49,13 @@ export const configAssignmentLevelEnum = pgEnum('config_assignment_level', [
   'site',
   'device_group',
   'device',
+]);
+
+export const backupModeEnum = pgEnum('backup_mode_enum', [
+  'file',
+  'hyperv',
+  'mssql',
+  'system_image',
 ]);
 
 export const configurationPolicies = pgTable('configuration_policies', {
@@ -221,6 +229,20 @@ export const configPolicySensitiveDataSettings = pgTable('config_policy_sensitiv
   intervalMinutes: integer('interval_minutes'),
   cron: varchar('cron', { length: 120 }),
   timezone: varchar('timezone', { length: 64 }).notNull().default('UTC'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Single-item: one row per feature link (backup settings)
+export const configPolicyBackupSettings = pgTable('config_policy_backup_settings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  featureLinkId: uuid('feature_link_id').notNull().unique().references(() => configPolicyFeatureLinks.id, { onDelete: 'cascade' }),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  schedule: jsonb('schedule').notNull().default({}),
+  retention: jsonb('retention').notNull().default({}),
+  paths: jsonb('paths').notNull().default([]),
+  backupMode: backupModeEnum('backup_mode').notNull().default('file'),
+  targets: jsonb('targets').notNull().default({}),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

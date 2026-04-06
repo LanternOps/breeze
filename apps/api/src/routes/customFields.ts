@@ -47,10 +47,13 @@ const customFieldQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).default(50)
 });
 import { customFieldDefinitions } from '../db/schema';
-import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import { PERMISSIONS } from '../services/permissions';
 
 export const customFieldRoutes = new Hono();
+const requireCustomFieldRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
+const requireCustomFieldWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
 
 type CustomFieldDefinition = {
   id: string;
@@ -184,6 +187,7 @@ function mapCustomFieldRow(
 customFieldRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requireCustomFieldRead,
   zValidator('query', customFieldQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -245,6 +249,7 @@ customFieldRoutes.get(
 customFieldRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireCustomFieldRead,
   zValidator('param', customFieldIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -263,6 +268,8 @@ customFieldRoutes.get(
 customFieldRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requireCustomFieldWrite,
+  requireMfa(),
   zValidator('json', createCustomFieldRequestSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -337,6 +344,8 @@ customFieldRoutes.post(
 customFieldRoutes.patch(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireCustomFieldWrite,
+  requireMfa(),
   zValidator('param', customFieldIdParamSchema),
   zValidator('json', updateCustomFieldSchema),
   async (c) => {
@@ -387,6 +396,8 @@ customFieldRoutes.patch(
 customFieldRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireCustomFieldWrite,
+  requireMfa(),
   zValidator('param', customFieldIdParamSchema),
   async (c) => {
     const auth = c.get('auth');

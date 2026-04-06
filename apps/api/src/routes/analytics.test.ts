@@ -27,6 +27,23 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
 
+vi.mock('../middleware/auth', () => ({
+  authMiddleware: vi.fn((c: any, next: any) => {
+    c.set('auth', {
+      scope: 'organization',
+      orgId: ORG_ID,
+      accessibleOrgIds: [ORG_ID],
+      canAccessOrg: (id: string) => id === ORG_ID,
+      orgCondition: () => undefined,
+      user: { id: USER_ID, email: 'test@example.com', name: 'Test User' },
+    });
+    return next();
+  }),
+  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+}));
+
 vi.mock('../db', () => {
   const createChain = (result: unknown = []) => {
     const chain: Record<string, any> = {};
@@ -145,17 +162,19 @@ vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'organization',
-      orgId: ORG_ID,
+      orgId: '11111111-1111-1111-1111-111111111111',
       partnerId: null,
-      user: { id: USER_ID, email: 'test@example.com' },
-      accessibleOrgIds: [ORG_ID],
-      canAccessOrg: (orgId: string) => orgId === ORG_ID,
-      orgCondition: vi.fn((column: unknown) => ({ column, orgId: ORG_ID }))
+      user: { id: '11111111-1111-1111-1111-111111111112', email: 'test@example.com' },
+      accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
+      canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111',
+      orgCondition: vi.fn((column: unknown) => ({ column, orgId: '11111111-1111-1111-1111-111111111111' }))
     });
 
     return next();
   }),
-  requireScope: vi.fn(() => async (_c: any, next: any) => next())
+  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
 import { db } from '../db';

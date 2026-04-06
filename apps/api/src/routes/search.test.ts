@@ -35,13 +35,40 @@ vi.mock('../db/schema', () => ({
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
+      user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
       orgId: 'org-1',
+      partnerId: null,
       accessibleOrgIds: ['org-1'],
+      canAccessOrg: (id: string) => id === 'org-1',
       orgCondition: () => undefined
     });
     return next();
   })
+}));
+
+vi.mock('../services/permissions', () => ({
+  getUserPermissions: vi.fn(async () => ({
+    permissions: [
+      { resource: 'devices', action: 'read' },
+      { resource: 'scripts', action: 'read' },
+      { resource: 'alerts', action: 'read' },
+      { resource: 'users', action: 'read' },
+    ],
+    partnerId: null,
+    orgId: 'org-1',
+    roleId: 'role-1',
+    scope: 'organization',
+  })),
+  hasPermission: vi.fn((userPerms: any, resource: string, action: string) =>
+    userPerms.permissions.some((p: any) => p.resource === resource && p.action === action)
+  ),
+  PERMISSIONS: {
+    DEVICES_READ: { resource: 'devices', action: 'read' },
+    SCRIPTS_READ: { resource: 'scripts', action: 'read' },
+    ALERTS_READ: { resource: 'alerts', action: 'read' },
+    USERS_READ: { resource: 'users', action: 'read' },
+  }
 }));
 
 import { db } from '../db';
@@ -100,4 +127,3 @@ describe('search routes', () => {
     expect(res.status).toBe(400);
   });
 });
-

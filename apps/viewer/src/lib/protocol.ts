@@ -6,6 +6,7 @@ export interface ConnectionParams {
   sessionId: string;
   connectCode: string;
   apiUrl: string;
+  targetSessionId?: number;
 }
 
 function isPrivateHost(hostname: string): boolean {
@@ -45,6 +46,7 @@ export function parseDeepLink(url: string): ConnectionParams | null {
     const sessionId = parsed.searchParams.get('session');
     const connectCode = parsed.searchParams.get('code');
     const apiUrl = parsed.searchParams.get('api');
+    const targetSessionIdRaw = parsed.searchParams.get('targetSessionId');
 
     if (!sessionId || !connectCode || !apiUrl) {
       return null;
@@ -59,7 +61,16 @@ export function parseDeepLink(url: string): ConnectionParams | null {
       return null;
     }
 
-    return { sessionId, connectCode, apiUrl: api.toString().replace(/\/$/, '') };
+    // Parse optional targetSessionId (Windows session ID for RDP/console targeting)
+    let targetSessionId: number | undefined;
+    if (targetSessionIdRaw != null) {
+      const parsed_id = parseInt(targetSessionIdRaw, 10);
+      if (!isNaN(parsed_id) && parsed_id >= 0 && parsed_id <= 65535) {
+        targetSessionId = parsed_id;
+      }
+    }
+
+    return { sessionId, connectCode, apiUrl: api.toString().replace(/\/$/, ''), ...(targetSessionId != null ? { targetSessionId } : {}) };
   } catch {
     return null;
   }

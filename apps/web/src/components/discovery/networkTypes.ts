@@ -52,10 +52,10 @@ export type DeviceOption = {
 };
 
 export const eventTypeConfig: Record<NetworkEventType, { label: string; color: string }> = {
-  new_device: { label: 'New Device', color: 'bg-green-500/20 text-green-700 border-green-500/40' },
-  device_disappeared: { label: 'Disappeared', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40' },
+  new_device: { label: 'New Device', color: 'bg-success/15 text-success border-success/30' },
+  device_disappeared: { label: 'Disappeared', color: 'bg-warning/15 text-warning border-warning/30' },
   device_changed: { label: 'Changed', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40' },
-  rogue_device: { label: 'Rogue', color: 'bg-red-500/20 text-red-700 border-red-500/40' }
+  rogue_device: { label: 'Rogue', color: 'bg-destructive/15 text-destructive border-destructive/30' }
 };
 
 function asObject(value: unknown): Record<string, unknown> | null {

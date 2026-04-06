@@ -4,7 +4,12 @@
   "windows": ["main", "session-*"],
   "permissions": [
     "core:default",
+    "core:window:allow-close",
+    "core:window:allow-destroy",
+    "core:webview:allow-webview-close",
     "deep-link:default",
-    "shell:allow-open"
+    "shell:allow-open",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text"
   ]
 }

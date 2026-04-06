@@ -245,6 +245,11 @@ describe('manage_alert_rules schema', () => {
     expect(parse('manage_alert_rules', { action: 'list_rules' }).success).toBe(true);
   });
 
+  it('accepts list_templates', () => {
+    expect(parse('manage_alert_rules', { action: 'list_templates' }).success).toBe(true);
+    expect(parse('manage_alert_rules', { action: 'list_templates', category: 'performance', severity: 'high' }).success).toBe(true);
+  });
+
   it('accepts list_channels and alert_summary', () => {
     expect(parse('manage_alert_rules', { action: 'list_channels' }).success).toBe(true);
     expect(parse('manage_alert_rules', { action: 'alert_summary' }).success).toBe(true);
@@ -325,5 +330,68 @@ describe('generate_report schema', () => {
 
   it('rejects invalid format', () => {
     expect(parse('generate_report', { action: 'create', name: 'Test', reportType: 'compliance', format: 'docx' }).success).toBe(false);
+  });
+});
+
+// ─── manage_patches: setup_auto_approval ────────────────────────────────
+
+describe('manage_patches setup_auto_approval schema', () => {
+  it('accepts valid setup_auto_approval with defaults', () => {
+    expect(parse('manage_patches', { action: 'setup_auto_approval' }).success).toBe(true);
+  });
+
+  it('accepts setup_auto_approval with all options', () => {
+    expect(parse('manage_patches', {
+      action: 'setup_auto_approval',
+      configPolicyId: TEST_UUID,
+      autoApprove: true,
+      autoApproveSeverities: ['critical', 'important'],
+      scheduleFrequency: 'weekly',
+      scheduleTime: '03:00',
+      rebootPolicy: 'if_required',
+    }).success).toBe(true);
+  });
+
+  it('rejects invalid scheduleTime format', () => {
+    expect(parse('manage_patches', { action: 'setup_auto_approval', scheduleTime: 'midnight' }).success).toBe(false);
+  });
+
+  it('rejects out-of-range scheduleTime values', () => {
+    expect(parse('manage_patches', { action: 'setup_auto_approval', scheduleTime: '25:00' }).success).toBe(false);
+    expect(parse('manage_patches', { action: 'setup_auto_approval', scheduleTime: '99:99' }).success).toBe(false);
+    expect(parse('manage_patches', { action: 'setup_auto_approval', scheduleTime: '1:00' }).success).toBe(false);
+  });
+
+  it('accepts valid edge-case scheduleTime values', () => {
+    expect(parse('manage_patches', { action: 'setup_auto_approval', scheduleTime: '00:00' }).success).toBe(true);
+    expect(parse('manage_patches', { action: 'setup_auto_approval', scheduleTime: '23:59' }).success).toBe(true);
+  });
+
+  it('rejects invalid autoApproveSeverities values', () => {
+    expect(parse('manage_patches', { action: 'setup_auto_approval', autoApproveSeverities: ['unknown'] }).success).toBe(false);
+    expect(parse('manage_patches', { action: 'setup_auto_approval', autoApproveSeverities: ['critical', 'catastrophic'] }).success).toBe(false);
+  });
+
+  it('rejects invalid rebootPolicy', () => {
+    expect(parse('manage_patches', { action: 'setup_auto_approval', rebootPolicy: 'reboot_now' }).success).toBe(false);
+  });
+});
+
+// ─── manage_service_monitors ────────────────────────────────────────────
+
+describe('manage_service_monitors schema', () => {
+  it('accepts valid list', () => {
+    expect(parse('manage_service_monitors', { action: 'list' }).success).toBe(true);
+  });
+
+  it('accepts list with configPolicyId filter', () => {
+    expect(parse('manage_service_monitors', { action: 'list', configPolicyId: TEST_UUID }).success).toBe(true);
+  });
+
+  it('rejects invalid actions (add/remove/update are not supported)', () => {
+    expect(parse('manage_service_monitors', { action: 'add' }).success).toBe(false);
+    expect(parse('manage_service_monitors', { action: 'remove' }).success).toBe(false);
+    expect(parse('manage_service_monitors', { action: 'update' }).success).toBe(false);
+    expect(parse('manage_service_monitors', { action: 'restart' }).success).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Search, ChevronLeft, ChevronRight, Play, Pencil, Trash2 } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Play, Pencil, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ScriptLanguage, OSType, ScriptRunAs } from '@breeze/shared';
 export type { ScriptLanguage, OSType } from '@breeze/shared';
@@ -37,9 +37,9 @@ const languageConfig: Record<ScriptLanguage, { label: string; color: string; ico
 };
 
 const statusConfig: Record<ScriptStatus, { label: string; color: string }> = {
-  active: { label: 'Active', color: 'bg-green-500/20 text-green-700 border-green-500/40' },
-  draft: { label: 'Draft', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40' },
-  archived: { label: 'Archived', color: 'bg-gray-500/20 text-gray-700 border-gray-500/40' }
+  active: { label: 'Active', color: 'bg-success/15 text-success border-success/30' },
+  draft: { label: 'Draft', color: 'bg-warning/15 text-warning border-warning/30' },
+  archived: { label: 'Archived', color: 'bg-muted text-muted-foreground border-border' }
 };
 
 const osLabels: Record<OSType, string> = {
@@ -82,6 +82,18 @@ export default function ScriptList({
   const [languageFilter, setLanguageFilter] = useState<string>('all');
   const [osFilter, setOsFilter] = useState<string>('all');
   const [currentPage, setCurrentPage] = useState(1);
+  const [sortColumn, setSortColumn] = useState<string | null>(null);
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+
+  const toggleSort = (column: string) => {
+    if (sortColumn === column) {
+      setSortDirection(d => d === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortColumn(column);
+      setSortDirection('asc');
+    }
+    setCurrentPage(1);
+  };
 
   // Extract unique categories from scripts if not provided
   const availableCategories = useMemo(() => {
@@ -106,20 +118,39 @@ export default function ScriptList({
     });
   }, [scripts, query, categoryFilter, languageFilter, osFilter]);
 
-  const totalPages = Math.ceil(filteredScripts.length / pageSize);
+  const sortedScripts = useMemo(() => {
+    if (!sortColumn) return filteredScripts;
+    return [...filteredScripts].sort((a, b) => {
+      let cmp = 0;
+      switch (sortColumn) {
+        case 'name':
+          cmp = a.name.localeCompare(b.name);
+          break;
+        case 'language':
+          cmp = a.language.localeCompare(b.language);
+          break;
+        case 'category':
+          cmp = a.category.localeCompare(b.category);
+          break;
+        case 'lastRun':
+          cmp = (a.lastRun ?? '').localeCompare(b.lastRun ?? '');
+          break;
+        case 'status':
+          cmp = (a.status ?? 'active').localeCompare(b.status ?? 'active');
+          break;
+      }
+      return sortDirection === 'asc' ? cmp : -cmp;
+    });
+  }, [filteredScripts, sortColumn, sortDirection]);
+
+  const totalPages = Math.ceil(sortedScripts.length / pageSize);
   const startIndex = (currentPage - 1) * pageSize;
-  const paginatedScripts = filteredScripts.slice(startIndex, startIndex + pageSize);
+  const paginatedScripts = sortedScripts.slice(startIndex, startIndex + pageSize);
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-lg font-semibold">Scripts</h2>
-          <p className="text-sm text-muted-foreground">
-            {filteredScripts.length} of {scripts.length} scripts
-          </p>
-        </div>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center flex-wrap">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className="flex flex-1 flex-col gap-2 sm:flex-row sm:items-center flex-wrap">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
@@ -176,19 +207,47 @@ export default function ScriptList({
             <option value="linux">Linux</option>
           </select>
         </div>
+        <span className="text-xs text-muted-foreground tabular-nums whitespace-nowrap">
+          {filteredScripts.length} of {scripts.length}
+        </span>
       </div>
 
-      <div className="mt-6 overflow-x-auto rounded-md border">
+      <div className="mt-4 overflow-x-auto rounded-md border">
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">Language</th>
-              <th className="px-4 py-3">Category</th>
-              <th className="px-4 py-3">OS Types</th>
-              <th className="px-4 py-3">Last Run</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3 text-right">Actions</th>
+              <th className="px-4 py-2.5 cursor-pointer select-none transition-colors hover:text-foreground" onClick={() => toggleSort('name')}>
+                <span className="inline-flex items-center gap-1">
+                  Name
+                  {sortColumn === 'name' && (sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
+                </span>
+              </th>
+              <th className="px-4 py-2.5 cursor-pointer select-none transition-colors hover:text-foreground" onClick={() => toggleSort('language')}>
+                <span className="inline-flex items-center gap-1">
+                  Language
+                  {sortColumn === 'language' && (sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
+                </span>
+              </th>
+              <th className="px-4 py-2.5 cursor-pointer select-none transition-colors hover:text-foreground" onClick={() => toggleSort('category')}>
+                <span className="inline-flex items-center gap-1">
+                  Category
+                  {sortColumn === 'category' && (sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
+                </span>
+              </th>
+              <th className="px-4 py-2.5">OS</th>
+              <th className="px-4 py-2.5 cursor-pointer select-none transition-colors hover:text-foreground" onClick={() => toggleSort('lastRun')}>
+                <span className="inline-flex items-center gap-1">
+                  Last Run
+                  {sortColumn === 'lastRun' && (sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
+                </span>
+              </th>
+              <th className="px-4 py-2.5 cursor-pointer select-none transition-colors hover:text-foreground" onClick={() => toggleSort('status')}>
+                <span className="inline-flex items-center gap-1">
+                  Status
+                  {sortColumn === 'status' && (sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
+                </span>
+              </th>
+              <th className="px-4 py-2.5 text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -202,13 +261,20 @@ export default function ScriptList({
               paginatedScripts.map(script => (
                 <tr
                   key={script.id}
-                  className="transition hover:bg-muted/40"
+                  tabIndex={0}
+                  role="button"
+                  className="transition hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none"
+                  onClick={() => onEdit?.(script)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); onEdit?.(script); }
+                    if (e.key === ' ') { e.preventDefault(); onRun?.(script); }
+                  }}
                 >
-                  <td className="px-4 py-3">
-                    <div>
-                      <p className="text-sm font-medium">{script.name}</p>
+                  <td className="max-w-[280px] px-4 py-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium" title={script.name}>{script.name}</p>
                       {script.description && (
-                        <p className="text-xs text-muted-foreground truncate max-w-xs">
+                        <p className="text-xs text-muted-foreground truncate max-w-xs" title={script.description}>
                           {script.description}
                         </p>
                       )}
@@ -260,10 +326,11 @@ export default function ScriptList({
                           e.stopPropagation();
                           onRun?.(script);
                         }}
-                        className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
+                        className="inline-flex h-7 items-center gap-1 rounded-md bg-primary/10 px-2 text-xs font-medium text-primary hover:bg-primary/20 transition-colors"
                         title="Run script"
                       >
-                        <Play className="h-4 w-4" />
+                        <Play className="h-3 w-3" />
+                        Run
                       </button>
                       <button
                         type="button"

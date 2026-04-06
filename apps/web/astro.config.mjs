@@ -11,7 +11,7 @@ export default defineConfig({
   adapter: node({
     mode: 'standalone'
   }),
-  experimental: {
+  security: {
     csp: {
       directives: [
         "default-src 'self'",
@@ -25,7 +25,17 @@ export default defineConfig({
         "connect-src 'self' https: ws: wss:"
       ],
       scriptDirective: {
-        resources: ["'self'", 'https://cdn.jsdelivr.net', 'https://static.cloudflareinsights.com']
+        // Astro auto-hashes its own inline scripts, but is:inline scripts in
+        // Layout.astro and certain hydration bootstrap fragments may not be
+        // covered.  Add their sha256 hashes here so they pass CSP validation.
+        // If a CSP script-src-elem violation appears in the browser console,
+        // copy the suggested sha256 hash from the error into this array.
+        resources: [
+          "'self'",
+          'https://cdn.jsdelivr.net',
+          'https://static.cloudflareinsights.com',
+          "'sha256-dr7co1YqmJP1+caEJBfXkM/oHRwOVAknT+gDygo8nD0='"
+        ]
       },
       styleDirective: {
         // 'unsafe-inline' required because xterm.js injects dynamic inline
@@ -47,8 +57,15 @@ export default defineConfig({
     allowedHosts: ['2breeze.app']
   },
   vite: {
+    resolve: {
+      dedupe: ['react', 'react-dom']
+    },
+    optimizeDeps: {
+      include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime', 'react/jsx-dev-runtime', 'zustand', 'zustand/middleware']
+    },
     ssr: {
-      noExternal: ['@tanstack/react-query']
+      noExternal: ['@tanstack/react-query'],
+      external: ['@novnc/novnc']
     },
     server: {
       allowedHosts: 'all',

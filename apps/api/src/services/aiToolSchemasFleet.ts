@@ -33,7 +33,7 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
   ),
 
   manage_patches: z.object({
-    action: z.enum(['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback']),
+    action: z.enum(['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback', 'setup_auto_approval']),
     patchId: uuid.optional(),
     patchIds: z.array(uuid).max(50).optional(),
     deviceIds: z.array(uuid).max(50).optional(),
@@ -42,6 +42,13 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
     status: z.enum(['pending', 'approved', 'rejected', 'deferred']).optional(),
     deferUntil: z.string().datetime({ offset: true }).optional(),
     notes: z.string().max(1000).optional(),
+    configPolicyId: uuid.optional(),
+    autoApprove: z.boolean().optional(),
+    autoApproveSeverities: z.array(z.enum(['critical', 'important', 'moderate', 'low'])).optional(),
+    scheduleFrequency: z.enum(['daily', 'weekly', 'monthly']).optional(),
+    scheduleTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+    rebootPolicy: z.enum(['if_required', 'always', 'never']).optional(),
+    sources: z.array(z.enum(['os', 'third_party', 'custom'])).optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }).refine(
     (d) => {
@@ -142,14 +149,15 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
   ),
 
   manage_alert_rules: z.object({
-    action: z.enum(['list_rules', 'get_rule', 'create_rule', 'update_rule', 'delete_rule', 'test_rule', 'list_channels', 'alert_summary']),
+    action: z.enum(['list_templates', 'list_rules', 'get_rule', 'create_rule', 'update_rule', 'delete_rule', 'test_rule', 'list_channels', 'alert_summary']),
     ruleId: uuid.optional(),
     name: z.string().min(1).max(200).optional(),
     templateId: uuid.optional(),
-    targetType: z.string().max(50).optional(),
+    targetType: z.enum(['device', 'group', 'site', 'org', 'all']).optional(),
     targetId: uuid.optional(),
     overrideSettings: z.record(z.unknown()).optional(),
     isActive: z.boolean().optional(),
+    category: z.string().max(100).optional(),
     severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }).refine(
@@ -192,4 +200,9 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
     (d) => d.action !== 'download' || !!d.reportRunId,
     { message: 'reportRunId is required for download' },
   ),
+
+  manage_service_monitors: z.object({
+    action: z.enum(['list']),
+    configPolicyId: uuid.optional(),
+  }),
 };

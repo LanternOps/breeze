@@ -75,14 +75,14 @@ export default function AiCostIndicator({ enabled = true }: AiCostIndicatorProps
     ? `$${(monthlyUsed / 100).toFixed(2)} / $${(monthlyBudget / 100).toFixed(2)}`
     : `$${(monthlyUsed / 100).toFixed(2)} this month`;
 
-  const barColor = percentage > 90 ? 'bg-red-500' : percentage > 70 ? 'bg-yellow-500' : 'bg-purple-500';
+  const barColor = percentage > 90 ? 'bg-red-500' : percentage > 70 ? 'bg-yellow-500' : 'bg-primary';
 
   return (
-    <div className="flex items-center gap-2 px-4 py-1.5 border-b border-gray-200/50 dark:border-gray-700/50">
-      <Coins className="h-3 w-3 text-gray-500" />
-      <span className="text-[10px] text-gray-500">{costDisplay}</span>
+    <div className="flex items-center gap-2 px-4 py-1.5 border-b">
+      <Coins className="h-3 w-3 text-muted-foreground" />
+      <span className="text-[10px] text-muted-foreground">{costDisplay}</span>
       {monthlyBudget && (
-        <div className="flex-1 h-1 rounded-full bg-gray-200 overflow-hidden dark:bg-gray-800">
+        <div className="flex-1 h-1 rounded-full bg-muted overflow-hidden">
           <div
             className={cn('h-full rounded-full transition-all', barColor, widthPercentClass(percentage))}
           />

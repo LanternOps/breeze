@@ -1,8 +1,26 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { createHash } from 'crypto';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { agentRoutes } from './agents';
 
 vi.mock('../services', () => ({}));
+vi.mock('../services/redis', () => ({
+  getRedis: vi.fn(() => ({
+    multi: vi.fn(),
+    get: vi.fn(async () => null),
+    set: vi.fn(async () => 'OK'),
+    del: vi.fn(async () => 1),
+    incr: vi.fn(async () => 1),
+    expire: vi.fn(async () => 1),
+  })),
+}));
+vi.mock('../services/rate-limit', () => ({
+  rateLimiter: vi.fn(async () => ({
+    allowed: true,
+    remaining: 9,
+    resetAt: new Date(Date.now() + 60_000),
+  })),
+}));
 vi.mock('../services/auditEvents', () => ({
   writeAuditEvent: vi.fn()
 }));
@@ -109,6 +127,18 @@ vi.mock('../services/eventBus', () => ({
   EventType: {}
 }));
 
+vi.mock('./backup/verificationService', () => ({
+  processBackupVerificationResult: vi.fn(),
+}));
+
+vi.mock('../services/vaultSyncPersistence', () => ({
+  applyVaultSyncCommandResult: vi.fn(),
+}));
+
+vi.mock('../services/restoreResultPersistence', () => ({
+  updateRestoreJobByCommandId: vi.fn(),
+}));
+
 vi.mock('../services/commandQueue', () => ({
   queueCommandForExecution: vi.fn(),
   CommandTypes: {
@@ -132,12 +162,14 @@ vi.mock('../middleware/agentAuth', () => ({
       siteId: 'site-123'
     });
     return next();
-  })
+  }),
+  isAgentTokenRotationDue: vi.fn(() => false),
 }));
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { saveFilesystemSnapshot } from '../services/filesystemAnalysis';
 import { queueCommandForExecution } from '../services/commandQueue';
+import { processBackupVerificationResult } from './backup/verificationService';
 
 describe('agent routes', () => {
   let app: Hono;
@@ -153,10 +185,63 @@ describe('agent routes', () => {
     app.route('/agents', agentRoutes);
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   describe('POST /agents/enroll', () => {
-    it('should enroll an agent with a valid enrollment key', async () => {
-      // Enrollment now does: db.update(enrollmentKeys).set(...).where(...).returning()
-      // to atomically validate and increment key usage
+    it('blocks enrollment in production when no enrollment secret is configured', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'key-123',
+              orgId: 'org-123',
+              siteId: 'site-123',
+              keySecretHash: null,
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/agents/enroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enrollmentKey: 'enroll-key',
+          hostname: 'agent-host',
+          osType: 'linux',
+          osVersion: '1.0',
+          architecture: 'x86_64',
+          agentVersion: '2.0'
+        })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe('Enrollment secret required');
+    });
+
+    it('allows enrollment in development without enrollment secret', async () => {
+      vi.stubEnv('NODE_ENV', 'development');
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'key-123',
+              orgId: 'org-123',
+              siteId: 'site-123',
+              keySecretHash: null,
+            }])
+          })
+        })
+      } as any);
+
       vi.mocked(db.update).mockReturnValueOnce({
         set: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -230,12 +315,128 @@ describe('agent routes', () => {
       expect(body.config).toBeDefined();
     });
 
-    it('should reject invalid enrollment keys', async () => {
-      // db.update().set().where().returning() returns empty = invalid key
+    it('requires the configured global enrollment secret when a key has no per-key secret', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', 'global-secret');
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'key-123',
+              orgId: 'org-123',
+              siteId: 'site-123',
+              keySecretHash: null,
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/agents/enroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enrollmentKey: 'enroll-key',
+          hostname: 'agent-host',
+          osType: 'linux',
+          osVersion: '1.0',
+          architecture: 'x86_64',
+          agentVersion: '2.0'
+        })
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Enrollment secret required' });
+    });
+
+    it('accepts the configured global enrollment secret when present', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', 'global-secret');
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'key-123',
+              orgId: 'org-123',
+              siteId: 'site-123',
+              keySecretHash: null,
+            }])
+          })
+        })
+      } as any);
+
       vi.mocked(db.update).mockReturnValueOnce({
         set: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([])
+            returning: vi.fn().mockResolvedValue([{
+              id: 'key-123',
+              key: 'hashed-enroll-key',
+              orgId: 'org-123',
+              siteId: 'site-123',
+              usageCount: 1
+            }])
+          })
+        })
+      } as any);
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue(Object.assign(Promise.resolve([]), {
+            limit: vi.fn().mockResolvedValue([])
+          }))
+        })
+      } as any);
+
+      const tx = {
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              id: 'device-123',
+              orgId: 'org-123',
+              siteId: 'site-123',
+              agentId: 'agent-new',
+              hostname: 'agent-host',
+              osType: 'linux',
+              osVersion: '1.0',
+              architecture: 'x86_64',
+              agentVersion: '2.0',
+              status: 'online'
+            }])
+          })
+        }),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([])
+            })
+          })
+        })
+      };
+      vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as any));
+
+      const res = await app.request('/agents/enroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enrollmentKey: 'enroll-key',
+          enrollmentSecret: 'global-secret',
+          hostname: 'agent-host',
+          osType: 'linux',
+          osVersion: '1.0',
+          architecture: 'x86_64',
+          agentVersion: '2.0'
+        })
+      });
+
+      expect(res.status).toBe(201);
+    });
+
+    it('should reject invalid enrollment keys', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
           })
         })
       } as any);
@@ -254,6 +455,168 @@ describe('agent routes', () => {
       });
 
       expect(res.status).toBe(401);
+    });
+
+    it('accepts a matching per-key enrollment secret', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'key-123',
+              orgId: 'org-123',
+              siteId: 'site-123',
+              keySecretHash: createHash('sha256').update('per-key-secret').digest('hex'),
+            }])
+          })
+        })
+      } as any);
+
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              id: 'key-123',
+              key: 'hashed-enroll-key',
+              orgId: 'org-123',
+              siteId: 'site-123',
+              usageCount: 1,
+            }])
+          })
+        })
+      } as any);
+
+      const tx = {
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              id: 'device-123',
+              orgId: 'org-123',
+              siteId: 'site-123',
+              agentId: 'agent-new',
+              hostname: 'agent-host',
+              osType: 'linux',
+              osVersion: '1.0',
+              architecture: 'x86_64',
+              agentVersion: '2.0',
+              status: 'online'
+            }])
+          })
+        }),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([])
+            })
+          })
+        })
+      };
+      vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as any));
+
+      const res = await app.request('/agents/enroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enrollmentKey: 'enroll-key',
+          enrollmentSecret: 'per-key-secret',
+          hostname: 'agent-host',
+          osType: 'linux',
+          osVersion: '1.0',
+          architecture: 'x86_64',
+          agentVersion: '2.0'
+        })
+      });
+
+      expect(res.status).toBe(201);
+    });
+
+    it('rejects a mismatched per-key enrollment secret', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+
+      const incrementReturning = vi.fn().mockResolvedValue([{
+        id: 'key-123',
+        key: 'hashed-enroll-key',
+        orgId: 'org-123',
+        siteId: 'site-123',
+        usageCount: 1,
+      }]);
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'key-123',
+              orgId: 'org-123',
+              siteId: 'site-123',
+              keySecretHash: createHash('sha256').update('per-key-secret').digest('hex'),
+            }])
+          })
+        })
+      } as any);
+
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: incrementReturning
+          })
+        })
+      } as any);
+
+      const res = await app.request('/agents/enroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enrollmentKey: 'enroll-key',
+          enrollmentSecret: 'wrong-secret',
+          hostname: 'agent-host',
+          osType: 'linux',
+          osVersion: '1.0',
+          architecture: 'x86_64',
+          agentVersion: '2.0'
+        })
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Invalid enrollment secret' });
+      expect(incrementReturning).not.toHaveBeenCalled();
+    });
+
+    it('prefers the per-key secret over the configured global secret', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', 'global-secret');
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'key-123',
+              orgId: 'org-123',
+              siteId: 'site-123',
+              keySecretHash: createHash('sha256').update('per-key-secret').digest('hex'),
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/agents/enroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enrollmentKey: 'enroll-key',
+          enrollmentSecret: 'global-secret',
+          hostname: 'agent-host',
+          osType: 'linux',
+          osVersion: '1.0',
+          architecture: 'x86_64',
+          agentVersion: '2.0'
+        })
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Invalid enrollment secret' });
     });
   });
 
@@ -622,6 +985,49 @@ describe('agent routes', () => {
       });
 
       expect(res.status).toBe(404);
+    });
+
+    it('rejects malformed critical verification payloads without downstream mutation', async () => {
+      const updateWhere = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: '99999999-9999-4999-8999-999999999999' }])
+      });
+      const updateSet = vi.fn().mockReturnValue({ where: updateWhere });
+      vi.mocked(db.update).mockReturnValue({ set: updateSet } as any);
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: '99999999-9999-4999-8999-999999999999',
+              type: 'backup_verify',
+              status: 'sent',
+              payload: {},
+              deviceId: 'device-123',
+              createdAt: new Date()
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/commands/99999999-9999-4999-8999-999999999999/result', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'completed',
+          result: {
+            filesVerified: 10
+          }
+        })
+      });
+
+      expect(res.status).toBe(200);
+      expect(vi.mocked(processBackupVerificationResult)).not.toHaveBeenCalled();
+      expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'failed',
+        result: expect.objectContaining({
+          error: expect.stringContaining('Rejected malformed backup_verify result'),
+        }),
+      }));
     });
 
     it('persists threshold filesystem analysis command results', async () => {

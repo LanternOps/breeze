@@ -41,7 +41,7 @@ vi.mock('../services/remoteSessionAuth', () => ({
 }));
 
 vi.mock('./agentWs', () => ({
-  sendCommandToAgent: vi.fn(() => false)
+  sendCommandToAgent: vi.fn(() => true)
 }));
 
 const mockDb = vi.hoisted(() => ({
@@ -308,7 +308,8 @@ describe('remote routes', () => {
         },
         device: {
           id: DEVICE_UUID,
-          orgId: 'org-123'
+          orgId: 'org-123',
+          agentId: 'agent-abc123'
         }
       };
 

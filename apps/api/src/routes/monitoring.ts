@@ -2,11 +2,12 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, desc, eq, gte, inArray, isNotNull, lte, sql } from 'drizzle-orm';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { db } from '../db';
 import { devices, deviceSoftware, deviceChangeLog, discoveredAssets, networkMonitors, snmpDevices, snmpMetrics, serviceProcessCheckResults } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
 import { isRedisAvailable } from '../services/redis';
+import { PERMISSIONS } from '../services/permissions';
 
 type AuthContext = {
   scope: string;
@@ -69,6 +70,8 @@ async function resolveOrgIdForAsset(auth: AuthContext, assetId: string, requeste
 
 export const monitoringRoutes = new Hono();
 monitoringRoutes.use('*', authMiddleware);
+const requireMonitoringRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
+const requireMonitoringWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
 
 const listAssetsSchema = z.object({
   orgId: z.string().uuid().optional(),
@@ -78,6 +81,7 @@ const listAssetsSchema = z.object({
 monitoringRoutes.get(
   '/assets',
   requireScope('organization', 'partner', 'system'),
+  requireMonitoringRead,
   zValidator('query', listAssetsSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -237,6 +241,7 @@ monitoringRoutes.get(
 monitoringRoutes.get(
   '/assets/:id',
   requireScope('organization', 'partner', 'system'),
+  requireMonitoringRead,
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const assetId = c.req.param('id')!;
@@ -346,6 +351,8 @@ const upsertSnmpSchema = z.object({
 monitoringRoutes.put(
   '/assets/:id/snmp',
   requireScope('organization', 'partner', 'system'),
+  requireMonitoringWrite,
+  requireMfa(),
   zValidator('json', upsertSnmpSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -475,6 +482,8 @@ const patchSnmpSchema = z.object({
 monitoringRoutes.patch(
   '/assets/:id/snmp',
   requireScope('organization', 'partner', 'system'),
+  requireMonitoringWrite,
+  requireMfa(),
   zValidator('json', patchSnmpSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -540,6 +549,8 @@ monitoringRoutes.patch(
 monitoringRoutes.delete(
   '/assets/:id',
   requireScope('organization', 'partner', 'system'),
+  requireMonitoringWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const assetId = c.req.param('id')!;
@@ -598,6 +609,7 @@ const knownServicesQuerySchema = z.object({
 monitoringRoutes.get(
   '/known-services',
   requireScope('organization', 'partner', 'system'),
+  requireMonitoringRead,
   zValidator('query', knownServicesQuerySchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -701,6 +713,7 @@ const checkResultsQuerySchema = z.object({
 monitoringRoutes.get(
   '/results',
   requireScope('organization', 'partner', 'system'),
+  requireMonitoringRead,
   zValidator('query', checkResultsQuerySchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -747,6 +760,7 @@ monitoringRoutes.get(
 monitoringRoutes.get(
   '/results/:deviceId/summary',
   requireScope('organization', 'partner', 'system'),
+  requireMonitoringRead,
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const deviceId = c.req.param('deviceId')!;
@@ -799,6 +813,7 @@ monitoringRoutes.get(
 monitoringRoutes.get(
   '/status/:deviceId',
   requireScope('organization', 'partner', 'system'),
+  requireMonitoringRead,
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const deviceId = c.req.param('deviceId')!;

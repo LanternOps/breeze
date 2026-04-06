@@ -53,7 +53,9 @@ export default function MacOSPermissionsBanner({ deviceId, osType }: MacOSPermis
 
   // Derive a stable boolean so the polling effect only resets when the
   // polling rate actually needs to change, not on every response.
-  const hasMissing = tcc ? (!tcc.fullDiskAccess || !tcc.screenRecording || !tcc.accessibility) : false;
+  const hasMissing = tcc
+    ? (!tcc.fullDiskAccess || !tcc.screenRecording || !tcc.accessibility || tcc.remoteDesktop === false)
+    : false;
 
   // Poll while any permission is missing
   useEffect(() => {
@@ -67,25 +69,36 @@ export default function MacOSPermissionsBanner({ deviceId, osType }: MacOSPermis
   if (!tcc || !hasMissing) return null;
 
   const fdaMissing = !tcc.fullDiskAccess;
+  const remoteDesktopMissing = tcc.remoteDesktop === false;
 
   return (
     <div className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3">
       <AlertTriangle className="h-5 w-5 mt-0.5 shrink-0 text-amber-600" />
       <div className="min-w-0">
         <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
-          {fdaMissing ? 'Full Disk Access Required' : 'Permissions Configuring'}
+          {fdaMissing ? 'Full Disk Access Required' : remoteDesktopMissing ? 'Remote Desktop Permission Required' : 'Permissions Configuring'}
         </p>
         <p className="mt-1 text-sm text-amber-700 dark:text-amber-400">
           {fdaMissing
             ? 'Full Disk Access is required. Grant it in System Settings > Privacy & Security > Full Disk Access. Screen Recording and Accessibility will be configured automatically.'
+            : remoteDesktopMissing
+              ? 'macOS Remote Desktop permission is missing. The login-window desktop path will stay unavailable until it is granted.'
             : 'Screen Recording and Accessibility are being configured automatically. If this persists, check agent logs or restart the agent.'}
         </p>
-        {fdaMissing && (
+        {(fdaMissing || remoteDesktopMissing) && (
           <div className="mt-2 flex flex-wrap gap-2">
-            <span className="inline-flex items-center gap-1 rounded-full border border-red-400/40 bg-red-500/10 px-2.5 py-0.5 text-xs font-medium text-red-700 dark:text-red-400">
-              <XCircle className="h-3 w-3" />
-              Full Disk Access
-            </span>
+            {fdaMissing && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-red-400/40 bg-red-500/10 px-2.5 py-0.5 text-xs font-medium text-red-700 dark:text-red-400">
+                <XCircle className="h-3 w-3" />
+                Full Disk Access
+              </span>
+            )}
+            {remoteDesktopMissing && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-red-400/40 bg-red-500/10 px-2.5 py-0.5 text-xs font-medium text-red-700 dark:text-red-400">
+                <XCircle className="h-3 w-3" />
+                Remote Desktop
+              </span>
+            )}
           </div>
         )}
       </div>

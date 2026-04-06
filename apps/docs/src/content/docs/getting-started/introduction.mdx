@@ -7,6 +7,8 @@ sidebar:
 ---
 
 import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { Image } from 'astro:assets';
+import dashboardScreenshot from '../../../assets/screenshots/dashboard.png';
 
 Breeze is an open-source **Remote Monitoring and Management (RMM)** platform built for MSPs and internal IT teams. It's designed to scale to 10,000+ agents while staying fast, secure, and simple to operate.
 
@@ -26,6 +28,8 @@ Breeze is an open-source **Remote Monitoring and Management (RMM)** platform bui
     SHA-256 hashed agent tokens, optional Cloudflare mTLS, RBAC, audit logging, and rate limiting out of the box.
   </Card>
 </CardGrid>
+
+<Image src={dashboardScreenshot} alt="Breeze RMM dashboard with device status, alerts, and real-time activity" />
 
 ## Architecture at a Glance
 

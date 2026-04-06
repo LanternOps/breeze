@@ -1,18 +1,64 @@
 ---
 title: Playbooks
 description: Predefined and custom playbooks for automated incident response, remediation workflows, and standard operating procedures.
-sidebar:
-  order: 38
-  label: Playbooks
 ---
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Playbooks are structured, multi-step remediation workflows that run against a single device. Each playbook defines an ordered sequence of steps — diagnose, act, wait, verify, rollback — that execute tools on the target device and evaluate the results. Playbooks codify your standard operating procedures so that incident response is consistent, auditable, and repeatable regardless of who triggers it.
+Playbooks are structured, multi-step remediation workflows that run against a single device. Each playbook defines an ordered sequence of steps -- diagnose, act, wait, verify, rollback -- that execute tools on the target device and evaluate the results. Playbooks codify your standard operating procedures so that incident response is consistent, auditable, and repeatable regardless of who triggers it.
 
 Breeze ships with built-in playbooks for common scenarios (disk cleanup, service restart, memory pressure relief). Organizations can also create custom playbooks scoped to their own environment. Playbooks can be triggered manually by administrators, automatically by the AI assistant in response to alerts, or programmatically through the API.
 
 Every execution is recorded with per-step timing, tool input/output, and pass/fail status. If a step fails, the playbook's failure policy determines whether execution stops, continues, or triggers a rollback sequence.
+
+<Aside type="tip">
+  Built-in playbooks (Disk Cleanup, Service Restart with Health Check, Memory Pressure Relief) are automatically created when the Breeze API starts for the first time. They are available to all organizations out of the box -- no setup required.
+</Aside>
+
+---
+
+## Running a Playbook
+
+Playbooks can be triggered in several ways from the Breeze dashboard.
+
+### From the AI Assistant
+
+The most common way to run a playbook is through the AI assistant during an investigation. When the AI identifies a remediation opportunity -- for example, a device with high disk usage -- it can suggest and execute the appropriate playbook. The AI handles variable substitution and monitors each step as it executes.
+
+### From the Device Detail Page
+
+<Steps>
+
+1. **Navigate to the device.** Open the device detail page for the target device.
+
+2. **Open Playbook History.** Scroll to the **Playbook History** section on the device page. This shows all past playbook executions for the device.
+
+3. **Trigger a playbook.** The AI assistant or an alert-triggered automation initiates playbook execution on the device. You can also use the API to execute a specific playbook against the device (see [API Reference](#api-reference)).
+
+</Steps>
+
+### Variables
+
+When executing a playbook, you supply runtime variables that are substituted into step inputs. For example, the Service Restart playbook requires a `serviceName` variable to know which service to restart. The AI assistant fills these in automatically based on context; when triggering via API, pass them in the `variables` field.
+
+---
+
+## Viewing Results
+
+Every playbook execution is recorded and visible from the device's **Playbook History** section.
+
+Each execution row shows:
+- **Playbook name and category** -- with a color-coded category badge (disk, service, memory, patch, security).
+- **Status** -- Pending, Running, Waiting, Completed, Failed, Rolled Back, or Cancelled, each with a distinct icon and color.
+- **Trigger source** -- who or what initiated the run (AI, manual, alert).
+- **Duration** -- total execution time from start to completion.
+
+Click an execution to expand it and view:
+- **Step-by-step results** -- each step is listed with its index number, name, tool used, duration, and status (Done, Failed, Skipped, Pending, Running). Failed steps highlight in red for quick identification.
+- **Error details** -- if the execution failed, the error message is displayed in a prominent banner.
+- **Rollback indicator** -- if a rollback was triggered, a notice appears confirming it was executed.
+
+Use the **Refresh** button to update the list while executions are still in progress.
 
 ---
 
@@ -66,7 +112,7 @@ Each step can define an `onFailure` behavior that controls what happens when it 
 
 ## Built-in Playbooks
 
-Breeze includes three built-in playbooks that are seeded into the database on startup. Built-in playbooks have `isBuiltIn: true` and a `null` organization ID, making them available to all organizations. They are updated automatically when the API starts — if a built-in playbook's definition changes in a new release, the existing database record is updated via upsert.
+Breeze includes three built-in playbooks that are available to all organizations out of the box. They are updated automatically with each release.
 
 ### Disk Cleanup
 
@@ -136,7 +182,7 @@ Organizations can create custom playbooks scoped to their own environment. Custo
 
 ### Creating a custom playbook
 
-Custom playbooks are created by inserting into the `playbook_definitions` table through the API or directly via the database. Each playbook definition includes:
+Custom playbooks are created through the API. Each playbook definition includes:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -250,7 +296,7 @@ Additional filtering applies: `deviceTags` restricts matching to devices with sp
 
 ## Execution History
 
-Every playbook run creates an execution record in the `playbook_executions` table. Execution records include:
+Every playbook run creates an execution record. Execution records include:
 
 | Field | Description |
 |-------|-------------|
@@ -403,6 +449,24 @@ All playbook endpoints require authentication and scope-based authorization. Org
 | `rollbackExecuted` | boolean | Whether rollback was triggered |
 | `startedAt` | string or null | ISO 8601 timestamp |
 | `completedAt` | string or null | ISO 8601 timestamp |
+
+---
+
+## Incident Response Integration
+
+Playbooks integrate with the [Incident Response](/features/incident-response/) system. When a playbook is executed in the context of an active incident, the execution record includes the `incidentId` in its context, creating a direct link between the remediation workflow and the incident timeline.
+
+The AI assistant can trigger playbooks during incident response conversations. For example, when investigating a compromised device, the AI might execute the **Service Restart** playbook to restart a suspicious service, then record the result as evidence on the incident.
+
+### Security Playbooks
+
+Create custom playbooks with `category: "security"` for incident-specific workflows:
+
+- **Endpoint isolation** — disable network interfaces, block USB, kill suspicious processes
+- **Evidence collection** — gather logs, running processes, network connections, and screenshots
+- **Service recovery** — restart affected services after containment, verify health
+
+Security playbooks can be linked to alert trigger conditions with `alertTypes: ["security_threat"]` so they execute automatically (or with confirmation) when a security alert fires.
 
 ---
 

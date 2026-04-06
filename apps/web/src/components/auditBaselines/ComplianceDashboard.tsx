@@ -174,12 +174,12 @@ export default function ComplianceDashboard() {
           <h3 className="text-sm font-semibold">Compliance by Baseline</h3>
           <table className="mt-4 w-full text-sm">
             <thead className="bg-muted/40">
-              <tr className="border-b">
-                <th className="px-4 py-3 text-left font-medium text-muted-foreground">Baseline</th>
-                <th className="px-4 py-3 text-left font-medium text-muted-foreground">OS</th>
-                <th className="px-4 py-3 text-right font-medium text-muted-foreground">Devices</th>
-                <th className="px-4 py-3 text-right font-medium text-muted-foreground">Avg Score</th>
-                <th className="px-4 py-3 text-left font-medium text-muted-foreground">Status</th>
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="px-4 py-3">Baseline</th>
+                <th className="px-4 py-3">OS</th>
+                <th className="px-4 py-3 text-right">Devices</th>
+                <th className="px-4 py-3 text-right">Avg Score</th>
+                <th className="px-4 py-3">Status</th>
               </tr>
             </thead>
             <tbody>

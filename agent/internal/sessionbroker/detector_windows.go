@@ -19,12 +19,12 @@ func NewSessionDetector() SessionDetector {
 }
 
 var (
-	modWtsapi32                    = windows.NewLazySystemDLL("wtsapi32.dll")
-	modKernel32ForWts              = windows.NewLazySystemDLL("kernel32.dll")
-	procWTSEnumerateSessions       = modWtsapi32.NewProc("WTSEnumerateSessionsW")
-	procWTSFreeMemory              = modWtsapi32.NewProc("WTSFreeMemory")
-	procWTSQuerySessionInfo        = modWtsapi32.NewProc("WTSQuerySessionInformationW")
-	procGetActiveConsoleSessionId  = modKernel32ForWts.NewProc("WTSGetActiveConsoleSessionId")
+	modWtsapi32                   = windows.NewLazySystemDLL("wtsapi32.dll")
+	modKernel32ForWts             = windows.NewLazySystemDLL("kernel32.dll")
+	procWTSEnumerateSessions      = modWtsapi32.NewProc("WTSEnumerateSessionsW")
+	procWTSFreeMemory             = modWtsapi32.NewProc("WTSFreeMemory")
+	procWTSQuerySessionInfo       = modWtsapi32.NewProc("WTSQuerySessionInformationW")
+	procGetActiveConsoleSessionId = modKernel32ForWts.NewProc("WTSGetActiveConsoleSessionId")
 )
 
 const (
@@ -38,9 +38,9 @@ const (
 )
 
 type wtsSessionInfo struct {
-	SessionID uint32
+	SessionID      uint32
 	WinStationName *uint16
-	State     uint32
+	State          uint32
 }
 
 func (d *windowsDetector) ListSessions() ([]DetectedSession, error) {
@@ -87,13 +87,39 @@ func (d *windowsDetector) ListSessions() ([]DetectedSession, error) {
 			sessionType = "rdp"
 		}
 
-		sessions = append(sessions, DetectedSession{
+		session := DetectedSession{
 			Username: username,
 			Session:  fmt.Sprintf("%d", info.SessionID),
 			State:    wtsStateString(info.State),
 			Display:  "windows",
 			Type:     sessionType,
-		})
+		}
+		var err error
+		session.Session, err = sanitizeDetectedField(session.Session, true)
+		if err != nil {
+			continue
+		}
+		session.Display, err = sanitizeDetectedField(session.Display, true)
+		if err != nil {
+			continue
+		}
+		session.State, err = sanitizeDetectedField(session.State, true)
+		if err != nil {
+			continue
+		}
+		session.Type, err = sanitizeDetectedField(session.Type, true)
+		if err != nil {
+			continue
+		}
+		session.Username, err = sanitizeDetectedField(session.Username, false)
+		if err != nil {
+			continue
+		}
+
+		sessions = append(sessions, session)
+		if len(sessions) >= maxDetectedSessions {
+			break
+		}
 	}
 
 	return sessions, nil
@@ -226,8 +252,8 @@ func wtsStateString(state uint32) string {
 // is in a disconnected state (no active display). A helper in a disconnected
 // session cannot capture the screen or inject input.
 func IsSessionDisconnected(winSessionID string) bool {
-	var id uint32
-	if _, err := fmt.Sscanf(winSessionID, "%d", &id); err != nil {
+	id, err := parseWindowsSessionID(winSessionID)
+	if err != nil {
 		log.Warn("IsSessionDisconnected: failed to parse session ID",
 			"winSessionID", winSessionID, "error", err.Error())
 		return false

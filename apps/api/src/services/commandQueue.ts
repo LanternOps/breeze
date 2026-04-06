@@ -1,8 +1,13 @@
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext } from '../db';
 import { deviceCommands, devices, auditLogs } from '../db/schema';
 import { sendCommandToAgent } from '../routes/agentWs';
 import { captureException } from './sentry';
+import { recordBackupCommandTimeout, recordRestoreTimeout } from './backupMetrics';
+import {
+  claimPendingCommandForDelivery,
+  releaseClaimedCommandDelivery,
+} from './commandDispatch';
 
 // Command types for system tools
 export const CommandTypes = {
@@ -104,6 +109,46 @@ export const CommandTypes = {
   // Audit policy compliance
   COLLECT_AUDIT_POLICY: 'collect_audit_policy',
   APPLY_AUDIT_POLICY_BASELINE: 'apply_audit_policy_baseline',
+
+  // Safe mode reboot (Windows only)
+  REBOOT_SAFE_MODE: 'reboot_safe_mode',
+  // Self-uninstall (remote wipe)
+  SELF_UNINSTALL: 'self_uninstall',
+  // Backup
+  BACKUP_RUN: 'backup_run',
+  BACKUP_STOP: 'backup_stop',
+  BACKUP_RESTORE: 'backup_restore',
+  BACKUP_VERIFY: 'backup_verify',
+  BACKUP_TEST_RESTORE: 'backup_test_restore',
+  BACKUP_CLEANUP: 'backup_cleanup',
+  // VSS
+  VSS_STATUS: 'vss_status',
+  VSS_WRITER_LIST: 'vss_writer_list',
+  // MSSQL
+  MSSQL_DISCOVER: 'mssql_discover',
+  MSSQL_BACKUP: 'mssql_backup',
+  MSSQL_RESTORE: 'mssql_restore',
+  MSSQL_VERIFY: 'mssql_verify',
+  // Hyper-V
+  HYPERV_DISCOVER: 'hyperv_discover',
+  HYPERV_BACKUP: 'hyperv_backup',
+  HYPERV_RESTORE: 'hyperv_restore',
+  HYPERV_CHECKPOINT: 'hyperv_checkpoint',
+  HYPERV_VM_STATE: 'hyperv_vm_state',
+  // System state & BMR
+  SYSTEM_STATE_COLLECT: 'system_state_collect',
+  HARDWARE_PROFILE: 'hardware_profile',
+  VM_RESTORE_FROM_BACKUP: 'vm_restore_from_backup',
+  VM_RESTORE_ESTIMATE: 'vm_restore_estimate',
+  VM_INSTANT_BOOT: 'vm_instant_boot',
+  BMR_RECOVER: 'bmr_recover',
+  // Vault
+  VAULT_SYNC: 'vault_sync',
+  VAULT_STATUS: 'vault_status',
+  VAULT_CONFIGURE: 'vault_configure',
+  // Incident response
+  COLLECT_EVIDENCE: 'collect_evidence',
+  EXECUTE_CONTAINMENT: 'execute_containment',
 } as const;
 
 export type CommandType = typeof CommandTypes[keyof typeof CommandTypes];
@@ -147,6 +192,14 @@ export interface QueueCommandForExecutionResult {
   error?: string;
 }
 
+// Backup-related command types — used to guard backup-specific Prometheus metrics
+const BACKUP_COMMAND_TYPES = new Set([
+  'backup_run', 'backup_stop', 'backup_restore', 'backup_verify',
+  'backup_test_restore', 'backup_cleanup', 'vm_restore_from_backup',
+  'vm_instant_boot', 'bmr_recover', 'mssql_backup', 'mssql_restore',
+  'hyperv_backup', 'hyperv_restore',
+]);
+
 // Commands that modify system state or access sensitive data (e.g., screen capture) and should always be audit-logged
 const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.KILL_PROCESS,
@@ -189,6 +242,36 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.APPLY_AUDIT_POLICY_BASELINE,
   // Peripheral control — pushes full active policy set to agent
   CommandTypes.PERIPHERAL_POLICY_SYNC,
+  // Safe mode reboot
+  CommandTypes.REBOOT_SAFE_MODE,
+  // Self-uninstall (remote wipe)
+  CommandTypes.SELF_UNINSTALL,
+  CommandTypes.BACKUP_RUN,
+  CommandTypes.BACKUP_STOP,
+  CommandTypes.BACKUP_RESTORE,
+  CommandTypes.BACKUP_VERIFY,
+  CommandTypes.BACKUP_TEST_RESTORE,
+  // VSS
+  CommandTypes.VSS_WRITER_LIST,
+  // MSSQL
+  CommandTypes.MSSQL_BACKUP,
+  CommandTypes.MSSQL_RESTORE,
+  CommandTypes.MSSQL_VERIFY,
+  // Hyper-V
+  CommandTypes.HYPERV_BACKUP,
+  CommandTypes.HYPERV_RESTORE,
+  CommandTypes.HYPERV_CHECKPOINT,
+  CommandTypes.HYPERV_VM_STATE,
+  // BMR
+  CommandTypes.VM_RESTORE_FROM_BACKUP,
+  CommandTypes.VM_INSTANT_BOOT,
+  CommandTypes.BMR_RECOVER,
+  // Vault
+  CommandTypes.VAULT_SYNC,
+  CommandTypes.VAULT_CONFIGURE,
+  // Incident response
+  CommandTypes.COLLECT_EVIDENCE,
+  CommandTypes.EXECUTE_CONTAINMENT,
 ]);
 
 /**
@@ -257,6 +340,7 @@ export async function waitForCommandResult(
   pollIntervalMs: number = 500
 ): Promise<QueuedCommand> {
   const startTime = Date.now();
+  let lastObservedCommand: QueuedCommand | null = null;
 
   while (Date.now() - startTime < timeoutMs) {
     const [command] = await db
@@ -269,6 +353,8 @@ export async function waitForCommandResult(
       throw new Error(`Command ${commandId} not found`);
     }
 
+    lastObservedCommand = command as QueuedCommand;
+
     // Check if command is complete
     if (command.status === 'completed' || command.status === 'failed') {
       return command as QueuedCommand;
@@ -279,17 +365,40 @@ export async function waitForCommandResult(
   }
 
   // Timeout - update command status
-  await db
+  const completedAt = new Date();
+  const [timedOutUpdate] = await db
     .update(deviceCommands)
     .set({
       status: 'failed',
-      completedAt: new Date(),
+      completedAt,
       result: {
         status: 'timeout',
         error: `Command timed out after ${timeoutMs}ms`
       }
     })
-    .where(eq(deviceCommands.id, commandId));
+    .where(and(
+      eq(deviceCommands.id, commandId),
+      inArray(deviceCommands.status, ['pending', 'sent']),
+    ))
+    .returning({
+      id: deviceCommands.id,
+      status: deviceCommands.status,
+    });
+
+  const timedOutType = lastObservedCommand?.type;
+  if (timedOutUpdate && timedOutType) {
+    if (BACKUP_COMMAND_TYPES.has(timedOutType)) {
+      recordBackupCommandTimeout(timedOutType, 'sync_wait');
+    }
+    if (
+      timedOutType === CommandTypes.BACKUP_RESTORE
+      || timedOutType === CommandTypes.VM_RESTORE_FROM_BACKUP
+      || timedOutType === CommandTypes.VM_INSTANT_BOOT
+      || timedOutType === CommandTypes.BMR_RECOVER
+    ) {
+      recordRestoreTimeout(timedOutType);
+    }
+  }
 
   const [timedOutCommand] = await db
     .select()
@@ -331,29 +440,63 @@ export async function queueCommandForExecution(
   const command = await queueCommand(deviceId, type, payload, userId);
 
   if (device.agentId && !preferHeartbeat) {
-    const sent = sendCommandToAgent(device.agentId, {
-      id: command.id,
-      type,
-      payload
-    });
-    if (sent) {
-      const executedAt = new Date();
-      await db
-        .update(deviceCommands)
-        .set({ status: 'sent', executedAt })
-        .where(eq(deviceCommands.id, command.id));
-
-      return {
-        command: {
-          ...command,
-          status: 'sent',
-          executedAt
-        } as QueuedCommand
-      };
+    const claimed = await claimPendingCommandForDelivery(command.id);
+    if (claimed) {
+      const sent = sendCommandToAgent(device.agentId, {
+        id: command.id,
+        type,
+        payload
+      });
+      if (sent) {
+        return {
+          command: {
+            ...command,
+            status: 'sent',
+            executedAt: claimed.executedAt
+          } as QueuedCommand
+        };
+      }
+      await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
     }
   }
 
   return { command };
+}
+
+export async function queueBackupStopCommand(
+  deviceId: string,
+  options: {
+    userId?: string;
+  } = {}
+): Promise<QueueCommandForExecutionResult> {
+  return runOutsideDbContextSafe(async () => {
+    const result = await queueCommandForExecution(
+      deviceId,
+      CommandTypes.BACKUP_STOP,
+      { reason: 'cancelled' },
+      options
+    );
+
+    if (result.error) {
+      return result;
+    }
+
+    if (result.command?.status !== 'sent' && result.command?.id) {
+      await db
+        .delete(deviceCommands)
+        .where(
+          and(
+            eq(deviceCommands.id, result.command.id),
+            eq(deviceCommands.status, 'pending')
+          )
+        );
+      return {
+        error: 'Backup stop could not be dispatched immediately',
+      };
+    }
+
+    return result;
+  });
 }
 
 /**
@@ -457,16 +600,16 @@ export async function executeCommand(
 
     // Dispatch via WebSocket
     if (device.agentId && !preferHeartbeat) {
-      const sent = sendCommandToAgent(device.agentId, {
-        id: command.id,
-        type,
-        payload,
-      });
-      if (sent) {
-        await db
-          .update(deviceCommands)
-          .set({ status: 'sent', executedAt: new Date() })
-          .where(eq(deviceCommands.id, command.id));
+      const claimed = await claimPendingCommandForDelivery(command.id);
+      if (claimed) {
+        const sent = sendCommandToAgent(device.agentId, {
+          id: command.id,
+          type,
+          payload,
+        });
+        if (!sent) {
+          await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
+        }
       }
     }
 
@@ -515,7 +658,10 @@ export async function markCommandsSent(commandIds: string[]): Promise<void> {
         status: 'sent',
         executedAt: new Date()
       })
-      .where(eq(deviceCommands.id, id));
+      .where(and(
+        eq(deviceCommands.id, id),
+        eq(deviceCommands.status, 'pending'),
+      ));
   }
 }
 
@@ -533,5 +679,8 @@ export async function submitCommandResult(
       completedAt: new Date(),
       result
     })
-    .where(eq(deviceCommands.id, commandId));
+    .where(and(
+      eq(deviceCommands.id, commandId),
+      eq(deviceCommands.status, 'sent'),
+    ));
 }

@@ -90,6 +90,7 @@ services:
     volumes:
       # Mount source code for hot-reloading
       - ./apps/api/src:/app/apps/api/src:cached
+      - ./apps/api/migrations:/app/apps/api/migrations:ro
       - ./packages/shared/src:/app/packages/shared/src:cached
       # Mount config files
       - ./apps/api/package.json:/app/apps/api/package.json:ro

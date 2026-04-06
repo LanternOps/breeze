@@ -90,7 +90,11 @@ func RestartWithHelper(newBinaryPath, targetPath string) error {
 
 	script := strings.Join([]string{
 		"Start-Sleep -Seconds 3",
+		// Stop the agent service first
 		"Stop-Service -Name '" + serviceName + "' -Force -ErrorAction SilentlyContinue",
+		// Kill any lingering breeze processes (helper, viewer, user helpers)
+		// that might hold file locks on the binary or shared directory.
+		"Get-Process -Name 'breeze-helper','breeze-agent','breeze-viewer' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
 		"Start-Sleep -Seconds 2",
 		fmt.Sprintf("Copy-Item -Path '%s' -Destination '%s' -Force", safeBinary, safeTarget),
 		"Start-Service -Name '" + serviceName + "'",

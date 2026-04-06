@@ -37,7 +37,9 @@ vi.mock('../middleware/auth', () => ({
       canAccessOrg: () => true
     });
     return next();
-  })
+  }),
+  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 vi.mock('../services/commandQueue', () => ({

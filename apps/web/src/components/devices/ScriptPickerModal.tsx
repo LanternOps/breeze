@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { X, Search, Play, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 
 export type ScriptLanguage = 'powershell' | 'bash' | 'python' | 'cmd';
@@ -115,11 +116,8 @@ export default function ScriptPickerModal({
     onClose();
   };
 
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-2xl max-h-[80vh] overflow-hidden rounded-lg border bg-card shadow-lg flex flex-col">
+    <Dialog open={isOpen} onClose={onClose} title="Select Script" maxWidth="2xl" className="max-h-[80vh] overflow-hidden flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between border-b px-6 py-4">
           <div>
@@ -242,7 +240,6 @@ export default function ScriptPickerModal({
             Cancel
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

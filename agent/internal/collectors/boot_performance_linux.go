@@ -112,11 +112,15 @@ func (c *BootPerformanceCollector) Collect() (*BootPerformanceMetrics, error) {
 
 // readProcBtime reads the btime field from /proc/stat as a fallback for boot time.
 func readProcBtime() time.Time {
+	info, err := os.Stat("/proc/stat")
+	if err != nil || info.Size() > collectorFileReadLimit {
+		return time.Time{}
+	}
 	data, err := os.ReadFile("/proc/stat")
 	if err != nil {
 		return time.Time{}
 	}
-	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner := newCollectorScanner(data)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "btime ") {
@@ -134,8 +138,7 @@ func readProcBtime() time.Time {
 
 // collectSystemdTiming runs systemd-analyze and parses boot phase timings.
 func collectSystemdTiming(metrics *BootPerformanceMetrics) {
-	cmd := exec.Command("systemd-analyze")
-	output, err := cmd.CombinedOutput()
+	output, err := runCollectorCombinedOutput(collectorShortCommandTimeout, "systemd-analyze")
 	if err != nil {
 		slog.Info("systemd-analyze not available; boot phase timing will be unavailable", "error", err)
 		return
@@ -174,15 +177,14 @@ func collectSystemdTiming(metrics *BootPerformanceMetrics) {
 
 // collectSystemdUnits enumerates enabled systemd service units.
 func collectSystemdUnits(metrics *BootPerformanceMetrics) {
-	cmd := exec.Command("systemctl", "list-unit-files",
+	output, err := runCollectorOutput(collectorShortCommandTimeout, "systemctl", "list-unit-files",
 		"--state=enabled", "--type=service", "--no-pager", "--no-legend")
-	output, err := cmd.Output()
 	if err != nil {
 		slog.Info("systemctl list-unit-files not available; systemd units will be omitted", "error", err)
 		return
 	}
 
-	scanner := bufio.NewScanner(bytes.NewReader(output))
+	scanner := newCollectorScanner(output)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -194,15 +196,24 @@ func collectSystemdUnits(metrics *BootPerformanceMetrics) {
 		}
 
 		unitName := fields[0]
+		if !isValidCollectorServiceUnit(unitName) {
+			continue
+		}
 		// Remove .service suffix for display
 		displayName := strings.TrimSuffix(unitName, ".service")
 
 		metrics.StartupItems = append(metrics.StartupItems, StartupItem{
-			Name:    displayName,
+			Name:    truncateCollectorString(displayName),
 			Type:    "systemd",
-			Path:    unitName,
+			Path:    truncateCollectorString(unitName),
 			Enabled: true,
 		})
+		if len(metrics.StartupItems) >= collectorResultLimit {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		slog.Warn("failed to parse systemd unit list", "error", err)
 	}
 }
 
@@ -233,12 +244,16 @@ func collectCronReboot(metrics *BootPerformanceMetrics) {
 
 // parseCronFile reads a crontab file and extracts @reboot entries.
 func parseCronFile(path string, metrics *BootPerformanceMetrics) {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() > collectorFileReadLimit {
+		return
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return
 	}
 
-	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner := newCollectorScanner(data)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -274,11 +289,14 @@ func parseCronFile(path string, metrics *BootPerformanceMetrics) {
 		name := filepath.Base(cmdParts[0])
 
 		metrics.StartupItems = append(metrics.StartupItems, StartupItem{
-			Name:    name,
+			Name:    truncateCollectorString(name),
 			Type:    "cron",
-			Path:    path + ": " + command,
+			Path:    truncateCollectorString(path + ": " + command),
 			Enabled: enabled,
 		})
+		if len(metrics.StartupItems) >= collectorResultLimit {
+			break
+		}
 	}
 }
 
@@ -323,11 +341,14 @@ func collectInitDScripts(metrics *BootPerformanceMetrics) {
 		}
 
 		metrics.StartupItems = append(metrics.StartupItems, StartupItem{
-			Name:    name,
+			Name:    truncateCollectorString(name),
 			Type:    "init_d",
-			Path:    scriptPath,
+			Path:    truncateCollectorString(scriptPath),
 			Enabled: true, // Present in init.d implies enabled on legacy systems
 		})
+		if len(metrics.StartupItems) >= collectorResultLimit {
+			break
+		}
 	}
 }
 
@@ -335,14 +356,13 @@ func collectInitDScripts(metrics *BootPerformanceMetrics) {
 func collectSystemdBlame() map[string]int64 {
 	result := make(map[string]int64)
 
-	cmd := exec.Command("systemd-analyze", "blame", "--no-pager")
-	output, err := cmd.Output()
+	output, err := runCollectorOutput(collectorShortCommandTimeout, "systemd-analyze", "blame", "--no-pager")
 	if err != nil {
 		slog.Info("systemd-analyze blame not available; per-service timing will be unavailable", "error", err)
 		return result
 	}
 
-	scanner := bufio.NewScanner(bytes.NewReader(output))
+	scanner := newCollectorScanner(output)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -358,12 +378,21 @@ func collectSystemdBlame() map[string]int64 {
 
 		timeStr := fields[0]
 		serviceName := strings.TrimSuffix(fields[1], ".service")
+		if !isValidCollectorServiceUnit(fields[1]) {
+			continue
+		}
 
 		seconds := parseSystemdTime(timeStr)
 		ms := int64(seconds * 1000)
 		if ms > 0 {
-			result[serviceName] = ms
+			result[truncateCollectorString(serviceName)] = ms
 		}
+		if len(result) >= collectorResultLimit {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		slog.Warn("failed to parse systemd blame output", "error", err)
 	}
 
 	return result
@@ -462,8 +491,7 @@ func getClkTck() int64 {
 		return cachedClkTck
 	}
 	clkTck := int64(100) // default: sysconf(_SC_CLK_TCK) on most Linux
-	cmd := exec.Command("getconf", "CLK_TCK")
-	if out, err := cmd.Output(); err == nil {
+	if out, err := runCollectorOutput(collectorShortCommandTimeout, "getconf", "CLK_TCK"); err == nil {
 		if val, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64); err == nil && val > 0 {
 			clkTck = val
 		}
@@ -540,11 +568,13 @@ func manageSystemdService(name, action string) error {
 	if !strings.HasSuffix(unitName, ".service") {
 		unitName = name + ".service"
 	}
+	if !isValidCollectorServiceUnit(unitName) {
+		return fmt.Errorf("invalid systemd unit %q", unitName)
+	}
 
-	cmd := exec.Command("systemctl", action, unitName)
-	output, err := cmd.CombinedOutput()
+	output, err := runCollectorCombinedOutput(collectorShortCommandTimeout, "systemctl", action, unitName)
 	if err != nil {
-		return fmt.Errorf("systemctl %s %s failed: %v: %s", action, unitName, err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("systemctl %s %s failed: %v: %s", action, unitName, err, truncateCollectorString(string(output)))
 	}
 	return nil
 }
@@ -626,24 +656,22 @@ func manageInitDService(name, action string) error {
 	// Try update-rc.d (Debian/Ubuntu)
 	updateRcD, err := exec.LookPath("update-rc.d")
 	if err == nil {
-		var cmd *exec.Cmd
+		var output []byte
 		if action == "disable" {
-			cmd = exec.Command(updateRcD, name, "disable")
+			output, err = runCollectorCombinedOutput(collectorShortCommandTimeout, updateRcD, name, "disable")
 		} else {
-			cmd = exec.Command(updateRcD, name, "enable")
+			output, err = runCollectorCombinedOutput(collectorShortCommandTimeout, updateRcD, name, "enable")
 		}
-		output, err := cmd.CombinedOutput()
 		if err == nil {
 			return nil
 		}
-		slog.Info("update-rc.d failed, falling back to systemctl", "service", name, "error", strings.TrimSpace(string(output)))
+		slog.Info("update-rc.d failed, falling back to systemctl", "service", name, "error", truncateCollectorString(string(output)))
 	}
 
 	// Fallback: use systemctl
-	cmd := exec.Command("systemctl", action, name)
-	output, err := cmd.CombinedOutput()
+	output, err := runCollectorCombinedOutput(collectorShortCommandTimeout, "systemctl", action, name)
 	if err != nil {
-		return fmt.Errorf("failed to %s init.d service %s: %v: %s", action, name, err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("failed to %s init.d service %s: %v: %s", action, name, err, truncateCollectorString(string(output)))
 	}
 	return nil
 }

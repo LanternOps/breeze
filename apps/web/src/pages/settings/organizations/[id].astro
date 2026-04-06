@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import OrgSettingsPage from '../../../components/settings/OrgSettingsPage';
+
+const { id } = Astro.params;
+---
+
+<DashboardLayout title="Organization Settings">
+  <OrgSettingsPage orgId={id} client:load />
+</DashboardLayout>

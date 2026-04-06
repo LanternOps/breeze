@@ -8,18 +8,21 @@ import RecentActivity from '../components/dashboard/RecentActivity';
 
 <DashboardLayout title="Dashboard">
   <div class="space-y-6">
-    <div>
-      <h1 class="text-2xl font-bold">Dashboard</h1>
-      <p class="text-muted-foreground">Overview of your managed devices and alerts</p>
+    <div class="animate-in">
+      <DashboardStats client:load />
     </div>
 
-    <DashboardStats client:load />
-
-    <div class="grid gap-6 lg:grid-cols-2">
+    <!-- Alerts get 2/3 width — that's what techs triage first -->
+    <div class="animate-in stagger-1 grid gap-6 lg:grid-cols-3">
+      <div class="lg:col-span-2">
+        <RecentAlerts client:load />
+      </div>
       <DeviceStatusChart client:load />
-      <RecentAlerts client:load />
     </div>
 
-    <RecentActivity client:load />
+    <!-- Activity — lightweight secondary section -->
+    <div class="animate-in stagger-2">
+      <RecentActivity client:load />
+    </div>
   </div>
 </DashboardLayout>

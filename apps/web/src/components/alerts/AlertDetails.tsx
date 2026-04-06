@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   X,
   ExternalLink,
@@ -7,12 +7,20 @@ import {
   XCircle,
   Clock,
   User,
-  AlertTriangle,
   Mail,
-  MessageSquare
+  MessageSquare,
+  Loader2
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { Alert, AlertSeverity, AlertStatus } from './AlertList';
+import {
+  severityConfig,
+  statusConfig,
+  formatRelativeTime,
+  formatDateTime,
+  type AlertSeverity,
+  type AlertStatus,
+} from './alertConfig';
+import type { Alert } from './AlertList';
 
 export type NotificationHistory = {
   id: string;
@@ -41,46 +49,7 @@ type AlertDetailsProps = {
   onAcknowledge?: (alert: Alert) => void;
   onResolve?: (alert: Alert, note: string) => void;
   onSuppress?: (alert: Alert) => void;
-};
-
-const severityConfig: Record<AlertSeverity, { label: string; color: string; bgColor: string; icon: typeof AlertTriangle }> = {
-  critical: {
-    label: 'Critical',
-    color: 'text-red-700 dark:text-red-400',
-    bgColor: 'bg-red-500/20 border-red-500/40',
-    icon: AlertTriangle
-  },
-  high: {
-    label: 'High',
-    color: 'text-orange-700 dark:text-orange-400',
-    bgColor: 'bg-orange-500/20 border-orange-500/40',
-    icon: AlertTriangle
-  },
-  medium: {
-    label: 'Medium',
-    color: 'text-yellow-700 dark:text-yellow-400',
-    bgColor: 'bg-yellow-500/20 border-yellow-500/40',
-    icon: AlertTriangle
-  },
-  low: {
-    label: 'Low',
-    color: 'text-blue-700 dark:text-blue-400',
-    bgColor: 'bg-blue-500/20 border-blue-500/40',
-    icon: AlertTriangle
-  },
-  info: {
-    label: 'Info',
-    color: 'text-gray-700 dark:text-gray-400',
-    bgColor: 'bg-gray-500/20 border-gray-500/40',
-    icon: AlertTriangle
-  }
-};
-
-const statusConfig: Record<AlertStatus, { label: string; color: string }> = {
-  active: { label: 'Active', color: 'bg-red-500/20 text-red-700 border-red-500/40' },
-  acknowledged: { label: 'Acknowledged', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40' },
-  resolved: { label: 'Resolved', color: 'bg-green-500/20 text-green-700 border-green-500/40' },
-  suppressed: { label: 'Suppressed', color: 'bg-gray-500/20 text-gray-700 border-gray-500/40' }
+  submitting?: boolean;
 };
 
 const channelIcons: Record<string, typeof Mail> = {
@@ -92,29 +61,6 @@ const channelIcons: Record<string, typeof Mail> = {
   sms: MessageSquare
 };
 
-function formatDateTime(dateString: string): string {
-  const date = new Date(dateString);
-  if (Number.isNaN(date.getTime())) return dateString;
-  return date.toLocaleString();
-}
-
-function formatRelativeTime(dateString: string): string {
-  const date = new Date(dateString);
-  if (Number.isNaN(date.getTime())) return dateString;
-
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / (1000 * 60));
-  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-  if (diffMins < 1) return 'Just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
-}
-
 export default function AlertDetails({
   alert,
   statusHistory = [],
@@ -123,10 +69,29 @@ export default function AlertDetails({
   onClose,
   onAcknowledge,
   onResolve,
-  onSuppress
+  onSuppress,
+  submitting = false
 }: AlertDetailsProps) {
   const [resolutionNote, setResolutionNote] = useState('');
   const [showResolveForm, setShowResolveForm] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // Trap Escape key
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
+  // Focus the panel when opened
+  useEffect(() => {
+    if (isOpen && panelRef.current) {
+      panelRef.current.focus();
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -139,26 +104,37 @@ export default function AlertDetails({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-background/80 px-4 py-8">
-      <div className="w-full max-w-3xl rounded-lg border bg-card shadow-lg">
+    <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true" aria-label={`Alert details: ${alert.title}`}>
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-background/60" onClick={onClose} />
+
+      {/* Slide-over panel */}
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        className="relative z-10 flex h-full w-full max-w-2xl flex-col border-l bg-card shadow-xl slide-in-right"
+      >
         {/* Header */}
-        <div className="flex items-start justify-between border-b p-6">
-          <div className="flex items-start gap-4">
+        <div className="flex items-start justify-between border-b px-6 py-4">
+          <div className="flex items-start gap-3 min-w-0">
             <div
               className={cn(
-                'flex h-10 w-10 items-center justify-center rounded-lg',
-                severityConfig[alert.severity].bgColor
+                'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg',
+                severityConfig[alert.severity].bg,
+                severityConfig[alert.severity].border,
+                'border'
               )}
             >
-              <SeverityIcon className={cn('h-5 w-5', severityConfig[alert.severity].color)} />
+              <SeverityIcon className={cn('h-4 w-4', severityConfig[alert.severity].color)} />
             </div>
-            <div>
-              <h2 className="text-xl font-semibold">{alert.title}</h2>
-              <div className="mt-1 flex flex-wrap items-center gap-2">
+            <div className="min-w-0">
+              <h2 className="text-lg font-semibold leading-tight truncate">{alert.title}</h2>
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                 <span
                   className={cn(
-                    'inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium',
-                    severityConfig[alert.severity].bgColor,
+                    'inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium',
+                    severityConfig[alert.severity].bg,
+                    severityConfig[alert.severity].border,
                     severityConfig[alert.severity].color
                   )}
                 >
@@ -166,7 +142,7 @@ export default function AlertDetails({
                 </span>
                 <span
                   className={cn(
-                    'inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium',
+                    'inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium',
                     statusConfig[alert.status].color
                   )}
                 >
@@ -178,14 +154,15 @@ export default function AlertDetails({
           <button
             type="button"
             onClick={onClose}
-            className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-muted"
+            aria-label="Close panel"
           >
             <X className="h-5 w-5" />
           </button>
         </div>
 
-        {/* Content */}
-        <div className="p-6 space-y-6">
+        {/* Scrollable content */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-5">
           {/* Alert Message */}
           <div className="rounded-md border bg-muted/20 p-4">
             <p className="text-sm">{alert.message}</p>
@@ -260,7 +237,7 @@ export default function AlertDetails({
                       >
                         {change.toStatus === 'active' && <Bell className="h-4 w-4" />}
                         {change.toStatus === 'acknowledged' && <CheckCircle className="h-4 w-4" />}
-                        {change.toStatus === 'resolved' && <XCircle className="h-4 w-4" />}
+                        {change.toStatus === 'resolved' && <CheckCircle className="h-4 w-4" />}
                         {change.toStatus === 'suppressed' && <Bell className="h-4 w-4" />}
                       </div>
                       {index < statusHistory.length - 1 && (
@@ -271,7 +248,7 @@ export default function AlertDetails({
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium">
                           {change.fromStatus
-                            ? `${statusConfig[change.fromStatus].label} -> ${statusConfig[change.toStatus].label}`
+                            ? `${statusConfig[change.fromStatus].label} \u2192 ${statusConfig[change.toStatus].label}`
                             : statusConfig[change.toStatus].label}
                         </span>
                         <span className="text-xs text-muted-foreground">
@@ -330,10 +307,10 @@ export default function AlertDetails({
                           className={cn(
                             'inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium',
                             notification.status === 'sent'
-                              ? 'bg-green-500/20 text-green-700 border-green-500/40'
+                              ? 'bg-success/15 text-success border-success/30'
                               : notification.status === 'failed'
-                                ? 'bg-red-500/20 text-red-700 border-red-500/40'
-                                : 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40'
+                                ? 'bg-destructive/15 text-destructive border-destructive/30'
+                                : 'bg-warning/15 text-warning border-warning/30'
                           )}
                         >
                           {notification.status}
@@ -352,7 +329,7 @@ export default function AlertDetails({
 
           {/* Resolution Note Form */}
           {showResolveForm && (
-            <div className="rounded-md border border-green-500/40 bg-green-500/10 p-4">
+            <div className="rounded-md border border-success/40 bg-success/5 p-4">
               <h3 className="text-sm font-semibold mb-3">Resolution Note</h3>
               <textarea
                 value={resolutionNote}
@@ -372,51 +349,67 @@ export default function AlertDetails({
                 <button
                   type="button"
                   onClick={handleResolve}
-                  className="h-9 rounded-md bg-green-600 px-4 text-sm font-medium text-white hover:bg-green-700"
+                  disabled={submitting}
+                  className="h-9 rounded-md bg-success px-4 text-sm font-medium text-success-foreground hover:bg-success/90 disabled:opacity-50"
                 >
-                  Resolve Alert
+                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Resolve Alert'}
                 </button>
               </div>
             </div>
           )}
         </div>
 
-        {/* Footer Actions */}
-        <div className="flex items-center justify-end gap-3 border-t p-6">
+        {/* Footer Actions — pinned to bottom */}
+        <div className="flex items-center justify-end gap-2 border-t px-6 py-4">
           <button
             type="button"
             onClick={onClose}
-            className="h-10 rounded-md border px-4 text-sm font-medium hover:bg-muted"
+            className="h-9 rounded-md border px-4 text-sm font-medium hover:bg-muted"
           >
             Close
           </button>
+          {alert.status !== 'suppressed' && alert.status !== 'resolved' && (
+            <button
+              type="button"
+              onClick={() => onSuppress?.(alert)}
+              disabled={submitting}
+              title="Silence this alert — stops notifications without resolving"
+              className="h-9 rounded-md border px-4 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+            >
+              Suppress
+            </button>
+          )}
           {alert.status === 'active' && (
             <button
               type="button"
               onClick={() => onAcknowledge?.(alert)}
-              className="h-10 rounded-md border border-yellow-500/40 bg-yellow-500/20 px-4 text-sm font-medium text-yellow-700 hover:bg-yellow-500/30"
+              disabled={submitting}
+              title="Mark as seen — stops escalation but keeps alert active"
+              className={cn(
+                'h-9 rounded-md border px-4 text-sm font-medium disabled:opacity-50',
+                'border-warning/40 bg-warning/10 text-warning hover:bg-warning/20'
+              )}
             >
-              <CheckCircle className="mr-2 inline-block h-4 w-4" />
-              Acknowledge
+              {submitting ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <>
+                  <CheckCircle className="mr-1.5 inline-block h-4 w-4" />
+                  Acknowledge
+                </>
+              )}
             </button>
           )}
           {(alert.status === 'active' || alert.status === 'acknowledged') && !showResolveForm && (
             <button
               type="button"
               onClick={() => setShowResolveForm(true)}
-              className="h-10 rounded-md bg-green-600 px-4 text-sm font-medium text-white hover:bg-green-700"
+              disabled={submitting}
+              title="Close this alert — marks the issue as fixed"
+              className="h-9 rounded-md bg-success px-4 text-sm font-medium text-success-foreground hover:bg-success/90 disabled:opacity-50"
             >
-              <XCircle className="mr-2 inline-block h-4 w-4" />
+              <CheckCircle className="mr-1.5 inline-block h-4 w-4" />
               Resolve
-            </button>
-          )}
-          {alert.status !== 'suppressed' && alert.status !== 'resolved' && (
-            <button
-              type="button"
-              onClick={() => onSuppress?.(alert)}
-              className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
-            >
-              Suppress
             </button>
           )}
         </div>
