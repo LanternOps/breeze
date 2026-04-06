@@ -71,6 +71,13 @@ var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Start the watchdog monitoring loop",
 	Run: func(cmd *cobra.Command, args []string) {
+		if isWindowsService() {
+			if err := runAsWindowsService(); err != nil {
+				fmt.Fprintf(os.Stderr, "Windows service error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 		runWatchdog()
 	},
 }
