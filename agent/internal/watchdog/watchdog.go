@@ -39,6 +39,7 @@ var transitions = map[string]map[string]string{
 	},
 	StateRecovering: {
 		EventAgentRecovered:    StateMonitoring,
+		EventIPCConnected:      StateMonitoring,
 		EventRecoveryExhausted: StateFailover,
 	},
 	StateStandby: {
@@ -48,6 +49,7 @@ var transitions = map[string]map[string]string{
 	},
 	StateFailover: {
 		EventAgentRecovered: StateMonitoring,
+		EventIPCConnected:   StateMonitoring,
 	},
 }
 
