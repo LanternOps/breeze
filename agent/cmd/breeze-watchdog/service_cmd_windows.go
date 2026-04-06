@@ -108,6 +108,63 @@ func serviceUninstallCmd() *cobra.Command {
 	}
 }
 
+// isWindowsService checks whether we were launched by the SCM.
+func isWindowsService() bool {
+	ok, err := svc.IsWindowsService()
+	if err != nil {
+		return false
+	}
+	return ok
+}
+
+// watchdogSvc implements svc.Handler for the Windows SCM.
+type watchdogSvc struct {
+	stopCh chan struct{}
+}
+
+// runAsWindowsService wraps runWatchdog under the SCM handler so that the
+// service correctly reports Running/Stopped status.
+func runAsWindowsService() error {
+	return svc.Run(windowsWatchdogServiceName, &watchdogSvc{
+		stopCh: make(chan struct{}),
+	})
+}
+
+// Execute is the SCM callback.
+func (s *watchdogSvc) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
+	changes <- svc.Status{State: svc.StartPending}
+
+	// Start the watchdog loop in a goroutine.
+	done := make(chan struct{})
+	go func() {
+		runWatchdog()
+		close(done)
+	}()
+
+	changes <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
+
+	for {
+		select {
+		case cr := <-r:
+			switch cr.Cmd {
+			case svc.Interrogate:
+				changes <- cr.CurrentStatus
+			case svc.Stop, svc.Shutdown:
+				changes <- svc.Status{State: svc.StopPending}
+				// Send SIGTERM-equivalent to the watchdog's signal handler.
+				p, _ := os.FindProcess(os.Getpid())
+				if p != nil {
+					p.Signal(os.Interrupt)
+				}
+				<-done
+				return false, 0
+			}
+		case <-done:
+			return false, 0
+		}
+	}
+}
+
 // restartWatchdogService restarts the watchdog Windows service via SCM.
 func restartWatchdogService() error {
 	m, err := mgr.Connect()
