@@ -1,4 +1,4 @@
-.PHONY: build build-agent build-desktop-helper build-backup build-all build-all-agent build-all-desktop-helper build-all-backup build-winres build-windows-msi clean test install install-service uninstall-service dev-push
+.PHONY: build build-agent build-desktop-helper build-backup build-all build-all-agent build-all-desktop-helper build-all-backup build-winres build-windows-msi clean test install install-service uninstall-service dev-push build-watchdog build-watchdog-linux build-watchdog-darwin build-watchdog-windows dev-push-watchdog dev-push-both
 
 VERSION ?= 0.5.0
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
@@ -169,3 +169,53 @@ endif
 		-F "version=$(DEV_VERSION)" \
 		-F "binary=@bin/breeze-agent-dev" | python3 -m json.tool
 	@echo "Dev push complete — agent will restart with $(DEV_VERSION)"
+
+# Watchdog targets
+build-watchdog:
+	go build $(LDFLAGS) -o bin/breeze-watchdog ./cmd/breeze-watchdog
+
+build-watchdog-linux:
+	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-watchdog-linux-amd64 ./cmd/breeze-watchdog
+	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o bin/breeze-watchdog-linux-arm64 ./cmd/breeze-watchdog
+
+build-watchdog-darwin:
+	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-watchdog-darwin-amd64 ./cmd/breeze-watchdog
+	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o bin/breeze-watchdog-darwin-arm64 ./cmd/breeze-watchdog
+
+build-watchdog-windows:
+	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-watchdog-windows-amd64.exe ./cmd/breeze-watchdog
+
+# Dev push watchdog: build + upload watchdog binary to API + trigger watchdog update
+# Usage: make dev-push-watchdog [DEVICE=<deviceId>] [API_URL=...] [AUTH_TOKEN=...]
+dev-push-watchdog:
+ifndef DEVICE
+	$(error DEVICE is required. Set BREEZE_DEV_DEVICE in ../.env.dev or pass DEVICE=<id>)
+endif
+ifndef AUTH_TOKEN
+	$(error AUTH_TOKEN is required. Set BREEZE_API_KEY in ../.env.dev or pass AUTH_TOKEN=<key>)
+endif
+	$(eval DEV_VERSION := dev-$(shell date +%s))
+	$(eval AUTH_HEADER := $(if $(filter brz_%,$(AUTH_TOKEN)),X-API-Key: $(AUTH_TOKEN),Authorization: Bearer $(AUTH_TOKEN)))
+	@echo "Querying device platform..."
+	$(eval PLATFORM := $(shell curl -sf "$(API_URL)/api/v1/devices/$(DEVICE)" -H "$(AUTH_HEADER)" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); os_map={'windows':'windows','macos':'darwin','linux':'linux'}; print(os_map.get(d.get('osType','linux'),'linux')+'/'+d.get('architecture','amd64'))" 2>/dev/null || echo ""))
+ifeq ($(PLATFORM),)
+	$(error Failed to query device platform from API. Check DEVICE ID and AUTH_TOKEN.)
+endif
+	$(eval TARGET_GOOS := $(word 1,$(subst /, ,$(PLATFORM))))
+	$(eval TARGET_GOARCH := $(word 2,$(subst /, ,$(PLATFORM))))
+	$(eval BUILD_GOOS := $(shell go env GOOS))
+	$(eval BUILD_GOARCH := $(shell go env GOARCH))
+	$(eval CGO_FLAG := $(if $(and $(filter $(BUILD_GOOS),$(TARGET_GOOS)),$(filter $(BUILD_GOARCH),$(TARGET_GOARCH))),,CGO_ENABLED=0))
+	@echo "Building watchdog for $(TARGET_GOOS)/$(TARGET_GOARCH) version=$(DEV_VERSION) (cgo=$(if $(CGO_FLAG),off,on))..."
+	GOOS=$(TARGET_GOOS) GOARCH=$(TARGET_GOARCH) $(CGO_FLAG) go build -ldflags "-X main.version=$(DEV_VERSION)" -o bin/breeze-watchdog-dev ./cmd/breeze-watchdog
+	@echo "Uploading watchdog binary to API..."
+	@curl -sf -X POST "$(API_URL)/api/v1/dev/push" \
+		-H "$(AUTH_HEADER)" \
+		-F "agentId=$(DEVICE)" \
+		-F "version=$(DEV_VERSION)" \
+		-F "component=watchdog" \
+		-F "binary=@bin/breeze-watchdog-dev" | python3 -m json.tool
+	@echo "Dev push watchdog complete — watchdog will restart with $(DEV_VERSION)"
+
+# Dev push both agent and watchdog in sequence
+dev-push-both: dev-push dev-push-watchdog

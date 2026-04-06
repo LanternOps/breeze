@@ -162,7 +162,10 @@ export const heartbeatSchema = z.object({
     remoteDesktopPermission: z.boolean().nullable().optional(),
     checkedAt: z.string().datetime({ offset: true }),
   }).optional(),
-  isHeadless: z.boolean().optional()
+  isHeadless: z.boolean().optional(),
+  role: z.enum(['agent', 'watchdog']).optional(),
+  watchdogState: z.string().optional(),
+  osType: z.string().optional(),
 });
 
 // ============================================
