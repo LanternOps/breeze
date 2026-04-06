@@ -7,7 +7,6 @@ import {
   devices,
   deviceMetrics,
   agentVersions,
-  deviceCommands,
 } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { heartbeatSchema } from './schemas';
@@ -45,26 +44,21 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
   if (isWatchdog) {
     // Update watchdog-specific columns only — don't touch agent metrics
-    await db.update(devices)
-      .set({
-        watchdogStatus: data.watchdogState === 'FAILOVER' ? 'failover' : 'connected',
-        watchdogLastSeen: new Date(),
-        watchdogVersion: data.agentVersion,
-        updatedAt: new Date(),
-      })
-      .where(eq(devices.id, device.id));
+    try {
+      await db.update(devices)
+        .set({
+          watchdogStatus: data.watchdogState === 'FAILOVER' ? 'failover' : 'connected',
+          watchdogLastSeen: new Date(),
+          watchdogVersion: data.agentVersion,
+          updatedAt: new Date(),
+        })
+        .where(eq(devices.id, device.id));
+    } catch (err) {
+      console.error('Failed to update watchdog status:', err);
+    }
 
-    // Check for watchdog-targeted commands
-    const watchdogCommands = await db.select()
-      .from(deviceCommands)
-      .where(
-        and(
-          eq(deviceCommands.deviceId, device.id),
-          eq(deviceCommands.targetRole, 'watchdog'),
-          eq(deviceCommands.status, 'pending'),
-        )
-      )
-      .limit(10);
+    // Claim watchdog-targeted commands (marks as sent to prevent duplicate delivery)
+    const watchdogCommands = await claimPendingCommandsForDevice(device.id, 10, 'watchdog');
 
     // Check for watchdog upgrade
     let watchdogUpgradeTo: string | undefined;
