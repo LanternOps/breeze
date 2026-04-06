@@ -512,9 +512,9 @@ func enrollDevice(enrollmentKey string) {
 	}
 
 	if cfg.AgentID != "" {
-		fmt.Fprintf(os.Stderr, "Agent is already enrolled with ID: %s\n", cfg.AgentID)
-		fmt.Fprintln(os.Stderr, "To re-enroll, delete the config file first.")
-		os.Exit(1)
+		fmt.Printf("Agent is already enrolled with ID: %s\n", cfg.AgentID)
+		fmt.Println("To re-enroll, delete the config file first.")
+		return // exit 0 — not an error, allows && chains to continue
 	}
 
 	fmt.Printf("Enrolling with server: %s\n", cfg.ServerURL)
