@@ -78,7 +78,7 @@ var runCmd = &cobra.Command{
 			}
 			return
 		}
-		runWatchdog()
+		runWatchdog(nil)
 	},
 }
 
@@ -135,7 +135,10 @@ func main() {
 }
 
 // runWatchdog is the main watchdog loop.
-func runWatchdog() {
+// stopCh is an optional channel that, when closed, triggers a clean shutdown.
+// On Unix this is nil (signal handling is used instead). On Windows the SCM
+// handler closes it on Stop/Shutdown.
+func runWatchdog(stopCh <-chan struct{}) {
 	cfg, err := config.Load("")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
@@ -257,6 +260,11 @@ func runWatchdog() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
 
+	// If no external stop channel provided, create a dummy that never fires.
+	if stopCh == nil {
+		stopCh = make(chan struct{})
+	}
+
 	// Create tickers for the three check intervals.
 	processTicker := time.NewTicker(wdCfg.ProcessCheckInterval)
 	defer processTicker.Stop()
@@ -274,8 +282,14 @@ func runWatchdog() {
 	for {
 		select {
 		case <-sigChan:
-			journal.Log(watchdog.LevelInfo, "watchdog.shutdown", nil)
+			journal.Log(watchdog.LevelInfo, "watchdog.shutdown", map[string]any{"trigger": "signal"})
 			fmt.Println("Watchdog shutting down")
+			ipcClient.Close()
+			return
+
+		case <-stopCh:
+			journal.Log(watchdog.LevelInfo, "watchdog.shutdown", map[string]any{"trigger": "scm"})
+			fmt.Println("Watchdog shutting down (SCM stop)")
 			ipcClient.Close()
 			return
 
