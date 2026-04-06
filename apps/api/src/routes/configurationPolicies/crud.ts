@@ -11,6 +11,7 @@ import {
   updateConfigPolicy,
   deleteConfigPolicy,
 } from '../../services/configurationPolicy';
+import { invalidateRemoteAccessCache } from '../../services/remoteAccessPolicy';
 import {
   createConfigPolicySchema,
   updateConfigPolicySchema,
@@ -122,6 +123,8 @@ crudRoutes.patch(
     const updated = await updateConfigPolicy(id, data, auth);
     if (!updated) return c.json({ error: 'Configuration policy not found' }, 404);
 
+    invalidateRemoteAccessCache();
+
     writeRouteAudit(c, {
       orgId: updated.orgId,
       action: 'config_policy.update',
@@ -147,6 +150,8 @@ crudRoutes.delete(
 
     const deleted = await deleteConfigPolicy(id, auth);
     if (!deleted) return c.json({ error: 'Configuration policy not found' }, 404);
+
+    invalidateRemoteAccessCache();
 
     writeRouteAudit(c, {
       orgId: deleted.orgId,

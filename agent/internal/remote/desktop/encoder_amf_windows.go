@@ -184,10 +184,14 @@ func (e *amfEncoder) Flush() error {
 // --- optionalStallDetector interface ---
 
 func (e *amfEncoder) IsPermanentlyStalled() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	return e.permanentlyStalled
 }
 
 func (e *amfEncoder) AdvanceStallDetection() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	// Called from the capture loop during idle periods. If we have pending
 	// nil outputs, check whether we should attempt recovery now.
 	if e.consecutiveNilOutputs >= amfStallThreshold {

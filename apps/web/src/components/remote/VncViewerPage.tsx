@@ -13,19 +13,15 @@ export default function VncViewerPage({ tunnelId, wsUrl, password: initialPasswo
   const [copied, setCopied] = useState(false);
   const [password, setPassword] = useState(initialPassword || '');
 
-  // Read password from URL hash (not query params) for security
+  // Read password from sessionStorage (set by ConnectDesktopButton before navigation)
   useEffect(() => {
-    const hash = window.location.hash;
-    if (hash) {
-      const params = new URLSearchParams(hash.slice(1));
-      const pwd = params.get('pwd');
-      if (pwd) {
-        setPassword(pwd);
-        // Strip password from URL for security
-        window.history.replaceState(null, '', window.location.pathname + window.location.search);
-      }
+    const key = `vnc-pwd-${tunnelId}`;
+    const pwd = sessionStorage.getItem(key);
+    if (pwd) {
+      setPassword(pwd);
+      sessionStorage.removeItem(key);
     }
-  }, []);
+  }, [tunnelId]);
 
   const handleDisconnect = useCallback(() => {
     fetchWithAuth(`/tunnels/${tunnelId}`, { method: 'DELETE' }).catch((err) => {
