@@ -44,6 +44,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/security"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
+	"github.com/breeze-rmm/agent/internal/state"
 	"github.com/breeze-rmm/agent/internal/tcc"
 	"github.com/breeze-rmm/agent/internal/terminal"
 	"github.com/breeze-rmm/agent/internal/tunnel"
@@ -196,6 +197,9 @@ type Heartbeat struct {
 
 	// Tracks whether the read-only FS error has been logged (prevents log spam)
 	updateReadOnlyLogged bool
+
+	// Path to the agent state file, set by main after startup.
+	statePath string
 }
 
 func New(cfg *config.Config) *Heartbeat {
@@ -401,6 +405,11 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 // SetWebSocketClient sets the WebSocket client for terminal output streaming
 func (h *Heartbeat) SetWebSocketClient(ws *websocket.Client) {
 	h.wsClient = ws
+}
+
+// SetStatePath sets the path to the agent state file for heartbeat updates.
+func (h *Heartbeat) SetStatePath(path string) {
+	h.statePath = path
 }
 
 func (h *Heartbeat) httpClient() *http.Client {
@@ -1903,6 +1912,14 @@ func (h *Heartbeat) sendHeartbeat() {
 	}
 
 	h.healthMon.Update("heartbeat", health.Healthy, "")
+
+	// Update state file with latest heartbeat timestamp so the watchdog
+	// can detect stale heartbeats.
+	if h.statePath != "" {
+		if err := state.UpdateHeartbeat(h.statePath, time.Now()); err != nil {
+			log.Warn("failed to update state file heartbeat", "error", err.Error())
+		}
+	}
 
 	// Heartbeat succeeded — commit (clear) the dropped log counter so it is
 	// not re-reported. If the POST had failed, the count would be preserved
