@@ -1074,11 +1074,16 @@ func (b *Broker) allowedHelperPaths() []string {
 	if err != nil {
 		exePath = filepath.Clean(exePath)
 	}
+	dir := filepath.Dir(exePath)
 	paths := []string{
 		exePath,
-		filepath.Join(filepath.Dir(exePath), "breeze-desktop-helper"),
+		filepath.Join(dir, "breeze-desktop-helper"),
+		filepath.Join(dir, "breeze-watchdog"),
+		filepath.Join(dir, "breeze-desktop-helper.exe"),
+		filepath.Join(dir, "breeze-watchdog.exe"),
 		"/usr/local/bin/breeze-agent",
 		"/usr/local/bin/breeze-desktop-helper",
+		"/usr/local/bin/breeze-watchdog",
 	}
 	seen := make(map[string]struct{}, len(paths))
 	out := make([]string, 0, len(paths))
