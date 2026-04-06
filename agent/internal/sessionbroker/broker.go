@@ -42,8 +42,9 @@ const (
 
 // Role-based scopes: SYSTEM helpers own desktop capture, user-token helpers own script execution.
 var (
-	systemHelperScopes = []string{"notify", "tray", "clipboard", "desktop"}
-	userHelperScopes   = []string{"notify", "clipboard", "run_as_user"}
+	systemHelperScopes   = []string{"notify", "tray", "clipboard", "desktop"}
+	userHelperScopes     = []string{"notify", "clipboard", "run_as_user"}
+	watchdogHelperScopes = []string{"watchdog"}
 )
 
 // MessageHandler is called when a user helper sends a message that isn't
@@ -58,6 +59,7 @@ type Broker struct {
 	socketPath  string
 	listener    net.Listener
 	rateLimiter *ipc.RateLimiter
+	startTime   time.Time // broker creation time, used for watchdog uptime
 
 	mu           sync.RWMutex
 	sessions     map[string]*Session   // sessionID -> Session
@@ -76,6 +78,7 @@ func New(socketPath string, onMessage MessageHandler) *Broker {
 	b := &Broker{
 		socketPath:   socketPath,
 		rateLimiter:  ipc.NewRateLimiter(RateLimitAttempts, RateLimitWindow),
+		startTime:    time.Now(),
 		sessions:     make(map[string]*Session),
 		byIdentity:   make(map[string][]*Session),
 		staleHelpers: make(map[string][]int),
@@ -745,8 +748,9 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	// On Windows, SYSTEM helpers must run as SYSTEM (S-1-5-18), and user helpers
 	// must NOT run as SYSTEM. This prevents a non-SYSTEM process from claiming
 	// system role to get desktop scopes, or SYSTEM from claiming user role.
+	// The watchdog must also run as root/SYSTEM.
+	const systemSID = "S-1-5-18"
 	if runtime.GOOS == "windows" {
-		const systemSID = "S-1-5-18"
 		if helperRole == ipc.HelperRoleSystem && creds.SID != systemSID {
 			log.Warn("role/identity mismatch: non-SYSTEM process claiming system role",
 				"sid", creds.SID, "pid", creds.PID)
@@ -767,6 +771,28 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 			conn.Close()
 			return
 		}
+		if helperRole == ipc.HelperRoleWatchdog && creds.SID != systemSID {
+			log.Warn("role/identity mismatch: non-SYSTEM process claiming watchdog role",
+				"sid", creds.SID, "pid", creds.PID)
+			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+				Accepted: false,
+				Reason:   "watchdog role requires SYSTEM identity",
+			})
+			conn.Close()
+			return
+		}
+	} else {
+		// Unix: watchdog must run as root (UID 0).
+		if helperRole == ipc.HelperRoleWatchdog && creds.UID != 0 {
+			log.Warn("role/identity mismatch: non-root process claiming watchdog role",
+				"uid", creds.UID, "pid", creds.PID)
+			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+				Accepted: false,
+				Reason:   "watchdog role requires root identity",
+			})
+			conn.Close()
+			return
+		}
 	}
 
 	var scopes []string
@@ -775,6 +801,8 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		scopes = userHelperScopes
 	case backupipc.HelperRoleBackup:
 		scopes = backupHelperScopes
+	case ipc.HelperRoleWatchdog:
+		scopes = watchdogHelperScopes
 	default:
 		helperRole = ipc.HelperRoleSystem
 		scopes = systemHelperScopes
@@ -893,6 +921,37 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		case ipc.TypeDisconnect:
 			log.Info("user helper disconnecting", "uid", s.UID, "sessionId", s.SessionID)
 			s.Close()
+		case ipc.TypeWatchdogPing:
+			if !s.HasScope("watchdog") {
+				log.Warn("dropping watchdog_ping from non-watchdog session",
+					"sessionId", s.SessionID, "role", s.HelperRole)
+				return
+			}
+			var ping ipc.WatchdogPing
+			if err := json.Unmarshal(env.Payload, &ping); err != nil {
+				log.Warn("invalid watchdog_ping payload", "error", err.Error())
+				return
+			}
+			pong := ipc.WatchdogPong{
+				Healthy: true,
+				Uptime:  int64(time.Since(b.startTime).Seconds()),
+			}
+			if ping.RequestHealthSummary && b.onMessage != nil {
+				// Health summary is populated by the heartbeat module via onMessage;
+				// for the broker-level ping we include uptime only.
+			}
+			if err := s.SendNotify(env.ID, ipc.TypeWatchdogPong, pong); err != nil {
+				log.Warn("failed to send watchdog_pong", "error", err.Error())
+			}
+		case ipc.TypeWatchdogCommandResult:
+			if !shouldForwardUnsolicitedHelperMessage(s, env) {
+				log.Warn("dropping unauthorized watchdog_command_result",
+					"sessionId", s.SessionID, "role", s.HelperRole)
+				return
+			}
+			if b.onMessage != nil {
+				b.onMessage(s, env)
+			}
 		case backupipc.TypeBackupResult, backupipc.TypeBackupProgress, backupipc.TypeBackupReady:
 			if !shouldForwardUnsolicitedHelperMessage(s, env) {
 				log.Warn("dropping unauthorized backup helper message",
@@ -1174,6 +1233,8 @@ func shouldForwardUnsolicitedHelperMessage(session *Session, env *ipc.Envelope) 
 		return session.HasScope("tray")
 	case ipc.TypeSASRequest, ipc.TypeDesktopPeerDisconnected:
 		return session.HasScope("desktop")
+	case ipc.TypeWatchdogCommandResult:
+		return session.HasScope("watchdog")
 	case ipc.TypeNotifyResult, ipc.TypeClipboardData, ipc.TypeCommandResult:
 		return false
 	default:
