@@ -115,9 +115,12 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           throw new Error('Invalid ticket response from server');
         }
 
-        // Navigate to the in-browser VNC viewer
+        // Pass password via sessionStorage (not URL) to avoid browser history exposure
         const wsUrl = `wss://${window.location.host}/api/v1/tunnel-ws/${tunnel.id}/ws?ticket=${ticket}`;
-        window.location.href = `/remote/vnc/${tunnel.id}?ws=${encodeURIComponent(wsUrl)}#pwd=${encodeURIComponent(vncPassword)}`;
+        if (vncPassword) {
+          sessionStorage.setItem(`vnc-pwd-${tunnel.id}`, vncPassword);
+        }
+        window.location.href = `/remote/vnc/${tunnel.id}?ws=${encodeURIComponent(wsUrl)}`;
 
         setStatus('idle');
         return;

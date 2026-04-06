@@ -11,6 +11,7 @@ import {
   listAssignments,
   listAssignmentsForTarget,
 } from '../../services/configurationPolicy';
+import { invalidateRemoteAccessCache } from '../../services/remoteAccessPolicy';
 import {
   assignPolicySchema,
   targetQuerySchema,
@@ -66,6 +67,9 @@ assignmentRoutes.post(
         data.osFilter
       );
 
+      // Invalidate remote access policy cache — assignment may affect access decisions
+      invalidateRemoteAccessCache();
+
       writeRouteAudit(c, {
         orgId: policy.orgId,
         action: 'config_policy.assign',
@@ -100,6 +104,9 @@ assignmentRoutes.delete(
 
     const deleted = await unassignPolicy(aid, id);
     if (!deleted) return c.json({ error: 'Assignment not found' }, 404);
+
+    // Invalidate remote access policy cache — unassignment may affect access decisions
+    invalidateRemoteAccessCache();
 
     writeRouteAudit(c, {
       orgId: policy.orgId,
