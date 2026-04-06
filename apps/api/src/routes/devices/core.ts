@@ -24,6 +24,62 @@ import { sendCommandToAgent, isAgentConnected } from '../agentWs';
 import { CommandTypes } from '../../services/commandQueue';
 import { getGlobalEnrollmentSecret } from '../agents/enrollment';
 
+/**
+ * All tables with a direct device_id FK to devices.id, ordered so children come
+ * before parents (to avoid FK violations during cascade delete).
+ *
+ * Tables whose only FK to devices is via an intermediate table with ON DELETE CASCADE
+ * (e.g. vault_snapshot_inventory → local_vaults) don't need to be listed here.
+ *
+ * IMPORTANT: When you add a new table with a device_id FK, add it here.
+ * The test in core.test.ts will fail CI if you forget.
+ */
+export const DEVICE_CASCADE_DELETE_TABLES = [
+  // recovery_tokens & backup_chains FK to backup_snapshots (no cascade),
+  // so delete them first, then restore_jobs → backup_snapshots → backup_jobs
+  'recovery_tokens', 'backup_chains',
+  'restore_jobs', 'backup_verifications', 'backup_snapshots', 'backup_jobs',
+  // Application backup & DR
+  'sql_instances', 'local_vaults', 'hyperv_vms',
+  // Core device tables
+  'device_group_memberships', 'group_membership_log',
+  'device_hardware', 'device_network', 'device_ip_history', 'device_disks',
+  'device_metrics', 'device_software', 'device_registry_state', 'device_config_state',
+  'device_commands', 'device_connections', 'device_boot_metrics',
+  'device_sessions', 'device_change_log', 'device_warranty',
+  // Patches
+  'device_patches', 'patch_job_results', 'patch_rollbacks',
+  // Deployments & software
+  'deployment_devices', 'deployment_results', 'software_inventory',
+  'software_compliance_status', 'software_policy_audit',
+  // Remote access
+  'remote_sessions', 'file_transfers', 'tunnel_sessions',
+  // Monitoring & logs
+  'service_process_check_results', 'alerts', 'agent_logs', 'script_executions',
+  'device_event_logs', 'automation_policy_compliance', 'backup_sla_events',
+  // Security
+  'sensitive_data_scans', 'sensitive_data_findings',
+  'dns_security_events', 'dns_event_aggregations',
+  'security_status', 'security_threats', 'security_scans', 'security_posture_snapshots',
+  'cis_baseline_results', 'cis_remediation_actions',
+  'browser_extensions', 'browser_policy_violations',
+  'audit_baseline_results', 'audit_policy_states',
+  'peripheral_events',
+  's1_agents', 's1_threats', 's1_actions',
+  'huntress_agents', 'huntress_incidents',
+  // AI & context
+  'ai_sessions', 'ai_screenshots', 'brain_device_context',
+  // Analytics & reliability
+  'device_reliability_history', 'device_reliability',
+  'playbook_executions', 'time_series_metrics', 'capacity_predictions',
+  // Portal & integrations
+  'psa_ticket_mappings', 'tickets', 'asset_checkouts',
+  // Filesystem
+  'device_filesystem_snapshots', 'device_filesystem_cleanup_runs', 'device_filesystem_scan_state',
+  // Backup verification
+  'recovery_readiness',
+] as const;
+
 export const coreRoutes = new Hono();
 
 coreRoutes.use('*', authMiddleware);
@@ -681,48 +737,7 @@ coreRoutes.delete(
         await tx.execute(sql`UPDATE network_change_events SET alert_id = NULL WHERE alert_id IN ${deviceAlertIds}`);
         await tx.execute(sql`UPDATE network_change_events SET linked_device_id = NULL WHERE linked_device_id = ${deviceId}`);
 
-        // All tables with a device_id FK, ordered so children come before parents.
-        const tables = [
-          // Backup chain: restore_jobs → backup_snapshots → backup_jobs
-          'restore_jobs', 'backup_verifications', 'backup_snapshots', 'backup_jobs',
-          // Core device tables
-          'device_group_memberships', 'group_membership_log',
-          'device_hardware', 'device_network', 'device_ip_history', 'device_disks',
-          'device_metrics', 'device_software', 'device_registry_state', 'device_config_state',
-          'device_commands', 'device_connections', 'device_boot_metrics',
-          'device_sessions', 'device_change_log', 'device_warranty',
-          // Patches
-          'device_patches', 'patch_job_results', 'patch_rollbacks',
-          // Deployments & software
-          'deployment_devices', 'deployment_results', 'software_inventory',
-          'software_compliance_status', 'software_policy_audit',
-          // Remote access
-          'remote_sessions', 'file_transfers', 'tunnel_sessions',
-          // Monitoring & logs
-          'service_process_check_results', 'alerts', 'agent_logs', 'script_executions',
-          'device_event_logs', 'automation_policy_compliance',
-          // Security
-          'sensitive_data_scans', 'sensitive_data_findings',
-          'dns_security_events', 'dns_event_aggregations',
-          'security_status', 'security_threats', 'security_scans', 'security_posture_snapshots',
-          'cis_baseline_results', 'cis_remediation_actions',
-          'browser_extensions', 'browser_policy_violations',
-          'audit_baseline_results', 'audit_policy_states',
-          'peripheral_events',
-          's1_agents', 's1_threats', 's1_actions',
-          'huntress_agents', 'huntress_incidents',
-          // AI & context
-          'ai_sessions', 'ai_screenshots', 'brain_device_context',
-          // Analytics & reliability
-          'device_reliability_history', 'device_reliability',
-          'playbook_executions', 'time_series_metrics', 'capacity_predictions',
-          // Portal & integrations
-          'psa_ticket_mappings', 'tickets', 'asset_checkouts',
-          // Filesystem
-          'device_filesystem_snapshots', 'device_filesystem_cleanup_runs', 'device_filesystem_scan_state',
-          // Backup verification
-          'recovery_readiness',
-        ];
+        const tables = DEVICE_CASCADE_DELETE_TABLES;
         for (const table of tables) {
           await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE device_id = ${deviceId}`);
         }

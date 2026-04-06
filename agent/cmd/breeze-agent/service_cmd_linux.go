@@ -42,7 +42,7 @@ RestartSec=5
 # Security hardening
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/etc/breeze /var/lib/breeze /var/log/breeze /var/cache/apt /var/lib/apt /var/lib/dpkg /var/log/apt /usr/local/bin/breeze-agent
+ReadWritePaths=/etc/breeze /var/lib/breeze /var/log/breeze /var/run/breeze /var/cache/apt /var/lib/apt /var/lib/dpkg /var/log/apt /usr/local/bin
 PrivateTmp=true
 NoNewPrivileges=false
 CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_FOWNER
@@ -173,9 +173,14 @@ var serviceInstallCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "Warning: failed to enable service: %s\n", strings.TrimSpace(string(out)))
 		}
 
-		// Create breeze group for IPC socket access (best-effort)
-		if err := exec.Command("groupadd", "--system", "breeze").Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to create 'breeze' group: %v (may already exist)\n", err)
+		// Create breeze group for IPC socket access (best-effort, idempotent)
+		if err := exec.Command("getent", "group", "breeze").Run(); err != nil {
+			// Group doesn't exist — create it
+			if createErr := exec.Command("groupadd", "--system", "breeze").Run(); createErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to create 'breeze' group: %v\n", createErr)
+			} else {
+				fmt.Println("Created 'breeze' group for IPC socket access.")
+			}
 		}
 
 		// Create IPC socket directory

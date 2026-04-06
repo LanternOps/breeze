@@ -102,9 +102,9 @@ if [ -f "$XDG_SRC" ]; then
     echo "XDG autostart desktop file installed."
 fi
 
-# Create breeze group for IPC socket access
+# Create breeze group for IPC socket access (idempotent)
 if ! getent group breeze &>/dev/null; then
-    groupadd --system breeze
+    groupadd --system breeze 2>/dev/null || true
     echo "Created 'breeze' group for IPC socket access."
 fi
 

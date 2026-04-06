@@ -36,7 +36,7 @@ RestartSec=5
 # Security hardening
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/etc/breeze /var/lib/breeze /var/log/breeze /usr/local/bin/breeze-watchdog /usr/local/bin/breeze-agent
+ReadWritePaths=/etc/breeze /var/lib/breeze /var/log/breeze /var/run/breeze /usr/local/bin
 PrivateTmp=true
 
 # Logging (stdout goes to journald)
