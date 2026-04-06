@@ -22,7 +22,7 @@
     "@hookform/resolvers": "^5.2.2",
     "@monaco-editor/react": "^4.6.0",
     "@novnc/novnc": "1.7.0-beta",
-    "@tanstack/react-query": "^5.95.2",
+    "@tanstack/react-query": "^5.96.2",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
