@@ -8,6 +8,9 @@
 <?ifndef BackupExePath?>
 <?define BackupExePath=..\breeze-backup-windows-amd64.exe?>
 <?endif?>
+<?ifndef WatchdogExePath?>
+<?define WatchdogExePath=..\breeze-watchdog-windows-amd64.exe?>
+<?endif?>
 <?ifndef UserTaskXmlPath?>
 <?define UserTaskXmlPath=..\service\windows\breeze-agent-user-task.xml?>
 <?endif?>
@@ -72,6 +75,25 @@
         <Component Id="cmpBreezeBackupExe" Guid="*">
           <File Id="filBreezeBackupExe" Name="breeze-backup.exe"
                 Source="$(var.BackupExePath)" KeyPath="yes" />
+        </Component>
+
+        <Component Id="cmpBreezeWatchdogExe" Guid="*">
+          <File Id="filBreezeWatchdogExe" Name="breeze-watchdog.exe"
+                Source="$(var.WatchdogExePath)" KeyPath="yes" />
+          <ServiceInstall Id="svcInstallWatchdog"
+                          Name="BreezeWatchdog"
+                          DisplayName="Breeze RMM Watchdog"
+                          Description="Monitors and recovers the Breeze RMM Agent"
+                          Start="auto"
+                          Type="ownProcess"
+                          ErrorControl="normal"
+                          Arguments="run" />
+          <ServiceControl Id="svcControlWatchdog"
+                          Name="BreezeWatchdog"
+                          Start="install"
+                          Stop="both"
+                          Remove="uninstall"
+                          Wait="yes" />
         </Component>
 
         <!-- Register BreezeAgent to run in Safe Mode with Networking. Without this,
@@ -175,6 +197,7 @@
     <Feature Id="MainFeature" Title="Breeze Agent" Level="1">
       <ComponentRef Id="cmpBreezeAgentExe" />
       <ComponentRef Id="cmpBreezeBackupExe" />
+      <ComponentRef Id="cmpBreezeWatchdogExe" />
       <ComponentRef Id="cmpSafeBootNetworkReg" />
       <ComponentRef Id="cmpUserTaskXml" />
       <ComponentRef Id="cmpInstallWindowsPs1" />

@@ -2,6 +2,9 @@
 # Breeze Agent macOS .pkg preinstall script
 # Stops the existing agent service before files are replaced.
 
+# Stop watchdog
+launchctl bootout system/com.breeze.watchdog 2>/dev/null || true
+
 # Stop existing daemon gracefully
 launchctl bootout system/com.breeze.agent 2>/dev/null || true
 
