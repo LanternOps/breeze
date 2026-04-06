@@ -13,6 +13,7 @@ import { eventLogsRoutes } from './eventlogs';
 import { filesystemRoutes } from './filesystem';
 import { sessionsRoutes } from './sessions';
 import { diagnosticLogsRoutes } from './diagnosticLogs';
+import { watchdogLogsRoutes } from './watchdogLogs';
 import { bootMetricsRoutes } from './bootMetrics';
 import { diagnoseRoutes } from './diagnose';
 import { warrantyRoutes } from './warranty';
@@ -43,6 +44,7 @@ deviceRoutes.route('/', eventsRoutes);
 deviceRoutes.route('/', eventLogsRoutes);
 deviceRoutes.route('/', sessionsRoutes);
 deviceRoutes.route('/', diagnosticLogsRoutes);
+deviceRoutes.route('/', watchdogLogsRoutes);
 deviceRoutes.route('/', warrantyRoutes);
 deviceRoutes.route('/', bootMetricsRoutes);
 
