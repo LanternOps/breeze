@@ -69,6 +69,7 @@ func (c *FailoverClient) SendHeartbeat(watchdogVersion, currentState string, jou
 	body := map[string]any{
 		"role":           "watchdog",
 		"watchdogState":  currentState,
+		"status":         "ok",
 		"agentVersion":   watchdogVersion,
 		"journalExcerpt": journalEntries,
 		"timestamp":      time.Now().UTC().Format(time.RFC3339),
