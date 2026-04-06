@@ -256,8 +256,7 @@ jobs:
             dotnet tool install --global wix | Out-Null
           }
           "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-        env:
-          WIX_OSMF_EULA_ACCEPTED: "true"
+          wix eula accept wix7
 
       - name: Get version from tag
         id: version
@@ -408,8 +407,6 @@ jobs:
 
       - name: Build MSI
         shell: pwsh
-        env:
-          WIX_OSMF_EULA_ACCEPTED: "true"
         run: |
           $root = $env:GITHUB_WORKSPACE
           $version = "${{ steps.version.outputs.version }}"
