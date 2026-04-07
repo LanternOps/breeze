@@ -39,7 +39,8 @@ function Get-CustomActionDataValue {
 }
 
 $serverUrl = Get-CustomActionDataValue -Data $CustomActionData -Key "SERVER_URL" -NextKey "ENROLLMENT_KEY"
-$enrollmentKey = Get-CustomActionDataValue -Data $CustomActionData -Key "ENROLLMENT_KEY"
+$enrollmentKey = Get-CustomActionDataValue -Data $CustomActionData -Key "ENROLLMENT_KEY" -NextKey "ENROLLMENT_SECRET"
+$enrollmentSecret = Get-CustomActionDataValue -Data $CustomActionData -Key "ENROLLMENT_SECRET"
 
 if ([string]::IsNullOrWhiteSpace($serverUrl) -or [string]::IsNullOrWhiteSpace($enrollmentKey)) {
     exit 0
@@ -61,7 +62,12 @@ if (Test-Path $configPath) {
     exit 0
 }
 
-& $agentExe enroll $enrollmentKey --server $serverUrl
+$enrollArgs = @("enroll", $enrollmentKey, "--server", $serverUrl)
+if (-not [string]::IsNullOrWhiteSpace($enrollmentSecret)) {
+    $enrollArgs += "--enrollment-secret"
+    $enrollArgs += $enrollmentSecret
+}
+& $agentExe @enrollArgs
 if ($LASTEXITCODE -ne 0) {
     throw "Enrollment command failed with exit code $LASTEXITCODE"
 }
