@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { List, Grid, Plus, Copy, Loader2, X, AlertCircle, ArrowRight } from 'lucide-react';
+import { List, Grid, Plus, AlertCircle, ArrowRight } from 'lucide-react';
 import { showToast } from '../shared/Toast';
 import type { FilterConditionGroup } from '@breeze/shared';
 import DeviceList, { type Device, type DeviceStatus, type OSType } from './DeviceList';
@@ -7,6 +7,7 @@ import type { DeviceRole } from '@/lib/deviceRoles';
 import DeviceCard from './DeviceCard';
 import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
 import DeviceSettingsModal from './DeviceSettingsModal';
+import AddDeviceModal from './AddDeviceModal';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { fetchWithAuth } from '../../stores/auth';
 import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice } from '../../services/deviceActions';
@@ -14,14 +15,6 @@ import { navigateTo } from '@/lib/navigation';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { asRecord, toPercent } from '@/lib/deviceUtils';
 import ProgressBar from '../shared/ProgressBar';
-
-function detectUserOS(): 'windows' | 'macos' | 'linux' {
-  if (typeof navigator === 'undefined') return 'linux';
-  const ua = navigator.userAgent.toLowerCase();
-  if (ua.includes('win')) return 'windows';
-  if (ua.includes('mac')) return 'macos';
-  return 'linux';
-}
 
 type ViewMode = 'list' | 'grid';
 
@@ -44,17 +37,11 @@ export default function DevicesPage() {
   const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [actionInProgress, setActionInProgress] = useState(false);
   const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number; label: string } | null>(null);
-  const [showOnboarding, setShowOnboarding] = useState(false);
-  const [onboardingToken, setOnboardingToken] = useState<string>('');
-  const [enrollmentSecret, setEnrollmentSecret] = useState<string>('');
-  const [tokenLoading, setTokenLoading] = useState(false);
-  const [tokenCopied, setTokenCopied] = useState(false);
-  const [tokenError, setTokenError] = useState<string>();
+  const [showAddDevice, setShowAddDevice] = useState(false);
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   const [scriptTargetDevices, setScriptTargetDevices] = useState<Device[]>([]);
   const [settingsDevice, setSettingsDevice] = useState<Device | null>(null);
   const [advancedFilter, setAdvancedFilter] = useState<FilterConditionGroup | null>(null);
-  const [selectedOS, setSelectedOS] = useState<'windows' | 'macos' | 'linux'>(detectUserOS);
 
   const scriptTargetLabel =
     scriptTargetDevices.length === 1
@@ -154,80 +141,6 @@ export default function DevicesPage() {
   useEffect(() => {
     fetchDevices();
   }, [fetchDevices]);
-
-  const handleOpenOnboarding = async () => {
-    setShowOnboarding(true);
-    setTokenLoading(true);
-    setOnboardingToken('');
-    setEnrollmentSecret('');
-    setTokenError(undefined);
-
-    try {
-      const response = await fetchWithAuth('/devices/onboarding-token', {
-        method: 'POST'
-      });
-
-      if (!response.ok) {
-        if (response.status === 401) {
-          void navigateTo('/login', { replace: true });
-          return;
-        }
-        let errorMessage = 'Failed to generate installation token';
-        try {
-          const errorData = await response.json();
-          const rawMessage = errorData.message || errorData.error || '';
-          if (response.status === 403 && rawMessage.toLowerCase().includes('mfa required')) {
-            errorMessage = 'MFA_REQUIRED';
-          } else {
-            errorMessage = rawMessage || errorMessage;
-          }
-        } catch {
-          if (response.status === 404) {
-            errorMessage = 'Token generation service not available. Please contact support.';
-          } else if (response.status >= 500) {
-            errorMessage = 'Server error. Please try again later.';
-          }
-        }
-        setTokenError(errorMessage);
-        return;
-      }
-
-      const data = await response.json();
-      const token = data.token ?? data.onboardingToken ?? data.data?.token;
-      if (!token) {
-        setTokenError('Server returned empty token. Please try again.');
-        return;
-      }
-      setOnboardingToken(token);
-      if (data.enrollmentSecret) {
-        setEnrollmentSecret(data.enrollmentSecret);
-      }
-    } catch (err) {
-      setTokenError(err instanceof Error ? err.message : 'Network error. Please check your connection.');
-    } finally {
-      setTokenLoading(false);
-    }
-  };
-
-  const handleCopyToken = async () => {
-    if (!onboardingToken) return;
-    try {
-      await navigator.clipboard.writeText(onboardingToken);
-      setTokenCopied(true);
-      setTimeout(() => setTokenCopied(false), 2000);
-    } catch {
-      showToast({ type: 'error', message: 'Failed to copy token' });
-    }
-  };
-
-  const handleCopyCommand = async (command: string) => {
-    try {
-      await navigator.clipboard.writeText(command);
-      showToast({ type: 'success', message: 'Command copied to clipboard' });
-    } catch {
-      showToast({ type: 'error', message: 'Failed to copy command' });
-    }
-  };
 
   const handleSelectDevice = (device: Device) => {
     void navigateTo(`/devices/${device.id}`);
@@ -560,7 +473,7 @@ export default function DevicesPage() {
           </div>
           <button
             type="button"
-            onClick={handleOpenOnboarding}
+            onClick={() => setShowAddDevice(true)}
             className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
           >
             <Plus className="h-4 w-4" />
@@ -627,158 +540,7 @@ export default function DevicesPage() {
         </div>
       )}
 
-      {showOnboarding && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8 overflow-y-auto"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="onboarding-title"
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') setShowOnboarding(false);
-          }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setShowOnboarding(false);
-          }}
-        >
-          <div className="w-full max-w-2xl rounded-lg border bg-card p-6 shadow-sm">
-            <div className="flex items-center justify-between mb-4">
-              <h2 id="onboarding-title" className="text-lg font-semibold">Add New Device</h2>
-              <button
-                type="button"
-                onClick={() => setShowOnboarding(false)}
-                className="h-8 w-8 rounded-md hover:bg-muted flex items-center justify-center"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            <p className="text-sm text-muted-foreground mb-6">
-              Install the Breeze agent on your device to add it to your fleet. Use the installation token and commands below.
-            </p>
-
-            <div className="space-y-6">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">Step 1 — Copy your installation token</p>
-                <div className="rounded-lg border bg-muted/30 p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="text-sm font-medium">Installation Token</label>
-                    <button
-                      type="button"
-                      onClick={handleCopyToken}
-                      disabled={tokenLoading || !onboardingToken}
-                      className="inline-flex items-center gap-1 text-xs text-primary hover:underline disabled:opacity-50"
-                    >
-                      <Copy className="h-3 w-3" />
-                      {tokenCopied ? 'Copied!' : 'Copy'}
-                    </button>
-                  </div>
-                  {tokenLoading ? (
-                    <div className="flex items-center gap-2 py-2">
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      <span className="text-sm text-muted-foreground">Generating token...</span>
-                    </div>
-                  ) : tokenError === 'MFA_REQUIRED' ? (
-                    <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700">
-                      Multi-factor authentication is required to generate installation tokens.{' '}
-                      <a
-                        href="/settings/profile"
-                        className="font-medium underline hover:no-underline"
-                      >
-                        Set up MFA in your profile settings
-                      </a>{' '}
-                      and sign in again, then retry.
-                    </div>
-                  ) : tokenError ? (
-                    <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-                      {tokenError}
-                      <button
-                        type="button"
-                        onClick={handleOpenOnboarding}
-                        className="ml-2 underline hover:no-underline"
-                      >
-                        Retry
-                      </button>
-                    </div>
-                  ) : (
-                    <code className="block rounded-md bg-background p-3 text-sm font-mono break-all">
-                      {onboardingToken || 'No token available'}
-                    </code>
-                  )}
-                </div>
-              </div>
-
-              {(() => {
-                const apiUrl = (import.meta.env.PUBLIC_API_URL || window.location.origin).replace(/\/$/, '');
-                const ghBase = (import.meta.env.PUBLIC_AGENT_DOWNLOAD_URL || 'https://github.com/lanternops/breeze/releases/latest/download').replace(/\/$/, '');
-                const token = onboardingToken || '<TOKEN>';
-
-                const secretFlag = enrollmentSecret ? ` --enrollment-secret "${enrollmentSecret}"` : '';
-                const winCmd = `Invoke-WebRequest -Uri "${ghBase}/breeze-agent-windows-amd64.exe" -OutFile breeze-agent.exe; .\\breeze-agent.exe service install; .\\breeze-agent.exe enroll "${token}" --server "${apiUrl}"${secretFlag}; .\\breeze-agent.exe service start`;
-                const macCmd = `curl -fsSL -o /tmp/breeze-agent.pkg "${apiUrl}/api/v1/agents/download/darwin/$(uname -m | sed 's/x86_64/amd64/;s/arm64/arm64/')/pkg" && sudo installer -pkg /tmp/breeze-agent.pkg -target / && sudo breeze-agent enroll "${token}" --server "${apiUrl}"${secretFlag} && sudo launchctl kickstart -k system/com.breeze.agent`;
-                const linuxCmd = `curl -fsSL -o breeze-agent "${ghBase}/breeze-agent-linux-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" && chmod +x breeze-agent && sudo mv breeze-agent /usr/local/bin/ && sudo breeze-agent service install && sudo breeze-agent enroll "${token}" --server "${apiUrl}"${secretFlag} && sudo breeze-agent service start`;
-
-                return (
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">Step 2 — Run the install command</p>
-                    <div className="flex gap-1 mb-3">
-                      {(['windows', 'macos', 'linux'] as const).map(os => (
-                        <button
-                          key={os}
-                          type="button"
-                          onClick={() => setSelectedOS(os)}
-                          className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
-                            selectedOS === os
-                              ? 'bg-primary text-primary-foreground'
-                              : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                          }`}
-                        >
-                          {os === 'windows' ? 'Windows' : os === 'macos' ? 'macOS' : 'Linux'}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="rounded-lg border bg-muted/30 p-4">
-                      <div className="flex items-start justify-between gap-2">
-                        <code className="text-xs font-mono text-muted-foreground break-all">
-                          {selectedOS === 'windows' ? winCmd : selectedOS === 'macos' ? macCmd : linuxCmd}
-                        </code>
-                        <button
-                          type="button"
-                          onClick={() => handleCopyCommand(selectedOS === 'windows' ? winCmd : selectedOS === 'macos' ? macCmd : linuxCmd)}
-                          className="flex-shrink-0 p-1 hover:bg-muted rounded"
-                        >
-                          <Copy className="h-4 w-4" />
-                        </button>
-                      </div>
-                    </div>
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      {selectedOS === 'windows' ? 'Run as Administrator in PowerShell' : 'Run in Terminal'}
-                    </p>
-                  </div>
-                );
-              })()}
-
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">Step 3 — Wait for connection</p>
-                <div className="rounded-md border border-blue-500/40 bg-blue-500/10 p-4 text-sm">
-                  <p className="text-blue-600 text-xs">
-                    The installation token expires in 24 hours. Your device will appear in the list once the agent connects.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-6 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setShowOnboarding(false)}
-                className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
-              >
-                Done
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <AddDeviceModal isOpen={showAddDevice} onClose={() => setShowAddDevice(false)} />
 
       <ScriptPickerModal
         isOpen={scriptPickerOpen}

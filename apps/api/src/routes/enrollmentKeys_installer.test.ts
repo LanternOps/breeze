@@ -264,7 +264,7 @@ describe('enrollment key routes — installer download', () => {
       expect(res.headers.get('Content-Disposition')).toContain('breeze-agent-macos.zip');
     });
 
-    it('creates child key with maxUsage=1', async () => {
+    it('creates child key with maxUsage=1 by default', async () => {
       const parentKey = makeEnrollmentKey();
       mockSelectFromWhereLimit([parentKey]);
       mockInsertValuesReturning([
@@ -289,19 +289,101 @@ describe('enrollment key routes — installer download', () => {
       );
     });
 
-    it('emits audit log for installer download', async () => {
-      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+    it('creates child key with count query param', async () => {
+      const parentKey = makeEnrollmentKey();
+      mockSelectFromWhereLimit([parentKey]);
       mockInsertValuesReturning([
-        makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer)', maxUsage: 1 }),
+        makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer x5)', maxUsage: 5 }),
       ]);
 
-      await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows?count=5`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.insert).toHaveBeenCalledTimes(1);
+      const insertMock = vi.mocked(db.insert).mock.results[0].value;
+      const valuesFn = insertMock.values;
+      expect(valuesFn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          maxUsage: 5,
+          name: 'Test Key (installer x5)',
+        })
+      );
+    });
+
+    it('returns 400 for count=0', async () => {
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows?count=0`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 400 for negative count', async () => {
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows?count=-1`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 400 for non-numeric count', async () => {
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows?count=abc`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 400 for count exceeding max (100001)', async () => {
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows?count=100001`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 400 for fractional count', async () => {
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows?count=1.5`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('emits audit log with count for installer download', async () => {
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+      mockInsertValuesReturning([
+        makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer x3)', maxUsage: 3 }),
+      ]);
+
+      await app.request(`/enrollment-keys/${KEY_ID}/installer/windows?count=3`, {
         method: 'GET',
         headers: { Authorization: 'Bearer token' },
       });
 
       expect(createAuditLogAsync).toHaveBeenCalledWith(
-        expect.objectContaining({ action: 'enrollment_key.installer_download' })
+        expect.objectContaining({
+          action: 'enrollment_key.installer_download',
+          details: expect.objectContaining({ count: 3 }),
+        })
       );
     });
   });

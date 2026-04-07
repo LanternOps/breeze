@@ -124,6 +124,10 @@ const rotateEnrollmentKeySchema = z.object({
   expiresAt: z.string().datetime().optional()
 });
 
+const installerQuerySchema = z.object({
+  count: z.coerce.number().int().min(1).max(100000).optional(),
+});
+
 function sanitizeEnrollmentKey(enrollmentKey: typeof enrollmentKeys.$inferSelect) {
   const { key, ...safeRecord } = enrollmentKey;
   return safeRecord;
@@ -440,10 +444,12 @@ enrollmentKeyRoutes.get(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
+  zValidator('query', installerQuerySchema),
   async (c) => {
     const auth = c.get('auth');
     const keyId = c.req.param('id')!;
     const platform = c.req.param('platform');
+    const { count: childMaxUsage = 1 } = c.req.valid('query');
 
     if (platform !== 'windows' && platform !== 'macos') {
       return c.json({ error: 'Invalid platform. Must be "windows" or "macos".' }, 400);
@@ -487,6 +493,9 @@ enrollmentKeyRoutes.get(
 
     // Global enrollment secret (per-key secrets can't be recovered from hash)
     const globalSecret = process.env.AGENT_ENROLLMENT_SECRET || '';
+    if (!globalSecret && parentKey.keySecretHash) {
+      console.warn('[installer] AGENT_ENROLLMENT_SECRET not configured but parent key has a secret hash — agents may fail to enroll');
+    }
 
     // Fetch template binary BEFORE creating child key (prevent orphans if fetch fails)
     let templateBuffer: Buffer;
@@ -508,10 +517,10 @@ enrollmentKeyRoutes.get(
       .values({
         orgId: parentKey.orgId,
         siteId: parentKey.siteId,
-        name: `${parentKey.name} (installer)`,
+        name: `${parentKey.name} (installer${childMaxUsage > 1 ? ` x${childMaxUsage}` : ''})`,
         key: childKeyHash,
         keySecretHash: parentKey.keySecretHash,
-        maxUsage: 1,
+        maxUsage: childMaxUsage,
         expiresAt: parentKey.expiresAt,
         createdBy: auth.user.id,
       })
@@ -536,7 +545,7 @@ enrollmentKeyRoutes.get(
           action: 'enrollment_key.installer_download',
           keyId: parentKey.id,
           keyName: parentKey.name,
-          details: { platform, childKeyId: childKey.id },
+          details: { platform, childKeyId: childKey.id, count: childMaxUsage },
         });
 
         c.header('Content-Type', 'application/octet-stream');
@@ -560,7 +569,7 @@ enrollmentKeyRoutes.get(
         action: 'enrollment_key.installer_download',
         keyId: parentKey.id,
         keyName: parentKey.name,
-        details: { platform, childKeyId: childKey.id },
+        details: { platform, childKeyId: childKey.id, count: childMaxUsage },
       });
 
       c.header('Content-Type', 'application/zip');
@@ -569,8 +578,26 @@ enrollmentKeyRoutes.get(
       c.header('Cache-Control', 'no-store');
       return c.body(zipBuffer as unknown as ArrayBuffer);
     } catch (err) {
-      console.error('[installer] Build failed:', err);
-      await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, childKey.id)).catch(() => {});
+      console.error('[installer] Build failed:', err instanceof Error ? err.message : err);
+
+      // Audit the failure so it's traceable
+      createAuditLogAsync({
+        orgId: parentKey.orgId,
+        actorId: auth.user.id,
+        actorEmail: auth.user.email,
+        action: 'enrollment_key.installer_build_failed',
+        resourceType: 'enrollment_key',
+        resourceId: parentKey.id,
+        resourceName: parentKey.name,
+        details: { platform, childKeyId: childKey.id, count: childMaxUsage, error: err instanceof Error ? err.message : String(err) },
+        ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+        userAgent: c.req.header('user-agent'),
+        result: 'failure',
+      });
+
+      await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, childKey.id)).catch((cleanupErr) => {
+        console.error('[installer] Failed to clean up orphaned child key:', childKey.id, cleanupErr instanceof Error ? cleanupErr.message : cleanupErr);
+      });
       return c.json({ error: 'Failed to build installer' }, 500);
     }
   }
