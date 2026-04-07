@@ -163,6 +163,43 @@ All secrets generated fresh for this deployment. Key additions vs local `.env`:
 8. Verify: health endpoints, login, billing portal
 ```
 
+## Watchtower — Automatic Image Updates
+
+[Watchtower](https://containrrr.dev/watchtower/) monitors running containers and pulls updated GHCR images automatically.
+
+| Setting | Value |
+|---------|-------|
+| Image | `containrrr/watchtower:latest` |
+| Poll interval | 300s (5 minutes) |
+| Scope | GHCR services only: `api`, `web`, `binaries-init` |
+| Cleanup | Remove old images after update (`--cleanup`) |
+| Restart | Rolling — one container at a time |
+| Notifications | None initially (can add Slack/email later) |
+
+Compose service:
+```yaml
+watchtower:
+  image: containrrr/watchtower:latest
+  container_name: breeze-watchtower
+  restart: unless-stopped
+  environment:
+    WATCHTOWER_POLL_INTERVAL: 300
+    WATCHTOWER_CLEANUP: "true"
+    WATCHTOWER_LABEL_ENABLE: "true"
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+  networks:
+    - breeze
+```
+
+Only containers with `com.centurylinklabs.watchtower.enable=true` label are watched (label-enable mode). This excludes `billing` (built locally), `redis`, and `caddy` from auto-updates.
+
+Labels added to `api`, `web`, and `binaries-init`:
+```yaml
+labels:
+  - "com.centurylinklabs.watchtower.enable=true"
+```
+
 ## What's NOT Included
 
 - No monitoring stack (Prometheus, Grafana, Loki, Alertmanager)
