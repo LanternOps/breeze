@@ -56,6 +56,16 @@ Agents update themselves automatically. On each heartbeat (~60s), the API checks
 3. Replaces the executable and restarts the service
 4. Rolls back automatically if the new binary fails to start
 
+During an update, the device status changes to **Updating** in the dashboard so you can distinguish active updates from offline agents. If the update takes longer than 5 minutes, the device reverts to **Offline**. After a successful restart, the agent immediately reports its new version (bypassing the normal 0--60 second heartbeat jitter).
+
+### Linux Binary-In-Use Handling
+
+On Linux, the updater handles the case where the agent binary is still in use (common with manual installs that don't use a package manager). The updater removes the old binary before writing the new one to avoid `ETXTBSY` ("text file busy") errors. If a file lock error still occurs, it is treated as transient and retried on the next heartbeat.
+
+### Watchdog Recovery
+
+The [watchdog service](/features/watchdog/) automatically restarts the agent after a failed update or crash. If an update leaves the agent in a bad state, the watchdog detects the failure and restarts the previous (backed-up) binary.
+
 The binary source depends on your `BINARY_SOURCE` setting:
 
 | Mode | Agent downloads from |

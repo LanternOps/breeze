@@ -117,6 +117,11 @@
     "description": "Create, scope, rotate, and manage enrollment keys for onboarding agents into Breeze RMM.",
     "headings": [
       "Key Concepts",
+      "Per-Key Enrollment Secrets",
+      "Installer Downloads",
+      "Downloading from the Dashboard",
+      "Downloading via API",
+      "Public Download Links",
       "Enrollment Key Lifecycle",
       "Creating a Key",
       "Listing Keys",
@@ -164,6 +169,7 @@
       "Overview",
       "Installation",
       "Verifying the Helper Is Running",
+      "Console User Tracking (macOS)",
       "AI Chat",
       "Creating a Chat Session",
       "Session Architecture",
@@ -201,6 +207,9 @@
     "headings": [
       "Supported Platforms",
       "Quick Install",
+      "Pre-Configured Installers",
+      "Public Installer Links",
+      "What Gets Installed",
       "What Enrollment Does",
       "Verifying Installation",
       "Configuration File"
@@ -425,6 +434,8 @@
       "Job fails immediately",
       "Snapshot browse returns empty",
       "Restore goes to wrong device",
+      "Restore or verification will not start",
+      "No verification history",
       "Dashboard shows 0 protected devices",
       "VSS writers in Failed state",
       "SLA breach alerts firing unexpectedly",
@@ -569,6 +580,7 @@
       "Adding Monitoring",
       "Pinning a Version",
       "Resource Tuning",
+      "Redis Authentication",
       "Updating"
     ],
     "section": "deploy"
@@ -616,6 +628,8 @@
     "headings": [
       "Docker Compose Upgrade",
       "Agent Updates",
+      "Linux Binary-In-Use Handling",
+      "Watchdog Recovery",
       "Migration Failure Recovery",
       "Zero-Downtime Upgrades",
       "Rolling Back",
@@ -1047,6 +1061,7 @@
       "Scanning",
       "Compliance",
       "Remediation",
+      "macOS Sharing & Security Checks",
       "Troubleshooting"
     ],
     "section": "features"
@@ -2048,6 +2063,12 @@
       "Adaptive Bitrate",
       "Audio Streaming",
       "Secure Desktop Capture",
+      "GPU-Accelerated Streaming",
+      "VNC Fallback (macOS)",
+      "Session Switcher",
+      "OS Keyboard Shortcuts",
+      "Login Screen Input (macOS)",
+      "Network Proxy",
       "Remote Terminal",
       "Starting a terminal session",
       "Connection flow",
@@ -2064,6 +2085,8 @@
       "API Reference",
       "Sessions",
       "File Transfers",
+      "Network Proxy Tunnels",
+      "Events",
       "Troubleshooting"
     ],
     "section": "features"
@@ -2605,6 +2628,26 @@
       "RDP sessions show as \"ssh\" or vice versa",
       "Windows Session 0 / service sessions appear",
       "Idle time is always 0"
+    ],
+    "section": "features"
+  },
+  {
+    "path": "/features/watchdog/",
+    "title": "Agent Watchdog",
+    "description": "A companion service that monitors the Breeze agent process, performs escalating recovery, and provides failover connectivity when the agent is down.",
+    "headings": [
+      "How It Works",
+      "States",
+      "State transitions",
+      "Recovery",
+      "Failover",
+      "Health Journal",
+      "Configuration",
+      "Watchdog Logs API",
+      "Query parameters",
+      "Example",
+      "Dashboard Indicators",
+      "Troubleshooting"
     ],
     "section": "features"
   },

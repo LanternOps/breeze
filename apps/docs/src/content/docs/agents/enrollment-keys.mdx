@@ -30,6 +30,56 @@ Enrollment keys are short-lived, usage-limited tokens that authorize new agents 
 
 ---
 
+## Per-Key Enrollment Secrets
+
+Each enrollment key can optionally have its own **enrollment secret**, separate from the global `AGENT_ENROLLMENT_SECRET` environment variable. When a per-key secret is set, it takes priority over the global secret during enrollment.
+
+This is useful when you want to restrict enrollment to specific keys with unique credentials -- for example, giving each customer site its own secret so that a leaked key from one site cannot be used with another site's installer.
+
+Per-key secrets are set when creating or rotating a key. If no per-key secret is set, the global `AGENT_ENROLLMENT_SECRET` is used as usual.
+
+<Aside type="tip">
+  Per-key secrets and the global enrollment secret serve the same gating purpose. The per-key secret simply lets you scope that gate to individual keys rather than sharing one secret across all enrollments.
+</Aside>
+
+---
+
+## Installer Downloads
+
+Each enrollment key can generate pre-configured Windows MSI and macOS PKG installers. These installers are pre-loaded with the enrollment key and site assignment, so agents enroll automatically when the installer runs.
+
+### Downloading from the Dashboard
+
+From the enrollment key list or detail view, click **Download Installer** and choose the platform (Windows or macOS). The installer is generated on the fly and downloaded to your browser.
+
+### Downloading via API
+
+```bash
+# Download a pre-configured installer for a specific key
+curl -OJ https://breeze.yourdomain.com/api/v1/enrollment-keys/KEY_UUID/installer/windows \
+  -H "Authorization: Bearer $TOKEN"
+
+curl -OJ https://breeze.yourdomain.com/api/v1/enrollment-keys/KEY_UUID/installer/macos \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Public Download Links
+
+You can generate a shareable, token-authenticated URL so that site contacts can download the installer without needing dashboard access.
+
+```bash
+# Generate a public download link
+curl -X POST https://breeze.yourdomain.com/api/v1/enrollment-keys/KEY_UUID/installer-link \
+  -H "Authorization: Bearer $TOKEN"
+
+# The response includes a URL like:
+# /api/v1/enrollment-keys/public-download/windows?token=...
+```
+
+Share the resulting URL with on-site contacts. Public download links are rate-limited to prevent abuse.
+
+---
+
 ## Enrollment Key Lifecycle
 
 ### Creating a Key
@@ -273,6 +323,9 @@ All routes are prefixed with `/api/v1/enrollment-keys` and require JWT authentic
 | `GET` | `/enrollment-keys/:id` | `organizations:read` | Get metadata for a single enrollment key (raw key not included). |
 | `POST` | `/enrollment-keys/:id/rotate` | `organizations:write` + MFA | Regenerate key material, reset usage count. Returns the new raw key. |
 | `DELETE` | `/enrollment-keys/:id` | `organizations:write` + MFA | Permanently delete an enrollment key. |
+| `GET` | `/enrollment-keys/:id/installer/:platform` | `organizations:read` | Download a pre-configured MSI or PKG installer. |
+| `POST` | `/enrollment-keys/:id/installer-link` | `organizations:write` | Generate a public download link for an installer. |
+| `GET` | `/enrollment-keys/public-download/:platform` | Token (public) | Download an installer via a public link token. |
 
 The agent enrollment endpoint is separate:
 

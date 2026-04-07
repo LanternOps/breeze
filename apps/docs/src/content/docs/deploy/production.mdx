@@ -62,6 +62,7 @@ An optional monitoring stack (Prometheus, Grafana, Alertmanager, Loki, Promtail,
 
    echo "AGENT_ENROLLMENT_SECRET=$(openssl rand -hex 32)"
    echo "POSTGRES_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=')"
+   echo "REDIS_PASSWORD=$(openssl rand -hex 32)"
    ```
 
    Paste the output into `.env`.
@@ -159,6 +160,17 @@ Override default resource limits via environment variables:
 # Redis memory limit (default: 256mb)
 REDIS_MAXMEMORY=512mb
 ```
+
+### Redis Authentication
+
+Redis requires password authentication in production. Generate a password and add it to `.env`:
+
+```bash
+REDIS_PASSWORD=$(openssl rand -hex 32)
+REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+```
+
+The `docker-compose.yml` passes `REDIS_PASSWORD` to the Redis container automatically. See [Environment Variables](/deploy/environment/) for details.
 
 ## Updating
 

@@ -70,7 +70,9 @@ The Helper connects to the agent service via a Unix domain socket at `/var/run/b
   </TabItem>
   <TabItem label="macOS">
 
-Install the user helper as a LaunchAgent:
+On macOS, the Helper auto-installs the first time a remote desktop connection is initiated -- no manual setup is needed. The agent downloads and configures the Helper automatically.
+
+For manual installation, use the LaunchAgent:
 
 ```bash
 sudo make install-user-helper
@@ -112,6 +114,12 @@ After authentication, the Helper sends a capabilities message reporting what it 
 | `CanCapture` | Screen capture available (requires display) |
 | `CanClipboard` | Clipboard access available (requires display) |
 | `DisplayServer` | Active display server string |
+
+### Console User Tracking (macOS)
+
+On macOS, the Helper tracks console user changes and automatically tears down stale sessions when the active user switches. This ensures that remote desktop sessions, screen captures, and input actions are always routed to the correct user session -- even on shared machines where multiple users log in throughout the day.
+
+No configuration is required. The Helper detects user switches via the system console and cleans up automatically.
 
 ---
 

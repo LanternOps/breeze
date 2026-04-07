@@ -77,6 +77,44 @@ The Breeze agent is a single Go binary (~8 MB) with no runtime dependencies. It 
   </TabItem>
 </Tabs>
 
+## Pre-Configured Installers
+
+Instead of running manual enrollment commands, you can download a ready-to-run installer from the Breeze dashboard.
+
+<Steps>
+1. Open the **Add Device** dialog from the Devices page.
+2. Select **Download Installer** and choose **Windows MSI** or **macOS PKG**.
+3. Set a **device count** to control how many devices can enroll with this installer.
+4. Run the installer on the target machine. The agent enrolls automatically with the correct organization and site -- no enrollment commands needed.
+</Steps>
+
+<Aside type="tip">
+  Each installer is pre-loaded with the enrollment key and site assignment. Just distribute the file and run it.
+</Aside>
+
+### Public Installer Links
+
+You can generate a shareable download URL for an enrollment key so that site contacts can install the agent without needing access to the Breeze dashboard.
+
+- From the enrollment key details, click **Copy Public Link** or use the API (`POST /enrollment-keys/:id/installer-link`).
+- Share the link with on-site contacts via email, chat, or documentation.
+- Links are token-authenticated and rate-limited to prevent abuse.
+
+---
+
+## What Gets Installed
+
+All platform installers (MSI, PKG, and manual service install) include two components:
+
+| Component | Description |
+|-----------|-------------|
+| **Breeze Agent** | The main service that communicates with the Breeze server, runs commands, and reports device status. |
+| **Watchdog** | A companion service that monitors the agent and automatically restarts it after crashes or hangs. |
+
+The watchdog runs alongside the agent as a separate process. You do not need to configure it -- it starts automatically with the agent service. See the [Watchdog documentation](/features/watchdog) for details.
+
+---
+
 ## What Enrollment Does
 
 During enrollment, the agent:

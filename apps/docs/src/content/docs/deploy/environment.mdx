@@ -28,8 +28,9 @@ All configuration is done through environment variables, defined in your `.env.p
 
 | Variable | Default | Required | Description |
 |---|---|---|---|
-| `REDIS_URL` | `redis://localhost:6379` | | Redis connection URL |
+| `REDIS_URL` | `redis://localhost:6379` | | Redis connection URL. Include the password when `REDIS_PASSWORD` is set (e.g., `redis://:password@localhost:6379`) |
 | `REDIS_PORT` | `6379` | | Redis port |
+| `REDIS_PASSWORD` | — | Yes (prod) | Password for Redis authentication. Set in docker-compose and include in `REDIS_URL` |
 
 ## Authentication & Security
 

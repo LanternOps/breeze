@@ -59,6 +59,30 @@
       ]
     },
     {
+      "pattern": "agent/internal/tunnel/**",
+      "docs": [
+        "features/remote-access.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/watchdog/**",
+      "docs": [
+        "features/watchdog.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/state/**",
+      "docs": [
+        "features/watchdog.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/cis/checks_darwin_sharing.go",
+      "docs": [
+        "features/cis-hardening.mdx"
+      ]
+    },
+    {
       "pattern": "apps/api/src/routes/agents/**",
       "docs": [
         "agents/enrollment.mdx",
@@ -78,6 +102,26 @@
       "docs": [
         "deploy/upgrades.mdx",
         "deploy/binaries.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/tunnels.ts",
+      "docs": [
+        "features/remote-access.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/eventWs.ts",
+      "docs": [
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/enrollmentKeys.ts",
+      "docs": [
+        "agents/enrollment-keys.mdx",
+        "agents/installation.mdx"
       ]
     },
     {
