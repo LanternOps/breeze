@@ -191,7 +191,7 @@ fn route_deep_link(app: &tauri::AppHandle, url: String) {
     }
 
     // Always open a new session window immediately.
-    // Each session window runs its own update check in the frontend.
+    // Updates are handled by the background auto_update task at startup.
     create_session_window(app, url);
 }
 
@@ -255,9 +255,19 @@ fn create_session_window(app: &tauri::AppHandle, url: String) {
 }
 
 /// Check for updates and silently download + install if available.
-/// The update is staged and applied on next app restart — active sessions are never interrupted.
+///
+/// Platform behavior after install:
+/// - **macOS/Linux**: replaces the app binary on disk while the running process
+///   continues in memory. The new version takes effect on next launch.
+/// - **Windows**: launches the MSI/NSIS installer and terminates the process.
+///   Active remote desktop sessions will be interrupted.
+///
+/// The 3-second startup delay plus download time means the install typically
+/// fires during early session setup, minimising disruption on Windows.
 async fn auto_update(app: tauri::AppHandle) {
-    // Delay to let session windows and WebRTC setup proceed first
+    // Delay so the initial session connection isn't competing for network
+    // bandwidth with the update download. 3s is a rough heuristic to let
+    // the WebRTC handshake complete on typical connections.
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     let updater = match app.updater() {
@@ -279,12 +289,38 @@ async fn auto_update(app: tauri::AppHandle) {
 
     eprintln!("Update {} available, downloading...", update.version);
 
-    if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
-        eprintln!("Update download/install failed: {}", e);
+    let mut downloaded: usize = 0;
+    let bytes = match update
+        .download(
+            |chunk_len, content_len| {
+                downloaded += chunk_len;
+                if let Some(total) = content_len {
+                    eprintln!("Update download: {downloaded}/{total} bytes");
+                }
+            },
+            || {
+                eprintln!("Update download finished");
+            },
+        )
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("Update download failed: {}", e);
+            return;
+        }
+    };
+
+    eprintln!("Update {} downloaded, installing...", update.version);
+
+    // install() behaviour varies by platform — see doc comment above.
+    // On Windows this call does not return (process exits after launching installer).
+    if let Err(e) = update.install(bytes) {
+        eprintln!("Update install failed: {}", e);
         return;
     }
 
-    eprintln!("Update installed, will apply on next restart");
+    eprintln!("Update installed, will take effect on next launch");
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -376,9 +412,10 @@ pub fn run() {
                 }
             });
 
-            // Silent auto-update: check, download, stage for next restart
+            // Fire-and-forget: update failures must never block the app.
+            // Errors are logged inside auto_update(); panics are absorbed by the runtime.
             let update_handle = app.handle().clone();
-            tauri::async_runtime::spawn(auto_update(update_handle));
+            let _update_task = tauri::async_runtime::spawn(auto_update(update_handle));
 
             Ok(())
         })
