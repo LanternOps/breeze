@@ -89,6 +89,10 @@ vi.mock('../services/redis', () => ({
   isRedisAvailable: vi.fn(() => false)
 }));
 
+vi.mock('../services/eventBus', () => ({
+  publishEvent: vi.fn().mockResolvedValue('event-id'),
+}));
+
 vi.mock('./backup/verificationService', () => ({
   processBackupVerificationResult: vi.fn(),
 }));
