@@ -837,6 +837,16 @@ jobs:
           sed -i.bak 's/"version": "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/"version": "'"$MSI_VERSION"'"/' package.json && rm package.json.bak
           echo "Injected version $MSI_VERSION into viewer config files (from $BUILD_VERSION)"
 
+      - name: Validate signing key
+        shell: bash
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY secret is not set — update signing will fail"
+            exit 1
+          fi
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+
       - name: Build Tauri app
         working-directory: apps/viewer
         shell: bash
@@ -1035,6 +1045,16 @@ jobs:
           sed -i.bak 's/^version = "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/version = "'"$MSI_VERSION"'"/' src-tauri/Cargo.toml && rm src-tauri/Cargo.toml.bak
           sed -i.bak 's/"version": "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/"version": "'"$MSI_VERSION"'"/' package.json && rm package.json.bak
           echo "Injected version $MSI_VERSION into viewer config files (from $BUILD_VERSION)"
+
+      - name: Validate signing key
+        shell: bash
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY secret is not set — update signing will fail"
+            exit 1
+          fi
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
 
       - name: Build Tauri app
         working-directory: apps/viewer
@@ -1310,7 +1330,8 @@ jobs:
           # Collect all per-platform latest.json files
           FILES=$(find manifests -name 'latest.json' -type f)
           if [ -z "$FILES" ]; then
-            echo "No update manifests found — skipping merge"
+            echo "::warning::No viewer update manifests found — auto-update will not work for this release"
+            echo '{}' > latest.json
             exit 0
           fi
 
@@ -1323,15 +1344,30 @@ jobs:
             const files = process.argv.slice(1);
             let merged = null;
             for (const f of files) {
-              const data = JSON.parse(fs.readFileSync(f, 'utf8'));
+              let data;
+              try {
+                data = JSON.parse(fs.readFileSync(f, 'utf8'));
+              } catch (err) {
+                console.error('ERROR: Failed to parse ' + f + ': ' + err.message);
+                process.exit(1);
+              }
               if (!merged) {
                 merged = data;
+                if (!merged.platforms) merged.platforms = {};
               } else {
-                Object.assign(merged.platforms || {}, data.platforms || {});
+                Object.assign(merged.platforms, data.platforms || {});
               }
             }
+            if (!merged || !merged.platforms || Object.keys(merged.platforms).length === 0) {
+              console.error('ERROR: Merged manifest has no platforms');
+              process.exit(1);
+            }
+            if (!merged.version) {
+              console.error('ERROR: Merged manifest has no version');
+              process.exit(1);
+            }
             fs.writeFileSync('latest.json', JSON.stringify(merged, null, 2));
-            console.log('Merged platforms:', Object.keys(merged.platforms || {}));
+            console.log('Merged platforms:', Object.keys(merged.platforms));
           " $FILES
 
           cat latest.json
