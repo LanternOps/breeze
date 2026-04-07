@@ -2772,6 +2772,11 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 			log.Warn("update deferred: binary locked by another process, will retry", "targetVersion", targetVersion, "error", err.Error())
 			return
 		}
+		// Binary is currently executing (ETXTBSY) — transient, retry next heartbeat.
+		if errors.Is(err, updater.ErrTextBusy) {
+			log.Warn("update deferred: binary is executing, will retry", "targetVersion", targetVersion, "error", err.Error())
+			return
+		}
 		log.Error("failed to update", "targetVersion", targetVersion, "error", err.Error())
 		return
 	}
