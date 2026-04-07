@@ -28,6 +28,7 @@ type DeviceGroup = {
   deviceCount: number;
   createdAt: string;
   updatedAt: string;
+  deviceIds?: string[];
 };
 
 type GroupMembership = {
@@ -57,7 +58,8 @@ const listGroupsQuerySchema = z.object({
   siteId: z.string().uuid().optional(),
   type: z.enum(['static', 'dynamic']).optional(),
   parentId: z.string().uuid().optional(),
-  search: z.string().optional()
+  search: z.string().optional(),
+  includeMemberships: z.enum(['true', 'false']).optional()
 });
 
 const createGroupSchema = z.object({
@@ -157,9 +159,10 @@ async function getDeviceCountForGroup(groupId: string): Promise<number> {
 
 function mapGroupRow(
   group: typeof deviceGroups.$inferSelect,
-  deviceCount: number
+  deviceCount: number,
+  deviceIds?: string[]
 ): DeviceGroup {
-  return {
+  const result: DeviceGroup = {
     id: group.id,
     orgId: group.orgId,
     siteId: group.siteId,
@@ -173,6 +176,10 @@ function mapGroupRow(
     createdAt: group.createdAt.toISOString(),
     updatedAt: group.updatedAt.toISOString()
   };
+  if (deviceIds) {
+    result.deviceIds = deviceIds;
+  }
+  return result;
 }
 
 // GET / - List groups for the org
@@ -233,7 +240,32 @@ groupRoutes.get(
 
     const countMap = new Map(countRows.map((row) => [row.groupId, Number(row.count)]));
 
-    const data = results.map((group) => mapGroupRow(group, countMap.get(group.id) ?? 0));
+    // Optionally fetch device memberships
+    let membershipMap: Map<string, string[]> | null = null;
+    if (query.includeMemberships === 'true' && groupIds.length > 0) {
+      const membershipRows = await db
+        .select({
+          groupId: deviceGroupMemberships.groupId,
+          deviceId: deviceGroupMemberships.deviceId
+        })
+        .from(deviceGroupMemberships)
+        .where(inArray(deviceGroupMemberships.groupId, groupIds));
+
+      membershipMap = new Map<string, string[]>();
+      for (const row of membershipRows) {
+        const existing = membershipMap.get(row.groupId) ?? [];
+        existing.push(row.deviceId);
+        membershipMap.set(row.groupId, existing);
+      }
+    }
+
+    const data = results.map((group) =>
+      mapGroupRow(
+        group,
+        countMap.get(group.id) ?? 0,
+        membershipMap?.get(group.id)
+      )
+    );
 
     return c.json({ data, total: data.length });
   }

@@ -265,6 +265,79 @@ describe('groups routes', () => {
       expect(body.data).toEqual([]);
       expect(body.total).toBe(0);
     });
+
+    it('should return deviceIds when includeMemberships=true', async () => {
+      const groups = [makeGroup(), makeGroup({ id: GROUP_ID_2, name: 'Second Group' })];
+      vi.mocked(db.select)
+        // First call: fetch groups
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockResolvedValue(groups)
+            })
+          })
+        } as any)
+        // Second call: device counts
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([
+                { groupId: GROUP_ID, count: 2 },
+                { groupId: GROUP_ID_2, count: 1 }
+              ])
+            })
+          })
+        } as any)
+        // Third call: membership deviceIds
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { groupId: GROUP_ID, deviceId: DEVICE_ID },
+              { groupId: GROUP_ID, deviceId: DEVICE_ID_2 },
+              { groupId: GROUP_ID_2, deviceId: DEVICE_ID }
+            ])
+          })
+        } as any);
+
+      const res = await app.request('/groups?includeMemberships=true', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(2);
+      expect(body.data[0].deviceIds).toEqual([DEVICE_ID, DEVICE_ID_2]);
+      expect(body.data[1].deviceIds).toEqual([DEVICE_ID]);
+    });
+
+    it('should not return deviceIds when includeMemberships is not set', async () => {
+      const groups = [makeGroup()];
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockResolvedValue(groups)
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([{ groupId: GROUP_ID, count: 3 }])
+            })
+          })
+        } as any);
+
+      const res = await app.request('/groups', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].deviceIds).toBeUndefined();
+    });
   });
 
 });
