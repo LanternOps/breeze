@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { eq } from 'drizzle-orm';
+import { eq, and, isNull } from 'drizzle-orm';
 import * as dbModule from '../../db';
-import { users, partners, partnerUsers, roles } from '../../db/schema';
+import { users, partners, partnerUsers, roles, rolePermissions, permissions, organizations, sites } from '../../db/schema';
 import {
   hashPassword,
   isPasswordStrong,
@@ -122,6 +122,17 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
 
   return runWithSystemDbAccess(async () => {
 
+    // Block registration until the system admin has completed initial setup
+    const [adminUser] = await db
+      .select({ setupCompletedAt: users.setupCompletedAt })
+      .from(users)
+      .where(eq(users.email, 'admin@breeze.local'))
+      .limit(1);
+
+    if (adminUser && !adminUser.setupCompletedAt) {
+      return c.json({ error: 'System setup is not yet complete. Contact your administrator.' }, 403);
+    }
+
     // Rate limit registration - stricter for partner registration
     const redis = getRedis();
     if (!redis) {
@@ -232,13 +243,67 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
           orgAccess: 'all'
         });
 
-        // Update last login inside tx
+        // Copy permissions from the seeded system Partner Admin role
+        const [systemPartnerAdmin] = await tx
+          .select({ id: roles.id })
+          .from(roles)
+          .where(
+            and(
+              eq(roles.name, 'Partner Admin'),
+              eq(roles.isSystem, true),
+              isNull(roles.partnerId)
+            )
+          )
+          .limit(1);
+
+        if (systemPartnerAdmin) {
+          const systemPerms = await tx
+            .select({ permissionId: rolePermissions.permissionId })
+            .from(rolePermissions)
+            .where(eq(rolePermissions.roleId, systemPartnerAdmin.id));
+
+          for (const perm of systemPerms) {
+            await tx.insert(rolePermissions).values({
+              roleId: adminRole.id,
+              permissionId: perm.permissionId
+            });
+          }
+        }
+
+        // Create default organization
+        const orgSlug = slug + '-org';
+        const [newOrg] = await tx
+          .insert(organizations)
+          .values({
+            partnerId: newPartner.id,
+            name: companyName,
+            slug: orgSlug,
+            type: 'customer',
+            status: 'active'
+          })
+          .returning();
+
+        // Create default site
+        let newSiteId: string | null = null;
+        if (newOrg) {
+          const [newSite] = await tx
+            .insert(sites)
+            .values({
+              orgId: newOrg.id,
+              name: 'Main Office',
+              timezone: 'UTC'
+            })
+            .returning();
+          newSiteId = newSite?.id ?? null;
+        }
+
+        // Mark setup as complete — new partners don't need the wizard
         await tx
           .update(users)
-          .set({ lastLoginAt: new Date() })
+          .set({ lastLoginAt: new Date(), setupCompletedAt: new Date() })
           .where(eq(users.id, newUser.id));
 
-        return { newPartner, adminRole, newUser };
+        return { newPartner, adminRole, newUser, newOrg, newSiteId };
       });
 
       // Token creation outside tx (doesn't need rollback)
@@ -248,7 +313,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         sub: result.newUser.id,
         email: result.newUser.email,
         roleId: result.adminRole.id,
-        orgId: null,
+        orgId: result.newOrg?.id ?? null,
         partnerId: result.newPartner.id,
         scope: 'partner',
         mfa: mfaSatisfied

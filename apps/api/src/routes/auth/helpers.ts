@@ -527,11 +527,13 @@ export function auditLogin(
 
 /**
  * Check if a user requires the first-login setup wizard.
- * Triggers for any user who hasn't completed setup yet (new registrations,
- * seeded admin, invited users who haven't gone through the wizard).
+ * Triggers for the seeded admin on first login (before they complete setup).
+ * New partner registrations get their org/site created at registration time
+ * and have setupCompletedAt set, so they skip the wizard.
  */
 export function userRequiresSetup(user: {
   setupCompletedAt: Date | string | null;
+  email: string;
 }): boolean {
-  return !user.setupCompletedAt;
+  return !user.setupCompletedAt && user.email === 'admin@breeze.local';
 }
