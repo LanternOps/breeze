@@ -1,3 +1,5 @@
+import archiver from 'archiver';
+
 const PLACEHOLDER_CHAR_LENGTH = 512;
 
 /** Sentinel strings padded to 512 chars with null bytes -- must match build-msi.ps1 */
@@ -45,4 +47,79 @@ export function replaceMsiPlaceholders(template: Buffer, values: InstallerValues
   }
 
   return result;
+}
+
+// --- macOS zip bundle builder ---
+
+const MACOS_INSTALL_SCRIPT = `#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ENROLLMENT_JSON="$SCRIPT_DIR/enrollment.json"
+
+if [ ! -f "$ENROLLMENT_JSON" ]; then
+  echo "Error: enrollment.json not found in $SCRIPT_DIR"
+  exit 1
+fi
+
+# Install the PKG
+echo "Installing Breeze Agent..."
+sudo installer -pkg "$SCRIPT_DIR/breeze-agent.pkg" -target /
+
+# Read enrollment config (macOS ships python3)
+SERVER_URL=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['serverUrl'])" "$ENROLLMENT_JSON")
+ENROLLMENT_KEY=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['enrollmentKey'])" "$ENROLLMENT_JSON")
+ENROLLMENT_SECRET=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('enrollmentSecret',''))" "$ENROLLMENT_JSON")
+SITE_ID=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('siteId',''))" "$ENROLLMENT_JSON")
+
+# Build enrollment command
+ENROLL_ARGS=("$ENROLLMENT_KEY" --server "$SERVER_URL")
+[ -n "$ENROLLMENT_SECRET" ] && ENROLL_ARGS+=(--enrollment-secret "$ENROLLMENT_SECRET")
+[ -n "$SITE_ID" ] && ENROLL_ARGS+=(--site-id "$SITE_ID")
+
+echo "Enrolling agent..."
+sudo /usr/local/bin/breeze-agent enroll "${'$'}{ENROLL_ARGS[@]}"
+
+# Clean up credentials
+rm -f "$ENROLLMENT_JSON"
+
+echo "Breeze agent installed and enrolled successfully."
+`;
+
+interface MacosZipValues {
+  serverUrl: string;
+  enrollmentKey: string;
+  enrollmentSecret: string;
+  siteId: string;
+}
+
+export async function buildMacosInstallerZip(
+  pkgBuffer: Buffer,
+  values: MacosZipValues
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const archive = archiver('zip', { zlib: { level: 6 } });
+    const chunks: Buffer[] = [];
+
+    archive.on('data', (chunk: Buffer) => chunks.push(chunk));
+    archive.on('end', () => resolve(Buffer.concat(chunks)));
+    archive.on('error', reject);
+
+    archive.append(pkgBuffer, { name: 'breeze-agent.pkg' });
+
+    const enrollmentJson = JSON.stringify(
+      {
+        serverUrl: values.serverUrl,
+        enrollmentKey: values.enrollmentKey,
+        enrollmentSecret: values.enrollmentSecret,
+        siteId: values.siteId,
+      },
+      null,
+      2
+    );
+    archive.append(enrollmentJson, { name: 'enrollment.json' });
+    archive.append(MACOS_INSTALL_SCRIPT, { name: 'install.sh', mode: 0o755 });
+
+    archive.finalize();
+  });
 }
