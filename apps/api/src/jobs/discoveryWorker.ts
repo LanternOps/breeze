@@ -104,6 +104,8 @@ export interface DiscoveredHostResult {
   };
   responseTimeMs?: number;
   methods: string[];
+  firstSeen?: string;
+  lastSeen?: string;
 }
 type DiscoveryJobData = DiscoveryQueueJobData;
 

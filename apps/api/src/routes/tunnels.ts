@@ -312,7 +312,7 @@ tunnelRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
 
     const conditions = [eq(tunnelSessions.id, id)];
     if (auth.orgId) {
@@ -342,7 +342,7 @@ tunnelRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
 
     const conditions = [eq(tunnelSessions.id, id)];
     if (auth.orgId) {
@@ -392,7 +392,7 @@ tunnelRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
 
     const conditions = [eq(tunnelSessions.id, id)];
     if (auth.orgId) {
@@ -495,7 +495,7 @@ tunnelRoutes.put(
   zValidator('json', updateAllowlistSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     if (!auth.orgId) {
       return c.json({ error: 'Org context required' }, 400);
     }
@@ -533,7 +533,7 @@ tunnelRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     if (!auth.orgId) {
       return c.json({ error: 'Org context required' }, 400);
     }

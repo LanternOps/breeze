@@ -111,7 +111,7 @@ export async function resolvePatchPolicyReference(
         ringId: patchPolicy.id,
         ringName: patchPolicy.name,
         categoryRules: Array.isArray(patchPolicy.categoryRules) ? patchPolicy.categoryRules : [],
-        autoApprove: patchPolicy.autoApprove ?? {},
+        autoApprove: (patchPolicy.autoApprove ?? {}) as Record<string, unknown> | boolean,
       };
     }
     return {

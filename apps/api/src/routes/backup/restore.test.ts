@@ -25,7 +25,7 @@ vi.mock('../../db', () => ({
     update: (...args: unknown[]) => updateMock(...(args as [])),
     delete: (...args: unknown[]) => deleteMock(...(args as [])),
   },
-  runOutsideDbContext: (...args: unknown[]) => runOutsideDbContextMock(...(args as [])),
+  runOutsideDbContext: (...args: unknown[]) => runOutsideDbContextMock(...(args as [any])),
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -108,7 +108,7 @@ describe('restore routes', () => {
         accessibleOrgIds: ['org-1'],
         canAccessOrg: (candidateOrgId: string) => candidateOrgId === 'org-1',
         orgCondition: () => undefined,
-        token: { sub: 'user-1', scope: 'organization' },
+        token: { sub: 'user-1', scope: 'organization' } as any,
       });
       await next();
     });

@@ -201,7 +201,7 @@ vmRestoreRoutes.post(
       if (dispatchResult.error) {
         return c.json(
           { error: dispatchResult.error },
-          mapDispatchErrorStatus(dispatchResult.error)
+          mapDispatchErrorStatus(dispatchResult.error) as any
         );
       }
 
@@ -346,7 +346,7 @@ vmRestoreRoutes.post(
       if (dispatchResult.error) {
         return c.json(
           { error: dispatchResult.error },
-          mapDispatchErrorStatus(dispatchResult.error)
+          mapDispatchErrorStatus(dispatchResult.error) as any
         );
       }
 

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 const publishEventMock = vi.fn(async (..._args: any[]) => 'event-id');
-const resolveAllBackupAssignedDevicesMock = vi.fn(async () => []);
+const resolveAllBackupAssignedDevicesMock = vi.fn(async (..._args: any[]) => [] as any[]);
 
 vi.mock('../../services/eventBus', () => ({
   publishEvent: (...args: any[]) => publishEventMock(...args),

@@ -277,7 +277,7 @@ describe('enrollment key routes — installer download', () => {
       });
 
       expect(db.insert).toHaveBeenCalledTimes(1);
-      const insertMock = vi.mocked(db.insert).mock.results[0].value;
+      const insertMock = vi.mocked(db.insert).mock.results[0]!.value;
       const valuesFn = insertMock.values;
       expect(valuesFn).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -303,7 +303,7 @@ describe('enrollment key routes — installer download', () => {
 
       expect(res.status).toBe(200);
       expect(db.insert).toHaveBeenCalledTimes(1);
-      const insertMock = vi.mocked(db.insert).mock.results[0].value;
+      const insertMock = vi.mocked(db.insert).mock.results[0]!.value;
       const valuesFn = insertMock.values;
       expect(valuesFn).toHaveBeenCalledWith(
         expect.objectContaining({

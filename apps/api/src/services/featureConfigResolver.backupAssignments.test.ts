@@ -163,7 +163,7 @@ describe('resolveAllBackupAssignedDevices tenancy scoping', () => {
         ])
       )
       .mockReturnValueOnce(
-        makeSelectChain((condition) => {
+        makeSelectChain((condition: unknown) => {
           const resolvedPartnerId = findEqValue(condition, 'organizations.partnerId');
           const resolvedOrgId = findEqValue(condition, 'devices.orgId');
 

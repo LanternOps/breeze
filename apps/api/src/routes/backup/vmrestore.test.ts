@@ -38,7 +38,7 @@ vi.mock('../../db', () => ({
     insert: (...args: unknown[]) => insertMock(...(args as [])),
     update: (...args: unknown[]) => updateMock(...(args as [])),
   },
-  runOutsideDbContext: (...args: unknown[]) => runOutsideDbContextMock(...(args as [])),
+  runOutsideDbContext: (...args: unknown[]) => runOutsideDbContextMock(...(args as [any])),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
 }));
 

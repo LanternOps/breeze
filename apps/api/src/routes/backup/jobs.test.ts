@@ -118,7 +118,7 @@ describe('backup jobs routes', () => {
         accessibleOrgIds: ['org-a'],
         canAccessOrg: (candidateOrgId: string) => candidateOrgId === 'org-a',
         orgCondition: () => undefined,
-        token: { sub: 'user-1', scope: 'organization' },
+        token: { sub: 'user-1', scope: 'organization' } as any,
       });
       await next();
     });

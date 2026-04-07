@@ -141,7 +141,7 @@ export async function removeQueuedBackupDispatch(jobId: string): Promise<boolean
   }
 
   const state = await queuedJob.getState();
-  if (state !== 'waiting' && state !== 'delayed' && state !== 'paused') {
+  if (state !== 'waiting' && state !== 'delayed' && state !== ('paused' as string)) {
     return false;
   }
 

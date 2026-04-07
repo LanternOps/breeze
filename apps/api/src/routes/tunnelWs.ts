@@ -240,7 +240,7 @@ function createTunnelWsHandlers(tunnelId: string, ticket: string | undefined) {
         // Register data callback: agent data → user WebSocket
         tunnelDataCallbacks.set(tunnelId, (data: Uint8Array) => {
           try {
-            ws.send(data);
+            ws.send(data as Uint8Array<ArrayBuffer>);
           } catch (err) {
             console.warn(`[TunnelWs] Failed to relay data for tunnel ${tunnelId}, cleaning up:`, err);
             cleanupTunnelConnection(tunnelId);
@@ -253,7 +253,7 @@ function createTunnelWsHandlers(tunnelId: string, ticket: string | undefined) {
         const buffered = earlyFrameBuffers.get(tunnelId);
         if (buffered && buffered.length > 0) {
           for (const frame of buffered) {
-            try { ws.send(frame); } catch { break; }
+            try { ws.send(frame as Uint8Array<ArrayBuffer>); } catch { break; }
           }
         }
         earlyFrameBuffers.delete(tunnelId);

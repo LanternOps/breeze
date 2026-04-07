@@ -105,14 +105,14 @@ describe('buildMacosInstallerZip', () => {
     expect(entries).toContain('enrollment.json');
     expect(entries).toContain('install.sh');
 
-    const jsonStr = await zip.files['enrollment.json'].async('string');
+    const jsonStr = await zip.files['enrollment.json']!.async('string');
     const config = JSON.parse(jsonStr);
     expect(config.serverUrl).toBe('https://breeze.example.com');
     expect(config.enrollmentKey).toBe('abc123');
     expect(config.enrollmentSecret).toBe('secret456');
     expect(config.siteId).toBe('550e8400-e29b-41d4-a716-446655440000');
 
-    const pkgData = await zip.files['breeze-agent.pkg'].async('nodebuffer');
+    const pkgData = await zip.files['breeze-agent.pkg']!.async('nodebuffer');
     expect(pkgData.equals(fakePkg)).toBe(true);
   });
 
@@ -125,7 +125,7 @@ describe('buildMacosInstallerZip', () => {
     });
 
     const zip = await JSZip.loadAsync(zipBuffer);
-    const config = JSON.parse(await zip.files['enrollment.json'].async('string'));
+    const config = JSON.parse(await zip.files['enrollment.json']!.async('string'));
     expect(config.enrollmentSecret).toBe('');
   });
 });
@@ -192,7 +192,7 @@ describe('buildMacosInstallerZip — install.sh content', () => {
     });
 
     const zip = await JSZip.loadAsync(zipBuffer);
-    const script = await zip.files['install.sh'].async('string');
+    const script = await zip.files['install.sh']!.async('string');
     expect(script).toContain('#!/bin/bash');
     expect(script).toContain('breeze-agent enroll');
     expect(script).toContain('enrollment.json');

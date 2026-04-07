@@ -248,7 +248,7 @@ restoreRoutes.post(
           },
           result: 'failure',
         });
-        return c.json({ error }, mapDispatchErrorStatus(error));
+        return c.json({ error }, mapDispatchErrorStatus(error) as any);
       }
 
       if (!command?.id) {
