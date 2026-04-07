@@ -212,8 +212,8 @@ export default function DashboardStats() {
             <p className="text-sm font-medium text-foreground">No devices enrolled yet</p>
             <p className="text-xs text-muted-foreground">Enroll your first device to start monitoring your fleet.</p>
           </div>
-          <a href="/settings/enrollment-keys" className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
-            Get enrollment key
+          <a href="/devices#add-device" className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
+            Add Device
             <ArrowRight className="h-3.5 w-3.5" />
           </a>
         </div>

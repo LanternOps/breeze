@@ -109,8 +109,8 @@ export default function DeviceStatusChart() {
         <a href="/devices" className="mb-4 inline-block text-sm font-semibold hover:text-primary transition-colors">Fleet Status</a>
         <div className="flex flex-col items-center justify-center py-8 text-center">
           <p className="text-sm text-muted-foreground">No devices enrolled yet</p>
-          <a href="/settings/enrollment-keys" className="mt-2 text-xs font-medium text-primary hover:underline">
-            Enroll a device
+          <a href="/devices#add-device" className="mt-2 text-xs font-medium text-primary hover:underline">
+            Add a device
           </a>
         </div>
       </div>
