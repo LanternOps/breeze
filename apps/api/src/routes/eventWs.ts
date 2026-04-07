@@ -91,7 +91,7 @@ export async function consumeTicket(ticket: string): Promise<{ userId: string; o
     if (!redis) return null;
 
     // Atomic GET+DEL via Lua for one-time semantics across replicas
-    const raw = await (redis as any).call('EVAL', CONSUME_LUA, '1', `${REDIS_KEY_PREFIX}${ticket}`);
+    const raw = await redis.eval(CONSUME_LUA, 1, `${REDIS_KEY_PREFIX}${ticket}`);
     if (!raw || typeof raw !== 'string') return null;
 
     let record: TicketRecord;
