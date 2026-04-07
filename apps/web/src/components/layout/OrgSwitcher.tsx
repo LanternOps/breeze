@@ -46,7 +46,7 @@ function OrgMenuItem({
   onSelectSite: (siteId: string | null) => void;
 }) {
   const [showSites, setShowSites] = useState(false);
-  const orgSites = sites.filter((site) => site.organizationId === org.id);
+  const orgSites = sites.filter((site) => site.orgId === org.id);
   const hasSites = orgSites.length > 0;
 
   return (

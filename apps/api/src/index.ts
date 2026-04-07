@@ -31,7 +31,7 @@ import { searchRoutes } from './routes/search';
 import { logsRoutes } from './routes/logs';
 import { remoteRoutes } from './routes/remote';
 import { apiKeyRoutes } from './routes/apiKeys';
-import { enrollmentKeyRoutes } from './routes/enrollmentKeys';
+import { enrollmentKeyRoutes, publicEnrollmentRoutes } from './routes/enrollmentKeys';
 import { ssoRoutes } from './routes/sso';
 import { docsRoutes } from './routes/docs';
 import { accessReviewRoutes } from './routes/accessReviews';
@@ -663,6 +663,7 @@ api.route('/events', createEventWsRoutes(upgradeWebSocket)); // Event stream Web
 api.route('/tunnels', tunnelRoutes);
 api.route('/remote', remoteRoutes);
 api.route('/api-keys', apiKeyRoutes);
+api.route('/enrollment-keys', publicEnrollmentRoutes); // Public download (no auth) — must precede auth-protected routes
 api.route('/enrollment-keys', enrollmentKeyRoutes);
 api.route('/sso', ssoRoutes);
 api.route('/docs', docsRoutes);
