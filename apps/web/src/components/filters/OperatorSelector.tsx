@@ -76,7 +76,7 @@ export function OperatorSelector({
     <select
       value={value}
       onChange={(e) => onChange(e.target.value as FilterOperator)}
-      className={`h-9 min-w-[140px] rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${className}`}
+      className={`min-w-[140px] rounded-md border bg-background px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${className}`}
     >
       {availableOperators.map((operator) => (
         <option key={operator} value={operator}>

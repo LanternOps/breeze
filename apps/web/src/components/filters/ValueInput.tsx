@@ -21,7 +21,7 @@ export function ValueInput({
   const noValueOperators: FilterOperator[] = ['isNull', 'isNotNull', 'isEmpty', 'isNotEmpty'];
   if (noValueOperators.includes(operator)) {
     return (
-      <div className="h-9 flex items-center text-sm text-muted-foreground italic">
+      <div className="flex items-center py-2 text-sm text-muted-foreground italic">
         No value needed
       </div>
     );
@@ -68,7 +68,7 @@ export function ValueInput({
       <select
         value={String(value)}
         onChange={(e) => onChange(e.target.value)}
-        className={`h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${className}`}
+        className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${className}`}
       >
         {field.enumValues.map((enumValue) => (
           <option key={enumValue} value={enumValue}>
@@ -85,7 +85,7 @@ export function ValueInput({
       <select
         value={String(value)}
         onChange={(e) => onChange(e.target.value === 'true')}
-        className={`h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${className}`}
+        className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${className}`}
       >
         <option value="true">Yes</option>
         <option value="false">No</option>
@@ -100,7 +100,7 @@ export function ValueInput({
         type="number"
         value={typeof value === 'number' ? value : ''}
         onChange={(e) => onChange(e.target.valueAsNumber || 0)}
-        className={`h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${className}`}
+        className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${className}`}
         placeholder="Enter a number"
       />
     );
@@ -119,7 +119,7 @@ export function ValueInput({
         type={field.type === 'date' ? 'date' : 'datetime-local'}
         value={dateValue}
         onChange={(e) => onChange(e.target.value)}
-        className={`h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${className}`}
+        className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${className}`}
       />
     );
   }
@@ -130,7 +130,7 @@ export function ValueInput({
       type="text"
       value={typeof value === 'string' ? value : ''}
       onChange={(e) => onChange(e.target.value)}
-      className={`h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${className}`}
+      className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${className}`}
       placeholder={getPlaceholder(field, operator)}
     />
   );
@@ -170,12 +170,12 @@ function DurationInput({
         value={safeValue.amount}
         onChange={(e) => handleAmountChange(e.target.valueAsNumber)}
         min={1}
-        className="h-9 w-20 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        className="w-20 rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
       />
       <select
         value={safeValue.unit}
         onChange={(e) => handleUnitChange(e.target.value)}
-        className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        className="rounded-md border bg-background px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
       >
         <option value="minutes">minutes</option>
         <option value="hours">hours</option>
@@ -214,14 +214,14 @@ function DateRangeInput({
         type="date"
         value={fromStr}
         onChange={(e) => onChange({ ...safeValue, from: new Date(e.target.value) })}
-        className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        className="rounded-md border bg-background px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
       />
       <span className="text-sm text-muted-foreground">to</span>
       <input
         type="date"
         value={toStr}
         onChange={(e) => onChange({ ...safeValue, to: new Date(e.target.value) })}
-        className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        className="rounded-md border bg-background px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
       />
     </div>
   );

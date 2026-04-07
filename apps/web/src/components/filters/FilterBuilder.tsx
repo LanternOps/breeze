@@ -194,7 +194,7 @@ export function FilterBuilder({
             <select
               value={value.operator}
               onChange={(e) => handleOperatorChange(e.target.value as 'AND' | 'OR')}
-              className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="rounded-md border bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             >
               <option value="AND">All conditions (AND)</option>
               <option value="OR">Any condition (OR)</option>
