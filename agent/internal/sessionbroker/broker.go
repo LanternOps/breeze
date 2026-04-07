@@ -65,6 +65,7 @@ type Broker struct {
 	sessions     map[string]*Session   // sessionID -> Session
 	byIdentity   map[string][]*Session // identity key -> Sessions (UID string on Unix, SID on Windows)
 	staleHelpers map[string][]int      // winSessionID -> PIDs of disconnected helpers
+	consoleUser  string                // macOS: current console user ("loginwindow" at login screen)
 	backup       *backupHelper         // backup helper process and session
 	closed       bool
 
@@ -91,6 +92,14 @@ func New(socketPath string, onMessage MessageHandler) *Broker {
 func (b *Broker) SetSessionClosedHandler(handler SessionClosedHandler) {
 	b.mu.Lock()
 	b.onSessionClosed = handler
+	b.mu.Unlock()
+}
+
+// SetConsoleUser updates the current macOS console user. When set to
+// "loginwindow", desktop session selection prefers login_window helpers.
+func (b *Broker) SetConsoleUser(username string) {
+	b.mu.Lock()
+	b.consoleUser = username
 	b.mu.Unlock()
 }
 
@@ -276,12 +285,25 @@ func (b *Broker) PreferredDesktopSession() *Session {
 }
 
 func (b *Broker) preferredDesktopSessionLocked() *Session {
+	atLoginWindow := b.consoleUser == "loginwindow"
+
 	var best *Session
 	for _, s := range b.sessions {
 		if !s.HasScope("desktop") {
 			continue
 		}
 		if s.Capabilities == nil || !s.Capabilities.CanCapture {
+			continue
+		}
+		// On macOS at the login screen, skip user_session helpers if a
+		// login_window helper is available.
+		if atLoginWindow && s.DesktopContext == ipc.DesktopContextUserSession &&
+			best != nil && best.DesktopContext == ipc.DesktopContextLoginWindow {
+			continue
+		}
+		if atLoginWindow && best != nil && best.DesktopContext == ipc.DesktopContextUserSession &&
+			s.DesktopContext == ipc.DesktopContextLoginWindow {
+			best = s
 			continue
 		}
 		if best == nil || betterDesktopSession(s, best) {

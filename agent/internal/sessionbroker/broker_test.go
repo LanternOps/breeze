@@ -304,3 +304,117 @@ func TestPreferredSessionWithScopePrefersNewestUserHelper(t *testing.T) {
 		t.Fatalf("PreferredSessionWithScope returned %q, want %q", got.SessionID, newerUser.SessionID)
 	}
 }
+
+func TestPreferredDesktopSession_LoginWindowConsole_PrefersLoginWindowHelper(t *testing.T) {
+	now := time.Now()
+
+	userSession := &Session{
+		SessionID:      "user-sess",
+		BinaryKind:     ipc.HelperBinaryDesktopHelper,
+		DesktopContext: ipc.DesktopContextUserSession,
+		Capabilities:   &ipc.Capabilities{CanCapture: true},
+		AllowedScopes:  []string{"desktop"},
+		ConnectedAt:    now.Add(-10 * time.Minute),
+		LastSeen:       now,
+	}
+	loginSession := &Session{
+		SessionID:      "login-sess",
+		BinaryKind:     ipc.HelperBinaryDesktopHelper,
+		DesktopContext: ipc.DesktopContextLoginWindow,
+		Capabilities:   &ipc.Capabilities{CanCapture: true},
+		AllowedScopes:  []string{"desktop"},
+		ConnectedAt:    now.Add(-1 * time.Minute),
+		LastSeen:       now,
+	}
+
+	b := &Broker{
+		sessions: map[string]*Session{
+			userSession.SessionID:  userSession,
+			loginSession.SessionID: loginSession,
+		},
+		byIdentity:   make(map[string][]*Session),
+		staleHelpers: make(map[string][]int),
+	}
+
+	// Without console user set, user_session wins (existing behavior).
+	got := b.PreferredDesktopSession()
+	if got.SessionID != "user-sess" {
+		t.Fatalf("without console user: got %q, want user-sess", got.SessionID)
+	}
+
+	// With console at login window, login_window helper should win.
+	b.SetConsoleUser("loginwindow")
+	got = b.PreferredDesktopSession()
+	if got.SessionID != "login-sess" {
+		t.Fatalf("with loginwindow console: got %q, want login-sess", got.SessionID)
+	}
+}
+
+func TestPreferredDesktopSession_LoggedInConsole_PrefersUserSession(t *testing.T) {
+	now := time.Now()
+
+	userSession := &Session{
+		SessionID:      "user-sess",
+		BinaryKind:     ipc.HelperBinaryDesktopHelper,
+		DesktopContext: ipc.DesktopContextUserSession,
+		Capabilities:   &ipc.Capabilities{CanCapture: true},
+		AllowedScopes:  []string{"desktop"},
+		ConnectedAt:    now.Add(-10 * time.Minute),
+		LastSeen:       now,
+	}
+	loginSession := &Session{
+		SessionID:      "login-sess",
+		BinaryKind:     ipc.HelperBinaryDesktopHelper,
+		DesktopContext: ipc.DesktopContextLoginWindow,
+		Capabilities:   &ipc.Capabilities{CanCapture: true},
+		AllowedScopes:  []string{"desktop"},
+		ConnectedAt:    now.Add(-1 * time.Minute),
+		LastSeen:       now,
+	}
+
+	b := &Broker{
+		sessions: map[string]*Session{
+			userSession.SessionID:  userSession,
+			loginSession.SessionID: loginSession,
+		},
+		byIdentity:   make(map[string][]*Session),
+		staleHelpers: make(map[string][]int),
+	}
+
+	// With a real user logged in, user_session should still win.
+	b.SetConsoleUser("alice")
+	got := b.PreferredDesktopSession()
+	if got.SessionID != "user-sess" {
+		t.Fatalf("with alice console: got %q, want user-sess", got.SessionID)
+	}
+}
+
+func TestPreferredDesktopSession_LoginWindowConsole_OnlyLoginHelpers(t *testing.T) {
+	now := time.Now()
+
+	// Only a user_session helper connected, but console is at login window.
+	userSession := &Session{
+		SessionID:      "user-sess",
+		BinaryKind:     ipc.HelperBinaryDesktopHelper,
+		DesktopContext: ipc.DesktopContextUserSession,
+		Capabilities:   &ipc.Capabilities{CanCapture: true},
+		AllowedScopes:  []string{"desktop"},
+		ConnectedAt:    now,
+		LastSeen:       now,
+	}
+
+	b := &Broker{
+		sessions: map[string]*Session{
+			userSession.SessionID: userSession,
+		},
+		byIdentity:   make(map[string][]*Session),
+		staleHelpers: make(map[string][]int),
+	}
+
+	b.SetConsoleUser("loginwindow")
+	got := b.PreferredDesktopSession()
+	// Should still return the user_session as fallback — better than nil.
+	if got == nil {
+		t.Fatal("should return user_session as fallback when no login_window helper exists")
+	}
+}
