@@ -48,11 +48,19 @@ func New(cfg *Config) *Updater {
 // Callers should treat this as a permanent failure and stop retrying.
 var ErrReadOnlyFS = fmt.Errorf("binary path is on a read-only filesystem")
 
+// ErrTextBusy is returned when the binary is currently executing (ETXTBSY).
+// This is transient — the unlink-before-write in replaceBinary handles it,
+// but this sentinel prevents misclassification as ErrReadOnlyFS.
+var ErrTextBusy = fmt.Errorf("binary is currently executing")
+
 func normalizePreflightErr(err error) error {
 	if err == nil {
 		return nil
 	}
 	if errors.Is(err, ErrFileLocked) {
+		return err
+	}
+	if errors.Is(err, ErrTextBusy) {
 		return err
 	}
 	return fmt.Errorf("%w: %v", ErrReadOnlyFS, err)
@@ -495,6 +503,9 @@ func checkWritable(binaryPath string) error {
 	if err != nil {
 		if isFileLocked(err) {
 			return fmt.Errorf("%w: %v", ErrFileLocked, err)
+		}
+		if errors.Is(err, syscall.ETXTBSY) {
+			return fmt.Errorf("%w: %v", ErrTextBusy, err)
 		}
 		return err
 	}
