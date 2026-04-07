@@ -40,6 +40,7 @@ export default function EnrollmentKeyManager() {
   const [totalPages, setTotalPages] = useState(1);
   const [rotateTarget, setRotateTarget] = useState<EnrollmentKey | null>(null);
   const [downloadDropdownId, setDownloadDropdownId] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
 
   // Create form state
   const [formName, setFormName] = useState('');
@@ -207,6 +208,8 @@ export default function EnrollmentKeyManager() {
   };
 
   const handleDownloadInstaller = async (keyId: string, platform: 'windows' | 'macos') => {
+    if (downloading) return;
+    setDownloading(true);
     try {
       const response = await fetchWithAuth(`/enrollment-keys/${keyId}/installer/${platform}`);
 
@@ -226,8 +229,11 @@ export default function EnrollmentKeyManager() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-    } catch {
-      setError('Failed to download installer');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      setError(`Failed to download installer: ${message}`);
+    } finally {
+      setDownloading(false);
     }
   };
 
@@ -406,10 +412,11 @@ export default function EnrollmentKeyManager() {
                                   e.stopPropagation();
                                   setDownloadDropdownId(downloadDropdownId === key.id ? null : key.id);
                                 }}
-                                className="rounded-md px-2 py-1 text-xs text-foreground hover:bg-muted"
+                                disabled={downloading}
+                                className="rounded-md px-2 py-1 text-xs text-foreground hover:bg-muted disabled:opacity-50"
                                 title="Download pre-configured installer"
                               >
-                                Download
+                                {downloading ? 'Downloading...' : 'Download'}
                               </button>
                               {downloadDropdownId === key.id && (
                                 <div className="absolute right-0 top-full z-10 mt-1 w-44 rounded-md border bg-popover py-1 shadow-md">
