@@ -24,6 +24,7 @@ import { matchAgentTokenHash } from '../middleware/agentAuth';
 import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES } from '../services/agentCommandResultValidation';
 import { updateRestoreJobByCommandId, updateRestoreJobFromResult } from '../services/restoreResultPersistence';
 import { captureException } from '../services/sentry';
+import { publishEvent } from '../services/eventBus';
 
 declare module 'hono' {
   interface ContextVariableMap {
@@ -1352,6 +1353,28 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         return getPendingCommands(agentId);
       });
 
+      // Publish device.online event for real-time UI updates
+      if (agentDb) {
+        try {
+          const [deviceInfo] = await runWithAgentDbAccess(async () =>
+            db.select({ id: devices.id, hostname: devices.hostname, agentVersion: devices.agentVersion })
+              .from(devices)
+              .where(eq(devices.agentId, agentId))
+              .limit(1)
+          );
+          if (deviceInfo) {
+            publishEvent('device.online', agentDb.orgId, {
+              deviceId: deviceInfo.id,
+              hostname: deviceInfo.hostname,
+              agentVersion: deviceInfo.agentVersion,
+              status: 'online',
+            }, 'agent-ws').catch(err => console.error('[AgentWs] Failed to publish device.online:', err));
+          }
+        } catch (err) {
+          console.error('[AgentWs] Failed to query device for online event:', err);
+        }
+      }
+
       // Send welcome message with any pending commands
       ws.send(JSON.stringify({
         type: 'connected',
@@ -1755,7 +1778,7 @@ onClose: async (_event: unknown, ws: WSContext) => {
           await runWithAgentDbAccess(async () => {
             try {
               const [current] = await db
-                .select({ status: devices.status })
+                .select({ id: devices.id, status: devices.status, hostname: devices.hostname })
                 .from(devices)
                 .where(eq(devices.agentId, agentId))
                 .limit(1);
@@ -1767,10 +1790,15 @@ onClose: async (_event: unknown, ws: WSContext) => {
                 console.log(`[AgentWs] Preserving 'updating' status for agent ${agentId} on disconnect`);
                 return;
               }
+              await updateDeviceStatus(agentId, 'offline');
+              publishEvent('device.offline', agentDb.orgId, {
+                deviceId: current.id,
+                hostname: current.hostname,
+              }, 'agent-ws').catch(err => console.error('[AgentWs] Failed to publish device.offline:', err));
             } catch (err) {
               console.error(`[AgentWs] Failed to check status for ${agentId} on disconnect, falling back to offline:`, err);
+              await updateDeviceStatus(agentId, 'offline');
             }
-            await updateDeviceStatus(agentId, 'offline');
           });
         }
       } else {
