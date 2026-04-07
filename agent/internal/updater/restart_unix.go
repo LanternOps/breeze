@@ -30,7 +30,7 @@ func Restart() error {
 func restartSystemd() error {
 	out, err := exec.Command("systemctl", "restart", "breeze-agent").CombinedOutput()
 	if err != nil {
-		log.Debug("systemd restart failed", "error", err.Error(), "output", string(out))
+		log.Warn("systemd restart failed", "error", err.Error(), "output", string(out))
 		return err
 	}
 	log.Info("restarted via systemd")
@@ -40,7 +40,7 @@ func restartSystemd() error {
 func restartLaunchd() error {
 	out, err := exec.Command("launchctl", "kickstart", "-k", "system/com.breeze.agent").CombinedOutput()
 	if err != nil {
-		log.Debug("launchd restart failed", "error", err.Error(), "output", string(out))
+		log.Warn("launchd restart failed", "error", err.Error(), "output", string(out))
 		return err
 	}
 	log.Info("restarted via launchd")
