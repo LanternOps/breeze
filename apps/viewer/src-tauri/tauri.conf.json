@@ -25,6 +25,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/32x32.png",
@@ -39,6 +40,12 @@
       "desktop": {
         "schemes": ["breeze"]
       }
+    },
+    "updater": {
+      "pubkey": "PUBLIC_KEY_FROM_TASK_1",
+      "endpoints": [
+        "https://github.com/LanternOps/breeze/releases/latest/download/latest.json"
+      ]
     }
   }
 }
