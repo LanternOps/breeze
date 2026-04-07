@@ -104,6 +104,9 @@ export default function DeviceList({
   const [roleFilter, setRoleFilter] = useState<string>('all');
   const [orgFilter, setOrgFilter] = useState<string>('all');
   const [siteFilter, setSiteFilter] = useState<string>('all');
+  const [groupFilter, setGroupFilter] = useState<string[]>([]);
+  const [groupDropdownOpen, setGroupDropdownOpen] = useState(false);
+  const groupDropdownRef = useRef<HTMLDivElement>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
@@ -126,6 +129,28 @@ export default function DeviceList({
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [rowMenuOpenId]);
+
+  // Close group dropdown on outside click
+  useEffect(() => {
+    if (!groupDropdownOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (groupDropdownRef.current && !groupDropdownRef.current.contains(e.target as Node)) {
+        setGroupDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [groupDropdownOpen]);
+
+  // Auto-select a newly created group
+  useEffect(() => {
+    if (autoSelectGroupId && groups.some(g => g.id === autoSelectGroupId)) {
+      setGroupFilter(prev =>
+        prev.includes(autoSelectGroupId) ? prev : [...prev, autoSelectGroupId]
+      );
+      onAutoSelectConsumed?.();
+    }
+  }, [autoSelectGroupId, groups, onAutoSelectConsumed]);
 
   // Fetch matching device IDs from server when advanced filter changes
   useEffect(() => {
@@ -191,10 +216,13 @@ export default function DeviceList({
       const matchesRole = roleFilter === 'all' ? true : device.deviceRole === roleFilter;
       const matchesOrg = orgFilter === 'all' ? true : device.orgId === orgFilter;
       const matchesSite = siteFilter === 'all' ? true : device.siteId === siteFilter;
+      const matchesGroup = groupFilter.length === 0
+        ? true
+        : groupFilter.some(gId => groupMembershipMap.get(gId)?.has(device.id));
 
-      return matchesQuery && matchesStatus && matchesOs && matchesRole && matchesOrg && matchesSite;
+      return matchesQuery && matchesStatus && matchesOs && matchesRole && matchesOrg && matchesSite && matchesGroup;
     });
-  }, [devices, query, statusFilter, osFilter, roleFilter, orgFilter, siteFilter, serverFilterIds]);
+  }, [devices, query, statusFilter, osFilter, roleFilter, orgFilter, siteFilter, groupFilter, groupMembershipMap, serverFilterIds]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -234,7 +262,7 @@ export default function DeviceList({
     });
   }, [filteredDevices, sortField, sortDirection]);
 
-  const moreFiltersCount = [roleFilter, orgFilter, siteFilter].filter(f => f !== 'all').length;
+  const moreFiltersCount = [roleFilter, orgFilter, siteFilter].filter(f => f !== 'all').length + (groupFilter.length > 0 ? 1 : 0);
 
   const totalPages = Math.ceil(sortedDevices.length / pageSize);
   const startIndex = (currentPage - 1) * pageSize;
@@ -338,7 +366,7 @@ export default function DeviceList({
                 </span>
               )}
             </button>
-            {(query || statusFilter !== 'all' || osFilter !== 'all' || roleFilter !== 'all' || orgFilter !== 'all' || siteFilter !== 'all') && (
+            {(query || statusFilter !== 'all' || osFilter !== 'all' || roleFilter !== 'all' || orgFilter !== 'all' || siteFilter !== 'all' || groupFilter.length > 0) && (
               <button
                 type="button"
                 onClick={() => {
@@ -348,6 +376,7 @@ export default function DeviceList({
                   setRoleFilter('all');
                   setOrgFilter('all');
                   setSiteFilter('all');
+                  setGroupFilter([]);
                   setCurrentPage(1);
                 }}
                 className="h-10 whitespace-nowrap rounded-md px-3 text-sm font-medium text-muted-foreground hover:text-foreground"
@@ -411,6 +440,66 @@ export default function DeviceList({
                     </option>
                   ))}
                 </select>
+              )}
+              {groups.length > 0 && (
+                <div className="relative" ref={groupDropdownRef}>
+                  <button
+                    type="button"
+                    onClick={() => setGroupDropdownOpen(!groupDropdownOpen)}
+                    className="h-10 whitespace-nowrap rounded-md border bg-background px-3 text-sm font-medium hover:bg-muted flex items-center gap-1.5"
+                  >
+                    Groups
+                    {groupFilter.length > 0 && (
+                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[10px] font-semibold text-primary-foreground">
+                        {groupFilter.length}
+                      </span>
+                    )}
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </button>
+                  {groupDropdownOpen && (
+                    <div className="absolute left-0 top-full z-20 mt-1 w-64 rounded-md border bg-card shadow-lg">
+                      <div className="max-h-48 overflow-y-auto p-2">
+                        {groups.map(group => (
+                          <label key={group.id} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 hover:bg-muted">
+                            <input
+                              type="checkbox"
+                              checked={groupFilter.includes(group.id)}
+                              onChange={() => {
+                                setGroupFilter(prev =>
+                                  prev.includes(group.id)
+                                    ? prev.filter(id => id !== group.id)
+                                    : [...prev, group.id]
+                                );
+                                setCurrentPage(1);
+                              }}
+                              className="h-4 w-4 rounded border-border"
+                            />
+                            <span className="text-sm truncate">{group.name}</span>
+                            <span className="ml-auto text-[10px] text-muted-foreground">{group.type}</span>
+                          </label>
+                        ))}
+                      </div>
+                      <div className="border-t px-2 py-2 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setGroupDropdownOpen(false);
+                            onCreateGroup?.();
+                          }}
+                          className="text-xs font-medium text-primary hover:underline"
+                        >
+                          + New Group
+                        </button>
+                        <a
+                          href="/devices/groups"
+                          className="text-xs text-muted-foreground hover:text-foreground ml-auto"
+                        >
+                          Manage Groups
+                        </a>
+                      </div>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           </div>
