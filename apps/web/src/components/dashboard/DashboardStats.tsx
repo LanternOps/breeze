@@ -240,8 +240,8 @@ export default function DashboardStats() {
               className={cn(
                 'h-5 w-5',
                 stat.name === 'Online' && 'text-success',
-                stat.name === 'Warnings' && 'text-warning',
-                stat.name === 'Critical' && 'text-destructive',
+                stat.name === 'Warnings' && (stats!.warningAlerts > 0 ? 'text-warning' : 'text-muted-foreground'),
+                stat.name === 'Critical' && (stats!.criticalAlerts > 0 ? 'text-destructive' : 'text-muted-foreground'),
                 !['Online', 'Warnings', 'Critical'].includes(stat.name) && 'text-muted-foreground'
               )}
             />
