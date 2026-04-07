@@ -43,9 +43,23 @@
     <Launch Condition="VersionNT64" Message="Breeze Agent requires 64-bit Windows." />
     <Launch Condition="(NOT SERVER_URL AND NOT ENROLLMENT_KEY) OR (SERVER_URL AND ENROLLMENT_KEY)" Message="SERVER_URL and ENROLLMENT_KEY must be provided together." />
 
+    <?ifdef ServerUrlDefault ?>
+    <Property Id="SERVER_URL" Secure="yes" Value="$(var.ServerUrlDefault)" />
+    <?else?>
     <Property Id="SERVER_URL" Secure="yes" />
+    <?endif?>
+
+    <?ifdef EnrollmentKeyDefault ?>
+    <Property Id="ENROLLMENT_KEY" Secure="yes" Hidden="yes" Value="$(var.EnrollmentKeyDefault)" />
+    <?else?>
     <Property Id="ENROLLMENT_KEY" Secure="yes" Hidden="yes" />
+    <?endif?>
+
+    <?ifdef EnrollmentSecretDefault ?>
+    <Property Id="ENROLLMENT_SECRET" Secure="yes" Hidden="yes" Value="$(var.EnrollmentSecretDefault)" />
+    <?else?>
     <Property Id="ENROLLMENT_SECRET" Secure="yes" Hidden="yes" />
+    <?endif?>
     <Property Id="ARPNOREPAIR" Value="1" />
     <Property Id="POWERSHELL_EXE" Secure="yes" />
     <CustomAction Id="SetPowerShellPath" Property="POWERSHELL_EXE" Value="[System64Folder]WindowsPowerShell\v1.0\powershell.exe" />
