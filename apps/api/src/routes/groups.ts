@@ -240,6 +240,10 @@ groupRoutes.get(
 
     const countMap = new Map(countRows.map((row) => [row.groupId, Number(row.count)]));
 
+    // NOTE: Membership query is unbounded. Acceptable at current scale (<100 groups,
+    // <10k devices). If group/membership counts grow significantly, consider pagination
+    // or server-side filtering instead of loading all memberships into the client.
+
     // Optionally fetch device memberships
     let membershipMap: Map<string, string[]> | null = null;
     if (query.includeMemberships === 'true' && groupIds.length > 0) {

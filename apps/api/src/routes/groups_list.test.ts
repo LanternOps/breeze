@@ -338,6 +338,62 @@ describe('groups routes', () => {
       const body = await res.json();
       expect(body.data[0].deviceIds).toBeUndefined();
     });
+
+    it('should not return deviceIds when includeMemberships=false', async () => {
+      const groups = [makeGroup()];
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockResolvedValue(groups)
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([{ groupId: GROUP_ID, count: 3 }])
+            })
+          })
+        } as any);
+
+      const res = await app.request('/groups?includeMemberships=false', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].deviceIds).toBeUndefined();
+    });
+
+    it('should return empty data when includeMemberships=true and no groups exist', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
+
+      const res = await app.request('/groups?includeMemberships=true', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(0);
+      expect(body.total).toBe(0);
+    });
   });
 
 });
