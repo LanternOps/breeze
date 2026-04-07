@@ -161,6 +161,7 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
         body: JSON.stringify({
           name: `Add device installer (${new Date().toISOString().slice(0, 10)})`,
           siteId: selectedSiteId,
+          orgId: currentOrgId,
         }),
       });
 
@@ -237,6 +238,7 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
         body: JSON.stringify({
           name: `Add device link (${new Date().toISOString().slice(0, 10)})`,
           siteId: selectedSiteId,
+          orgId: currentOrgId,
         }),
       });
 
