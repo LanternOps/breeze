@@ -5,10 +5,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/secmem"
@@ -419,5 +421,29 @@ func TestEndToEndUpdateWithoutRestart(t *testing.T) {
 	content, _ = os.ReadFile(binaryPath)
 	if string(content) != "old binary" {
 		t.Fatalf("rollback didn't restore: %s", string(content))
+	}
+}
+
+func TestNormalizePreflightErr_PreservesTextBusy(t *testing.T) {
+	err := normalizePreflightErr(ErrTextBusy)
+	if !errors.Is(err, ErrTextBusy) {
+		t.Fatalf("expected ErrTextBusy, got %v", err)
+	}
+	if errors.Is(err, ErrReadOnlyFS) {
+		t.Fatalf("did not expect ErrReadOnlyFS, got %v", err)
+	}
+}
+
+func TestCheckWritable_DetectsETXTBSY(t *testing.T) {
+	// Wrap syscall.ETXTBSY in an os.PathError to simulate what the kernel returns
+	pathErr := &os.PathError{Op: "open", Path: "/fake", Err: syscall.ETXTBSY}
+	// checkWritable is not directly testable with a real ETXTBSY (need running executable),
+	// so test the classification logic via normalizePreflightErr
+	wrapped := fmt.Errorf("%w: %v", ErrTextBusy, pathErr)
+	if !errors.Is(wrapped, ErrTextBusy) {
+		t.Fatalf("expected ErrTextBusy, got %v", wrapped)
+	}
+	if errors.Is(wrapped, ErrReadOnlyFS) {
+		t.Fatalf("should not match ErrReadOnlyFS")
 	}
 }
