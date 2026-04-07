@@ -4,6 +4,7 @@ import { randomBytes } from 'crypto';
 import { z } from 'zod';
 import { getRedis } from '../services/redis';
 import { getEventDispatcher, type ClientEntry } from '../services/eventDispatcher';
+import { authMiddleware, resolveOrgAccess } from '../middleware/auth';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -150,14 +151,31 @@ function sendJson(ws: WSContext, payload: Record<string, unknown>): void {
 export function createEventWsTicketRoute(): Hono {
   const app = new Hono();
 
+  app.use('*', authMiddleware);
+
   app.post('/ws-ticket', async (c) => {
     const auth = c.get('auth');
 
-    if (!auth?.user?.id || !auth?.orgId) {
+    if (!auth?.user?.id) {
       return c.json({ error: 'Unauthorized' }, 401);
     }
 
-    const result = await createEventWsTicket(auth.user.id, auth.orgId);
+    // Resolve orgId for partner/system users who pass it as a query param
+    const requestedOrgId = c.req.query('orgId') ?? undefined;
+    const orgAccess = await resolveOrgAccess(auth, requestedOrgId);
+
+    let orgId: string;
+    if (auth.orgId) {
+      orgId = auth.orgId;
+    } else if (orgAccess.type === 'single') {
+      orgId = orgAccess.orgId;
+    } else if (orgAccess.type === 'multiple' && orgAccess.orgIds.length > 0) {
+      orgId = orgAccess.orgIds[0];
+    } else {
+      return c.json({ error: 'Organization context required — select an org first' }, 400);
+    }
+
+    const result = await createEventWsTicket(auth.user.id, orgId);
     return c.json(result);
   });
 

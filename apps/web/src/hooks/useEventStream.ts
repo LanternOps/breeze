@@ -3,6 +3,7 @@ import { fetchWithAuth } from '../stores/auth';
 
 const PING_INTERVAL_MS = 60_000;
 const MAX_BACKOFF_MS = 30_000;
+const MAX_TICKET_RETRIES = 5;
 
 interface EventStreamEvent {
   type: string;
@@ -50,14 +51,23 @@ export function useEventStream(options: EventStreamOptions) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const ticketFailuresRef = useRef(0);
+
   const connectWs = useCallback(async () => {
     if (stoppedRef.current) return;
 
     try {
       const res = await fetchWithAuth('/events/ws-ticket', { method: 'POST' });
       if (!res.ok) {
+        ticketFailuresRef.current++;
+        // Stop retrying after repeated ticket failures to avoid burning refresh tokens
+        if (ticketFailuresRef.current >= MAX_TICKET_RETRIES) {
+          console.warn('[useEventStream] Giving up after', MAX_TICKET_RETRIES, 'ticket failures');
+          return;
+        }
         throw new Error(`Ticket request failed: ${res.status}`);
       }
+      ticketFailuresRef.current = 0;
       const { ticket } = await res.json();
 
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';

@@ -18,6 +18,17 @@ vi.mock('../services/eventDispatcher', () => {
   };
 });
 
+// Mock auth middleware as a pass-through (tests inject auth context manually)
+vi.mock('../middleware/auth', () => ({
+  authMiddleware: vi.fn(async (_c: any, next: any) => { await next(); }),
+  resolveOrgAccess: vi.fn(async (auth: any, requestedOrgId?: string) => {
+    if (requestedOrgId) return { type: 'single', orgId: requestedOrgId };
+    if (auth.scope === 'partner' && auth.partnerId) return { type: 'multiple', orgIds: [] };
+    if (auth.scope === 'organization' && auth.orgId) return { type: 'single', orgId: auth.orgId };
+    return { type: 'all' };
+  }),
+}));
+
 // -------------------------------------------------------------------
 // Imports (after mocks)
 // -------------------------------------------------------------------
@@ -130,12 +141,12 @@ describe('createEventWsTicketRoute', () => {
     expect(res.status).toBe(401);
   });
 
-  it('returns 401 when orgId is missing from auth', async () => {
+  it('returns 400 when orgId cannot be resolved', async () => {
     const { Hono } = await import('hono');
     const app = new Hono();
 
     app.use('*', async (c, next) => {
-      c.set('auth', { user: { id: 'user-abc', email: 'a@b.com', name: 'A' }, orgId: null } as any);
+      c.set('auth', { user: { id: 'user-abc', email: 'a@b.com', name: 'A' }, orgId: null, scope: 'system' } as any);
       await next();
     });
 
@@ -143,7 +154,39 @@ describe('createEventWsTicketRoute', () => {
     app.route('/events', ticketApp);
 
     const res = await app.request('/events/ws-ticket', { method: 'POST' });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(400);
+  });
+
+  it('resolves orgId from query param for partner users', async () => {
+    const { Hono } = await import('hono');
+    const app = new Hono();
+
+    app.use('*', async (c, next) => {
+      c.set('auth', {
+        user: { id: 'user-abc', email: 'a@b.com', name: 'A' },
+        orgId: null,
+        scope: 'partner',
+        partnerId: 'partner-1',
+        canAccessOrg: () => true,
+        accessibleOrgIds: ['org-from-query'],
+      } as any);
+      await next();
+    });
+
+    const { resolveOrgAccess } = await import('../middleware/auth');
+    vi.mocked(resolveOrgAccess).mockResolvedValueOnce({ type: 'single', orgId: 'org-from-query' });
+
+    const ticketApp = createEventWsTicketRoute();
+    app.route('/events', ticketApp);
+
+    const res = await app.request('/events/ws-ticket?orgId=org-from-query', { method: 'POST' });
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.ticket).toBeTruthy();
+
+    const identity = await consumeTicket(body.ticket);
+    expect(identity).toEqual({ userId: 'user-abc', orgId: 'org-from-query' });
   });
 
   it('issued ticket is consumable with correct identity', async () => {
