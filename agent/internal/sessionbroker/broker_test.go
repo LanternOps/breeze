@@ -483,3 +483,62 @@ func TestCloseSessionsByDesktopContext(t *testing.T) {
 		t.Fatal("notify-only session should not be closed")
 	}
 }
+
+func TestCloseSessionsByDesktopContext_MultipleMatches(t *testing.T) {
+	now := time.Now()
+
+	sess1Conn, sess1Client := createSocketPair(t)
+	defer sess1Client.Close()
+	sess1 := NewSession(ipc.NewConn(sess1Conn), 1000, "1000", "alice", "", "user-desktop-1", []string{"desktop"})
+	sess1.DesktopContext = ipc.DesktopContextUserSession
+	sess1.ConnectedAt = now
+
+	sess2Conn, sess2Client := createSocketPair(t)
+	defer sess2Client.Close()
+	sess2 := NewSession(ipc.NewConn(sess2Conn), 1000, "1000", "alice", "", "user-desktop-2", []string{"desktop"})
+	sess2.DesktopContext = ipc.DesktopContextUserSession
+	sess2.ConnectedAt = now
+
+	loginConn, loginClient := createSocketPair(t)
+	defer loginClient.Close()
+	loginSess := NewSession(ipc.NewConn(loginConn), 0, "0", "loginwindow", "", "login-desktop", []string{"desktop"})
+	loginSess.DesktopContext = ipc.DesktopContextLoginWindow
+	loginSess.ConnectedAt = now
+
+	b := &Broker{
+		sessions: map[string]*Session{
+			sess1.SessionID:    sess1,
+			sess2.SessionID:    sess2,
+			loginSess.SessionID: loginSess,
+		},
+		byIdentity:   make(map[string][]*Session),
+		staleHelpers: make(map[string][]int),
+	}
+
+	closed := b.CloseSessionsByDesktopContext(ipc.DesktopContextUserSession)
+	if closed != 2 {
+		t.Fatalf("CloseSessionsByDesktopContext returned %d, want 2", closed)
+	}
+
+	sess1.mu.Lock()
+	s1Closed := sess1.closed
+	sess1.mu.Unlock()
+	sess2.mu.Lock()
+	s2Closed := sess2.closed
+	sess2.mu.Unlock()
+	if !s1Closed || !s2Closed {
+		t.Fatalf("both user sessions should be closed: sess1=%v, sess2=%v", s1Closed, s2Closed)
+	}
+
+	loginSess.mu.Lock()
+	lClosed := loginSess.closed
+	loginSess.mu.Unlock()
+	if lClosed {
+		t.Fatal("login session should not be closed")
+	}
+
+	// No-match case: returns 0 without panic.
+	if b.CloseSessionsByDesktopContext("nonexistent") != 0 {
+		t.Fatal("expected 0 for nonexistent context")
+	}
+}
