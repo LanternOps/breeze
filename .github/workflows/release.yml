@@ -434,7 +434,9 @@ jobs:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
           certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PROD }}
-          files: ${{ github.workspace }}\dist\breeze-agent.msi
+          files: |
+            ${{ github.workspace }}\dist\breeze-agent.msi
+            ${{ github.workspace }}\dist\breeze-agent-template.msi
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
@@ -446,7 +448,9 @@ jobs:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
           certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PRERELEASE }}
-          files: ${{ github.workspace }}\dist\breeze-agent.msi
+          files: |
+            ${{ github.workspace }}\dist\breeze-agent.msi
+            ${{ github.workspace }}\dist\breeze-agent-template.msi
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
@@ -458,7 +462,8 @@ jobs:
             (Join-Path $env:GITHUB_WORKSPACE "dist\breeze-agent-windows-amd64.exe"),
             (Join-Path $env:GITHUB_WORKSPACE "dist\breeze-backup-windows-amd64.exe"),
             (Join-Path $env:GITHUB_WORKSPACE "dist\breeze-watchdog-windows-amd64.exe"),
-            (Join-Path $env:GITHUB_WORKSPACE "dist\breeze-agent.msi")
+            (Join-Path $env:GITHUB_WORKSPACE "dist\breeze-agent.msi"),
+            (Join-Path $env:GITHUB_WORKSPACE "dist\breeze-agent-template.msi")
           )
           foreach ($target in $targets) {
             $sig = Get-AuthenticodeSignature -FilePath $target
