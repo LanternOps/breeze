@@ -39,6 +39,11 @@ type DeviceListProps = {
   devices: Device[];
   orgs?: { id: string; name: string }[];
   sites?: { id: string; name: string }[];
+  groups?: { id: string; name: string; type: 'static' | 'dynamic'; deviceCount: number }[];
+  groupMembershipMap?: Map<string, Set<string>>;
+  onCreateGroup?: () => void;
+  autoSelectGroupId?: string | null;
+  onAutoSelectConsumed?: () => void;
   timezone?: string;
   onSelect?: (device: Device) => void;
   onAction?: (action: string, device: Device) => void;
@@ -78,6 +83,11 @@ export default function DeviceList({
   devices,
   orgs = [],
   sites = [],
+  groups = [],
+  groupMembershipMap = new Map(),
+  onCreateGroup,
+  autoSelectGroupId,
+  onAutoSelectConsumed,
   timezone,
   onSelect,
   onAction,

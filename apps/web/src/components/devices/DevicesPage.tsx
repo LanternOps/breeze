@@ -29,10 +29,20 @@ type Site = {
   name: string;
 };
 
+type DeviceGroup = {
+  id: string;
+  name: string;
+  type: 'static' | 'dynamic';
+  deviceCount: number;
+  deviceIds?: string[];
+};
+
 export default function DevicesPage() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [orgs, setOrgs] = useState<Org[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
+  const [deviceGroups, setDeviceGroups] = useState<DeviceGroup[]>([]);
+  const [groupMembershipMap, setGroupMembershipMap] = useState<Map<string, Set<string>>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('list');
@@ -61,11 +71,12 @@ export default function DevicesPage() {
       setLoading(true);
       setError(null);
 
-      // Fetch devices, orgs, and sites in parallel
-      const [devicesResponse, orgsResponse, sitesResponse] = await Promise.all([
+      // Fetch devices, orgs, sites, and groups in parallel
+      const [devicesResponse, orgsResponse, sitesResponse, groupsResponse] = await Promise.all([
         fetchWithAuth('/devices?includeDecommissioned=true'),
         fetchWithAuth('/orgs'),
-        fetchWithAuth('/orgs/sites')
+        fetchWithAuth('/orgs/sites'),
+        fetchWithAuth('/device-groups?includeMemberships=true')
       ]);
 
       if (!devicesResponse.ok) {
@@ -129,6 +140,23 @@ export default function DevicesPage() {
         siteName: siteMap.get(device.siteId) ?? 'Unknown Site'
       }));
 
+      // Fetch groups for group filter
+      let groupsList: DeviceGroup[] = [];
+      if (groupsResponse.ok) {
+        const groupsData = await groupsResponse.json();
+        groupsList = groupsData.data ?? groupsData.groups ?? [];
+      }
+
+      // Build group membership map: groupId -> Set<deviceId>
+      const memberMap = new Map<string, Set<string>>();
+      for (const group of groupsList) {
+        if (group.deviceIds) {
+          memberMap.set(group.id, new Set(group.deviceIds));
+        }
+      }
+
+      setDeviceGroups(groupsList);
+      setGroupMembershipMap(memberMap);
       setDevices(devicesWithNames);
       setOrgs(orgsList);
       setSites(sitesList);
@@ -555,6 +583,8 @@ export default function DevicesPage() {
           devices={devices}
           orgs={orgs}
           sites={sites}
+          groups={deviceGroups}
+          groupMembershipMap={groupMembershipMap}
           onSelect={handleSelectDevice}
           onAction={handleDeviceAction}
           onBulkAction={handleBulkAction}
