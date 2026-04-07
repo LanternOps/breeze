@@ -85,6 +85,32 @@ describe('replaceMsiPlaceholders', () => {
       })
     ).toThrow(/SERVER_URL value too long/);
   });
+
+  it('replaces ASCII-encoded placeholders (real WiX MSI format)', () => {
+    // WiX stores MSI property values as ASCII/UTF-8, not UTF-16LE
+    const serverSentinel = Buffer.from(PLACEHOLDERS.SERVER_URL, 'ascii');
+    const keySentinel = Buffer.from(PLACEHOLDERS.ENROLLMENT_KEY, 'ascii');
+    const secretSentinel = Buffer.from(PLACEHOLDERS.ENROLLMENT_SECRET, 'ascii');
+
+    const template = Buffer.concat([
+      Buffer.alloc(2048, 0xaa), // header to pass size check
+      serverSentinel,
+      keySentinel,
+      secretSentinel,
+    ]);
+
+    const result = replaceMsiPlaceholders(template, {
+      serverUrl: 'https://test.2breeze.app',
+      enrollmentKey: 'brz_key123',
+      enrollmentSecret: 'secret',
+    });
+
+    expect(result.length).toBe(template.length);
+    expect(result.includes(Buffer.from('@@BREEZE_SERVER_URL@@', 'ascii'))).toBe(false);
+    expect(result.includes(Buffer.from('https://test.2breeze.app', 'ascii'))).toBe(true);
+    expect(result.includes(Buffer.from('brz_key123', 'ascii'))).toBe(true);
+    expect(result.includes(Buffer.from('secret', 'ascii'))).toBe(true);
+  });
 });
 
 describe('buildMacosInstallerZip', () => {

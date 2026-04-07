@@ -37,15 +37,25 @@ export function replaceMsiPlaceholders(template: Buffer, values: InstallerValues
       throw new Error(`${name} value too long: ${value.length} chars exceeds ${PLACEHOLDER_CHAR_LENGTH} limit`);
     }
 
-    const sentinelBuf = Buffer.from(sentinel, 'utf16le');
-    const offset = result.indexOf(sentinelBuf);
+    // WiX stores MSI property values as ASCII/UTF-8 in the internal database
+    // tables, not UTF-16LE. Try ASCII first, fall back to UTF-16LE for
+    // compatibility with any future WiX version changes.
+    const sentinelAscii = Buffer.from(sentinel, 'ascii');
+    const sentinelUtf16 = Buffer.from(sentinel, 'utf16le');
+    let offset = result.indexOf(sentinelAscii);
+    let encoding: BufferEncoding = 'ascii';
+
+    if (offset === -1) {
+      offset = result.indexOf(sentinelUtf16);
+      encoding = 'utf16le';
+    }
 
     if (offset === -1) {
       throw new Error(`${name} placeholder not found in template MSI`);
     }
 
     const replacementPadded = value.padEnd(PLACEHOLDER_CHAR_LENGTH, '\0');
-    const replacementBuf = Buffer.from(replacementPadded, 'utf16le');
+    const replacementBuf = Buffer.from(replacementPadded, encoding);
 
     replacementBuf.copy(result, offset);
   }
