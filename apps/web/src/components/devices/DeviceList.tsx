@@ -172,7 +172,9 @@ export default function DeviceList({
         ? true
         : device.hostname.toLowerCase().includes(normalizedQuery) ||
           (device.displayName?.toLowerCase().includes(normalizedQuery) ?? false);
-      const matchesStatus = statusFilter === 'all' ? true : device.status === statusFilter;
+      const matchesStatus = statusFilter === 'all'
+        ? device.status !== 'decommissioned'
+        : device.status === statusFilter;
       const matchesOs = osFilter === 'all' ? true : device.os === osFilter;
       const matchesRole = roleFilter === 'all' ? true : device.deviceRole === roleFilter;
       const matchesOrg = orgFilter === 'all' ? true : device.orgId === orgFilter;
