@@ -3,7 +3,7 @@ import type { WSContext } from 'hono/ws';
 import { randomBytes } from 'crypto';
 import { z } from 'zod';
 import { getRedis } from '../services/redis';
-import { getEventDispatcher, matchesEventType, type ClientEntry } from '../services/eventDispatcher';
+import { getEventDispatcher, type ClientEntry } from '../services/eventDispatcher';
 
 // ---------------------------------------------------------------------------
 // Constants
