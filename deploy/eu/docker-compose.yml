@@ -1,0 +1,228 @@
+x-healthcheck-defaults: &healthcheck
+  interval: 30s
+  timeout: 10s
+  retries: 3
+
+services:
+  binaries-init:
+    image: ghcr.io/lanternops/breeze/binaries:${BREEZE_VERSION:-latest}
+    pull_policy: always
+    container_name: breeze-binaries-init
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+    volumes:
+      - binaries:/target
+    restart: "no"
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: breeze-caddy
+    restart: unless-stopped
+    command: |
+      sh -c 'cat > /etc/caddy/Caddyfile <<CADDYEOF
+      :80 {
+        encode zstd gzip
+        @api path /api/* /health /ready /metrics/*
+        handle @api {
+          reverse_proxy api:3001
+        }
+        @billing path /billing /billing/*
+        handle @billing {
+          reverse_proxy billing:3002
+        }
+        handle {
+          reverse_proxy web:4321
+        }
+        header {
+          X-Content-Type-Options "nosniff"
+          Referrer-Policy "strict-origin-when-cross-origin"
+        }
+      }
+      CADDYEOF
+      caddy run --config /etc/caddy/Caddyfile --adapter caddyfile'
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    healthcheck:
+      <<: *healthcheck
+      test: ['CMD', 'caddy', 'version']
+      start_period: 20s
+    networks:
+      - breeze
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: breeze-tunnel
+    restart: unless-stopped
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - /opt/breeze/cloudflared:/etc/cloudflared:ro
+    depends_on:
+      caddy:
+        condition: service_healthy
+    networks:
+      - breeze
+
+  api:
+    image: ghcr.io/lanternops/breeze/api:${BREEZE_VERSION:-latest}
+    platform: linux/amd64
+    container_name: breeze-api
+    restart: unless-stopped
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+    environment:
+      NODE_ENV: production
+      API_PORT: 3001
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
+      REFRESH_TOKEN_EXPIRES_IN: ${REFRESH_TOKEN_EXPIRES_IN:-7d}
+      AGENT_ENROLLMENT_SECRET: ${AGENT_ENROLLMENT_SECRET:?Set AGENT_ENROLLMENT_SECRET in .env}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://eu.2breeze.app}
+      PUBLIC_APP_URL: https://eu.2breeze.app
+      DASHBOARD_URL: https://eu.2breeze.app
+      PUBLIC_API_URL: https://eu.2breeze.app
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
+      MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?Set MFA_ENCRYPTION_KEY in .env}
+      ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER:-}
+      MFA_RECOVERY_CODE_PEPPER: ${MFA_RECOVERY_CODE_PEPPER:-}
+      TRANSFER_STORAGE_PATH: /data/transfers
+      PATCH_REPORT_STORAGE_PATH: /data/patch-reports
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_JSON: "true"
+      METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: production
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-auto}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-noreply@2breeze.app}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      APP_VERSION: ${BREEZE_VERSION:-latest}
+      BREEZE_VERSION: ${BREEZE_VERSION:-latest}
+      BINARY_SOURCE: github
+      AGENT_BINARY_DIR: /data/binaries/agent
+      VIEWER_BINARY_DIR: /data/binaries/viewer
+      HELPER_BINARY_DIR: /data/binaries/helper
+      BINARY_VERSION_FILE: /data/binaries/VERSION
+      TURN_HOST: ${TURN_HOST:-}
+      TURN_PORT: ${TURN_PORT:-3478}
+      TURN_SECRET: ${TURN_SECRET:-}
+      TRUST_PROXY_HEADERS: "true"
+      PARTNER_HOOKS_URL: http://billing:3002/hooks
+      BILLING_SERVICE_URL: http://billing:3002
+      BILLING_SERVICE_API_KEY: ${BILLING_SERVICE_API_KEY:-}
+    volumes:
+      - api_data:/data
+      - binaries:/data/binaries:ro
+    depends_on:
+      binaries-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      <<: *healthcheck
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:3001/health']
+      start_period: 40s
+    networks:
+      - breeze
+
+  web:
+    image: ghcr.io/lanternops/breeze/web:${BREEZE_VERSION:-latest}
+    platform: linux/amd64
+    container_name: breeze-web
+    restart: unless-stopped
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 4321
+      PUBLIC_API_URL: https://eu.2breeze.app
+      PUBLIC_BILLING_URL: https://eu.2breeze.app
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      <<: *healthcheck
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:4321/']
+      start_period: 30s
+    networks:
+      - breeze
+
+  billing:
+    build:
+      context: /opt/breeze-billing
+      dockerfile: Dockerfile
+    image: breeze-billing:local
+    container_name: breeze-billing
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      BILLING_PORT: 3002
+      DATABASE_URL: ${DATABASE_URL}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_STARTER_PRICE_ID: ${STRIPE_STARTER_PRICE_ID:-}
+      STRIPE_COMMUNITY_PRICE_ID: ${STRIPE_COMMUNITY_PRICE_ID:-}
+      BILLING_API_KEY: ${BILLING_SERVICE_API_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-billing@2breeze.app}
+      APP_BASE_URL: https://eu.2breeze.app
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      <<: *healthcheck
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:3002/health']
+      start_period: 20s
+    networks:
+      - breeze
+
+  redis:
+    image: redis:7-alpine
+    container_name: breeze-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction --maxclients 10000 --requirepass ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      <<: *healthcheck
+      test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD}', '--no-auth-warning', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - breeze
+
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: breeze-watchtower
+    restart: unless-stopped
+    environment:
+      WATCHTOWER_POLL_INTERVAL: 300
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_LABEL_ENABLE: "true"
+      DOCKER_API_VERSION: "1.54"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - breeze
+
+networks:
+  breeze:
+    name: breeze
+
+volumes:
+  binaries:
+  caddy_data:
+  caddy_config:
+  api_data:
+  redis_data:
