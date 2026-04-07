@@ -12,15 +12,15 @@ interface CreateGroupModalProps {
   onCreated: (groupId: string) => void;
 }
 
-const EMPTY_FILTER: FilterConditionGroup = {
+const makeEmptyFilter = (): FilterConditionGroup => ({
   operator: 'AND',
   conditions: [{ field: 'hostname', operator: 'contains', value: '' }]
-};
+});
 
 export default function CreateGroupModal({ isOpen, onClose, onCreated }: CreateGroupModalProps) {
   const [name, setName] = useState('');
   const [type, setType] = useState<GroupType>('static');
-  const [filterConditions, setFilterConditions] = useState<FilterConditionGroup>(EMPTY_FILTER);
+  const [filterConditions, setFilterConditions] = useState<FilterConditionGroup>(makeEmptyFilter());
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -55,7 +55,7 @@ export default function CreateGroupModal({ isOpen, onClose, onCreated }: CreateG
       // Reset form
       setName('');
       setType('static');
-      setFilterConditions(EMPTY_FILTER);
+      setFilterConditions(makeEmptyFilter());
       onCreated(newGroupId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create group');
@@ -67,7 +67,7 @@ export default function CreateGroupModal({ isOpen, onClose, onCreated }: CreateG
   const handleClose = () => {
     setName('');
     setType('static');
-    setFilterConditions(EMPTY_FILTER);
+    setFilterConditions(makeEmptyFilter());
     setError(null);
     onClose();
   };
