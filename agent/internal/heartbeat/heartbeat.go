@@ -627,6 +627,15 @@ func (h *Heartbeat) Start() {
 	interval := time.Duration(h.config.HeartbeatIntervalSeconds) * time.Second
 	if checkUpdateMarker() {
 		log.Info("post-update restart: sending immediate heartbeat (jitter skipped)")
+		// On macOS, the agent self-update recreates the IPC socket. The
+		// desktop helpers lose their connection and may be waiting on
+		// backoff. Kickstart them so remote desktop recovers immediately.
+		if runtime.GOOS == "darwin" {
+			go func() {
+				time.Sleep(500 * time.Millisecond) // let IPC socket bind before kickstarting
+				kickstartDarwinDesktopHelpers()
+			}()
+		}
 	} else {
 		jitter := time.Duration(rand.Int64N(int64(interval)))
 		log.Info("initial heartbeat jitter", "delay", jitter)
@@ -1800,6 +1809,13 @@ func (h *Heartbeat) sendReliabilityMetrics() {
 }
 
 func (h *Heartbeat) sendHeartbeat() {
+	// After a successful self-update, the old process continues running until
+	// the service manager kills it. Don't send heartbeats with stale version info.
+	if h.upgradeInProgress.Load() {
+		log.Debug("skipping heartbeat, upgrade in progress")
+		return
+	}
+
 	metrics, err := h.metricsCol.Collect()
 	metricsAvailable := true
 	if err != nil {
@@ -2749,6 +2765,11 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	log.Info("upgrade requested", "targetVersion", targetVersion)
 
 	h.sendUpdateStatus(targetVersion)
+	// Give the WebSocket write goroutine time to flush the update_status
+	// message to the server before the binary is replaced and the process
+	// is restarted (e.g. via launchctl kickstart). Without this, the device
+	// may appear "Offline" instead of "Updating" in the dashboard.
+	time.Sleep(500 * time.Millisecond)
 
 	binaryPath, err := os.Executable()
 	if err != nil {
@@ -2805,7 +2826,14 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 		return
 	}
 
-	log.Info("update successful", "targetVersion", targetVersion)
+	log.Info("update successful, blocking old process to prevent stale heartbeats", "targetVersion", targetVersion)
+
+	// On macOS/Linux, launchctl kickstart -k / systemctl restart return
+	// immediately while the old process keeps running. If we return here,
+	// the heartbeat loop will send another heartbeat with the OLD version,
+	// overwriting the new version in the database. Block forever so the
+	// service manager kills us.
+	select {}
 }
 
 // makeUserExecFunc returns a UserExecFunc that dispatches commands to a connected

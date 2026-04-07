@@ -736,21 +736,74 @@ func runHelperProcess(name, role, context, binaryKind string) {
 		"binaryKind", binaryKind,
 	)
 
-	client := userhelper.NewWithOptions(socketPath, role, binaryKind, context)
-
-	// Handle shutdown signals
+	// Handle shutdown signals via a done channel so multiple selects
+	// can observe the shutdown without racing on a buffered sigChan.
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	done := make(chan struct{})
 	go func() {
 		<-sigChan
-		log.Info("shutting down helper", "name", name)
-		client.Stop()
+		close(done)
 	}()
 
-	if err := client.Run(); err != nil {
-		log.Error("helper error", "name", name, "error", err)
-		os.Exit(1)
-	}
+	// Reconnect loop: when the IPC socket disappears (e.g. agent self-update
+	// recreates it), retry with exponential backoff instead of exiting.
+	const (
+		helperMinBackoff = 2 * time.Second
+		helperMaxBackoff = 30 * time.Second
+	)
 
-	log.Info("helper stopped", "name", name)
+	backoff := helperMinBackoff
+	for {
+		client := userhelper.NewWithOptions(socketPath, role, binaryKind, context)
+
+		// Stop the current client when shutdown is signaled. The clientDone
+		// channel lets this goroutine exit when Run() returns on its own,
+		// preventing a goroutine leak per reconnect iteration.
+		clientDone := make(chan struct{})
+		go func() {
+			select {
+			case <-done:
+				log.Info("shutting down helper", "name", name)
+				client.Stop()
+			case <-clientDone:
+				// Run() returned on its own; nothing to do.
+			}
+		}()
+
+		connStart := time.Now()
+		err := client.Run()
+		close(clientDone)
+		if err == nil {
+			// Clean exit (e.g. Stop() was called via signal)
+			log.Info("helper stopped", "name", name)
+			return
+		}
+
+		// Check if we were signaled to stop — don't retry after shutdown.
+		select {
+		case <-done:
+			log.Info("helper stopped after error", "name", name)
+			return
+		default:
+		}
+
+		// If the connection was up for a meaningful period, reset backoff
+		// so the next reconnect starts fast.
+		if time.Since(connStart) > helperMaxBackoff {
+			backoff = helperMinBackoff
+		}
+
+		log.Warn("helper disconnected, reconnecting",
+			"name", name, "error", err.Error(), "backoff", backoff)
+
+		// Wait for backoff or shutdown signal.
+		select {
+		case <-time.After(backoff):
+			backoff = min(backoff*2, helperMaxBackoff)
+		case <-done:
+			log.Info("helper stopped during reconnect backoff", "name", name)
+			return
+		}
+	}
 }
