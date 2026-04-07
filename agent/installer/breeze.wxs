@@ -45,6 +45,7 @@
 
     <Property Id="SERVER_URL" Secure="yes" />
     <Property Id="ENROLLMENT_KEY" Secure="yes" Hidden="yes" />
+    <Property Id="ENROLLMENT_SECRET" Secure="yes" Hidden="yes" />
     <Property Id="ARPNOREPAIR" Value="1" />
     <Property Id="POWERSHELL_EXE" Secure="yes" />
     <CustomAction Id="SetPowerShellPath" Property="POWERSHELL_EXE" Value="[System64Folder]WindowsPowerShell\v1.0\powershell.exe" />
@@ -150,7 +151,7 @@
     <CustomAction
       Id="SetEnrollAgentData"
       Property="EnrollAgent"
-      Value="SERVER_URL=[SERVER_URL];ENROLLMENT_KEY=[ENROLLMENT_KEY]" />
+      Value="SERVER_URL=[SERVER_URL];ENROLLMENT_KEY=[ENROLLMENT_KEY];ENROLLMENT_SECRET=[ENROLLMENT_SECRET]" />
 
     <CustomAction
       Id="RegisterUserHelperTask"
