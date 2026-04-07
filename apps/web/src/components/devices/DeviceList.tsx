@@ -255,7 +255,7 @@ export default function DeviceList({
   const someSelected = paginatedDevices.some(d => selectedIds.has(d.id));
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div>
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">
@@ -477,7 +477,7 @@ export default function DeviceList({
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">
+              <th className="px-3 py-3">
                 <input
                   type="checkbox"
                   checked={allSelected}
@@ -490,7 +490,7 @@ export default function DeviceList({
                 />
               </th>
               <th
-                className="px-4 py-3 cursor-pointer select-none hover:text-foreground"
+                className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
                 title="Sort by hostname"
                 onClick={() => handleSort('hostname')}
               >
@@ -503,12 +503,12 @@ export default function DeviceList({
                   )}
                 </span>
               </th>
-              <th className="hidden px-4 py-3 xl:table-cell">Organization</th>
-              <th className="hidden px-4 py-3 xl:table-cell">Site</th>
-              <th className="px-4 py-3">OS</th>
-              <th className="hidden px-4 py-3 lg:table-cell">Role</th>
+              <th className="px-3 py-3">Organization</th>
+              <th className="px-3 py-3">Site</th>
+              <th className="px-3 py-3">OS</th>
+              <th className="px-3 py-3">Role</th>
               <th
-                className="px-4 py-3 cursor-pointer select-none hover:text-foreground"
+                className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
                 title="Sort by status"
                 onClick={() => handleSort('status')}
               >
@@ -522,7 +522,7 @@ export default function DeviceList({
                 </span>
               </th>
               <th
-                className="hidden px-4 py-3 md:table-cell cursor-pointer select-none hover:text-foreground"
+                className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
                 title="Sort by CPU usage"
                 onClick={() => handleSort('cpuPercent')}
               >
@@ -536,7 +536,7 @@ export default function DeviceList({
                 </span>
               </th>
               <th
-                className="hidden px-4 py-3 md:table-cell cursor-pointer select-none hover:text-foreground"
+                className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
                 title="Sort by RAM usage"
                 onClick={() => handleSort('ramPercent')}
               >
@@ -550,7 +550,7 @@ export default function DeviceList({
                 </span>
               </th>
               <th
-                className="px-4 py-3 cursor-pointer select-none hover:text-foreground"
+                className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
                 title="Sort by last seen time"
                 onClick={() => handleSort('lastSeen')}
               >
@@ -563,13 +563,13 @@ export default function DeviceList({
                   )}
                 </span>
               </th>
-              <th className="px-4 py-3 text-right">Actions</th>
+              <th className="px-3 py-3 text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {paginatedDevices.length === 0 ? (
               <tr>
-                <td colSpan={11} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                <td colSpan={11} className="px-3 py-6 text-center text-sm text-muted-foreground">
                   No devices found. Try adjusting your search or filters.
                 </td>
               </tr>
@@ -587,7 +587,7 @@ export default function DeviceList({
                   }}
                   className="cursor-pointer transition hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none"
                 >
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-3">
                     <input
                       type="checkbox"
                       checked={selectedIds.has(device.id)}
@@ -597,17 +597,17 @@ export default function DeviceList({
                       className="h-4 w-4 rounded border-border"
                     />
                   </td>
-                  <td className="max-w-[200px] px-4 py-3 text-sm font-medium">
+                  <td className="max-w-[200px] px-3 py-3 text-sm font-medium">
                     <span className="block truncate" title={device.displayName || device.hostname}>{device.displayName || device.hostname}</span>
                   </td>
-                  <td className="hidden max-w-[160px] px-4 py-3 text-sm text-muted-foreground xl:table-cell">
+                  <td className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
                     <span className="block truncate" title={device.orgName}>{device.orgName}</span>
                   </td>
-                  <td className="hidden max-w-[160px] px-4 py-3 text-sm text-muted-foreground xl:table-cell">
+                  <td className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
                     <span className="block truncate" title={device.siteName}>{device.siteName}</span>
                   </td>
-                  <td className="px-4 py-3 text-sm">{osLabels[device.os]}</td>
-                  <td className="hidden px-4 py-3 text-sm lg:table-cell">
+                  <td className="px-3 py-3 text-sm">{osLabels[device.os]}</td>
+                  <td className="px-3 py-3 text-sm">
                     {(() => {
                       const role = device.deviceRole ?? 'unknown';
                       const RoleIcon = getDeviceRoleIcon(role);
@@ -619,12 +619,12 @@ export default function DeviceList({
                       );
                     })()}
                   </td>
-                  <td className="px-4 py-3 text-sm">
+                  <td className="px-3 py-3 text-sm">
                     <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}>
                       {statusLabels[device.status]}
                     </span>
                   </td>
-                  <td className="hidden px-4 py-3 text-sm md:table-cell">
+                  <td className="px-3 py-3 text-sm">
                     {device.status === 'online' ? (
                       <div className="flex items-center gap-2">
                         <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
@@ -638,7 +638,7 @@ export default function DeviceList({
                       <span className="text-muted-foreground">&mdash;</span>
                     )}
                   </td>
-                  <td className="hidden px-4 py-3 text-sm md:table-cell">
+                  <td className="px-3 py-3 text-sm">
                     {device.status === 'online' ? (
                       <div className="flex items-center gap-2">
                         <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
@@ -652,10 +652,10 @@ export default function DeviceList({
                       <span className="text-muted-foreground">&mdash;</span>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-sm text-muted-foreground">
+                  <td className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
                     {formatLastSeen(device.lastSeen, effectiveTimezone)}
                   </td>
-                  <td className="px-4 py-3 text-sm" onClick={e => e.stopPropagation()}>
+                  <td className="px-3 py-3 text-sm" onClick={e => e.stopPropagation()}>
                     <div className="flex items-center justify-end gap-1">
                       <ConnectDesktopButton
                         deviceId={device.id}

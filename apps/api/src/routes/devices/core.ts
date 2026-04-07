@@ -25,6 +25,15 @@ import { CommandTypes } from '../../services/commandQueue';
 import { getGlobalEnrollmentSecret } from '../agents/enrollment';
 
 /**
+ * Tables where linked_device_id (not device_id) references devices.id.
+ * These get SET NULL rather than deleted during cascade.
+ */
+export const DEVICE_LINKED_DEVICE_ID_TABLES = [
+  'network_change_events',
+  'discovered_assets',
+] as const;
+
+/**
  * All tables with a direct device_id FK to devices.id, ordered so children come
  * before parents (to avoid FK violations during cascade delete).
  *
@@ -32,7 +41,7 @@ import { getGlobalEnrollmentSecret } from '../agents/enrollment';
  * (e.g. vault_snapshot_inventory → local_vaults) don't need to be listed here.
  *
  * IMPORTANT: When you add a new table with a device_id FK, add it here.
- * The test in core.test.ts will fail CI if you forget.
+ * The test in cascadeDelete.test.ts will fail CI if you forget.
  */
 export const DEVICE_CASCADE_DELETE_TABLES = [
   // recovery_tokens & backup_chains FK to backup_snapshots (no cascade),
@@ -736,6 +745,7 @@ coreRoutes.delete(
         await tx.execute(sql`UPDATE log_correlations SET alert_id = NULL WHERE alert_id IN ${deviceAlertIds}`);
         await tx.execute(sql`UPDATE network_change_events SET alert_id = NULL WHERE alert_id IN ${deviceAlertIds}`);
         await tx.execute(sql`UPDATE network_change_events SET linked_device_id = NULL WHERE linked_device_id = ${deviceId}`);
+        await tx.execute(sql`UPDATE discovered_assets SET linked_device_id = NULL WHERE linked_device_id = ${deviceId}`);
 
         const tables = DEVICE_CASCADE_DELETE_TABLES;
         for (const table of tables) {
