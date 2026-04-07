@@ -261,7 +261,7 @@ export default function DeviceList({
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">
-            {filteredDevices.length} of {devices.length} devices
+            {filteredDevices.length} of {statusFilter === 'all' ? devices.filter(d => d.status !== 'decommissioned').length : devices.length} devices
             {serverFilterIds !== null && (
               <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
                 <Filter className="h-3 w-3" />
@@ -475,8 +475,8 @@ export default function DeviceList({
         </div>
       )}
 
-      <div className="mt-6 overflow-x-auto overflow-y-visible rounded-md border">
-        <table className="min-w-full divide-y">
+      <div className="mt-6 rounded-md border">
+        <table className="w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               <th className="px-3 py-3">

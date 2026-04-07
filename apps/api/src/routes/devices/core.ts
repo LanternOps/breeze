@@ -744,8 +744,9 @@ coreRoutes.delete(
         await tx.execute(sql`DELETE FROM alert_notifications WHERE alert_id IN ${deviceAlertIds}`);
         await tx.execute(sql`UPDATE log_correlations SET alert_id = NULL WHERE alert_id IN ${deviceAlertIds}`);
         await tx.execute(sql`UPDATE network_change_events SET alert_id = NULL WHERE alert_id IN ${deviceAlertIds}`);
-        await tx.execute(sql`UPDATE network_change_events SET linked_device_id = NULL WHERE linked_device_id = ${deviceId}`);
-        await tx.execute(sql`UPDATE discovered_assets SET linked_device_id = NULL WHERE linked_device_id = ${deviceId}`);
+        for (const linkedTable of DEVICE_LINKED_DEVICE_ID_TABLES) {
+          await tx.execute(sql`UPDATE ${sql.identifier(linkedTable)} SET linked_device_id = NULL WHERE linked_device_id = ${deviceId}`);
+        }
 
         const tables = DEVICE_CASCADE_DELETE_TABLES;
         for (const table of tables) {
@@ -756,9 +757,12 @@ coreRoutes.delete(
     } catch (err: unknown) {
       const pgCode = (err as { code?: string })?.code;
       if (pgCode === '23503') {
-        const detail = (err as { detail?: string })?.detail ?? 'unknown constraint';
+        const detail = (err as { detail?: string })?.detail ?? '';
+        const constraintTable = (err as { table_name?: string })?.table_name;
         console.error(`[devices] FK violation during cascade delete of ${deviceId}: ${detail}`, err);
-        return c.json({ error: 'Cannot delete: device still has related records. Please contact support.' }, 409);
+        return c.json({
+          error: `Cannot delete: device still has related records${constraintTable ? ` in ${constraintTable}` : ''}. This table may need to be added to the cascade delete list.`,
+        }, 409);
       }
       throw err;
     }
@@ -772,6 +776,12 @@ coreRoutes.delete(
       details: { uninstallCommandSent: uninstallSent }
     });
 
-    return c.json({ success: true });
+    return c.json({
+      success: true,
+      agentUninstallSent: uninstallSent,
+      ...(!uninstallSent && device.agentId && {
+        warning: 'The agent could not be reached for remote uninstall. You may need to manually remove it from the endpoint.',
+      }),
+    });
   }
 );

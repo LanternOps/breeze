@@ -100,7 +100,7 @@ export function DeviceFilterBar({
             value={selectedFilterId}
             onChange={(e) => handleSavedFilterSelect(e.target.value)}
             disabled={savedFiltersLoading}
-            className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="rounded-md border bg-background pl-2 pr-6 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           >
             <option value="">Saved Filters...</option>
             {savedFilters.map(f => (

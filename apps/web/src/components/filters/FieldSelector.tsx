@@ -98,7 +98,7 @@ export function FieldSelector({
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="flex h-9 w-48 items-center justify-between rounded-md border bg-background px-3 text-sm hover:bg-muted"
+        className="flex w-48 items-center justify-between rounded-md border bg-background px-3 py-2 text-sm hover:bg-muted"
       >
         <span className="truncate">{selectedField?.label || 'Select field'}</span>
         <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />
