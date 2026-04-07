@@ -2,10 +2,12 @@ import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import SetupStepper from './SetupStepper';
+import AccountSetupStep from './AccountSetupStep';
 import OrganizationSetupStep from './OrganizationSetupStep';
 import EnrollDeviceStep from './EnrollDeviceStep';
 
 const STEPS = [
+  { label: 'Account' },
   { label: 'Organization' },
   { label: 'Install Agent' },
 ];
@@ -94,6 +96,10 @@ export default function SetupWizard() {
     checkSetup();
   }, [isHydrated, isLoading, isAuthenticated]);
 
+  const handleAccountStepComplete = () => {
+    setCurrentStep(1);
+  };
+
   const handleOrgStepComplete = (createdOrgId: string, createdSiteId: string, createdOrgName: string, createdSiteName: string) => {
     setOrgId(createdOrgId);
     setSiteId(createdSiteId);
@@ -101,7 +107,7 @@ export default function SetupWizard() {
     setSiteName(createdSiteName);
     try { localStorage.setItem(SETUP_ORG_KEY, createdOrgId); } catch { /* ignore */ }
     try { localStorage.setItem(SETUP_SITE_KEY, createdSiteId); } catch { /* ignore */ }
-    setCurrentStep(1);
+    setCurrentStep(2);
   };
 
   const handleStepClick = (step: number) => {
@@ -109,7 +115,7 @@ export default function SetupWizard() {
   };
 
   const handleBackToOrg = () => {
-    setCurrentStep(0);
+    setCurrentStep(1);
   };
 
   const handleSkipAll = async () => {
@@ -147,9 +153,12 @@ export default function SetupWizard() {
 
       <div className="rounded-lg border bg-card p-6 shadow-sm">
         {currentStep === 0 && (
+          <AccountSetupStep onNext={handleAccountStepComplete} />
+        )}
+        {currentStep === 1 && (
           <OrganizationSetupStep onNext={handleOrgStepComplete} />
         )}
-        {currentStep === 1 && orgId && siteId && (
+        {currentStep === 2 && orgId && siteId && (
           <EnrollDeviceStep
             orgId={orgId}
             siteId={siteId}
