@@ -51,12 +51,13 @@ class EventDispatcher {
     const url = resolveRedisUrl();
     const sub = new Redis(url, {
       maxRetriesPerRequest: 3,
-      lazyConnect: true,
     });
 
     sub.subscribe(`${STREAM_PREFIX}:live:${orgId}`, (err) => {
       if (err) {
-        console.error(`[EventDispatcher] Failed to subscribe to org ${orgId}:`, err.message);
+        console.error(`[EventDispatcher] Failed to subscribe to org ${orgId}, removing dead subscriber:`, err.message);
+        this.subscribers.delete(orgId);
+        sub.quit().catch(() => {});
       }
     });
 
@@ -74,8 +75,8 @@ class EventDispatcher {
   private unsubscribeFromOrg(orgId: string): void {
     const sub = this.subscribers.get(orgId);
     if (!sub) return;
-    sub.unsubscribe().catch(() => {});
-    sub.quit().catch(() => {});
+    sub.unsubscribe().catch((err: Error) => console.warn(`[EventDispatcher] Failed to unsubscribe org ${orgId}:`, err.message));
+    sub.quit().catch((err: Error) => console.warn(`[EventDispatcher] Failed to quit Redis for org ${orgId}:`, err.message));
     this.subscribers.delete(orgId);
   }
 
@@ -86,7 +87,8 @@ class EventDispatcher {
     let parsed: { type?: string };
     try {
       parsed = JSON.parse(rawMessage);
-    } catch {
+    } catch (err) {
+      console.error(`[EventDispatcher] Failed to parse event for org ${orgId}:`, err instanceof Error ? err.message : err);
       return;
     }
 
@@ -109,8 +111,9 @@ class EventDispatcher {
       if (matches) {
         try {
           client.ws.send(outgoing);
-        } catch {
-          console.warn(`[EventDispatcher] Failed to send event to client ${client.userId}, dropping`);
+        } catch (err) {
+          console.warn(`[EventDispatcher] Failed to send ${eventType} to client ${client.userId} in org ${orgId}, removing client:`, err instanceof Error ? err.message : err);
+          orgClients.delete(client);
         }
       }
     }
@@ -118,9 +121,11 @@ class EventDispatcher {
 
   async shutdown(): Promise<void> {
     this.stopped = true;
-    for (const [orgId] of this.subscribers) {
-      this.unsubscribeFromOrg(orgId);
+    for (const [, sub] of this.subscribers) {
+      sub.unsubscribe().catch((err: Error) => console.warn('[EventDispatcher] Shutdown unsubscribe error:', err.message));
+      sub.quit().catch((err: Error) => console.warn('[EventDispatcher] Shutdown quit error:', err.message));
     }
+    this.subscribers.clear();
     this.clients.clear();
   }
 }
