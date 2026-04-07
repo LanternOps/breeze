@@ -111,7 +111,7 @@ async function processDetectOffline(data: DetectOfflineJobData): Promise<{
     .from(devices)
     .where(
       and(
-        eq(devices.status, 'online'),
+        or(eq(devices.status, 'online'), eq(devices.status, 'updating')),
         lt(devices.lastSeenAt, thresholdTime)
       )
     )
@@ -171,7 +171,7 @@ async function processMarkOffline(data: MarkOfflineJobData): Promise<{
 
   // Check if device has reconnected since job was queued
   const thresholdTime = new Date(Date.now() - DEFAULT_OFFLINE_THRESHOLD_MINUTES * 60 * 1000);
-  if (device.status !== 'online' || (device.lastSeenAt && device.lastSeenAt >= thresholdTime)) {
+  if ((device.status !== 'online' && device.status !== 'updating') || (device.lastSeenAt && device.lastSeenAt >= thresholdTime)) {
     // Device is no longer stale
     return {
       deviceId: data.deviceId,

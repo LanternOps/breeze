@@ -531,6 +531,19 @@ func (h *Heartbeat) sendTerminalOutput(sessionId string, data []byte) {
 	}
 }
 
+// sendUpdateStatus notifies the server that an agent self-update is about
+// to start, so the device transitions to "updating" status.
+func (h *Heartbeat) sendUpdateStatus(targetVersion string) {
+	if h.wsClient == nil {
+		log.Error("cannot send update_status: no WS client", "targetVersion", targetVersion)
+		return
+	}
+	if err := h.wsClient.SendUpdateStatus(targetVersion); err != nil {
+		log.Error("failed to send update_status, device will not show 'updating' in dashboard",
+			"targetVersion", targetVersion, "error", err.Error())
+	}
+}
+
 // sendDesktopDisconnectNotification tells the API that a WebRTC peer
 // connection dropped so it can mark the session as disconnected and allow
 // the viewer to reconnect.
@@ -2710,6 +2723,8 @@ func (h *Heartbeat) handleUpgrade(targetVersion string) {
 // doUpgrade contains the actual upgrade logic, called by handleUpgrade.
 func (h *Heartbeat) doUpgrade(targetVersion string) {
 	log.Info("upgrade requested", "targetVersion", targetVersion)
+
+	h.sendUpdateStatus(targetVersion)
 
 	binaryPath, err := os.Executable()
 	if err != nil {

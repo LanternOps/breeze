@@ -1469,6 +1469,28 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
           return;
         }
 
+        // Handle update_status messages: agent is about to self-update
+        if (message.type === 'update_status' && typeof message.targetVersion === 'string') {
+          if (agentDb) {
+            await runWithAgentDbAccess(async () => {
+              try {
+                await db
+                  .update(devices)
+                  .set({
+                    status: 'updating',
+                    lastSeenAt: new Date(),
+                    updatedAt: new Date()
+                  })
+                  .where(eq(devices.agentId, agentId));
+                console.log(`[AgentWs] Agent ${agentId} entering update to ${message.targetVersion}`);
+              } catch (error) {
+                console.error(`[AgentWs] Failed to set updating status for ${agentId}:`, error);
+              }
+            });
+          }
+          return;
+        }
+
         // Handle command_result for terminal/desktop commands (non-UUID IDs)
         if (message.type === 'command_result' && typeof message.commandId === 'string' &&
             (message.commandId.startsWith('term-') || message.commandId.startsWith('desk-'))) {
@@ -1727,9 +1749,29 @@ onClose: async (_event: unknown, ws: WSContext) => {
         activeConnections.delete(agentId);
         console.log(`Agent ${agentId} disconnected. Active connections: ${activeConnections.size}`);
 
-        // Update device status to offline
+        // Update device status to offline (but preserve 'updating' — let
+        // the offline detector handle the timeout for stale updating devices)
         if (agentDb) {
-          await runWithAgentDbAccess(async () => updateDeviceStatus(agentId, 'offline'));
+          await runWithAgentDbAccess(async () => {
+            try {
+              const [current] = await db
+                .select({ status: devices.status })
+                .from(devices)
+                .where(eq(devices.agentId, agentId))
+                .limit(1);
+              if (!current) {
+                console.warn(`[AgentWs] Device not found for agent ${agentId} on disconnect, skipping status update`);
+                return;
+              }
+              if (current.status === 'updating') {
+                console.log(`[AgentWs] Preserving 'updating' status for agent ${agentId} on disconnect`);
+                return;
+              }
+            } catch (err) {
+              console.error(`[AgentWs] Failed to check status for ${agentId} on disconnect, falling back to offline:`, err);
+            }
+            await updateDeviceStatus(agentId, 'offline');
+          });
         }
       } else {
         console.log(`Agent ${agentId} stale connection closed (newer connection active). Active connections: ${activeConnections.size}`);
@@ -1748,7 +1790,26 @@ if (activeConnections.get(agentId) === ws) {
         activeConnections.delete(agentId);
       }
       if (agentDb) {
-        void runWithAgentDbAccess(async () => updateDeviceStatus(agentId, 'offline')).catch((err) => {
+        void runWithAgentDbAccess(async () => {
+          try {
+            const [current] = await db
+              .select({ status: devices.status })
+              .from(devices)
+              .where(eq(devices.agentId, agentId))
+              .limit(1);
+            if (!current) {
+              console.warn(`[AgentWs] Device not found for agent ${agentId} on error disconnect, skipping status update`);
+              return;
+            }
+            if (current.status === 'updating') {
+              console.log(`[AgentWs] Preserving 'updating' status for agent ${agentId} on error disconnect`);
+              return;
+            }
+          } catch (err) {
+            console.error(`[AgentWs] Failed to check status for ${agentId} on error disconnect, falling back to offline:`, err);
+          }
+          await updateDeviceStatus(agentId, 'offline');
+        }).catch((err) => {
           console.error(`[AgentWs] Failed to mark agent ${agentId} offline after error:`, err);
         });
       }

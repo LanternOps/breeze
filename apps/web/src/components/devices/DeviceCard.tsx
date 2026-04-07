@@ -22,7 +22,8 @@ const statusColors: Record<DeviceStatus, string> = {
   offline: 'bg-destructive',
   maintenance: 'bg-warning',
   decommissioned: 'bg-muted-foreground',
-  quarantined: 'bg-warning'
+  quarantined: 'bg-warning',
+  updating: 'bg-info'
 };
 
 const osIcons: Record<OSType, React.ReactNode> = {

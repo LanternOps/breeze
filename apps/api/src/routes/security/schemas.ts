@@ -23,7 +23,7 @@ export type StatusRow = {
   orgId: string;
   deviceName: string;
   os: 'windows' | 'macos' | 'linux';
-  deviceState: 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined';
+  deviceState: 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined' | 'updating';
   provider: ProviderKey;
   providerVersion: string | null;
   definitionsVersion: string | null;
