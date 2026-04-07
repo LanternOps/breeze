@@ -1,5 +1,5 @@
 import { Job, Queue, Worker } from 'bullmq';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { buildRecoveryBootMediaArtifact } from '../services/recoveryBootMediaService';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
@@ -24,7 +24,7 @@ let recoveryBootMediaWorkerInstance: Worker<RecoveryBootMediaQueueJobData> | nul
 function getRecoveryBootMediaQueue(): Queue<RecoveryBootMediaQueueJobData> {
   if (!recoveryBootMediaQueue) {
     recoveryBootMediaQueue = new Queue<RecoveryBootMediaQueueJobData>(RECOVERY_BOOT_MEDIA_QUEUE, {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
     });
   }
   return recoveryBootMediaQueue;
@@ -43,7 +43,7 @@ function createRecoveryBootMediaWorker(): Worker<RecoveryBootMediaQueueJobData> 
       return { artifactId: data.artifactId };
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 1,
       lockDuration: 300_000,
       stalledInterval: 60_000,

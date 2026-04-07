@@ -7,7 +7,7 @@ import {
   networkBaselines,
   networkChangeEvents
 } from '../db/schema';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { compareBaselineScan, normalizeBaselineScanSchedule } from '../services/networkBaseline';
 import { enqueueDiscoveryScan, type DiscoveredHostResult } from './discoveryWorker';
@@ -60,7 +60,7 @@ let networkBaselineWorkerInstance: Worker<NetworkBaselineJobData> | null = null;
 export function getNetworkBaselineQueue(): Queue {
   if (!networkBaselineQueue) {
     networkBaselineQueue = new Queue(NETWORK_BASELINE_QUEUE, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return networkBaselineQueue;
@@ -86,7 +86,7 @@ function createNetworkBaselineWorker(): Worker<NetworkBaselineJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 5,
       lockDuration: 300_000,
       stalledInterval: 60_000,

@@ -13,7 +13,7 @@ import {
   remoteSessions,
   restoreJobs,
 } from '../db/schema';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { getCommandTimeoutMs, EXCLUDED_COMMAND_TYPES } from '../services/commandTimeouts';
 import { captureException } from '../services/sentry';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/backupMetrics';
@@ -52,7 +52,7 @@ let reaperWorker: Worker<ReaperJobData> | null = null;
 function getQueue(): Queue<ReaperJobData> {
   if (!reaperQueue) {
     reaperQueue = new Queue<ReaperJobData>(QUEUE_NAME, {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
     });
   }
   return reaperQueue;
@@ -569,7 +569,7 @@ function createWorker(): Worker<ReaperJobData> {
       return results;
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 1,
     },
   );

@@ -24,7 +24,7 @@ interface DeploymentPayload {
   action?: 'install' | 'uninstall' | 'update';
   policyId?: string;
 }
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { getUsersForAlert, sendPushToUser } from '../services/notifications';
 import { getEmailService } from '../services/email';
@@ -279,7 +279,7 @@ async function resolveActiveQueueJob(
 export function getDeploymentQueue(): Queue {
   if (!deploymentQueue) {
     deploymentQueue = new Queue(DEPLOYMENT_QUEUE, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return deploymentQueue;
@@ -288,7 +288,7 @@ export function getDeploymentQueue(): Queue {
 export function getDeploymentDeviceQueue(): Queue {
   if (!deploymentDeviceQueue) {
     deploymentDeviceQueue = new Queue(DEPLOYMENT_DEVICE_QUEUE, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return deploymentDeviceQueue;
@@ -452,7 +452,7 @@ export function createDeploymentWorker(): Worker {
       };
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 5,
       lockDuration: 300_000,
       stalledInterval: 60_000,
@@ -618,7 +618,7 @@ export function createDeploymentDeviceWorker(): Worker {
       }
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 10,
       lockDuration: 300_000,
       stalledInterval: 60_000,

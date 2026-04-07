@@ -9,7 +9,7 @@ import { Job, Queue, Worker } from 'bullmq';
 import { sql } from 'drizzle-orm';
 
 import * as dbModule from '../db';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -43,7 +43,7 @@ let retentionWorker: Worker<RetentionJobData> | null = null;
 export function getUserRiskRetentionQueue(): Queue<RetentionJobData> {
   if (!retentionQueue) {
     retentionQueue = new Queue<RetentionJobData>(QUEUE_NAME, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return retentionQueue;
@@ -85,7 +85,7 @@ export function createUserRiskRetentionWorker(): Worker<RetentionJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 1
     }
   );

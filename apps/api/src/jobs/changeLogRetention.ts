@@ -10,7 +10,7 @@ import * as dbModule from '../db';
 import { deviceChangeLog } from '../db/schema';
 import { lt } from 'drizzle-orm';
 import { captureException } from '../services/sentry';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -28,7 +28,7 @@ let retentionQueue: Queue | null = null;
 export function getChangeLogRetentionQueue(): Queue {
   if (!retentionQueue) {
     retentionQueue = new Queue(QUEUE_NAME, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return retentionQueue;
@@ -65,7 +65,7 @@ export function createChangeLogRetentionWorker(): Worker<RetentionJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 1
     }
   );

@@ -18,7 +18,7 @@ import {
   sites,
 } from '../db/schema';
 import { and, eq, gte, inArray } from 'drizzle-orm';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { checkDeviceMaintenanceWindow } from '../services/featureConfigResolver';
 import { enqueuePatchJob } from './patchJobExecutor';
 import {
@@ -52,7 +52,7 @@ let schedulerWorker: Worker | null = null;
 function getSchedulerQueue(): Queue {
   if (!schedulerQueue) {
     schedulerQueue = new Queue(QUEUE_NAME, {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
     });
   }
   return schedulerQueue;
@@ -434,7 +434,7 @@ function createSchedulerWorker(): Worker {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 1,
       lockDuration: 300_000,
       stalledInterval: 60_000,

@@ -4,7 +4,7 @@ import * as dbModule from '../db';
 import { devices, peripheralEvents, peripheralPolicies } from '../db/schema';
 import { publishEvent } from '../services/eventBus';
 import { CommandTypes, queueCommand, queueCommandForExecution } from '../services/commandQueue';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 
 const { db } = dbModule;
@@ -55,7 +55,7 @@ function getBlockedThreshold(): number {
 export function getPeripheralAnomalyQueue(): Queue<AnomalyScanJobData> {
   if (!anomalyQueue) {
     anomalyQueue = new Queue<AnomalyScanJobData>(PERIPHERAL_ANOMALY_QUEUE, {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
     });
   }
   return anomalyQueue;
@@ -64,7 +64,7 @@ export function getPeripheralAnomalyQueue(): Queue<AnomalyScanJobData> {
 export function getPeripheralPolicyDistributionQueue(): Queue<PolicyDistributionJobData> {
   if (!policyDistributionQueue) {
     policyDistributionQueue = new Queue<PolicyDistributionJobData>(PERIPHERAL_POLICY_DISTRIBUTION_QUEUE, {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
     });
   }
   return policyDistributionQueue;
@@ -234,7 +234,7 @@ function createPeripheralAnomalyWorker(): Worker<AnomalyScanJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 1
     }
   );
@@ -249,7 +249,7 @@ function createPeripheralPolicyDistributionWorker(): Worker<PolicyDistributionJo
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 2
     }
   );

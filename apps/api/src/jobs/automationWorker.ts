@@ -28,7 +28,7 @@ import {
   isInMaintenanceWindow,
   type ScheduledAutomationWithTarget,
 } from '../services/featureConfigResolver';
-import { getRedisConnection, isRedisAvailable } from '../services/redis';
+import { getBullMQConnection, isRedisAvailable } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 
 const { db } = dbModule;
@@ -249,7 +249,7 @@ export function collectDueConfigPolicyScheduleDispatches(
 export function getAutomationQueue(): Queue<AutomationJobData> {
   if (!automationQueue) {
     automationQueue = new Queue<AutomationJobData>(AUTOMATION_QUEUE, {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
     });
   }
 
@@ -727,7 +727,7 @@ function createAutomationWorker(): Worker<AutomationJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 10,
       lockDuration: 300_000,
       stalledInterval: 60_000,

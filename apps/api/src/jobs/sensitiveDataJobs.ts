@@ -5,7 +5,7 @@ import * as dbModule from '../db';
 import { deviceCommands, devices, sensitiveDataPolicies, sensitiveDataScans } from '../db/schema';
 import { CommandTypes, queueCommandForExecution } from '../services/commandQueue';
 import { isCronDue } from '../services/automationRuntime';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 
 const { db } = dbModule;
@@ -53,7 +53,7 @@ function getSensitiveDataDispatchJobId(scanId: string): string {
 export function getSensitiveDataQueue(): Queue<SensitiveDataJobData> {
   if (!sensitiveDataQueue) {
     sensitiveDataQueue = new Queue<SensitiveDataJobData>(SENSITIVE_DATA_QUEUE, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return sensitiveDataQueue;
@@ -487,7 +487,7 @@ export function createSensitiveDataWorker(): Worker<SensitiveDataJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: SENSITIVE_DATA_WORKER_CONCURRENCY,
       lockDuration: 120_000,
       lockRenewTime: 60_000,

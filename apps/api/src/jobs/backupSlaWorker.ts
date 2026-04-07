@@ -16,7 +16,7 @@ import {
   deviceGroupMemberships,
 } from '../db/schema';
 import { eq, and, sql, isNull, desc, inArray } from 'drizzle-orm';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { getEventBus } from '../services/eventBus';
 import { resolveAllBackupAssignedDevices } from '../services/featureConfigResolver';
 
@@ -38,7 +38,7 @@ let slaQueue: Queue | null = null;
 
 function getSlaQueue(): Queue {
   if (!slaQueue) {
-    slaQueue = new Queue(SLA_QUEUE, { connection: getRedisConnection() });
+    slaQueue = new Queue(SLA_QUEUE, { connection: getBullMQConnection() });
   }
   return slaQueue;
 }
@@ -61,7 +61,7 @@ function createSlaWorker(): Worker<SlaJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 2,
       lockDuration: 120_000,
     }

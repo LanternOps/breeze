@@ -9,7 +9,7 @@ import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import { agentLogs } from '../db/schema';
 import { lt } from 'drizzle-orm';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -28,7 +28,7 @@ let retentionQueue: Queue | null = null;
 export function getAgentLogRetentionQueue(): Queue {
   if (!retentionQueue) {
     retentionQueue = new Queue(QUEUE_NAME, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return retentionQueue;
@@ -66,7 +66,7 @@ export function createAgentLogRetentionWorker(): Worker<RetentionJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 1
     }
   );

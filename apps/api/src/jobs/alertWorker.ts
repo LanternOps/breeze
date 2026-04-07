@@ -9,7 +9,7 @@ import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import { devices, deviceMetrics, organizations, alerts } from '../db/schema';
 import { eq, and, gte, desc, inArray, isNotNull } from 'drizzle-orm';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import {
   evaluateDeviceAlerts,
   checkAllAutoResolve,
@@ -46,7 +46,7 @@ let alertQueue: Queue | null = null;
 export function getAlertQueue(): Queue {
   if (!alertQueue) {
     alertQueue = new Queue(ALERT_QUEUE, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return alertQueue;
@@ -97,7 +97,7 @@ export function createAlertWorker(): Worker<AlertJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 10,
       lockDuration: 300_000,
       stalledInterval: 60_000,

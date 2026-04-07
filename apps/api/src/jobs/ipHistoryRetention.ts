@@ -8,7 +8,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 
 const { db } = dbModule;
@@ -27,7 +27,7 @@ let retentionQueue: Queue | null = null;
 export function getIPHistoryRetentionQueue(): Queue {
   if (!retentionQueue) {
     retentionQueue = new Queue(QUEUE_NAME, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return retentionQueue;
@@ -59,7 +59,7 @@ export function createIPHistoryRetentionWorker(): Worker<RetentionJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 1
     }
   );

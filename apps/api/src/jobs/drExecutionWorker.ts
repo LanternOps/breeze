@@ -1,5 +1,5 @@
 import { Job, Queue, Worker } from 'bullmq';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { reconcileDrExecution } from '../services/drExecutionService';
 import { isReusableState } from '../services/bullmqUtils';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
@@ -28,7 +28,7 @@ function getDrExecutionReconcileJobId(executionId: string): string {
 function getDrExecutionQueue(): Queue<DrExecutionQueueJobData> {
   if (!drExecutionQueue) {
     drExecutionQueue = new Queue<DrExecutionQueueJobData>(DR_EXECUTION_QUEUE, {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
     });
   }
   return drExecutionQueue;
@@ -50,7 +50,7 @@ function createDrExecutionWorker(): Worker<DrExecutionQueueJobData> {
       };
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 4,
       lockDuration: 120_000,
       stalledInterval: 60_000,

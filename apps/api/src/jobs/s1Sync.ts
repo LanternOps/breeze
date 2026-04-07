@@ -9,7 +9,7 @@ import {
   s1Integrations,
   s1Threats
 } from '../db/schema';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { decryptSecret } from '../services/secretCrypto';
 import { S1_THREAT_ACTIONS, SentinelOneClient, type S1ThreatAction, type S1ActionStatus } from '../services/sentinelOne/client';
@@ -161,7 +161,7 @@ export function applyPollFailure(
 function getS1SyncQueue(): Queue<S1SyncJobData> {
   if (!s1SyncQueue) {
     s1SyncQueue = new Queue<S1SyncJobData>(S1_SYNC_QUEUE, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return s1SyncQueue;
@@ -802,7 +802,7 @@ function createS1SyncWorker(): Worker<S1SyncJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 4,
       lockDuration: 300_000,
       stalledInterval: 60_000,

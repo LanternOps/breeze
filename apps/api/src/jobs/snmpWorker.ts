@@ -9,7 +9,7 @@ import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import { snmpDevices, snmpMetrics, snmpTemplates, devices } from '../db/schema';
 import { eq, and, sql } from 'drizzle-orm';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { sendCommandToAgent, isAgentConnected, type AgentCommand } from '../routes/agentWs';
 
@@ -26,7 +26,7 @@ let snmpQueue: Queue | null = null;
 export function getSnmpQueue(): Queue {
   if (!snmpQueue) {
     snmpQueue = new Queue(SNMP_QUEUE, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return snmpQueue;
@@ -78,7 +78,7 @@ function createSnmpWorker(): Worker<SnmpJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 10,
       lockDuration: 300_000,
       stalledInterval: 60_000,

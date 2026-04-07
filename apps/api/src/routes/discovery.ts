@@ -830,10 +830,15 @@ discoveryRoutes.get(
             and ${networkMonitors.isActive} = true
         )`,
         linkedDeviceHostname: devices.hostname,
-        linkedDeviceDisplayName: devices.displayName
+        linkedDeviceDisplayName: devices.displayName,
+        profileId: discoveryProfiles.id,
+        profileName: discoveryProfiles.name,
+        profileSubnets: discoveryProfiles.subnets
       })
       .from(discoveredAssets)
       .leftJoin(devices, eq(discoveredAssets.linkedDeviceId, devices.id))
+      .leftJoin(discoveryJobs, eq(discoveredAssets.lastJobId, discoveryJobs.id))
+      .leftJoin(discoveryProfiles, eq(discoveryJobs.profileId, discoveryProfiles.id))
       .where(where)
       .orderBy(desc(discoveredAssets.lastSeenAt));
 
@@ -860,6 +865,9 @@ discoveryRoutes.get(
           networkMonitoringEnabled: Boolean(row.networkMonitoringEnabled),
           monitoringEnabled: Boolean(row.snmpMonitoringEnabled) || Boolean(row.networkMonitoringEnabled),
           discoveryMethods: a.discoveryMethods,
+          profileId: row.profileId ?? null,
+          profileName: row.profileName ?? null,
+          profileSubnets: row.profileSubnets ?? null,
           notes: a.notes,
           tags: a.tags,
           firstSeenAt: a.firstSeenAt.toISOString(),

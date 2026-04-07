@@ -17,7 +17,7 @@ import {
   type DnsThreatCategory
 } from '../db/schema';
 import { createDnsProvider, type DnsEvent } from '../services/dnsProviders';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { decryptSecret } from '../services/secretCrypto';
 import { captureException } from '../services/sentry';
@@ -79,7 +79,7 @@ interface EventAggregationDelta {
 export function getDnsSyncQueue(): Queue<DnsSyncJobData> {
   if (!dnsSyncQueue) {
     dnsSyncQueue = new Queue<DnsSyncJobData>(DNS_SYNC_QUEUE, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return dnsSyncQueue;
@@ -628,7 +628,7 @@ function createDnsSyncWorker(): Worker<DnsSyncJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 4,
       lockDuration: 300_000,
       stalledInterval: 60_000,

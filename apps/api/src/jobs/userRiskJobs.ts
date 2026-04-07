@@ -3,7 +3,7 @@ import { sql } from 'drizzle-orm';
 
 import * as dbModule from '../db';
 import { organizationUsers } from '../db/schema';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import {
   appendUserRiskSignalEvent,
   computeAndPersistUserRiskForUser,
@@ -100,7 +100,7 @@ function sanitizeUserRiskSignalEventInput(
 export function getUserRiskQueue(): Queue<UserRiskJobData> {
   if (!userRiskQueue) {
     userRiskQueue = new Queue<UserRiskJobData>(USER_RISK_QUEUE, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return userRiskQueue;
@@ -222,7 +222,7 @@ export function createUserRiskWorker(): Worker<UserRiskJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: USER_RISK_WORKER_CONCURRENCY
     }
   );

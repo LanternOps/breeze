@@ -9,7 +9,7 @@ import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import { snmpMetrics } from '../db/schema';
 import { lt } from 'drizzle-orm';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -25,7 +25,7 @@ let retentionQueue: Queue | null = null;
 export function getSnmpRetentionQueue(): Queue {
   if (!retentionQueue) {
     retentionQueue = new Queue(QUEUE_NAME, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return retentionQueue;
@@ -54,7 +54,7 @@ function createSnmpRetentionWorker(): Worker<RetentionJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 1
     }
   );
