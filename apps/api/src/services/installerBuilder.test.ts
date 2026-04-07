@@ -130,6 +130,75 @@ describe('buildMacosInstallerZip', () => {
   });
 });
 
+describe('replaceMsiPlaceholders — boundary & immutability', () => {
+  it('accepts a value of exactly 512 characters', () => {
+    const template = Buffer.concat([
+      Buffer.alloc(2048, 0xaa),
+      Buffer.from(PLACEHOLDERS.SERVER_URL, 'utf16le'),
+      Buffer.from(PLACEHOLDERS.ENROLLMENT_KEY, 'utf16le'),
+      Buffer.from(PLACEHOLDERS.ENROLLMENT_SECRET, 'utf16le'),
+    ]);
+
+    expect(() =>
+      replaceMsiPlaceholders(template, {
+        serverUrl: 'x'.repeat(512),
+        enrollmentKey: 'k',
+        enrollmentSecret: '',
+      })
+    ).not.toThrow();
+  });
+
+  it('rejects a value of 513 characters', () => {
+    const template = Buffer.concat([
+      Buffer.alloc(2048, 0xaa),
+      Buffer.from(PLACEHOLDERS.SERVER_URL, 'utf16le'),
+      Buffer.from(PLACEHOLDERS.ENROLLMENT_KEY, 'utf16le'),
+      Buffer.from(PLACEHOLDERS.ENROLLMENT_SECRET, 'utf16le'),
+    ]);
+
+    expect(() =>
+      replaceMsiPlaceholders(template, {
+        serverUrl: 'x'.repeat(513),
+        enrollmentKey: 'k',
+        enrollmentSecret: '',
+      })
+    ).toThrow(/SERVER_URL value too long/);
+  });
+
+  it('does not mutate the input template buffer', () => {
+    const serverSentinel = Buffer.from(PLACEHOLDERS.SERVER_URL, 'utf16le');
+    const keySentinel = Buffer.from(PLACEHOLDERS.ENROLLMENT_KEY, 'utf16le');
+    const secretSentinel = Buffer.from(PLACEHOLDERS.ENROLLMENT_SECRET, 'utf16le');
+    const template = Buffer.concat([Buffer.alloc(2048, 0xaa), serverSentinel, keySentinel, secretSentinel]);
+    const originalCopy = Buffer.from(template);
+
+    replaceMsiPlaceholders(template, {
+      serverUrl: 'https://changed.com',
+      enrollmentKey: 'newkey',
+      enrollmentSecret: 'newsecret',
+    });
+
+    expect(template.equals(originalCopy)).toBe(true);
+  });
+});
+
+describe('buildMacosInstallerZip — install.sh content', () => {
+  it('install.sh contains shebang and enrollment command', async () => {
+    const zipBuffer = await buildMacosInstallerZip(Buffer.from('pkg'), {
+      serverUrl: 'https://x.com',
+      enrollmentKey: 'key1',
+      enrollmentSecret: '',
+      siteId: '550e8400-e29b-41d4-a716-446655440000',
+    });
+
+    const zip = await JSZip.loadAsync(zipBuffer);
+    const script = await zip.files['install.sh'].async('string');
+    expect(script).toContain('#!/bin/bash');
+    expect(script).toContain('breeze-agent enroll');
+    expect(script).toContain('enrollment.json');
+  });
+});
+
 describe('installer endpoint integration', () => {
   it('MSI placeholder replacement produces valid output with realistic layout', () => {
     // Build a realistic template buffer with all 3 sentinels scattered throughout
