@@ -416,6 +416,17 @@ jobs:
           $msiPath = Join-Path $root "dist\breeze-agent.msi"
           & (Join-Path $root "agent\installer\build-msi.ps1") -Version $version -AgentExePath $agentExe -BackupExePath $backupExe -WatchdogExePath $watchdogExe -OutputPath $msiPath
 
+      - name: Build Template MSI
+        shell: pwsh
+        run: |
+          $root = $env:GITHUB_WORKSPACE
+          $version = "${{ steps.version.outputs.version }}"
+          $agentExe = Join-Path $root "dist\breeze-agent-windows-amd64.exe"
+          $backupExe = Join-Path $root "dist\breeze-backup-windows-amd64.exe"
+          $watchdogExe = Join-Path $root "dist\breeze-watchdog-windows-amd64.exe"
+          $msiPath = Join-Path $root "dist\breeze-agent-template.msi"
+          & (Join-Path $root "agent\installer\build-msi.ps1") -Version $version -AgentExePath $agentExe -BackupExePath $backupExe -WatchdogExePath $watchdogExe -OutputPath $msiPath -Template
+
       - name: Sign MSI (stable profile)
         if: ${{ !contains(github.ref_name, '-') }}
         uses: azure/artifact-signing-action@v1
@@ -475,6 +486,13 @@ jobs:
         with:
           name: breeze-agent-windows-msi
           path: dist/breeze-agent.msi
+          retention-days: 30
+
+      - name: Upload Template MSI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: breeze-agent-template-msi
+          path: dist/breeze-agent-template.msi
           retention-days: 30
 
       - name: Upload signed backup EXE artifact
