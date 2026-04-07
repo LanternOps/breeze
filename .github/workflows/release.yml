@@ -1328,7 +1328,7 @@ jobs:
         shell: bash
         run: |
           # Collect all per-platform latest.json files
-          FILES=$(find manifests -name 'latest.json' -type f)
+          FILES=$(find manifests -name 'latest.json' -type f 2>/dev/null || true)
           if [ -z "$FILES" ]; then
             echo "::warning::No viewer update manifests found — auto-update will not work for this release"
             echo '{}' > latest.json
