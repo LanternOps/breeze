@@ -10,7 +10,7 @@ import {
   rateLimiter,
   getRedis
 } from '../../services';
-import { ENABLE_REGISTRATION, registerSchema, registerPartnerSchema } from './schemas';
+import { ENABLE_REGISTRATION, ENABLE_2FA, registerSchema, registerPartnerSchema } from './schemas';
 import { dispatchHook } from '../../services/partnerHooks';
 import {
   runWithSystemDbAccess,
@@ -80,6 +80,8 @@ registerRoutes.post('/register', zValidator('json', registerSchema), async (c) =
   }
 
   const context = await resolveCurrentUserTokenContext(newUser.id);
+  // MFA is vacuously satisfied when the user hasn't enrolled in MFA
+  const mfaSatisfied = !(ENABLE_2FA && newUser.mfaEnabled);
   const tokens = await createTokenPair({
     sub: newUser.id,
     email: newUser.email,
@@ -87,7 +89,7 @@ registerRoutes.post('/register', zValidator('json', registerSchema), async (c) =
     orgId: context.orgId,
     partnerId: context.partnerId,
     scope: context.scope,
-    mfa: false
+    mfa: mfaSatisfied
   });
 
   await db
@@ -240,6 +242,8 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
       });
 
       // Token creation outside tx (doesn't need rollback)
+      // MFA is vacuously satisfied when the user hasn't enrolled in MFA
+      const mfaSatisfied = !(ENABLE_2FA && result.newUser.mfaEnabled);
       const tokens = await createTokenPair({
         sub: result.newUser.id,
         email: result.newUser.email,
@@ -247,7 +251,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         orgId: null,
         partnerId: result.newPartner.id,
         scope: 'partner',
-        mfa: false
+        mfa: mfaSatisfied
       });
 
       setRefreshTokenCookie(c, tokens.refreshToken);

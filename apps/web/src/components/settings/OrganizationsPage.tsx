@@ -249,7 +249,10 @@ export default function OrganizationsPage() {
         body: JSON.stringify(payload)
       });
 
-      if (!response.ok) throw new Error('Failed to save site');
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || `Failed to save site (${response.status})`);
+      }
 
       await fetchSites(selectedOrg.id);
       handleCloseSiteModal();
