@@ -512,8 +512,11 @@ func checkWritable(binaryPath string) error {
 		if isFileLocked(err) {
 			return fmt.Errorf("%w: %v", ErrFileLocked, err)
 		}
+		// ETXTBSY means the binary is running but the filesystem is writable.
+		// replaceBinary handles this via unlink-before-write (fresh inode),
+		// so this is not a writability problem — let the update proceed.
 		if errors.Is(err, syscall.ETXTBSY) {
-			return fmt.Errorf("%w: %v", ErrTextBusy, err)
+			return nil
 		}
 		return err
 	}
@@ -540,6 +543,12 @@ func (u *Updater) Rollback() error {
 
 	if _, err := os.Stat(u.config.BackupPath); os.IsNotExist(err) {
 		return fmt.Errorf("no backup found at %s", u.config.BackupPath)
+	}
+
+	// On Unix, unlink the current binary before writing the backup.
+	// Same reason as replaceBinary: avoid ETXTBSY on a running executable.
+	if runtime.GOOS != "windows" {
+		os.Remove(u.config.BinaryPath)
 	}
 
 	// Copy backup to current location
