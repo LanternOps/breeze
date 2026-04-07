@@ -94,13 +94,19 @@ export function useEventStream(options: EventStreamOptions) {
       };
 
       ws.onmessage = (event) => {
+        let msg: { type?: string; data?: unknown };
         try {
-          const msg = JSON.parse(event.data);
-          if (msg.type === 'event' && msg.data) {
-            optionsRef.current.onEvent(msg.data);
-          }
+          msg = JSON.parse(event.data);
         } catch {
-          // Malformed message
+          console.warn('[useEventStream] Received malformed message from server');
+          return;
+        }
+        if (msg.type === 'event' && msg.data) {
+          try {
+            optionsRef.current.onEvent(msg.data as EventStreamEvent);
+          } catch (err) {
+            console.error('[useEventStream] Event handler error:', err);
+          }
         }
       };
 
@@ -111,10 +117,11 @@ export function useEventStream(options: EventStreamOptions) {
         scheduleReconnect();
       };
 
-      ws.onerror = () => {
-        // onclose fires after onerror
+      ws.onerror = (err) => {
+        console.warn('[useEventStream] WebSocket error:', err);
       };
-    } catch {
+    } catch (err) {
+      console.warn('[useEventStream] Connection failed, scheduling reconnect:', err instanceof Error ? err.message : err);
       scheduleReconnect();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
