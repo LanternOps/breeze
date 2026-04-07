@@ -586,6 +586,9 @@ func checkUpdateMarker() bool {
 	markerPath := filepath.Join(config.ConfigDir(), ".update-restart")
 	_, err := os.Stat(markerPath)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Warn("failed to check update marker", "path", markerPath, "error", err.Error())
+		}
 		return false
 	}
 	if removeErr := os.Remove(markerPath); removeErr != nil {
