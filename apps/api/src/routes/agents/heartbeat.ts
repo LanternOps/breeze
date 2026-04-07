@@ -22,7 +22,9 @@ import {
 } from './helpers';
 import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
+import { publishEvent } from '../../services/eventBus';
 import { isAgentTokenRotationDue } from '../../middleware/agentAuth';
+import { captureException } from '../../services/sentry';
 
 export const heartbeatRoutes = new Hono();
 
@@ -148,6 +150,18 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     .update(devices)
     .set(deviceUpdates)
     .where(eq(devices.id, device.id));
+
+  // Publish event when agent version changes (for real-time UI updates)
+  if (data.agentVersion && data.agentVersion !== device.agentVersion) {
+    publishEvent('device.updated', device.orgId, {
+      deviceId: device.id,
+      fields: ['agentVersion'],
+      agentVersion: data.agentVersion,
+    }, 'heartbeat').catch(err => {
+      console.error('[Heartbeat] Failed to publish device.updated:', err);
+      captureException(err);
+    });
+  }
 
   if (data.metrics) {
     await db

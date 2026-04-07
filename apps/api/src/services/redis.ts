@@ -27,7 +27,7 @@ function warnAboutInsecureRedis(message: string): void {
   console.warn(`[Redis] ${message}`);
 }
 
-function resolveRedisUrl(): string {
+export function resolveRedisUrl(): string {
   const explicitUrl = process.env.REDIS_URL?.trim();
   if (explicitUrl) {
     if (!hasPasswordInRedisUrl(explicitUrl)) {

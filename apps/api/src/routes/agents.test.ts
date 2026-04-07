@@ -122,9 +122,13 @@ vi.mock('../services/cloudflareMtls', () => ({
 }));
 
 vi.mock('../services/eventBus', () => ({
-  publishEvent: vi.fn(),
+  publishEvent: vi.fn().mockResolvedValue('event-id'),
   getEventBus: vi.fn(() => ({ subscribe: vi.fn(), publish: vi.fn() })),
   EventType: {}
+}));
+
+vi.mock('../services/sentry', () => ({
+  captureException: vi.fn(),
 }));
 
 vi.mock('./backup/verificationService', () => ({
