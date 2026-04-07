@@ -118,3 +118,38 @@ describe('buildMacosInstallerZip', () => {
     expect(config.enrollmentSecret).toBe('');
   });
 });
+
+describe('installer endpoint integration', () => {
+  it('MSI placeholder replacement produces valid output with realistic layout', () => {
+    // Build a realistic template buffer with all 3 sentinels scattered throughout
+    const sentinel1 = Buffer.from(PLACEHOLDERS.SERVER_URL, 'utf16le');
+    const sentinel2 = Buffer.from(PLACEHOLDERS.ENROLLMENT_KEY, 'utf16le');
+    const sentinel3 = Buffer.from(PLACEHOLDERS.ENROLLMENT_SECRET, 'utf16le');
+
+    // Simulate a real MSI layout (header + data + sentinels scattered with gaps)
+    const header = Buffer.alloc(4096, 0xcc);
+    const gap = Buffer.alloc(1024, 0xdd);
+    const template = Buffer.concat([header, sentinel1, gap, sentinel2, gap, sentinel3, gap]);
+
+    const result = replaceMsiPlaceholders(template, {
+      serverUrl: 'https://rmm.acme-msp.com',
+      enrollmentKey: 'a'.repeat(64),
+      enrollmentSecret: 'my-enrollment-secret',
+    });
+
+    // Size unchanged
+    expect(result.length).toBe(template.length);
+
+    // Header unchanged (not corrupted)
+    expect(result.subarray(0, 4096).equals(header)).toBe(true);
+
+    // Gaps unchanged
+    const gap1Start = 4096 + sentinel1.length;
+    expect(result.subarray(gap1Start, gap1Start + 1024).equals(gap)).toBe(true);
+
+    // Values present at correct offsets
+    const serverVal = result.subarray(4096, 4096 + sentinel1.length).toString('utf16le');
+    expect(serverVal.startsWith('https://rmm.acme-msp.com')).toBe(true);
+    expect(serverVal.includes('@@BREEZE')).toBe(false);
+  });
+});
