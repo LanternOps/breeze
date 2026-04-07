@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_deep_link::DeepLinkExt;
+use tauri_plugin_updater::UpdaterExt;
 
 /// Register this app bundle with macOS Launch Services so the `breeze://`
 /// URL scheme always resolves to the current install location (not a stale
@@ -253,12 +254,47 @@ fn create_session_window(app: &tauri::AppHandle, url: String) {
     }
 }
 
+/// Check for updates and silently download + install if available.
+/// The update is staged and applied on next app restart — active sessions are never interrupted.
+async fn auto_update(app: tauri::AppHandle) {
+    // Delay to let session windows and WebRTC setup proceed first
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    let updater = match app.updater() {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("Failed to create updater: {}", e);
+            return;
+        }
+    };
+
+    let update = match updater.check().await {
+        Ok(Some(update)) => update,
+        Ok(None) => return, // already up to date
+        Err(e) => {
+            eprintln!("Update check failed: {}", e);
+            return;
+        }
+    };
+
+    eprintln!("Update {} available, downloading...", update.version);
+
+    if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
+        eprintln!("Update download/install failed: {}", e);
+        return;
+    }
+
+    eprintln!("Update installed, will apply on next restart");
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             get_pending_deep_link,
             clear_pending_deep_link,
@@ -339,6 +375,10 @@ pub fn run() {
                     });
                 }
             });
+
+            // Silent auto-update: check, download, stage for next restart
+            let update_handle = app.handle().clone();
+            tauri::async_runtime::spawn(auto_update(update_handle));
 
             Ok(())
         })
