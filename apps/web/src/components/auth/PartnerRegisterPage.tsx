@@ -34,7 +34,7 @@ export default function PartnerRegisterPage() {
 
     if (result.user && result.tokens) {
       login(result.user, result.tokens);
-      await navigateTo(result.redirectUrl ?? '/');
+      await navigateTo(result.redirectUrl ?? '/setup');
       return;
     }
 

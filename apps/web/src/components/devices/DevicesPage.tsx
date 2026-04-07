@@ -544,8 +544,8 @@ export default function DevicesPage() {
                 Get enrollment key
                 <ArrowRight className="h-4 w-4" />
               </a>
-              <a href="https://docs.breezermm.com/getting-started" target="_blank" rel="noopener" className="inline-flex items-center gap-1.5 rounded-md border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors">
-                View setup guide
+              <a href="https://docs.breezermm.com/agents/installation/" target="_blank" rel="noopener" className="inline-flex items-center gap-1.5 rounded-md border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors">
+                View installation guide
               </a>
             </div>
           </div>

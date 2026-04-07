@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
@@ -116,8 +117,11 @@ export default function EnrollmentKeyManager() {
     try {
       const body: Record<string, unknown> = { name: formName };
 
-      // Use first available orgId from existing keys, or let the server resolve it
-      if (keys.length > 0) {
+      // Use the currently selected org from the org switcher
+      const currentOrgId = useOrgStore.getState().currentOrgId;
+      if (currentOrgId) {
+        body.orgId = currentOrgId;
+      } else if (keys.length > 0) {
         body.orgId = keys[0].orgId;
       }
 
