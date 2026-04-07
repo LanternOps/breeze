@@ -96,9 +96,20 @@ func TestNormalizePreflightErr_PreservesFileLocked(t *testing.T) {
 }
 
 func TestNormalizePreflightErr_WrapsReadOnly(t *testing.T) {
+	// EROFS, EACCES, and EPERM should all be classified as read-only
+	for _, sysErr := range []error{syscall.EROFS, syscall.EACCES, syscall.EPERM} {
+		err := normalizePreflightErr(sysErr)
+		if !errors.Is(err, ErrReadOnlyFS) {
+			t.Fatalf("expected ErrReadOnlyFS for %v, got %v", sysErr, err)
+		}
+	}
+}
+
+func TestNormalizePreflightErr_PassesThroughTransient(t *testing.T) {
+	// Transient errors should NOT be wrapped as ErrReadOnlyFS
 	err := normalizePreflightErr(os.ErrPermission)
-	if !errors.Is(err, ErrReadOnlyFS) {
-		t.Fatalf("expected ErrReadOnlyFS, got %v", err)
+	if errors.Is(err, ErrReadOnlyFS) {
+		t.Fatalf("os.ErrPermission should not be classified as ErrReadOnlyFS")
 	}
 }
 

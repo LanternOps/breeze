@@ -63,7 +63,13 @@ func normalizePreflightErr(err error) error {
 	if errors.Is(err, ErrTextBusy) {
 		return err
 	}
-	return fmt.Errorf("%w: %v", ErrReadOnlyFS, err)
+	// Only classify known read-only indicators as permanent.
+	// Transient errors (ENOMEM, EMFILE, EIO, etc.) should not
+	// permanently disable auto-update.
+	if errors.Is(err, syscall.EROFS) || errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) {
+		return fmt.Errorf("%w: %v", ErrReadOnlyFS, err)
+	}
+	return err
 }
 
 // UpdateTo downloads and installs a new version
