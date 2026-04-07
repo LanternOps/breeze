@@ -9,6 +9,10 @@ import { randomBytes } from 'crypto';
 import { createAuditLogAsync } from '../services/auditService';
 import { PERMISSIONS } from '../services/permissions';
 import { hashEnrollmentKey } from '../services/enrollmentKeySecurity';
+import { readFileSync } from 'node:fs';
+import { resolve, join } from 'node:path';
+import { replaceMsiPlaceholders, buildMacosInstallerZip } from '../services/installerBuilder';
+import { getBinarySource, getGithubTemplateMsiUrl, getGithubAgentPkgUrl } from '../services/binarySource';
 
 export const enrollmentKeyRoutes = new Hono();
 
@@ -72,6 +76,28 @@ function writeEnrollmentKeyAudit(
     userAgent: c.req.header('user-agent'),
     result: 'success'
   });
+}
+
+async function fetchTemplateMsi(): Promise<Buffer> {
+  if (getBinarySource() === 'github') {
+    const url = getGithubTemplateMsiUrl();
+    const resp = await fetch(url, { redirect: 'follow' });
+    if (!resp.ok) throw new Error(`Failed to fetch template MSI: ${resp.status}`);
+    return Buffer.from(await resp.arrayBuffer());
+  }
+  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
+  return readFileSync(join(binaryDir, 'breeze-agent-template.msi'));
+}
+
+async function fetchMacosPkg(): Promise<Buffer> {
+  if (getBinarySource() === 'github') {
+    const url = getGithubAgentPkgUrl('darwin', 'arm64');
+    const resp = await fetch(url, { redirect: 'follow' });
+    if (!resp.ok) throw new Error(`Failed to fetch macOS PKG: ${resp.status}`);
+    return Buffer.from(await resp.arrayBuffer());
+  }
+  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
+  return readFileSync(join(binaryDir, 'breeze-agent-darwin-arm64.pkg'));
 }
 
 // ============================================
@@ -402,5 +428,137 @@ enrollmentKeyRoutes.delete(
       success: true,
       message: 'Enrollment key deleted successfully'
     });
+  }
+);
+
+// ============================================
+// GET /:id/installer/:platform - Download pre-configured installer
+// ============================================
+
+enrollmentKeyRoutes.get(
+  '/:id/installer/:platform',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
+  async (c) => {
+    const auth = c.get('auth');
+    const keyId = c.req.param('id')!;
+    const platform = c.req.param('platform');
+
+    if (platform !== 'windows' && platform !== 'macos') {
+      return c.json({ error: 'Invalid platform. Must be "windows" or "macos".' }, 400);
+    }
+
+    // Look up parent enrollment key
+    const [parentKey] = await db
+      .select()
+      .from(enrollmentKeys)
+      .where(eq(enrollmentKeys.id, keyId))
+      .limit(1);
+
+    if (!parentKey) {
+      return c.json({ error: 'Enrollment key not found' }, 404);
+    }
+
+    // Verify org access
+    const hasAccess = await ensureOrgAccess(parentKey.orgId, auth);
+    if (!hasAccess) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
+
+    // Verify key is still usable
+    if (parentKey.expiresAt && new Date(parentKey.expiresAt) < new Date()) {
+      return c.json({ error: 'Enrollment key has expired' }, 410);
+    }
+    if (parentKey.maxUsage !== null && parentKey.usageCount >= parentKey.maxUsage) {
+      return c.json({ error: 'Enrollment key usage exhausted' }, 410);
+    }
+
+    // Require siteId on the parent key
+    if (!parentKey.siteId) {
+      return c.json({ error: 'Enrollment key must have a siteId to generate installers' }, 400);
+    }
+
+    // Generate a child enrollment key (single-use, same org/site/expiry)
+    const rawChildKey = generateEnrollmentKey();
+    const childKeyHash = hashEnrollmentKey(rawChildKey);
+
+    const [childKey] = await db
+      .insert(enrollmentKeys)
+      .values({
+        orgId: parentKey.orgId,
+        siteId: parentKey.siteId,
+        name: `${parentKey.name} (installer)`,
+        key: childKeyHash,
+        keySecretHash: parentKey.keySecretHash,
+        maxUsage: 1,
+        expiresAt: parentKey.expiresAt,
+        createdBy: auth.user.id,
+      })
+      .returning();
+
+    if (!childKey) {
+      return c.json({ error: 'Failed to generate installer key' }, 500);
+    }
+
+    // Global enrollment secret (per-key secrets can't be recovered from hash)
+    const globalSecret = process.env.AGENT_ENROLLMENT_SECRET || '';
+
+    // Determine server URL
+    const serverUrl = process.env.PUBLIC_API_URL
+      || process.env.API_URL
+      || `${c.req.header('x-forwarded-proto') || 'https'}://${c.req.header('host')}`;
+
+    // Audit log
+    writeEnrollmentKeyAudit(c, auth, {
+      orgId: parentKey.orgId,
+      action: 'enrollment_key.installer_download',
+      keyId: parentKey.id,
+      keyName: parentKey.name,
+      details: { platform, childKeyId: childKey.id },
+    });
+
+    if (platform === 'windows') {
+      let templateBuffer: Buffer;
+      try {
+        templateBuffer = await fetchTemplateMsi();
+      } catch (err) {
+        console.error('[installer] Failed to fetch template MSI:', err);
+        return c.json({ error: 'Template MSI not available' }, 503);
+      }
+
+      const modified = replaceMsiPlaceholders(templateBuffer, {
+        serverUrl,
+        enrollmentKey: rawChildKey,
+        enrollmentSecret: globalSecret,
+      });
+
+      c.header('Content-Type', 'application/octet-stream');
+      c.header('Content-Disposition', 'attachment; filename="breeze-agent.msi"');
+      c.header('Content-Length', String(modified.length));
+      c.header('Cache-Control', 'no-store');
+      return c.body(modified as unknown as ArrayBuffer);
+    }
+
+    // macOS
+    let pkgBuffer: Buffer;
+    try {
+      pkgBuffer = await fetchMacosPkg();
+    } catch (err) {
+      console.error('[installer] Failed to fetch macOS PKG:', err);
+      return c.json({ error: 'macOS PKG not available' }, 503);
+    }
+
+    const zipBuffer = await buildMacosInstallerZip(pkgBuffer, {
+      serverUrl,
+      enrollmentKey: rawChildKey,
+      enrollmentSecret: globalSecret,
+      siteId: parentKey.siteId,
+    });
+
+    c.header('Content-Type', 'application/zip');
+    c.header('Content-Disposition', 'attachment; filename="breeze-agent-macos.zip"');
+    c.header('Content-Length', String(zipBuffer.length));
+    c.header('Cache-Control', 'no-store');
+    return c.body(zipBuffer as unknown as ArrayBuffer);
   }
 );

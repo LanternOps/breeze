@@ -12,7 +12,9 @@ param(
     [string]$WatchdogExePath = "",
 
     [Parameter(Mandatory = $false)]
-    [string]$OutputPath = ""
+    [string]$OutputPath = "",
+
+    [switch]$Template
 )
 
 $ErrorActionPreference = "Stop"
@@ -76,6 +78,19 @@ if (-not (Test-Path $outputDir)) {
     New-Item -Path $outputDir -ItemType Directory -Force | Out-Null
 }
 
+$templateArgs = @()
+if ($Template) {
+    $pad = 512
+    $serverPlaceholder = "@@BREEZE_SERVER_URL@@".PadRight($pad, [char]0)
+    $keyPlaceholder = "@@BREEZE_ENROLLMENT_KEY@@".PadRight($pad, [char]0)
+    $secretPlaceholder = "@@BREEZE_ENROLLMENT_SECRET@@".PadRight($pad, [char]0)
+    $templateArgs = @(
+        "-d", "ServerUrlDefault=$serverPlaceholder",
+        "-d", "EnrollmentKeyDefault=$keyPlaceholder",
+        "-d", "EnrollmentSecretDefault=$secretPlaceholder"
+    )
+}
+
 $wixArgs = @(
     "build",
     "$installerPath",
@@ -89,7 +104,7 @@ $wixArgs = @(
     "-d", "RemoveUserHelperScriptPath=$removeUserHelperScriptPath",
     "-d", "EnrollAgentScriptPath=$enrollAgentScriptPath",
     "-o", "$OutputPath"
-)
+) + $templateArgs
 
 & wix @wixArgs
 if ($LASTEXITCODE -ne 0) {

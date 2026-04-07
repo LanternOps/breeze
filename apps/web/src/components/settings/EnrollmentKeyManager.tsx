@@ -39,6 +39,7 @@ export default function EnrollmentKeyManager() {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [rotateTarget, setRotateTarget] = useState<EnrollmentKey | null>(null);
+  const [downloadDropdownId, setDownloadDropdownId] = useState<string | null>(null);
 
   // Create form state
   const [formName, setFormName] = useState('');
@@ -73,6 +74,13 @@ export default function EnrollmentKeyManager() {
   useEffect(() => {
     fetchKeys();
   }, [fetchKeys]);
+
+  useEffect(() => {
+    if (!downloadDropdownId) return;
+    const handler = () => setDownloadDropdownId(null);
+    document.addEventListener('click', handler);
+    return () => document.removeEventListener('click', handler);
+  }, [downloadDropdownId]);
 
   const handleCopyKey = async (key: string, id: string) => {
     try {
@@ -195,6 +203,31 @@ export default function EnrollmentKeyManager() {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleDownloadInstaller = async (keyId: string, platform: 'windows' | 'macos') => {
+    try {
+      const response = await fetchWithAuth(`/enrollment-keys/${keyId}/installer/${platform}`);
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({ error: 'Download failed' }));
+        setError(body.error || `Download failed (${response.status})`);
+        return;
+      }
+
+      const blob = await response.blob();
+      const filename = platform === 'windows' ? 'breeze-agent.msi' : 'breeze-agent-macos.zip';
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      setError('Failed to download installer');
     }
   };
 
@@ -363,21 +396,63 @@ export default function EnrollmentKeyManager() {
                         {new Date(key.createdAt).toLocaleDateString()}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <button
-                          type="button"
-                          onClick={() => handleRotateKey(key)}
-                          disabled={submitting}
-                          className="mr-1 rounded-md px-2 py-1 text-xs text-foreground hover:bg-muted disabled:opacity-50"
-                        >
-                          Rotate
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleOpenDelete(key)}
-                          className="rounded-md px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
-                        >
-                          Delete
-                        </button>
+                        <div className="relative inline-flex items-center gap-1">
+                          {/* Download Installer Dropdown - only for active keys with siteId */}
+                          {status.label === 'Active' && key.siteId && (
+                            <div className="relative">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDownloadDropdownId(downloadDropdownId === key.id ? null : key.id);
+                                }}
+                                className="rounded-md px-2 py-1 text-xs text-foreground hover:bg-muted"
+                                title="Download pre-configured installer"
+                              >
+                                Download
+                              </button>
+                              {downloadDropdownId === key.id && (
+                                <div className="absolute right-0 top-full z-10 mt-1 w-44 rounded-md border bg-popover py-1 shadow-md">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      handleDownloadInstaller(key.id, 'windows');
+                                      setDownloadDropdownId(null);
+                                    }}
+                                    className="w-full px-3 py-1.5 text-left text-xs hover:bg-muted"
+                                  >
+                                    Windows (.msi)
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      handleDownloadInstaller(key.id, 'macos');
+                                      setDownloadDropdownId(null);
+                                    }}
+                                    className="w-full px-3 py-1.5 text-left text-xs hover:bg-muted"
+                                  >
+                                    macOS (.zip)
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleRotateKey(key)}
+                            disabled={submitting}
+                            className="rounded-md px-2 py-1 text-xs text-foreground hover:bg-muted disabled:opacity-50"
+                          >
+                            Rotate
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenDelete(key)}
+                            className="rounded-md px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
