@@ -418,3 +418,68 @@ func TestPreferredDesktopSession_LoginWindowConsole_OnlyLoginHelpers(t *testing.
 		t.Fatal("should return user_session as fallback when no login_window helper exists")
 	}
 }
+
+func TestCloseSessionsByDesktopContext(t *testing.T) {
+	now := time.Now()
+
+	userSess, userClient := createSocketPair(t)
+	defer userClient.Close()
+	userSession := NewSession(ipc.NewConn(userSess), 1000, "1000", "alice", "", "user-desktop", []string{"desktop"})
+	userSession.BinaryKind = ipc.HelperBinaryDesktopHelper
+	userSession.DesktopContext = ipc.DesktopContextUserSession
+	userSession.Capabilities = &ipc.Capabilities{CanCapture: true}
+	userSession.ConnectedAt = now
+
+	loginSess, loginClient := createSocketPair(t)
+	defer loginClient.Close()
+	loginSession := NewSession(ipc.NewConn(loginSess), 0, "0", "loginwindow", "", "login-desktop", []string{"desktop"})
+	loginSession.BinaryKind = ipc.HelperBinaryDesktopHelper
+	loginSession.DesktopContext = ipc.DesktopContextLoginWindow
+	loginSession.Capabilities = &ipc.Capabilities{CanCapture: true}
+	loginSession.ConnectedAt = now
+
+	notifySess, notifyClient := createSocketPair(t)
+	defer notifyClient.Close()
+	notifySession := NewSession(ipc.NewConn(notifySess), 1000, "1000", "alice", "", "notify-only", []string{"notify"})
+	notifySession.ConnectedAt = now
+
+	b := &Broker{
+		sessions: map[string]*Session{
+			userSession.SessionID:   userSession,
+			loginSession.SessionID:  loginSession,
+			notifySession.SessionID: notifySession,
+		},
+		byIdentity:   make(map[string][]*Session),
+		staleHelpers: make(map[string][]int),
+	}
+
+	closed := b.CloseSessionsByDesktopContext(ipc.DesktopContextUserSession)
+	if closed != 1 {
+		t.Fatalf("CloseSessionsByDesktopContext returned %d, want 1", closed)
+	}
+
+	// Verify user session was closed. Note: without RecvLoop running,
+	// removeSession won't fire, so we check the session's closed field
+	// directly instead of using SessionByID.
+	userSession.mu.Lock()
+	userClosed := userSession.closed
+	userSession.mu.Unlock()
+	if !userClosed {
+		t.Fatal("user-desktop session should be closed")
+	}
+
+	// Verify login and notify sessions were NOT closed.
+	loginSession.mu.Lock()
+	loginClosed := loginSession.closed
+	loginSession.mu.Unlock()
+	if loginClosed {
+		t.Fatal("login-desktop session should not be closed")
+	}
+
+	notifySession.mu.Lock()
+	notifyClosed := notifySession.closed
+	notifySession.mu.Unlock()
+	if notifyClosed {
+		t.Fatal("notify-only session should not be closed")
+	}
+}

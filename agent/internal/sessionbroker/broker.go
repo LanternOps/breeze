@@ -1066,6 +1066,25 @@ func (b *Broker) KillStaleHelpers(winSessionID string) {
 	}
 }
 
+// CloseSessionsByDesktopContext closes all sessions with the given desktop
+// context (e.g., "user_session"). Used on macOS to tear down stale helpers
+// after a logout event. Returns the number of sessions closed.
+func (b *Broker) CloseSessionsByDesktopContext(ctx string) int {
+	b.mu.Lock()
+	var toClose []*Session
+	for _, s := range b.sessions {
+		if s.DesktopContext == ctx {
+			toClose = append(toClose, s)
+		}
+	}
+	b.mu.Unlock()
+
+	for _, s := range toClose {
+		s.Close()
+	}
+	return len(toClose)
+}
+
 // setupSocket is implemented in broker_windows.go and broker_unix.go.
 
 func (b *Broker) verifyBinaryPath(peerPath string) bool {
