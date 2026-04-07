@@ -9,10 +9,11 @@ import { randomBytes } from 'crypto';
 import { createAuditLogAsync } from '../services/auditService';
 import { PERMISSIONS } from '../services/permissions';
 import { hashEnrollmentKey } from '../services/enrollmentKeySecurity';
-import { readFile } from 'node:fs/promises';
-import { resolve, join } from 'node:path';
-import { replaceMsiPlaceholders, buildMacosInstallerZip, buildWindowsInstallerZip } from '../services/installerBuilder';
-import { getBinarySource, getGithubTemplateMsiUrl, getGithubAgentPkgUrl } from '../services/binarySource';
+import {
+  replaceMsiPlaceholders, buildMacosInstallerZip, buildWindowsInstallerZip,
+  fetchTemplateMsi, fetchRegularMsi, fetchMacosPkg,
+} from '../services/installerBuilder';
+import { MsiSigningService } from '../services/msiSigning';
 
 export const enrollmentKeyRoutes = new Hono();
 
@@ -78,27 +79,7 @@ function writeEnrollmentKeyAudit(
   });
 }
 
-async function fetchTemplateMsi(): Promise<Buffer> {
-  if (getBinarySource() === 'github') {
-    const url = getGithubTemplateMsiUrl();
-    const resp = await fetch(url, { redirect: 'follow' });
-    if (!resp.ok) throw new Error(`Failed to fetch template MSI: ${resp.status}`);
-    return Buffer.from(await resp.arrayBuffer());
-  }
-  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
-  return readFile(join(binaryDir, 'breeze-agent-template.msi'));
-}
-
-async function fetchMacosPkg(): Promise<Buffer> {
-  if (getBinarySource() === 'github') {
-    const url = getGithubAgentPkgUrl('darwin', 'arm64');
-    const resp = await fetch(url, { redirect: 'follow' });
-    if (!resp.ok) throw new Error(`Failed to fetch macOS PKG: ${resp.status}`);
-    return Buffer.from(await resp.arrayBuffer());
-  }
-  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
-  return readFile(join(binaryDir, 'breeze-agent-darwin-arm64.pkg'));
-}
+// fetchTemplateMsi, fetchRegularMsi, fetchMacosPkg moved to installerBuilder.ts
 
 // ============================================
 // Validation Schemas
@@ -502,15 +483,18 @@ enrollmentKeyRoutes.get(
       console.warn('[installer] AGENT_ENROLLMENT_SECRET not configured but parent key has a secret hash — agents may fail to enroll');
     }
 
-    // Fetch template binary BEFORE creating child key (prevent orphans if fetch fails)
-    let templateBuffer: Buffer;
+    // Determine signing availability and fetch appropriate binary BEFORE creating child key
+    const signingService = MsiSigningService.fromEnv();
+    let binaryBuffer: Buffer;
     try {
-      templateBuffer = platform === 'windows'
-        ? await fetchTemplateMsi()
-        : await fetchMacosPkg();
+      if (platform === 'windows') {
+        binaryBuffer = signingService ? await fetchTemplateMsi() : await fetchRegularMsi();
+      } else {
+        binaryBuffer = await fetchMacosPkg();
+      }
     } catch (err) {
       console.error(`[installer] Failed to fetch ${platform} binary:`, err);
-      return c.json({ error: `${platform === 'windows' ? 'Template MSI' : 'macOS PKG'} not available` }, 503);
+      return c.json({ error: `${platform === 'windows' ? 'MSI' : 'macOS PKG'} not available` }, 503);
     }
 
     // Generate a child enrollment key (single-use, same org/site/expiry)
@@ -538,14 +522,28 @@ enrollmentKeyRoutes.get(
     // Build the installer — wrap in try/catch to clean up orphaned child key on failure
     try {
       if (platform === 'windows') {
-        const modified = replaceMsiPlaceholders(templateBuffer, {
-          serverUrl,
-          enrollmentKey: rawChildKey,
-          enrollmentSecret: globalSecret,
-        });
+        const enrollValues = { serverUrl, enrollmentKey: rawChildKey, enrollmentSecret: globalSecret };
 
-        if (!modified) {
-          return c.json({ error: 'Failed to build Windows installer — template placeholders not found' }, 500);
+        let resultBuffer: Buffer;
+        let contentType: string;
+        let filename: string;
+
+        if (signingService) {
+          // Signing configured: patch template MSI → re-sign → serve signed .msi
+          const patched = replaceMsiPlaceholders(binaryBuffer, enrollValues);
+          if (!patched) {
+            return c.json({ error: 'Failed to build Windows installer — template placeholders not found' }, 500);
+          }
+          resultBuffer = await signingService.signMsi(patched);
+          contentType = 'application/octet-stream';
+          filename = 'breeze-agent.msi';
+        } else {
+          // No signing: zip bundle with unmodified signed MSI + enrollment.json + install.bat
+          resultBuffer = await buildWindowsInstallerZip(binaryBuffer, {
+            ...enrollValues, siteId: parentKey.siteId,
+          });
+          contentType = 'application/zip';
+          filename = 'breeze-agent-windows.zip';
         }
 
         writeEnrollmentKeyAudit(c, auth, {
@@ -553,25 +551,24 @@ enrollmentKeyRoutes.get(
           action: 'enrollment_key.installer_download',
           keyId: parentKey.id,
           keyName: parentKey.name,
-          details: { platform, childKeyId: childKey.id, count: childMaxUsage },
+          details: { platform, childKeyId: childKey.id, count: childMaxUsage, signed: !!signingService },
         });
 
-        c.header('Content-Type', 'application/octet-stream');
-        c.header('Content-Disposition', 'attachment; filename="breeze-agent.msi"');
-        c.header('Content-Length', String(modified.length));
+        c.header('Content-Type', contentType);
+        c.header('Content-Disposition', `attachment; filename="${filename}"`);
+        c.header('Content-Length', String(resultBuffer.length));
         c.header('Cache-Control', 'no-store');
-        return c.body(modified as unknown as ArrayBuffer);
+        return c.body(resultBuffer as unknown as ArrayBuffer);
       }
 
-      // macOS
-      const zipBuffer = await buildMacosInstallerZip(templateBuffer, {
+      // macOS — unchanged
+      const zipBuffer = await buildMacosInstallerZip(binaryBuffer, {
         serverUrl,
         enrollmentKey: rawChildKey,
         enrollmentSecret: globalSecret,
         siteId: parentKey.siteId,
       });
 
-      // Audit log
       writeEnrollmentKeyAudit(c, auth, {
         orgId: parentKey.orgId,
         action: 'enrollment_key.installer_download',
@@ -656,12 +653,16 @@ enrollmentKeyRoutes.post(
       return c.json({ error: 'Enrollment key must have a siteId to generate installer links' }, 400);
     }
 
-    // Verify template binary is available (fail fast before creating child key)
+    // Verify binary is available (fail fast before creating child key)
     try {
-      platform === 'windows' ? await fetchTemplateMsi() : await fetchMacosPkg();
+      if (platform === 'windows') {
+        MsiSigningService.fromEnv() ? await fetchTemplateMsi() : await fetchRegularMsi();
+      } else {
+        await fetchMacosPkg();
+      }
     } catch (err) {
       console.error(`[installer-link] Failed to fetch ${platform} binary:`, err);
-      return c.json({ error: `${platform === 'windows' ? 'Template MSI' : 'macOS PKG'} not available` }, 503);
+      return c.json({ error: `${platform === 'windows' ? 'MSI' : 'macOS PKG'} not available` }, 503);
     }
 
     // Generate a child enrollment key
@@ -779,63 +780,61 @@ publicEnrollmentRoutes.get(
 
     const globalSecret = process.env.AGENT_ENROLLMENT_SECRET || '';
 
-    // Fetch template binary
-    let templateBuffer: Buffer;
+    // Fetch binary (template if signing configured, regular if not)
+    const signingService = MsiSigningService.fromEnv();
+    let binaryBuffer: Buffer;
     try {
-      templateBuffer = platform === 'windows'
-        ? await fetchTemplateMsi()
-        : await fetchMacosPkg();
+      if (platform === 'windows') {
+        binaryBuffer = signingService ? await fetchTemplateMsi() : await fetchRegularMsi();
+      } else {
+        binaryBuffer = await fetchMacosPkg();
+      }
     } catch (err) {
       console.error(`[public-download] Failed to fetch ${platform} binary:`, err);
       return c.json({ error: 'Installer binary not available' }, 503);
     }
 
-    // Increment usage count
-    await db
-      .update(enrollmentKeys)
-      .set({ usageCount: sql`${enrollmentKeys.usageCount} + 1` })
-      .where(eq(enrollmentKeys.id, enrollmentKey.id));
-
-    // Build installer
+    // Build installer BEFORE incrementing usage (don't burn usage on build failure)
     try {
+      let resultBuffer: Buffer;
+      let contentType: string;
+      let filename: string;
+
       if (platform === 'windows') {
-        const modified = replaceMsiPlaceholders(templateBuffer, {
+        const enrollValues = { serverUrl, enrollmentKey: token, enrollmentSecret: globalSecret };
+
+        if (signingService) {
+          const patched = replaceMsiPlaceholders(binaryBuffer, enrollValues);
+          if (!patched) {
+            return c.json({ error: 'Failed to build Windows installer' }, 500);
+          }
+          resultBuffer = await signingService.signMsi(patched);
+          contentType = 'application/octet-stream';
+          filename = 'breeze-agent.msi';
+        } else {
+          resultBuffer = await buildWindowsInstallerZip(binaryBuffer, {
+            ...enrollValues, siteId: enrollmentKey.siteId,
+          });
+          contentType = 'application/zip';
+          filename = 'breeze-agent-windows.zip';
+        }
+      } else {
+        // macOS
+        resultBuffer = await buildMacosInstallerZip(binaryBuffer, {
           serverUrl,
           enrollmentKey: token,
           enrollmentSecret: globalSecret,
+          siteId: enrollmentKey.siteId,
         });
-
-        if (!modified) {
-          return c.json({ error: 'Failed to build Windows installer' }, 500);
-        }
-
-        createAuditLogAsync({
-          orgId: enrollmentKey.orgId,
-          actorId: 'public',
-          action: 'enrollment_key.public_download',
-          resourceType: 'enrollment_key',
-          resourceId: enrollmentKey.id,
-          resourceName: enrollmentKey.name,
-          details: { platform, ip },
-          ipAddress: ip,
-          userAgent: c.req.header('user-agent'),
-          result: 'success',
-        });
-
-        c.header('Content-Type', 'application/octet-stream');
-        c.header('Content-Disposition', 'attachment; filename="breeze-agent.msi"');
-        c.header('Content-Length', String(modified.length));
-        c.header('Cache-Control', 'no-store');
-        return c.body(modified as unknown as ArrayBuffer);
+        contentType = 'application/zip';
+        filename = 'breeze-agent-macos.zip';
       }
 
-      // macOS
-      const zipBuffer = await buildMacosInstallerZip(templateBuffer, {
-        serverUrl,
-        enrollmentKey: token,
-        enrollmentSecret: globalSecret,
-        siteId: enrollmentKey.siteId,
-      });
+      // Increment usage only after successful build
+      await db
+        .update(enrollmentKeys)
+        .set({ usageCount: sql`${enrollmentKeys.usageCount} + 1` })
+        .where(eq(enrollmentKeys.id, enrollmentKey.id));
 
       createAuditLogAsync({
         orgId: enrollmentKey.orgId,
@@ -844,17 +843,17 @@ publicEnrollmentRoutes.get(
         resourceType: 'enrollment_key',
         resourceId: enrollmentKey.id,
         resourceName: enrollmentKey.name,
-        details: { platform, ip },
+        details: { platform, ip, signed: !!signingService },
         ipAddress: ip,
         userAgent: c.req.header('user-agent'),
         result: 'success',
       });
 
-      c.header('Content-Type', 'application/zip');
-      c.header('Content-Disposition', 'attachment; filename="breeze-agent-macos.zip"');
-      c.header('Content-Length', String(zipBuffer.length));
+      c.header('Content-Type', contentType);
+      c.header('Content-Disposition', `attachment; filename="${filename}"`);
+      c.header('Content-Length', String(resultBuffer.length));
       c.header('Cache-Control', 'no-store');
-      return c.body(zipBuffer as unknown as ArrayBuffer);
+      return c.body(resultBuffer as unknown as ArrayBuffer);
     } catch (err) {
       console.error('[public-download] Build failed:', err instanceof Error ? err.message : err);
       return c.json({ error: 'Failed to build installer' }, 500);

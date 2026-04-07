@@ -1,4 +1,7 @@
 import archiver from 'archiver';
+import { readFile } from 'node:fs/promises';
+import { resolve, join } from 'node:path';
+import { getBinarySource, getGithubTemplateMsiUrl, getGithubAgentPkgUrl, getGithubRegularMsiUrl } from './binarySource';
 
 const PLACEHOLDER_CHAR_LENGTH = 512;
 
@@ -256,4 +259,39 @@ export async function buildMacosInstallerZip(
 
     archive.finalize().catch(reject);
   });
+}
+
+// --- Binary fetch helpers (moved from enrollmentKeys.ts) ---
+
+export async function fetchTemplateMsi(): Promise<Buffer> {
+  if (getBinarySource() === 'github') {
+    const url = getGithubTemplateMsiUrl();
+    const resp = await fetch(url, { redirect: 'follow' });
+    if (!resp.ok) throw new Error(`Failed to fetch template MSI: ${resp.status}`);
+    return Buffer.from(await resp.arrayBuffer());
+  }
+  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
+  return readFile(join(binaryDir, 'breeze-agent-template.msi'));
+}
+
+export async function fetchRegularMsi(): Promise<Buffer> {
+  if (getBinarySource() === 'github') {
+    const url = getGithubRegularMsiUrl();
+    const resp = await fetch(url, { redirect: 'follow' });
+    if (!resp.ok) throw new Error(`Failed to fetch regular MSI: ${resp.status}`);
+    return Buffer.from(await resp.arrayBuffer());
+  }
+  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
+  return readFile(join(binaryDir, 'breeze-agent.msi'));
+}
+
+export async function fetchMacosPkg(): Promise<Buffer> {
+  if (getBinarySource() === 'github') {
+    const url = getGithubAgentPkgUrl('darwin', 'arm64');
+    const resp = await fetch(url, { redirect: 'follow' });
+    if (!resp.ok) throw new Error(`Failed to fetch macOS PKG: ${resp.status}`);
+    return Buffer.from(await resp.arrayBuffer());
+  }
+  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
+  return readFile(join(binaryDir, 'breeze-agent-darwin-arm64.pkg'));
 }

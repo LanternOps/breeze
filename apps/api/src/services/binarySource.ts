@@ -55,6 +55,10 @@ export function getGithubTemplateMsiUrl(): string {
   return `${githubDownloadBase()}/breeze-agent-template.msi`;
 }
 
+export function getGithubRegularMsiUrl(): string {
+  return `${githubDownloadBase()}/breeze-agent.msi`;
+}
+
 export const VIEWER_FILENAMES: Record<string, string> = {
   macos: 'breeze-viewer-macos.dmg',
   windows: 'breeze-viewer-windows.msi',
