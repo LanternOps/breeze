@@ -1,6 +1,6 @@
 import { Job, Queue, Worker } from 'bullmq';
 import * as dbModule from '../db';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import {
   ensurePostBackupIntegrityChecks,
   recalculateReadinessScores,
@@ -30,7 +30,7 @@ let backupVerificationWorker: Worker<BackupVerificationJobData> | null = null;
 function getBackupVerificationQueue(): Queue<BackupVerificationJobData> {
   if (!backupVerificationQueue) {
     backupVerificationQueue = new Queue<BackupVerificationJobData>(BACKUP_VERIFICATION_QUEUE, {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
     });
   }
   return backupVerificationQueue;
@@ -58,7 +58,7 @@ function createBackupVerificationWorker(): Worker<BackupVerificationJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 3,
       lockDuration: 120_000,
       lockRenewTime: 60_000,

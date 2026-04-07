@@ -6,10 +6,6 @@ export const queueActorMetaSchema = z.object({
   source: z.string().min(1),
 }).strict();
 
-const queueMetaEnvelopeSchema = z.object({
-  meta: queueActorMetaSchema.optional(),
-}).strict();
-
 const backupSnapshotFileSchema = z.object({
   sourcePath: z.string().min(1),
   backupPath: z.string().min(1),
@@ -174,10 +170,10 @@ export type RecoveryMediaQueueJobData = z.infer<typeof recoveryMediaQueueJobData
 export type RecoveryBootMediaQueueJobData = z.infer<typeof recoveryBootMediaQueueJobDataSchema>;
 export type QueueActorMeta = z.infer<typeof queueActorMetaSchema>;
 
-export function withQueueMeta<T extends z.infer<typeof queueMetaEnvelopeSchema>>(
+export function withQueueMeta<T extends Record<string, unknown>>(
   payload: T,
   meta: QueueActorMeta
-): T {
+): T & { meta: QueueActorMeta } {
   return {
     ...payload,
     meta,

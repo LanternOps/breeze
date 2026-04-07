@@ -17,7 +17,7 @@ import {
   deviceCommands,
 } from '../db/schema';
 import { eq, and, sql, inArray } from 'drizzle-orm';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { resolveApprovedPatchesForDevice, type RingConfig } from '../services/patchApprovalEvaluator';
 import { evaluateRebootPolicy, executeReboot } from '../services/patchRebootHandler';
@@ -79,7 +79,7 @@ async function resolveActiveQueueJob(queue: Queue, candidateIds: string[]) {
 export function getPatchJobQueue(): Queue {
   if (!patchJobQueue) {
     patchJobQueue = new Queue(PATCH_JOB_QUEUE, {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
     });
   }
   return patchJobQueue;
@@ -88,7 +88,7 @@ export function getPatchJobQueue(): Queue {
 export function getPatchJobDeviceQueue(): Queue {
   if (!patchJobDeviceQueue) {
     patchJobDeviceQueue = new Queue(PATCH_JOB_DEVICE_QUEUE, {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
     });
   }
   return patchJobDeviceQueue;
@@ -154,7 +154,7 @@ export function createPatchJobWorker(): Worker<PatchJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 5,
       lockDuration: 300_000,
       stalledInterval: 60_000,
@@ -290,7 +290,7 @@ function createPatchJobDeviceWorker(): Worker<PatchJobDeviceData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 10,
       lockDuration: 300_000,
       stalledInterval: 60_000,

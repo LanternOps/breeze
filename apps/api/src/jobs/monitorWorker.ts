@@ -9,7 +9,7 @@ import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import { networkMonitors, networkMonitorResults, devices, networkMonitorAlertRules, alerts, discoveredAssets } from '../db/schema';
 import { eq, and, sql, desc, inArray } from 'drizzle-orm';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
 import { buildMonitorCommand } from '../routes/monitors';
@@ -36,7 +36,7 @@ let monitorQueue: Queue | null = null;
 export function getMonitorQueue(): Queue {
   if (!monitorQueue) {
     monitorQueue = new Queue(MONITOR_QUEUE, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return monitorQueue;
@@ -121,7 +121,7 @@ function createMonitorWorker(): Worker<MonitorJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 10,
       lockDuration: 300_000,
       stalledInterval: 60_000,

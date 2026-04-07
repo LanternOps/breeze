@@ -14,7 +14,7 @@ import {
   type HuntressIncidentRecord,
 } from '../services/huntressClient';
 import { publishEvent } from '../services/eventBus';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { captureException } from '../services/sentry';
 import { decryptSecret } from '../services/secretCrypto';
@@ -132,7 +132,7 @@ async function addUniqueJob(
 export function getHuntressSyncQueue(): Queue<HuntressSyncJobData> {
   if (!huntressSyncQueue) {
     huntressSyncQueue = new Queue<HuntressSyncJobData>(HUNTRESS_SYNC_QUEUE, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return huntressSyncQueue;
@@ -797,7 +797,7 @@ function createHuntressSyncWorker(): Worker<HuntressSyncJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 4,
       lockDuration: 300_000,
       stalledInterval: 60_000,

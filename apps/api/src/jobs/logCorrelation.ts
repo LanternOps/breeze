@@ -1,6 +1,6 @@
 import { Job, Queue, Worker } from 'bullmq';
 
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { detectPatternCorrelation, runCorrelationRules } from '../services/logSearch';
 import { captureException } from '../services/sentry';
 import { isReusableState } from '../services/bullmqUtils';
@@ -65,7 +65,7 @@ function stableShortHash(value: string): string {
 export function getLogCorrelationQueue(): Queue<CorrelationJobData> {
   if (!correlationQueue) {
     correlationQueue = new Queue<CorrelationJobData>(LOG_CORRELATION_QUEUE, {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
     });
   }
   return correlationQueue;
@@ -107,7 +107,7 @@ export function createLogCorrelationWorker(): Worker<CorrelationJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 1,
     }
   );

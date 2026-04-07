@@ -10,7 +10,7 @@ import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import { playbookExecutions } from '../db/schema';
 import { and, eq, lt, inArray } from 'drizzle-orm';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 
 const { db } = dbModule;
@@ -30,7 +30,7 @@ let retentionQueue: Queue | null = null;
 export function getPlaybookRetentionQueue(): Queue {
   if (!retentionQueue) {
     retentionQueue = new Queue(QUEUE_NAME, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return retentionQueue;
@@ -101,7 +101,7 @@ export function createPlaybookRetentionWorker(): Worker<RetentionJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 1
     }
   );

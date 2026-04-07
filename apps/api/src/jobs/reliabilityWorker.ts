@@ -3,7 +3,7 @@ import { sql } from 'drizzle-orm';
 
 import * as dbModule from '../db';
 import { devices } from '../db/schema';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { computeAndPersistDeviceReliability, computeAndPersistOrgReliability } from '../services/reliabilityScoring';
 import { captureException } from '../services/sentry';
 import { isReusableState } from '../services/bullmqUtils';
@@ -44,7 +44,7 @@ let reliabilityWorker: Worker<ReliabilityJobData> | null = null;
 export function getReliabilityQueue(): Queue<ReliabilityJobData> {
   if (!reliabilityQueue) {
     reliabilityQueue = new Queue<ReliabilityJobData>(RELIABILITY_QUEUE, {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
     });
   }
   return reliabilityQueue;
@@ -106,7 +106,7 @@ export function createReliabilityWorker(): Worker<ReliabilityJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 5,
       lockDuration: 300_000,
       stalledInterval: 60_000,

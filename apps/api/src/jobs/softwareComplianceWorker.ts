@@ -7,7 +7,7 @@ import {
   recordSoftwarePolicyViolation,
   recordSoftwareRemediationDecision,
 } from '../routes/metrics';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import {
   evaluateSoftwarePolicyAgainstInventory,
   getSoftwareInventoryByDeviceIds,
@@ -228,7 +228,7 @@ let softwareComplianceWorker: Worker<SoftwareComplianceJobData> | null = null;
 export function getSoftwareComplianceQueue(): Queue<SoftwareComplianceJobData> {
   if (!softwareComplianceQueue) {
     softwareComplianceQueue = new Queue<SoftwareComplianceJobData>(SOFTWARE_COMPLIANCE_QUEUE, {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
     });
   }
   return softwareComplianceQueue;
@@ -485,7 +485,7 @@ export function createSoftwareComplianceWorker(): Worker<SoftwareComplianceJobDa
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 4,
       lockDuration: 300_000,
       stalledInterval: 60_000,

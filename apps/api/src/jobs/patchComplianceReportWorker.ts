@@ -6,7 +6,7 @@ import { Job, Queue, Worker } from 'bullmq';
 
 import * as dbModule from '../db';
 import { devicePatches, devices, patchComplianceReports, patches, patchSourceEnum, patchSeverityEnum } from '../db/schema';
-import { getRedisConnection, isRedisAvailable } from '../services/redis';
+import { getBullMQConnection, isRedisAvailable } from '../services/redis';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -216,7 +216,7 @@ async function processGenerateComplianceReport(
 export function getPatchComplianceReportQueue(): Queue<PatchComplianceReportJobData> {
   if (!patchComplianceReportQueue) {
     patchComplianceReportQueue = new Queue<PatchComplianceReportJobData>(PATCH_COMPLIANCE_REPORT_QUEUE, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
 
@@ -318,7 +318,7 @@ function createPatchComplianceReportWorker(): Worker<PatchComplianceReportJobDat
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 2,
       lockDuration: 300_000,
       stalledInterval: 60_000,

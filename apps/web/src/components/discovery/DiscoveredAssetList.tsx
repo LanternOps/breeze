@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Info, Signal, CheckCircle2, XCircle } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Filter, Info, Signal, CheckCircle2, XCircle } from 'lucide-react';
 import AssetDetailModal, { type AssetDetail } from './AssetDetailModal';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -41,6 +41,9 @@ export type DiscoveredAsset = {
   discoveryMethods?: string[];
   notes?: string | null;
   tags?: string[];
+  profileId?: string | null;
+  profileName?: string | null;
+  profileSubnets?: string[] | null;
 };
 
 type ApiDiscoveryAsset = {
@@ -61,6 +64,9 @@ type ApiDiscoveryAsset = {
   linkedDeviceName?: string | null;
   monitoringEnabled?: boolean;
   discoveryMethods?: string[] | null;
+  profileId?: string | null;
+  profileName?: string | null;
+  profileSubnets?: string[] | null;
   notes?: string | null;
   tags?: string[] | null;
   lastSeenAt?: string | null;
@@ -155,7 +161,10 @@ function mapAsset(asset: ApiDiscoveryAsset): DiscoveredAsset {
     monitoringEnabled: asset.monitoringEnabled ?? false,
     discoveryMethods: asset.discoveryMethods ?? undefined,
     notes: asset.notes ?? null,
-    tags: asset.tags ?? undefined
+    tags: asset.tags ?? undefined,
+    profileId: asset.profileId ?? null,
+    profileName: asset.profileName ?? null,
+    profileSubnets: asset.profileSubnets ?? null
   };
 }
 
@@ -169,6 +178,49 @@ function toDetail(asset: DiscoveredAsset): AssetDetail {
   };
 }
 
+interface FilterChipGroupProps {
+  label: string;
+  chips: Array<{ key: string; label: string; count: number; color: string }>;
+  activeKey: string | null;
+  onToggle: (key: string) => void;
+  showIcon?: boolean;
+}
+
+function FilterChipGroup({ label, chips, activeKey, onToggle, showIcon }: FilterChipGroupProps) {
+  const visibleChips = chips.filter(c => c.count > 0);
+  if (visibleChips.length === 0) return null;
+
+  const inactiveStyle = 'border-transparent text-muted-foreground hover:bg-muted';
+
+  return (
+    <div className="flex items-center gap-2">
+      {showIcon && <Filter className="h-3.5 w-3.5 text-muted-foreground" />}
+      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
+      <div className="flex flex-wrap gap-1">
+        {visibleChips.map(chip => {
+          const isActive = activeKey === chip.key;
+          return (
+            <button
+              key={chip.key}
+              type="button"
+              onClick={() => onToggle(chip.key)}
+              className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium transition ${
+                isActive ? chip.color : inactiveStyle
+              }`}
+            >
+              {chip.label}
+              <span className="opacity-60">{chip.count}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+const filterDivider = <div className="h-4 w-px bg-border" />;
+const primaryChipColor = 'border-primary/40 bg-primary/10 text-primary';
+
 interface DiscoveredAssetListProps {
   timezone?: string;
 }
@@ -181,6 +233,8 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
   const [selectedAsset, setSelectedAsset] = useState<AssetDetail | null>(null);
   const [approvalFilter, setApprovalFilter] = useState<string>('all');
   const [typeFilter, setTypeFilter] = useState<string>('all');
+  const [profileFilter, setProfileFilter] = useState<string | null>(null);
+  const [subnetFilter, setSubnetFilter] = useState<string | null>(null);
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(new Set());
   const [bulkActing, setBulkActing] = useState(false);
 
@@ -188,11 +242,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
     try {
       setLoading(true);
       setError(undefined);
-      const params = new URLSearchParams();
-      if (approvalFilter !== 'all') params.set('approvalStatus', approvalFilter);
-      if (typeFilter !== 'all') params.set('assetType', typeFilter);
-      const qs = params.toString();
-      const response = await fetchWithAuth(`/discovery/assets${qs ? `?${qs}` : ''}`);
+      const response = await fetchWithAuth('/discovery/assets');
       if (!response.ok) {
         throw new Error('Failed to fetch discovered assets');
       }
@@ -207,7 +257,53 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
     } finally {
       setLoading(false);
     }
-  }, [approvalFilter, typeFilter]);
+  }, []);
+
+  const filteredAssets = useMemo(() => {
+    let result = assets;
+    if (approvalFilter !== 'all') result = result.filter(a => a.approvalStatus === approvalFilter);
+    if (typeFilter !== 'all') result = result.filter(a => a.type === typeFilter);
+    if (profileFilter) result = result.filter(a => a.profileId === profileFilter);
+    if (subnetFilter) result = result.filter(a => a.profileSubnets?.includes(subnetFilter));
+    return result;
+  }, [assets, approvalFilter, typeFilter, profileFilter, subnetFilter]);
+
+  const approvalCounts = useMemo(() => {
+    const counts: Record<string, number> = { pending: 0, approved: 0, dismissed: 0 };
+    for (const a of assets) counts[a.approvalStatus] = (counts[a.approvalStatus] ?? 0) + 1;
+    return counts;
+  }, [assets]);
+
+  const typeCounts = useMemo(() => {
+    const base = approvalFilter !== 'all' ? assets.filter(a => a.approvalStatus === approvalFilter) : assets;
+    const counts: Record<string, number> = {};
+    for (const a of base) counts[a.type] = (counts[a.type] ?? 0) + 1;
+    return counts;
+  }, [assets, approvalFilter]);
+
+  const profileOptions = useMemo(() => {
+    const map = new Map<string, { name: string; count: number }>();
+    for (const a of assets) {
+      if (!a.profileId) continue;
+      const existing = map.get(a.profileId);
+      if (existing) {
+        existing.count++;
+      } else {
+        map.set(a.profileId, { name: a.profileName ?? 'Unknown', count: 1 });
+      }
+    }
+    return map;
+  }, [assets]);
+
+  const availableSubnets = useMemo(() => {
+    const base = profileFilter ? assets.filter(a => a.profileId === profileFilter) : assets;
+    const counts = new Map<string, number>();
+    for (const a of base) {
+      if (!a.profileSubnets) continue;
+      for (const s of a.profileSubnets) counts.set(s, (counts.get(s) ?? 0) + 1);
+    }
+    return counts;
+  }, [assets, profileFilter]);
 
   const fetchDevices = useCallback(async () => {
     try {
@@ -271,23 +367,23 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
     });
   };
 
-  const allVisibleSelected = assets.length > 0 && assets.every(asset => selectedAssetIds.has(asset.id));
-  const selectedCount = assets.filter(asset => selectedAssetIds.has(asset.id)).length;
+  const allVisibleSelected = filteredAssets.length > 0 && filteredAssets.every(asset => selectedAssetIds.has(asset.id));
+  const selectedCount = filteredAssets.filter(asset => selectedAssetIds.has(asset.id)).length;
 
   const toggleSelectAllVisible = () => {
     setSelectedAssetIds(prev => {
       const next = new Set(prev);
       if (allVisibleSelected) {
-        for (const asset of assets) next.delete(asset.id);
+        for (const asset of filteredAssets) next.delete(asset.id);
       } else {
-        for (const asset of assets) next.add(asset.id);
+        for (const asset of filteredAssets) next.add(asset.id);
       }
       return next;
     });
   };
 
   const handleBulkApprove = async () => {
-    const ids = [...selectedAssetIds];
+    const ids = filteredAssets.filter(a => selectedAssetIds.has(a.id)).map(a => a.id);
     if (ids.length === 0) return;
     try {
       setBulkActing(true);
@@ -309,7 +405,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
   };
 
   const handleBulkDismiss = async () => {
-    const ids = [...selectedAssetIds];
+    const ids = filteredAssets.filter(a => selectedAssetIds.has(a.id)).map(a => a.id);
     if (ids.length === 0) return;
     try {
       setBulkActing(true);
@@ -369,35 +465,90 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
         </div>
       )}
 
+      {/* Quick filters */}
       <div className="mt-4 flex flex-wrap items-center gap-3">
-        <select
-          value={approvalFilter}
-          onChange={e => setApprovalFilter(e.target.value)}
-          className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-        >
-          <option value="all">All statuses</option>
-          <option value="pending">Pending</option>
-          <option value="approved">Approved</option>
-          <option value="dismissed">Dismissed</option>
-        </select>
-        <select
-          value={typeFilter}
-          onChange={e => setTypeFilter(e.target.value)}
-          className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-        >
-          <option value="all">All types</option>
-          {(Object.keys(typeConfig) as DiscoveredAssetType[]).map(key => (
-            <option key={key} value={key}>{typeConfig[key].label}</option>
-          ))}
-        </select>
-        {(approvalFilter !== 'all' || typeFilter !== 'all') && (
-          <button
-            type="button"
-            onClick={() => { setApprovalFilter('all'); setTypeFilter('all'); }}
-            className="h-9 rounded-md border px-3 text-sm text-muted-foreground hover:text-foreground"
-          >
-            Clear filters
-          </button>
+        <FilterChipGroup
+          label="Status"
+          showIcon
+          chips={(Object.keys(approvalStatusConfig) as DiscoveredAssetApprovalStatus[]).map(s => ({
+            key: s,
+            label: approvalStatusConfig[s].label,
+            count: approvalCounts[s] ?? 0,
+            color: approvalStatusConfig[s].color,
+          }))}
+          activeKey={approvalFilter === 'all' ? null : approvalFilter}
+          onToggle={key => setApprovalFilter(approvalFilter === key ? 'all' : key)}
+        />
+
+        {Object.keys(typeCounts).length > 0 && (
+          <>
+            {filterDivider}
+            <FilterChipGroup
+              label="Type"
+              chips={(Object.keys(typeConfig) as DiscoveredAssetType[]).map(t => ({
+                key: t,
+                label: typeConfig[t].label,
+                count: typeCounts[t] ?? 0,
+                color: typeConfig[t].color,
+              }))}
+              activeKey={typeFilter === 'all' ? null : typeFilter}
+              onToggle={key => setTypeFilter(typeFilter === key ? 'all' : key)}
+            />
+          </>
+        )}
+
+        {profileOptions.size > 0 && (
+          <>
+            {filterDivider}
+            <FilterChipGroup
+              label="Profile"
+              chips={[...profileOptions.entries()].map(([id, { name, count }]) => ({
+                key: id,
+                label: name,
+                count,
+                color: primaryChipColor,
+              }))}
+              activeKey={profileFilter}
+              onToggle={key => {
+                if (profileFilter === key) {
+                  setProfileFilter(null);
+                } else {
+                  setProfileFilter(key);
+                  setSubnetFilter(null);
+                }
+              }}
+            />
+          </>
+        )}
+
+        {availableSubnets.size > 0 && (
+          <>
+            {filterDivider}
+            <FilterChipGroup
+              label="Subnet"
+              chips={[...availableSubnets.entries()].map(([subnet, count]) => ({
+                key: subnet,
+                label: subnet,
+                count,
+                color: primaryChipColor,
+              }))}
+              activeKey={subnetFilter}
+              onToggle={key => setSubnetFilter(subnetFilter === key ? null : key)}
+            />
+          </>
+        )}
+
+        {(approvalFilter !== 'all' || typeFilter !== 'all' || profileFilter || subnetFilter) && (
+          <>
+            {filterDivider}
+            <button
+              type="button"
+              onClick={() => { setApprovalFilter('all'); setTypeFilter('all'); setProfileFilter(null); setSubnetFilter(null); }}
+              className="text-xs text-muted-foreground hover:text-foreground"
+            >
+              Clear all
+            </button>
+          </>
         )}
       </div>
 
@@ -456,14 +607,14 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
             </tr>
           </thead>
           <tbody className="divide-y">
-            {assets.length === 0 ? (
+            {filteredAssets.length === 0 ? (
               <tr>
                 <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                  No assets discovered yet.
+                  {assets.length === 0 ? 'No assets discovered yet.' : 'No assets match the current filters.'}
                 </td>
               </tr>
             ) : (
-              assets.map(asset => (
+              filteredAssets.map(asset => (
                 <tr
                   key={asset.id}
                   onClick={() => setSelectedAsset(toDetail(asset))}

@@ -3,7 +3,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { auditBaselines, devices } from '../db/schema';
 import { queueCommandForExecution } from '../services/commandQueue';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { evaluateAuditBaselineDrift } from '../services/auditBaselineService';
 import { captureException } from '../services/sentry';
 import { isReusableState } from '../services/bullmqUtils';
@@ -37,7 +37,7 @@ let auditBaselineWorker: Worker<AuditBaselineJobData> | null = null;
 export function getAuditBaselineQueue(): Queue<AuditBaselineJobData> {
   if (!auditBaselineQueue) {
     auditBaselineQueue = new Queue<AuditBaselineJobData>(AUDIT_BASELINE_QUEUE, {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
     });
   }
   return auditBaselineQueue;
@@ -104,7 +104,7 @@ function createAuditBaselineWorker(): Worker<AuditBaselineJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 3,
     }
   );

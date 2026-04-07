@@ -18,7 +18,7 @@ import {
   organizations
 } from '../db/schema';
 import { eq, and, inArray, asc } from 'drizzle-orm';
-import { getRedis, getRedisConnection, isRedisAvailable } from './redis';
+import { getRedis, getBullMQConnection, isRedisAvailable } from './redis';
 import { rateLimiter } from './rate-limit';
 import { interpolateTemplate } from './alertConditions';
 import {
@@ -52,7 +52,7 @@ let notificationQueue: Queue | null = null;
 export function getNotificationQueue(): Queue {
   if (!notificationQueue) {
     notificationQueue = new Queue(NOTIFICATION_QUEUE, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return notificationQueue;
@@ -94,7 +94,7 @@ export function createNotificationWorker(): Worker<NotificationJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 5
     }
   );

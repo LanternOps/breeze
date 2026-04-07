@@ -10,7 +10,7 @@ import { queueCommand } from '../services/commandQueue';
 import { normalizeCisSchedule } from '../services/cisHardening';
 import { seedDefaultCisCheckCatalog } from '../services/cisCatalog';
 import { publishEvent } from '../services/eventBus';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { isReusableState } from '../services/bullmqUtils';
 
@@ -65,7 +65,7 @@ let cisWorker: Worker<CisJobData> | null = null;
 export function getCisQueue(): Queue<CisJobData> {
   if (!cisQueue) {
     cisQueue = new Queue<CisJobData>(CIS_QUEUE, {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
     });
   }
   return cisQueue;
@@ -377,7 +377,7 @@ function createCisWorker(): Worker<CisJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 4,
       lockDuration: 300_000,
       stalledInterval: 60_000,

@@ -4,7 +4,7 @@ import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { devices } from '../db/schema';
 import { publishEvent } from '../services/eventBus';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { computeAndPersistOrgSecurityPosture } from '../services/securityPosture';
 import { isReusableState } from '../services/bullmqUtils';
 
@@ -136,7 +136,7 @@ export async function publishSecurityScoreChangedEvents(
 export function getSecurityPostureQueue(): Queue<SecurityPostureJobData> {
   if (!securityPostureQueue) {
     securityPostureQueue = new Queue<SecurityPostureJobData>(SECURITY_POSTURE_QUEUE, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return securityPostureQueue;
@@ -206,7 +206,7 @@ export function createSecurityPostureWorker(): Worker<SecurityPostureJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: SECURITY_POSTURE_WORKER_CONCURRENCY,
       lockDuration: 300_000,
       stalledInterval: 60_000,

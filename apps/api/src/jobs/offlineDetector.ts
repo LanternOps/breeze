@@ -9,7 +9,7 @@ import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import { devices, alertRules, alertTemplates, alerts } from '../db/schema';
 import { eq, and, lt, inArray, or } from 'drizzle-orm';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { publishEvent } from '../services/eventBus';
 import { createAlert } from '../services/alertService';
 import { interpolateTemplate } from '../services/alertConditions';
@@ -37,7 +37,7 @@ const DEFAULT_OFFLINE_THRESHOLD_MINUTES = 5;
 export function getOfflineQueue(): Queue {
   if (!offlineQueue) {
     offlineQueue = new Queue(OFFLINE_QUEUE, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return offlineQueue;
@@ -79,7 +79,7 @@ export function createOfflineWorker(): Worker<OfflineJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 5,
       lockDuration: 120_000,
       lockRenewTime: 60_000,

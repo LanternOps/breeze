@@ -10,7 +10,7 @@ import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import { deviceEventLogs } from '../db/schema';
 import { and, eq, lt } from 'drizzle-orm';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { getOrgEventLogRetentionDays } from '../routes/agents/helpers';
 
 const { db } = dbModule;
@@ -26,7 +26,7 @@ let retentionQueue: Queue | null = null;
 export function getEventLogRetentionQueue(): Queue {
   if (!retentionQueue) {
     retentionQueue = new Queue(QUEUE_NAME, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return retentionQueue;
@@ -77,7 +77,7 @@ export function createEventLogRetentionWorker(): Worker<RetentionJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 1
     }
   );

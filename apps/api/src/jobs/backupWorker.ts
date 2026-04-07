@@ -24,7 +24,7 @@ import {
 import { recoveryTokens } from '../db/schema/recoveryTokens';
 import { eq, and, sql, isNull, lt, inArray } from 'drizzle-orm';
 import { resolveAllBackupAssignedDevices } from '../services/featureConfigResolver';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import {
   sendCommandToAgent,
   isAgentConnected,
@@ -99,7 +99,7 @@ function createBackupWorker(): Worker<BackupQueueJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 5,
       lockDuration: 300_000,
       stalledInterval: 60_000,

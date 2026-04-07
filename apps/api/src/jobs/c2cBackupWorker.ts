@@ -11,7 +11,7 @@ import { Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import { c2cBackupConfigs, c2cBackupJobs } from '../db/schema';
 import { eq } from 'drizzle-orm';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import {
   closeC2cQueue,
   enqueueC2cSync,
@@ -59,7 +59,7 @@ function createC2cWorker(): Worker<C2cJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 3,
       lockDuration: 300_000,
       stalledInterval: 60_000,

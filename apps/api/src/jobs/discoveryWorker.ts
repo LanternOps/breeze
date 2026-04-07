@@ -22,7 +22,7 @@ import {
 import type { DiscoveryProfileAlertSettings } from '../db/schema';
 import { eq, and, or, sql, inArray, type SQL } from 'drizzle-orm';
 import { normalizeMac, buildApprovalDecision } from '../services/assetApproval';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { sendCommandToAgent, isAgentConnected, type AgentCommand } from '../routes/agentWs';
 import { isCronDue } from '../services/automationRuntime';
@@ -55,7 +55,7 @@ let discoveryQueue: Queue | null = null;
 export function getDiscoveryQueue(): Queue {
   if (!discoveryQueue) {
     discoveryQueue = new Queue(DISCOVERY_QUEUE, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return discoveryQueue;
@@ -158,7 +158,7 @@ export function createDiscoveryWorker(): Worker<DiscoveryJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 5,
       lockDuration: 300_000,
       stalledInterval: 60_000,

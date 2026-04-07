@@ -1,4 +1,5 @@
 import Redis from 'ioredis';
+import type { ConnectionOptions } from 'bullmq';
 
 let redisClient: Redis | null = null;
 let redisAvailable = true;
@@ -151,6 +152,15 @@ export function getRedisConnection(): Redis {
   }
 
   return bullmqConnection;
+}
+
+/**
+ * Get BullMQ-compatible connection options.
+ * Wraps getRedisConnection() with the ConnectionOptions type that
+ * BullMQ Queue/Worker constructors expect.
+ */
+export function getBullMQConnection(): ConnectionOptions {
+  return getRedisConnection() as unknown as ConnectionOptions;
 }
 
 export function isBullMQAvailable(): boolean {

@@ -2,7 +2,7 @@ import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { browserExtensions, browserPolicies, browserPolicyViolations, devices } from '../db/schema';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 
 const { db } = dbModule;
@@ -28,7 +28,7 @@ let evalWorker: Worker<PolicyEvalJobData> | null = null;
 function getEvalQueue(): Queue<PolicyEvalJobData> {
   if (!evalQueue) {
     evalQueue = new Queue<PolicyEvalJobData>(BROWSER_POLICY_EVAL_QUEUE, {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
     });
   }
   return evalQueue;
@@ -136,7 +136,7 @@ export async function initializeBrowserSecurityJobs(): Promise<void> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 1,
     }
   );

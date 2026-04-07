@@ -3,7 +3,7 @@ import { and, eq, gte, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { deviceCommands, softwareComplianceStatus, softwarePolicies, type RemediationError } from '../db/schema';
 import { recordSoftwareRemediationDecision } from '../routes/metrics';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { CommandTypes, queueCommand } from '../services/commandQueue';
 import { recordSoftwarePolicyAudit } from '../services/softwarePolicyService';
@@ -44,7 +44,7 @@ let softwareRemediationWorker: Worker<SoftwareRemediationJobData> | null = null;
 export function getSoftwareRemediationQueue(): Queue<SoftwareRemediationJobData> {
   if (!softwareRemediationQueue) {
     softwareRemediationQueue = new Queue<SoftwareRemediationJobData>(SOFTWARE_REMEDIATION_QUEUE, {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
     });
   }
   return softwareRemediationQueue;
@@ -339,7 +339,7 @@ export function createSoftwareRemediationWorker(): Worker<SoftwareRemediationJob
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 5,
       lockDuration: 300_000,
       stalledInterval: 60_000,

@@ -8,7 +8,7 @@ import { Job, Queue, Worker } from 'bullmq';
 import { and, eq } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { automationPolicies } from '../db/schema';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { evaluatePolicy, scanAndEvaluateConfigPolicyCompliance } from '../services/policyEvaluationService';
 
 const { db } = dbModule;
@@ -63,7 +63,7 @@ function isPolicyDue(policy: typeof automationPolicies.$inferSelect, nowMs: numb
 export function getPolicyEvaluationQueue(): Queue<PolicyEvaluationJobData> {
   if (!policyEvaluationQueue) {
     policyEvaluationQueue = new Queue<PolicyEvaluationJobData>(POLICY_EVALUATION_QUEUE, {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
     });
   }
   return policyEvaluationQueue;
@@ -180,7 +180,7 @@ export function createPolicyEvaluationWorker(): Worker<PolicyEvaluationJobData> 
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 3,
       lockDuration: 300_000,
       stalledInterval: 60_000,

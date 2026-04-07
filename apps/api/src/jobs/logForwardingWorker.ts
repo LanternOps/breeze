@@ -7,7 +7,7 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { bulkIndexEvents, clearClientCache } from '../services/logForwarding';
 
 const QUEUE_NAME = 'log-forwarding';
@@ -73,7 +73,7 @@ function sanitizeLogForwardingData(data: LogForwardingJobData): LogForwardingJob
 export function getLogForwardingQueue(): Queue<LogForwardingJobData> {
   if (!queue) {
     queue = new Queue<LogForwardingJobData>(QUEUE_NAME, {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       defaultJobOptions: {
         removeOnComplete: { count: 100 },
         removeOnFail: { count: 500 },
@@ -126,7 +126,7 @@ export async function initializeLogForwardingWorker(): Promise<void> {
       return result;
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 5,
       lockDuration: 300_000,
       stalledInterval: 60_000,

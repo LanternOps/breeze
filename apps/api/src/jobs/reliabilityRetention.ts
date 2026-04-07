@@ -10,7 +10,7 @@ import { lt } from 'drizzle-orm';
 
 import * as dbModule from '../db';
 import { deviceReliabilityHistory } from '../db/schema';
-import { getRedisConnection } from '../services/redis';
+import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 
 const { db } = dbModule;
@@ -34,7 +34,7 @@ let retentionWorker: Worker<RetentionJobData> | null = null;
 export function getReliabilityRetentionQueue(): Queue<RetentionJobData> {
   if (!retentionQueue) {
     retentionQueue = new Queue<RetentionJobData>(QUEUE_NAME, {
-      connection: getRedisConnection()
+      connection: getBullMQConnection()
     });
   }
   return retentionQueue;
@@ -59,7 +59,7 @@ export function createReliabilityRetentionWorker(): Worker<RetentionJobData> {
       });
     },
     {
-      connection: getRedisConnection(),
+      connection: getBullMQConnection(),
       concurrency: 1
     }
   );
