@@ -17,13 +17,22 @@ func (h *Heartbeat) startDarwinDesktopWatcher() {
 		return
 	}
 
+	// Set initial console user so session selection is correct from startup.
+	detector := sessionbroker.NewSessionDetector()
+	if sessions, err := detector.ListSessions(); err == nil && len(sessions) > 0 {
+		h.sessionBroker.SetConsoleUser(sessions[0].Username)
+	} else {
+		// No console user detected — assume login window.
+		h.sessionBroker.SetConsoleUser("loginwindow")
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		<-h.stopChan
 		cancel()
 	}()
 
-	events := sessionbroker.NewSessionDetector().WatchSessions(ctx)
+	events := detector.WatchSessions(ctx)
 	go func() {
 		for event := range events {
 			switch event.Type {
@@ -42,6 +51,23 @@ func (h *Heartbeat) handleHelperSessionClosed(session *sessionbroker.Session) {
 }
 
 func (h *Heartbeat) handleDarwinSessionEvent(event sessionbroker.SessionEvent) {
+	// Update console user on the broker for session selection.
+	switch event.Type {
+	case sessionbroker.SessionLogout:
+		// User logged out — console returns to login window.
+		h.sessionBroker.SetConsoleUser("loginwindow")
+		// Tear down stale user_session helpers so they don't linger.
+		if n := h.sessionBroker.CloseSessionsByDesktopContext(ipc.DesktopContextUserSession); n > 0 {
+			log.Info("closed stale user_session helpers after logout", "count", n, "user", event.Username)
+		}
+	case sessionbroker.SessionLogin:
+		h.sessionBroker.SetConsoleUser(event.Username)
+	case sessionbroker.SessionSwitch:
+		if event.Username != "" {
+			h.sessionBroker.SetConsoleUser(event.Username)
+		}
+	}
+
 	go func() {
 		select {
 		case <-time.After(darwinDesktopHandoffDelay):
