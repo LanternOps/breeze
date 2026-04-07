@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState, useRef, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -29,9 +29,15 @@ export type RoleOption = {
   scope: string;
 };
 
+type OrgOption = {
+  id: string;
+  name: string;
+};
+
 type UserInviteFormProps = {
   isOpen?: boolean;
   roles?: RoleOption[];
+  organizations?: OrgOption[];
   onSubmit?: (values: InviteFormValues) => void | Promise<void>;
   onCancel?: () => void;
   errorMessage?: string;
@@ -45,6 +51,7 @@ type UserInviteFormProps = {
 export default function UserInviteForm({
   isOpen = true,
   roles = [],
+  organizations = [],
   onSubmit,
   onCancel,
   errorMessage,
@@ -58,6 +65,7 @@ export default function UserInviteForm({
     register,
     handleSubmit,
     watch,
+    setValue,
     formState: { errors, isSubmitting }
   } = useForm<InviteFormValues>({
     resolver: zodResolver(inviteSchema),
@@ -72,7 +80,53 @@ export default function UserInviteForm({
 
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
   const orgAccessValue = watch('orgAccess');
+  const orgIdsValue = watch('orgIds');
   const showOrgSettings = showOrgAccess && orgAccessValue !== undefined;
+
+  // Org search state
+  const [orgSearch, setOrgSearch] = useState('');
+  const [orgDropdownOpen, setOrgDropdownOpen] = useState(false);
+  const orgSearchRef = useRef<HTMLInputElement>(null);
+  const orgDropdownRef = useRef<HTMLDivElement>(null);
+
+  const selectedOrgIds = useMemo(
+    () => (orgIdsValue ?? '').split(',').map(s => s.trim()).filter(Boolean),
+    [orgIdsValue]
+  );
+
+  const filteredOrgs = useMemo(
+    () =>
+      organizations.filter(
+        org =>
+          !selectedOrgIds.includes(org.id) &&
+          org.name.toLowerCase().includes(orgSearch.toLowerCase())
+      ),
+    [organizations, selectedOrgIds, orgSearch]
+  );
+
+  const addOrg = (orgId: string) => {
+    const next = [...selectedOrgIds, orgId].join(',');
+    setValue('orgIds', next, { shouldValidate: true });
+    setOrgSearch('');
+    setOrgDropdownOpen(false);
+    orgSearchRef.current?.focus();
+  };
+
+  const removeOrg = (orgId: string) => {
+    const next = selectedOrgIds.filter(id => id !== orgId).join(',');
+    setValue('orgIds', next, { shouldValidate: true });
+  };
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (orgDropdownRef.current && !orgDropdownRef.current.contains(e.target as Node)) {
+        setOrgDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
 
   if (!isOpen) {
     return null;
@@ -173,16 +227,74 @@ export default function UserInviteForm({
               </div>
               {orgAccessValue === 'selected' && (
                 <div className="space-y-2">
-                  <label htmlFor="invite-orgs" className="text-sm font-medium">
-                    Organization IDs
+                  <label className="text-sm font-medium">
+                    Organizations
                   </label>
-                  <input
-                    id="invite-orgs"
-                    type="text"
-                    placeholder="Organization IDs (comma separated)"
-                    className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                    {...register('orgIds')}
-                  />
+                  {/* Selected org chips */}
+                  {selectedOrgIds.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {selectedOrgIds.map(id => {
+                        const org = organizations.find(o => o.id === id);
+                        return (
+                          <span
+                            key={id}
+                            className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-1 text-xs font-medium text-primary"
+                          >
+                            {org?.name ?? id}
+                            <button
+                              type="button"
+                              onClick={() => removeOrg(id)}
+                              className="ml-0.5 rounded-sm hover:text-destructive"
+                              aria-label={`Remove ${org?.name ?? id}`}
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5">
+                                <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+                              </svg>
+                            </button>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {/* Search input + dropdown */}
+                  <div ref={orgDropdownRef} className="relative">
+                    <input
+                      ref={orgSearchRef}
+                      type="text"
+                      value={orgSearch}
+                      onChange={e => {
+                        setOrgSearch(e.target.value);
+                        setOrgDropdownOpen(true);
+                      }}
+                      onFocus={() => setOrgDropdownOpen(true)}
+                      placeholder="Search organizations..."
+                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                    {orgDropdownOpen && (
+                      <div className="absolute z-10 mt-1 max-h-48 w-full overflow-auto rounded-md border bg-card shadow-md">
+                        {filteredOrgs.length === 0 ? (
+                          <p className="px-3 py-2 text-sm text-muted-foreground">
+                            {organizations.length === 0
+                              ? 'No organizations available'
+                              : 'No matching organizations'}
+                          </p>
+                        ) : (
+                          filteredOrgs.map(org => (
+                            <button
+                              key={org.id}
+                              type="button"
+                              onClick={() => addOrg(org.id)}
+                              className="w-full px-3 py-2 text-left text-sm hover:bg-muted transition-colors"
+                            >
+                              {org.name}
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  {/* Hidden field for form state */}
+                  <input type="hidden" {...register('orgIds')} />
                   {errors.orgIds && (
                     <p className="text-sm text-destructive">{errors.orgIds.message}</p>
                   )}
