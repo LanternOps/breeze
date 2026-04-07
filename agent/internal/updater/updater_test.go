@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -435,17 +434,46 @@ func TestNormalizePreflightErr_PreservesTextBusy(t *testing.T) {
 	}
 }
 
-func TestCheckWritable_DetectsETXTBSY(t *testing.T) {
-	// Wrap syscall.ETXTBSY in an os.PathError to simulate what the kernel returns
-	pathErr := &os.PathError{Op: "open", Path: "/fake", Err: syscall.ETXTBSY}
-	// checkWritable is not directly testable with a real ETXTBSY (need running executable),
-	// so test the classification logic via normalizePreflightErr
-	wrapped := fmt.Errorf("%w: %v", ErrTextBusy, pathErr)
-	if !errors.Is(wrapped, ErrTextBusy) {
-		t.Fatalf("expected ErrTextBusy, got %v", wrapped)
+func TestRollback_UnlinksBeforeWrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unlink behavior is Unix-only")
 	}
-	if errors.Is(wrapped, ErrReadOnlyFS) {
-		t.Fatalf("should not match ErrReadOnlyFS")
+
+	tmpDir := t.TempDir()
+	binaryPath := filepath.Join(tmpDir, "breeze-agent")
+	backupPath := filepath.Join(tmpDir, "breeze-agent.backup")
+
+	// Create "current" binary and hold it open (simulates running executable)
+	os.WriteFile(binaryPath, []byte("corrupted"), 0755)
+	holder, err := os.Open(binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+
+	origInfo, _ := os.Stat(binaryPath)
+	origSys := origInfo.Sys().(*syscall.Stat_t)
+	origIno := origSys.Ino
+
+	// Create backup
+	os.WriteFile(backupPath, []byte("good v0.1.0"), 0755)
+
+	u := New(&Config{BinaryPath: binaryPath, BackupPath: backupPath})
+	if err := u.Rollback(); err != nil {
+		t.Fatalf("rollback failed: %v", err)
+	}
+
+	// Verify rollback content
+	content, _ := os.ReadFile(binaryPath)
+	if string(content) != "good v0.1.0" {
+		t.Fatalf("rollback content mismatch: %s", string(content))
+	}
+
+	// Verify new inode (unlink happened)
+	newInfo, _ := os.Stat(binaryPath)
+	newSys := newInfo.Sys().(*syscall.Stat_t)
+	if newSys.Ino == origIno {
+		t.Fatal("expected new inode after unlink+create in rollback")
 	}
 }
 
