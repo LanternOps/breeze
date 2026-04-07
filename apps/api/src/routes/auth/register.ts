@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { eq, and, isNull } from 'drizzle-orm';
 import * as dbModule from '../../db';
-import { users, partners, partnerUsers, roles, rolePermissions, permissions, organizations, sites } from '../../db/schema';
+import { users, partners, partnerUsers, roles, rolePermissions, organizations, sites } from '../../db/schema';
 import {
   hashPassword,
   isPasswordStrong,
@@ -129,7 +129,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
       .where(eq(users.email, 'admin@breeze.local'))
       .limit(1);
 
-    if (adminUser && !adminUser.setupCompletedAt) {
+    if (!adminUser || !adminUser.setupCompletedAt) {
       return c.json({ error: 'System setup is not yet complete. Contact your administrator.' }, 403);
     }
 
@@ -256,18 +256,20 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
           )
           .limit(1);
 
-        if (systemPartnerAdmin) {
-          const systemPerms = await tx
-            .select({ permissionId: rolePermissions.permissionId })
-            .from(rolePermissions)
-            .where(eq(rolePermissions.roleId, systemPartnerAdmin.id));
+        if (!systemPartnerAdmin) {
+          throw new Error('System Partner Admin role not found — run seed first');
+        }
 
-          for (const perm of systemPerms) {
-            await tx.insert(rolePermissions).values({
-              roleId: adminRole.id,
-              permissionId: perm.permissionId
-            });
-          }
+        const systemPerms = await tx
+          .select({ permissionId: rolePermissions.permissionId })
+          .from(rolePermissions)
+          .where(eq(rolePermissions.roleId, systemPartnerAdmin.id));
+
+        for (const perm of systemPerms) {
+          await tx.insert(rolePermissions).values({
+            roleId: adminRole.id,
+            permissionId: perm.permissionId
+          });
         }
 
         // Create default organization
@@ -283,18 +285,22 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
           })
           .returning();
 
+        if (!newOrg) {
+          throw new Error('Failed to create default organization');
+        }
+
         // Create default site
-        let newSiteId: string | null = null;
-        if (newOrg) {
-          const [newSite] = await tx
-            .insert(sites)
-            .values({
-              orgId: newOrg.id,
-              name: 'Main Office',
-              timezone: 'UTC'
-            })
-            .returning();
-          newSiteId = newSite?.id ?? null;
+        const [newSite] = await tx
+          .insert(sites)
+          .values({
+            orgId: newOrg.id,
+            name: 'Main Office',
+            timezone: 'UTC'
+          })
+          .returning();
+
+        if (!newSite) {
+          throw new Error('Failed to create default site');
         }
 
         // Mark setup as complete — new partners don't need the wizard
@@ -303,7 +309,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
           .set({ lastLoginAt: new Date(), setupCompletedAt: new Date() })
           .where(eq(users.id, newUser.id));
 
-        return { newPartner, adminRole, newUser, newOrg, newSiteId };
+        return { newPartner, adminRole, newUser, newOrg, newSite };
       });
 
       // Token creation outside tx (doesn't need rollback)
@@ -344,7 +350,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
             effectiveStatus = hookResponse.status;
           } catch (statusErr) {
             console.error(`[Registration] Failed to update partner ${result.newPartner.id} status to '${hookResponse.status}':`, statusErr instanceof Error ? statusErr.message : String(statusErr));
-            effectiveStatus = hookResponse.status;
+            // Keep effectiveStatus at original value since DB update failed
           }
         }
       }

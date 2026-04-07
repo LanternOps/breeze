@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useEventStream } from '../../hooks/useEventStream';
-import { List, Grid, Plus, AlertCircle, ArrowRight } from 'lucide-react';
+import { List, Grid, Plus, AlertCircle } from 'lucide-react';
 import { showToast } from '../shared/Toast';
 import type { FilterConditionGroup } from '@breeze/shared';
 import DeviceList, { type Device, type DeviceStatus, type OSType } from './DeviceList';
@@ -49,7 +49,10 @@ export default function DevicesPage() {
   const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [actionInProgress, setActionInProgress] = useState(false);
   const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number; label: string } | null>(null);
-  const [showAddDevice, setShowAddDevice] = useState(false);
+  const [showAddDevice, setShowAddDevice] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.location.hash === '#add-device';
+  });
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   const [scriptTargetDevices, setScriptTargetDevices] = useState<Device[]>([]);
   const [settingsDevice, setSettingsDevice] = useState<Device | null>(null);
@@ -583,13 +586,17 @@ export default function DevicesPage() {
           <div className="max-w-lg">
             <h2 className="text-lg font-semibold text-foreground mb-2">Your fleet is empty</h2>
             <p className="text-sm text-muted-foreground mb-6">
-              Get started by enrolling your first device. You'll need an enrollment key and the Breeze agent installer.
+              Get started by adding your first device. The installer and enrollment key are generated automatically.
             </p>
             <div className="flex gap-3">
-              <a href="/settings/enrollment-keys" className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
-                Get enrollment key
-                <ArrowRight className="h-4 w-4" />
-              </a>
+              <button
+                type="button"
+                onClick={() => setShowAddDevice(true)}
+                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+              >
+                <Plus className="h-4 w-4" />
+                Add Device
+              </button>
               <a href="https://docs.breezermm.com/agents/installation/" target="_blank" rel="noopener" className="inline-flex items-center gap-1.5 rounded-md border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors">
                 View installation guide
               </a>
