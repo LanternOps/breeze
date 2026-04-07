@@ -147,9 +147,9 @@ describe('resolveDeploymentTargets', () => {
       });
 
       const filterCondition = {
-        operator: 'and' as const,
+        operator: 'AND' as const,
         conditions: [
-          { field: 'osType', operator: 'eq' as const, value: 'windows' },
+          { field: 'osType', operator: 'equals' as const, value: 'windows' },
         ],
       };
 
@@ -239,7 +239,7 @@ describe('resolveDeploymentTargets', () => {
         orgId: ORG_ID_2,
         targetConfig: {
           type: 'filter',
-          filter: { operator: 'and' as const, conditions: [] },
+          filter: { operator: 'AND' as const, conditions: [] },
         },
       });
 

@@ -22,10 +22,10 @@ function getTableColumns(table: PgTable<any>): any[] {
 
 describe('DEVICE_CASCADE_DELETE_TABLES coverage', () => {
   it('includes every table whose device_id FK references devices.id', () => {
-    const cascadeSet = new Set(DEVICE_CASCADE_DELETE_TABLES);
+    const cascadeSet = new Set<string>(DEVICE_CASCADE_DELETE_TABLES);
     const allTables = Object.values(schema).filter(
-      (v): v is PgTable<any> => v instanceof PgTable
-    );
+      (v) => v instanceof PgTable
+    ) as PgTable<any>[];
 
     const missing: string[] = [];
 
@@ -50,10 +50,10 @@ describe('DEVICE_CASCADE_DELETE_TABLES coverage', () => {
   });
 
   it('includes every table whose linked_device_id FK references devices.id', () => {
-    const linkedSet = new Set(DEVICE_LINKED_DEVICE_ID_TABLES);
+    const linkedSet = new Set<string>(DEVICE_LINKED_DEVICE_ID_TABLES);
     const allTables = Object.values(schema).filter(
-      (v): v is PgTable<any> => v instanceof PgTable
-    );
+      (v) => v instanceof PgTable
+    ) as PgTable<any>[];
 
     const missing: string[] = [];
 
@@ -78,8 +78,7 @@ describe('DEVICE_CASCADE_DELETE_TABLES coverage', () => {
 
   it('does not list tables that no longer exist in the schema', () => {
     const allTableNames = new Set(
-      Object.values(schema)
-        .filter((v): v is PgTable<any> => v instanceof PgTable)
+      (Object.values(schema).filter((v) => v instanceof PgTable) as PgTable<any>[])
         .map((t) => getTableName(t))
     );
 

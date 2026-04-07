@@ -19,7 +19,7 @@ vi.mock('../../db', () => ({
     select: (...args: unknown[]) => selectMock(...(args as [])),
     update: (...args: unknown[]) => updateMock(...(args as [])),
   },
-  runOutsideDbContext: (...args: unknown[]) => runOutsideDbContextMock(...(args as [])),
+  runOutsideDbContext: (...args: unknown[]) => runOutsideDbContextMock(...(args as [any])),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
 }));
 
@@ -83,7 +83,9 @@ describe('agent commands routes', () => {
     app.use('*', async (c, next) => {
       c.set('agent', {
         deviceId: 'device-1',
+        agentId: 'agent-1',
         orgId: 'org-1',
+        siteId: 'site-1',
       });
       await next();
     });

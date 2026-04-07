@@ -309,7 +309,7 @@ async function expireTokenArtifacts(orgId: string) {
 }
 
 async function enforcePublicRateLimit(
-  c: Parameters<typeof bmrPublicRoutes.post>[1] extends never ? never : any,
+  c: any,
   action: 'authenticate' | 'complete',
   limit: number
 ) {
@@ -323,7 +323,7 @@ async function enforcePublicRateLimit(
 }
 
 async function enforceTokenRateLimit(
-  c: Parameters<typeof bmrPublicRoutes.post>[1] extends never ? never : any,
+  c: any,
   action: 'authenticate' | 'download',
   tokenHash: string,
   limit: number,
@@ -1320,6 +1320,7 @@ bmrPublicRoutes.get(
     const [row] = await db
       .select({
         id: recoveryTokens.id,
+        orgId: recoveryTokens.orgId,
         snapshotId: recoveryTokens.snapshotId,
         status: recoveryTokens.status,
         authenticatedAt: recoveryTokens.authenticatedAt,
@@ -1383,7 +1384,7 @@ bmrPublicRoutes.get(
       const status =
         target.reason === 'Recovery session has expired. Re-authenticate to continue.'
           ? 401
-          : target.reason.startsWith('Token is ')
+          : target.reason?.startsWith('Token is ')
             ? 401
             : 409;
       writeRecoveryDownloadAudit(c, {

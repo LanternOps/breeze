@@ -611,7 +611,7 @@ async function isBackupJobCancelled(jobId: string): Promise<boolean> {
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
-let backupWorkerInstance: Worker<BackupJobData> | null = null;
+let backupWorkerInstance: Worker<BackupQueueJobData> | null = null;
 
 export async function initializeBackupWorker(): Promise<void> {
   try {

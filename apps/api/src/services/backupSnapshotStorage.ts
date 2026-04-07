@@ -49,14 +49,13 @@ function buildS3StorageClient(providerConfig: Record<string, unknown>) {
       accessKeyId:
         getStringValue(providerConfig, 'accessKey') ||
         getStringValue(providerConfig, 'accessKeyId') ||
-        undefined,
+        '',
       secretAccessKey:
         getStringValue(providerConfig, 'secretKey') ||
         getStringValue(providerConfig, 'secretAccessKey') ||
-        undefined,
+        '',
       sessionToken: getStringValue(providerConfig, 'sessionToken') ?? undefined,
-      prefix: getStringValue(providerConfig, 'prefix') ?? undefined,
-    }),
+    } as any),
   };
 }
 

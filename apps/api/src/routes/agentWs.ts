@@ -99,8 +99,8 @@ type CommandResultHandler = (params: {
 function normalizeDiscoveryHosts(hosts: DiscoveredHostResult[]): DiscoveredHostResult[] {
   return hosts.map(h => ({
     ...h,
-    firstSeen: h.firstSeen instanceof Date ? h.firstSeen.toISOString() : h.firstSeen,
-    lastSeen: h.lastSeen instanceof Date ? h.lastSeen.toISOString() : h.lastSeen,
+    firstSeen: (h.firstSeen as any) instanceof Date ? (h.firstSeen as any).toISOString() : h.firstSeen,
+    lastSeen: (h.lastSeen as any) instanceof Date ? (h.lastSeen as any).toISOString() : h.lastSeen,
   }));
 }
 

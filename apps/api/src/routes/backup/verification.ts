@@ -98,7 +98,7 @@ backupVerificationRoutes.post(
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Verification failed to start';
     if (error instanceof BackupVerificationDispatchError) {
-      return c.json({ error: message }, error.statusCode);
+      return c.json({ error: message }, error.statusCode as any);
     }
     const isValidation = error instanceof Error && (
       message.includes('not found') ||

@@ -170,7 +170,7 @@ export function createEventWsTicketRoute(): Hono {
     } else if (orgAccess.type === 'single') {
       orgId = orgAccess.orgId;
     } else if (orgAccess.type === 'multiple' && orgAccess.orgIds.length > 0) {
-      orgId = orgAccess.orgIds[0];
+      orgId = orgAccess.orgIds[0]!;
     } else {
       return c.json({ error: 'Organization context required — select an org first' }, 400);
     }

@@ -76,7 +76,7 @@ vi.mock('../../services/sentry', () => ({
 
 const encryptSecretMock = vi.fn((value: string) => `enc:${value}`);
 vi.mock('../../services/secretCrypto', () => ({
-  encryptSecret: (...args: unknown[]) => encryptSecretMock(...(args as [])),
+  encryptSecret: (...args: unknown[]) => encryptSecretMock(...(args as [any])),
 }));
 
 const getPlatformConfigMock = vi.fn();

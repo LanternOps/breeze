@@ -74,8 +74,8 @@ vi.mock('../../services/c2cM365', () => ({
 }));
 
 vi.mock('../../services/secretCrypto', () => ({
-  encryptSecret: (...args: unknown[]) => encryptSecretMock(...(args as [])),
-  decryptSecret: (...args: unknown[]) => decryptSecretMock(...(args as [])),
+  encryptSecret: (...args: unknown[]) => encryptSecretMock(...(args as [any])),
+  decryptSecret: (...args: unknown[]) => decryptSecretMock(...(args as [any])),
 }));
 
 vi.mock('../../middleware/auth', () => ({

@@ -10,10 +10,11 @@ function sha256Hex(buffer: Buffer): string {
 }
 
 async function computeTemplateDigest(templateDir: string): Promise<string> {
-  const files = [
+  const files: [string, string][] = [
     ['README.txt', await writeAndRead(join(templateDir, 'README.txt'), Buffer.from('boot media template\n'))],
     ['boot/grub/grub.cfg', await writeAndRead(join(templateDir, 'boot', 'grub', 'grub.cfg'), Buffer.from('set timeout=5\n'))],
-  ].sort(([left], [right]) => left.localeCompare(right));
+  ];
+  files.sort(([left], [right]) => left.localeCompare(right));
   const canonical = files
     .map(([relativePath, checksum]) => `${relativePath}:${checksum}`)
     .join('\n');

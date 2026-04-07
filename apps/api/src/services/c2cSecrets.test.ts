@@ -37,9 +37,9 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('./secretCrypto', () => ({
-  encryptSecret: (...args: unknown[]) => encryptSecretMock(...(args as [])),
-  decryptSecret: (...args: unknown[]) => decryptSecretMock(...(args as [])),
-  isEncryptedSecret: (...args: unknown[]) => isEncryptedSecretMock(...(args as [])),
+  encryptSecret: (...args: unknown[]) => encryptSecretMock(...(args as [any])),
+  decryptSecret: (...args: unknown[]) => decryptSecretMock(...(args as [any])),
+  isEncryptedSecret: (...args: unknown[]) => isEncryptedSecretMock(...(args as [any])),
 }));
 
 import {
