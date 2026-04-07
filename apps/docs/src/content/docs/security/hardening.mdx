@@ -26,6 +26,7 @@ Before going live, verify every item:
 - [ ] Only ports 80/443 (and optionally 3478 for TURN) exposed publicly
 - [ ] PostgreSQL bound to `127.0.0.1` (not `0.0.0.0`)
 - [ ] Redis bound to `127.0.0.1` (not `0.0.0.0`)
+- [ ] Redis password authentication enabled via `REDIS_PASSWORD` (set in docker-compose and included in `REDIS_URL`)
 - [ ] Grafana/Prometheus accessible only via localhost or VPN
 - [ ] SSH key-only authentication (no password auth)
 - [ ] UFW or iptables configured
@@ -50,10 +51,12 @@ Before going live, verify every item:
 - [ ] Registration disabled in production (`ENABLE_REGISTRATION=false`) after initial setup
 - [ ] Rate limiting active on login endpoints
 - [ ] Session timeout configured (`SESSION_MAX_AGE`)
+- [ ] Session revocation is fail-closed — revoked sessions stay revoked even if Redis is unavailable
 
 ### Agent Security
 
 - [ ] Agent tokens stored as SHA-256 hashes (automatic for new enrollments)
+- [ ] Agent token rotation tested (`POST /agents/:id/rotate-token`) — both old and new tokens are valid for a 5-minute grace period, and the agent picks up the new token on its next heartbeat with no downtime
 - [ ] Config file permissions: `0750` for `/etc/breeze/`, `0640` for `agent.yaml`, `0600` for `secrets.yaml`
 - [ ] Agent rate limiting enabled (120 req/60s per agent via Redis)
 - [ ] Enrollment keys set with expiry and usage limits

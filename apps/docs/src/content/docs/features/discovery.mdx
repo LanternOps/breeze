@@ -304,6 +304,8 @@ GET /discovery/assets?orgId=uuid&status=new&assetType=router
 | `status` | `new`, `identified`, `managed`, `ignored`, `offline` |
 | `assetType` | `workstation`, `server`, `printer`, `router`, `switch`, `firewall`, `access_point`, `phone`, `iot`, `camera`, `nas`, `unknown` |
 
+**Quick Filters:** The discovered assets tab includes chip-style quick filter buttons at the top of the list. Filter by scan profile or subnet to quickly narrow down results. When filters are active, bulk actions (approve, ignore, delete) apply only to the currently filtered view -- unfiltered assets are not affected.
+
 Each asset in the response includes monitoring status flags:
 
 | Field | Description |

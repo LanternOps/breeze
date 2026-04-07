@@ -118,6 +118,56 @@ Remote desktop sessions can optionally stream system audio from the device to th
 
 Breeze can capture the Windows secure desktop (Ctrl+Alt+Del screen, UAC prompts, lock screen). This is possible because the helper process runs as SYSTEM with `GENERIC_ALL` access to the input desktop. Secure desktop capture is automatic — no additional configuration is required.
 
+### GPU-Accelerated Streaming
+
+Remote desktop uses hardware GPU encoding when available for better performance. The agent supports both NVIDIA (NVENC) and AMD (AMF) GPUs and auto-selects the best encoder based on the device's hardware.
+
+If the hardware encoder stalls (for example, due to a driver issue), the agent automatically switches to a software encoder within approximately 600 milliseconds — previous builds took around 11 seconds to recover. Headless servers without a GPU use software rendering automatically with no configuration needed.
+
+### VNC Fallback (macOS)
+
+Older macOS devices running Monterey or Ventura do not support WebRTC remote desktop at the login screen. Breeze auto-detects this limitation and falls back to VNC via the built-in macOS Screen Sharing service.
+
+When the fallback activates, the system enables Screen Sharing with a one-time ephemeral password, tunnels VNC through the agent connection, and renders it in the browser using noVNC. When you disconnect, Screen Sharing is automatically disabled and the password is cleared — no credentials persist on the device.
+
+This works in both the browser and the Breeze viewer app. No manual configuration is needed — the **Connect Desktop** button auto-detects the situation and displays a VNC badge on the session.
+
+### Session Switcher
+
+A dropdown in the remote desktop toolbar shows all active user sessions on the target device. Click a session to switch to it — there is no need to disconnect and reconnect.
+
+This is particularly useful on multi-user Windows servers and macOS machines with multiple logged-in users. If the switch fails for any reason, the viewer automatically recovers the previous session.
+
+### OS Keyboard Shortcuts
+
+The viewer toolbar includes a keyboard shortcut menu that adapts to the target device's operating system:
+
+- **Windows**: Ctrl+Alt+Del, Win+L, Win+R, and other system shortcuts
+- **macOS**: Cmd+Option+Esc, Cmd+Q, and other macOS shortcuts
+- **Linux**: Ctrl+Alt+Backspace and other Linux shortcuts
+
+Select a shortcut from the menu to inject it into the remote session. This avoids the problem of your local operating system intercepting the key combination before it reaches the viewer.
+
+### Login Screen Input (macOS)
+
+Keyboard and mouse input works at the macOS login screen during remote desktop sessions. You can type passwords and interact with login UI elements remotely. This uses a low-level input method that operates below the normal event system, so it functions even when no user session is active.
+
+### Network Proxy
+
+Network Proxy lets you access TCP services on an agent's local network without a VPN — router web interfaces, NAS management panels, printer admin pages, switch management ports, and similar resources. Traffic tunnels over the existing agent WebSocket connection, so there is no additional network configuration required on either end.
+
+**Starting a proxy session:**
+
+- Open the **Discovered Assets** tab on a device and click **Enable Proxy Access** next to the target service, or create a tunnel manually by specifying the destination host and port.
+
+**Security model:**
+
+- **Default-deny allowlists** control which destinations agents can connect to. Configure allowlists per-site in **Settings → Remote Access**.
+- **Source IP restrictions** limit which users or networks can open tunnels.
+- Idle timeout and concurrent session limits apply to prevent resource exhaustion.
+- A built-in SSRF-safe blocklist prevents tunnels to internal metadata endpoints and loopback addresses.
+- Each tunnel session is associated with a specific user and fully audit logged.
+
 ---
 
 ## Remote Terminal
@@ -307,6 +357,23 @@ To free session capacity, close active sessions from the Active Sessions list on
 | POST | `/remote/transfers/:id/cancel` | Cancel a pending or active transfer |
 | POST | `/remote/transfers/:id/chunks` | Upload a chunk (multipart: `chunkIndex`, `data`) |
 | GET | `/remote/transfers/:id/download` | Download a completed file (`upload` direction only) |
+
+### Network Proxy Tunnels
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/remote/tunnels` | Create a tunnel session (body: `deviceId`, `targetHost`, `targetPort`) |
+| GET | `/remote/tunnels` | List active tunnel sessions (`?deviceId=&status=`) |
+| DELETE | `/remote/tunnels/:id` | Close a tunnel session |
+| GET | `/remote/tunnels/allowlists` | List proxy allowlists for a site |
+| POST | `/remote/tunnels/allowlists` | Create or update a proxy allowlist entry |
+| DELETE | `/remote/tunnels/allowlists/:id` | Remove a proxy allowlist entry |
+
+### Events
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/events/ws` | Real-time event WebSocket — streams device status changes, alert triggers, and session lifecycle events |
 
 ---
 

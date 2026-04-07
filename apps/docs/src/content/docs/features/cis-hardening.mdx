@@ -442,6 +442,36 @@ Each remediation action in the response includes the device hostname, baseline n
 
 ---
 
+## macOS Sharing & Security Checks
+
+Breeze includes 15 CIS checks aligned with the **CIS Apple macOS Benchmark Level 1** sharing and security controls. These checks evaluate whether common macOS sharing services and firewall settings are configured securely. They run automatically as part of any macOS baseline scan.
+
+| Check | What It Evaluates |
+|-------|-------------------|
+| Screen Sharing | Whether Screen Sharing is disabled (CIS recommends off unless actively needed) |
+| Remote Login (SSH) | Whether Remote Login is disabled for all users |
+| File Sharing (SMB) | Whether the built-in SMB file sharing service is disabled |
+| AirDrop Discoverability | Whether AirDrop is restricted to contacts only or fully disabled |
+| Remote Management | Whether Apple Remote Desktop remote management is disabled |
+| Remote Apple Events | Whether Remote Apple Events are disabled |
+| Internet Sharing | Whether Internet Sharing (NAT gateway) is disabled on all interfaces |
+| Content Caching | Whether the content caching service is disabled |
+| Media Sharing | Whether media sharing (Home Sharing / shared library) is disabled |
+| Bluetooth Sharing | Whether Bluetooth file sharing is disabled |
+| Printer Sharing | Whether shared printers are disabled |
+| Firewall Enabled | Whether the application firewall (socketfilterfw) is turned on |
+| Firewall Stealth Mode | Whether stealth mode is enabled so the device does not respond to probing requests |
+| Handoff | Whether Handoff is disabled (prevents data leakage between devices) |
+| Wake for Network Access | Whether Wake for Network Access is disabled to reduce remote attack surface |
+
+<Aside type="tip">
+  These checks cover the sharing-related controls from CIS macOS Benchmark Level 1 Sections 2 and 3. If your macOS baseline is set to `l2`, additional defense-in-depth checks beyond sharing services are also evaluated.
+</Aside>
+
+When a sharing service is found enabled, the finding includes the current service state in the `evidence` field and a recommended remediation command (typically a `defaults write` or `launchctl` invocation) that can be dispatched through the standard approval workflow.
+
+---
+
 ## Troubleshooting
 
 **Scan queued but no results appearing.**
