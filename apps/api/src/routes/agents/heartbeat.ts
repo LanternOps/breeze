@@ -24,6 +24,7 @@ import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { publishEvent } from '../../services/eventBus';
 import { isAgentTokenRotationDue } from '../../middleware/agentAuth';
+import { captureException } from '../../services/sentry';
 
 export const heartbeatRoutes = new Hono();
 
@@ -156,7 +157,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       deviceId: device.id,
       fields: ['agentVersion'],
       agentVersion: data.agentVersion,
-    }, 'heartbeat').catch(err => console.error('[Heartbeat] Failed to publish device.updated:', err));
+    }, 'heartbeat').catch(err => {
+      console.error('[Heartbeat] Failed to publish device.updated:', err);
+      captureException(err);
+    });
   }
 
   if (data.metrics) {

@@ -88,7 +88,10 @@ const CONSUME_LUA = `
 export async function consumeTicket(ticket: string): Promise<{ userId: string; orgId: string } | null> {
   if (shouldUseRedis()) {
     const redis = getRedis();
-    if (!redis) return null;
+    if (!redis) {
+      console.error('[EventWs] Redis unavailable during ticket consumption');
+      return null;
+    }
 
     // Atomic GET+DEL via Lua for one-time semantics across replicas
     const raw = await redis.eval(CONSUME_LUA, 1, `${REDIS_KEY_PREFIX}${ticket}`);
@@ -97,7 +100,8 @@ export async function consumeTicket(ticket: string): Promise<{ userId: string; o
     let record: TicketRecord;
     try {
       record = JSON.parse(raw) as TicketRecord;
-    } catch {
+    } catch (err) {
+      console.error('[EventWs] Failed to parse ticket record from Redis:', err instanceof Error ? err.message : err);
       return null;
     }
 
@@ -134,8 +138,8 @@ export type ClientMessage = z.infer<typeof clientMessageSchema>;
 function sendJson(ws: WSContext, payload: Record<string, unknown>): void {
   try {
     ws.send(JSON.stringify(payload));
-  } catch {
-    // Best-effort; the WS may already be closing.
+  } catch (err) {
+    console.warn('[EventWs] Failed to send message to client:', err instanceof Error ? err.message : err);
   }
 }
 
@@ -266,6 +270,7 @@ function createEventWsHandlers(ticket: string | undefined) {
       switch (msg.action) {
         case 'subscribe':
           for (const t of msg.types) {
+            if (client.subscribedTypes.size >= 200) break;
             client.subscribedTypes.add(t);
           }
           sendJson(ws, { type: 'subscribed', types: Array.from(client.subscribedTypes) });

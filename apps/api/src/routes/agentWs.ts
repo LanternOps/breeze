@@ -1368,10 +1368,14 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               hostname: deviceInfo.hostname,
               agentVersion: deviceInfo.agentVersion,
               status: 'online',
-            }, 'agent-ws').catch(err => console.error('[AgentWs] Failed to publish device.online:', err));
+            }, 'agent-ws').catch(err => {
+              console.error('[AgentWs] Failed to publish device.online:', err);
+              captureException(err);
+            });
           }
         } catch (err) {
           console.error('[AgentWs] Failed to query device for online event:', err);
+          captureException(err instanceof Error ? err : new Error(String(err)));
         }
       }
 
@@ -1794,10 +1798,20 @@ onClose: async (_event: unknown, ws: WSContext) => {
               publishEvent('device.offline', agentDb.orgId, {
                 deviceId: current.id,
                 hostname: current.hostname,
-              }, 'agent-ws').catch(err => console.error('[AgentWs] Failed to publish device.offline:', err));
+              }, 'agent-ws').catch(err => {
+                console.error('[AgentWs] Failed to publish device.offline:', err);
+                captureException(err);
+              });
             } catch (err) {
               console.error(`[AgentWs] Failed to check status for ${agentId} on disconnect, falling back to offline:`, err);
               await updateDeviceStatus(agentId, 'offline');
+              publishEvent('device.offline', agentDb.orgId, {
+                deviceId: agentId,
+                hostname: '',
+              }, 'agent-ws').catch(pubErr => {
+                console.error('[AgentWs] Failed to publish device.offline:', pubErr);
+                captureException(pubErr);
+              });
             }
           });
         }
