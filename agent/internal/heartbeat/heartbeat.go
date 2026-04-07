@@ -579,6 +579,25 @@ func (h *Heartbeat) SCMSessionCh() chan<- sessionbroker.SCMSessionEvent {
 	return h.scmSessionCh
 }
 
+// checkUpdateMarker looks for the transient .update-restart file written
+// by the updater before restart. If found, deletes it and returns true
+// so the caller can skip the startup jitter and heartbeat immediately.
+func checkUpdateMarker() bool {
+	markerPath := filepath.Join(config.ConfigDir(), ".update-restart")
+	_, err := os.Stat(markerPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Warn("failed to check update marker", "path", markerPath, "error", err.Error())
+		}
+		return false
+	}
+	if removeErr := os.Remove(markerPath); removeErr != nil {
+		log.Warn("failed to remove update marker", "path", markerPath, "error", removeErr.Error())
+	}
+	log.Info("update marker found, skipping startup jitter for immediate heartbeat")
+	return true
+}
+
 func (h *Heartbeat) Start() {
 	// Start session broker for user helpers
 	if h.sessionBroker != nil {
@@ -603,14 +622,19 @@ func (h *Heartbeat) Start() {
 	}
 
 	// Jitter: random delay before first heartbeat to avoid thundering herd
-	// after mass restart of agents
+	// after mass restart of agents. Skip jitter if restarting after self-update
+	// so the new version is reported immediately.
 	interval := time.Duration(h.config.HeartbeatIntervalSeconds) * time.Second
-	jitter := time.Duration(rand.Int64N(int64(interval)))
-	log.Info("initial heartbeat jitter", "delay", jitter)
-	select {
-	case <-time.After(jitter):
-	case <-h.stopChan:
-		return
+	if checkUpdateMarker() {
+		log.Info("post-update restart: sending immediate heartbeat (jitter skipped)")
+	} else {
+		jitter := time.Duration(rand.Int64N(int64(interval)))
+		log.Info("initial heartbeat jitter", "delay", jitter)
+		select {
+		case <-time.After(jitter):
+		case <-h.stopChan:
+			return
+		}
 	}
 
 	ticker := time.NewTicker(interval)

@@ -76,6 +76,7 @@ import { createAgentWsRoutes } from './routes/agentWs';
 import { createTerminalWsRoutes } from './routes/terminalWs';
 import { createDesktopWsRoutes } from './routes/desktopWs';
 import { createTunnelWsRoutes } from './routes/tunnelWs';
+import { createEventWsRoutes, createEventWsTicketRoute } from './routes/eventWs';
 import { tunnelRoutes } from './routes/tunnels';
 import { agentVersionRoutes } from './routes/agentVersions';
 import { viewerRoutes } from './routes/viewers';
@@ -159,6 +160,7 @@ import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
+import { shutdownEventDispatcher } from './services/eventDispatcher';
 import { getEventBus } from './services/eventBus';
 import { writeAuditEvent } from './services/auditEvents';
 import { createCorsOriginResolver } from './services/corsOrigins';
@@ -657,6 +659,7 @@ api.route('/logs', logsRoutes);
 api.route('/remote/sessions', createTerminalWsRoutes(upgradeWebSocket)); // WebSocket routes first (no auth middleware)
 api.route('/desktop-ws', createDesktopWsRoutes(upgradeWebSocket)); // Desktop WebSocket routes (outside /remote to avoid auth middleware)
 api.route('/tunnel-ws', createTunnelWsRoutes(upgradeWebSocket)); // Tunnel WebSocket routes (no auth middleware — uses one-time tickets)
+api.route('/events', createEventWsRoutes(upgradeWebSocket)); // Event stream WebSocket (no auth middleware — uses one-time tickets)
 api.route('/tunnels', tunnelRoutes);
 api.route('/remote', remoteRoutes);
 api.route('/api-keys', apiKeyRoutes);
@@ -701,6 +704,7 @@ api.route('/tags', tagRoutes);
 api.route('/custom-fields', customFieldRoutes);
 api.route('/filters', filterRoutes);
 api.route('/deployments', deploymentRoutes);
+api.route('/events', createEventWsTicketRoute()); // Event stream ticket endpoint (requires auth)
 api.route('/metrics', metricsRoutes);
 api.route('/agent-ws', createAgentWsRoutes(upgradeWebSocket));
 api.route('/agent-versions', agentVersionRoutes);
@@ -1079,6 +1083,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownOfflineDetector,
     shutdownAlertWorkers,
     shutdownStaleCommandReaper,
+    shutdownEventDispatcher,
     async () => getEventBus().close(),
     closeRedis,
     async () => {

@@ -11,10 +11,12 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"syscall"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/secmem"
 )
@@ -72,6 +74,15 @@ func normalizePreflightErr(err error) error {
 	return err
 }
 
+// writeUpdateMarker creates a transient file that tells the new process
+// to skip startup jitter and send an immediate heartbeat.
+func writeUpdateMarker(version string) {
+	markerPath := filepath.Join(config.ConfigDir(), ".update-restart")
+	if err := os.WriteFile(markerPath, []byte(version), 0600); err != nil {
+		log.Warn("failed to write update marker", "path", markerPath, "error", err.Error())
+	}
+}
+
 // UpdateTo downloads and installs a new version
 func (u *Updater) UpdateTo(version string) error {
 	log.Info("starting update", "targetVersion", version)
@@ -108,6 +119,7 @@ func (u *Updater) UpdateTo(version string) error {
 	//    The script handles: stop service -> copy new binary -> start service.
 	//    The agent exits normally after spawning the script.
 	if runtime.GOOS == "windows" {
+		writeUpdateMarker(version)
 		if err := RestartWithHelper(tempPath, u.config.BinaryPath); err != nil {
 			removeCleanup(tempPath)
 			if rbErr := u.Rollback(); rbErr != nil {
@@ -125,6 +137,7 @@ func (u *Updater) UpdateTo(version string) error {
 	//    signature, which invalidates macOS TCC permission grants.
 	if runtime.GOOS == "darwin" {
 		defer removeCleanup(tempPath)
+		writeUpdateMarker(version)
 		pkgErr := u.installViaPkg(version)
 		if pkgErr == nil {
 			return nil // .pkg install handles binary replacement + restart
@@ -147,6 +160,7 @@ func (u *Updater) UpdateTo(version string) error {
 		return fmt.Errorf("failed to replace binary (rolled back): %w", err)
 	}
 
+	writeUpdateMarker(version)
 	if err := Restart(); err != nil {
 		if rbErr := u.Rollback(); rbErr != nil {
 			log.Error("rollback also failed after restart error", "restartError", err, "rollbackError", rbErr)

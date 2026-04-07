@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useEventStream } from '../../hooks/useEventStream';
 import { List, Grid, Plus, AlertCircle, ArrowRight } from 'lucide-react';
 import { showToast } from '../shared/Toast';
 import type { FilterConditionGroup } from '@breeze/shared';
@@ -141,6 +142,38 @@ export default function DevicesPage() {
   useEffect(() => {
     fetchDevices();
   }, [fetchDevices]);
+
+  // Real-time device status updates
+  const handleDeviceEvent = useCallback((event: { type: string; payload: Record<string, unknown> }) => {
+    const { type, payload } = event;
+    const deviceId = payload.deviceId as string;
+    if (!deviceId) return;
+
+    if (type === 'device.online' || type === 'device.offline') {
+      setDevices(prev => prev.map(d =>
+        d.id === deviceId
+          ? { ...d, status: (payload.status as string ?? (type === 'device.online' ? 'online' : 'offline')) as DeviceStatus, lastSeen: new Date().toISOString() }
+          : d
+      ));
+    } else if (type === 'device.updated') {
+      const fields = payload.fields as string[] | undefined;
+      if (fields?.includes('agentVersion')) {
+        setDevices(prev => prev.map(d =>
+          d.id === deviceId
+            ? { ...d, agentVersion: (payload.agentVersion as string) ?? d.agentVersion }
+            : d
+        ));
+      }
+    } else if (type === 'device.enrolled' || type === 'device.decommissioned') {
+      fetchDevices();
+    }
+  }, [fetchDevices]);
+
+  const { subscribe } = useEventStream({ onEvent: handleDeviceEvent });
+
+  useEffect(() => {
+    subscribe(['device.online', 'device.offline', 'device.updated', 'device.enrolled', 'device.decommissioned']);
+  }, [subscribe]);
 
   const handleSelectDevice = (device: Device) => {
     void navigateTo(`/devices/${device.id}`);
