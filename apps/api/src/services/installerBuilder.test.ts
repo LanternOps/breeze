@@ -60,15 +60,14 @@ describe('replaceMsiPlaceholders', () => {
     ).toThrow(/suspiciously small/);
   });
 
-  it('throws if a placeholder is not found in the buffer', () => {
+  it('returns null if a placeholder is not found in the buffer', () => {
     const largeBuffer = Buffer.alloc(2048, 0xaa);
-    expect(() =>
-      replaceMsiPlaceholders(largeBuffer, {
-        serverUrl: 'https://x.com',
-        enrollmentKey: 'k',
-        enrollmentSecret: '',
-      })
-    ).toThrow(/SERVER_URL placeholder not found/);
+    const result = replaceMsiPlaceholders(largeBuffer, {
+      serverUrl: 'https://x.com',
+      enrollmentKey: 'k',
+      enrollmentSecret: '',
+    });
+    expect(result).toBeNull();
   });
 
   it('throws if value exceeds placeholder capacity', () => {

@@ -81,9 +81,10 @@ if (-not (Test-Path $outputDir)) {
 $templateArgs = @()
 if ($Template) {
     $pad = 512
-    $serverPlaceholder = "@@BREEZE_SERVER_URL@@".PadRight($pad, [char]0)
-    $keyPlaceholder = "@@BREEZE_ENROLLMENT_KEY@@".PadRight($pad, [char]0)
-    $secretPlaceholder = "@@BREEZE_ENROLLMENT_SECRET@@".PadRight($pad, [char]0)
+    # Pad with spaces (not nulls) — MSI string pool strips null bytes but preserves spaces
+    $serverPlaceholder = "@@BREEZE_SERVER_URL@@".PadRight($pad, ' ')
+    $keyPlaceholder = "@@BREEZE_ENROLLMENT_KEY@@".PadRight($pad, ' ')
+    $secretPlaceholder = "@@BREEZE_ENROLLMENT_SECRET@@".PadRight($pad, ' ')
     $templateArgs = @(
         "-d", "ServerUrlDefault=$serverPlaceholder",
         "-d", "EnrollmentKeyDefault=$keyPlaceholder",

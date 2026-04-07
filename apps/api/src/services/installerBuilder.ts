@@ -2,11 +2,11 @@ import archiver from 'archiver';
 
 const PLACEHOLDER_CHAR_LENGTH = 512;
 
-/** Sentinel strings padded to 512 chars with null bytes -- must match build-msi.ps1 */
+/** Sentinel strings padded to 512 chars with spaces -- must match build-msi.ps1 */
 export const PLACEHOLDERS = {
-  SERVER_URL: '@@BREEZE_SERVER_URL@@'.padEnd(PLACEHOLDER_CHAR_LENGTH, '\0'),
-  ENROLLMENT_KEY: '@@BREEZE_ENROLLMENT_KEY@@'.padEnd(PLACEHOLDER_CHAR_LENGTH, '\0'),
-  ENROLLMENT_SECRET: '@@BREEZE_ENROLLMENT_SECRET@@'.padEnd(PLACEHOLDER_CHAR_LENGTH, '\0'),
+  SERVER_URL: '@@BREEZE_SERVER_URL@@'.padEnd(PLACEHOLDER_CHAR_LENGTH, ' '),
+  ENROLLMENT_KEY: '@@BREEZE_ENROLLMENT_KEY@@'.padEnd(PLACEHOLDER_CHAR_LENGTH, ' '),
+  ENROLLMENT_SECRET: '@@BREEZE_ENROLLMENT_SECRET@@'.padEnd(PLACEHOLDER_CHAR_LENGTH, ' '),
 };
 
 interface InstallerValues {
@@ -15,52 +15,165 @@ interface InstallerValues {
   enrollmentSecret: string;
 }
 
+/** Bare sentinel prefixes (without padding) for fallback matching */
+const SENTINEL_PREFIXES = {
+  SERVER_URL: '@@BREEZE_SERVER_URL@@',
+  ENROLLMENT_KEY: '@@BREEZE_ENROLLMENT_KEY@@',
+  ENROLLMENT_SECRET: '@@BREEZE_ENROLLMENT_SECRET@@',
+};
+
 /**
- * Replace UTF-16LE encoded placeholder sentinels in an MSI buffer with real values.
- * Returns a new buffer of the same size (values are null-padded to match placeholder length).
+ * Replace placeholder sentinels in an MSI buffer with real values.
+ * Supports space-padded sentinels (new template builds) and unpadded
+ * sentinels (older builds where WiX stripped null padding).
+ * Returns a new buffer, or null if placeholders can't be found/replaced safely.
  */
-export function replaceMsiPlaceholders(template: Buffer, values: InstallerValues): Buffer {
+export function replaceMsiPlaceholders(template: Buffer, values: InstallerValues): Buffer | null {
   if (template.length < 1024) {
     throw new Error(`Template MSI is suspiciously small (${template.length} bytes) — may be corrupt or a failed download`);
   }
 
   const result = Buffer.from(template); // copy
 
-  const replacements: Array<{ name: string; sentinel: string; value: string }> = [
-    { name: 'SERVER_URL', sentinel: PLACEHOLDERS.SERVER_URL, value: values.serverUrl },
-    { name: 'ENROLLMENT_KEY', sentinel: PLACEHOLDERS.ENROLLMENT_KEY, value: values.enrollmentKey },
-    { name: 'ENROLLMENT_SECRET', sentinel: PLACEHOLDERS.ENROLLMENT_SECRET, value: values.enrollmentSecret },
+  const replacements: Array<{ name: string; sentinel: string; prefix: string; value: string }> = [
+    { name: 'SERVER_URL', sentinel: PLACEHOLDERS.SERVER_URL, prefix: SENTINEL_PREFIXES.SERVER_URL, value: values.serverUrl },
+    { name: 'ENROLLMENT_KEY', sentinel: PLACEHOLDERS.ENROLLMENT_KEY, prefix: SENTINEL_PREFIXES.ENROLLMENT_KEY, value: values.enrollmentKey },
+    { name: 'ENROLLMENT_SECRET', sentinel: PLACEHOLDERS.ENROLLMENT_SECRET, prefix: SENTINEL_PREFIXES.ENROLLMENT_SECRET, value: values.enrollmentSecret },
   ];
 
-  for (const { name, sentinel, value } of replacements) {
+  for (const { name, sentinel, prefix, value } of replacements) {
     if (value.length > PLACEHOLDER_CHAR_LENGTH) {
       throw new Error(`${name} value too long: ${value.length} chars exceeds ${PLACEHOLDER_CHAR_LENGTH} limit`);
     }
 
-    // WiX stores MSI property values as ASCII/UTF-8 in the internal database
-    // tables, not UTF-16LE. Try ASCII first, fall back to UTF-16LE for
-    // compatibility with any future WiX version changes.
+    // Try full space-padded sentinel (new template builds) in ASCII then UTF-16LE
     const sentinelAscii = Buffer.from(sentinel, 'ascii');
     const sentinelUtf16 = Buffer.from(sentinel, 'utf16le');
     let offset = result.indexOf(sentinelAscii);
     let encoding: BufferEncoding = 'ascii';
+    let sentinelLen = sentinelAscii.length;
 
     if (offset === -1) {
       offset = result.indexOf(sentinelUtf16);
       encoding = 'utf16le';
+      sentinelLen = sentinelUtf16.length;
+    }
+
+    // Fallback: try unpadded prefix (old template where WiX stripped null padding)
+    if (offset === -1) {
+      const prefixAscii = Buffer.from(prefix, 'ascii');
+      offset = result.indexOf(prefixAscii);
+      if (offset !== -1) {
+        encoding = 'ascii';
+        sentinelLen = prefixAscii.length;
+        // Can only replace if value fits in the sentinel's footprint
+        if (Buffer.from(value, 'ascii').length > sentinelLen) {
+          console.warn(`[installer] ${name}: value (${value.length} chars) exceeds unpadded sentinel (${prefix.length} chars) — cannot do in-place MSI replacement`);
+          return null;
+        }
+      }
     }
 
     if (offset === -1) {
-      throw new Error(`${name} placeholder not found in template MSI`);
+      console.warn(`[installer] ${name} placeholder not found in template MSI`);
+      return null;
     }
 
+    // Pad replacement to match sentinel length (null-padded for clean termination)
     const replacementPadded = value.padEnd(PLACEHOLDER_CHAR_LENGTH, '\0');
     const replacementBuf = Buffer.from(replacementPadded, encoding);
-
-    replacementBuf.copy(result, offset);
+    // Only write up to the sentinel length to avoid overwriting adjacent data
+    const writeLen = Math.min(replacementBuf.length, sentinelLen);
+    replacementBuf.copy(result, offset, 0, writeLen);
   }
 
   return result;
+}
+
+// --- Windows zip bundle builder (fallback when MSI placeholder replacement fails) ---
+
+const WINDOWS_INSTALL_SCRIPT = `@echo off
+setlocal EnableDelayedExpansion
+
+set "SCRIPT_DIR=%~dp0"
+set "ENROLLMENT_JSON=%SCRIPT_DIR%enrollment.json"
+set "MSI_PATH=%SCRIPT_DIR%breeze-agent.msi"
+
+if not exist "%ENROLLMENT_JSON%" (
+    echo Error: enrollment.json not found
+    exit /b 1
+)
+
+echo Installing Breeze Agent...
+msiexec /i "%MSI_PATH%" /quiet /norestart
+
+REM Wait for install to complete
+timeout /t 5 /nobreak >nul
+
+REM Read enrollment config and enroll
+for /f "usebackq tokens=1,* delims=:" %%a in (\`type "%ENROLLMENT_JSON%"\`) do (
+    set "key=%%~a"
+    set "val=%%~b"
+    set "key=!key: =!"
+    set "key=!key:"=!"
+    set "val=!val: =!"
+    set "val=!val:"=!"
+    set "val=!val:,=!"
+    if "!key!"=="serverUrl" set "SERVER_URL=!val!"
+    if "!key!"=="enrollmentKey" set "ENROLLMENT_KEY=!val!"
+    if "!key!"=="enrollmentSecret" set "ENROLLMENT_SECRET=!val!"
+)
+
+set ENROLL_CMD="%ProgramFiles%\\Breeze\\breeze-agent.exe" enroll "%ENROLLMENT_KEY%" --server "%SERVER_URL%"
+if defined ENROLLMENT_SECRET if not "%ENROLLMENT_SECRET%"=="" (
+    set ENROLL_CMD=%ENROLL_CMD% --enrollment-secret "%ENROLLMENT_SECRET%"
+)
+
+echo Enrolling agent...
+%ENROLL_CMD%
+
+REM Clean up credentials
+del "%ENROLLMENT_JSON%" 2>nul
+
+echo Breeze agent installed and enrolled successfully.
+`;
+
+interface WindowsZipValues {
+  serverUrl: string;
+  enrollmentKey: string;
+  enrollmentSecret: string;
+  siteId: string;
+}
+
+export async function buildWindowsInstallerZip(
+  msiBuffer: Buffer,
+  values: WindowsZipValues
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const archive = archiver('zip', { zlib: { level: 6 } });
+    const chunks: Buffer[] = [];
+
+    archive.on('data', (chunk: Buffer) => chunks.push(chunk));
+    archive.on('end', () => resolve(Buffer.concat(chunks)));
+    archive.on('error', reject);
+
+    archive.append(msiBuffer, { name: 'breeze-agent.msi' });
+
+    const enrollmentJson = JSON.stringify(
+      {
+        serverUrl: values.serverUrl,
+        enrollmentKey: values.enrollmentKey,
+        enrollmentSecret: values.enrollmentSecret,
+        siteId: values.siteId,
+      },
+      null,
+      2
+    );
+    archive.append(enrollmentJson, { name: 'enrollment.json' });
+    archive.append(WINDOWS_INSTALL_SCRIPT, { name: 'install.bat' });
+
+    archive.finalize().catch(reject);
+  });
 }
 
 // --- macOS zip bundle builder ---

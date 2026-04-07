@@ -11,7 +11,7 @@ import { PERMISSIONS } from '../services/permissions';
 import { hashEnrollmentKey } from '../services/enrollmentKeySecurity';
 import { readFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
-import { replaceMsiPlaceholders, buildMacosInstallerZip } from '../services/installerBuilder';
+import { replaceMsiPlaceholders, buildMacosInstallerZip, buildWindowsInstallerZip } from '../services/installerBuilder';
 import { getBinarySource, getGithubTemplateMsiUrl, getGithubAgentPkgUrl } from '../services/binarySource';
 
 export const enrollmentKeyRoutes = new Hono();
@@ -553,11 +553,30 @@ enrollmentKeyRoutes.get(
           details: { platform, childKeyId: childKey.id, count: childMaxUsage },
         });
 
-        c.header('Content-Type', 'application/octet-stream');
-        c.header('Content-Disposition', 'attachment; filename="breeze-agent.msi"');
-        c.header('Content-Length', String(modified.length));
+        if (modified) {
+          // MSI placeholder replacement succeeded — return standalone MSI
+          c.header('Content-Type', 'application/octet-stream');
+          c.header('Content-Disposition', 'attachment; filename="breeze-agent.msi"');
+          c.header('Content-Length', String(modified.length));
+          c.header('Cache-Control', 'no-store');
+          return c.body(modified as unknown as ArrayBuffer);
+        }
+
+        // Fallback: template MSI placeholders can't be replaced in-place.
+        // Bundle as zip with MSI + enrollment.json + install.bat (like macOS).
+        console.warn('[installer] MSI placeholder replacement failed — using zip bundle fallback');
+        const zipBuffer = await buildWindowsInstallerZip(templateBuffer, {
+          serverUrl,
+          enrollmentKey: rawChildKey,
+          enrollmentSecret: globalSecret,
+          siteId: parentKey.siteId ?? '',
+        });
+
+        c.header('Content-Type', 'application/zip');
+        c.header('Content-Disposition', 'attachment; filename="breeze-agent-windows.zip"');
+        c.header('Content-Length', String(zipBuffer.length));
         c.header('Cache-Control', 'no-store');
-        return c.body(modified as unknown as ArrayBuffer);
+        return c.body(zipBuffer as unknown as ArrayBuffer);
       }
 
       // macOS
@@ -815,11 +834,27 @@ publicEnrollmentRoutes.get(
           result: 'success',
         });
 
-        c.header('Content-Type', 'application/octet-stream');
-        c.header('Content-Disposition', 'attachment; filename="breeze-agent.msi"');
-        c.header('Content-Length', String(modified.length));
+        if (modified) {
+          c.header('Content-Type', 'application/octet-stream');
+          c.header('Content-Disposition', 'attachment; filename="breeze-agent.msi"');
+          c.header('Content-Length', String(modified.length));
+          c.header('Cache-Control', 'no-store');
+          return c.body(modified as unknown as ArrayBuffer);
+        }
+
+        // Zip bundle fallback
+        const zipBuffer = await buildWindowsInstallerZip(templateBuffer, {
+          serverUrl,
+          enrollmentKey: token,
+          enrollmentSecret: globalSecret,
+          siteId: enrollmentKey.siteId ?? '',
+        });
+
+        c.header('Content-Type', 'application/zip');
+        c.header('Content-Disposition', 'attachment; filename="breeze-agent-windows.zip"');
+        c.header('Content-Length', String(zipBuffer.length));
         c.header('Cache-Control', 'no-store');
-        return c.body(modified as unknown as ArrayBuffer);
+        return c.body(zipBuffer as unknown as ArrayBuffer);
       }
 
       // macOS
