@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import UserList, { type User } from './UserList';
 import UserInviteForm, { type RoleOption } from './UserInviteForm';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'invite' | 'edit' | 'remove';
@@ -23,6 +24,7 @@ type Toast = {
 
 export default function UsersPage() {
   const currentUser = useAuthStore((s) => s.user);
+  const organizations = useOrgStore((s) => s.organizations);
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<RoleOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -290,6 +292,7 @@ export default function UsersPage() {
         <UserInviteForm
           isOpen
           roles={roles}
+          organizations={organizations.map(o => ({ id: o.id, name: o.name }))}
           showOrgAccess={roles.some(r => r.scope === 'partner')}
           onSubmit={handleInviteSubmit}
           onCancel={handleCloseModal}
