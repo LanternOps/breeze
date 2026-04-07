@@ -823,7 +823,8 @@ jobs:
         working-directory: apps/viewer
         shell: bash
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ''
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -852,6 +853,14 @@ jobs:
           name: ${{ matrix.asset_name }}
           path: apps/viewer/${{ matrix.asset_name }}
           retention-days: 30
+
+      - name: Upload Viewer update manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: viewer-update-manifest-${{ matrix.target }}
+          path: apps/viewer/src-tauri/target/${{ matrix.target }}/release/bundle/*/latest.json
+          retention-days: 30
+          if-no-files-found: warn
 
   build-helper:
     name: Build Helper
@@ -1013,7 +1022,8 @@ jobs:
         working-directory: apps/viewer
         shell: bash
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ''
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -1040,6 +1050,14 @@ jobs:
           name: breeze-viewer-macos.dmg
           path: apps/viewer/breeze-viewer-macos.dmg
           retention-days: 30
+
+      - name: Upload Viewer macOS update manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: viewer-update-manifest-macos
+          path: apps/viewer/src-tauri/target/universal-apple-darwin/release/bundle/*/latest.json
+          retention-days: 30
+          if-no-files-found: warn
 
   build-helper-macos:
     name: Build Helper (macOS)
@@ -1252,10 +1270,65 @@ jobs:
           overwrite: true
           retention-days: 30
 
+  merge-viewer-update-manifest:
+    name: Merge Viewer Update Manifests
+    runs-on: ubuntu-latest
+    needs: [build-viewer, build-viewer-macos]
+    if: >-
+      !cancelled()
+      && (needs.build-viewer.result == 'success' || needs.build-viewer.result == 'skipped')
+      && (needs.build-viewer-macos.result == 'success' || needs.build-viewer-macos.result == 'skipped')
+    steps:
+      - name: Download all viewer update manifests
+        uses: actions/download-artifact@v8
+        with:
+          path: manifests
+          pattern: 'viewer-update-manifest-*'
+          merge-multiple: false
+
+      - name: Merge manifests into single latest.json
+        shell: bash
+        run: |
+          # Collect all per-platform latest.json files
+          FILES=$(find manifests -name 'latest.json' -type f)
+          if [ -z "$FILES" ]; then
+            echo "No update manifests found — skipping merge"
+            exit 0
+          fi
+
+          echo "Found manifests:"
+          echo "$FILES"
+
+          # Merge: take version/notes/pub_date from first file, merge all platforms objects
+          node -e "
+            const fs = require('fs');
+            const files = process.argv.slice(1);
+            let merged = null;
+            for (const f of files) {
+              const data = JSON.parse(fs.readFileSync(f, 'utf8'));
+              if (!merged) {
+                merged = data;
+              } else {
+                Object.assign(merged.platforms || {}, data.platforms || {});
+              }
+            }
+            fs.writeFileSync('latest.json', JSON.stringify(merged, null, 2));
+            console.log('Merged platforms:', Object.keys(merged.platforms || {}));
+          " $FILES
+
+          cat latest.json
+
+      - name: Upload merged manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: viewer-latest-json
+          path: latest.json
+          retention-days: 30
+
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-api, build-web, build-agent, build-windows-msi, build-macos-agent, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos]
+    needs: [build-api, build-web, build-agent, build-windows-msi, build-macos-agent, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest]
     if: >-
       !cancelled()
       && needs.build-api.result == 'success'
@@ -1268,6 +1341,7 @@ jobs:
       && (needs.build-helper.result == 'success' || needs.build-helper.result == 'skipped')
       && (needs.build-viewer-macos.result == 'success' || needs.build-viewer-macos.result == 'skipped')
       && (needs.build-helper-macos.result == 'success' || needs.build-helper-macos.result == 'skipped')
+      && (needs.merge-viewer-update-manifest.result == 'success' || needs.merge-viewer-update-manifest.result == 'skipped')
       && !(github.event_name == 'workflow_dispatch' && inputs.skip_release)
     permissions:
       contents: write
@@ -1279,7 +1353,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           path: artifacts
-          pattern: '{api-dist,web-dist,breeze-agent-*,breeze-backup-*,breeze-desktop-helper-*,breeze-watchdog-*,breeze-viewer-*,breeze-helper-*}'
+          pattern: '{api-dist,web-dist,breeze-agent-*,breeze-backup-*,breeze-desktop-helper-*,breeze-watchdog-*,breeze-viewer-*,breeze-helper-*,viewer-latest-json}'
           merge-multiple: false
 
       - name: Prepare release assets
@@ -1320,6 +1394,11 @@ jobs:
               cp "$dir"/* release-assets/
             fi
           done
+
+          # Copy viewer update manifest
+          if [ -d "artifacts/viewer-latest-json" ] && [ -f "artifacts/viewer-latest-json/latest.json" ]; then
+            cp artifacts/viewer-latest-json/latest.json release-assets/latest.json
+          fi
 
           # Copy helper installers
           for dir in artifacts/breeze-helper-*; do
