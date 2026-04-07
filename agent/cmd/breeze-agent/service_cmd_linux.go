@@ -201,9 +201,17 @@ var serviceInstallCmd = &cobra.Command{
 		running := isSystemServiceRunning()
 
 		if enrolled && running {
-			// Already enrolled and running — nothing more to do.
-			fmt.Printf("\nAgent is enrolled and the service is running.\n")
+			// Already enrolled and running — show current status automatically.
+			fmt.Println()
+			statusCmd := exec.Command(linuxBinaryPath, "status")
+			statusCmd.Stdout = os.Stdout
+			statusCmd.Stderr = os.Stderr
+			statusCmd.Run() // best-effort; ignore error
+
+			fmt.Println("\nHelpful Commands:")
 			fmt.Println("  Logs:    journalctl -u breeze-agent -f")
+			fmt.Println("  Status:  sudo breeze-agent service status")
+			fmt.Println("  Restart: sudo breeze-agent service start")
 		} else if enrolled {
 			fmt.Println()
 			fmt.Println("Next steps:")
