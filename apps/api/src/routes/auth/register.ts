@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { eq, and, isNull } from 'drizzle-orm';
+import { eq, and, isNull, sql } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import { users, partners, partnerUsers, roles, rolePermissions, organizations, sites } from '../../db/schema';
 import {
@@ -122,14 +122,17 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
 
   return runWithSystemDbAccess(async () => {
 
-    // Block registration until the system admin has completed initial setup
-    const [adminUser] = await db
+    // Block registration until any partner admin has completed initial setup.
+    // We check partner_users + users rather than a hardcoded email because the
+    // seeded admin may have changed their email during the setup wizard.
+    const [setupAdmin] = await db
       .select({ setupCompletedAt: users.setupCompletedAt })
       .from(users)
-      .where(eq(users.email, 'admin@breeze.local'))
+      .innerJoin(partnerUsers, eq(partnerUsers.userId, users.id))
+      .where(sql`${users.setupCompletedAt} IS NOT NULL`)
       .limit(1);
 
-    if (!adminUser || !adminUser.setupCompletedAt) {
+    if (!setupAdmin) {
       return c.json({ error: 'System setup is not yet complete. Contact your administrator.' }, 403);
     }
 
