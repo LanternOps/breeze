@@ -10,7 +10,7 @@ import (
 	"syscall"
 )
 
-// Restart restarts the agent service
+// Restart tries service managers in order, then falls back to exec.
 func Restart() error {
 	// Try systemd first (Linux)
 	if err := restartSystemd(); err == nil {
@@ -22,18 +22,29 @@ func Restart() error {
 		return nil
 	}
 
-	// Fall back to exec syscall
+	// No service manager available
+	log.Warn("no service manager detected, falling back to exec — agent will not auto-restart on crash")
 	return restartExec()
 }
 
 func restartSystemd() error {
-	cmd := exec.Command("systemctl", "restart", "breeze-agent")
-	return cmd.Run()
+	out, err := exec.Command("systemctl", "restart", "breeze-agent").CombinedOutput()
+	if err != nil {
+		log.Debug("systemd restart failed", "error", err.Error(), "output", string(out))
+		return err
+	}
+	log.Info("restarted via systemd")
+	return nil
 }
 
 func restartLaunchd() error {
-	cmd := exec.Command("launchctl", "kickstart", "-k", "system/com.breeze.agent")
-	return cmd.Run()
+	out, err := exec.Command("launchctl", "kickstart", "-k", "system/com.breeze.agent").CombinedOutput()
+	if err != nil {
+		log.Debug("launchd restart failed", "error", err.Error(), "output", string(out))
+		return err
+	}
+	log.Info("restarted via launchd")
+	return nil
 }
 
 // RestartWithHelper is Windows-only; on Unix it's never called because
@@ -54,6 +65,7 @@ func restartExec() error {
 		return fmt.Errorf("failed to resolve symlinks: %w", err)
 	}
 
+	log.Info("restarting via exec", "binary", binary)
 	args := []string{binary, "run"}
 	env := os.Environ()
 
