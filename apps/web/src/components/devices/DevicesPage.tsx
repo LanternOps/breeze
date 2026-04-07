@@ -9,6 +9,7 @@ import DeviceCard from './DeviceCard';
 import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
 import DeviceSettingsModal from './DeviceSettingsModal';
 import AddDeviceModal from './AddDeviceModal';
+import CreateGroupModal from './CreateGroupModal';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { fetchWithAuth } from '../../stores/auth';
 import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice } from '../../services/deviceActions';
@@ -53,6 +54,8 @@ export default function DevicesPage() {
   const [scriptTargetDevices, setScriptTargetDevices] = useState<Device[]>([]);
   const [settingsDevice, setSettingsDevice] = useState<Device | null>(null);
   const [advancedFilter, setAdvancedFilter] = useState<FilterConditionGroup | null>(null);
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
+  const [autoSelectGroupId, setAutoSelectGroupId] = useState<string | null>(null);
 
   const scriptTargetLabel =
     scriptTargetDevices.length === 1
@@ -169,6 +172,12 @@ export default function DevicesPage() {
 
   useEffect(() => {
     fetchDevices();
+  }, [fetchDevices]);
+
+  const handleGroupCreated = useCallback(async (newGroupId: string) => {
+    setShowCreateGroup(false);
+    setAutoSelectGroupId(newGroupId);
+    await fetchDevices();
   }, [fetchDevices]);
 
   // Real-time device status updates
@@ -589,6 +598,9 @@ export default function DevicesPage() {
           onAction={handleDeviceAction}
           onBulkAction={handleBulkAction}
           serverFilter={advancedFilter}
+          onCreateGroup={() => setShowCreateGroup(true)}
+          autoSelectGroupId={autoSelectGroupId}
+          onAutoSelectConsumed={() => setAutoSelectGroupId(null)}
         />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
@@ -604,6 +616,12 @@ export default function DevicesPage() {
       )}
 
       <AddDeviceModal isOpen={showAddDevice} onClose={() => setShowAddDevice(false)} />
+
+      <CreateGroupModal
+        isOpen={showCreateGroup}
+        onClose={() => setShowCreateGroup(false)}
+        onCreated={handleGroupCreated}
+      />
 
       <ScriptPickerModal
         isOpen={scriptPickerOpen}
