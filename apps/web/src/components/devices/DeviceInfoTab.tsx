@@ -159,6 +159,7 @@ const statusColors: Record<string, string> = {
   online: 'bg-success/15 text-success border-success/30',
   offline: 'bg-destructive/15 text-destructive border-destructive/30',
   maintenance: 'bg-warning/15 text-warning border-warning/30',
+  updating: 'bg-info/15 text-info border-info/30',
 };
 
 export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {

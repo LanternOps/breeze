@@ -128,7 +128,7 @@ export interface OrganizationUser {
 // ============================================
 
 export type OSType = 'windows' | 'macos' | 'linux';
-export type DeviceStatus = 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined';
+export type DeviceStatus = 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined' | 'updating';
 export type DeviceGroupType = 'static' | 'dynamic';
 export type GroupMembershipSource = 'manual' | 'dynamic_rule' | 'policy';
 

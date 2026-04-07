@@ -4,7 +4,7 @@ import { users } from './users';
 import type { DesktopAccessState, InterfaceBandwidth, TCCPermissions } from '@breeze/shared';
 
 export const osTypeEnum = pgEnum('os_type', ['windows', 'macos', 'linux']);
-export const deviceStatusEnum = pgEnum('device_status', ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined']);
+export const deviceStatusEnum = pgEnum('device_status', ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined', 'updating']);
 export const deviceGroupTypeEnum = pgEnum('device_group_type', ['static', 'dynamic']);
 export const membershipSourceEnum = pgEnum('membership_source', ['manual', 'dynamic_rule', 'policy']);
 export const ipAssignmentTypeEnum = pgEnum('ip_assignment_type', ['dhcp', 'static', 'vpn', 'link-local', 'unknown']);

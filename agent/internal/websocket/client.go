@@ -470,6 +470,28 @@ func (c *Client) SendPatchProgress(commandID string, event any) error {
 	}
 }
 
+// SendUpdateStatus notifies the server that a self-update is about to start.
+// Non-blocking: drops if send channel is full.
+func (c *Client) SendUpdateStatus(targetVersion string) error {
+	msg := map[string]any{
+		"type":          "update_status",
+		"targetVersion": targetVersion,
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal update_status: %w", err)
+	}
+
+	select {
+	case c.sendChan <- data:
+		return nil
+	case <-c.done:
+		return fmt.Errorf("client is stopped")
+	default:
+		return fmt.Errorf("send channel full, dropping update_status")
+	}
+}
+
 // SendVerificationProgress sends a backup verification progress event to the server.
 // Non-blocking: drops if send channel is full.
 func (c *Client) SendVerificationProgress(commandID string, event any) error {

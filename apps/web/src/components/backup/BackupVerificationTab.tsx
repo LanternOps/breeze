@@ -77,7 +77,7 @@ function readinessColor(score: number): string {
   return 'text-destructive';
 }
 
-type DeviceStatus = 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined';
+type DeviceStatus = 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined' | 'updating';
 
 export default function BackupVerificationTab({
   deviceId,
