@@ -19,10 +19,14 @@ func (h *Heartbeat) startDarwinDesktopWatcher() {
 
 	// Set initial console user so session selection is correct from startup.
 	detector := sessionbroker.NewSessionDetector()
-	if sessions, err := detector.ListSessions(); err == nil && len(sessions) > 0 {
+	sessions, err := detector.ListSessions()
+	if err != nil {
+		log.Warn("failed to detect initial console user, assuming login window",
+			"error", err.Error())
+	}
+	if len(sessions) > 0 {
 		h.sessionBroker.SetConsoleUser(sessions[0].Username)
 	} else {
-		// No console user detected — assume login window.
 		h.sessionBroker.SetConsoleUser("loginwindow")
 	}
 

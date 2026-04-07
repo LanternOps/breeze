@@ -99,8 +99,12 @@ func (b *Broker) SetSessionClosedHandler(handler SessionClosedHandler) {
 // "loginwindow", desktop session selection prefers login_window helpers.
 func (b *Broker) SetConsoleUser(username string) {
 	b.mu.Lock()
+	prev := b.consoleUser
 	b.consoleUser = username
 	b.mu.Unlock()
+	if prev != username {
+		log.Debug("console user changed", "from", prev, "to", username)
+	}
 }
 
 // Listen starts the IPC listener. Blocks until stopChan is closed.
@@ -1080,7 +1084,12 @@ func (b *Broker) CloseSessionsByDesktopContext(ctx string) int {
 	b.mu.Unlock()
 
 	for _, s := range toClose {
-		s.Close()
+		if err := s.Close(); err != nil {
+			log.Debug("failed to close session by desktop context",
+				"sessionId", s.SessionID,
+				"desktopContext", ctx,
+				"error", err.Error())
+		}
 	}
 	return len(toClose)
 }
