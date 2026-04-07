@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useEventStream } from '../../hooks/useEventStream';
 import { ArrowLeft } from 'lucide-react';
 import { showToast } from '../shared/Toast';
 import DeviceDetails from './DeviceDetails';
@@ -77,6 +78,38 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
   useEffect(() => {
     fetchDevice();
   }, [fetchDevice]);
+
+  // Real-time device updates
+  const handleDeviceEvent = useCallback((event: { type: string; payload: Record<string, unknown> }) => {
+    const { type, payload } = event;
+    const eventDeviceId = payload.deviceId as string;
+    if (eventDeviceId !== deviceId) return;
+
+    if (type === 'device.online' || type === 'device.offline') {
+      setDevice(prev => prev ? {
+        ...prev,
+        status: (payload.status as string ?? (type === 'device.online' ? 'online' : 'offline')) as DeviceStatus,
+        lastSeen: new Date().toISOString(),
+        agentVersion: (payload.agentVersion as string) ?? prev.agentVersion,
+      } : prev);
+    } else if (type === 'device.updated') {
+      const fields = payload.fields as string[] | undefined;
+      if (fields?.includes('agentVersion')) {
+        setDevice(prev => prev ? {
+          ...prev,
+          agentVersion: (payload.agentVersion as string) ?? prev.agentVersion,
+        } : prev);
+      }
+    } else if (type === 'device.decommissioned') {
+      fetchDevice();
+    }
+  }, [deviceId, fetchDevice]);
+
+  const { subscribe } = useEventStream({ onEvent: handleDeviceEvent });
+
+  useEffect(() => {
+    subscribe(['device.online', 'device.offline', 'device.updated', 'device.decommissioned']);
+  }, [subscribe]);
 
   // Inject AI context when device data is available
   const setPageContext = useAiStore((s) => s.setPageContext);
