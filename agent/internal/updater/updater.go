@@ -318,6 +318,14 @@ func (u *Updater) replaceBinary(newPath string) error {
 		}
 	}
 
+	// On Unix, unlink the old binary before creating the new file.
+	// The kernel keeps the old inode alive for the running process's
+	// memory-mapped text segment. The new file gets a fresh inode,
+	// avoiding ETXTBSY ("text file busy") errors.
+	if runtime.GOOS != "windows" {
+		os.Remove(u.config.BinaryPath)
+	}
+
 	// Copy new binary to target location
 	src, err := os.Open(newPath)
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"testing"
 
@@ -445,5 +446,57 @@ func TestCheckWritable_DetectsETXTBSY(t *testing.T) {
 	}
 	if errors.Is(wrapped, ErrReadOnlyFS) {
 		t.Fatalf("should not match ErrReadOnlyFS")
+	}
+}
+
+func TestReplaceBinary_UnlinksBeforeWrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unlink behavior is Unix-only")
+	}
+
+	tmpDir := t.TempDir()
+	binaryPath := filepath.Join(tmpDir, "breeze-agent")
+	newBinaryPath := filepath.Join(tmpDir, "new-binary")
+
+	// Create current binary and hold it open (simulates running executable holding inode)
+	os.WriteFile(binaryPath, []byte("old binary"), 0755)
+	holder, err := os.Open(binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+
+	// Record original inode
+	origInfo, _ := os.Stat(binaryPath)
+	origSys := origInfo.Sys().(*syscall.Stat_t)
+	origIno := origSys.Ino
+
+	// Create new binary
+	os.WriteFile(newBinaryPath, []byte("new binary v2"), 0644)
+
+	u := New(&Config{BinaryPath: binaryPath})
+	if err := u.replaceBinary(newBinaryPath); err != nil {
+		t.Fatalf("replace failed: %v", err)
+	}
+
+	// Verify new content at path
+	content, _ := os.ReadFile(binaryPath)
+	if string(content) != "new binary v2" {
+		t.Fatalf("expected new content, got: %s", string(content))
+	}
+
+	// Verify it's a NEW inode (unlink created a new file, not truncated old one)
+	newInfo, _ := os.Stat(binaryPath)
+	newSys := newInfo.Sys().(*syscall.Stat_t)
+	if newSys.Ino == origIno {
+		t.Fatal("expected new inode after unlink+create, but got same inode")
+	}
+
+	// Verify the held-open file descriptor still reads old content (kernel kept old inode)
+	holder.Seek(0, 0)
+	oldContent := make([]byte, 100)
+	n, _ := holder.Read(oldContent)
+	if string(oldContent[:n]) != "old binary" {
+		t.Fatalf("held FD should still read old content, got: %s", string(oldContent[:n]))
 	}
 }
