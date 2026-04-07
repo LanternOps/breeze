@@ -20,6 +20,10 @@ interface InstallerValues {
  * Returns a new buffer of the same size (values are null-padded to match placeholder length).
  */
 export function replaceMsiPlaceholders(template: Buffer, values: InstallerValues): Buffer {
+  if (template.length < 1024) {
+    throw new Error(`Template MSI is suspiciously small (${template.length} bytes) — may be corrupt or a failed download`);
+  }
+
   const result = Buffer.from(template); // copy
 
   const replacements: Array<{ name: string; sentinel: string; value: string }> = [
@@ -104,6 +108,13 @@ export async function buildMacosInstallerZip(
     archive.on('data', (chunk: Buffer) => chunks.push(chunk));
     archive.on('end', () => resolve(Buffer.concat(chunks)));
     archive.on('error', reject);
+    archive.on('warning', (err) => {
+      if (err.code === 'ENOENT') {
+        reject(new Error(`Zip archive warning (entry missing): ${err.message}`));
+      } else {
+        console.error('[installer] Archiver warning during macOS zip build:', err);
+      }
+    });
 
     archive.append(pkgBuffer, { name: 'breeze-agent.pkg' });
 
@@ -120,6 +131,6 @@ export async function buildMacosInstallerZip(
     archive.append(enrollmentJson, { name: 'enrollment.json' });
     archive.append(MACOS_INSTALL_SCRIPT, { name: 'install.sh', mode: 0o755 });
 
-    archive.finalize();
+    archive.finalize().catch(reject);
   });
 }

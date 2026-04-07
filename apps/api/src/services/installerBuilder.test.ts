@@ -49,10 +49,21 @@ describe('replaceMsiPlaceholders', () => {
     expect(result.includes(Buffer.from('@@BREEZE_ENROLLMENT_SECRET@@', 'utf16le'))).toBe(false);
   });
 
-  it('throws if a placeholder is not found in the buffer', () => {
-    const emptyBuffer = Buffer.from('no placeholders here');
+  it('throws if template is suspiciously small', () => {
+    const tinyBuffer = Buffer.from('no placeholders here');
     expect(() =>
-      replaceMsiPlaceholders(emptyBuffer, {
+      replaceMsiPlaceholders(tinyBuffer, {
+        serverUrl: 'https://x.com',
+        enrollmentKey: 'k',
+        enrollmentSecret: '',
+      })
+    ).toThrow(/suspiciously small/);
+  });
+
+  it('throws if a placeholder is not found in the buffer', () => {
+    const largeBuffer = Buffer.alloc(2048, 0xaa);
+    expect(() =>
+      replaceMsiPlaceholders(largeBuffer, {
         serverUrl: 'https://x.com',
         enrollmentKey: 'k',
         enrollmentSecret: '',
