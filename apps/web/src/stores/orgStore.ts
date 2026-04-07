@@ -20,10 +20,9 @@ export interface Organization {
 
 export interface Site {
   id: string;
-  organizationId: string;
+  orgId: string;
   name: string;
   address?: string;
-  status: 'active' | 'inactive';
   deviceCount: number;
   createdAt: string;
 }

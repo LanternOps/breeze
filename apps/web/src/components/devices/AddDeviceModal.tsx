@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Download, Copy, Loader2, Check } from 'lucide-react';
+import { Download, Copy, Loader2, Check, Link } from 'lucide-react';
 import { Dialog } from '../shared/Dialog';
 import { showToast } from '../shared/Toast';
 import { fetchWithAuth } from '../../stores/auth';
@@ -23,7 +23,7 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
   const userOS = detectUserOS();
   const { currentOrgId, currentSiteId, sites } = useOrgStore();
   const orgSites = useMemo(
-    () => sites.filter((s) => s.organizationId === currentOrgId && s.status === 'active'),
+    () => sites.filter((s) => s.orgId === currentOrgId),
     [sites, currentOrgId],
   );
 
@@ -41,6 +41,12 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string>();
   const [downloadSuccess, setDownloadSuccess] = useState(false);
+
+  // Generate link state
+  const [generatedLink, setGeneratedLink] = useState('');
+  const [linkLoading, setLinkLoading] = useState(false);
+  const [linkError, setLinkError] = useState<string>();
+  const [linkCopied, setLinkCopied] = useState(false);
 
   // CLI tab state (lazy-loaded)
   const [cliInitialized, setCliInitialized] = useState(false);
@@ -70,6 +76,9 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
       setCliInitialized(false);
       setOnboardingToken('');
       setTokenError(undefined);
+      setGeneratedLink('');
+      setLinkError(undefined);
+      setLinkCopied(false);
     }
   }, [isOpen]);
 
@@ -210,6 +219,72 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
       }
     } finally {
       setDownloading(false);
+    }
+  };
+
+  // --- Generate public link ---
+  const handleGenerateLink = async () => {
+    if (linkLoading || !selectedSiteId) return;
+    setLinkLoading(true);
+    setLinkError(undefined);
+    setGeneratedLink('');
+
+    try {
+      // Step 1: Create parent enrollment key
+      const keyRes = await fetchWithAuth('/enrollment-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: `Add device link (${new Date().toISOString().slice(0, 10)})`,
+          siteId: selectedSiteId,
+        }),
+      });
+
+      if (!keyRes.ok) {
+        const body = await keyRes.json().catch(() => ({ error: 'Failed to create enrollment key' }));
+        const rawMessage = body.message || body.error || '';
+        if (keyRes.status === 403 && rawMessage.toLowerCase().includes('mfa required')) {
+          setLinkError('MFA_REQUIRED');
+        } else {
+          setLinkError(rawMessage || `Failed to create enrollment key (${keyRes.status})`);
+        }
+        return;
+      }
+
+      const keyData = await keyRes.json();
+
+      // Step 2: Generate public link
+      const linkRes = await fetchWithAuth(`/enrollment-keys/${keyData.id}/installer-link`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ platform: selectedPlatform, count: deviceCount }),
+      });
+
+      if (!linkRes.ok) {
+        const body = await linkRes.json().catch(() => ({ error: 'Failed to generate link' }));
+        setLinkError(body.error || `Failed to generate link (${linkRes.status})`);
+        return;
+      }
+
+      const linkData = await linkRes.json();
+      setGeneratedLink(linkData.url);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      setLinkError(`Failed to generate link: ${message}`);
+    } finally {
+      setLinkLoading(false);
+    }
+  };
+
+  const handleCopyLink = async () => {
+    if (!generatedLink) return;
+    try {
+      await navigator.clipboard.writeText(generatedLink);
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2000);
+      showToast({ type: 'success', message: 'Link copied to clipboard' });
+    } catch {
+      showToast({ type: 'error', message: 'Failed to copy link' });
     }
   };
 
@@ -356,6 +431,83 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                     </>
                   )}
                 </button>
+
+                {/* Generate Link button */}
+                <button
+                  type="button"
+                  onClick={handleGenerateLink}
+                  disabled={linkLoading || !selectedSiteId}
+                  className="w-full h-10 rounded-md border border-primary text-sm font-medium text-primary hover:bg-primary/5 disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {linkLoading ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Generating link...
+                    </>
+                  ) : (
+                    <>
+                      <Link className="h-4 w-4" />
+                      Generate Link
+                    </>
+                  )}
+                </button>
+
+                {/* Generated link display */}
+                {generatedLink && (
+                  <div className="rounded-md border border-green-500/40 bg-green-500/10 p-3 space-y-2">
+                    <p className="text-xs font-medium text-green-700">
+                      Share this link to download the installer from any computer:
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        readOnly
+                        value={generatedLink}
+                        className="flex-1 h-9 rounded-md border bg-background px-3 text-xs font-mono focus:outline-none"
+                        onClick={(e) => (e.target as HTMLInputElement).select()}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleCopyLink}
+                        className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:opacity-90 flex items-center gap-1.5"
+                      >
+                        {linkCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                        {linkCopied ? 'Copied' : 'Copy'}
+                      </button>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Valid for {deviceCount > 1 ? `${deviceCount} downloads` : '1 download'}.
+                      No login required.
+                    </p>
+                  </div>
+                )}
+
+                {/* Link errors */}
+                {linkError === 'MFA_REQUIRED' && (
+                  <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700">
+                    Multi-factor authentication is required to generate links.{' '}
+                    <a
+                      href="/settings/profile"
+                      className="font-medium underline hover:no-underline"
+                    >
+                      Set up MFA in your profile settings
+                    </a>{' '}
+                    and sign in again, then retry.
+                  </div>
+                )}
+
+                {linkError && linkError !== 'MFA_REQUIRED' && (
+                  <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+                    {linkError}
+                    <button
+                      type="button"
+                      onClick={handleGenerateLink}
+                      className="ml-2 underline hover:no-underline"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                )}
 
                 {/* MFA error */}
                 {downloadError === 'MFA_REQUIRED' && (
