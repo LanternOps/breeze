@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
-import { X } from 'lucide-react';
 import type { FilterConditionGroup } from '@breeze/shared';
+import { Dialog } from '../shared/Dialog';
 import { FilterBuilder, DEFAULT_FILTER_FIELDS } from '../filters/FilterBuilder';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -23,8 +23,6 @@ export default function CreateGroupModal({ isOpen, onClose, onCreated }: CreateG
   const [filterConditions, setFilterConditions] = useState<FilterConditionGroup>(makeEmptyFilter());
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  if (!isOpen) return null;
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -52,6 +50,10 @@ export default function CreateGroupModal({ isOpen, onClose, onCreated }: CreateG
       const data = await res.json();
       const newGroupId = data.data?.id ?? data.id;
 
+      if (!newGroupId || typeof newGroupId !== 'string') {
+        throw new Error('Group created but server response was missing the group ID. Please refresh the page.');
+      }
+
       // Reset form
       setName('');
       setType('static');
@@ -73,15 +75,9 @@ export default function CreateGroupModal({ isOpen, onClose, onCreated }: CreateG
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="fixed inset-0 bg-background/80 backdrop-blur-sm" onClick={handleClose} />
-      <div className="relative z-50 w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">New Device Group</h2>
-          <button type="button" onClick={handleClose} className="rounded-md p-1 hover:bg-muted">
-            <X className="h-5 w-5" />
-          </button>
-        </div>
+    <Dialog open={isOpen} onClose={handleClose} title="New Device Group" maxWidth="lg">
+      <div className="p-6">
+        <h2 className="text-lg font-semibold mb-4">New Device Group</h2>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
@@ -160,6 +156,6 @@ export default function CreateGroupModal({ isOpen, onClose, onCreated }: CreateG
           </div>
         </form>
       </div>
-    </div>
+    </Dialog>
   );
 }

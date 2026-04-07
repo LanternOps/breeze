@@ -79,7 +79,10 @@ export default function DevicesPage() {
         fetchWithAuth('/devices?includeDecommissioned=true'),
         fetchWithAuth('/orgs'),
         fetchWithAuth('/orgs/sites'),
-        fetchWithAuth('/device-groups?includeMemberships=true')
+        fetchWithAuth('/device-groups?includeMemberships=true').catch((err) => {
+          console.warn('Failed to fetch device groups:', err);
+          return null;
+        })
       ]);
 
       if (!devicesResponse.ok) {
@@ -145,9 +148,11 @@ export default function DevicesPage() {
 
       // Fetch groups for group filter
       let groupsList: DeviceGroup[] = [];
-      if (groupsResponse.ok) {
+      if (groupsResponse && groupsResponse.ok) {
         const groupsData = await groupsResponse.json();
         groupsList = groupsData.data ?? groupsData.groups ?? [];
+      } else if (groupsResponse && !groupsResponse.ok) {
+        console.warn('Failed to fetch device groups:', groupsResponse.status);
       }
 
       // Build group membership map: groupId -> Set<deviceId>
@@ -179,6 +184,10 @@ export default function DevicesPage() {
     setAutoSelectGroupId(newGroupId);
     await fetchDevices();
   }, [fetchDevices]);
+
+  const handleAutoSelectConsumed = useCallback(() => {
+    setAutoSelectGroupId(null);
+  }, []);
 
   // Real-time device status updates
   const handleDeviceEvent = useCallback((event: { type: string; payload: Record<string, unknown> }) => {
@@ -600,7 +609,7 @@ export default function DevicesPage() {
           serverFilter={advancedFilter}
           onCreateGroup={() => setShowCreateGroup(true)}
           autoSelectGroupId={autoSelectGroupId}
-          onAutoSelectConsumed={() => setAutoSelectGroupId(null)}
+          onAutoSelectConsumed={handleAutoSelectConsumed}
         />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
