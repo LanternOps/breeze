@@ -101,6 +101,10 @@ func NewInputHandler(_ string) InputHandler {
 	return &WindowsInputHandler{}
 }
 
+// InputAvailable always returns true on Windows — SendInput works in all
+// desktop contexts including the Winlogon/UAC secure desktop.
+func (h *WindowsInputHandler) InputAvailable() bool { return true }
+
 func (h *WindowsInputHandler) SetDisplayOffset(x, y int) {
 	h.mu.Lock()
 	h.offsetX = x
