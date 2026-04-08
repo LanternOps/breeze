@@ -291,23 +291,31 @@ func (b *Broker) PreferredDesktopSession() *Session {
 func (b *Broker) preferredDesktopSessionLocked() *Session {
 	atLoginWindow := b.consoleUser == "loginwindow"
 
+	// Pass 1: if at login window, try login_window helpers first.
+	if atLoginWindow {
+		var best *Session
+		for _, s := range b.sessions {
+			if !s.HasScope("desktop") || s.Capabilities == nil || !s.Capabilities.CanCapture {
+				continue
+			}
+			if s.DesktopContext == ipc.DesktopContextLoginWindow {
+				if best == nil || betterDesktopSession(s, best) {
+					best = s
+				}
+			}
+		}
+		if best != nil {
+			return best
+		}
+		// No login_window helper — fall through to user_session helpers.
+		// They can still capture the login screen on macOS; input will
+		// use IOHIDPostEvent via dynamic switching.
+	}
+
+	// Pass 2: best available session (normal selection or login window fallback).
 	var best *Session
 	for _, s := range b.sessions {
-		if !s.HasScope("desktop") {
-			continue
-		}
-		if s.Capabilities == nil || !s.Capabilities.CanCapture {
-			continue
-		}
-		// On macOS at the login screen, skip user_session helpers if a
-		// login_window helper is available.
-		if atLoginWindow && s.DesktopContext == ipc.DesktopContextUserSession &&
-			best != nil && best.DesktopContext == ipc.DesktopContextLoginWindow {
-			continue
-		}
-		if atLoginWindow && best != nil && best.DesktopContext == ipc.DesktopContextUserSession &&
-			s.DesktopContext == ipc.DesktopContextLoginWindow {
-			best = s
+		if !s.HasScope("desktop") || s.Capabilities == nil || !s.Capabilities.CanCapture {
 			continue
 		}
 		if best == nil || betterDesktopSession(s, best) {
