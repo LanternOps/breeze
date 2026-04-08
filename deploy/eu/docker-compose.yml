@@ -121,6 +121,10 @@ services:
       PARTNER_HOOKS_URL: http://billing:3002/hooks
       BILLING_SERVICE_URL: http://billing:3002
       BILLING_SERVICE_API_KEY: ${BILLING_SERVICE_API_KEY:-}
+      # MSI Signing (remote Windows signing service via Cloudflare Access)
+      MSI_SIGNING_URL: ${MSI_SIGNING_URL:-}
+      MSI_SIGNING_CF_ACCESS_ID: ${MSI_SIGNING_CF_ACCESS_ID:-}
+      MSI_SIGNING_CF_ACCESS_SECRET: ${MSI_SIGNING_CF_ACCESS_SECRET:-}
     volumes:
       - api_data:/data
       - binaries:/data/binaries:ro
