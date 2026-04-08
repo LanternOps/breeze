@@ -369,6 +369,26 @@ func (b *Broker) BroadcastNotification(title, body, urgency string) {
 	}
 }
 
+// BroadcastToDesktopSessions sends a fire-and-forget IPC message to all
+// connected sessions that have the "desktop" scope.
+func (b *Broker) BroadcastToDesktopSessions(msgType string, payload any) {
+	b.mu.RLock()
+	sessions := make([]*Session, 0, len(b.sessions))
+	for _, s := range b.sessions {
+		if s.HasScope("desktop") {
+			sessions = append(sessions, s)
+		}
+	}
+	b.mu.RUnlock()
+
+	for _, s := range sessions {
+		if err := s.SendNotify("", msgType, payload); err != nil {
+			log.Debug("broadcast to desktop session failed",
+				"sessionId", s.SessionID, "msgType", msgType, "error", err.Error())
+		}
+	}
+}
+
 // SessionCount returns the number of active sessions.
 func (b *Broker) SessionCount() int {
 	b.mu.RLock()
