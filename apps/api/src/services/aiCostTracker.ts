@@ -6,7 +6,7 @@
  */
 
 import { db } from '../db';
-import { aiSessions, aiCostUsage, aiBudgets } from '../db/schema';
+import { aiSessions, aiCostUsage, aiBudgets, organizations } from '../db/schema';
 import { eq, and, sql, desc, isNotNull } from 'drizzle-orm';
 import { getRedis } from './redis';
 import { rateLimiter } from './rate-limit';
@@ -20,6 +20,68 @@ const MODEL_PRICING: Record<string, { inputPerMillion: number; outputPerMillion:
 
 const DEFAULT_PRICING = { inputPerMillion: 300, outputPerMillion: 1500 };
 
+async function checkBillingCredits(orgId: string): Promise<string | null> {
+  const billingUrl = process.env.BILLING_SERVICE_URL;
+  const billingKey = process.env.BILLING_SERVICE_API_KEY;
+  if (!billingUrl || !billingKey) return null;
+
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+
+  if (!org?.partnerId) return null;
+
+  try {
+    const res = await fetch(`${billingUrl}/api/internal/partners/${org.partnerId}/ai-credits`, {
+      headers: { 'Authorization': `Bearer ${billingKey}` },
+    });
+
+    if (!res.ok) return null;
+
+    const data = await res.json() as { allowed: boolean; remainingCredits: number; plan: string };
+
+    if (!data.allowed) {
+      if (['free', 'starter'].includes(data.plan)) {
+        return 'AI assistant requires the Community plan.';
+      }
+      return 'You are out of AI credits. Purchase more credits to continue.';
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function deductBillingCredits(orgId: string, costCents: number): Promise<void> {
+  const billingUrl = process.env.BILLING_SERVICE_URL;
+  const billingKey = process.env.BILLING_SERVICE_API_KEY;
+  if (!billingUrl || !billingKey) return;
+
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+
+  if (!org?.partnerId) return;
+
+  try {
+    await fetch(`${billingUrl}/api/internal/partners/${org.partnerId}/ai-credits/deduct`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${billingKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ costCents }),
+    });
+  } catch (err) {
+    console.error('[AI] Failed to deduct billing credits:', err instanceof Error ? err.message : String(err));
+  }
+}
+
 export function calculateCostCents(model: string, inputTokens: number, outputTokens: number): number {
   const pricing = MODEL_PRICING[model] ?? DEFAULT_PRICING;
   const inputCost = (inputTokens / 1_000_000) * pricing.inputPerMillion;
@@ -32,6 +94,9 @@ export function calculateCostCents(model: string, inputTokens: number, outputTok
  * Returns null if allowed, or an error message if blocked.
  */
 export async function checkBudget(orgId: string): Promise<string | null> {
+  const creditError = await checkBillingCredits(orgId);
+  if (creditError) return creditError;
+
   const budget = await getEffectiveAiBudget(orgId);
   if (!budget.enabled) return 'AI features are disabled for this organization';
 
@@ -263,6 +328,8 @@ export async function recordUsageFromSdkResult(
   checkCostAnomalies(sessionId, orgId, costCents, dailyKey).catch(err => {
     console.error('[AI] Cost anomaly check failed (SDK):', err);
   });
+
+  await deductBillingCredits(orgId, costCents);
 }
 
 /**
