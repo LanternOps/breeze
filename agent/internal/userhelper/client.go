@@ -315,6 +315,9 @@ func (c *Client) commandLoop() error {
 		case ipc.TypeDesktopInput:
 			safeGo("desktop_input", func() { c.handleDesktopInput(env) })
 
+		case ipc.TypeConsoleUserChanged:
+			safeGo("console_user_changed", func() { c.handleConsoleUserChanged(env) })
+
 		case ipc.TypeClipboardGet:
 			safeGo("clipboard_get", func() { c.handleClipboardGet(env) })
 
@@ -893,6 +896,18 @@ func (c *Client) handleDesktopStop(env *ipc.Envelope) {
 
 func (c *Client) handleDesktopInput(env *ipc.Envelope) {
 	log.Debug("desktop_input received (not yet implemented)")
+}
+
+func (c *Client) handleConsoleUserChanged(env *ipc.Envelope) {
+	var payload ipc.ConsoleUserChangedPayload
+	if err := json.Unmarshal(env.Payload, &payload); err != nil {
+		log.Warn("invalid console_user_changed payload", "error", err)
+		return
+	}
+	atLoginWindow := payload.Username == "loginwindow"
+	log.Info("console user changed, updating input mode",
+		"username", payload.Username, "atLoginWindow", atLoginWindow)
+	c.desktopMgr.setAtLoginWindow(atLoginWindow)
 }
 
 func (c *Client) handleClipboardGet(env *ipc.Envelope) {
