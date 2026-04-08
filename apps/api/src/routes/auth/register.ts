@@ -346,9 +346,22 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
           console.error(`[Registration] Hook returned invalid status '${hookResponse.status}' for partner ${result.newPartner.id}; ignoring`);
         } else {
           try {
+            const updateSet: Record<string, unknown> = {
+              status: hookResponse.status as typeof result.newPartner.status,
+            };
+
+            // Apply optional status message fields from hook response
+            if (hookResponse.message || hookResponse.actionUrl || hookResponse.actionLabel) {
+              const msgSettings: Record<string, string | null> = {};
+              if (hookResponse.message) msgSettings.statusMessage = hookResponse.message;
+              if (hookResponse.actionUrl) msgSettings.statusActionUrl = hookResponse.actionUrl;
+              if (hookResponse.actionLabel) msgSettings.statusActionLabel = hookResponse.actionLabel;
+              updateSet.settings = sql`COALESCE(${partners.settings}, '{}'::jsonb) || ${JSON.stringify(msgSettings)}::jsonb`;
+            }
+
             await db
               .update(partners)
-              .set({ status: hookResponse.status as typeof result.newPartner.status })
+              .set(updateSet)
               .where(eq(partners.id, result.newPartner.id));
             effectiveStatus = hookResponse.status;
           } catch (statusErr) {
