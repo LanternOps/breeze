@@ -63,10 +63,13 @@ export class MsiSigningService {
       const tokenPath = join(workingDir, '.storepass');
       await writeFile(tokenPath, token, { mode: 0o600 });
 
+      // jsign expects bare hostname (e.g. wcus.codesigning.azure.net), not a full URL
+      const keystoreHost = this.endpoint.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+
       await execFileAsync('java', [
         '-jar', jsignJar,
         '--storetype', 'TRUSTEDSIGNING',
-        '--keystore', this.endpoint,
+        '--keystore', keystoreHost,
         '--storepass', `file:${tokenPath}`,
         '--alias', `${this.account}/${this.profile}`,
         msiPath,
