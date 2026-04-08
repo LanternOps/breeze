@@ -77,7 +77,7 @@ export const billingCreditTransactions = pgTable('billing_credit_transactions', 
 Run via SSH:
 
 ```bash
-ssh root@164.90.237.99 "PGPASSWORD='REDACTED_AIVEN_PASSWORD' psql 'postgresql://doadmin@private-breeze-eu-db-do-user-227115-0.i.db.ondigitalocean.com:25060/breeze?sslmode=require' -c \"
+ssh root@<DROPLET_IP> "PGPASSWORD='<DB_PASSWORD>' psql '<DATABASE_URL>' -c \"
 CREATE TABLE IF NOT EXISTS billing_credit_balances (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   partner_id UUID NOT NULL UNIQUE,
