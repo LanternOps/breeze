@@ -75,18 +75,20 @@ func handleTunnelOpen(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 
 	// For VNC on macOS, ensure Screen Sharing is running.
-	if isVNC {
-		if !tunnel.IsScreenSharingRunning() {
-			if h.tunnelMgr == nil || !h.tunnelMgr.IsManagedByPolicy() {
-				return tools.CommandResult{
-					Status:     "failed",
-					Error:      "Screen Sharing is disabled on this device. Enable 'Manage Remote Management' in Config Policy to allow Breeze to control this, or enable it manually in System Preferences > Sharing.",
-					DurationMs: time.Since(start).Milliseconds(),
-				}
+	// On non-darwin, IsScreenSharingRunning() returns false and
+	// EnableScreenSharing() is a no-op, so skip the policy gate.
+	if isVNC && tunnel.IsScreenSharingSupported() {
+		managedByPolicy := h.tunnelMgr != nil && h.tunnelMgr.IsManagedByPolicy()
+		running := tunnel.IsScreenSharingRunning()
+
+		if !running && !managedByPolicy {
+			return tools.CommandResult{
+				Status:     "failed",
+				Error:      "Screen Sharing is disabled on this device. Enable 'Manage Remote Management' in Config Policy to allow Breeze to control this, or enable it manually in System Preferences > Sharing.",
+				DurationMs: time.Since(start).Milliseconds(),
 			}
 		}
-		// Policy allows management — enable Screen Sharing.
-		if h.tunnelMgr != nil && h.tunnelMgr.IsManagedByPolicy() {
+		if managedByPolicy && !running {
 			vncPassword, _ := cmd.Payload["vncPassword"].(string)
 			if err := tunnel.EnableScreenSharing(vncPassword); err != nil {
 				return tools.CommandResult{
