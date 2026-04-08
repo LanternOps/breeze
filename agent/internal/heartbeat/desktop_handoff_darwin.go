@@ -55,21 +55,33 @@ func (h *Heartbeat) handleHelperSessionClosed(session *sessionbroker.Session) {
 }
 
 func (h *Heartbeat) handleDarwinSessionEvent(event sessionbroker.SessionEvent) {
+	var newConsoleUser string
+
 	// Update console user on the broker for session selection.
 	switch event.Type {
 	case sessionbroker.SessionLogout:
 		// User logged out — console returns to login window.
-		h.sessionBroker.SetConsoleUser("loginwindow")
+		newConsoleUser = "loginwindow"
+		h.sessionBroker.SetConsoleUser(newConsoleUser)
 		// Tear down stale user_session helpers so they don't linger.
 		if n := h.sessionBroker.CloseSessionsByDesktopContext(ipc.DesktopContextUserSession); n > 0 {
 			log.Info("closed stale user_session helpers after logout", "count", n, "user", event.Username)
 		}
 	case sessionbroker.SessionLogin:
-		h.sessionBroker.SetConsoleUser(event.Username)
+		newConsoleUser = event.Username
+		h.sessionBroker.SetConsoleUser(newConsoleUser)
 	case sessionbroker.SessionSwitch:
 		if event.Username != "" {
-			h.sessionBroker.SetConsoleUser(event.Username)
+			newConsoleUser = event.Username
+			h.sessionBroker.SetConsoleUser(newConsoleUser)
 		}
+	}
+
+	// Notify desktop helpers of console user change so they can switch
+	// input injection method (CGEvent vs IOHIDPostEvent).
+	if newConsoleUser != "" {
+		h.sessionBroker.BroadcastToDesktopSessions(ipc.TypeConsoleUserChanged,
+			ipc.ConsoleUserChangedPayload{Username: newConsoleUser})
 	}
 
 	go func() {
