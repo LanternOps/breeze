@@ -72,7 +72,6 @@ export class MsiSigningService {
         '--keystore', keystoreHost,
         '--storepass', `file:${tokenPath}`,
         '--alias', `${this.account}/${this.profile}`,
-        '--replace',
         msiPath,
       ], { timeout: 60_000 });
 
