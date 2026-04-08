@@ -345,33 +345,25 @@ export default function ViewerToolbar({
         </>
       )}
 
-      {/* Session picker (only shown with 2+ sessions on WebRTC) */}
+      {/* Session picker dropdown (only shown with 2+ sessions on WebRTC) */}
       {sessions.length > 1 && transport === 'webrtc' && (
         <>
           <div className="w-px h-5 bg-gray-600" />
-          <div className="flex items-center gap-1">
-            {sessions.map((s) => (
-              <button
-                key={s.sessionId}
-                onClick={() => onSwitchSession(s.sessionId)}
-                disabled={activeSessionId === s.sessionId}
-                title={`${s.username || `Session ${s.sessionId}`} (${s.type}${s.state === 'disconnected' ? ', disconnected' : ''})`}
-                className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-xs transition-colors ${
-                  activeSessionId === s.sessionId
-                    ? 'text-blue-400 bg-blue-500/20'
-                    : 'text-gray-500 hover:text-gray-300 hover:bg-gray-700'
-                }`}
-              >
-                <UserIcon className="w-3 h-3" />
-                <span className="max-w-[80px] truncate">{s.username || `Session ${s.sessionId}`}</span>
-                <span className={`w-1.5 h-1.5 rounded-full ${
-                  s.state === 'active' ? 'bg-green-400' : 'bg-yellow-400'
-                }`} aria-hidden="true" />
-                {s.type === 'rdp' && (
-                  <span className="text-[9px] font-medium text-gray-500 uppercase">RDP</span>
-                )}
-              </button>
-            ))}
+          <div className="flex items-center gap-1.5">
+            <UserIcon className="w-3 h-3 text-gray-400" />
+            <select
+              value={activeSessionId ?? ''}
+              onChange={(e) => onSwitchSession(Number(e.target.value))}
+              className="bg-gray-700 text-gray-300 text-xs rounded px-1 py-0.5 border border-gray-600"
+            >
+              {sessions.map((s) => (
+                <option key={s.sessionId} value={s.sessionId}>
+                  {s.username || `Session ${s.sessionId}`}
+                  {s.type === 'rdp' ? ' (RDP)' : ''}
+                  {s.state === 'disconnected' ? ' - disconnected' : ''}
+                </option>
+              ))}
+            </select>
           </div>
         </>
       )}
