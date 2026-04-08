@@ -42,21 +42,33 @@ The `login_window` context uses IOHIDPostEvent which works at the login window, 
 
 ## Design
 
-### Fix 1: Stop touching Remote Management
+### Fix 1: Stop touching Remote Management — gate behind Config Policy
 
-**Principle:** Never disable Apple Screen Sharing unless Breeze explicitly enabled it in the current process lifetime.
+**Principle:** Breeze never touches Apple Screen Sharing unless the user explicitly opts in via Config Policy. When VNC is needed and Screen Sharing is off, inform the user instead of fixing it for them.
+
+**Config Policy integration:**
+
+- New Config Policy boolean: `manageRemoteManagement` (default: `false`)
+- When `false` (default): Breeze never calls kickstart to enable or disable Screen Sharing
+- When `true`: Breeze manages Screen Sharing for VNC tunnels (enable on open, disable on idle/close, cleanup on startup)
 
 **Changes to `agent/internal/tunnel/manager.go`:**
 
-- Add a `breezeEnabledVNC` boolean field to `Manager` (not persisted — defaults to false on startup)
-- `EnableScreenSharing()` sets `breezeEnabledVNC = true`
-- `DisableScreenSharingIfIdle()` checks `breezeEnabledVNC` before calling `DisableScreenSharing()`; if false, does nothing
-- `CleanupOrphanedVNC()` — remove entirely. On startup, we don't know who enabled Screen Sharing, so we don't touch it.
-- `Stop()` — only disable if `breezeEnabledVNC` is true
+- Add `managedByPolicy bool` field to `Manager`, set from Config Policy at init
+- `CleanupOrphanedVNC()` — only runs if `managedByPolicy` is true; otherwise does nothing
+- `DisableScreenSharingIfIdle()` — only runs if `managedByPolicy` is true
+- `Stop()` — only disables if `managedByPolicy` is true
 
-**Future (not this PR):** If Breeze needs to manage Screen Sharing proactively, expose it via Config Policy with user choice:
-1. "User manages Remote Management" (Breeze never touches it)
-2. "Breeze manages Remote Management" (enable/disable as needed for VNC tunnels)
+**Changes to `agent/internal/heartbeat/handlers_tunnel.go`:**
+
+- When opening a VNC tunnel: check if Screen Sharing is running (port 5900)
+- If not running and `managedByPolicy` is false → return a descriptive error:
+  `"Screen Sharing is disabled on this device. Enable 'Manage Remote Management' in Config Policy to allow Breeze to control this, or enable it manually in System Preferences > Sharing."`
+- If not running and `managedByPolicy` is true → enable via kickstart as before
+
+**Changes to `agent/internal/tunnel/vnc_darwin.go`:**
+
+- `EnableScreenSharing()` unchanged (still uses kickstart), but only called when policy allows
 
 ### Fix 2: Dynamic input switching at login window
 
@@ -177,9 +189,9 @@ This is iteration-order independent and deterministic.
 
 | File | Change |
 |------|--------|
-| `agent/internal/tunnel/manager.go` | Add `breezeEnabledVNC` flag, guard all disable calls, remove `CleanupOrphanedVNC()` |
-| `agent/internal/tunnel/vnc_darwin.go` | Return `breezeEnabledVNC` flag from `EnableScreenSharing()` |
-| `agent/internal/heartbeat/heartbeat.go` | Remove `CleanupOrphanedVNC()` call at startup |
+| `agent/internal/tunnel/manager.go` | Add `managedByPolicy` flag, gate all cleanup/disable behind it |
+| `agent/internal/heartbeat/handlers_tunnel.go` | Check Screen Sharing state before VNC open, return informative error if off and unmanaged |
+| `agent/internal/heartbeat/heartbeat.go` | Pass Config Policy `manageRemoteManagement` to tunnel manager |
 | `agent/internal/remote/desktop/input.go` | Add `SetAtLoginWindow(bool)` to `InputHandler` interface |
 | `agent/internal/remote/desktop/input_darwin.go` | Always init HID, add atomic `atLoginWindow` flag, dynamic switching |
 | `agent/internal/remote/desktop/input_windows.go` | No-op `SetAtLoginWindow` |
@@ -193,14 +205,13 @@ This is iteration-order independent and deterministic.
 
 ## Testing
 
-1. **VNC cleanup removal** — start agent with Apple Screen Sharing enabled → verify it stays enabled after agent restart
-2. **Input at login window** — connect to Mac at login screen via WebRTC → verify mouse, clicks, and keyboard all work
-3. **Dynamic switching** — connect while user logged in → user logs out → verify input switches to HID mode automatically
-4. **Session selection** — with both helper types, verify login_window preferred at login screen, user_session preferred when logged in
-5. **Existing behavior preserved** — VNC tunnel open still enables Screen Sharing, close still disables (only Breeze-initiated)
+1. **Config Policy off (default)** — start agent with Apple Screen Sharing enabled → verify it stays enabled after agent restart. Open VNC tunnel when Screen Sharing is off → verify informative error returned, Screen Sharing not touched.
+2. **Config Policy on** — enable `manageRemoteManagement` → verify VNC tunnel auto-enables Screen Sharing, cleanup on startup works, disable on idle works.
+3. **Input at login window** — connect to Mac at login screen via WebRTC → verify mouse, clicks, and keyboard all work
+4. **Dynamic switching** — connect while user logged in → user logs out → verify input switches to HID mode automatically
+5. **Session selection** — with both helper types, verify login_window preferred at login screen, user_session preferred when logged in
 
 ## Out of Scope
 
-- Config Policy for Remote Management management (future PR)
-- VNC tunnel removal (VNC tunnels still work when explicitly requested)
+- VNC tunnel removal (VNC tunnels still work when policy enabled or Screen Sharing already on)
 - Login window helper support for pre-Sonoma Macs (the dynamic input fix makes this unnecessary)
