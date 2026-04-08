@@ -38,6 +38,9 @@ const (
 	// Desktop peer disconnected — helper notifies service when WebRTC drops
 	TypeDesktopPeerDisconnected = "desktop_peer_disconnected"
 
+	// Console user changed — agent notifies helpers to switch input mode
+	TypeConsoleUserChanged = "console_user_changed"
+
 	// Launch a process as the logged-in user (sent to user-role helper)
 	TypeLaunchProcess = "launch_process"
 	TypeLaunchResult  = "launch_result"
@@ -96,6 +99,12 @@ const (
 	DesktopContextUserSession = "user_session"
 	DesktopContextLoginWindow = "login_window"
 )
+
+// ConsoleUserChangedPayload is sent from agent to desktop helpers when
+// the macOS console user changes (login/logout/switch).
+type ConsoleUserChangedPayload struct {
+	Username string `json:"username"`
+}
 
 // AuthRequest is sent by the user helper to the root daemon after connecting.
 type AuthRequest struct {

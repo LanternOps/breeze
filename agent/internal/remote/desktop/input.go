@@ -49,6 +49,12 @@ type InputHandler interface {
 	// Returns false when running in login_window context on macOS without
 	// IOHIDSystem — CGEvent is silently blocked at the login window.
 	InputAvailable() bool
+
+	// SetAtLoginWindow toggles login-window input mode. On macOS, when true
+	// and IOHIDSystem is available, input uses IOHIDPostEvent instead of CGEvent
+	// (CGEvent clicks/keyboard are blocked at the macOS login window).
+	// No-op on Windows.
+	SetAtLoginWindow(atLoginWindow bool)
 }
 
 // TypeCharHandler is an optional interface for input handlers that support

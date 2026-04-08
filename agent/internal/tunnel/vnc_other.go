@@ -2,6 +2,11 @@
 
 package tunnel
 
+// IsScreenSharingSupported returns false on non-macOS platforms.
+func IsScreenSharingSupported() bool {
+	return false
+}
+
 // EnableScreenSharing is a no-op on non-macOS platforms.
 // VNC tunnels can still work if a VNC server is running.
 func EnableScreenSharing(_ string) error {

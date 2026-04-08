@@ -419,6 +419,49 @@ func TestPreferredDesktopSession_LoginWindowConsole_OnlyLoginHelpers(t *testing.
 	}
 }
 
+func TestPreferredDesktopSession_LoginWindow_DeterministicRegardlessOfOrder(t *testing.T) {
+	now := time.Now()
+
+	userSession := &Session{
+		SessionID:      "user-sess",
+		BinaryKind:     ipc.HelperBinaryDesktopHelper,
+		DesktopContext: ipc.DesktopContextUserSession,
+		Capabilities:   &ipc.Capabilities{CanCapture: true},
+		AllowedScopes:  []string{"desktop"},
+		ConnectedAt:    now.Add(-10 * time.Minute),
+		LastSeen:       now,
+	}
+	loginSession := &Session{
+		SessionID:      "login-sess",
+		BinaryKind:     ipc.HelperBinaryDesktopHelper,
+		DesktopContext: ipc.DesktopContextLoginWindow,
+		Capabilities:   &ipc.Capabilities{CanCapture: true},
+		AllowedScopes:  []string{"desktop"},
+		ConnectedAt:    now.Add(-1 * time.Minute),
+		LastSeen:       now,
+	}
+
+	// Run 50 iterations — Go map iteration is random, so if the old
+	// iteration-order-dependent bug were still present, some iterations
+	// would pick the wrong session.
+	for i := 0; i < 50; i++ {
+		b := &Broker{
+			sessions: map[string]*Session{
+				userSession.SessionID:  userSession,
+				loginSession.SessionID: loginSession,
+			},
+			byIdentity:   make(map[string][]*Session),
+			staleHelpers: make(map[string][]int),
+		}
+		b.SetConsoleUser("loginwindow")
+
+		got := b.PreferredDesktopSession()
+		if got.SessionID != "login-sess" {
+			t.Fatalf("iteration %d: got %q, want login-sess", i, got.SessionID)
+		}
+	}
+}
+
 func TestCloseSessionsByDesktopContext(t *testing.T) {
 	now := time.Now()
 

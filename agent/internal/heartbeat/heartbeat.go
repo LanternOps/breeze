@@ -95,7 +95,8 @@ type HeartbeatResponse struct {
 	RotateToken     bool            `json:"rotateToken,omitempty"`
 	HelperEnabled   bool            `json:"helperEnabled,omitempty"`
 	HelperSettings  *HelperSettings `json:"helperSettings,omitempty"`
-	HelperUpgradeTo string          `json:"helperUpgradeTo,omitempty"`
+	HelperUpgradeTo          string          `json:"helperUpgradeTo,omitempty"`
+	ManageRemoteManagement   bool            `json:"manageRemoteManagement,omitempty"`
 }
 
 type HelperSettings struct {
@@ -255,7 +256,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		desktopMgr:      desktop.NewSessionManager(),
 		wsDesktopMgr:    desktop.NewWsSessionManager(),
 		terminalMgr:     terminal.NewManager(),
-		tunnelMgr:       tunnel.NewManager(),
+		tunnelMgr:       tunnel.NewManager(false),
 		securityScanner: &security.SecurityScanner{Config: cfg},
 		pool:            workerpool.New(cfg.MaxConcurrentCommands, cfg.CommandQueueSize),
 		healthMon:       health.NewMonitor(),
@@ -2032,6 +2033,9 @@ func (h *Heartbeat) sendHeartbeat() {
 	if response.HelperUpgradeTo != "" {
 		h.helperMgr.CheckUpdate(response.HelperUpgradeTo)
 	}
+
+	// Update tunnel manager policy flag
+	h.tunnelMgr.SetManagedByPolicy(response.ManageRemoteManagement)
 
 	// Update helper enabled state and apply full settings
 	h.handleHelperEnabled(response.HelperEnabled)
