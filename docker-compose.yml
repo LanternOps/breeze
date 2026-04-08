@@ -122,13 +122,10 @@ services:
       TURN_PORT: ${TURN_PORT:-3478}
       TURN_SECRET: ${TURN_SECRET:-}
       E2E_MODE: ${E2E_MODE:-}
-      # MSI Signing (optional — set all 6 to enable server-side Authenticode signing)
-      AZURE_SIGNING_ENDPOINT: ${AZURE_SIGNING_ENDPOINT:-}
-      AZURE_SIGNING_ACCOUNT: ${AZURE_SIGNING_ACCOUNT:-}
-      AZURE_SIGNING_PROFILE: ${AZURE_SIGNING_PROFILE:-}
-      AZURE_SIGNING_TENANT_ID: ${AZURE_SIGNING_TENANT_ID:-}
-      AZURE_SIGNING_CLIENT_ID: ${AZURE_SIGNING_CLIENT_ID:-}
-      AZURE_SIGNING_CLIENT_SECRET: ${AZURE_SIGNING_CLIENT_SECRET:-}
+      # MSI Signing (optional — remote Windows signing service via Cloudflare Access)
+      MSI_SIGNING_URL: ${MSI_SIGNING_URL:-}
+      MSI_SIGNING_CF_ACCESS_ID: ${MSI_SIGNING_CF_ACCESS_ID:-}
+      MSI_SIGNING_CF_ACCESS_SECRET: ${MSI_SIGNING_CF_ACCESS_SECRET:-}
     volumes:
       - api_data:/data
       - binaries:/data/binaries:ro

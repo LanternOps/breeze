@@ -45,10 +45,8 @@ RUN pnpm build
 FROM node:22-alpine AS runner
 WORKDIR /app
 
-# Install wget for healthcheck, JRE + jsign for optional MSI Authenticode signing
-RUN apk add --no-cache wget openjdk17-jre-headless \
-    && wget -q -O /opt/jsign.jar https://github.com/ebourg/jsign/releases/download/7.4/jsign-7.4.jar \
-    && echo "2abf2ade9ea322acc2d60c24794eadc465ff9380938fca4c932d09e0b25f1c28  /opt/jsign.jar" | sha256sum -c -
+# Install wget for healthcheck
+RUN apk add --no-cache wget
 
 # Set production environment
 ENV NODE_ENV=production
