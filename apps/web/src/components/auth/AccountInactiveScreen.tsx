@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ShieldOff, LogOut } from 'lucide-react';
+import { ShieldOff, LogOut, Rocket } from 'lucide-react';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 
 interface StatusInfo {
@@ -69,12 +69,16 @@ export default function AccountInactiveScreen() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="w-full max-w-md space-y-6 text-center">
-        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-muted">
-          <ShieldOff className="h-8 w-8 text-muted-foreground" />
+        <div className={`mx-auto flex h-16 w-16 items-center justify-center rounded-full ${info?.status === 'pending' ? 'bg-primary/10' : 'bg-muted'}`}>
+          {info?.status === 'pending'
+            ? <Rocket className="h-8 w-8 text-primary" />
+            : <ShieldOff className="h-8 w-8 text-muted-foreground" />}
         </div>
 
         <div className="space-y-2">
-          <h1 className="text-2xl font-semibold tracking-tight">Account Inactive</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            {info?.status === 'pending' ? 'Almost There!' : 'Account Inactive'}
+          </h1>
           <p className="text-muted-foreground">{info?.message}</p>
         </div>
 
