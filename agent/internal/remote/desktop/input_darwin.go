@@ -213,6 +213,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 )
 
 // macOS virtual keycodes (from Carbon HIToolbox/Events.h)
@@ -267,8 +268,9 @@ type DarwinInputHandler struct {
 	mouseDown      bool    // track if mouse button is held for drag events
 	mouseBtn       int
 	scaleFactor    float64 // backing scale factor (2.0 on Retina)
-	useHID         bool    // true = IOHIDPostEvent for login window
-	inputAvailable bool    // false when in login_window context and HID connection fails
+	hidAvailable   bool
+	atLoginWindow  atomic.Bool
+	inputAvailable bool
 }
 
 func NewInputHandler(desktopContext string) InputHandler {
@@ -277,17 +279,23 @@ func NewInputHandler(desktopContext string) InputHandler {
 		sf = 1.0
 	}
 	h := &DarwinInputHandler{scaleFactor: sf, inputAvailable: true}
-	if desktopContext == "login_window" {
-		if rc := C.openHIDConnection(); rc == 0 {
-			h.useHID = true
-			h.inputAvailable = true
-			slog.Info("using IOHIDPostEvent for login-window input")
-		} else {
-			h.inputAvailable = false
-			slog.Error("IOHIDSystem unavailable in login_window context — input will NOT work",
-				"rc", int(rc))
-		}
+
+	// Always try to open HID connection regardless of context.
+	// IOHIDPostEvent is the only way to inject clicks/keyboard at the
+	// macOS login window. The helper has Accessibility TCC permission.
+	if rc := C.openHIDConnection(); rc == 0 {
+		h.hidAvailable = true
+		slog.Info("IOHIDSystem connection opened for login-window input support")
+	} else {
+		slog.Warn("IOHIDSystem unavailable — input at login window will be limited to mouse movement",
+			"rc", int(rc))
 	}
+
+	// If launched in login_window context, start in login window mode.
+	if desktopContext == "login_window" {
+		h.atLoginWindow.Store(true)
+	}
+
 	return h
 }
 
@@ -300,6 +308,22 @@ func (h *DarwinInputHandler) SetDisplayOffset(x, y int) {
 // since CGEvent is silently blocked at the macOS login window.
 func (h *DarwinInputHandler) InputAvailable() bool {
 	return h.inputAvailable
+}
+
+func (h *DarwinInputHandler) SetAtLoginWindow(atLoginWindow bool) {
+	prev := h.atLoginWindow.Swap(atLoginWindow)
+	if prev != atLoginWindow {
+		if atLoginWindow {
+			slog.Info("input switching to IOHIDPostEvent mode (login window)")
+		} else {
+			slog.Info("input switching to CGEvent mode (user session)")
+		}
+	}
+}
+
+// shouldUseHID returns true when input should use IOHIDPostEvent.
+func (h *DarwinInputHandler) shouldUseHID() bool {
+	return h.atLoginWindow.Load() && h.hidAvailable
 }
 
 var errInputUnavailable = fmt.Errorf("input injection unavailable in login_window context (IOHIDSystem not connected)")
@@ -347,7 +371,7 @@ func (h *DarwinInputHandler) SendMouseMove(x, y int) error {
 		return errInputUnavailable
 	}
 	sx, sy := h.scaleXY(x, y)
-	if h.useHID {
+	if h.shouldUseHID() {
 		if h.mouseDown {
 			C.hidMouseDrag(sx, sy, C.int(h.mouseBtn))
 		} else {
@@ -367,7 +391,7 @@ func (h *DarwinInputHandler) SendMouseClick(x, y int, button string) error {
 	}
 	sx, sy := h.scaleXY(x, y)
 	btn := C.int(buttonToInt(button))
-	if h.useHID {
+	if h.shouldUseHID() {
 		C.hidMouseDown(sx, sy, btn)
 		C.hidMouseUp(sx, sy, btn)
 	} else {
@@ -384,7 +408,7 @@ func (h *DarwinInputHandler) SendMouseDown(x, y int, button string) error {
 	h.mouseBtn = buttonToInt(button)
 	h.mouseDown = true
 	sx, sy := h.scaleXY(x, y)
-	if h.useHID {
+	if h.shouldUseHID() {
 		C.hidMouseDown(sx, sy, C.int(h.mouseBtn))
 	} else {
 		C.inputMouseDown(sx, sy, C.int(h.mouseBtn))
@@ -399,7 +423,7 @@ func (h *DarwinInputHandler) SendMouseUp(x, y int, button string) error {
 	h.mouseDown = false
 	sx, sy := h.scaleXY(x, y)
 	btn := C.int(buttonToInt(button))
-	if h.useHID {
+	if h.shouldUseHID() {
 		C.hidMouseUp(sx, sy, btn)
 	} else {
 		C.inputMouseUp(sx, sy, btn)
@@ -412,7 +436,7 @@ func (h *DarwinInputHandler) SendMouseScroll(x, y int, delta int) error {
 		return errInputUnavailable
 	}
 	sx, sy := h.scaleXY(x, y)
-	if h.useHID {
+	if h.shouldUseHID() {
 		C.hidMouseMove(sx, sy)
 		C.hidMouseScroll(C.int(-delta))
 	} else {
@@ -432,7 +456,7 @@ func (h *DarwinInputHandler) SendKeyPress(key string, modifiers []string) error 
 		return fmt.Errorf("unknown key: %s", key)
 	}
 	flags := modifiersToFlags(modifiers)
-	if h.useHID {
+	if h.shouldUseHID() {
 		C.hidKeyDown(C.int(keycode), flags)
 		C.hidKeyUp(C.int(keycode), flags)
 	} else {
@@ -451,7 +475,7 @@ func (h *DarwinInputHandler) SendKeyDown(key string) error {
 	if !ok {
 		return fmt.Errorf("unknown key: %s", key)
 	}
-	if h.useHID {
+	if h.shouldUseHID() {
 		C.hidKeyDown(C.int(keycode), 0)
 	} else {
 		C.inputKeyDown(C.int(keycode), 0)
@@ -468,7 +492,7 @@ func (h *DarwinInputHandler) SendKeyUp(key string) error {
 	if !ok {
 		return fmt.Errorf("unknown key: %s", key)
 	}
-	if h.useHID {
+	if h.shouldUseHID() {
 		C.hidKeyUp(C.int(keycode), 0)
 	} else {
 		C.inputKeyUp(C.int(keycode), 0)
