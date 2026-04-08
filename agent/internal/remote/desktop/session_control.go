@@ -57,11 +57,15 @@ func (s *Session) sendInputStatus() {
 		}
 
 		if dc != nil {
-			msg, _ := json.Marshal(map[string]any{
+			msg, err := json.Marshal(map[string]any{
 				"type":      "input_status",
 				"available": false,
 				"reason":    "IOHIDSystem unavailable at login window",
 			})
+			if err != nil {
+				slog.Error("Failed to marshal input_status message", "session", s.id, "error", err.Error())
+				return
+			}
 			if err := dc.SendText(string(msg)); err != nil {
 				slog.Warn("Failed to send input_status to viewer", "session", s.id, "error", err.Error())
 			} else {
@@ -85,6 +89,13 @@ func (s *Session) sendInputStatus() {
 
 // handleInputMessage processes input events from the data channel
 func (s *Session) handleInputMessage(data []byte) {
+	// Drop input events early when the handler cannot inject them (e.g. macOS
+	// login window without IOHIDSystem). The viewer is notified once via
+	// sendInputStatus(); no need to log per-event.
+	if !s.inputHandler.InputAvailable() {
+		return
+	}
+
 	if len(data) > maxInputMessageBytes {
 		slog.Warn("Rejected oversized input event", "session", s.id, "size", len(data))
 		return

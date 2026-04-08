@@ -78,7 +78,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
               eq(agentVersions.isLatest, true)
             )
           )
-          .orderBy(desc(agentVersions.createdAt))
+          .orderBy(desc(agentVersions.createdAt)) // newest first if multiple isLatest rows exist
           .limit(1);
 
         if (latestWatchdog) {
