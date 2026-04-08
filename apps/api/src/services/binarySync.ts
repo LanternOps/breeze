@@ -280,8 +280,12 @@ export async function syncFromGitHub(requestedVersion?: string): Promise<{ versi
     const platform = GH_PLATFORM_MAP[target.goos];
     if (!platform) continue;
 
-    await upsertVersion(version, platform, target.goarch, 'agent', asset.browser_download_url, checksum, asset.size, release.body);
-    synced.push(`agent:${platform}/${target.goarch}`);
+    try {
+      await upsertVersion(version, platform, target.goarch, 'agent', asset.browser_download_url, checksum, asset.size, release.body);
+      synced.push(`agent:${platform}/${target.goarch}`);
+    } catch (err) {
+      console.error(`[binarySync] Failed to upsert agent version for ${platform}/${target.goarch}:`, err instanceof Error ? err.message : err);
+    }
   }
 
   // Sync helper binaries
@@ -293,8 +297,12 @@ export async function syncFromGitHub(requestedVersion?: string): Promise<{ versi
     const platform = GH_PLATFORM_MAP[target.goos];
     if (!platform) continue;
 
-    await upsertVersion(version, platform, target.goarch, 'helper', asset.browser_download_url, checksum, asset.size, release.body);
-    synced.push(`helper:${platform}/${target.goarch}`);
+    try {
+      await upsertVersion(version, platform, target.goarch, 'helper', asset.browser_download_url, checksum, asset.size, release.body);
+      synced.push(`helper:${platform}/${target.goarch}`);
+    } catch (err) {
+      console.error(`[binarySync] Failed to upsert helper version for ${platform}/${target.goarch}:`, err instanceof Error ? err.message : err);
+    }
   }
 
   console.log(`[binarySync] GitHub sync: registered ${synced.length} binaries (version: ${version})`);
@@ -332,6 +340,9 @@ async function ensureCurrentVersionRegistered(): Promise<void> {
   }
 }
 
+// Transaction ensures atomicity: without it, concurrent upserts could leave
+// multiple rows with isLatest=true for the same platform/arch/component tuple,
+// causing heartbeat queries to return stale versions.
 async function upsertVersion(
   version: string, platform: string, arch: string, component: string,
   downloadUrl: string, checksum: string, size: number, releaseNotes?: string | null
