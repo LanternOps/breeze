@@ -111,3 +111,7 @@ func (h *helperDesktopManager) stopAll() {
 func (h *helperDesktopManager) hasActiveSessions() bool {
 	return h.mgr.HasActiveSessions()
 }
+
+func (h *helperDesktopManager) setAtLoginWindow(atLoginWindow bool) {
+	h.mgr.SetAtLoginWindow(atLoginWindow)
+}

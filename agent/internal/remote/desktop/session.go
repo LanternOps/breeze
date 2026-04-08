@@ -186,6 +186,16 @@ func (m *SessionManager) HasActiveSessions() bool {
 	return false
 }
 
+// SetAtLoginWindow updates the login-window input mode on all active sessions.
+// Called when the macOS console user changes.
+func (m *SessionManager) SetAtLoginWindow(atLoginWindow bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, s := range m.sessions {
+		s.inputHandler.SetAtLoginWindow(atLoginWindow)
+	}
+}
+
 // ICEServerConfig represents an ICE server from the API payload.
 type ICEServerConfig struct {
 	// URLs can be a string or []string in the API payload, so we use interface{}
