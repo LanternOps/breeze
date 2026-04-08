@@ -13,6 +13,9 @@ func NewInputHandler(_ string) InputHandler {
 	return &darwinInputHandlerNoCgo{}
 }
 
+// InputAvailable returns false — CGO is required for input injection on macOS.
+func (h *darwinInputHandlerNoCgo) InputAvailable() bool { return false }
+
 func (h *darwinInputHandlerNoCgo) SetDisplayOffset(x, y int) {}
 
 func (h *darwinInputHandlerNoCgo) SendMouseMove(x, y int) error {

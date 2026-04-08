@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   devices,
@@ -78,6 +78,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
               eq(agentVersions.isLatest, true)
             )
           )
+          .orderBy(desc(agentVersions.createdAt))
           .limit(1);
 
         if (latestWatchdog) {
@@ -258,6 +259,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
             eq(agentVersions.isLatest, true)
           )
         )
+        .orderBy(desc(agentVersions.createdAt))
         .limit(1);
 
       if (latestVersion) {
@@ -294,6 +296,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
             eq(agentVersions.isLatest, true)
           )
         )
+        .orderBy(desc(agentVersions.createdAt))
         .limit(1);
 
 if (latestHelper) {
@@ -322,6 +325,7 @@ if (latestHelper) {
             eq(agentVersions.isLatest, true)
           )
         )
+        .orderBy(desc(agentVersions.createdAt))
         .limit(1);
 
       if (latestWatchdog && device.watchdogVersion) {

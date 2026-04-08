@@ -9,6 +9,7 @@ type stubInputHandler struct {
 	events []InputEvent
 }
 
+func (h *stubInputHandler) InputAvailable() bool                              { return true }
 func (h *stubInputHandler) SetDisplayOffset(x, y int)                         {}
 func (h *stubInputHandler) SendMouseMove(x, y int) error                      { return nil }
 func (h *stubInputHandler) SendMouseClick(x, y int, button string) error      { return nil }
