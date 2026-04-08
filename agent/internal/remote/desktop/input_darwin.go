@@ -303,10 +303,13 @@ func (h *DarwinInputHandler) SetDisplayOffset(x, y int) {
 	// macOS CGEvents use global display coordinates; offset handled by capturer.
 }
 
-// InputAvailable reports whether this handler can inject input.
-// Returns false when in login_window context and IOHIDSystem connection failed,
-// since CGEvent is silently blocked at the macOS login window.
+// InputAvailable reports whether this handler can inject full input.
+// Returns false when at the login window without IOHIDSystem — CGEvent
+// clicks and keyboard are blocked there, only mouse movement works.
 func (h *DarwinInputHandler) InputAvailable() bool {
+	if h.atLoginWindow.Load() && !h.hidAvailable {
+		return false
+	}
 	return h.inputAvailable
 }
 
