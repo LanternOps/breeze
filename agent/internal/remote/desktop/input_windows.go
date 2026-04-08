@@ -112,6 +112,8 @@ func (h *WindowsInputHandler) SetDisplayOffset(x, y int) {
 	h.mu.Unlock()
 }
 
+func (h *WindowsInputHandler) SetAtLoginWindow(_ bool) {}
+
 func (h *WindowsInputHandler) SendMouseMove(x, y int) error {
 	// Ensure we're on the active input desktop. Without this, SendInput from
 	// a standalone InputHandler (e.g., computer_action) is silently dropped

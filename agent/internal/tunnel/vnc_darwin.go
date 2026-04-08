@@ -15,6 +15,11 @@ const (
 	kickstartPath = "/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
 )
 
+// IsScreenSharingSupported returns true on macOS where kickstart is available.
+func IsScreenSharingSupported() bool {
+	return true
+}
+
 // EnableScreenSharing enables macOS Screen Sharing (VNC) with an optional
 // VNC legacy password. If password is empty, VNC legacy auth is not configured.
 // The agent runs as root, so kickstart works without sudo.
