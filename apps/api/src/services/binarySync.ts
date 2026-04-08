@@ -336,27 +336,29 @@ async function upsertVersion(
   version: string, platform: string, arch: string, component: string,
   downloadUrl: string, checksum: string, size: number, releaseNotes?: string | null
 ) {
-  await db
-    .update(agentVersions)
-    .set({ isLatest: false })
-    .where(
-      and(
-        eq(agentVersions.platform, platform),
-        eq(agentVersions.architecture, arch),
-        eq(agentVersions.component, component),
-        eq(agentVersions.isLatest, true)
-      )
-    );
+  await db.transaction(async (tx) => {
+    await tx
+      .update(agentVersions)
+      .set({ isLatest: false })
+      .where(
+        and(
+          eq(agentVersions.platform, platform),
+          eq(agentVersions.architecture, arch),
+          eq(agentVersions.component, component),
+          eq(agentVersions.isLatest, true)
+        )
+      );
 
-  await db
-    .insert(agentVersions)
-    .values({
-      version, platform, architecture: arch, downloadUrl, checksum,
-      fileSize: BigInt(size), releaseNotes: releaseNotes ?? null,
-      isLatest: true, component
-    })
-    .onConflictDoUpdate({
-      target: [agentVersions.version, agentVersions.platform, agentVersions.architecture, agentVersions.component],
-      set: { downloadUrl, checksum, fileSize: BigInt(size), releaseNotes: releaseNotes ?? null, isLatest: true }
-    });
+    await tx
+      .insert(agentVersions)
+      .values({
+        version, platform, architecture: arch, downloadUrl, checksum,
+        fileSize: BigInt(size), releaseNotes: releaseNotes ?? null,
+        isLatest: true, component
+      })
+      .onConflictDoUpdate({
+        target: [agentVersions.version, agentVersions.platform, agentVersions.architecture, agentVersions.component],
+        set: { downloadUrl, checksum, fileSize: BigInt(size), releaseNotes: releaseNotes ?? null, isLatest: true }
+      });
+  });
 }

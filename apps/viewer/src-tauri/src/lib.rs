@@ -320,7 +320,30 @@ async fn auto_update(app: tauri::AppHandle) {
         return;
     }
 
-    eprintln!("Update installed, will take effect on next launch");
+    eprintln!("Update {} installed successfully", update.version);
+
+    // On macOS/Linux, the binary is replaced on disk but the running process
+    // continues with the old version in memory. Restart automatically so the
+    // user gets the new version without manual intervention.
+    // If a remote desktop session is active, skip the restart to avoid
+    // interrupting the user — they'll pick up the update on next launch.
+    #[cfg(not(target_os = "windows"))]
+    {
+        let has_active_sessions = app
+            .try_state::<SessionMap>()
+            .map(|s| {
+                let map = lock_or_recover(&s.0, "session_map");
+                !map.is_empty()
+            })
+            .unwrap_or(false);
+
+        if has_active_sessions {
+            eprintln!("Active remote session detected — deferring restart to next launch");
+        } else {
+            eprintln!("No active sessions — restarting to apply update");
+            app.restart();
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

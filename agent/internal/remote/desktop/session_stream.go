@@ -98,6 +98,17 @@ func (s *Session) startStreaming() {
 			"width", w,
 			"height", h,
 		)
+
+		// Notify viewer if input injection is unavailable (e.g. macOS login
+		// window without IOHIDSystem). Send asynchronously because the control
+		// data channel may not be open yet at startStreaming time.
+		if !s.inputHandler.InputAvailable() {
+			s.wg.Add(1)
+			go func() {
+				defer s.wg.Done()
+				s.sendInputStatus()
+			}()
+		}
 	})
 }
 

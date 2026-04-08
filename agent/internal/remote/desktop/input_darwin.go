@@ -264,10 +264,11 @@ var keyNameToKeycode = map[string]int{
 // DarwinInputHandler handles input on macOS using CGEvents (user session)
 // or IOHIDPostEvent (login window). Requires Accessibility permission.
 type DarwinInputHandler struct {
-	mouseDown   bool    // track if mouse button is held for drag events
-	mouseBtn    int
-	scaleFactor float64 // backing scale factor (2.0 on Retina)
-	useHID      bool    // true = IOHIDPostEvent for login window
+	mouseDown      bool    // track if mouse button is held for drag events
+	mouseBtn       int
+	scaleFactor    float64 // backing scale factor (2.0 on Retina)
+	useHID         bool    // true = IOHIDPostEvent for login window
+	inputAvailable bool    // false when in login_window context and HID connection fails
 }
 
 func NewInputHandler(desktopContext string) InputHandler {
@@ -275,13 +276,16 @@ func NewInputHandler(desktopContext string) InputHandler {
 	if sf < 1.0 {
 		sf = 1.0
 	}
-	h := &DarwinInputHandler{scaleFactor: sf}
+	h := &DarwinInputHandler{scaleFactor: sf, inputAvailable: true}
 	if desktopContext == "login_window" {
 		if rc := C.openHIDConnection(); rc == 0 {
 			h.useHID = true
+			h.inputAvailable = true
 			slog.Info("using IOHIDPostEvent for login-window input")
 		} else {
-			slog.Warn("failed to open IOHIDSystem connection, input will use CGEvent fallback", "rc", int(rc))
+			h.inputAvailable = false
+			slog.Error("IOHIDSystem unavailable in login_window context — input will NOT work",
+				"rc", int(rc))
 		}
 	}
 	return h
@@ -290,6 +294,15 @@ func NewInputHandler(desktopContext string) InputHandler {
 func (h *DarwinInputHandler) SetDisplayOffset(x, y int) {
 	// macOS CGEvents use global display coordinates; offset handled by capturer.
 }
+
+// InputAvailable reports whether this handler can inject input.
+// Returns false when in login_window context and IOHIDSystem connection failed,
+// since CGEvent is silently blocked at the macOS login window.
+func (h *DarwinInputHandler) InputAvailable() bool {
+	return h.inputAvailable
+}
+
+var errInputUnavailable = fmt.Errorf("input injection unavailable in login_window context (IOHIDSystem not connected)")
 
 // scaleXY converts viewer coordinates (video pixel space, 2x on Retina)
 // to macOS logical points that CGEvent expects.
@@ -330,6 +343,9 @@ func normalizeKeyName(key string) string {
 }
 
 func (h *DarwinInputHandler) SendMouseMove(x, y int) error {
+	if !h.inputAvailable {
+		return errInputUnavailable
+	}
 	sx, sy := h.scaleXY(x, y)
 	if h.useHID {
 		if h.mouseDown {
@@ -346,6 +362,9 @@ func (h *DarwinInputHandler) SendMouseMove(x, y int) error {
 }
 
 func (h *DarwinInputHandler) SendMouseClick(x, y int, button string) error {
+	if !h.inputAvailable {
+		return errInputUnavailable
+	}
 	sx, sy := h.scaleXY(x, y)
 	btn := C.int(buttonToInt(button))
 	if h.useHID {
@@ -359,6 +378,9 @@ func (h *DarwinInputHandler) SendMouseClick(x, y int, button string) error {
 }
 
 func (h *DarwinInputHandler) SendMouseDown(x, y int, button string) error {
+	if !h.inputAvailable {
+		return errInputUnavailable
+	}
 	h.mouseBtn = buttonToInt(button)
 	h.mouseDown = true
 	sx, sy := h.scaleXY(x, y)
@@ -371,6 +393,9 @@ func (h *DarwinInputHandler) SendMouseDown(x, y int, button string) error {
 }
 
 func (h *DarwinInputHandler) SendMouseUp(x, y int, button string) error {
+	if !h.inputAvailable {
+		return errInputUnavailable
+	}
 	h.mouseDown = false
 	sx, sy := h.scaleXY(x, y)
 	btn := C.int(buttonToInt(button))
@@ -383,6 +408,9 @@ func (h *DarwinInputHandler) SendMouseUp(x, y int, button string) error {
 }
 
 func (h *DarwinInputHandler) SendMouseScroll(x, y int, delta int) error {
+	if !h.inputAvailable {
+		return errInputUnavailable
+	}
 	sx, sy := h.scaleXY(x, y)
 	if h.useHID {
 		C.hidMouseMove(sx, sy)
@@ -395,6 +423,9 @@ func (h *DarwinInputHandler) SendMouseScroll(x, y int, delta int) error {
 }
 
 func (h *DarwinInputHandler) SendKeyPress(key string, modifiers []string) error {
+	if !h.inputAvailable {
+		return errInputUnavailable
+	}
 	key = normalizeKeyName(key)
 	keycode, ok := keyNameToKeycode[key]
 	if !ok {
@@ -412,6 +443,9 @@ func (h *DarwinInputHandler) SendKeyPress(key string, modifiers []string) error 
 }
 
 func (h *DarwinInputHandler) SendKeyDown(key string) error {
+	if !h.inputAvailable {
+		return errInputUnavailable
+	}
 	key = normalizeKeyName(key)
 	keycode, ok := keyNameToKeycode[key]
 	if !ok {
@@ -426,6 +460,9 @@ func (h *DarwinInputHandler) SendKeyDown(key string) error {
 }
 
 func (h *DarwinInputHandler) SendKeyUp(key string) error {
+	if !h.inputAvailable {
+		return errInputUnavailable
+	}
 	key = normalizeKeyName(key)
 	keycode, ok := keyNameToKeycode[key]
 	if !ok {
@@ -440,6 +477,9 @@ func (h *DarwinInputHandler) SendKeyUp(key string) error {
 }
 
 func (h *DarwinInputHandler) HandleEvent(event InputEvent) error {
+	if !h.inputAvailable {
+		return errInputUnavailable
+	}
 	switch event.Type {
 	case "mouse_move":
 		return h.SendMouseMove(event.X, event.Y)
