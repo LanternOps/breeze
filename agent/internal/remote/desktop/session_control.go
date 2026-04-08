@@ -40,6 +40,49 @@ func (s *Session) verifySecureDesktopTransition(timeout time.Duration) (supporte
 	}
 }
 
+// sendInputStatus waits for the control data channel to become available and
+// sends an input_status message to the viewer indicating that input injection
+// is unavailable. Called asynchronously from startStreaming.
+func (s *Session) sendInputStatus() {
+	// Wait up to 5 seconds for the control DC to be set by the viewer.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		s.mu.RLock()
+		dc := s.controlDC
+		active := s.isActive
+		s.mu.RUnlock()
+
+		if !active {
+			return
+		}
+
+		if dc != nil {
+			msg, _ := json.Marshal(map[string]any{
+				"type":      "input_status",
+				"available": false,
+				"reason":    "IOHIDSystem unavailable at login window",
+			})
+			if err := dc.SendText(string(msg)); err != nil {
+				slog.Warn("Failed to send input_status to viewer", "session", s.id, "error", err.Error())
+			} else {
+				slog.Info("Sent input_status to viewer: input unavailable", "session", s.id)
+			}
+			return
+		}
+
+		if time.Now().After(deadline) {
+			slog.Warn("Control DC not available within timeout, could not send input_status", "session", s.id)
+			return
+		}
+
+		select {
+		case <-s.done:
+			return
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
 // handleInputMessage processes input events from the data channel
 func (s *Session) handleInputMessage(data []byte) {
 	if len(data) > maxInputMessageBytes {

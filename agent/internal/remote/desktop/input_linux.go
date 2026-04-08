@@ -17,6 +17,9 @@ func NewInputHandler(_ string) InputHandler {
 	return &LinuxInputHandler{}
 }
 
+// InputAvailable always returns true on Linux — xdotool works in user sessions.
+func (h *LinuxInputHandler) InputAvailable() bool { return true }
+
 func (h *LinuxInputHandler) SetDisplayOffset(x, y int) {
 	// xdotool uses global screen coordinates; offset not needed.
 }

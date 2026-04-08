@@ -44,6 +44,11 @@ type InputHandler interface {
 
 	// HandleEvent processes a generic input event
 	HandleEvent(event InputEvent) error
+
+	// InputAvailable reports whether the handler can actually inject input.
+	// Returns false when running in login_window context on macOS without
+	// IOHIDSystem — CGEvent is silently blocked at the login window.
+	InputAvailable() bool
 }
 
 // TypeCharHandler is an optional interface for input handlers that support
