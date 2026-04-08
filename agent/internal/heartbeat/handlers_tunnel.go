@@ -74,14 +74,26 @@ func handleTunnelOpen(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
-	// For VNC on macOS, enable Screen Sharing with JIT password.
+	// For VNC on macOS, ensure Screen Sharing is running.
 	if isVNC {
-		vncPassword, _ := cmd.Payload["vncPassword"].(string)
-		if err := tunnel.EnableScreenSharing(vncPassword); err != nil {
-			return tools.CommandResult{
-				Status:     "failed",
-				Error:      fmt.Sprintf("failed to enable VNC screen sharing: %s", err.Error()),
-				DurationMs: time.Since(start).Milliseconds(),
+		if !tunnel.IsScreenSharingRunning() {
+			if h.tunnelMgr == nil || !h.tunnelMgr.IsManagedByPolicy() {
+				return tools.CommandResult{
+					Status:     "failed",
+					Error:      "Screen Sharing is disabled on this device. Enable 'Manage Remote Management' in Config Policy to allow Breeze to control this, or enable it manually in System Preferences > Sharing.",
+					DurationMs: time.Since(start).Milliseconds(),
+				}
+			}
+		}
+		// Policy allows management — enable Screen Sharing.
+		if h.tunnelMgr != nil && h.tunnelMgr.IsManagedByPolicy() {
+			vncPassword, _ := cmd.Payload["vncPassword"].(string)
+			if err := tunnel.EnableScreenSharing(vncPassword); err != nil {
+				return tools.CommandResult{
+					Status:     "failed",
+					Error:      fmt.Sprintf("failed to enable VNC screen sharing: %s", err.Error()),
+					DurationMs: time.Since(start).Milliseconds(),
+				}
 			}
 		}
 	}

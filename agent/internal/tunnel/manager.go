@@ -14,25 +14,42 @@ const (
 
 // Manager manages concurrent tunnel sessions for a single agent.
 type Manager struct {
-	sessions    map[string]*Session
-	mu          sync.RWMutex
-	maxSessions int
-	idleTimeout time.Duration
-	done        chan struct{}
-	stopOnce    sync.Once
-	stopped     bool
+	sessions        map[string]*Session
+	mu              sync.RWMutex
+	maxSessions     int
+	idleTimeout     time.Duration
+	done            chan struct{}
+	stopOnce        sync.Once
+	stopped         bool
+	managedByPolicy bool
 }
 
 // NewManager creates a Manager and starts the idle reaper goroutine.
-func NewManager() *Manager {
+// managedByPolicy controls whether Breeze is allowed to enable/disable macOS Screen Sharing.
+func NewManager(managedByPolicy bool) *Manager {
 	m := &Manager{
-		sessions:    make(map[string]*Session),
-		maxSessions: defaultMaxSessions,
-		idleTimeout: defaultIdleTimeout,
-		done:        make(chan struct{}),
+		sessions:        make(map[string]*Session),
+		maxSessions:     defaultMaxSessions,
+		idleTimeout:     defaultIdleTimeout,
+		done:            make(chan struct{}),
+		managedByPolicy: managedByPolicy,
 	}
 	go m.reapLoop()
 	return m
+}
+
+// SetManagedByPolicy updates whether Breeze is allowed to manage Screen Sharing.
+func (m *Manager) SetManagedByPolicy(managed bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.managedByPolicy = managed
+}
+
+// IsManagedByPolicy returns whether Breeze is allowed to manage Screen Sharing.
+func (m *Manager) IsManagedByPolicy() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.managedByPolicy
 }
 
 // OpenTunnel validates limits, dials the target, and starts a relay session.
@@ -141,8 +158,14 @@ func (m *Manager) HasVNCTunnels() bool {
 
 // DisableScreenSharingIfIdle disables macOS Screen Sharing when no VNC
 // tunnels remain active. Called after closing/reaping VNC tunnels and on
-// startup to clean up after crashes.
+// startup to clean up after crashes. No-op when managedByPolicy is false.
 func (m *Manager) DisableScreenSharingIfIdle(context string) {
+	m.mu.RLock()
+	managed := m.managedByPolicy
+	m.mu.RUnlock()
+	if !managed {
+		return
+	}
 	if m.HasVNCTunnels() {
 		return
 	}
@@ -153,7 +176,14 @@ func (m *Manager) DisableScreenSharingIfIdle(context string) {
 
 // CleanupOrphanedVNC disables Screen Sharing if it's running but there are
 // no active VNC tunnels. Called on agent startup to clean up after crashes.
+// No-op when managedByPolicy is false.
 func (m *Manager) CleanupOrphanedVNC() {
+	m.mu.RLock()
+	managed := m.managedByPolicy
+	m.mu.RUnlock()
+	if !managed {
+		return
+	}
 	if !IsScreenSharingRunning() {
 		return
 	}
