@@ -185,6 +185,11 @@ func (s *Session) handleControlMessage(data []byte) {
 			if ds.Type == "services" {
 				continue
 			}
+			// Skip empty sessions with no logged-in user (e.g. pre-allocated
+			// RDP listener sessions visible at the lock screen).
+			if ds.Username == "" {
+				continue
+			}
 			sessionNum, parseErr := sessionbroker.ParseWindowsSessionIDForHeartbeat(ds.Session)
 			if parseErr != nil {
 				slog.Debug("Skipping session with unparseable ID", "session", s.id, "winSession", ds.Session, "error", parseErr.Error())
