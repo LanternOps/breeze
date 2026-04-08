@@ -488,6 +488,7 @@ export async function apiRegisterPartner(
   partner?: Partner;
   tokens?: Tokens;
   redirectUrl?: string;
+  message?: string;
   error?: string;
 }> {
   try {
@@ -510,6 +511,7 @@ export async function apiRegisterPartner(
       partner: data.partner,
       tokens: data.tokens,
       redirectUrl: data.redirectUrl,
+      message: data.message,
     };
   } catch {
     return { success: false, error: 'Network error' };
