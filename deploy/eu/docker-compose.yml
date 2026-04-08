@@ -22,6 +22,10 @@ services:
       sh -c 'cat > /etc/caddy/Caddyfile <<CADDYEOF
       :80 {
         encode zstd gzip
+        @billing_auth path /api/v1/auth/billing-init
+        handle @billing_auth {
+          reverse_proxy billing:3002
+        }
         @api path /api/* /health /ready /metrics/*
         handle @api {
           reverse_proxy api:3001
@@ -213,6 +217,7 @@ services:
       DOCKER_API_VERSION: "1.54"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - /root/.docker/config.json:/config.json:ro
     networks:
       - breeze
 
