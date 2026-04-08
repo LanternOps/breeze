@@ -38,6 +38,10 @@ export default function PartnerRegisterPage() {
       return;
     }
 
+    // API returned success but no tokens (e.g. duplicate email — generic message for security)
+    if (result.message) {
+      setError(result.message);
+    }
     setLoading(false);
   };
 
