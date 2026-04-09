@@ -251,10 +251,16 @@ Navigate to **Settings → AI Usage** to view:
 | Per-user breakdown | Token usage grouped by user |
 | Per-session detail | Individual session cost and token counts |
 
-Cost data is stored in the `aiSessions` and `aiMessages` tables alongside the conversation history.
+Cost data is stored alongside the conversation history.
+
+### Billing credit integration
+
+When a billing service is configured (`BILLING_SERVICE_URL` and `BILLING_SERVICE_API_KEY`), AI sessions check the organization's credit balance before starting. If credits are exhausted, the user sees a message to purchase more credits. After each session completes, the estimated cost is deducted from the balance.
+
+When billing is not configured, AI usage is unlimited — cost tracking still records usage for visibility, but no spending limits are enforced.
 
 <Aside type="tip">
-  Cost tracking is automatic — no configuration required. It works for both the main AI assistant and the Helper AI chat.
+  Cost tracking is automatic — no configuration required. It works for both the main AI assistant and the Helper AI chat. Billing credit enforcement is optional and requires the billing service environment variables. See [Environment Variables](/deploy/environment/) for details.
 </Aside>
 
 ---

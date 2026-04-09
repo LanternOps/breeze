@@ -232,6 +232,29 @@ The Breeze stack includes a [coturn](https://github.com/coturn/coturn) TURN serv
 | `DOCKER_PLATFORM` | `linux/amd64` | Container platform. GHCR images are amd64 only. On Apple Silicon, use `docker-compose.override.yml.local-build` to build native arm64 images instead. |
 | `REDIS_MAXMEMORY` | `256mb` | Maximum memory Redis is allowed to use. Redis runs with `noeviction` policy so BullMQ jobs are never silently dropped. |
 
+## MSI Installer Signing
+
+| Variable | Default | Description |
+|---|---|---|
+| `MSI_SIGNING_URL` | — | URL of the remote Windows signing service. When set, pre-configured MSI installer downloads are code-signed before delivery. |
+| `MSI_SIGNING_CF_ACCESS_ID` | — | Cloudflare Access service token Client ID for authenticating to the signing service |
+| `MSI_SIGNING_CF_ACCESS_SECRET` | — | Cloudflare Access service token Client Secret for authenticating to the signing service |
+
+<Aside>
+  MSI signing is fully optional. When these variables are unset, installer downloads are delivered unsigned. See [Code Signing](/deploy/code-signing/) for details.
+</Aside>
+
+## Billing
+
+| Variable | Default | Description |
+|---|---|---|
+| `BILLING_SERVICE_URL` | — | URL of the billing service for AI credit checks and deductions. When unset, AI usage is unlimited. |
+| `BILLING_SERVICE_API_KEY` | — | API key for authenticating to the billing service |
+
+<Aside>
+  Billing integration is optional. When these variables are unset, AI chat sessions proceed without credit checks.
+</Aside>
+
 ## AI
 
 | Variable | Default | Description |

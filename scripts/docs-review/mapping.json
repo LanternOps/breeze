@@ -144,6 +144,26 @@
       ]
     },
     {
+      "pattern": "apps/api/src/services/msiSigning.ts",
+      "docs": [
+        "deploy/code-signing.mdx",
+        "agents/enrollment-keys.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/installerBuilder.ts",
+      "docs": [
+        "agents/enrollment-keys.mdx",
+        "agents/installation.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiCostTracker.ts",
+      "docs": [
+        "features/ai.mdx"
+      ]
+    },
+    {
       "pattern": "apps/api/src/db/schema/**",
       "docs": [
         "reference/schema.mdx"

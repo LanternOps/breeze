@@ -105,6 +105,30 @@ spctl --assess --verbose /path/to/breeze-agent
 
 ---
 
+## Installer Download Signing
+
+When you download a pre-configured MSI installer from the dashboard or a public installer link, Breeze can automatically code-sign the installer before delivery. This ensures that the patched MSI — which contains your enrollment key and site assignment — is trusted by Windows SmartScreen and antivirus tools.
+
+### How it works
+
+The API server sends the patched MSI to a dedicated Windows signing service (running `signtool` with Azure Trusted Signing) over HTTPS. The signing service returns the signed MSI, which is then delivered to the browser. The entire process adds a few seconds to the download.
+
+### Configuration
+
+Set three environment variables to enable installer signing:
+
+| Variable | Description |
+|----------|-------------|
+| `MSI_SIGNING_URL` | URL of the signing service endpoint |
+| `MSI_SIGNING_CF_ACCESS_ID` | Cloudflare Access service token Client ID (optional — only needed if the signing service is behind Cloudflare Access) |
+| `MSI_SIGNING_CF_ACCESS_SECRET` | Cloudflare Access service token Client Secret |
+
+When these variables are unset, installer downloads are delivered without an additional signature. The MSI template itself is still signed during the CI build, so the base installer is always signed — this step re-signs the MSI after enrollment data is embedded.
+
+See [Environment Variables](/deploy/environment/) for the full list.
+
+---
+
 ## Verifying Signatures
 
 ### Windows

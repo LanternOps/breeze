@@ -48,6 +48,8 @@ Per-key secrets are set when creating or rotating a key. If no per-key secret is
 
 Each enrollment key can generate pre-configured Windows MSI and macOS PKG installers. These installers are pre-loaded with the enrollment key and site assignment, so agents enroll automatically when the installer runs.
 
+When MSI signing is configured on the server, Windows installer downloads are automatically code-signed before delivery — Windows SmartScreen and antivirus tools will recognize them as trusted. See [Code Signing](/deploy/code-signing/) for setup details.
+
 ### Downloading from the Dashboard
 
 From the enrollment key list or detail view, click **Download Installer** and choose the platform (Windows or macOS). The installer is generated on the fly and downloaded to your browser.

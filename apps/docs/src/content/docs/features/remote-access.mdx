@@ -128,7 +128,11 @@ If the hardware encoder stalls (for example, due to a driver issue), the agent a
 
 Older macOS devices running Monterey or Ventura do not support WebRTC remote desktop at the login screen. Breeze auto-detects this limitation and falls back to VNC via the built-in macOS Screen Sharing service.
 
-When the fallback activates, the system enables Screen Sharing with a one-time ephemeral password, tunnels VNC through the agent connection, and renders it in the browser using noVNC. When you disconnect, Screen Sharing is automatically disabled and the password is cleared — no credentials persist on the device.
+When the fallback activates, the system tunnels VNC through the agent connection and renders it in the browser using noVNC. When you disconnect, the VNC password is cleared — no credentials persist on the device.
+
+<Aside type="note">
+  The agent no longer disables Apple Remote Management on startup. If you use Screen Sharing alongside Breeze, it stays enabled. VNC fallback behavior is controlled by the `manageRemoteManagement` Configuration Policy flag (off by default). When VNC is needed and Screen Sharing is not already enabled, the agent returns an informative error asking you to enable the policy or enable Screen Sharing manually on the device.
+</Aside>
 
 This works in both the browser and the Breeze viewer app. No manual configuration is needed — the **Connect Desktop** button auto-detects the situation and displays a VNC badge on the session.
 
