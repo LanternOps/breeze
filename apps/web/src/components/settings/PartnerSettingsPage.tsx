@@ -214,9 +214,13 @@ export default function PartnerSettingsPage() {
       settings.branding = brandingData;
       settings.aiBudgets = aiBudgetsData;
 
+      const payload: Record<string, unknown> = { settings };
+      const trimmedName = companyName.trim();
+      if (trimmedName) payload.name = trimmedName;
+
       const response = await fetchWithAuth('/orgs/partners/me', {
         method: 'PATCH',
-        body: JSON.stringify({ name: companyName, settings })
+        body: JSON.stringify(payload)
       });
 
       if (!response.ok) throw new Error('Failed to save settings');
