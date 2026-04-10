@@ -527,10 +527,24 @@ func enrollDevice(enrollmentKey string) {
 		systemInfo = &collectors.SystemInfo{}
 	}
 
-	hardwareInfo, err := hwCollector.CollectHardware()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Failed to collect hardware info: %v\n", err)
-		hardwareInfo = &collectors.HardwareInfo{}
+	// CollectHardware spawns WMIC processes on Windows which can take up to
+	// ~75s. Run it with a 10s timeout so enrollment doesn't block the MSI
+	// installer. The server will receive full hardware info on first heartbeat.
+	hardwareInfo := &collectors.HardwareInfo{}
+	hwDone := make(chan *collectors.HardwareInfo, 1)
+	go func() {
+		info, hwErr := hwCollector.CollectHardware()
+		if hwErr != nil {
+			hwDone <- &collectors.HardwareInfo{}
+			return
+		}
+		hwDone <- info
+	}()
+	select {
+	case info := <-hwDone:
+		hardwareInfo = info
+	case <-time.After(10 * time.Second):
+		fmt.Fprintf(os.Stderr, "Warning: Hardware collection timed out; using defaults for enrollment\n")
 	}
 
 	fmt.Printf("Hostname: %s\n", systemInfo.Hostname)

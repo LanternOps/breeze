@@ -74,5 +74,8 @@ if ($LASTEXITCODE -ne 0) {
 
 if (Get-Service -Name "BreezeAgent" -ErrorAction SilentlyContinue) {
     & sc.exe config BreezeAgent start= auto | Out-Null
-    Start-Service -Name "BreezeAgent" -ErrorAction Stop
+    # Use SilentlyContinue — the MSI StartServices action handles waiting for
+    # the service to reach Running state. ErrorAction Stop here would block
+    # this custom action for up to 30s if the service is slow to start.
+    Start-Service -Name "BreezeAgent" -ErrorAction SilentlyContinue
 }

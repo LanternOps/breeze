@@ -91,29 +91,43 @@ func runAsService(startFn func() (*agentComponents, error)) error {
 	return svc.Run("BreezeAgent", h)
 }
 
-// Execute is the SCM callback. It signals SERVICE_RUNNING, calls startFn,
-// then blocks until the SCM sends Stop or Shutdown.
+// Execute is the SCM callback. It signals SERVICE_RUNNING immediately, then
+// starts agent components in a goroutine. Blocking before signalling Running
+// would stall the MSI installer and SCM for however long initialisation takes.
 func (s *breezeService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
 	const accepted = svc.AcceptStop | svc.AcceptShutdown | svc.AcceptSessionChange
 
 	changes <- svc.Status{State: svc.StartPending}
 
-	comps, err := s.startFn()
-	if err != nil {
-		log.Error("agent start failed", "error", err)
-		changes <- svc.Status{State: svc.StopPending}
-		return true, 1 // report error to SCM
+	// Start agent components in the background so we can signal Running now.
+	type startResult struct {
+		comps *agentComponents
+		err   error
 	}
-
-	// Get the SCM session event channel (nil if lifecycle manager not active).
-	scmCh := comps.hb.SCMSessionCh()
+	startCh := make(chan startResult, 1)
+	go func() {
+		comps, err := s.startFn()
+		startCh <- startResult{comps, err}
+	}()
 
 	changes <- svc.Status{State: svc.Running, Accepts: accepted}
 	log.Info("agent running as Windows service")
 
-	// Block until SCM requests stop/shutdown.
+	var comps *agentComponents
+	var scmCh <-chan sessionbroker.SCMSessionEvent
+
 	for {
 		select {
+		case result := <-startCh:
+			startCh = nil // disable case — item already consumed
+			if result.err != nil {
+				log.Error("agent start failed", "error", result.err)
+				changes <- svc.Status{State: svc.StopPending}
+				return true, 1
+			}
+			comps = result.comps
+			scmCh = comps.hb.SCMSessionCh()
+
 		case cr := <-r:
 			switch cr.Cmd {
 			case svc.Interrogate:
@@ -121,7 +135,14 @@ func (s *breezeService) Execute(args []string, r <-chan svc.ChangeRequest, chang
 			case svc.Stop, svc.Shutdown:
 				log.Info("SCM requested stop")
 				changes <- svc.Status{State: svc.StopPending}
-				shutdownAgent(comps)
+				if comps != nil {
+					shutdownAgent(comps)
+				} else {
+					// startFn not yet complete — wait so we can clean up.
+					if result := <-startCh; result.comps != nil {
+						shutdownAgent(result.comps)
+					}
+				}
 				return false, 0
 			case svc.SessionChange:
 				if scmCh != nil {
