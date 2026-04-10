@@ -1,6 +1,16 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Force a deterministic navigator.userAgent BEFORE importing the component,
+// so `detectUserOS()` resolves to 'windows' regardless of host OS. On macOS
+// jsdom's default UA contains "darwin" (which includes "win"), but on Linux
+// CI it contains "linux" — without this override, the installer tab would
+// not be the default and the UI-level assertions below would all fail.
+Object.defineProperty(window.navigator, 'userAgent', {
+  configurable: true,
+  value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 jsdom/test',
+});
+
 import AddDeviceModal from './AddDeviceModal';
 import { fetchWithAuth } from '../../stores/auth';
 

@@ -104,7 +104,11 @@ describe('SNMPTemplateList', () => {
     render(<SNMPTemplateList />);
     await screen.findByText('Edge Custom');
 
+    // Open the confirm dialog via the row's Delete button…
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    // …then confirm it from the ConfirmDialog.
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete Template' }));
 
     await waitFor(() => {
       const deleteCalls = fetchWithAuthMock.mock.calls.filter(([url, options]) =>
