@@ -170,7 +170,7 @@
     <CustomAction
       Id="RegisterUserHelperTask"
       Property="POWERSHELL_EXE"
-      ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#filInstallWindowsPs1]&quot;"
+      ExeCommand="-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[#filInstallWindowsPs1]&quot;"
       Execute="deferred"
       Impersonate="no"
       Return="check" />
@@ -178,7 +178,7 @@
     <CustomAction
       Id="RollbackRegisterUserHelperTask"
       Property="POWERSHELL_EXE"
-      ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#filRemoveWindowsTaskPs1]&quot;"
+      ExeCommand="-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[#filRemoveWindowsTaskPs1]&quot;"
       Execute="rollback"
       Impersonate="no"
       Return="ignore" />
@@ -186,7 +186,7 @@
     <CustomAction
       Id="UnregisterUserHelperTask"
       Property="POWERSHELL_EXE"
-      ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#filRemoveWindowsTaskPs1]&quot;"
+      ExeCommand="-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[#filRemoveWindowsTaskPs1]&quot;"
       Execute="deferred"
       Impersonate="no"
       Return="ignore" />
@@ -194,7 +194,7 @@
     <CustomAction
       Id="EnrollAgent"
       Property="POWERSHELL_EXE"
-      ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#filEnrollAgentPs1]&quot; -CustomActionData &quot;[EnrollAgent]&quot;"
+      ExeCommand="-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[#filEnrollAgentPs1]&quot; -CustomActionData &quot;[EnrollAgent]&quot;"
       Execute="deferred"
       Impersonate="no"
       Return="check"
