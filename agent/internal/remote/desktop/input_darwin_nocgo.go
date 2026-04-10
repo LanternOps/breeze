@@ -53,3 +53,5 @@ func (h *darwinInputHandlerNoCgo) SendKeyUp(key string) error {
 func (h *darwinInputHandlerNoCgo) HandleEvent(event InputEvent) error {
 	return fmt.Errorf("input handler unavailable: built without CGO")
 }
+
+func (h *darwinInputHandlerNoCgo) SetAtLoginWindow(_ bool) {}
