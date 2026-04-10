@@ -752,6 +752,7 @@ async function serveInstaller(
   keyRow: typeof enrollmentKeys.$inferSelect,
   platform: 'windows' | 'macos',
   rawToken: string,
+  cleanupOnFailure = false,
 ): Promise<Response> {
   const ip = c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip') ?? 'unknown';
 
@@ -863,6 +864,13 @@ async function serveInstaller(
     return c.body(resultBuffer as unknown as ArrayBuffer);
   } catch (err) {
     console.error('[public-download] Build failed:', err instanceof Error ? err.message : err);
+
+    if (cleanupOnFailure) {
+      await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, keyRow.id)).catch((cleanupErr) => {
+        console.error('[public-download] Failed to clean up orphaned child key:', keyRow.id, cleanupErr instanceof Error ? cleanupErr.message : cleanupErr);
+      });
+    }
+
     return c.json({ error: 'Failed to build installer' }, 500);
   }
 }
@@ -926,24 +934,13 @@ publicShortLinkRoutes.get('/:code', async (c) => {
     return c.json({ error: 'Not found' }, 404);
   }
 
-  // Check expiry and usage on the short-code row BEFORE spawning a child key.
-  // This ensures the short-code's limits are enforced correctly.
+  // Check expiry on the short-code row BEFORE spawning a child key.
   if (row.expiresAt && new Date(row.expiresAt) < new Date()) {
     return c.json({ error: 'This link has expired.' }, 410);
   }
-  if (row.maxUsage !== null && row.usageCount >= row.maxUsage) {
-    return c.json({ error: 'This link has reached its maximum usage limit.' }, 410);
-  }
-
-  // Increment usage on the short-code row now (before spawning the child key).
-  // serveInstaller() will increment the child key's usage on successful build.
-  await db
-    .update(enrollmentKeys)
-    .set({ usageCount: sql`${enrollmentKeys.usageCount} + 1` })
-    .where(eq(enrollmentKeys.id, row.id));
 
   // The short-link row holds only the hashed token — the raw token was never stored.
-  // Spawn a fresh single-use child key so we can embed a valid raw token in the installer.
+  // Spawn a fresh single-use child key FIRST so we have something to embed in the installer.
   const rawToken = generateEnrollmentKey();
   const tokenHash = hashEnrollmentKey(rawToken);
 
@@ -966,5 +963,26 @@ publicShortLinkRoutes.get('/:code', async (c) => {
     return c.json({ error: 'Failed to prepare installer' }, 500);
   }
 
-  return serveInstaller(c, downloadKey, row.installerPlatform, rawToken);
+  // Atomic: only increment usage if still under the limit.
+  // This prevents TOCTOU races and ensures a failed insert doesn't burn a slot.
+  const claimed = await db
+    .update(enrollmentKeys)
+    .set({ usageCount: sql`${enrollmentKeys.usageCount} + 1` })
+    .where(
+      and(
+        eq(enrollmentKeys.id, row.id),
+        row.maxUsage !== null
+          ? lt(enrollmentKeys.usageCount, row.maxUsage)
+          : sql`true`
+      )
+    )
+    .returning({ id: enrollmentKeys.id });
+
+  if (claimed.length === 0) {
+    // Limit was hit between our read and now — clean up the child key we just inserted.
+    await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, downloadKey.id)).catch(() => {});
+    return c.json({ error: 'This link has reached its maximum usage limit.' }, 410);
+  }
+
+  return serveInstaller(c, downloadKey, row.installerPlatform, rawToken, true);
 });
