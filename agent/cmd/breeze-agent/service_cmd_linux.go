@@ -285,12 +285,20 @@ var serviceStartCmd = &cobra.Command{
 			return fmt.Errorf("service not installed — run 'sudo breeze-agent service install' first")
 		}
 
+		// Reload systemd so any updated unit file on disk is recognized before enabling.
+		exec.Command("systemctl", "daemon-reload").Run() //nolint:errcheck — best-effort
+
+		// Enable the service for auto-start on reboot before starting it.
+		if out, err := exec.Command("systemctl", "enable", linuxServiceName).CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to enable service for auto-start: %s\n", strings.TrimSpace(string(out)))
+		}
+
 		out, err := exec.Command("systemctl", "start", linuxServiceName).CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("failed to start service: %s", strings.TrimSpace(string(out)))
 		}
 
-		fmt.Println("Breeze Agent service started.")
+		fmt.Println("Breeze Agent service started and enabled for auto-start.")
 		fmt.Println("Logs: journalctl -u breeze-agent -f")
 		return nil
 	},

@@ -267,17 +267,34 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	h.isService = cfg.IsService
 	h.isHeadless = cfg.IsHeadless
 
-	// Classify device role once at startup and cache system info
+	// Classify device role once at startup and cache system info.
+	// CollectHardware spawns WMIC processes on Windows which can take up to
+	// ~75 s and would delay the service reporting "Running" to the SCM,
+	// causing the MSI installer to stall. Compute an initial role from
+	// CollectSystemInfo (fast) then refine it in a goroutine once hardware
+	// data is available. The goroutine holds h.mu only for the final write;
+	// sysInfo is a freshly allocated pointer not mutated after this point.
 	if sysInfo, err := h.hardwareCol.CollectSystemInfo(); err == nil {
 		h.cachedSysInfo = sysInfo
 		h.lastSysInfoRefresh = time.Now()
-		if hwInfo, err := h.hardwareCol.CollectHardware(); err == nil {
+		h.mu.Lock()
+		h.cachedDeviceRole = collectors.ClassifyDeviceRole(sysInfo, nil)
+		h.mu.Unlock()
+		go func(sysInfo *collectors.SystemInfo) {
+			hwInfo, err := h.hardwareCol.CollectHardware()
+			if err != nil {
+				log.Warn("hardware collection failed in background; device role will use system-info-only classification", "error", err.Error())
+				return
+			}
+			h.mu.Lock()
 			h.cachedDeviceRole = collectors.ClassifyDeviceRole(sysInfo, hwInfo)
-		} else {
-			h.cachedDeviceRole = collectors.ClassifyDeviceRole(sysInfo, nil)
-		}
+			h.mu.Unlock()
+		}(sysInfo)
 	} else {
+		log.Warn("system info collection failed at startup; device role defaulting to workstation", "error", err.Error())
+		h.mu.Lock()
 		h.cachedDeviceRole = "workstation"
+		h.mu.Unlock()
 	}
 
 	// Initialize Breeze Assist manager
@@ -1841,6 +1858,7 @@ func (h *Heartbeat) sendHeartbeat() {
 		}
 	}
 	sysInfo := h.cachedSysInfo
+	deviceRole := h.cachedDeviceRole
 	h.mu.Unlock()
 
 	payload := HeartbeatPayload{
@@ -1848,7 +1866,7 @@ func (h *Heartbeat) sendHeartbeat() {
 		AgentVersion:  h.agentVersion,
 		HelperVersion: h.helperMgr.InstalledVersion(),
 		HealthStatus:  h.healthMon.Summary(),
-		DeviceRole:    h.cachedDeviceRole,
+		DeviceRole:    deviceRole,
 		IsHeadless:    h.isHeadless,
 	}
 

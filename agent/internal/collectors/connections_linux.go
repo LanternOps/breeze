@@ -22,8 +22,6 @@ func (c *ConnectionsCollector) Collect() ([]ConnectionInfo, error) {
 			continue
 		}
 
-		protocol := c.getProtocolString(conn.Type, conn.Family)
-
 		processName := ""
 		if conn.Pid > 0 {
 			if cached, ok := processCache[conn.Pid]; ok {
@@ -38,19 +36,31 @@ func (c *ConnectionsCollector) Collect() ([]ConnectionInfo, error) {
 			}
 		}
 
-		connections = append(connections, ConnectionInfo{
-			Protocol:    protocol,
-			LocalAddr:   conn.Laddr.IP,
-			LocalPort:   int(conn.Laddr.Port),
-			RemoteAddr:  conn.Raddr.IP,
-			RemotePort:  int(conn.Raddr.Port),
-			State:       conn.Status,
-			Pid:         int(conn.Pid),
-			ProcessName: processName,
-		})
+		if info := c.mapConnection(conn, processName); info != nil {
+			connections = append(connections, *info)
+		}
 	}
 
 	return connections, nil
+}
+
+// mapConnection converts a gopsutil ConnectionStat to a ConnectionInfo.
+// Returns nil if the protocol is not one of the four supported types (tcp, tcp6, udp, udp6).
+func (c *ConnectionsCollector) mapConnection(conn net.ConnectionStat, processName string) *ConnectionInfo {
+	protocol := c.getProtocolString(conn.Type, conn.Family)
+	if protocol == "unknown" {
+		return nil
+	}
+	return &ConnectionInfo{
+		Protocol:    protocol,
+		LocalAddr:   conn.Laddr.IP,
+		LocalPort:   int(conn.Laddr.Port),
+		RemoteAddr:  conn.Raddr.IP,
+		RemotePort:  int(conn.Raddr.Port),
+		State:       conn.Status,
+		Pid:         int(conn.Pid),
+		ProcessName: processName,
+	}
 }
 
 func (c *ConnectionsCollector) getProtocolString(connType uint32, family uint32) string {

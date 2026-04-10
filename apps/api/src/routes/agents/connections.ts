@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '@hono/zod-validator';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
@@ -7,7 +8,11 @@ import { submitConnectionsSchema } from './schemas';
 
 export const connectionsRoutes = new Hono();
 
-connectionsRoutes.put('/:id/connections', zValidator('json', submitConnectionsSchema), async (c) => {
+connectionsRoutes.put(
+  '/:id/connections',
+  bodyLimit({ maxSize: 5 * 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }),
+  zValidator('json', submitConnectionsSchema),
+  async (c) => {
   const agentId = c.req.param('id');
   const data = c.req.valid('json');
 

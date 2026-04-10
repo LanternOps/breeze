@@ -220,10 +220,10 @@ tests:
         description: "Verify terms of service and privacy policy links are present"
         playwright:
           - assert:
-              selector: "a[href='/terms']"
+              selector: "a[href='https://breezermm.com/legal/terms-of-service']"
               contains: "Terms of Service"
           - assert:
-              selector: "a[href='/privacy']"
+              selector: "a[href='https://breezermm.com/legal/privacy-policy']"
               contains: "Privacy Policy"
 
   - id: register_partner_form_validation

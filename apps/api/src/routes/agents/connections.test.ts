@@ -178,6 +178,24 @@ describe('connections routes', () => {
       expect(res.status).toBe(400);
     });
 
+    it('should reject "unknown" protocol (Linux agent must filter before sending)', async () => {
+      const res = await app.request(`/agents/${AGENT_ID}/connections`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          connections: [
+            {
+              protocol: 'unknown',
+              localAddr: '0.0.0.0',
+              localPort: 80,
+            },
+          ],
+        }),
+      });
+
+      expect(res.status).toBe(400);
+    });
+
     it('should validate port range', async () => {
       const res = await app.request(`/agents/${AGENT_ID}/connections`, {
         method: 'PUT',

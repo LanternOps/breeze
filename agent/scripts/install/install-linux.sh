@@ -78,6 +78,7 @@ fi
 chmod 644 "$SERVICE_DST"
 
 systemctl daemon-reload
+systemctl enable breeze-agent
 
 # Install user helper systemd user unit
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -122,25 +123,21 @@ for user in $(who | awk '{print $1}' | sort -u); do
     fi
 done
 
-systemctl daemon-reload
-
 echo "Breeze Agent installed."
 echo ""
 
 # If the agent is already enrolled, skip the enrollment step in Next Steps.
 if [ -f "$CONFIG_DIR/agent.yaml" ] && grep -q 'agent_id:' "$CONFIG_DIR/agent.yaml" 2>/dev/null; then
     echo "Next steps:"
-    echo "  1. Enable:  sudo systemctl enable breeze-agent"
+    echo "  1. Start:   sudo systemctl start breeze-agent"
+    echo "  2. Status:  sudo systemctl status breeze-agent"
+    echo "  3. Logs:    journalctl -u breeze-agent -f"
+    echo "  4. User helper: systemctl --user enable breeze-agent-user (per-user)"
+else
+    echo "Next steps:"
+    echo "  1. Enroll:  sudo breeze-agent enroll <enrollment-key> --server https://your-server [--enrollment-secret <secret>]"
     echo "  2. Start:   sudo systemctl start breeze-agent"
     echo "  3. Status:  sudo systemctl status breeze-agent"
     echo "  4. Logs:    journalctl -u breeze-agent -f"
     echo "  5. User helper: systemctl --user enable breeze-agent-user (per-user)"
-else
-    echo "Next steps:"
-    echo "  1. Enroll:  sudo breeze-agent enroll <enrollment-key> --server https://your-server [--enrollment-secret <secret>]"
-    echo "  2. Enable:  sudo systemctl enable breeze-agent"
-    echo "  3. Start:   sudo systemctl start breeze-agent"
-    echo "  4. Status:  sudo systemctl status breeze-agent"
-    echo "  5. Logs:    journalctl -u breeze-agent -f"
-    echo "  6. User helper: systemctl --user enable breeze-agent-user (per-user)"
 fi

@@ -202,94 +202,9 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
   return c.json(partner, 201);
 });
 
-orgRoutes.get('/partners/:id', requireScope('system'), requireOrgRead, async (c) => {
-  const id = c.req.param('id')!;
-
-  const [partner] = await db
-    .select()
-    .from(partners)
-    .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
-    .limit(1);
-
-  if (!partner) {
-    return c.json({ error: 'Partner not found' }, 404);
-  }
-
-  return c.json(partner);
-});
-
-orgRoutes.patch('/partners/:id', requireScope('system', 'partner'), requireOrgWrite, requireMfa(), zValidator('json', updatePartnerSchema), async (c) => {
-  const auth = c.get('auth');
-  const id = c.req.param('id')!;
-
-  // Partner-scoped users may only update their own partner
-  if (auth.scope === 'partner' && auth.partnerId !== id) {
-    return c.json({ error: 'Forbidden' }, 403);
-  }
-
-  const data = c.req.valid('json');
-  const updates = { ...data, updatedAt: new Date() };
-
-  if (Object.keys(data).length === 0) {
-    return c.json({ error: 'No updates provided' }, 400);
-  }
-
-  const [partner] = await db
-    .update(partners)
-    .set(updates)
-    .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
-    .returning();
-
-  if (!partner) {
-    return c.json({ error: 'Partner not found' }, 404);
-  }
-
-  const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);
-  writeAuditEvent(c, {
-    orgId: auditOrgId,
-    actorId: auth.user?.id,
-    actorEmail: auth.user?.email,
-    action: 'partner.update',
-    resourceType: 'partner',
-    resourceId: partner.id,
-    resourceName: partner.name,
-    details: {
-      changedFields: Object.keys(data)
-    }
-  });
-
-  return c.json(partner);
-});
-
-orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requireMfa(), async (c) => {
-  const auth = c.get('auth');
-  const id = c.req.param('id')!;
-
-  const [partner] = await db
-    .update(partners)
-    .set({ deletedAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
-    .returning();
-
-  if (!partner) {
-    return c.json({ error: 'Partner not found' }, 404);
-  }
-
-  const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);
-  writeAuditEvent(c, {
-    orgId: auditOrgId,
-    actorId: auth.user?.id,
-    actorEmail: auth.user?.email,
-    action: 'partner.delete',
-    resourceType: 'partner',
-    resourceId: partner.id,
-    resourceName: partner.name
-  });
-
-  return c.json({ success: true });
-});
-
 // --- Partner Self-Service (partner-scoped users) ---
+// NOTE: all /partners/me handlers (GET, PATCH) must stay above /partners/:id in this file
+// so Hono's router matches the static segment "me" before the dynamic :id handler.
 
 const dayScheduleSchema = z.object({
   start: z.string(),
@@ -432,17 +347,110 @@ orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, require
     .where(and(eq(partners.id, auth.partnerId as string), isNull(partners.deletedAt)))
     .returning();
 
+  if (!partner) {
+    return c.json({ error: 'Partner not found' }, 404);
+  }
+
   const auditOrgId = await resolveAuditOrgIdForPartner(auth.partnerId);
   writeRouteAudit(c, {
     orgId: auditOrgId,
     action: 'partner.settings.update',
     resourceType: 'partner',
-    resourceId: partner?.id,
-    resourceName: partner?.name,
+    resourceId: partner.id,
+    resourceName: partner.name,
     details: { changedFields: Object.keys(body) }
   });
 
   return c.json(partner);
+});
+
+// --- Individual partner management (system-scoped) ---
+
+orgRoutes.get('/partners/:id', requireScope('system'), requireOrgRead, async (c) => {
+  const id = c.req.param('id')!;
+
+  const [partner] = await db
+    .select()
+    .from(partners)
+    .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
+    .limit(1);
+
+  if (!partner) {
+    return c.json({ error: 'Partner not found' }, 404);
+  }
+
+  return c.json(partner);
+});
+
+orgRoutes.patch('/partners/:id', requireScope('system', 'partner'), requireOrgWrite, requireMfa(), zValidator('json', updatePartnerSchema), async (c) => {
+  const auth = c.get('auth');
+  const id = c.req.param('id')!;
+
+  // Partner-scoped users may only update their own partner
+  if (auth.scope === 'partner' && auth.partnerId !== id) {
+    return c.json({ error: 'Forbidden' }, 403);
+  }
+
+  const data = c.req.valid('json');
+  const updates = { ...data, updatedAt: new Date() };
+
+  if (Object.keys(data).length === 0) {
+    return c.json({ error: 'No updates provided' }, 400);
+  }
+
+  const [partner] = await db
+    .update(partners)
+    .set(updates)
+    .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
+    .returning();
+
+  if (!partner) {
+    return c.json({ error: 'Partner not found' }, 404);
+  }
+
+  const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);
+  writeAuditEvent(c, {
+    orgId: auditOrgId,
+    actorId: auth.user?.id,
+    actorEmail: auth.user?.email,
+    action: 'partner.update',
+    resourceType: 'partner',
+    resourceId: partner.id,
+    resourceName: partner.name,
+    details: {
+      changedFields: Object.keys(data)
+    }
+  });
+
+  return c.json(partner);
+});
+
+orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requireMfa(), async (c) => {
+  const auth = c.get('auth');
+  const id = c.req.param('id')!;
+
+  const [partner] = await db
+    .update(partners)
+    .set({ deletedAt: new Date(), updatedAt: new Date() })
+    .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
+    .returning();
+
+  if (!partner) {
+    return c.json({ error: 'Partner not found' }, 404);
+  }
+
+  const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);
+  writeAuditEvent(c, {
+    orgId: auditOrgId,
+    actorId: auth.user?.id,
+    actorEmail: auth.user?.email,
+    action: 'partner.delete',
+    resourceType: 'partner',
+    resourceId: partner.id,
+    resourceName: partner.name
+  });
+
+  return c.json({ success: true });
 });
 
 // --- Organizations (partner-scoped) ---

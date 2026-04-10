@@ -53,4 +53,10 @@ describe('BrandHeader', () => {
     expect(container.querySelector('img')).toBeNull();
     expect(container.querySelector('svg')).not.toBeNull();
   });
+
+  it('falls back to the SVG for an empty string logoUrl', () => {
+    const { container } = render(<BrandHeader logoUrl="" name="Acme MSP" showLabel />);
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('svg')).not.toBeNull();
+  });
 });
