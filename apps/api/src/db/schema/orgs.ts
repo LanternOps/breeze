@@ -64,5 +64,7 @@ export const enrollmentKeys = pgTable('enrollment_keys', {
   maxUsage: integer('max_usage'),
   expiresAt: timestamp('expires_at'),
   createdBy: uuid('created_by'),
-  createdAt: timestamp('created_at').defaultNow().notNull()
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  shortCode: varchar('short_code', { length: 12 }).unique(),
+  installerPlatform: varchar('installer_platform', { length: 16 }),
 });
