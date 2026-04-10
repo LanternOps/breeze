@@ -9,7 +9,7 @@ type Props = {
 
 const PLACEHOLDER = 'Not set — orgs configure individually';
 
-const MAX_LOGO_BYTES = 300_000;
+const MAX_LOGO_BYTES = 400_000;
 const LOGO_ACCEPT = 'image/png,image/jpeg,image/webp';
 
 function resizeToDataUrl(file: File): Promise<string> {
@@ -51,13 +51,13 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
     setLogoError(null);
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > MAX_LOGO_BYTES) {
-      setLogoError(`File too large (${Math.round(file.size / 1024)} KB). Maximum is 300 KB.`);
-      e.target.value = '';
-      return;
-    }
     try {
       const dataUrl = await resizeToDataUrl(file);
+      if (dataUrl.length > MAX_LOGO_BYTES) {
+        setLogoError('Image too large after encoding (max 400 KB). Try a smaller or simpler image.');
+        e.target.value = '';
+        return;
+      }
       set({ logoUrl: dataUrl });
     } catch {
       setLogoError('Could not read image. Please try a different file.');
@@ -160,7 +160,7 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
               </div>
             </div>
             <p className="text-xs text-muted-foreground">
-              PNG, JPEG, or WebP · max 300 KB · resized to fit 256×256
+              PNG, JPEG, or WebP · max 400 KB after encoding · resized to fit 256×256
             </p>
             {logoError && (
               <p className="text-xs text-destructive">{logoError}</p>
@@ -173,12 +173,21 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
                   value={data.logoUrl ?? ''}
                   onChange={e => {
                     const val = e.target.value;
+                    if (!val) {
+                      setLogoError(null);
+                      set({ logoUrl: undefined });
+                      return;
+                    }
                     if (val.startsWith('blob:')) {
                       setLogoError('Blob URLs are temporary and cannot be saved. Upload the file instead.');
                       return;
                     }
+                    if (!sanitizeImageSrc(val)) {
+                      setLogoError('URL not supported. Use an https:// URL or upload a file.');
+                      return;
+                    }
                     setLogoError(null);
-                    set({ logoUrl: val || undefined });
+                    set({ logoUrl: val });
                   }}
                   placeholder={PLACEHOLDER}
                   className="h-9 w-full rounded-md border bg-background px-3 text-sm"

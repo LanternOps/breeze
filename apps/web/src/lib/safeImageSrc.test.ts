@@ -70,4 +70,8 @@ describe('sanitizeImageSrc', () => {
   it('rejects a data URI without the base64 marker', () => {
     expect(sanitizeImageSrc('data:image/png,rawbytes')).toBeNull();
   });
+
+  it('rejects a data URI with no base64 payload', () => {
+    expect(sanitizeImageSrc('data:image/png;base64,')).toBeNull();
+  });
 });

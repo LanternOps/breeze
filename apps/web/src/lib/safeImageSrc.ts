@@ -1,5 +1,5 @@
 const CONTROL_CHARS_PATTERN = /[\u0000-\u001F\u007F]/;
-const DATA_IMAGE_PATTERN = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/;
+const DATA_IMAGE_PATTERN = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]{4,}={0,2}$/;
 const MAX_DATA_URI_LENGTH = 400_000;
 
 function isSafeRelativePath(value: string): boolean {
