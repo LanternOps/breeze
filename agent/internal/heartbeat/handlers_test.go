@@ -109,6 +109,9 @@ var allCommandTypes = []string{
 
 	// handlers_incident_response.go init()
 	tools.CmdCollectEvidence, tools.CmdExecuteContainment,
+
+	// handlers_tunnel.go init()
+	tools.CmdTunnelOpen, tools.CmdTunnelData, tools.CmdTunnelClose,
 }
 
 func TestHandlerRegistryCompleteness(t *testing.T) {

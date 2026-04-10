@@ -106,7 +106,7 @@ func TestRunChecksResetsConsecutiveFailuresOnSuccess(t *testing.T) {
 	}
 }
 
-func TestRunChecksAutoRestartNotAttemptedWhenRunning(t *testing.T) {
+func TestRunChecksAutoRestartNotAttemptedForNotFound(t *testing.T) {
 	var mu sync.Mutex
 	var received []CheckResult
 
@@ -116,9 +116,9 @@ func TestRunChecksAutoRestartNotAttemptedWhenRunning(t *testing.T) {
 		mu.Unlock()
 	})
 
-	// Even with auto-restart enabled, if status is running, no restart should happen.
-	// We can't easily make checkProcess return "running" for a fake process,
-	// but we can verify for a not-found process that auto-restart IS attempted.
+	// Auto-restart should only trigger on StatusStopped, not on StatusNotFound
+	// or StatusError — this prevents restart spam for unresolvable names.
+	// See the comment in monitor.go runChecks() around the auto-restart branch.
 	m.mu.Lock()
 	m.config = MonitorConfig{
 		CheckIntervalSeconds: 30,
@@ -148,8 +148,8 @@ func TestRunChecksAutoRestartNotAttemptedWhenRunning(t *testing.T) {
 	if r.Status == StatusRunning {
 		t.Fatal("Status should not be running for nonexistent process")
 	}
-	if !r.AutoRestartAttempted {
-		t.Error("AutoRestartAttempted should be true when process is not running and auto_restart is enabled")
+	if r.AutoRestartAttempted {
+		t.Error("AutoRestartAttempted should be false for StatusNotFound — auto-restart must only fire for StatusStopped")
 	}
 }
 

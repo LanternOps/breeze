@@ -49,50 +49,37 @@ func (r *ScriptRunner) Run(language, content string, timeout time.Duration) *Scr
 	}
 	defer os.Remove(scriptFile)
 
-	// Build command
-	cmd := r.buildCommand(language, scriptFile)
+	// Create context with timeout and build command via CommandContext so
+	// os/exec handles the kill-on-timeout synchronization for us. Writing to
+	// cmd.Process from a separate goroutine while Wait is running is a race.
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := r.buildCommandContext(ctx, language, scriptFile)
 
 	// Set up output capture
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+	// Safety net if the child ignores SIGKILL and leaves pipes open.
+	cmd.WaitDelay = 5 * time.Second
 
-	// Start the command
-	if err := cmd.Start(); err != nil {
-		result.Status = "failed"
-		result.ErrorMsg = fmt.Sprintf("Failed to start script: %v", err)
-		result.DurationMs = time.Since(start).Milliseconds()
-		return result
-	}
-
-	// Wait with timeout
-	done := make(chan error)
-	go func() {
-		done <- cmd.Wait()
-	}()
-
-	select {
-	case <-ctx.Done():
-		cmd.Process.Kill()
+	err := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
 		result.Status = "timeout"
 		result.ErrorMsg = "Script execution timed out"
-	case err := <-done:
-		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				result.ExitCode = exitErr.ExitCode()
-				result.Status = "completed"
-			} else {
-				result.Status = "failed"
-				result.ErrorMsg = err.Error()
-			}
-		} else {
+	} else if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			result.ExitCode = exitErr.ExitCode()
 			result.Status = "completed"
-			result.ExitCode = 0
+		} else {
+			result.Status = "failed"
+			result.ErrorMsg = err.Error()
 		}
+	} else {
+		result.Status = "completed"
+		result.ExitCode = 0
 	}
 
 	result.Stdout = stdout.String()
@@ -117,20 +104,27 @@ func (r *ScriptRunner) getExtension(language string) string {
 	}
 }
 
+// buildCommand constructs an uncontextualized command. Kept for tests that
+// inspect the produced argv; production callers should use buildCommandContext
+// so timeouts propagate via the context (avoids racing with cmd.Process.Kill).
 func (r *ScriptRunner) buildCommand(language, scriptFile string) *exec.Cmd {
+	return r.buildCommandContext(context.Background(), language, scriptFile)
+}
+
+func (r *ScriptRunner) buildCommandContext(ctx context.Context, language, scriptFile string) *exec.Cmd {
 	switch language {
 	case "powershell":
 		if runtime.GOOS == "windows" {
-			return exec.Command("powershell", "-ExecutionPolicy", "Bypass", "-File", scriptFile)
+			return exec.CommandContext(ctx, "powershell", "-ExecutionPolicy", "Bypass", "-File", scriptFile)
 		}
-		return exec.Command("pwsh", "-File", scriptFile)
+		return exec.CommandContext(ctx, "pwsh", "-File", scriptFile)
 	case "bash":
-		return exec.Command("bash", scriptFile)
+		return exec.CommandContext(ctx, "bash", scriptFile)
 	case "python":
-		return exec.Command("python3", scriptFile)
+		return exec.CommandContext(ctx, "python3", scriptFile)
 	case "cmd":
-		return exec.Command("cmd", "/c", scriptFile)
+		return exec.CommandContext(ctx, "cmd", "/c", scriptFile)
 	default:
-		return exec.Command("sh", scriptFile)
+		return exec.CommandContext(ctx, "sh", scriptFile)
 	}
 }

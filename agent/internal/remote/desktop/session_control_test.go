@@ -19,6 +19,7 @@ func (h *stubInputHandler) SendMouseScroll(x, y int, delta int) error         { 
 func (h *stubInputHandler) SendKeyPress(key string, modifiers []string) error { return nil }
 func (h *stubInputHandler) SendKeyDown(key string) error                      { return nil }
 func (h *stubInputHandler) SendKeyUp(key string) error                        { return nil }
+func (h *stubInputHandler) SetAtLoginWindow(atLoginWindow bool)                {}
 func (h *stubInputHandler) HandleEvent(event InputEvent) error {
 	h.events = append(h.events, event)
 	return nil

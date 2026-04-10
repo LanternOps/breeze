@@ -24,11 +24,17 @@ func assertFailedWithMessage(t *testing.T, result CommandResult, expectedSubstri
 func TestScheduledTaskCommands_NonWindowsUnsupported(t *testing.T) {
 	expected := "scheduled tasks are only supported on Windows"
 
+	// ListTasks takes an optional folder (defaults to "\\") so an empty
+	// payload passes validation and reaches the OS stub. The per-task
+	// commands require a valid task path — supply one so arg validation
+	// in tasks.go passes and the OS stub's unsupported error is returned.
+	validPath := map[string]any{"path": "\\Microsoft\\Windows\\Example"}
+
 	assertFailedWithMessage(t, ListTasks(map[string]any{}), expected)
-	assertFailedWithMessage(t, GetTask(map[string]any{}), expected)
-	assertFailedWithMessage(t, RunTask(map[string]any{}), expected)
-	assertFailedWithMessage(t, EnableTask(map[string]any{}), expected)
-	assertFailedWithMessage(t, DisableTask(map[string]any{}), expected)
+	assertFailedWithMessage(t, GetTask(validPath), expected)
+	assertFailedWithMessage(t, RunTask(validPath), expected)
+	assertFailedWithMessage(t, EnableTask(validPath), expected)
+	assertFailedWithMessage(t, DisableTask(validPath), expected)
 }
 
 func TestRegistryCommands_NonWindowsUnsupported(t *testing.T) {

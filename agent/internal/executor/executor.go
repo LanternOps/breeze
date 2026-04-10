@@ -178,6 +178,17 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 	// Set process group so children are killed on timeout
 	setProcessGroup(cmd)
 
+	// When the context is cancelled (timeout), kill the entire process group
+	// rather than only the shell leader. Otherwise long-running children like
+	// `sleep` keep the stdout/stderr pipes open and Wait() blocks forever.
+	cmd.Cancel = func() error {
+		return killProcessGroup(cmd)
+	}
+	// Safety net: if killing the group doesn't cause Wait to return within
+	// this window (e.g. child is in uninterruptible I/O), give up and close
+	// the pipes ourselves.
+	cmd.WaitDelay = 5 * time.Second
+
 	// Handle runAs for elevated execution
 	if script.RunAs != "" {
 		if err := e.configureRunAs(cmd, script.RunAs); err != nil {
@@ -226,10 +237,9 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			// Kill the entire process group on timeout
-			if killErr := killProcessGroup(cmd); killErr != nil {
-				log.Warn("failed to kill process group", "executionId", script.ID, "error", killErr)
-			}
+			// Process group was already killed by cmd.Cancel when the context
+			// deadline expired; nothing more to do here besides record the
+			// timeout result.
 			log.Warn("execution timed out", "executionId", script.ID, "timeoutSeconds", timeout)
 			result.ExitCode = -1
 			result.Error = fmt.Sprintf("execution timed out after %d seconds", timeout)
@@ -252,22 +262,19 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 // Cancel terminates a running script execution
 func (e *Executor) Cancel(executionID string) error {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-
 	running, exists := e.running[executionID]
+	e.mu.Unlock()
 	if !exists {
 		return fmt.Errorf("execution %s not found or already completed", executionID)
 	}
 
 	log.Info("cancelling execution", "executionId", executionID)
 
-	// Cancel the context to terminate the process
+	// Cancel the context; this causes cmd.Cancel (set in Execute) to kill
+	// the entire process group. os/exec synchronizes the cancel callback
+	// with cmd.Start/Wait internally, so we don't race with Process field
+	// writes in the execution goroutine.
 	running.cancel()
-
-	// Kill the entire process group to prevent orphaned children
-	if err := killProcessGroup(running.cmd); err != nil {
-		log.Warn("failed to kill process group", "executionId", executionID, "error", err)
-	}
 
 	return nil
 }

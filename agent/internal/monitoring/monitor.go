@@ -101,7 +101,12 @@ func (m *Monitor) Start() {
 	m.ticker = time.NewTicker(time.Duration(interval) * time.Second)
 	m.running = true
 
-	go m.loop()
+	// Pass the stop channel and ticker into the loop goroutine so it doesn't
+	// have to read the Monitor fields (which are protected by m.mu and may be
+	// reassigned by a subsequent Start after Stop).
+	stopCh := m.stopCh
+	ticker := m.ticker
+	go m.loop(stopCh, ticker)
 	log.Info("monitoring started", "intervalSeconds", interval)
 }
 
@@ -120,15 +125,15 @@ func (m *Monitor) Stop() {
 	log.Info("monitoring stopped")
 }
 
-func (m *Monitor) loop() {
+func (m *Monitor) loop(stopCh <-chan struct{}, ticker *time.Ticker) {
 	// Run an immediate check on start
 	m.runChecks()
 
 	for {
 		select {
-		case <-m.stopCh:
+		case <-stopCh:
 			return
-		case <-m.ticker.C:
+		case <-ticker.C:
 			m.runChecks()
 		}
 	}
