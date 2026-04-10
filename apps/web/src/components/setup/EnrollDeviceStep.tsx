@@ -201,7 +201,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
       }
 
       const linkData = await linkRes.json();
-      setGeneratedLink(linkData.url);
+      setGeneratedLink(linkData.shortUrl ?? linkData.url);
     } catch (err) {
       setLinkError(err instanceof Error ? err.message : 'Unknown error');
     } finally {

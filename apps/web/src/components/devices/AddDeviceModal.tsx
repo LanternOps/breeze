@@ -269,7 +269,7 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
       }
 
       const linkData = await linkRes.json();
-      setGeneratedLink(linkData.url);
+      setGeneratedLink(linkData.shortUrl ?? linkData.url);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       setLinkError(`Failed to generate link: ${message}`);

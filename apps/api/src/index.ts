@@ -31,7 +31,7 @@ import { searchRoutes } from './routes/search';
 import { logsRoutes } from './routes/logs';
 import { remoteRoutes } from './routes/remote';
 import { apiKeyRoutes } from './routes/apiKeys';
-import { enrollmentKeyRoutes, publicEnrollmentRoutes } from './routes/enrollmentKeys';
+import { enrollmentKeyRoutes, publicEnrollmentRoutes, publicShortLinkRoutes } from './routes/enrollmentKeys';
 import { ssoRoutes } from './routes/sso';
 import { docsRoutes } from './routes/docs';
 import { accessReviewRoutes } from './routes/accessReviews';
@@ -338,6 +338,9 @@ app.get('/ready', (c) => {
 
 // Metrics endpoint (for Prometheus scraping at /metrics)
 app.route('/metrics', metricsRoutes);
+
+// Short link routes (enrollment short URLs at /s/<code>)
+app.route('/s', publicShortLinkRoutes);
 
 // API routes
 const api = new Hono();
