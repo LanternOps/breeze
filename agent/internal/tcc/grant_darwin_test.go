@@ -91,4 +91,9 @@ func TestConstants(t *testing.T) {
 	if agentBinaryPath != "/usr/local/bin/breeze-agent" {
 		t.Errorf("unexpected agent binary path: %s", agentBinaryPath)
 	}
+	// Helper path must match service_cmd_darwin.go's darwinDesktopHelperBinaryPath
+	// and the LaunchAgent plist entries.
+	if helperBinaryPath != "/usr/local/bin/breeze-desktop-helper" {
+		t.Errorf("unexpected helper binary path: %s", helperBinaryPath)
+	}
 }

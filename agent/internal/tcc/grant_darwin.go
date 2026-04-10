@@ -22,6 +22,12 @@ const systemTCCDBPath = "/Library/Application Support/com.apple.TCC/TCC.db"
 // agentBinaryPath is the installed location of the Breeze agent.
 const agentBinaryPath = "/usr/local/bin/breeze-agent"
 
+// helperBinaryPath is the installed location of the Breeze desktop helper.
+// The helper runs in the user's GUI session and is the process that
+// actually performs screen capture and accessibility actions, so it
+// needs its own TCC grants separate from the agent daemon.
+const helperBinaryPath = "/usr/local/bin/breeze-desktop-helper"
+
 // tccService represents a macOS TCC service identifier.
 type tccService struct {
 	Name    string // Human-readable name for logging
@@ -87,72 +93,88 @@ func EnsurePermissions() ([]GrantResult, error) {
 	// permissions (Accessibility) only need the system DB.
 	userDBPaths := getUserTCCDBPaths()
 
-	for _, svc := range services {
-		r := GrantResult{Service: svc.Service, Name: svc.Name}
+	// Grant for both the agent and the desktop helper. The helper runs in the
+	// user's GUI session and is the process that actually captures the screen
+	// and injects input events, so it needs its own TCC grants. The helper is
+	// installed alongside the agent but only after the first agent start, so
+	// skip it if the binary isn't on disk yet.
+	binaries := []string{agentBinaryPath}
+	if _, err := os.Stat(helperBinaryPath); err == nil {
+		binaries = append(binaries, helperBinaryPath)
+	}
 
-		// Grant in system TCC database
-		granted, checkErr := isAlreadyGranted(systemTCCDBPath, svc.Service)
-		if checkErr != nil {
-			log.Warn("failed to check existing TCC entry",
-				"service", svc.Name, "error", checkErr.Error())
-		}
+	for _, binaryPath := range binaries {
+		for _, svc := range services {
+			label := svc.Name
+			if binaryPath == helperBinaryPath {
+				label = svc.Name + " (helper)"
+			}
+			r := GrantResult{Service: svc.Service, Name: label}
 
-		if granted {
-			r.Granted = true
-			r.Already = true
-			log.Info("TCC permission already granted (system)", "service", svc.Name)
-		} else {
-			if grantErr := grantPermission(systemTCCDBPath, svc.Service, columns); grantErr != nil {
-				r.Err = grantErr
-				errCount++
-				log.Warn("failed to grant TCC permission (system)",
-					"service", svc.Name, "error", grantErr.Error())
-			} else {
+			// Grant in system TCC database
+			granted, checkErr := isAlreadyGrantedForBinary(systemTCCDBPath, svc.Service, binaryPath)
+			if checkErr != nil {
+				log.Warn("failed to check existing TCC entry",
+					"service", label, "binary", binaryPath, "error", checkErr.Error())
+			}
+
+			if granted {
 				r.Granted = true
-				log.Info("TCC permission granted (system)", "service", svc.Name)
-			}
-		}
-
-		// Screen Recording also needs user-level TCC grants
-		if svc.Service == "kTCCServiceScreenCapture" && len(userDBPaths) > 0 {
-			var userDBSucceeded bool
-			for _, userDB := range userDBPaths {
-				userGranted, userCheckErr := isAlreadyGranted(userDB, svc.Service)
-				if userCheckErr != nil {
-					log.Warn("failed to check user TCC entry",
-						"db", userDB, "error", userCheckErr.Error())
-				}
-				if userGranted {
-					log.Debug("Screen Recording already granted in user DB", "db", userDB)
-					userDBSucceeded = true
-					continue
-				}
-				// Detect schema for this user's DB (may differ from system DB)
-				userCols, schemaErr := detectTCCSchemaForDB(userDB)
-				if schemaErr != nil {
-					log.Warn("failed to detect user TCC schema", "db", userDB, "error", schemaErr.Error())
-					continue
-				}
-				if grantErr := grantPermission(userDB, svc.Service, userCols); grantErr != nil {
-					log.Warn("failed to grant Screen Recording in user DB",
-						"db", userDB, "error", grantErr.Error())
+				r.Already = true
+				log.Info("TCC permission already granted (system)", "service", label, "binary", binaryPath)
+			} else {
+				if grantErr := grantPermissionForBinary(systemTCCDBPath, svc.Service, columns, binaryPath); grantErr != nil {
+					r.Err = grantErr
+					errCount++
+					log.Warn("failed to grant TCC permission (system)",
+						"service", label, "binary", binaryPath, "error", grantErr.Error())
 				} else {
-					log.Info("Screen Recording granted in user DB", "db", userDB)
-					userDBSucceeded = true
+					r.Granted = true
+					log.Info("TCC permission granted (system)", "service", label, "binary", binaryPath)
 				}
 			}
-			if !userDBSucceeded {
-				r.Err = fmt.Errorf("Screen Recording grant failed for all %d user TCC databases", len(userDBPaths))
-				r.Granted = false
-				errCount++
-			}
-		}
 
-		results = append(results, r)
+			// Screen Recording also needs user-level TCC grants
+			if svc.Service == "kTCCServiceScreenCapture" && len(userDBPaths) > 0 {
+				var userDBSucceeded bool
+				for _, userDB := range userDBPaths {
+					userGranted, userCheckErr := isAlreadyGrantedForBinary(userDB, svc.Service, binaryPath)
+					if userCheckErr != nil {
+						log.Warn("failed to check user TCC entry",
+							"db", userDB, "binary", binaryPath, "error", userCheckErr.Error())
+					}
+					if userGranted {
+						log.Debug("Screen Recording already granted in user DB", "db", userDB, "binary", binaryPath)
+						userDBSucceeded = true
+						continue
+					}
+					// Detect schema for this user's DB (may differ from system DB)
+					userCols, schemaErr := detectTCCSchemaForDB(userDB)
+					if schemaErr != nil {
+						log.Warn("failed to detect user TCC schema", "db", userDB, "error", schemaErr.Error())
+						continue
+					}
+					if grantErr := grantPermissionForBinary(userDB, svc.Service, userCols, binaryPath); grantErr != nil {
+						log.Warn("failed to grant Screen Recording in user DB",
+							"db", userDB, "binary", binaryPath, "error", grantErr.Error())
+					} else {
+						log.Info("Screen Recording granted in user DB", "db", userDB, "binary", binaryPath)
+						userDBSucceeded = true
+					}
+				}
+				if !userDBSucceeded {
+					r.Err = fmt.Errorf("Screen Recording grant failed for all %d user TCC databases", len(userDBPaths))
+					r.Granted = false
+					errCount++
+				}
+			}
+
+			results = append(results, r)
+		}
 	}
 
 	if errCount > 0 {
-		return results, fmt.Errorf("%d of %d TCC grants failed", errCount, len(services))
+		return results, fmt.Errorf("%d of %d TCC grants failed", errCount, len(services)*len(binaries))
 	}
 	return results, nil
 }
@@ -189,13 +211,20 @@ func detectTCCSchemaForDB(dbPath string) ([]string, error) {
 }
 
 // isAlreadyGranted checks if a TCC entry already exists and is allowed
-// (auth_value=2) for the agent binary. Does not filter on
-// indirect_object_identifier because older macOS TCC schemas may lack that
-// column. Instead we check if any matching row has auth_value=2.
+// (auth_value=2) for the agent binary. Kept as a thin wrapper so CheckFDA
+// and other agent-scoped callers don't have to pass the binary path.
 func isAlreadyGranted(dbPath, service string) (bool, error) {
+	return isAlreadyGrantedForBinary(dbPath, service, agentBinaryPath)
+}
+
+// isAlreadyGrantedForBinary checks if a TCC entry already exists and is
+// allowed (auth_value=2) for the given binary path. Does not filter on
+// indirect_object_identifier because older macOS TCC schemas may lack that
+// column — instead we check if any matching row has auth_value=2.
+func isAlreadyGrantedForBinary(dbPath, service, binaryPath string) (bool, error) {
 	query := fmt.Sprintf(
 		"SELECT auth_value FROM access WHERE service=%s AND client=%s AND client_type=1;",
-		sqlStr(service), sqlStr(agentBinaryPath),
+		sqlStr(service), sqlStr(binaryPath),
 	)
 	out, err := runSQLite(dbPath, query)
 	if err != nil {
@@ -210,9 +239,14 @@ func isAlreadyGranted(dbPath, service string) (bool, error) {
 	return false, nil
 }
 
-// grantPermission inserts or replaces a TCC entry for the given service.
-// It adapts the SQL to the detected schema columns.
+// grantPermission inserts or replaces a TCC entry for the agent binary.
 func grantPermission(dbPath, service string, columns []string) error {
+	return grantPermissionForBinary(dbPath, service, columns, agentBinaryPath)
+}
+
+// grantPermissionForBinary inserts or replaces a TCC entry for the given
+// binary path and service. Adapts the SQL to the detected schema columns.
+func grantPermissionForBinary(dbPath, service string, columns []string, binaryPath string) error {
 	colSet := make(map[string]bool, len(columns))
 	for _, c := range columns {
 		colSet[c] = true
@@ -229,12 +263,12 @@ func grantPermission(dbPath, service string, columns []string) error {
 	// Build column/value lists starting with the required core columns
 	insertCols := []string{"service", "client", "client_type", "auth_value", "auth_reason", "auth_version"}
 	insertVals := []string{
-		sqlStr(service),         // service
-		sqlStr(agentBinaryPath), // client
-		"1",                     // client_type: 1 = absolute path
-		"2",                     // auth_value: 2 = allowed
-		"4",                     // auth_reason: 4 = system policy
-		"1",                     // auth_version
+		sqlStr(service),    // service
+		sqlStr(binaryPath), // client
+		"1",                // client_type: 1 = absolute path
+		"2",                // auth_value: 2 = allowed
+		"4",                // auth_reason: 4 = system policy
+		"1",                // auth_version
 	}
 
 	// Handle optional columns -- provide safe defaults so the INSERT
@@ -279,7 +313,7 @@ func grantPermission(dbPath, service string, columns []string) error {
 	}
 
 	// Verify the insert worked
-	granted, verifyErr := isAlreadyGranted(dbPath, service)
+	granted, verifyErr := isAlreadyGrantedForBinary(dbPath, service, binaryPath)
 	if verifyErr != nil {
 		return fmt.Errorf("verification query failed after INSERT: %w", verifyErr)
 	}
