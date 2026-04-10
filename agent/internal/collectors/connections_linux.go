@@ -23,6 +23,9 @@ func (c *ConnectionsCollector) Collect() ([]ConnectionInfo, error) {
 		}
 
 		protocol := c.getProtocolString(conn.Type, conn.Family)
+		if protocol == "unknown" {
+			continue // skip Unix sockets, raw sockets, and other non-TCP/UDP types
+		}
 
 		processName := ""
 		if conn.Pid > 0 {
