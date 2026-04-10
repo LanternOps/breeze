@@ -311,7 +311,7 @@ export default function PartnerSettingsPage() {
         ))}
       </div>
 
-      {activeTab !== 'regional' && (
+      {activeTab !== 'regional' && activeTab !== 'company' && (
         <div className="rounded-md border bg-blue-50 dark:bg-blue-950/30 px-4 py-3 text-sm text-blue-700 dark:text-blue-300">
           Values you set here are enforced across all organizations. Leave fields empty to let each organization configure individually.
         </div>
