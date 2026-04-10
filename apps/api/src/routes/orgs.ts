@@ -356,7 +356,7 @@ const partnerSettingsSchema = z.object({
     maintenanceWindow: z.string().optional(),
   }).optional(),
   branding: z.object({
-    logoUrl: z.string().optional(),
+    logoUrl: z.string().max(400_000, 'Logo data exceeds maximum size (400 KB)').optional(),
     primaryColor: z.string().optional(),
     secondaryColor: z.string().optional(),
     theme: z.enum(['light', 'dark', 'system']).optional(),
