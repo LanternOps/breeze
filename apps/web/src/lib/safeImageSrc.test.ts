@@ -37,4 +37,37 @@ describe('sanitizeImageSrc', () => {
     expect(sanitizeImageSrc('  ')).toBeNull();
     expect(sanitizeImageSrc('/logo.png\u0000')).toBeNull();
   });
+
+  // Data URI cases
+  it('accepts a valid PNG data URI within the size limit', () => {
+    const dataUri = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    expect(sanitizeImageSrc(dataUri)).toBe(dataUri);
+  });
+
+  it('accepts a valid JPEG data URI', () => {
+    const dataUri = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAARC';
+    expect(sanitizeImageSrc(dataUri)).toBe(dataUri);
+  });
+
+  it('accepts a valid WebP data URI', () => {
+    const dataUri = 'data:image/webp;base64,UklGRlYAAABXRUJQVlA4IEoAAADQAQCdASoBAAEAAkA4JYgCdAEO/gHOAAA=';
+    expect(sanitizeImageSrc(dataUri)).toBe(dataUri);
+  });
+
+  it('rejects SVG data URI (XSS risk)', () => {
+    expect(sanitizeImageSrc('data:image/svg+xml;base64,PHN2Zy8+')).toBeNull();
+  });
+
+  it('rejects HTML data URI', () => {
+    expect(sanitizeImageSrc('data:text/html;base64,PGh0bWwv>')).toBeNull();
+  });
+
+  it('rejects a data URI that exceeds the size limit', () => {
+    const oversized = 'data:image/png;base64,' + 'A'.repeat(400_001);
+    expect(sanitizeImageSrc(oversized)).toBeNull();
+  });
+
+  it('rejects a data URI without the base64 marker', () => {
+    expect(sanitizeImageSrc('data:image/png,rawbytes')).toBeNull();
+  });
 });

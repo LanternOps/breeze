@@ -1,4 +1,6 @@
 const CONTROL_CHARS_PATTERN = /[\u0000-\u001F\u007F]/;
+const DATA_IMAGE_PATTERN = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/;
+const MAX_DATA_URI_LENGTH = 400_000;
 
 function isSafeRelativePath(value: string): boolean {
   if (!value.startsWith('/')) {
@@ -20,6 +22,11 @@ export function sanitizeImageSrc(value: string | null | undefined): string | nul
   const candidate = value.trim();
   if (!candidate || CONTROL_CHARS_PATTERN.test(candidate)) {
     return null;
+  }
+
+  if (candidate.startsWith('data:')) {
+    if (candidate.length > MAX_DATA_URI_LENGTH) return null;
+    return DATA_IMAGE_PATTERN.test(candidate) ? candidate : null;
   }
 
   if (candidate.startsWith('blob:')) {
