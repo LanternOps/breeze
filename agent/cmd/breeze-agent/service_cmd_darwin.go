@@ -486,14 +486,22 @@ func bootstrapDesktopHelperPlists() {
 		} else {
 			fmt.Printf("Desktop helper bootstrapped for GUI session (uid %s)\n", uid)
 		}
+	} else {
+		fmt.Fprintln(os.Stderr, "Note: SUDO_UID not set; desktop helper GUI session bootstrap skipped (will retry on heartbeat).")
 	}
 
-	// Also bootstrap the login-window helper (covers login screen remote access).
-	out, err := exec.Command("launchctl", "bootstrap", "loginwindow", darwinDesktopLoginWindowPlistDst).CombinedOutput()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Note: could not bootstrap login-window desktop helper: %s\n",
-			strings.TrimSpace(string(out)))
+	// Bootstrap the login-window helper (covers login screen remote access).
+	// Use kickstart first (stable interface), fall back to bootstrap.
+	const loginWindowLabel = "loginwindow/com.breeze.desktop-helper-loginwindow"
+	if err := exec.Command("launchctl", "kickstart", "-k", loginWindowLabel).Run(); err == nil {
+		fmt.Println("Login-window desktop helper kickstarted.")
 	} else {
-		fmt.Println("Login-window desktop helper bootstrapped.")
+		out, err2 := exec.Command("launchctl", "bootstrap", "loginwindow", darwinDesktopLoginWindowPlistDst).CombinedOutput()
+		if err2 != nil {
+			fmt.Fprintf(os.Stderr, "Note: could not start login-window desktop helper: %s\n",
+				strings.TrimSpace(string(out)))
+		} else {
+			fmt.Println("Login-window desktop helper bootstrapped.")
+		}
 	}
 }
