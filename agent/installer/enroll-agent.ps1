@@ -42,6 +42,11 @@ $serverUrl = Get-CustomActionDataValue -Data $CustomActionData -Key "SERVER_URL"
 $enrollmentKey = Get-CustomActionDataValue -Data $CustomActionData -Key "ENROLLMENT_KEY" -NextKey "ENROLLMENT_SECRET"
 $enrollmentSecret = Get-CustomActionDataValue -Data $CustomActionData -Key "ENROLLMENT_SECRET"
 
+# Template MSI sentinels are space-padded to 512 chars; strip trailing padding.
+$serverUrl = $serverUrl.Trim()
+$enrollmentKey = $enrollmentKey.Trim()
+$enrollmentSecret = $enrollmentSecret.Trim()
+
 if ([string]::IsNullOrWhiteSpace($serverUrl) -or [string]::IsNullOrWhiteSpace($enrollmentKey)) {
     exit 0
 }

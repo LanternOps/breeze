@@ -33,7 +33,7 @@ describe('replaceMsiPlaceholders', () => {
     expect(result.includes(Buffer.from('secret456', 'utf16le'))).toBe(true);
   });
 
-  it('leaves ENROLLMENT_SECRET as nulls when empty', () => {
+  it('leaves ENROLLMENT_SECRET padded with spaces when empty', () => {
     const secretSentinel = Buffer.from(PLACEHOLDERS.ENROLLMENT_SECRET, 'utf16le');
     const keySentinel = Buffer.from(PLACEHOLDERS.ENROLLMENT_KEY, 'utf16le');
     const serverSentinel = Buffer.from(PLACEHOLDERS.SERVER_URL, 'utf16le');

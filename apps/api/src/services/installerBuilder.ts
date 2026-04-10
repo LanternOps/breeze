@@ -82,8 +82,12 @@ export function replaceMsiPlaceholders(template: Buffer, values: InstallerValues
       return null;
     }
 
-    // Pad replacement to match sentinel length (null-padded for clean termination)
-    const replacementPadded = value.padEnd(PLACEHOLDER_CHAR_LENGTH, '\0');
+    // Pad replacement with spaces (matches template build-msi.ps1). Null
+    // padding would be read back by MSI as U+0000 and truncate the string
+    // when it's expanded into a command line for deferred custom actions,
+    // silently losing the ENROLLMENT_KEY/ENROLLMENT_SECRET fields that come
+    // after SERVER_URL in CustomActionData.
+    const replacementPadded = value.padEnd(PLACEHOLDER_CHAR_LENGTH, ' ');
     const replacementBuf = Buffer.from(replacementPadded, encoding);
     // Only write up to the sentinel length to avoid overwriting adjacent data
     const writeLen = Math.min(replacementBuf.length, sentinelLen);
