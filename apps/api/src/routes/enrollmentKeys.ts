@@ -1,7 +1,9 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, sql, desc, inArray, lt, isNull, or } from 'drizzle-orm';
+import { customAlphabet } from 'nanoid';
 import { db } from '../db';
 import { enrollmentKeys } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
@@ -80,6 +82,22 @@ function writeEnrollmentKeyAudit(
 }
 
 // fetchTemplateMsi, fetchRegularMsi, fetchMacosPkg moved to installerBuilder.ts
+
+const shortCodeAlphabet = '23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz';
+const generateShortCode = customAlphabet(shortCodeAlphabet, 10);
+
+async function allocateShortCode(): Promise<string> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const code = generateShortCode();
+    const [existing] = await db
+      .select({ id: enrollmentKeys.id })
+      .from(enrollmentKeys)
+      .where(eq(enrollmentKeys.shortCode, code))
+      .limit(1);
+    if (!existing) return code;
+  }
+  throw new Error('Failed to allocate unique short code after 5 attempts');
+}
 
 // ============================================
 // Validation Schemas
@@ -500,6 +518,7 @@ enrollmentKeyRoutes.get(
     // Generate a child enrollment key (single-use, same org/site/expiry)
     const rawChildKey = generateEnrollmentKey();
     const childKeyHash = hashEnrollmentKey(rawChildKey);
+    const shortCode = await allocateShortCode();
 
     const [childKey] = await db
       .insert(enrollmentKeys)
@@ -512,6 +531,8 @@ enrollmentKeyRoutes.get(
         maxUsage: childMaxUsage,
         expiresAt: parentKey.expiresAt,
         createdBy: auth.user.id,
+        shortCode,
+        installerPlatform: platform,
       })
       .returning();
 
@@ -551,7 +572,7 @@ enrollmentKeyRoutes.get(
           action: 'enrollment_key.installer_download',
           keyId: parentKey.id,
           keyName: parentKey.name,
-          details: { platform, childKeyId: childKey.id, count: childMaxUsage, signed: !!signingService },
+          details: { platform, childKeyId: childKey.id, shortCode, count: childMaxUsage, signed: !!signingService },
         });
 
         c.header('Content-Type', contentType);
@@ -574,7 +595,7 @@ enrollmentKeyRoutes.get(
         action: 'enrollment_key.installer_download',
         keyId: parentKey.id,
         keyName: parentKey.name,
-        details: { platform, childKeyId: childKey.id, count: childMaxUsage },
+        details: { platform, childKeyId: childKey.id, shortCode, count: childMaxUsage },
       });
 
       c.header('Content-Type', 'application/zip');
@@ -668,6 +689,7 @@ enrollmentKeyRoutes.post(
     // Generate a child enrollment key
     const rawChildKey = generateEnrollmentKey();
     const childKeyHash = hashEnrollmentKey(rawChildKey);
+    const shortCode = await allocateShortCode();
 
     const [childKey] = await db
       .insert(enrollmentKeys)
@@ -680,6 +702,8 @@ enrollmentKeyRoutes.post(
         maxUsage: childMaxUsage,
         expiresAt: parentKey.expiresAt,
         createdBy: auth.user.id,
+        shortCode,
+        installerPlatform: platform,
       })
       .returning();
 
@@ -694,6 +718,7 @@ enrollmentKeyRoutes.post(
     }
 
     const publicUrl = `${serverUrl.replace(/\/$/, '')}/api/v1/enrollment-keys/public-download/${platform}?token=${rawChildKey}`;
+    const shortUrl = `${serverUrl.replace(/\/$/, '')}/s/${shortCode}`;
 
     // Audit log
     writeEnrollmentKeyAudit(c, auth, {
@@ -701,11 +726,12 @@ enrollmentKeyRoutes.post(
       action: 'enrollment_key.installer_link_created',
       keyId: parentKey.id,
       keyName: parentKey.name,
-      details: { platform, childKeyId: childKey.id, count: childMaxUsage },
+      details: { platform, childKeyId: childKey.id, shortCode, count: childMaxUsage },
     });
 
     return c.json({
       url: publicUrl,
+      shortUrl,
       expiresAt: childKey.expiresAt,
       maxUsage: childMaxUsage,
       platform,
@@ -717,6 +743,129 @@ enrollmentKeyRoutes.post(
 // ============================================
 // Public routes (no auth middleware)
 // ============================================
+
+// serveInstaller is the shared helper for both public-download and short-link routes.
+// `rawToken` is the plaintext enrollment key to embed in the installer.
+// `keyRow`  is the already-resolved enrollment key row (for validation and usage tracking).
+async function serveInstaller(
+  c: Context,
+  keyRow: typeof enrollmentKeys.$inferSelect,
+  platform: 'windows' | 'macos',
+  rawToken: string,
+): Promise<Response> {
+  const ip = c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip') ?? 'unknown';
+
+  // Rate limit by IP (10 per minute)
+  try {
+    const { getRedis } = await import('../services');
+    const { rateLimiter } = await import('../services/rate-limit');
+    const redis = getRedis();
+    const rateResult = await rateLimiter(redis, `public-installer:${ip}`, 10, 60);
+    if (!rateResult.allowed) {
+      return c.json({ error: 'Too many requests. Please try again later.' }, 429);
+    }
+  } catch {
+    // If Redis is unavailable, allow the request (fail open for downloads)
+  }
+
+  // Validate key is still usable
+  if (keyRow.expiresAt && new Date(keyRow.expiresAt) < new Date()) {
+    return c.json({ error: 'This download link has expired' }, 410);
+  }
+  if (keyRow.maxUsage !== null && keyRow.usageCount >= keyRow.maxUsage) {
+    return c.json({ error: 'This download link has been used the maximum number of times' }, 410);
+  }
+  if (!keyRow.siteId) {
+    return c.json({ error: 'Invalid enrollment key configuration' }, 400);
+  }
+
+  // Determine server URL
+  const serverUrl = process.env.PUBLIC_API_URL || process.env.API_URL;
+  if (!serverUrl) {
+    return c.json({ error: 'Server URL not configured' }, 500);
+  }
+
+  const globalSecret = process.env.AGENT_ENROLLMENT_SECRET || '';
+
+  // Fetch binary (template if signing configured, regular if not)
+  const signingService = MsiSigningService.fromEnv();
+  let binaryBuffer: Buffer;
+  try {
+    if (platform === 'windows') {
+      binaryBuffer = signingService ? await fetchTemplateMsi() : await fetchRegularMsi();
+    } else {
+      binaryBuffer = await fetchMacosPkg();
+    }
+  } catch (err) {
+    console.error(`[public-download] Failed to fetch ${platform} binary:`, err);
+    return c.json({ error: 'Installer binary not available' }, 503);
+  }
+
+  // Build installer BEFORE incrementing usage (don't burn usage on build failure)
+  try {
+    let resultBuffer: Buffer;
+    let contentType: string;
+    let filename: string;
+
+    if (platform === 'windows') {
+      const enrollValues = { serverUrl, enrollmentKey: rawToken, enrollmentSecret: globalSecret };
+
+      if (signingService) {
+        const patched = replaceMsiPlaceholders(binaryBuffer, enrollValues);
+        if (!patched) {
+          return c.json({ error: 'Failed to build Windows installer' }, 500);
+        }
+        resultBuffer = await signingService.signMsi(patched);
+        contentType = 'application/octet-stream';
+        filename = 'breeze-agent.msi';
+      } else {
+        resultBuffer = await buildWindowsInstallerZip(binaryBuffer, {
+          ...enrollValues, siteId: keyRow.siteId,
+        });
+        contentType = 'application/zip';
+        filename = 'breeze-agent-windows.zip';
+      }
+    } else {
+      // macOS
+      resultBuffer = await buildMacosInstallerZip(binaryBuffer, {
+        serverUrl,
+        enrollmentKey: rawToken,
+        enrollmentSecret: globalSecret,
+        siteId: keyRow.siteId,
+      });
+      contentType = 'application/zip';
+      filename = 'breeze-agent-macos.zip';
+    }
+
+    // Increment usage only after successful build
+    await db
+      .update(enrollmentKeys)
+      .set({ usageCount: sql`${enrollmentKeys.usageCount} + 1` })
+      .where(eq(enrollmentKeys.id, keyRow.id));
+
+    createAuditLogAsync({
+      orgId: keyRow.orgId,
+      actorId: 'public',
+      action: 'enrollment_key.public_download',
+      resourceType: 'enrollment_key',
+      resourceId: keyRow.id,
+      resourceName: keyRow.name,
+      details: { platform, ip, signed: !!signingService },
+      ipAddress: ip,
+      userAgent: c.req.header('user-agent'),
+      result: 'success',
+    });
+
+    c.header('Content-Type', contentType);
+    c.header('Content-Disposition', `attachment; filename="${filename}"`);
+    c.header('Content-Length', String(resultBuffer.length));
+    c.header('Cache-Control', 'no-store');
+    return c.body(resultBuffer as unknown as ArrayBuffer);
+  } catch (err) {
+    console.error('[public-download] Build failed:', err instanceof Error ? err.message : err);
+    return c.json({ error: 'Failed to build installer' }, 500);
+  }
+}
 
 export const publicEnrollmentRoutes = new Hono();
 
@@ -735,20 +884,6 @@ publicEnrollmentRoutes.get(
       return c.json({ error: 'Invalid platform. Must be "windows" or "macos".' }, 400);
     }
 
-    // Rate limit by IP (10 per minute)
-    const ip = c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip') ?? 'unknown';
-    try {
-      const { getRedis } = await import('../services');
-      const { rateLimiter } = await import('../services/rate-limit');
-      const redis = getRedis();
-      const rateResult = await rateLimiter(redis, `public-installer:${ip}`, 10, 60);
-      if (!rateResult.allowed) {
-        return c.json({ error: 'Too many requests. Please try again later.' }, 429);
-      }
-    } catch {
-      // If Redis is unavailable, allow the request (fail open for downloads)
-    }
-
     // Look up enrollment key by token hash
     const keyHash = hashEnrollmentKey(token);
     const [enrollmentKey] = await db
@@ -761,102 +896,59 @@ publicEnrollmentRoutes.get(
       return c.json({ error: 'Invalid or expired download link' }, 404);
     }
 
-    // Validate key is still usable
-    if (enrollmentKey.expiresAt && new Date(enrollmentKey.expiresAt) < new Date()) {
-      return c.json({ error: 'This download link has expired' }, 410);
-    }
-    if (enrollmentKey.maxUsage !== null && enrollmentKey.usageCount >= enrollmentKey.maxUsage) {
-      return c.json({ error: 'This download link has been used the maximum number of times' }, 410);
-    }
-    if (!enrollmentKey.siteId) {
-      return c.json({ error: 'Invalid enrollment key configuration' }, 400);
-    }
-
-    // Determine server URL
-    const serverUrl = process.env.PUBLIC_API_URL || process.env.API_URL;
-    if (!serverUrl) {
-      return c.json({ error: 'Server URL not configured' }, 500);
-    }
-
-    const globalSecret = process.env.AGENT_ENROLLMENT_SECRET || '';
-
-    // Fetch binary (template if signing configured, regular if not)
-    const signingService = MsiSigningService.fromEnv();
-    let binaryBuffer: Buffer;
-    try {
-      if (platform === 'windows') {
-        binaryBuffer = signingService ? await fetchTemplateMsi() : await fetchRegularMsi();
-      } else {
-        binaryBuffer = await fetchMacosPkg();
-      }
-    } catch (err) {
-      console.error(`[public-download] Failed to fetch ${platform} binary:`, err);
-      return c.json({ error: 'Installer binary not available' }, 503);
-    }
-
-    // Build installer BEFORE incrementing usage (don't burn usage on build failure)
-    try {
-      let resultBuffer: Buffer;
-      let contentType: string;
-      let filename: string;
-
-      if (platform === 'windows') {
-        const enrollValues = { serverUrl, enrollmentKey: token, enrollmentSecret: globalSecret };
-
-        if (signingService) {
-          const patched = replaceMsiPlaceholders(binaryBuffer, enrollValues);
-          if (!patched) {
-            return c.json({ error: 'Failed to build Windows installer' }, 500);
-          }
-          resultBuffer = await signingService.signMsi(patched);
-          contentType = 'application/octet-stream';
-          filename = 'breeze-agent.msi';
-        } else {
-          resultBuffer = await buildWindowsInstallerZip(binaryBuffer, {
-            ...enrollValues, siteId: enrollmentKey.siteId,
-          });
-          contentType = 'application/zip';
-          filename = 'breeze-agent-windows.zip';
-        }
-      } else {
-        // macOS
-        resultBuffer = await buildMacosInstallerZip(binaryBuffer, {
-          serverUrl,
-          enrollmentKey: token,
-          enrollmentSecret: globalSecret,
-          siteId: enrollmentKey.siteId,
-        });
-        contentType = 'application/zip';
-        filename = 'breeze-agent-macos.zip';
-      }
-
-      // Increment usage only after successful build
-      await db
-        .update(enrollmentKeys)
-        .set({ usageCount: sql`${enrollmentKeys.usageCount} + 1` })
-        .where(eq(enrollmentKeys.id, enrollmentKey.id));
-
-      createAuditLogAsync({
-        orgId: enrollmentKey.orgId,
-        actorId: 'public',
-        action: 'enrollment_key.public_download',
-        resourceType: 'enrollment_key',
-        resourceId: enrollmentKey.id,
-        resourceName: enrollmentKey.name,
-        details: { platform, ip, signed: !!signingService },
-        ipAddress: ip,
-        userAgent: c.req.header('user-agent'),
-        result: 'success',
-      });
-
-      c.header('Content-Type', contentType);
-      c.header('Content-Disposition', `attachment; filename="${filename}"`);
-      c.header('Content-Length', String(resultBuffer.length));
-      c.header('Cache-Control', 'no-store');
-      return c.body(resultBuffer as unknown as ArrayBuffer);
-    } catch (err) {
-      console.error('[public-download] Build failed:', err instanceof Error ? err.message : err);
-      return c.json({ error: 'Failed to build installer' }, 500);
-    }
+    return serveInstaller(c, enrollmentKey, platform, token);
   }
 );
+
+// ============================================
+// Public short-link routes (no auth middleware)
+// ============================================
+
+export const publicShortLinkRoutes = new Hono();
+
+publicShortLinkRoutes.get('/:code', async (c) => {
+  const code = c.req.param('code');
+  if (!code || code.length > 12) {
+    return c.json({ error: 'Not found' }, 404);
+  }
+
+  const [row] = await db
+    .select()
+    .from(enrollmentKeys)
+    .where(eq(enrollmentKeys.shortCode, code))
+    .limit(1);
+
+  if (!row || !row.installerPlatform) {
+    return c.json({ error: 'Not found' }, 404);
+  }
+
+  if (row.installerPlatform !== 'windows' && row.installerPlatform !== 'macos') {
+    return c.json({ error: 'Not found' }, 404);
+  }
+
+  // The short-link row holds only the hashed token — the raw token was never stored.
+  // Spawn a fresh single-use child key so we can embed a valid raw token in the installer.
+  const rawToken = generateEnrollmentKey();
+  const tokenHash = hashEnrollmentKey(rawToken);
+
+  const [downloadKey] = await db
+    .insert(enrollmentKeys)
+    .values({
+      orgId: row.orgId,
+      siteId: row.siteId,
+      name: `${row.name} (short-link download)`,
+      key: tokenHash,
+      keySecretHash: row.keySecretHash,
+      maxUsage: 1,
+      expiresAt: row.expiresAt,
+      createdBy: null,
+      installerPlatform: row.installerPlatform,
+    })
+    .returning();
+
+  if (!downloadKey) {
+    return c.json({ error: 'Failed to prepare installer' }, 500);
+  }
+
+  return serveInstaller(c, downloadKey, row.installerPlatform, rawToken);
+});
