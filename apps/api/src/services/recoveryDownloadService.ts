@@ -139,7 +139,6 @@ export async function getAuthenticatedRecoveryDownloadTarget(
       1,
       Math.min(300, Math.floor((downloadExpiry.getTime() - Date.now()) / 1000))
     );
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument -- AWS SDK version mismatch
     const url = await (getSignedUrl as any)(
       client,
       new GetObjectCommand({

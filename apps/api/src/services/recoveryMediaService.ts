@@ -633,7 +633,6 @@ export async function getRecoveryMediaDownloadTarget(orgId: string, artifactId: 
 
   if (storage.provider === 's3') {
     const client = buildS3Client(storage);
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument -- AWS SDK version mismatch
     const url = await (getSignedUrl as any)(
       client,
       new GetObjectCommand({
@@ -680,7 +679,6 @@ export async function getRecoveryMediaSignatureDownloadTarget(orgId: string, art
 
   if (storage.provider === 's3') {
     const client = buildS3Client(storage);
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument -- AWS SDK version mismatch
     const url = await (getSignedUrl as any)(
       client,
       new GetObjectCommand({

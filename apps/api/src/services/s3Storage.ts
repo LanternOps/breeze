@@ -99,7 +99,6 @@ export async function getPresignedUrl(s3Key: string, ttlSeconds?: number): Promi
   // Presigned URLs are valid even for non-existent keys, so verify first
   await client.send(new HeadObjectCommand({ Bucket: bucket, Key: s3Key }));
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-argument -- AWS SDK version mismatch between S3Client and s3-request-presigner
   return (getSignedUrl as any)(client, new GetObjectCommand({ Bucket: bucket, Key: s3Key }), {
     expiresIn: ttl,
   });
