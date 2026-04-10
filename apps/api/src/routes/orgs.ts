@@ -227,6 +227,14 @@ const partnerSettingsSchema = z.object({
     phone: z.string().optional(),
     website: z.string().optional()
   }).optional(),
+  address: z.object({
+    street1: z.string().max(255).optional(),
+    street2: z.string().max(255).optional(),
+    city: z.string().max(255).optional(),
+    region: z.string().max(255).optional(),
+    postalCode: z.string().max(32).optional(),
+    country: z.string().length(2).optional().or(z.literal('')),
+  }).optional(),
   security: z.object({
     minLength: z.number().int().min(6).max(128).optional(),
     complexity: z.enum(['standard', 'strict', 'passphrase']).optional(),
