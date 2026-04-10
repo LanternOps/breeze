@@ -67,7 +67,7 @@ func ensureSASPolicy() {
 	}
 	log.Info("SoftwareSASGeneration policy not set or insufficient, enabling for services+apps", "currentValue", int(policy))
 	if err := desktop.SetSASPolicy(uint32(desktop.SASPolicyServicesApps)); err != nil {
-		log.Warn("Failed to auto-set SoftwareSASGeneration policy", "error", err)
+		log.Warn("Failed to auto-set SoftwareSASGeneration policy", "error", err.Error())
 	} else {
 		log.Info("Auto-set SoftwareSASGeneration policy to 3 (services+apps)")
 	}
@@ -91,43 +91,31 @@ func runAsService(startFn func() (*agentComponents, error)) error {
 	return svc.Run("BreezeAgent", h)
 }
 
-// Execute is the SCM callback. It signals SERVICE_RUNNING immediately, then
-// starts agent components in a goroutine. Blocking before signalling Running
-// would stall the MSI installer and SCM for however long initialisation takes.
+// Execute is the SCM callback. It signals StartPending, runs startFn
+// synchronously, then signals Running and enters the SCM control loop.
+// SCM requires services to report Running via the changes channel within
+// its start timeout, so startFn itself must not block — any long-running
+// initialisation (e.g. hardware collection) must be backgrounded by the
+// caller before Execute is reached.
 func (s *breezeService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
 	const accepted = svc.AcceptStop | svc.AcceptShutdown | svc.AcceptSessionChange
 
 	changes <- svc.Status{State: svc.StartPending}
 
-	// Start agent components in the background so we can signal Running now.
-	type startResult struct {
-		comps *agentComponents
-		err   error
+	comps, err := s.startFn()
+	if err != nil {
+		log.Error("agent start failed", "error", err.Error())
+		changes <- svc.Status{State: svc.StopPending}
+		return true, 1
 	}
-	startCh := make(chan startResult, 1)
-	go func() {
-		comps, err := s.startFn()
-		startCh <- startResult{comps, err}
-	}()
+
+	scmCh := comps.hb.SCMSessionCh()
 
 	changes <- svc.Status{State: svc.Running, Accepts: accepted}
 	log.Info("agent running as Windows service")
 
-	var comps *agentComponents
-	var scmCh <-chan sessionbroker.SCMSessionEvent
-
 	for {
 		select {
-		case result := <-startCh:
-			startCh = nil // disable case — item already consumed
-			if result.err != nil {
-				log.Error("agent start failed", "error", result.err)
-				changes <- svc.Status{State: svc.StopPending}
-				return true, 1
-			}
-			comps = result.comps
-			scmCh = comps.hb.SCMSessionCh()
-
 		case cr := <-r:
 			switch cr.Cmd {
 			case svc.Interrogate:
@@ -135,14 +123,7 @@ func (s *breezeService) Execute(args []string, r <-chan svc.ChangeRequest, chang
 			case svc.Stop, svc.Shutdown:
 				log.Info("SCM requested stop")
 				changes <- svc.Status{State: svc.StopPending}
-				if comps != nil {
-					shutdownAgent(comps)
-				} else {
-					// startFn not yet complete — wait so we can clean up.
-					if result := <-startCh; result.comps != nil {
-						shutdownAgent(result.comps)
-					}
-				}
+				shutdownAgent(comps)
 				return false, 0
 			case svc.SessionChange:
 				if scmCh != nil {

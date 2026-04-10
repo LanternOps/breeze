@@ -282,7 +282,7 @@ func startAgent() (*agentComponents, error) {
 			renewClient := api.NewClient(cfg.ServerURL, secureToken.Reveal(), cfg.AgentID)
 			renewResp, err := renewClient.RenewCert()
 			if err != nil {
-				log.Error("mTLS cert renewal request failed, continuing without mTLS", "error", err)
+				log.Error("mTLS cert renewal request failed, continuing without mTLS", "error", err.Error())
 				cfg.MtlsCertPEM = "" // Clear so we don't load the expired cert
 			} else if renewResp.Quarantined {
 				log.Error("device quarantined by server, continuing without mTLS")
@@ -290,7 +290,7 @@ func startAgent() (*agentComponents, error) {
 			} else if renewResp.Mtls != nil {
 				// Validate the cert/key pair before saving
 				if _, verifyErr := mtls.LoadClientCert(renewResp.Mtls.Certificate, renewResp.Mtls.PrivateKey); verifyErr != nil {
-					log.Error("renewed cert/key pair is invalid, continuing without mTLS", "error", verifyErr)
+					log.Error("renewed cert/key pair is invalid, continuing without mTLS", "error", verifyErr.Error())
 					cfg.MtlsCertPEM = ""
 				} else {
 					cfg.MtlsCertPEM = renewResp.Mtls.Certificate
@@ -298,7 +298,7 @@ func startAgent() (*agentComponents, error) {
 					cfg.MtlsCertExpires = renewResp.Mtls.ExpiresAt
 					cfg.AuthToken = secureToken.Reveal()
 					if saveErr := config.SaveTo(cfg, cfgFile); saveErr != nil {
-						log.Error("failed to save renewed mTLS cert to config", "error", saveErr)
+						log.Error("failed to save renewed mTLS cert to config", "error", saveErr.Error())
 					}
 					cfg.AuthToken = ""
 					log.Info("mTLS certificate renewed", "expires", renewResp.Mtls.ExpiresAt)
@@ -312,7 +312,7 @@ func startAgent() (*agentComponents, error) {
 		var err error
 		tlsCfg, err = mtls.BuildTLSConfig(cfg.MtlsCertPEM, cfg.MtlsKeyPEM)
 		if err != nil {
-			log.Error("failed to load mTLS certificate, continuing without mTLS", "error", err)
+			log.Error("failed to load mTLS certificate, continuing without mTLS", "error", err.Error())
 			tlsCfg = nil
 		} else if tlsCfg != nil {
 			log.Info("mTLS client certificate loaded")
@@ -450,7 +450,7 @@ func runAgent() {
 	// so we report Running/Stopped status back to the SCM correctly.
 	if isWindowsService() {
 		if err := runAsService(startAgent); err != nil {
-			log.Error("service failed", "error", err)
+			log.Error("service failed", "error", err.Error())
 			os.Exit(1)
 		}
 		return
@@ -527,9 +527,9 @@ func enrollDevice(enrollmentKey string) {
 		systemInfo = &collectors.SystemInfo{}
 	}
 
-	// CollectHardware spawns WMIC processes on Windows which can take up to
-	// ~75s. Run it with a 10s timeout so enrollment doesn't block the MSI
-	// installer. The server will receive full hardware info on first heartbeat.
+	// WMIC-based hardware collection can take ~75s on Windows, which would
+	// block enrollment under an MSI custom action. Fall back to defaults
+	// after 10s; heartbeat will populate full hardware info later.
 	hardwareInfo := &collectors.HardwareInfo{}
 	hwDone := make(chan *collectors.HardwareInfo, 1)
 	go func() {

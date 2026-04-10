@@ -57,7 +57,14 @@ if (-not (Test-Path $agentExe)) {
 if (Test-Path $configPath) {
     if (Get-Service -Name "BreezeAgent" -ErrorAction SilentlyContinue) {
         & sc.exe config BreezeAgent start= auto | Out-Null
-        Start-Service -Name "BreezeAgent" -ErrorAction SilentlyContinue
+        # Don't block on service startup here — surface failures as warnings
+        # so they land in the MSI log. This script exits immediately after,
+        # so there's no later StartServices retry in the upgrade path.
+        try {
+            Start-Service -Name "BreezeAgent" -ErrorAction Stop
+        } catch {
+            Write-Warning "Start-Service failed during enrollment custom action: $($_.Exception.Message)"
+        }
     }
     exit 0
 }
@@ -74,8 +81,12 @@ if ($LASTEXITCODE -ne 0) {
 
 if (Get-Service -Name "BreezeAgent" -ErrorAction SilentlyContinue) {
     & sc.exe config BreezeAgent start= auto | Out-Null
-    # Use SilentlyContinue — the MSI StartServices action handles waiting for
-    # the service to reach Running state. ErrorAction Stop here would block
-    # this custom action for up to 30s if the service is slow to start.
-    Start-Service -Name "BreezeAgent" -ErrorAction SilentlyContinue
+    # Don't block on service startup here — if this script is the MSI custom
+    # action host, the installer's own StartServices step will wait for
+    # Running. Surface failures as warnings so they land in the MSI log.
+    try {
+        Start-Service -Name "BreezeAgent" -ErrorAction Stop
+    } catch {
+        Write-Warning "Start-Service failed during enrollment custom action: $($_.Exception.Message). MSI StartServices will retry."
+    }
 }
