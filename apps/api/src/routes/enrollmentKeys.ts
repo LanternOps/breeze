@@ -926,6 +926,22 @@ publicShortLinkRoutes.get('/:code', async (c) => {
     return c.json({ error: 'Not found' }, 404);
   }
 
+  // Check expiry and usage on the short-code row BEFORE spawning a child key.
+  // This ensures the short-code's limits are enforced correctly.
+  if (row.expiresAt && new Date(row.expiresAt) < new Date()) {
+    return c.json({ error: 'This link has expired.' }, 410);
+  }
+  if (row.maxUsage !== null && row.usageCount >= row.maxUsage) {
+    return c.json({ error: 'This link has reached its maximum usage limit.' }, 410);
+  }
+
+  // Increment usage on the short-code row now (before spawning the child key).
+  // serveInstaller() will increment the child key's usage on successful build.
+  await db
+    .update(enrollmentKeys)
+    .set({ usageCount: sql`${enrollmentKeys.usageCount} + 1` })
+    .where(eq(enrollmentKeys.id, row.id));
+
   // The short-link row holds only the hashed token — the raw token was never stored.
   // Spawn a fresh single-use child key so we can embed a valid raw token in the installer.
   const rawToken = generateEnrollmentKey();
