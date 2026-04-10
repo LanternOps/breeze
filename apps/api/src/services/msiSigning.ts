@@ -49,7 +49,7 @@ export class MsiSigningService {
     const resp = await fetch(this.signingUrl, {
       method: 'POST',
       headers,
-      body: msiBuffer,
+      body: new Uint8Array(msiBuffer),
       signal: AbortSignal.timeout(120_000),
     });
 

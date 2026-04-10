@@ -71,7 +71,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	}
 
 	if checkCancelled() {
-		return result, ctx.Err()
+		return result, nil
 	}
 
 	// 1. Download and parse manifest
@@ -124,7 +124,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	// 5. Restore each file
 	for i, file := range files {
 		if checkCancelled() {
-			return result, ctx.Err()
+			return result, nil
 		}
 
 		current := int64(i + 1)
@@ -164,7 +164,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		}
 		if checkCancelled() {
 			_ = os.Remove(stagingFile)
-			return result, ctx.Err()
+			return result, nil
 		}
 
 		// Path containment check
@@ -220,7 +220,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	}
 
 	if checkCancelled() {
-		return result, ctx.Err()
+		return result, nil
 	}
 
 	// 6. Determine status

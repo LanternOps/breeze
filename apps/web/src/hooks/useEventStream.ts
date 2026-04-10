@@ -48,7 +48,6 @@ export function useEventStream(options: EventStreamOptions) {
       reconnectTimerRef.current = null;
       connectWs();
     }, delay);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const ticketFailuresRef = useRef(0);

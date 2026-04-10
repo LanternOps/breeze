@@ -22,7 +22,7 @@ describe('replaceMsiPlaceholders', () => {
       serverUrl: 'https://breeze.example.com',
       enrollmentKey: 'abc123',
       enrollmentSecret: 'secret456',
-    });
+    })!;
 
     expect(result.length).toBe(template.length);
     expect(result.includes(Buffer.from('@@BREEZE_SERVER_URL@@', 'utf16le'))).toBe(false);
@@ -43,7 +43,7 @@ describe('replaceMsiPlaceholders', () => {
       serverUrl: 'https://x.com',
       enrollmentKey: 'key1',
       enrollmentSecret: '',
-    });
+    })!;
 
     expect(result.length).toBe(template.length);
     expect(result.includes(Buffer.from('@@BREEZE_ENROLLMENT_SECRET@@', 'utf16le'))).toBe(false);
@@ -102,7 +102,7 @@ describe('replaceMsiPlaceholders', () => {
       serverUrl: 'https://test.2breeze.app',
       enrollmentKey: 'brz_key123',
       enrollmentSecret: 'secret',
-    });
+    })!;
 
     expect(result.length).toBe(template.length);
     expect(result.includes(Buffer.from('@@BREEZE_SERVER_URL@@', 'ascii'))).toBe(false);
@@ -240,7 +240,7 @@ describe('installer endpoint integration', () => {
       serverUrl: 'https://rmm.acme-msp.com',
       enrollmentKey: 'a'.repeat(64),
       enrollmentSecret: 'my-enrollment-secret',
-    });
+    })!;
 
     // Size unchanged
     expect(result.length).toBe(template.length);
