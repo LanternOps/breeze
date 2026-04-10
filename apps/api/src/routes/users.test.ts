@@ -11,7 +11,10 @@ vi.mock('../services/permissions', () => ({
     USERS_READ: { resource: 'users', action: 'read' },
     USERS_INVITE: { resource: 'users', action: 'invite' },
     USERS_WRITE: { resource: 'users', action: 'write' },
-    USERS_DELETE: { resource: 'users', action: 'delete' }
+    USERS_DELETE: { resource: 'users', action: 'delete' },
+    DEVICES_READ: { resource: 'devices', action: 'read' },
+    DEVICES_WRITE: { resource: 'devices', action: 'write' },
+    DEVICES_EXECUTE: { resource: 'devices', action: 'execute' }
   }
 }));
 
@@ -51,7 +54,17 @@ vi.mock('../db/schema', () => ({
   partnerUsers: {},
   organizationUsers: {},
   roles: {},
-  organizations: {}
+  organizations: {},
+  patchPolicies: {},
+  alertRules: {},
+  backupConfigs: {},
+  securityPolicies: {},
+  automationPolicies: {},
+  maintenanceWindows: {},
+  softwarePolicies: {},
+  sensitiveDataPolicies: {},
+  peripheralPolicies: {},
+  discoveredAssetTypeEnum: { enumValues: ['workstation', 'server', 'printer', 'unknown'] },
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -65,7 +78,8 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => (c: any, next: any) => next())
+  requirePermission: vi.fn(() => (c: any, next: any) => next()),
+  requireMfa: vi.fn(() => (_c: any, next: any) => next())
 }));
 
 vi.mock('../services/email', () => ({

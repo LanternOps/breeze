@@ -52,7 +52,9 @@ vi.mock('../services/assetApproval', () => ({
 }));
 
 vi.mock('../services/redis', () => ({
-  getRedisConnection: vi.fn(() => ({}))
+  getRedisConnection: vi.fn(() => ({})),
+  getBullMQConnection: vi.fn(() => ({ host: 'localhost', port: 6379 })),
+  isBullMQAvailable: vi.fn(() => true),
 }));
 
 vi.mock('../routes/agentWs', () => ({

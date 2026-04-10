@@ -71,6 +71,8 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('../services/redis', () => ({
   getRedisConnection: vi.fn(() => ({})),
+  getBullMQConnection: vi.fn(() => ({ host: 'localhost', port: 6379 })),
+  isBullMQAvailable: vi.fn(() => true),
 }));
 
 vi.mock('../routes/agentWs', () => ({
@@ -118,7 +120,7 @@ describe('monitor queue helpers', () => {
         monitorId: 'monitor-1',
         result: expect.objectContaining({ checkId: 'mon-monitor-1-123' }),
       }),
-      expect.objectContaining({ jobId: 'monitor-result:mon-monitor-1-123' }),
+      expect.objectContaining({ jobId: 'monitor-result-mon-monitor-1-123' }),
     );
   });
 

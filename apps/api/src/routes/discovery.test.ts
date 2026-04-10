@@ -95,7 +95,16 @@ vi.mock('../db/schema', () => ({
     siteId: 'devices.siteId',
     agentId: 'devices.agentId',
     status: 'devices.status'
-  }
+  },
+  patchPolicies: {},
+  alertRules: {},
+  backupConfigs: {},
+  securityPolicies: {},
+  automationPolicies: {},
+  maintenanceWindows: {},
+  softwarePolicies: {},
+  sensitiveDataPolicies: {},
+  peripheralPolicies: {}
 }));
 
 vi.mock('../middleware/auth', () => ({

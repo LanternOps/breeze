@@ -108,6 +108,8 @@ vi.mock('../db/schema', () => ({
   organizations: {},
   peripheralEventTypeEnum: { enumValues: ['connected', 'disconnected', 'blocked', 'allowed'] },
   backupJobs: {},
+  patchPolicies: {},
+  alertRules: {},
 }));
 
 vi.mock('../services/enrollmentKeySecurity', () => ({
@@ -170,10 +172,15 @@ vi.mock('../middleware/agentAuth', () => ({
   isAgentTokenRotationDue: vi.fn(() => false),
 }));
 
+vi.mock('../services/commandDispatch', () => ({
+  claimPendingCommandsForDevice: vi.fn().mockResolvedValue([]),
+}));
+
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { saveFilesystemSnapshot } from '../services/filesystemAnalysis';
 import { queueCommandForExecution } from '../services/commandQueue';
 import { processBackupVerificationResult } from './backup/verificationService';
+import { claimPendingCommandsForDevice } from '../services/commandDispatch';
 
 describe('agent routes', () => {
   let app: Hono;
@@ -636,20 +643,13 @@ describe('agent routes', () => {
               }])
             })
           })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              orderBy: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([{
-                  id: 'cmd-1',
-                  type: 'script',
-                  payload: { scriptId: 'script-1' }
-                }])
-              })
-            })
-          })
         } as any);
+
+      vi.mocked(claimPendingCommandsForDevice).mockResolvedValueOnce([{
+        id: 'cmd-1',
+        type: 'script',
+        payload: { scriptId: 'script-1' }
+      }] as any);
 
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
@@ -710,15 +710,6 @@ describe('agent routes', () => {
                 agentId: 'agent-123',
                 orgId: 'org-123'
               }])
-            })
-          })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              orderBy: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([])
-              })
             })
           })
         } as any)
@@ -845,25 +836,13 @@ describe('agent routes', () => {
               })
             })
           })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              orderBy: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([{
-                  id: 'cmd-filesystem-1',
-                  type: 'filesystem_analysis',
-                  payload: { path: 'C:\\', trigger: 'threshold' }
-                }])
-              })
-            })
-          })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([])
-          })
         } as any);
+
+      vi.mocked(claimPendingCommandsForDevice).mockResolvedValueOnce([{
+        id: 'cmd-filesystem-1',
+        type: 'filesystem_analysis',
+        payload: { path: 'C:\\', trigger: 'threshold' }
+      }] as any);
 
       const insertValues = vi.fn().mockResolvedValue(undefined);
       vi.mocked(db.insert).mockReturnValue({
@@ -1051,7 +1030,9 @@ describe('agent routes', () => {
 
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined)
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: '55555555-5555-4555-8555-555555555555' }])
+          })
         })
       } as any);
 
@@ -1091,7 +1072,9 @@ describe('agent routes', () => {
 
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined)
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: '66666666-6666-4666-8666-666666666666' }])
+          })
         })
       } as any);
 
@@ -1130,7 +1113,9 @@ describe('agent routes', () => {
 
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined)
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: '77777777-7777-4777-8777-777777777777' }])
+          })
         })
       } as any);
 

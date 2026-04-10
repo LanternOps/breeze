@@ -48,6 +48,8 @@ vi.mock('../services/eventBus', () => ({
 
 vi.mock('../services/redis', () => ({
   getRedisConnection: vi.fn(() => ({})),
+  getBullMQConnection: vi.fn(() => ({ host: 'localhost', port: 6379 })),
+  isBullMQAvailable: vi.fn(() => true),
 }));
 
 vi.mock('../services/sentry', () => ({

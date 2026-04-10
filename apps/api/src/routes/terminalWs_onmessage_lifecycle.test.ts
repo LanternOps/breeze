@@ -16,7 +16,16 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   remoteSessions: { id: 'remoteSessions.id', deviceId: 'remoteSessions.deviceId', status: 'remoteSessions.status' },
   devices: { id: 'devices.id' },
-  users: { id: 'users.id', status: 'users.status' }
+  users: { id: 'users.id', status: 'users.status' },
+  patchPolicies: {},
+  alertRules: {},
+  backupConfigs: {},
+  securityPolicies: {},
+  automationPolicies: {},
+  maintenanceWindows: {},
+  softwarePolicies: {},
+  sensitiveDataPolicies: {},
+  peripheralPolicies: {}
 }));
 
 vi.mock('../services/remoteSessionAuth', () => ({
@@ -26,6 +35,15 @@ vi.mock('../services/remoteSessionAuth', () => ({
 vi.mock('./agentWs', () => ({
   sendCommandToAgent: vi.fn(() => true),
   isAgentConnected: vi.fn(() => true)
+}));
+
+vi.mock('../services/remoteAccessPolicy', () => ({
+  checkRemoteAccess: vi.fn().mockResolvedValue({ allowed: true }),
+  resolveRemoteAccessForDevice: vi.fn().mockResolvedValue({
+    settings: { webrtcDesktop: true, vncRelay: true, remoteTools: true, enableProxy: true, defaultAllowedPorts: [], autoEnableProxy: false, maxConcurrentTunnels: 5, idleTimeoutMinutes: 5, maxSessionDurationHours: 8 },
+    policyName: null,
+    policyId: null,
+  }),
 }));
 
 // -------------------------------------------------------------------

@@ -61,7 +61,25 @@ vi.mock('../db/schema', () => ({
   devices: {},
   organizations: {},
   users: {},
-  auditLogs: {}
+  auditLogs: {},
+  patchPolicies: {},
+  alertRules: {},
+  backupConfigs: {},
+  securityPolicies: {},
+  automationPolicies: {},
+  maintenanceWindows: {},
+  softwarePolicies: {},
+  sensitiveDataPolicies: {},
+  peripheralPolicies: {}
+}));
+
+vi.mock('../services/remoteAccessPolicy', () => ({
+  checkRemoteAccess: vi.fn().mockResolvedValue({ allowed: true }),
+  resolveRemoteAccessForDevice: vi.fn().mockResolvedValue({
+    settings: { webrtcDesktop: true, vncRelay: true, remoteTools: true, enableProxy: true, defaultAllowedPorts: [], autoEnableProxy: false, maxConcurrentTunnels: 5, idleTimeoutMinutes: 5, maxSessionDurationHours: 8 },
+    policyName: null,
+    policyId: null,
+  }),
 }));
 
 vi.mock('../middleware/auth', () => ({

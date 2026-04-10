@@ -20,6 +20,16 @@ vi.mock('../../db/schema', () => ({
     deviceId: 'device_id',
     bootTimestamp: 'boot_timestamp',
   },
+  patchPolicies: {},
+  alertRules: {},
+  backupConfigs: {},
+  securityPolicies: {},
+  automationPolicies: {},
+  maintenanceWindows: {},
+  softwarePolicies: {},
+  sensitiveDataPolicies: {},
+  peripheralPolicies: {},
+  discoveredAssetTypeEnum: { enumValues: ['workstation', 'server', 'printer', 'unknown'] },
 }));
 
 import { db } from '../../db';

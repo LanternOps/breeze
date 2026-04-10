@@ -27,9 +27,14 @@ vi.mock('../../db', () => ({
     select: (...args: unknown[]) => selectMock(...(args as [])),
     update: (...args: unknown[]) => updateMock(...(args as [])),
   },
+  runOutsideDbContext: vi.fn(async (fn: any) => fn()),
+  withDbAccessContext: vi.fn(async (_ctx: any, fn: any) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: any) => fn()),
+  SYSTEM_DB_ACCESS_CONTEXT: { scope: 'system', orgId: null, accessibleOrgIds: null },
 }));
 
 vi.mock('../../db/schema', () => ({
+  patchPolicies: {},
   backupJobs: {
     id: 'backupJobs.id',
     orgId: 'backupJobs.orgId',
@@ -51,6 +56,14 @@ vi.mock('../../db/schema', () => ({
     displayName: 'devices.displayName',
     hostname: 'devices.hostname',
   },
+  alertRules: {},
+  securityPolicies: {},
+  automationPolicies: {},
+  maintenanceWindows: {},
+  softwarePolicies: {},
+  sensitiveDataPolicies: {},
+  peripheralPolicies: {},
+  discoveredAssetTypeEnum: { enumValues: ['workstation', 'server', 'printer', 'unknown'] },
 }));
 
 vi.mock('drizzle-orm', () => ({
@@ -67,6 +80,7 @@ vi.mock('drizzle-orm', () => ({
 }));
 
 vi.mock('../../middleware/auth', () => ({
+  authMiddleware: vi.fn((_c: any, next: any) => next()),
   requireScope: vi.fn(() => (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => (_c: any, next: any) => next()),
   requireMfa: vi.fn(() => (_c: any, next: any) => next()),

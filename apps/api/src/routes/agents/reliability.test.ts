@@ -16,6 +16,16 @@ vi.mock('../../db/schema', () => ({
     orgId: 'orgId',
     agentId: 'agentId',
   },
+  patchPolicies: {},
+  alertRules: {},
+  backupConfigs: {},
+  securityPolicies: {},
+  automationPolicies: {},
+  maintenanceWindows: {},
+  softwarePolicies: {},
+  sensitiveDataPolicies: {},
+  peripheralPolicies: {},
+  discoveredAssetTypeEnum: { enumValues: ['workstation', 'server', 'printer', 'unknown'] },
 }));
 
 vi.mock('../../jobs/reliabilityWorker', () => ({

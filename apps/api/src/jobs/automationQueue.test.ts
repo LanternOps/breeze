@@ -23,6 +23,7 @@ vi.mock('bullmq', () => ({
 
 vi.mock('../db', () => ({
   db: {},
+  withSystemDbAccessContext: vi.fn(async (fn: any) => fn()),
 }));
 
 vi.mock('../db/schema', () => ({
@@ -56,6 +57,8 @@ vi.mock('../services/featureConfigResolver', () => ({
 vi.mock('../services/redis', () => ({
   getRedisConnection: vi.fn(() => ({})),
   isRedisAvailable: vi.fn(() => true),
+  getBullMQConnection: vi.fn(() => ({ host: 'localhost', port: 6379 })),
+  isBullMQAvailable: vi.fn(() => true),
 }));
 
 import {

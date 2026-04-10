@@ -59,6 +59,15 @@ vi.mock('../db/schema', () => ({
     status: 'restoreJobs.status',
     targetConfig: 'restoreJobs.targetConfig',
   },
+  patchPolicies: {},
+  alertRules: {},
+  backupConfigs: {},
+  securityPolicies: {},
+  automationPolicies: {},
+  maintenanceWindows: {},
+  softwarePolicies: {},
+  sensitiveDataPolicies: {},
+  peripheralPolicies: {},
 }));
 
 vi.mock('./terminalWs', () => ({

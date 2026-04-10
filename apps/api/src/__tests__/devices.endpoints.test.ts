@@ -30,6 +30,15 @@ vi.mock('../services/enrollmentKeySecurity', () => ({
   generateEnrollmentKey: vi.fn(() => 'ek_test123')
 }));
 
+vi.mock('../services/remoteAccessPolicy', () => ({
+  checkRemoteAccess: vi.fn().mockResolvedValue({ allowed: true }),
+  resolveRemoteAccessForDevice: vi.fn().mockResolvedValue({
+    settings: { webrtcDesktop: true, vncRelay: true, remoteTools: true, enableProxy: true, defaultAllowedPorts: [], autoEnableProxy: false, maxConcurrentTunnels: 5, idleTimeoutMinutes: 5, maxSessionDurationHours: 8 },
+    policyName: null,
+    policyId: null,
+  }),
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
@@ -75,7 +84,16 @@ vi.mock('../db/schema', () => ({
   deviceGroups: {},
   deviceGroupMemberships: {},
   enrollmentKeys: {},
-  sites: {}
+  sites: {},
+  patchPolicies: {},
+  backupConfigs: {},
+  securityPolicies: {},
+  automationPolicies: {},
+  maintenanceWindows: {},
+  softwarePolicies: {},
+  sensitiveDataPolicies: {},
+  peripheralPolicies: {},
+  discoveredAssetTypeEnum: { enumValues: ['workstation', 'server', 'printer', 'unknown'] }
 }));
 
 import { db } from '../db';
@@ -172,7 +190,7 @@ describe('device endpoints (authenticated)', () => {
           })
         } as any);
 
-      const client = await createAuthenticatedClient(app);
+      const client = await createAuthenticatedClient(app, { mfa: true });
       const res = await client.post('/devices/bulk/commands', {
         deviceIds: [deviceOne.id, deviceTwo.id, deviceThree.id],
         type: 'reboot'

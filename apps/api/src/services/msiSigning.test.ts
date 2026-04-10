@@ -61,7 +61,7 @@ describe('MsiSigningService', () => {
         'https://sign.example.com/sign',
         expect.objectContaining({
           method: 'POST',
-          body: input,
+          body: new Uint8Array(input),
         }),
       );
     });

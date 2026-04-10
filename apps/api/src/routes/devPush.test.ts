@@ -38,6 +38,8 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
 vi.mock('../middleware/apiKeyAuth', () => ({
@@ -45,6 +47,7 @@ vi.mock('../middleware/apiKeyAuth', () => ({
     c.set('apiKey', { orgId: '11111111-1111-1111-1111-111111111111', scopes: ['devices:write'] });
     return next();
   }),
+  requireApiKeyScope: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
 const mockGetDeviceWithOrgCheck = vi.fn();

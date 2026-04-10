@@ -45,7 +45,17 @@ vi.mock('../db/schema', () => ({
   scriptExecutionBatches: {},
   devices: {},
   deviceCommands: {},
-  organizations: {}
+  organizations: {},
+  patchPolicies: {},
+  alertRules: {},
+  backupConfigs: {},
+  securityPolicies: {},
+  automationPolicies: {},
+  maintenanceWindows: {},
+  softwarePolicies: {},
+  sensitiveDataPolicies: {},
+  peripheralPolicies: {},
+  discoveredAssetTypeEnum: { enumValues: ['workstation', 'server', 'printer', 'unknown'] }
 }));
 
 vi.mock('../middleware/auth', () => ({

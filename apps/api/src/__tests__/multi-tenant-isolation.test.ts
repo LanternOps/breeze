@@ -61,6 +61,15 @@ vi.mock('../db/schema', () => ({
   organizations:            { id: 'id' },
   partnerUsers:             {},
   organizationUsers:        {},
+  patchPolicies: {},
+  backupConfigs: {},
+  securityPolicies: {},
+  automationPolicies: {},
+  maintenanceWindows: {},
+  softwarePolicies: {},
+  sensitiveDataPolicies: {},
+  peripheralPolicies: {},
+  discoveredAssetTypeEnum: { enumValues: ['workstation', 'server', 'printer', 'unknown'] },
 }));
 
 // ─── Mock auth middleware ─────────────────────────────────────────────────────

@@ -134,7 +134,9 @@ vi.mock('../../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn(() => async (_c: any, next: any) => next())
+  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
 import { db } from '../../db';
@@ -307,13 +309,28 @@ describe('patch routes', () => {
     const where = vi.fn().mockReturnValue({ groupBy });
     const innerJoin = vi.fn().mockReturnValue({ where });
 
+    // deviceBreakdown chain: .from().innerJoin().innerJoin().where().groupBy().having().orderBy()
+    const deviceBreakdownResult = vi.fn().mockResolvedValue([]);
+    const deviceBreakdownHaving = vi.fn().mockReturnValue({ orderBy: deviceBreakdownResult });
+    const deviceBreakdownGroupBy = vi.fn().mockReturnValue({ having: deviceBreakdownHaving });
+    const deviceBreakdownWhere = vi.fn().mockReturnValue({ groupBy: deviceBreakdownGroupBy });
+    const deviceBreakdownInnerJoin2 = vi.fn().mockReturnValue({ where: deviceBreakdownWhere });
+    const deviceBreakdownInnerJoin1 = vi.fn().mockReturnValue({ innerJoin: deviceBreakdownInnerJoin2 });
+
+    // severityCounts chain: .from().innerJoin().where().groupBy()
+    const severityGroupBy = vi.fn().mockResolvedValue([]);
+    const severityWhere = vi.fn().mockReturnValue({ groupBy: severityGroupBy });
+    const severityInnerJoin = vi.fn().mockReturnValue({ where: severityWhere });
+
     vi.mocked(db.select)
       .mockReturnValueOnce(selectWhereResult([{ id: DEVICE_A }, { id: DEVICE_C }]) as any)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           innerJoin
         })
-      } as any);
+      } as any)
+      .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ innerJoin: deviceBreakdownInnerJoin1 }) } as any)
+      .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ innerJoin: severityInnerJoin }) } as any);
 
     const res = await app.request(`/patches/compliance?orgId=${ACCESSIBLE_ORG_ID}&source=apple&severity=critical`, {
       method: 'GET',

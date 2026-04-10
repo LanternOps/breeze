@@ -16,7 +16,16 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   remoteSessions: { id: 'remoteSessions.id', deviceId: 'remoteSessions.deviceId', status: 'remoteSessions.status' },
   devices: { id: 'devices.id' },
-  users: { id: 'users.id', status: 'users.status' }
+  users: { id: 'users.id', status: 'users.status' },
+  patchPolicies: {},
+  alertRules: {},
+  backupConfigs: {},
+  securityPolicies: {},
+  automationPolicies: {},
+  maintenanceWindows: {},
+  softwarePolicies: {},
+  sensitiveDataPolicies: {},
+  peripheralPolicies: {}
 }));
 
 vi.mock('../services/remoteSessionAuth', () => ({

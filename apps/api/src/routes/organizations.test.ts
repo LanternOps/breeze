@@ -74,7 +74,9 @@ vi.mock('../middleware/auth', () => ({
       return c.json({ error: 'Partner access required' }, 403);
     }
     return next();
-  })
+  }),
+  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
 import { db } from '../db';
