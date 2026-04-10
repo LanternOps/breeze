@@ -565,6 +565,14 @@ export interface PartnerSettings {
     phone?: string;
     website?: string;
   };
+  address?: {
+    street1?: string;
+    street2?: string;
+    city?: string;
+    region?: string;
+    postalCode?: string;
+    country?: string;
+  };
   // NEW inheritable categories
   security?: InheritableSecuritySettings;
   notifications?: InheritableNotificationSettings;

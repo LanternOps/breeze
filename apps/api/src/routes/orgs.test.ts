@@ -1097,6 +1097,113 @@ describe('org routes', () => {
       // top-level settings keys not in the request body ARE preserved (top-level merge only)
       expect(capturedUpdateData.settings.notifications).toEqual({ emailEnabled: true });
     });
+
+    it('accepts a fully populated address in settings', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([currentPartner])
+          })
+        })
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              ...currentPartner,
+              settings: {
+                address: {
+                  street1: '123 Main St',
+                  street2: 'Suite 400',
+                  city: 'Denver',
+                  region: 'CO',
+                  postalCode: '80202',
+                  country: 'US',
+                }
+              }
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          settings: {
+            address: {
+              street1: '123 Main St',
+              street2: 'Suite 400',
+              city: 'Denver',
+              region: 'CO',
+              postalCode: '80202',
+              country: 'US',
+            }
+          }
+        })
+      });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('rejects an address country code longer than 2 characters', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          settings: {
+            address: { country: 'USA' }
+          }
+        })
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('accepts an empty-string address country', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([currentPartner])
+          })
+        })
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ ...currentPartner, settings: { address: { country: '' } } }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { address: { country: '' } } })
+      });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('rejects an address street1 longer than 255 characters', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          settings: { address: { street1: 'a'.repeat(256) } }
+        })
+      });
+
+      expect(res.status).toBe(400);
+    });
   });
 
   describe('scope enforcement on /partners/me routes', () => {
