@@ -1,14 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   Building2,
-  Calendar,
   Clock,
   Globe,
   Loader2,
-  Mail,
-  Phone,
   Save,
-  User
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
@@ -20,6 +16,7 @@ import PartnerEventLogsTab from './PartnerEventLogsTab';
 import PartnerDefaultsTab from './PartnerDefaultsTab';
 import PartnerBrandingTab from './PartnerBrandingTab';
 import PartnerAiBudgetsTab from './PartnerAiBudgetsTab';
+import PartnerCompanyTab from './PartnerCompanyTab';
 import { showToast } from '../shared/Toast';
 import type {
   PartnerSettings,
@@ -36,7 +33,7 @@ import type {
 } from '@breeze/shared';
 import { navigateTo } from '@/lib/navigation';
 
-type TabKey = 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'aiBudgets';
+type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'aiBudgets';
 
 type Partner = {
   id: string;
@@ -49,6 +46,7 @@ type Partner = {
 };
 
 const TABS: { key: TabKey; label: string }[] = [
+  { key: 'company', label: 'Company' },
   { key: 'regional', label: 'Regional' },
   { key: 'security', label: 'Security' },
   { key: 'notifications', label: 'Notifications' },
@@ -95,7 +93,7 @@ export default function PartnerSettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
-  const [activeTab, setActiveTab] = useState<TabKey>('regional');
+  const [activeTab, setActiveTab] = useState<TabKey>('company');
 
   // Regional form state
   const [timezone, setTimezone] = useState('UTC');
@@ -107,6 +105,8 @@ export default function PartnerSettingsPage() {
   const [contactEmail, setContactEmail] = useState('');
   const [contactPhone, setContactPhone] = useState('');
   const [contactWebsite, setContactWebsite] = useState('');
+  const [companyName, setCompanyName] = useState('');
+  const [address, setAddress] = useState<NonNullable<PartnerSettings['address']>>({});
 
   // Inheritable category state
   const [securityData, setSecurityData] = useState<InheritableSecuritySettings>({});
@@ -128,6 +128,7 @@ export default function PartnerSettingsPage() {
       }
       const data: Partner = await response.json();
       setPartner(data);
+      setCompanyName(data.name || '');
 
       const settings = data.settings || {};
       setTimezone(settings.timezone || 'UTC');
@@ -141,6 +142,7 @@ export default function PartnerSettingsPage() {
       setContactEmail(settings.contact?.email || '');
       setContactPhone(settings.contact?.phone || '');
       setContactWebsite(settings.contact?.website || '');
+      setAddress(settings.address || {});
 
       // Inheritable categories
       setSecurityData(settings.security || {});
@@ -193,6 +195,14 @@ export default function PartnerSettingsPage() {
           email: contactEmail || undefined,
           phone: contactPhone || undefined,
           website: contactWebsite || undefined
+        },
+        address: {
+          street1: address.street1 || undefined,
+          street2: address.street2 || undefined,
+          city: address.city || undefined,
+          region: address.region || undefined,
+          postalCode: address.postalCode || undefined,
+          country: address.country || undefined,
         }
       };
 
@@ -206,7 +216,7 @@ export default function PartnerSettingsPage() {
 
       const response = await fetchWithAuth('/orgs/partners/me', {
         method: 'PATCH',
-        body: JSON.stringify({ settings })
+        body: JSON.stringify({ name: companyName, settings })
       });
 
       if (!response.ok) throw new Error('Failed to save settings');
@@ -305,6 +315,28 @@ export default function PartnerSettingsPage() {
         <div className="rounded-md border bg-blue-50 dark:bg-blue-950/30 px-4 py-3 text-sm text-blue-700 dark:text-blue-300">
           Values you set here are enforced across all organizations. Leave fields empty to let each organization configure individually.
         </div>
+      )}
+
+      {/* Company Tab */}
+      {activeTab === 'company' && (
+        <PartnerCompanyTab
+          name={companyName}
+          address={address}
+          contact={{
+            name: contactName,
+            email: contactEmail,
+            phone: contactPhone,
+            website: contactWebsite,
+          }}
+          onNameChange={setCompanyName}
+          onAddressChange={setAddress}
+          onContactChange={(c) => {
+            setContactName(c.name || '');
+            setContactEmail(c.email || '');
+            setContactPhone(c.phone || '');
+            setContactWebsite(c.website || '');
+          }}
+        />
       )}
 
       {/* Regional Tab */}
@@ -413,47 +445,6 @@ export default function PartnerSettingsPage() {
                   ))}
                 </div>
               )}
-            </div>
-          </section>
-
-          {/* Contact Information */}
-          <section className="rounded-lg border bg-card p-6 shadow-sm">
-            <div className="mb-6">
-              <div className="flex items-center gap-2">
-                <User className="h-5 w-5 text-muted-foreground" />
-                <h2 className="text-lg font-semibold">Contact Information</h2>
-              </div>
-              <p className="mt-1 text-sm text-muted-foreground">Primary contact for your MSP.</p>
-            </div>
-            <div className="grid gap-6 sm:grid-cols-2">
-              <div className="space-y-2">
-                <label className="flex items-center gap-2 text-sm font-medium">
-                  <User className="h-4 w-4 text-muted-foreground" /> Contact Name
-                </label>
-                <input type="text" value={contactName} onChange={e => setContactName(e.target.value)}
-                  placeholder="John Smith" className="h-10 w-full rounded-md border bg-background px-3 text-sm" />
-              </div>
-              <div className="space-y-2">
-                <label className="flex items-center gap-2 text-sm font-medium">
-                  <Mail className="h-4 w-4 text-muted-foreground" /> Email
-                </label>
-                <input type="email" value={contactEmail} onChange={e => setContactEmail(e.target.value)}
-                  placeholder="contact@example.com" className="h-10 w-full rounded-md border bg-background px-3 text-sm" />
-              </div>
-              <div className="space-y-2">
-                <label className="flex items-center gap-2 text-sm font-medium">
-                  <Phone className="h-4 w-4 text-muted-foreground" /> Phone
-                </label>
-                <input type="tel" value={contactPhone} onChange={e => setContactPhone(e.target.value)}
-                  placeholder="+1 (555) 123-4567" className="h-10 w-full rounded-md border bg-background px-3 text-sm" />
-              </div>
-              <div className="space-y-2">
-                <label className="flex items-center gap-2 text-sm font-medium">
-                  <Calendar className="h-4 w-4 text-muted-foreground" /> Website
-                </label>
-                <input type="url" value={contactWebsite} onChange={e => setContactWebsite(e.target.value)}
-                  placeholder="https://example.com" className="h-10 w-full rounded-md border bg-background px-3 text-sm" />
-              </div>
             </div>
           </section>
 
