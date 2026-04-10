@@ -123,8 +123,6 @@ for user in $(who | awk '{print $1}' | sort -u); do
     fi
 done
 
-systemctl daemon-reload
-
 echo "Breeze Agent installed."
 echo ""
 
