@@ -329,7 +329,6 @@ func (h *DarwinInputHandler) shouldUseHID() bool {
 	return h.atLoginWindow.Load() && h.hidAvailable
 }
 
-
 var errInputUnavailable = fmt.Errorf("input injection unavailable in login_window context (IOHIDSystem not connected)")
 
 // scaleXY converts viewer coordinates (video pixel space, 2x on Retina)

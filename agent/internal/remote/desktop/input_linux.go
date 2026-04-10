@@ -22,7 +22,6 @@ func (h *LinuxInputHandler) InputAvailable() bool { return true }
 
 func (h *LinuxInputHandler) SetAtLoginWindow(_ bool) {}
 
-
 func (h *LinuxInputHandler) SetDisplayOffset(x, y int) {
 	// xdotool uses global screen coordinates; offset not needed.
 }
