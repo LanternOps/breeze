@@ -350,6 +350,11 @@ var serviceStartCmd = &cobra.Command{
 
 		fmt.Println("Breeze Agent service started.")
 		fmt.Printf("Logs: tail -f %s/agent.log\n", darwinLogDir)
+
+		// Bootstrap the desktop helper LaunchAgents so remote desktop connects promptly.
+		if _, err := os.Stat(darwinDesktopUserPlistDst); err == nil {
+			bootstrapDesktopHelperPlists()
+		}
 		return nil
 	},
 }
