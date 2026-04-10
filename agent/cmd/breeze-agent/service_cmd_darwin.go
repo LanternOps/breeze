@@ -222,6 +222,10 @@ var serviceInstallCmd = &cobra.Command{
 			fmt.Printf("LaunchAgent plist installed to %s\n", darwinDesktopLoginWindowPlistDst)
 		}
 
+		// Immediately load the helper LaunchAgents so the desktop helper connects
+		// right away rather than waiting for the first heartbeat.
+		bootstrapDesktopHelperPlists()
+
 		// Create breeze group for IPC socket access (best-effort)
 		if err := exec.Command("dscl", ".", "-read", "/Groups/breeze").Run(); err != nil {
 			if err2 := exec.Command("dscl", ".", "-create", "/Groups/breeze").Run(); err2 != nil {
@@ -458,4 +462,33 @@ func isLaunchdLoaded(label string) bool {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// bootstrapDesktopHelperPlists immediately loads the desktop helper LaunchAgents
+// into launchd for the installing user's GUI session (via SUDO_UID) and the
+// loginwindow domain. Called from service install and service start so the
+// helper connects right away rather than waiting for the first heartbeat.
+func bootstrapDesktopHelperPlists() {
+	// When run via sudo, SUDO_UID holds the real user's UID. Bootstrap the helper
+	// into that user's GUI session so it can access the display immediately.
+	if uid := os.Getenv("SUDO_UID"); uid != "" {
+		domain := "gui/" + uid
+		out, err := exec.Command("launchctl", "bootstrap", domain, darwinDesktopUserPlistDst).CombinedOutput()
+		if err != nil {
+			// Not fatal — kickstart will retry on next heartbeat.
+			fmt.Fprintf(os.Stderr, "Note: could not bootstrap desktop helper for user %s (will retry on heartbeat): %s\n",
+				uid, strings.TrimSpace(string(out)))
+		} else {
+			fmt.Printf("Desktop helper bootstrapped for GUI session (uid %s)\n", uid)
+		}
+	}
+
+	// Also bootstrap the login-window helper (covers login screen remote access).
+	out, err := exec.Command("launchctl", "bootstrap", "loginwindow", darwinDesktopLoginWindowPlistDst).CombinedOutput()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Note: could not bootstrap login-window desktop helper: %s\n",
+			strings.TrimSpace(string(out)))
+	} else {
+		fmt.Println("Login-window desktop helper bootstrapped.")
+	}
 }
