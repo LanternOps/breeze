@@ -65,6 +65,8 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
     }
   };
 
+  const safeLogo = sanitizeImageSrc(data.logoUrl);
+
   return (
     <div className="space-y-6">
       <div className="grid gap-6 sm:grid-cols-2">
@@ -121,13 +123,13 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
         </div>
 
         <div className="space-y-2 col-span-full">
-          <label className="text-sm font-medium">Logo</label>
+          <label htmlFor="logo-file-input" className="text-sm font-medium">Logo</label>
           <div className="rounded-lg border bg-muted/40 p-4 space-y-3">
             <div className="flex items-center gap-4">
               <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-lg border bg-background overflow-hidden">
-                {sanitizeImageSrc(data.logoUrl) ? (
+                {safeLogo ? (
                   <img
-                    src={sanitizeImageSrc(data.logoUrl)!}
+                    src={safeLogo}
                     alt="Logo preview"
                     className="h-full w-full object-contain"
                   />
@@ -138,6 +140,7 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
               <div className="flex flex-col gap-2">
                 <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-sm font-medium transition hover:bg-muted">
                   <input
+                    id="logo-file-input"
                     type="file"
                     accept={LOGO_ACCEPT}
                     className="hidden"
@@ -168,7 +171,15 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
                 <input
                   type="url"
                   value={data.logoUrl ?? ''}
-                  onChange={e => set({ logoUrl: e.target.value || undefined })}
+                  onChange={e => {
+                    const val = e.target.value;
+                    if (val.startsWith('blob:')) {
+                      setLogoError('Blob URLs are temporary and cannot be saved. Upload the file instead.');
+                      return;
+                    }
+                    setLogoError(null);
+                    set({ logoUrl: val || undefined });
+                  }}
                   placeholder={PLACEHOLDER}
                   className="h-9 w-full rounded-md border bg-background px-3 text-sm"
                 />
