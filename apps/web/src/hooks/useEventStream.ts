@@ -133,7 +133,6 @@ export function useEventStream(options: EventStreamOptions) {
       console.warn('[useEventStream] Connection failed, scheduling reconnect:', err instanceof Error ? err.message : err);
       scheduleReconnect();
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [send, scheduleReconnect]);
 
   const subscribe = useCallback((types: string[]) => {
