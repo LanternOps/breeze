@@ -11,7 +11,7 @@ import {
   User
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import KnownGuestsSettings from './KnownGuestsSettings';
 import PartnerSecurityTab from './PartnerSecurityTab';
@@ -90,7 +90,7 @@ function hasAnyValue(obj: object): boolean {
 }
 
 export default function PartnerSettingsPage() {
-  const { currentPartnerId, isLoading: contextLoading } = useOrgStore();
+  const { currentPartnerId, isLoading: contextLoading, setPartner: setPartnerContext } = useOrgStore();
   const [partner, setPartner] = useState<Partner | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -157,9 +157,25 @@ export default function PartnerSettingsPage() {
   }, []);
 
   useEffect(() => {
-    if (currentPartnerId) { fetchPartner(); }
-    else { setLoading(contextLoading); }
-  }, [currentPartnerId, contextLoading, fetchPartner]);
+    if (currentPartnerId) {
+      fetchPartner();
+      return;
+    }
+    if (contextLoading) return;
+    // No partner context in store yet. Try to seed it from the JWT (handles
+    // first-login and cleared-storage cases where currentPartnerId is null).
+    const token = useAuthStore.getState().tokens?.accessToken;
+    if (token) {
+      try {
+        const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+        if (payload.scope === 'partner' && payload.partnerId) {
+          setPartnerContext(payload.partnerId as string);
+          return; // Re-render will follow with currentPartnerId set
+        }
+      } catch { /* ignore decode failures */ }
+    }
+    setLoading(false); // JWT confirms non-partner scope; show access denied
+  }, [currentPartnerId, contextLoading, fetchPartner, setPartnerContext]);
 
   const handleSave = async () => {
     try {
