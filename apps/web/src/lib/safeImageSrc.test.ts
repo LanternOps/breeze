@@ -74,4 +74,26 @@ describe('sanitizeImageSrc', () => {
   it('rejects a data URI with no base64 payload', () => {
     expect(sanitizeImageSrc('data:image/png;base64,')).toBeNull();
   });
+
+  it('accepts a data URI of exactly 400,000 characters', () => {
+    const prefix = 'data:image/png;base64,';
+    const uri = prefix + 'A'.repeat(400_000 - prefix.length);
+    expect(uri.length).toBe(400_000);
+    expect(sanitizeImageSrc(uri)).toBe(uri);
+  });
+
+  it('rejects a data URI of exactly 400,001 characters', () => {
+    const prefix = 'data:image/png;base64,';
+    const uri = prefix + 'A'.repeat(400_001 - prefix.length);
+    expect(uri.length).toBe(400_001);
+    expect(sanitizeImageSrc(uri)).toBeNull();
+  });
+
+  it('rejects uppercase MIME type variants (case-sensitive by design)', () => {
+    // The allowlist is lowercase-only; browsers accept mixed-case but we intentionally reject
+    // to avoid any ambiguity in the allowlist (applies to data: URIs only; https: URLs are not filtered by MIME type).
+    expect(sanitizeImageSrc('data:image/PNG;base64,AAAA')).toBeNull();
+    expect(sanitizeImageSrc('data:image/JPEG;base64,AAAA')).toBeNull();
+    expect(sanitizeImageSrc('data:image/WebP;base64,AAAA')).toBeNull();
+  });
 });

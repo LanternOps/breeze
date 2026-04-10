@@ -39,7 +39,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { WEB_VERSION } from '../../lib/version';
 import BrandHeader from './BrandHeader';
 
@@ -155,10 +155,11 @@ const navSections: NavSection[] = [
     label: 'Settings',
     icon: Building,
     items: [
+      { name: 'Partner', href: '/settings/partner', icon: Building },
+      { name: 'Organizations', href: '/settings/organizations', icon: Building2 },
       { name: 'AI Usage & Budget', href: '/settings/ai-usage', icon: BrainCircuit },
       { name: 'Custom Fields', href: '/settings/custom-fields', icon: ListChecks },
       { name: 'Saved Filters', href: '/settings/filters', icon: Filter },
-      { name: 'Organizations', href: '/settings/organizations', icon: Building2 },
       { name: 'Users', href: '/settings/users', icon: Users },
       { name: 'Roles', href: '/settings/roles', icon: KeyRound },
       { name: 'Enrollment Keys', href: '/settings/enrollment-keys', icon: Key },
@@ -247,12 +248,32 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
       });
   }, []);
 
-  // Fetch partner branding for the top-left header. 403/404 silently falls back (system-scoped users have no partner).
+  // Fetch partner branding for the top-left header. Skipped when the JWT identifies
+  // a non-partner scope; falls through to the server (which will 403) when the scope
+  // cannot be decoded.
   useEffect(() => {
+    // Decode the JWT scope without verification (safe browser-side, used only to avoid a known 403).
+    const token = useAuthStore.getState().tokens?.accessToken;
+    let scope: string | null = null;
+    if (token) {
+      try {
+        const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+        scope = typeof payload.scope === 'string' ? payload.scope : null;
+      } catch {
+        // If decode fails, fall through and let the server respond (it will 403 for non-partner).
+      }
+    }
+    if (scope !== null && scope !== 'partner') return;
+
     let cancelled = false;
     fetchWithAuth('/orgs/partners/me')
       .then((r) => {
-        if (!r.ok) return null;
+        if (!r.ok) {
+          if (r.status !== 403 && r.status !== 404) {
+            console.warn('[Sidebar] Partner branding fetch returned unexpected status', r.status);
+          }
+          return null;
+        }
         return r.json() as Promise<{ name?: string; settings?: { branding?: { logoUrl?: string } } }>;
       })
       .then((data) => {

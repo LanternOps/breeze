@@ -2,9 +2,9 @@ import { sanitizeImageSrc } from '../../lib/safeImageSrc';
 
 interface BrandHeaderProps {
   /** Partner logo. Sanitized before render; falls back to the Breeze SVG when null/unsafe. */
-  logoUrl: string | null | undefined;
+  logoUrl: string | null;
   /** Partner name. Falls back to "Breeze" when null/empty. */
-  name: string | null | undefined;
+  name: string | null;
   /** Whether to render the text label (hidden in collapsed sidebar mode). */
   showLabel: boolean;
 }

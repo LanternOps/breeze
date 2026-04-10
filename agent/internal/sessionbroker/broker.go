@@ -1142,10 +1142,17 @@ func (b *Broker) verifyBinaryPath(peerPath string) bool {
 func (b *Broker) allowedHelperPaths() []string {
 	exePath, err := os.Executable()
 	if err != nil {
-		log.Warn("failed to get executable path, using hardcoded helper paths", "error", err.Error())
+		if runtime.GOOS == "windows" {
+			// On Windows all trusted paths are derived from the exe location;
+			// without it we cannot determine any safe paths.
+			log.Warn("failed to get executable path; no helper paths available", "error", err.Error())
+			return []string{}
+		}
+		log.Warn("failed to get executable path, falling back to hardcoded helper paths", "error", err.Error())
 		return []string{
 			"/usr/local/bin/breeze-agent",
 			"/usr/local/bin/breeze-desktop-helper",
+			"/usr/local/bin/breeze-watchdog",
 		}
 	}
 	exePath, err = filepath.EvalSymlinks(exePath)
@@ -1159,9 +1166,13 @@ func (b *Broker) allowedHelperPaths() []string {
 		filepath.Join(dir, "breeze-watchdog"),
 		filepath.Join(dir, "breeze-desktop-helper.exe"),
 		filepath.Join(dir, "breeze-watchdog.exe"),
-		"/usr/local/bin/breeze-agent",
-		"/usr/local/bin/breeze-desktop-helper",
-		"/usr/local/bin/breeze-watchdog",
+	}
+	if runtime.GOOS != "windows" {
+		paths = append(paths,
+			"/usr/local/bin/breeze-agent",
+			"/usr/local/bin/breeze-desktop-helper",
+			"/usr/local/bin/breeze-watchdog",
+		)
 	}
 	seen := make(map[string]struct{}, len(paths))
 	out := make([]string, 0, len(paths))
@@ -1184,7 +1195,11 @@ func (b *Broker) computeAllowedHashes() map[string]struct{} {
 	for _, path := range b.allowedHelperPaths() {
 		sum, err := hashFileSHA256(path)
 		if err != nil {
-			log.Warn("failed to hash allowed helper binary", "path", path, "error", err.Error())
+			if errors.Is(err, os.ErrNotExist) {
+				log.Debug("allowed helper binary not present", "path", path)
+			} else {
+				log.Warn("failed to hash allowed helper binary", "path", path, "error", err.Error())
+			}
 			continue
 		}
 		hashes[sum] = struct{}{}

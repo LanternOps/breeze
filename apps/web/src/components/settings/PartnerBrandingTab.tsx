@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import type { InheritableBrandingSettings } from '@breeze/shared';
 import { sanitizeImageSrc } from '../../lib/safeImageSrc';
 
@@ -47,6 +47,20 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
 
   const [logoError, setLogoError] = useState<string | null>(null);
 
+  // Separate draft state for the URL input so users can type intermediate values without
+  // each keystroke being rejected by sanitizeImageSrc (which rejects partial URLs like "htt").
+  const [urlDraft, setUrlDraft] = useState<string>(() =>
+    data.logoUrl?.startsWith('data:') ? '' : (data.logoUrl ?? '')
+  );
+
+  // When the logo is cleared externally (Remove button) or replaced by a file upload,
+  // reset the URL draft so the input reflects the new state.
+  useEffect(() => {
+    if (!data.logoUrl || data.logoUrl.startsWith('data:')) {
+      setUrlDraft('');
+    }
+  }, [data.logoUrl]);
+
   const handleLogoFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     setLogoError(null);
     const file = e.target.files?.[0];
@@ -59,13 +73,37 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
         return;
       }
       set({ logoUrl: dataUrl });
-    } catch {
+    } catch (err) {
+      console.error('[PartnerBrandingTab] Logo file processing failed:', err);
       setLogoError('Could not read image. Please try a different file.');
       e.target.value = '';
     }
   };
 
+  const handleUrlBlur = () => {
+    const val = urlDraft.trim();
+    if (!val) {
+      setLogoError(null);
+      set({ logoUrl: undefined });
+      return;
+    }
+    if (val.startsWith('blob:')) {
+      setLogoError('Blob URLs are temporary and cannot be saved. Upload the file instead.');
+      return;
+    }
+    if (!sanitizeImageSrc(val)) {
+      setLogoError('URL not supported. Use an https:// URL or upload a file.');
+      return;
+    }
+    setLogoError(null);
+    set({ logoUrl: val });
+  };
+
   const safeLogo = sanitizeImageSrc(data.logoUrl);
+  // A data URI was saved but fails sanitization (e.g., corrupted or truncated in DB).
+  const hasInvalidDataUri = !!data.logoUrl?.startsWith('data:') && !safeLogo;
+  // Show the URL fallback input when there's no uploaded data URI, or when the saved one is invalid.
+  const showUrlField = !data.logoUrl?.startsWith('data:') || hasInvalidDataUri;
 
   return (
     <div className="space-y-6">
@@ -162,33 +200,21 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
             <p className="text-xs text-muted-foreground">
               PNG, JPEG, or WebP · max 400 KB after encoding · resized to fit 256×256
             </p>
+            {hasInvalidDataUri && (
+              <p className="text-xs text-destructive">Saved logo data is invalid. Remove it or upload a new one.</p>
+            )}
             {logoError && (
               <p className="text-xs text-destructive">{logoError}</p>
             )}
-            {!data.logoUrl?.startsWith('data:') && (
+            {showUrlField && (
               <div className="space-y-1">
-                <label className="text-xs text-muted-foreground">Or paste an image URL</label>
+                <label htmlFor="logo-url-input" className="text-xs text-muted-foreground">Or paste an image URL</label>
                 <input
+                  id="logo-url-input"
                   type="url"
-                  value={data.logoUrl ?? ''}
-                  onChange={e => {
-                    const val = e.target.value;
-                    if (!val) {
-                      setLogoError(null);
-                      set({ logoUrl: undefined });
-                      return;
-                    }
-                    if (val.startsWith('blob:')) {
-                      setLogoError('Blob URLs are temporary and cannot be saved. Upload the file instead.');
-                      return;
-                    }
-                    if (!sanitizeImageSrc(val)) {
-                      setLogoError('URL not supported. Use an https:// URL or upload a file.');
-                      return;
-                    }
-                    setLogoError(null);
-                    set({ logoUrl: val });
-                  }}
+                  value={urlDraft}
+                  onChange={e => { setUrlDraft(e.target.value); setLogoError(null); }}
+                  onBlur={handleUrlBlur}
                   placeholder={PLACEHOLDER}
                   className="h-9 w-full rounded-md border bg-background px-3 text-sm"
                 />

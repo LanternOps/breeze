@@ -4,6 +4,48 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## MSI Builder Enrollment Injection — 2026-04-09
+
+**Branch:** `main`
+**Commit:** `d783648c`
+**Tested by:** Claude
+**Result:** PASS
+
+### What was tested
+- [x] API: `GET /enrollment-keys/:id/installer/windows` returns valid MSI (19.7MB, `application/octet-stream`)
+- [x] API: All 3 placeholders (`@@BREEZE_SERVER_URL@@`, `@@BREEZE_ENROLLMENT_KEY@@`, `@@BREEZE_ENROLLMENT_SECRET@@`) confirmed replaced in MSI binary (none found in output)
+- [x] API: Injected server URL (`https://2breeze.app`) confirmed present at correct offset in MSI
+- [x] API: Unique child enrollment key embedded — hash verified against DB record via `SHA256(pepper:rawKey)`
+- [x] API: `POST /api/v1/agents/enroll` with MSI-injected raw key returns correct `orgId` + `siteId` (HTTP 201)
+- [x] API: Child key `usageCount` incremented to 1 after enrollment; key correctly shows "Exhausted" after single use
+- [x] Agent: WiX `breeze.wxs` — `SetEnrollAgentData` → `EnrollAgent` custom action chain correct; condition gates on `SERVER_URL AND ENROLLMENT_KEY`
+- [x] Agent: `enroll-agent.ps1` correctly parses `CustomActionData` via regex and calls `breeze-agent.exe enroll <key> --server <url> --enrollment-secret <secret>`
+- [x] Agent: Go `enroll` command accepts positional key arg + persistent `--server` flag — matches PS1 call signature exactly
+- [x] Agent: `build-msi.ps1` pads placeholders to 512 chars with spaces — matches `installerBuilder.ts` sentinel format
+- [x] UI: Enrollment Keys page shows correct Active/Exhausted status for child keys
+- [x] UI: Download button shows platform dropdown (Windows/.msi, macOS/.pkg) for active keys with siteId
+- [x] UI: `AddDeviceModal` creates parent key with siteId then fetches `/enrollment-keys/:id/installer/:platform?count=N`
+- [x] UI: No JS console errors on enrollment keys page
+
+### Evidence
+- MSI binary: 19,668,992 bytes, valid WiX MSI (`Composite Document File V2`, WiX Toolset 7.0)
+- Placeholder check: `grep -c "@@BREEZE_*@@"` returns 0 for all 3 sentinels
+- Server URL at offset 19,640,365; enrollment key (64-char hex) at 19,640,891; enrollment secret at 19,641,420
+- DB record `017846c0`: `key = SHA256(ENROLLMENT_KEY_PEPPER:rawKey)` matches injected raw key exactly
+- Enrollment API response: `{ agentId, deviceId, authToken, orgId: "cc841fdb...", siteId: "741590bf..." }`
+- DB after enrollment: child key `usageCount=1`, `maxUsage=1` (exhausted)
+- Test device `e4bcef6b` deleted after verification
+
+### Issues Found
+- None. End-to-end flow is correct.
+
+### Notes
+- Each download creates a new single-use child key — downloading twice leaves one orphaned key (expected security behavior; each issued installer is independently traceable)
+- Signing mode active (`MSI_SIGNING_URL` configured) — template MSI patched then re-signed via Azure Trusted Signing
+- Zip fallback path (no signing) not tested here; `install.bat` uses `tokens=1,*` delimiter which correctly handles URLs containing `:`
+
+---
+
 ## TCP Tunnel Relay (VNC + Network Proxy) — 2026-04-04
 
 **Branch:** `main` (merged from `feature/tcp-tunnel-relay`)

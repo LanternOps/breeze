@@ -228,11 +228,21 @@ export default function PartnerRegisterForm({
         />
         <label htmlFor="acceptTerms" className="text-sm leading-snug text-muted-foreground">
           I agree to the{' '}
-          <a href="/terms" className="text-primary hover:underline">
+          <a
+            href="https://breezermm.com/legal/terms-of-service"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-primary hover:underline"
+          >
             Terms of Service
           </a>{' '}
           and{' '}
-          <a href="/privacy" className="text-primary hover:underline">
+          <a
+            href="https://breezermm.com/legal/privacy-policy"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-primary hover:underline"
+          >
             Privacy Policy
           </a>
         </label>

@@ -15,7 +15,7 @@ func wmicGet(args []string, property string) string {
 	cmdArgs := append(args, "get", property, "/format:list")
 	out, err := runCollectorOutput(wmicTimeout, "wmic", cmdArgs...)
 	if err != nil {
-		slog.Warn("wmic query failed", "args", strings.Join(args, " "), "error", err.Error())
+		slog.Debug("wmic query failed", "args", strings.Join(args, " "), "error", err.Error())
 		return ""
 	}
 	// Output format: "Property=Value\r\n"

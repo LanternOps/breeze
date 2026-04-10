@@ -53,7 +53,13 @@ vi.mock('../middleware/auth', () => ({
     } as any);
     return next();
   }),
-  requireScope: vi.fn(() => (c: any, next: any) => next()),
+  requireScope: vi.fn((...scopes: string[]) => (c: any, next: any) => {
+    const auth = c.get('auth');
+    if (!scopes.includes(auth?.scope)) {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
+    return next();
+  }),
   requirePartner: vi.fn((c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next())
@@ -872,5 +878,267 @@ describe('org routes', () => {
       const body = await res.json();
       expect(body.success).toBe(true);
     });
+  });
+
+  describe('GET /orgs/partners/me', () => {
+    it('returns partner details for a partner-scoped user', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'Acme MSP', settings: {} }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/me');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.id).toBe('partner-123');
+      expect(body.name).toBe('Acme MSP');
+    });
+
+    it('returns 404 when the partner record is not found (soft-deleted)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/me');
+
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe('PATCH /orgs/partners/me', () => {
+    it('rejects a logoUrl exceeding 400 KB', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          settings: {
+            branding: {
+              logoUrl: 'data:image/png;base64,' + 'A'.repeat(400_001)
+            }
+          }
+        })
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('accepts a valid branding update within size limits', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([currentPartner])
+          })
+        })
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              ...currentPartner,
+              settings: { branding: { primaryColor: '#ff0000' } }
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          settings: { branding: { primaryColor: '#ff0000' } }
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.settings.branding.primaryColor).toBe('#ff0000');
+    });
+
+    it('returns 404 when the partner record is not found during update', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'New Name' })
+      });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('returns 404 when the partner is deleted between pre-flight check and update', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };
+      // Pre-flight select succeeds, but the update returns no rows (race-deleted)
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([currentPartner])
+          })
+        })
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'New Name' })
+      });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('preserves existing settings keys when applying a partial update', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const existingSettings = { branding: { primaryColor: '#aabbcc' }, notifications: { emailEnabled: true } };
+      const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: existingSettings };
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([currentPartner])
+          })
+        })
+      } as any);
+
+      let capturedUpdateData: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          capturedUpdateData = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{
+                ...currentPartner,
+                settings: data.settings
+              }])
+            })
+          };
+        })
+      } as any);
+
+      await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { branding: { primaryColor: '#ff0000' } } })
+      });
+
+      // Both the new branding key and the pre-existing notifications key must be present
+      expect(capturedUpdateData.settings).toMatchObject({
+        branding: { primaryColor: '#ff0000' },
+        notifications: { emailEnabled: true }
+      });
+    });
+
+    it('replaces the entire branding sub-object when updating settings (shallow merge)', async () => {
+      // settings is merged at the top level only — updating settings.branding replaces
+      // the whole branding object; keys within branding that are not in the request body
+      // are not preserved. This is intentional shallow-merge behavior.
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+
+      const existingSettings = {
+        branding: { primaryColor: '#000000', logoUrl: 'https://old.example.com/logo.png' },
+        notifications: { emailEnabled: true }
+      };
+      const currentPartner = { id: 'partner-123', name: 'Test Partner', settings: existingSettings };
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([currentPartner])
+          })
+        })
+      } as any);
+
+      let capturedUpdateData: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          capturedUpdateData = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ ...currentPartner, settings: data.settings }])
+            })
+          };
+        })
+      } as any);
+
+      await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { branding: { primaryColor: '#ff0000' } } })
+      });
+
+      // branding is replaced wholesale — logoUrl from the existing record is NOT preserved
+      expect(capturedUpdateData.settings.branding).toEqual({ primaryColor: '#ff0000' });
+      // top-level settings keys not in the request body ARE preserved (top-level merge only)
+      expect(capturedUpdateData.settings.notifications).toEqual({ emailEnabled: true });
+    });
+  });
+
+  describe('scope enforcement on /partners/me routes', () => {
+    it('returns 403 when a system-scoped token hits GET /partners/me', async () => {
+      setAuthContext({ scope: 'system' });
+
+      const res = await app.request('/orgs/partners/me');
+
+      expect(res.status).toBe(403);
+    });
+
+    it('returns 403 when an organization-scoped token hits GET /partners/me', async () => {
+      setAuthContext({ scope: 'organization' });
+
+      const res = await app.request('/orgs/partners/me');
+
+      expect(res.status).toBe(403);
+    });
+
+    it('returns 403 when a system-scoped token hits PATCH /partners/me', async () => {
+      setAuthContext({ scope: 'system' });
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'New Name' })
+      });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('returns 403 when an organization-scoped token hits PATCH /partners/me', async () => {
+      setAuthContext({ scope: 'organization' });
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'New Name' })
+      });
+
+      expect(res.status).toBe(403);
+    });
+
   });
 });
