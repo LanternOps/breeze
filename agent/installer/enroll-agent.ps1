@@ -38,6 +38,9 @@ function Get-CustomActionDataValue {
     return $match.Groups["value"].Value
 }
 
+$logDir = Join-Path $env:ProgramData "Breeze\logs"
+New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+
 $serverUrl = Get-CustomActionDataValue -Data $CustomActionData -Key "SERVER_URL" -NextKey "ENROLLMENT_KEY"
 $enrollmentKey = Get-CustomActionDataValue -Data $CustomActionData -Key "ENROLLMENT_KEY" -NextKey "ENROLLMENT_SECRET"
 $enrollmentSecret = Get-CustomActionDataValue -Data $CustomActionData -Key "ENROLLMENT_SECRET"
@@ -48,11 +51,28 @@ $enrollmentKey = $enrollmentKey.Trim()
 $enrollmentSecret = $enrollmentSecret.Trim()
 
 if ([string]::IsNullOrWhiteSpace($serverUrl) -or [string]::IsNullOrWhiteSpace($enrollmentKey)) {
-    exit 0
+    # The MSI condition gates EnrollAgent on both properties being non-empty,
+    # so reaching this branch means CustomActionData was mangled between MSI
+    # and PowerShell (e.g. null bytes in the property value truncated the
+    # command-line argument). Write a forensic marker and fail loudly.
+    $marker = Join-Path $logDir "enroll-failed.txt"
+    @"
+Enrollment custom action received empty SERVER_URL or ENROLLMENT_KEY despite
+the MSI condition requiring both. This usually means the template MSI was
+patched with null bytes instead of spaces, truncating the CustomActionData
+command-line argument.
+
+Timestamp: $(Get-Date -Format 'o')
+CustomActionData length: $($CustomActionData.Length)
+Parsed serverUrl: '$serverUrl'
+Parsed enrollmentKey present: $(-not [string]::IsNullOrWhiteSpace($enrollmentKey))
+"@ | Out-File -FilePath $marker -Encoding utf8 -Force
+    throw "Enrollment skipped: CustomActionData missing SERVER_URL or ENROLLMENT_KEY (see $marker)"
 }
 
-$agentExe = Join-Path $env:ProgramFiles "Breeze\\breeze-agent.exe"
-$configPath = Join-Path $env:ProgramData "Breeze\\agent.yaml"
+$agentExe = Join-Path $env:ProgramFiles "Breeze\breeze-agent.exe"
+$configPath = Join-Path $env:ProgramData "Breeze\agent.yaml"
+$enrollLog = Join-Path $logDir "enroll.log"
 
 if (-not (Test-Path $agentExe)) {
     throw "breeze-agent.exe not found at expected location: $agentExe"
@@ -79,9 +99,10 @@ if (-not [string]::IsNullOrWhiteSpace($enrollmentSecret)) {
     $enrollArgs += "--enrollment-secret"
     $enrollArgs += $enrollmentSecret
 }
-& $agentExe @enrollArgs
+"[$(Get-Date -Format 'o')] enrolling against $serverUrl" | Out-File -FilePath $enrollLog -Encoding utf8 -Append
+& $agentExe @enrollArgs *>&1 | Tee-Object -FilePath $enrollLog -Append
 if ($LASTEXITCODE -ne 0) {
-    throw "Enrollment command failed with exit code $LASTEXITCODE"
+    throw "Enrollment command failed with exit code $LASTEXITCODE — see $enrollLog"
 }
 
 if (Get-Service -Name "BreezeAgent" -ErrorAction SilentlyContinue) {

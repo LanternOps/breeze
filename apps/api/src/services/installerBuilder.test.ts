@@ -110,6 +110,37 @@ describe('replaceMsiPlaceholders', () => {
     expect(result.includes(Buffer.from('brz_key123', 'ascii'))).toBe(true);
     expect(result.includes(Buffer.from('secret', 'ascii'))).toBe(true);
   });
+
+  it('patched sentinel regions contain no null bytes (would truncate CustomActionData)', () => {
+    const serverSentinel = Buffer.from(PLACEHOLDERS.SERVER_URL, 'utf16le');
+    const keySentinel = Buffer.from(PLACEHOLDERS.ENROLLMENT_KEY, 'utf16le');
+    const secretSentinel = Buffer.from(PLACEHOLDERS.ENROLLMENT_SECRET, 'utf16le');
+    const template = Buffer.concat([
+      Buffer.alloc(2048, 0xaa),
+      serverSentinel,
+      keySentinel,
+      secretSentinel,
+    ]);
+
+    const result = replaceMsiPlaceholders(template, {
+      serverUrl: 'https://api.breezermm.com',
+      enrollmentKey: 'brz_abcdef',
+      enrollmentSecret: '',
+    })!;
+
+    // Verify no embedded NUL WCHARs (0x00 0x00 pairs) in any of the three
+    // sentinel regions. A NUL WCHAR here would terminate the string when
+    // MSI passes it to a deferred custom action via command line.
+    const offsets = [2048, 2048 + serverSentinel.length, 2048 + serverSentinel.length + keySentinel.length];
+    for (const offset of offsets) {
+      const region = result.slice(offset, offset + serverSentinel.length);
+      for (let i = 0; i < region.length; i += 2) {
+        if (region[i] === 0 && region[i + 1] === 0) {
+          throw new Error(`NUL WCHAR at byte ${i} in region starting at offset ${offset} — would truncate downstream`);
+        }
+      }
+    }
+  });
 });
 
 describe('buildMacosInstallerZip', () => {

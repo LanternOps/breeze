@@ -92,6 +92,18 @@ export function replaceMsiPlaceholders(template: Buffer, values: InstallerValues
     // Only write up to the sentinel length to avoid overwriting adjacent data
     const writeLen = Math.min(replacementBuf.length, sentinelLen);
     replacementBuf.copy(result, offset, 0, writeLen);
+
+    // Post-patch validation: decode the sentinel region back and verify it
+    // round-trips to the expected value with no embedded nulls. Null bytes
+    // in the padding truncate command-line arguments when MSI expands this
+    // property into a deferred custom action's CustomActionData.
+    const decoded = result.slice(offset, offset + writeLen).toString(encoding);
+    if (decoded.includes('\0')) {
+      throw new Error(`[installer] ${name}: patched region contains null characters — would truncate downstream (bug in replacement logic)`);
+    }
+    if (decoded.trimEnd() !== value) {
+      throw new Error(`[installer] ${name}: post-patch round-trip failed — expected ${JSON.stringify(value)}, got ${JSON.stringify(decoded.trimEnd())}`);
+    }
   }
 
   return result;

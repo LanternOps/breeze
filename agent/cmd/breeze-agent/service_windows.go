@@ -5,15 +5,32 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
+	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 )
+
+// writeStartupFailureMarker drops a human-readable file in the logs directory
+// recording why startAgent() failed. The SCM/MSI layer doesn't surface the
+// underlying error to an admin, so this marker is often the only trail.
+func writeStartupFailureMarker(startErr error) {
+	logDir := filepath.Join(config.ConfigDir(), "logs")
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return
+	}
+	path := filepath.Join(logDir, "agent-start-failed.txt")
+	content := fmt.Sprintf("timestamp: %s\npid: %d\nerror: %s\n",
+		time.Now().Format(time.RFC3339), os.Getpid(), startErr.Error())
+	_ = os.WriteFile(path, []byte(content), 0644)
+}
 
 var procGetConsoleWindow = syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleWindow")
 
@@ -105,6 +122,7 @@ func (s *breezeService) Execute(args []string, r <-chan svc.ChangeRequest, chang
 	comps, err := s.startFn()
 	if err != nil {
 		log.Error("agent start failed", "error", err.Error())
+		writeStartupFailureMarker(err)
 		changes <- svc.Status{State: svc.StopPending}
 		return true, 1
 	}
