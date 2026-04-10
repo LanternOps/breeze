@@ -32,8 +32,8 @@ export default function ConnectVncButton({
   const [error, setError] = useState<string | null>(null);
   const [tunnelId, setTunnelId] = useState<string | null>(null);
   const [vncWsUrl, setVncWsUrl] = useState<string | null>(null);
-  const pollTimerRef = useRef<ReturnType<typeof setTimeout>>();
-  const autoDismissRef = useRef<ReturnType<typeof setTimeout>>();
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const autoDismissRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
     return () => {

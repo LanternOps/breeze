@@ -71,6 +71,7 @@ export default function AssetDetailModal({
   }, [asset]);
 
   const handleLink = async () => {
+    if (!asset) return;
     if (!selectedDevice) {
       setLinkError('Select a device to link.');
       return;
@@ -97,6 +98,7 @@ export default function AssetDetailModal({
   };
 
   const handleDelete = async () => {
+    if (!asset) return;
     const name = asset.hostname || asset.ip;
     if (!confirm(`Delete discovered asset "${name}"?`)) {
       return;
@@ -122,6 +124,7 @@ export default function AssetDetailModal({
   };
 
   const handleSaveInfo = async () => {
+    if (!asset) return;
     try {
       setSaving(true);
       setSaveError(undefined);

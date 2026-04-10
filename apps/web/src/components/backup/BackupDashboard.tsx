@@ -263,7 +263,7 @@ export default function BackupDashboard() {
         }
 
         const body = await response.json().catch(() => null);
-        const deviceName = overdueDevices.find((d) => d.id === deviceId)?.hostname ?? deviceId;
+        const deviceName = overdueDevices.find((d) => d.id === deviceId)?.name ?? deviceId;
         failedDetails.push(`${deviceName}: ${body?.error ?? `status ${response.status}`}`);
         failed += 1;
       }

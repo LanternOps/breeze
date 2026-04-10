@@ -3,6 +3,7 @@ import DashboardLayout from '../../../layouts/DashboardLayout.astro';
 import SiteDetailPage from '../../../components/settings/SiteDetailPage';
 
 const { id } = Astro.params;
+if (!id) return Astro.redirect('/settings/sites');
 ---
 
 <DashboardLayout title="Site Settings">
