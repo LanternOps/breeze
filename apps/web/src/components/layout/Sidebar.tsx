@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect, useSyncExternalStore } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   LayoutDashboard,
   Monitor,
@@ -52,24 +52,21 @@ type SidebarMode = 'open' | 'hover' | 'collapsed';
 // ---------------------------------------------------------------------------
 // Path tracking (reactive across Astro View Transitions)
 // ---------------------------------------------------------------------------
-let pathListeners = new Set<() => void>();
-function subscribeToPath(cb: () => void) {
-  pathListeners.add(cb);
-  return () => { pathListeners.delete(cb); };
-}
-function getPathSnapshot() {
-  return typeof window !== 'undefined' ? window.location.pathname : '/';
-}
-function getServerSnapshot() {
-  return '/';
-}
-if (typeof window !== 'undefined') {
-  document.addEventListener('astro:after-swap', () => {
-    pathListeners.forEach((cb) => cb());
-  });
-  window.addEventListener('popstate', () => {
-    pathListeners.forEach((cb) => cb());
-  });
+// useEffect-based: cleaned up on unmount, schedules normal async React updates
+// so it can't conflict with concurrent island hydration (unlike useSyncExternalStore
+// which forces SyncLane renders that can clear the dispatcher mid-transition).
+function useCurrentPath(initialPath: string): string {
+  const [path, setPath] = useState(initialPath);
+  useEffect(() => {
+    const update = () => setPath(window.location.pathname);
+    document.addEventListener('astro:after-swap', update);
+    window.addEventListener('popstate', update);
+    return () => {
+      document.removeEventListener('astro:after-swap', update);
+      window.removeEventListener('popstate', update);
+    };
+  }, []);
+  return path;
 }
 
 // ---------------------------------------------------------------------------
@@ -221,8 +218,7 @@ function sectionForHref(href: string): string | null {
 export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps) {
   const [mode, setMode] = useState<SidebarMode>(readSavedMode);
   const [hovered, setHovered] = useState(false);
-  const livePath = useSyncExternalStore(subscribeToPath, getPathSnapshot, getServerSnapshot);
-  const currentPath = livePath || initialPath;
+  const currentPath = useCurrentPath(initialPath);
 
   // --- Responsive breakpoints -----------------------------------------------
   // Track whether viewport is below lg (1024px) or md (768px) to override mode
