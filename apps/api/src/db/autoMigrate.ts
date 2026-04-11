@@ -263,7 +263,19 @@ export async function autoMigrate(): Promise<void> {
             `[auto-migrate] WARNING: App DB user "${me.user}" has BYPASSRLS/SUPERUSER — RLS policies are NOT enforced. Set DATABASE_URL_APP to postgresql://breeze_app:<pw>@... to connect as the unprivileged role.`,
           );
         }
+      } else {
+        console.warn(
+          '[auto-migrate] WARNING: Could not verify app DB role privileges — pg_roles returned no row for current_user. This may indicate a misconfigured role setup.',
+        );
       }
+    } catch (err) {
+      // Non-fatal: the probe itself failed (e.g., transient connectivity,
+      // auth mismatch). Log loudly so operators can see it, but continue
+      // startup so a flaky probe doesn't block the whole API.
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[auto-migrate] WARNING: BYPASSRLS assertion probe failed — RLS enforcement status unknown: ${message}`,
+      );
     } finally {
       await appClient.end();
     }

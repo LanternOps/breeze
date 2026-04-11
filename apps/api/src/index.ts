@@ -1153,12 +1153,17 @@ async function bootstrap(): Promise<void> {
   const config = validateConfig();
   console.log(`[config] Validated: NODE_ENV=${config.NODE_ENV}, port=${config.API_PORT}`);
 
-  await runStartupChecks();
-
-  // Auto-migrate schema and seed on first boot (set AUTO_MIGRATE=false to disable)
+  // Auto-migrate schema and seed on first boot (set AUTO_MIGRATE=false to
+  // disable). Runs BEFORE runStartupChecks because ensureAppRole() — called
+  // from autoMigrate — is what creates the unprivileged breeze_app role that
+  // DATABASE_URL_APP points at. On a fresh database the role doesn't exist
+  // until this runs, and the connectivity check (which uses the proxied
+  // `db`) would fail first.
   if (process.env.AUTO_MIGRATE !== 'false') {
     await autoMigrate();
   }
+
+  await runStartupChecks();
 
   try {
     await runWithSystemDbAccess(async () => {

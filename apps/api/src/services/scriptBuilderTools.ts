@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { AuthContext } from '../middleware/auth';
 import { executeTool } from './aiTools';
-import { withDbAccessContext } from '../db';
+import { withDbAccessContext, runOutsideDbContext } from '../db';
 import type { AiToolTier } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
 import { captureException } from './sentry';
@@ -82,15 +82,21 @@ function makeExistingHandler(
     try {
       const auth = getAuth();
       // Reconstruct the user's DB access context so tool execution runs
-      // under the same RLS scope the originating request did.
+      // under the same RLS scope the originating request did. Wrap in
+      // runOutsideDbContext first because withDbAccessContext short-circuits
+      // when an AsyncLocalStorage store already exists — and the SDK MCP
+      // dispatch chain leaves a stale store behind, which would cause the
+      // inner call to inherit whatever scope happened to be on the stack.
       const result = await withTimeout(
-        withDbAccessContext(
-          {
-            scope: auth.scope,
-            orgId: auth.orgId,
-            accessibleOrgIds: auth.accessibleOrgIds,
-          },
-          () => executeTool(toolName, args, auth),
+        runOutsideDbContext(() =>
+          withDbAccessContext(
+            {
+              scope: auth.scope,
+              orgId: auth.orgId,
+              accessibleOrgIds: auth.accessibleOrgIds,
+            },
+            () => executeTool(toolName, args, auth),
+          ),
         ),
         TOOL_EXECUTION_TIMEOUT_MS,
         toolName,
