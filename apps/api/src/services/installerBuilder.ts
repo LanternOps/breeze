@@ -212,11 +212,12 @@ fi
 echo "Installing Breeze Agent..."
 sudo installer -pkg "$SCRIPT_DIR/breeze-agent.pkg" -target /
 
-# Read enrollment config (macOS ships python3)
-SERVER_URL=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['serverUrl'])" "$ENROLLMENT_JSON")
-ENROLLMENT_KEY=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['enrollmentKey'])" "$ENROLLMENT_JSON")
-ENROLLMENT_SECRET=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('enrollmentSecret',''))" "$ENROLLMENT_JSON")
-SITE_ID=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('siteId',''))" "$ENROLLMENT_JSON")
+# Read enrollment config via plutil (ships with macOS, no Xcode CLT required).
+# /usr/bin/python3 is only a stub on fresh Macs and triggers the "requires developer tools" popup.
+SERVER_URL=$(plutil -extract serverUrl raw -o - "$ENROLLMENT_JSON")
+ENROLLMENT_KEY=$(plutil -extract enrollmentKey raw -o - "$ENROLLMENT_JSON")
+ENROLLMENT_SECRET=$(plutil -extract enrollmentSecret raw -o - "$ENROLLMENT_JSON" 2>/dev/null || echo "")
+SITE_ID=$(plutil -extract siteId raw -o - "$ENROLLMENT_JSON" 2>/dev/null || echo "")
 
 # Build enrollment command
 ENROLL_ARGS=("$ENROLLMENT_KEY" --server "$SERVER_URL")
