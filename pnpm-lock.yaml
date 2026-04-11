@@ -411,7 +411,7 @@ importers:
         version: 18.3.7(@types/react@18.3.28)
       '@vitejs/plugin-react':
         specifier: ^4.3.1
-        version: 4.7.0(vite@5.4.21(@types/node@25.5.2)(lightningcss@1.32.0)(terser@5.44.1))
+        version: 4.7.0(vite@6.4.1(@types/node@25.5.2)(jiti@1.21.7)(lightningcss@1.32.0)(terser@5.44.1)(tsx@4.21.0)(yaml@2.8.3))
       autoprefixer:
         specifier: ^10.4.27
         version: 10.4.27(postcss@8.5.8)
@@ -428,11 +428,11 @@ importers:
         specifier: ^5.5.4
         version: 5.9.3
       vite:
-        specifier: ^5.4.3
-        version: 5.4.21(@types/node@25.5.2)(lightningcss@1.32.0)(terser@5.44.1)
+        specifier: ^6.4.1
+        version: 6.4.1(@types/node@25.5.2)(jiti@1.21.7)(lightningcss@1.32.0)(terser@5.44.1)(tsx@4.21.0)(yaml@2.8.3)
       vitest:
         specifier: ^4.1.2
-        version: 4.1.2(@opentelemetry/api@1.9.0)(@types/node@25.5.2)(jsdom@27.4.0)(vite@5.4.21(@types/node@25.5.2)(lightningcss@1.32.0)(terser@5.44.1))
+        version: 4.1.2(@opentelemetry/api@1.9.0)(@types/node@25.5.2)(jsdom@27.4.0)(vite@6.4.1(@types/node@25.5.2)(jiti@1.21.7)(lightningcss@1.32.0)(terser@5.44.1)(tsx@4.21.0)(yaml@2.8.3))
 
   apps/web:
     dependencies:
@@ -15176,13 +15176,13 @@ snapshots:
       chai: 6.2.2
       tinyrainbow: 3.1.0
 
-  '@vitest/mocker@4.1.2(vite@5.4.21(@types/node@25.5.2)(lightningcss@1.32.0)(terser@5.44.1))':
+  '@vitest/mocker@4.1.2(vite@6.4.1(@types/node@25.5.2)(jiti@1.21.7)(lightningcss@1.32.0)(terser@5.44.1)(tsx@4.21.0)(yaml@2.8.3))':
     dependencies:
       '@vitest/spy': 4.1.2
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 5.4.21(@types/node@25.5.2)(lightningcss@1.32.0)(terser@5.44.1)
+      vite: 6.4.1(@types/node@25.5.2)(jiti@1.21.7)(lightningcss@1.32.0)(terser@5.44.1)(tsx@4.21.0)(yaml@2.8.3)
 
   '@vitest/mocker@4.1.2(vite@7.3.1(@types/node@25.5.2)(jiti@1.21.7)(lightningcss@1.32.0)(terser@5.44.1)(tsx@4.21.0)(yaml@2.8.3))':
     dependencies:
@@ -21636,10 +21636,10 @@ snapshots:
     optionalDependencies:
       vite: 7.3.1(@types/node@25.5.2)(jiti@1.21.7)(lightningcss@1.32.0)(terser@5.44.1)(tsx@4.21.0)(yaml@2.8.3)
 
-  vitest@4.1.2(@opentelemetry/api@1.9.0)(@types/node@25.5.2)(jsdom@27.4.0)(vite@5.4.21(@types/node@25.5.2)(lightningcss@1.32.0)(terser@5.44.1)):
+  vitest@4.1.2(@opentelemetry/api@1.9.0)(@types/node@25.5.2)(jsdom@27.4.0)(vite@6.4.1(@types/node@25.5.2)(jiti@1.21.7)(lightningcss@1.32.0)(terser@5.44.1)(tsx@4.21.0)(yaml@2.8.3)):
     dependencies:
       '@vitest/expect': 4.1.2
-      '@vitest/mocker': 4.1.2(vite@5.4.21(@types/node@25.5.2)(lightningcss@1.32.0)(terser@5.44.1))
+      '@vitest/mocker': 4.1.2(vite@6.4.1(@types/node@25.5.2)(jiti@1.21.7)(lightningcss@1.32.0)(terser@5.44.1)(tsx@4.21.0)(yaml@2.8.3))
       '@vitest/pretty-format': 4.1.2
       '@vitest/runner': 4.1.2
       '@vitest/snapshot': 4.1.2
@@ -21656,7 +21656,7 @@ snapshots:
       tinyexec: 1.0.4
       tinyglobby: 0.2.15
       tinyrainbow: 3.1.0
-      vite: 5.4.21(@types/node@25.5.2)(lightningcss@1.32.0)(terser@5.44.1)
+      vite: 6.4.1(@types/node@25.5.2)(jiti@1.21.7)(lightningcss@1.32.0)(terser@5.44.1)(tsx@4.21.0)(yaml@2.8.3)
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@opentelemetry/api': 1.9.0

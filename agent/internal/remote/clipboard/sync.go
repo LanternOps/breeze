@@ -23,8 +23,13 @@ const (
 
 var errClipboardSyncUnconfigured = errors.New("clipboard sync not configured")
 
+type dcSender interface {
+	SendText(s string) error
+}
+
 type ClipboardSync struct {
 	dc           *webrtc.DataChannel
+	sender       dcSender
 	provider     Provider
 	pollInterval time.Duration
 	stop         chan struct{}
@@ -44,6 +49,7 @@ type clipboardPayload struct {
 func NewClipboardSync(dc *webrtc.DataChannel, provider Provider) *ClipboardSync {
 	syncer := &ClipboardSync{
 		dc:           dc,
+		sender:       dc,
 		provider:     provider,
 		pollInterval: defaultPollInterval,
 		stop:         make(chan struct{}),
@@ -56,6 +62,16 @@ func NewClipboardSync(dc *webrtc.DataChannel, provider Provider) *ClipboardSync 
 		})
 	}
 	return syncer
+}
+
+// newClipboardSyncWithSender is used by tests to inject a mock sender.
+func newClipboardSyncWithSender(sender dcSender, provider Provider) *ClipboardSync {
+	return &ClipboardSync{
+		sender:       sender,
+		provider:     provider,
+		pollInterval: defaultPollInterval,
+		stop:         make(chan struct{}),
+	}
 }
 
 func (c *ClipboardSync) Watch() {
@@ -112,7 +128,7 @@ func (c *ClipboardSync) Stop() {
 }
 
 func (c *ClipboardSync) Send(content Content) error {
-	if c.dc == nil {
+	if c.sender == nil {
 		return errClipboardSyncUnconfigured
 	}
 	if err := ValidateContent(content); err != nil {
@@ -132,7 +148,7 @@ func (c *ClipboardSync) Send(content Content) error {
 		return err
 	}
 
-	if err := c.dc.SendText(string(encoded)); err != nil {
+	if err := c.sender.SendText(string(encoded)); err != nil {
 		return err
 	}
 
@@ -182,9 +198,20 @@ func (c *ClipboardSync) Receive(msg webrtc.DataChannelMessage) error {
 		return err
 	}
 
+	fp := fingerprint(content)
 	c.mu.Lock()
-	c.lastSentHash = fingerprint(content)
+	c.lastSentHash = fp
 	c.mu.Unlock()
+
+	if c.sender != nil {
+		ack, err := json.Marshal(struct {
+			Type string `json:"type"`
+			Hash string `json:"hash"`
+		}{"ack", fmt.Sprintf("%x", fp)})
+		if err == nil {
+			_ = c.sender.SendText(string(ack))
+		}
+	}
 
 	return nil
 }

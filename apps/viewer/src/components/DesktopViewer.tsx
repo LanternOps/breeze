@@ -6,6 +6,7 @@ import { createWebRTCSession, scaleVideoCoords, AgentSessionError, type Authenti
 import { mapKey, getModifiers, isModifierOnly } from '../lib/keymap';
 import { textToKeyEvents } from '../lib/paste';
 import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
+import { handleCtrlVPaste } from '../lib/clipboardPaste';
 import ViewerToolbar from './ViewerToolbar';
 
 interface Props {
@@ -42,6 +43,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
   const clipboardDCRef = useRef<RTCDataChannel | null>(null);
   const lastClipboardHashRef = useRef<string>('');
+  const clipboardAckMapRef = useRef<Map<string, { resolve: () => void; timer: ReturnType<typeof setTimeout> }>>(new Map());
   const webrtcMouseMovePendingRef = useRef<{ x: number; y: number } | null>(null);
   const webrtcMouseMoveRafRef = useRef<number | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
@@ -253,14 +255,28 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           event.channel.onmessage = (msg) => {
             try {
               const payload = JSON.parse(msg.data);
-              if (payload.type === 'text' && payload.text) {
+              if (payload.type === 'ack' && payload.hash) {
+                const entry = clipboardAckMapRef.current.get(payload.hash);
+                if (entry) {
+                  clearTimeout(entry.timer);
+                  clipboardAckMapRef.current.delete(payload.hash);
+                  entry.resolve();
+                }
+              } else if (payload.type === 'text' && payload.text) {
                 lastClipboardHashRef.current = payload.text;
-                navigator.clipboard.writeText(payload.text).catch((err) => {
-                  console.debug('Failed to write remote clipboard to local:', err);
+                // navigator.clipboard.writeText requires a user activation in
+                // WKWebView/WebView2; invoking it from an onmessage handler
+                // silently rejects with NotAllowedError. Route through the
+                // Tauri plugin, which goes via the Rust side and does not
+                // require a gesture.
+                import('@tauri-apps/plugin-clipboard-manager').then(({ writeText }) =>
+                  writeText(payload.text)
+                ).catch((err) => {
+                  console.warn('[clipboard] failed to write remote→local:', err);
                 });
               }
             } catch (err) {
-              console.debug('Clipboard message handling failed:', err);
+              console.warn('[clipboard] message handling failed:', err);
             }
           };
           event.channel.onclose = () => {
@@ -1149,21 +1165,43 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       return;
     }
 
-    // Ctrl+V / Cmd+V → push local clipboard to remote before pasting
+    // Ctrl+V / Cmd+V → push local clipboard to remote before pasting.
+    // Must await the clipboard sync BEFORE dispatching the key_press, or the
+    // keystroke lands on the agent ahead of the clipboard payload and pastes
+    // the previous contents.
     if (ne.code === 'KeyV' && !ne.shiftKey && (ne.ctrlKey || ne.metaKey)) {
       const dc = clipboardDCRef.current;
-      if (dc && dc.readyState === 'open') {
-        import('@tauri-apps/plugin-clipboard-manager').then(({ readText }) =>
-          readText()
-        ).catch(() =>
-          navigator.clipboard.readText()
-        ).then((text) => {
-          if (text && text !== lastClipboardHashRef.current) {
-            lastClipboardHashRef.current = text;
-            dc.send(JSON.stringify({ type: 'text', text }));
-          }
-        }).catch(() => {});
+      const pasteKey = mapKey(ne);
+      let pasteModifiers = getModifiers(ne);
+      if (remapCmdCtrl && pasteModifiers.length > 0) {
+        pasteModifiers = pasteModifiers.map(m =>
+          m === 'ctrl' ? 'meta' : m === 'meta' ? 'ctrl' : m
+        );
       }
+      const dispatchPaste = () => {
+        if (pasteKey) sendInputFn({ type: 'key_press', key: pasteKey, modifiers: pasteModifiers });
+      };
+      const waitForAck = (hash: string, timeoutMs: number): Promise<void> => {
+        if (!hash) return Promise.resolve();
+        return new Promise<void>(resolve => {
+          const timer = setTimeout(() => {
+            clipboardAckMapRef.current.delete(hash);
+            resolve();
+          }, timeoutMs);
+          clipboardAckMapRef.current.set(hash, { resolve, timer });
+        });
+      };
+      handleCtrlVPaste({
+        dc,
+        readText: async () => {
+          const { readText } = await import('@tauri-apps/plugin-clipboard-manager');
+          return readText();
+        },
+        lastHash: lastClipboardHashRef,
+        dispatchPaste,
+        waitForAck,
+      });
+      return;
     }
 
     const key = mapKey(ne);
