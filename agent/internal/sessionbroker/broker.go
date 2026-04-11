@@ -14,24 +14,67 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
-
 	"sync/atomic"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
-// timedRWMutex wraps sync.RWMutex and logs a warning when Lock or RLock
-// acquisition takes longer than 1 second. This instruments the heartbeat
-// starvation symptom in issue #387: a reconnect storm generating many
-// removeSession write-locks can starve heartbeat read-path callers.
+// slowLockThresholdNs is the duration (in nanoseconds, via sync/atomic) above
+// which a broker lock acquisition wait OR a broker write-lock hold triggers a
+// WARN log. Atomic storage lets tests safely override it from other
+// goroutines without tripping -race. Production default is 1s.
+var slowLockThresholdNs atomic.Int64
+
+func init() {
+	slowLockThresholdNs.Store(int64(time.Second))
+}
+
+// slowLockThreshold returns the current threshold as a duration.
+func slowLockThreshold() time.Duration {
+	return time.Duration(slowLockThresholdNs.Load())
+}
+
+// setSlowLockThreshold overrides the threshold and returns the previous
+// value. Intended for tests — production code should leave the default alone.
+func setSlowLockThreshold(d time.Duration) time.Duration {
+	return time.Duration(slowLockThresholdNs.Swap(int64(d)))
+}
+
+// timedRWMutex wraps sync.RWMutex and logs a warning when:
+//  1. Lock or RLock acquisition waits longer than slowLockThreshold (a sign
+//     of contention on the broker).
+//  2. A write-lock (Lock) is HELD longer than slowLockThreshold. Long write
+//     holds under contention are the direct starvation cause described in
+//     issue #387 — e.g. handleConnection holding b.mu.Lock() across a
+//     15-second SendCommandAndWait while heartbeat readers pile up.
+//
+// Read-lock HOLD time is not instrumented. A single `acquiredAt` field cannot
+// safely track multiple concurrent RLock holders, and the alternatives
+// (goroutine-ID maps, returning tokens from RLock, atomic pointers) either
+// race or uglify the API. In this broker, RLock holders never perform
+// long-blocking work — the starvation bug is caused by WRITE-lock holders —
+// so instrumenting Lock holds alone captures the dangerous class of bug.
 //
 // The wrapper uses runtime.Callers to automatically identify the calling
 // function — no changes are required at individual call sites.
+//
+// Do not copy by value: the embedded RWMutex and acquiredAt timestamp are
+// stateful and must be accessed via pointer.
 type timedRWMutex struct {
-	mu sync.RWMutex
+	_          noCopy
+	mu         sync.RWMutex
+	acquiredAt time.Time // only valid while write lock is held; read only in Unlock
 }
+
+// noCopy may be embedded into structs which must not be copied after the first
+// use. See https://golang.org/issues/8005#issuecomment-190753527 — `go vet`
+// recognises this pattern.
+type noCopy struct{}
+
+func (*noCopy) Lock()   {}
+func (*noCopy) Unlock() {}
 
 func callerName(skip int) string {
 	var pcs [3]uintptr
@@ -41,36 +84,66 @@ func callerName(skip int) string {
 	}
 	frames := runtime.CallersFrames(pcs[:n])
 	f, _ := frames.Next()
-	// Trim package prefix for brevity: "sessionbroker.(*Broker).handleConnection"
-	// → "handleConnection"
 	name := f.Function
-	if i := strings.LastIndexByte(name, '.'); i >= 0 {
-		name = name[i+1:]
+	// Strip the package prefix ("sessionbroker/broker.Foo" → "Foo"). Use the
+	// last '/' to locate the final path segment, then the first '.' inside
+	// that segment to skip the package name. Everything after is the
+	// method/function name (possibly with receiver and suffixes).
+	if slash := strings.LastIndexByte(name, '/'); slash >= 0 {
+		name = name[slash+1:]
 	}
-	// Strip go method closure suffixes like "func1"
+	if dot := strings.IndexByte(name, '.'); dot >= 0 {
+		name = name[dot+1:]
+	}
+	// Strip receiver: "(*Broker).handleConnection" → "handleConnection"
+	if close := strings.LastIndexByte(name, ')'); close >= 0 && close+1 < len(name) && name[close+1] == '.' {
+		name = name[close+2:]
+	}
+	// Strip method-value ("-fm") and closure ("-func1") suffixes introduced by
+	// the compiler.
 	if i := strings.IndexByte(name, '-'); i >= 0 {
+		name = name[:i]
+	}
+	// Strip nested closure suffixes ("handleConnection.func1" → "handleConnection").
+	// The compiler uses '.' as the closure separator on nested anonymous funcs.
+	if i := strings.IndexByte(name, '.'); i >= 0 {
 		name = name[:i]
 	}
 	return name
 }
 
 func (t *timedRWMutex) Lock() {
+	// Snapshot threshold once so the warn comparisons inside Lock and Unlock
+	// see a consistent value even if a test overrides it mid-call.
+	threshold := slowLockThreshold()
 	start := time.Now()
 	t.mu.Lock()
-	if waited := time.Since(start); waited > time.Second {
+	if waited := time.Since(start); waited > threshold {
 		log.Warn("broker write-lock acquisition slow",
 			"op", "Lock", "caller", callerName(1), "waited_ms", waited.Milliseconds())
 	}
+	// Record hold-start timestamp. Safe without additional sync: exactly one
+	// writer holds the lock at a time, and the field is only read in Unlock
+	// (also under the exclusive lock).
+	t.acquiredAt = time.Now()
 }
 
 func (t *timedRWMutex) Unlock() {
+	// Capture hold duration before releasing — `acquiredAt` is only valid
+	// while the write lock is held.
+	held := time.Since(t.acquiredAt)
+	t.acquiredAt = time.Time{}
 	t.mu.Unlock()
+	if held > slowLockThreshold() {
+		log.Warn("broker write-lock held too long",
+			"op", "Lock", "caller", callerName(1), "held_ms", held.Milliseconds())
+	}
 }
 
 func (t *timedRWMutex) RLock() {
 	start := time.Now()
 	t.mu.RLock()
-	if waited := time.Since(start); waited > time.Second {
+	if waited := time.Since(start); waited > slowLockThreshold() {
 		log.Warn("broker read-lock acquisition slow",
 			"op", "RLock", "caller", callerName(1), "waited_ms", waited.Milliseconds())
 	}
@@ -149,6 +222,12 @@ type Broker struct {
 	// when the write-lock storm from reconnect loops is in progress.
 	snap atomic.Pointer[sessionSnapshot]
 
+	// snapFallbackWarned fires a single WARN the first time snapshotSessions
+	// hits the nil-snapshot fallback path. This should only ever happen in
+	// tests that construct Broker{} directly; a production occurrence means
+	// New() was bypassed somewhere.
+	snapFallbackWarned atomic.Bool
+
 	onMessage       MessageHandler
 	onSessionClosed SessionClosedHandler
 	selfHashes      map[string]struct{} // SHA-256 of allowed helper binaries
@@ -171,7 +250,7 @@ func New(socketPath string, onMessage MessageHandler) *Broker {
 }
 
 // snapshotSessions returns the sessions map and consoleUser via the atomic
-// snapshot if available, falling back to a locked read for Broker instances
+// snapshot if available, falling back to a locked *copy* for Broker instances
 // that were not created via New() (e.g., test fixtures that construct Broker{} directly).
 //
 // The returned map must be treated as read-only by callers.
@@ -179,9 +258,21 @@ func (b *Broker) snapshotSessions() (map[string]*Session, string) {
 	if snap := b.snap.Load(); snap != nil {
 		return snap.sessions, snap.consoleUser
 	}
+	// Fallback path: Broker was constructed directly (likely a test fixture).
+	// Warn once if this ever happens — production code should always go
+	// through New(), which initialises b.snap. Returning the live map
+	// without copying would race with any concurrent writer once the
+	// deferred RUnlock below fires.
+	if b.snapFallbackWarned.CompareAndSwap(false, true) {
+		log.Warn("sessionbroker: snapshotSessions hit nil-snapshot fallback; Broker not initialised via New()")
+	}
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return b.sessions, b.consoleUser
+	sessions := make(map[string]*Session, len(b.sessions))
+	for k, v := range b.sessions {
+		sessions[k] = v
+	}
+	return sessions, b.consoleUser
 }
 
 // publishSnapshotLocked builds a new immutable sessionSnapshot from the current
@@ -407,6 +498,11 @@ func (b *Broker) PreferredDesktopSession() *Session {
 // preferredDesktopSessionFromSnap is the lock-free variant of
 // preferredDesktopSessionLocked. It reads from an already-loaded snapshot
 // so callers on the heartbeat hot path avoid acquiring b.mu.RLock().
+//
+// Capabilities are read via Session.GetCapabilities() (which takes s.mu)
+// because the snapshot does not protect *Session internal fields — only the
+// outer map identity. Direct access to s.Capabilities would race with
+// SetCapabilities under -race.
 func preferredDesktopSessionFromSnap(snap *sessionSnapshot) *Session {
 	atLoginWindow := snap.consoleUser == "loginwindow"
 
@@ -414,7 +510,8 @@ func preferredDesktopSessionFromSnap(snap *sessionSnapshot) *Session {
 	if atLoginWindow {
 		var best *Session
 		for _, s := range snap.sessions {
-			if !s.HasScope("desktop") || s.Capabilities == nil || !s.Capabilities.CanCapture {
+			caps := s.GetCapabilities()
+			if !s.HasScope("desktop") || caps == nil || !caps.CanCapture {
 				continue
 			}
 			if s.DesktopContext == ipc.DesktopContextLoginWindow {
@@ -434,7 +531,8 @@ func preferredDesktopSessionFromSnap(snap *sessionSnapshot) *Session {
 	// Pass 2: best available session (normal selection or login window fallback).
 	var best *Session
 	for _, s := range snap.sessions {
-		if !s.HasScope("desktop") || s.Capabilities == nil || !s.Capabilities.CanCapture {
+		caps := s.GetCapabilities()
+		if !s.HasScope("desktop") || caps == nil || !caps.CanCapture {
 			continue
 		}
 		if best == nil || betterDesktopSession(s, best) {
@@ -451,7 +549,8 @@ func (b *Broker) preferredDesktopSessionLocked() *Session {
 	if atLoginWindow {
 		var best *Session
 		for _, s := range b.sessions {
-			if !s.HasScope("desktop") || s.Capabilities == nil || !s.Capabilities.CanCapture {
+			caps := s.GetCapabilities()
+			if !s.HasScope("desktop") || caps == nil || !caps.CanCapture {
 				continue
 			}
 			if s.DesktopContext == ipc.DesktopContextLoginWindow {
@@ -471,7 +570,8 @@ func (b *Broker) preferredDesktopSessionLocked() *Session {
 	// Pass 2: best available session (normal selection or login window fallback).
 	var best *Session
 	for _, s := range b.sessions {
-		if !s.HasScope("desktop") || s.Capabilities == nil || !s.Capabilities.CanCapture {
+		caps := s.GetCapabilities()
+		if !s.HasScope("desktop") || caps == nil || !caps.CanCapture {
 			continue
 		}
 		if best == nil || betterDesktopSession(s, best) {
@@ -487,18 +587,29 @@ func (b *Broker) preferredDesktopSessionLocked() *Session {
 // of session-internal state.
 // Uses the atomic snapshot to avoid lock contention on the heartbeat hot path.
 func (b *Broker) TCCStatus() *ipc.TCCStatus {
-	sessions, consoleUser := b.snapshotSessions()
+	// Prefer the full atomic snapshot — it has all three fields populated
+	// (sessions, byIdentity, consoleUser), so passing it to snapshot-based
+	// helpers like preferredDesktopSessionFromSnap is safe even as those
+	// helpers evolve to read additional fields. Fall back to a locked copy
+	// only when the broker was constructed directly without New() (tests).
+	snap := b.snap.Load()
+	if snap == nil {
+		sessions, consoleUser := b.snapshotSessions()
+		snap = &sessionSnapshot{
+			sessions:    sessions,
+			byIdentity:  nil, // fallback path: not populated, do not read
+			consoleUser: consoleUser,
+		}
+	}
 
-	snapView := &sessionSnapshot{sessions: sessions, consoleUser: consoleUser}
-
-	if preferred := preferredDesktopSessionFromSnap(snapView); preferred != nil {
+	if preferred := preferredDesktopSessionFromSnap(snap); preferred != nil {
 		if tcc := preferred.GetTCCStatus(); tcc != nil {
 			cp := *tcc
 			return &cp
 		}
 	}
 
-	for _, s := range sessions {
+	for _, s := range snap.sessions {
 		if !s.HasScope("desktop") {
 			continue
 		}
@@ -508,7 +619,7 @@ func (b *Broker) TCCStatus() *ipc.TCCStatus {
 		}
 	}
 
-	for _, s := range sessions {
+	for _, s := range snap.sessions {
 		if tcc := s.GetTCCStatus(); tcc != nil {
 			cp := *tcc
 			return &cp
@@ -591,16 +702,21 @@ func (b *Broker) FindCapableSession(capability string, targetWinSession string) 
 	}
 
 	hasCapability := func(s *Session) bool {
-		if s.Capabilities == nil {
+		// GetCapabilities takes s.mu — required because the atomic snapshot
+		// only protects the outer map identity, not per-session fields. A
+		// direct read of s.Capabilities races with SetCapabilities writers
+		// (which run under s.mu.Lock()) and trips -race under contention.
+		caps := s.GetCapabilities()
+		if caps == nil {
 			return false
 		}
 		switch capability {
 		case "capture":
-			return s.Capabilities.CanCapture
+			return caps.CanCapture
 		case "clipboard":
-			return s.Capabilities.CanClipboard
+			return caps.CanClipboard
 		case "notify":
-			return s.Capabilities.CanNotify
+			return caps.CanNotify
 		}
 		return false
 	}
@@ -1159,14 +1275,17 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 			if err := json.Unmarshal(env.Payload, &caps); err != nil {
 				log.Warn("invalid capabilities payload", "uid", s.UID, "error", err.Error())
 			} else {
-				s.SetCapabilities(sanitizeCapabilitiesForSession(s, &caps))
+				sanitized := sanitizeCapabilitiesForSession(s, &caps)
+				s.SetCapabilities(sanitized)
+				// Log from the locally-held copy to avoid a post-Set read of
+				// s.Capabilities that would race with any concurrent reader.
 				log.Info("capabilities received",
 					"uid", s.UID,
-					"canNotify", s.Capabilities.CanNotify,
-					"canTray", s.Capabilities.CanTray,
-					"canCapture", s.Capabilities.CanCapture,
-					"canClipboard", s.Capabilities.CanClipboard,
-					"displayServer", s.Capabilities.DisplayServer,
+					"canNotify", sanitized.CanNotify,
+					"canTray", sanitized.CanTray,
+					"canCapture", sanitized.CanCapture,
+					"canClipboard", sanitized.CanClipboard,
+					"displayServer", sanitized.DisplayServer,
 				)
 			}
 		case ipc.TypeTCCStatus:
@@ -1319,6 +1438,14 @@ func (b *Broker) KillStaleHelpers(winSessionID string) {
 // CloseSessionsByDesktopContext closes all sessions with the given desktop
 // context (e.g., "user_session"). Used on macOS to tear down stale helpers
 // after a logout event. Returns the number of sessions closed.
+//
+// Note: this method iterates b.sessions under b.mu.Lock() and queues matching
+// sessions into a local slice before releasing the lock and calling Close on
+// each one. Because the atomic snapshot is NOT refreshed until removeSession
+// runs (via the RecvLoop exit path for each closed session), snapshot-path
+// readers may briefly see closed sessions during that window. This is an
+// acceptable trade-off: Close() is idempotent, and the calling code tolerates
+// a best-effort teardown on macOS logout.
 func (b *Broker) CloseSessionsByDesktopContext(ctx string) int {
 	b.mu.Lock()
 	var toClose []*Session
@@ -1482,7 +1609,8 @@ func (b *Broker) reapIdleSessions() {
 	b.mu.RLock()
 	var toClose []*Session
 	for _, s := range b.sessions {
-		if s.Capabilities != nil && s.Capabilities.CanCapture {
+		caps := s.GetCapabilities()
+		if caps != nil && caps.CanCapture {
 			continue
 		}
 		if s.IdleDuration() > IdleTimeout {

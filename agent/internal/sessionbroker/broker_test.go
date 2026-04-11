@@ -657,7 +657,15 @@ func BenchmarkFindCapableSessionUnderConcurrentConnections(b *testing.B) {
 
 	b.ResetTimer()
 	for range b.N {
-		_ = broker.FindCapableSession("capture", "1")
+		s := broker.FindCapableSession("capture", "1")
+		if s == nil {
+			// The benchmark pre-registers five capture-capable sessions in
+			// WinSessionID "1"; the write-storm goroutines only churn their
+			// own "storm-*" sessions without touching the pre-registered
+			// ones, so FindCapableSession must never return nil. A nil
+			// result indicates a regression in the atomic-snapshot path.
+			b.Fatal("FindCapableSession returned nil under concurrent writes")
+		}
 	}
 	b.StopTimer()
 
