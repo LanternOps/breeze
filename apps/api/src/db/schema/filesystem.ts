@@ -11,6 +11,7 @@ import {
   index
 } from 'drizzle-orm/pg-core';
 import { devices } from './devices';
+import { organizations } from './orgs';
 import { users } from './users';
 
 export const filesystemSnapshotTriggerEnum = pgEnum('filesystem_snapshot_trigger', ['on_demand', 'threshold']);
@@ -19,6 +20,7 @@ export const filesystemCleanupRunStatusEnum = pgEnum('filesystem_cleanup_run_sta
 export const deviceFilesystemSnapshots = pgTable('device_filesystem_snapshots', {
   id: uuid('id').primaryKey().defaultRandom(),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
   capturedAt: timestamp('captured_at').defaultNow().notNull(),
   trigger: filesystemSnapshotTriggerEnum('trigger').notNull().default('on_demand'),
   partial: boolean('partial').notNull().default(false),
@@ -41,6 +43,7 @@ export const deviceFilesystemSnapshots = pgTable('device_filesystem_snapshots', 
 export const deviceFilesystemCleanupRuns = pgTable('device_filesystem_cleanup_runs', {
   id: uuid('id').primaryKey().defaultRandom(),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
   requestedBy: uuid('requested_by').references(() => users.id),
   requestedAt: timestamp('requested_at').defaultNow().notNull(),
   approvedAt: timestamp('approved_at'),
@@ -57,6 +60,7 @@ export const deviceFilesystemCleanupRuns = pgTable('device_filesystem_cleanup_ru
 
 export const deviceFilesystemScanState = pgTable('device_filesystem_scan_state', {
   deviceId: uuid('device_id').primaryKey().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
   lastRunMode: text('last_run_mode').notNull().default('baseline'),
   lastBaselineCompletedAt: timestamp('last_baseline_completed_at'),
   lastDiskUsedPercent: real('last_disk_used_percent'),

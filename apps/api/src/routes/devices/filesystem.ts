@@ -274,6 +274,7 @@ filesystemRoutes.post(
       .insert(deviceFilesystemCleanupRuns)
       .values({
         deviceId,
+        orgId: device.orgId,
         requestedBy: auth.user.id,
         plan: {
           snapshotId: snapshot.id,
@@ -372,6 +373,7 @@ filesystemRoutes.post(
       .insert(deviceFilesystemCleanupRuns)
       .values({
         deviceId,
+        orgId: device.orgId,
         requestedBy: auth.user.id,
         approvedAt: new Date(),
         plan: {

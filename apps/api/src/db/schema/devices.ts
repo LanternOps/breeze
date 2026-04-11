@@ -166,6 +166,7 @@ export const deviceSoftware = pgTable('device_software', {
 
 export const deviceRegistryState = pgTable('device_registry_state', {
   deviceId: uuid('device_id').notNull().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
   registryPath: text('registry_path').notNull(),
   valueName: text('value_name').notNull(),
   valueData: text('value_data'),
@@ -178,6 +179,7 @@ export const deviceRegistryState = pgTable('device_registry_state', {
 
 export const deviceConfigState = pgTable('device_config_state', {
   deviceId: uuid('device_id').notNull().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
   filePath: text('file_path').notNull(),
   configKey: text('config_key').notNull(),
   configValue: text('config_value'),

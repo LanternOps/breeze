@@ -1473,6 +1473,15 @@ export async function handleFilesystemAnalysisCommandResult(
     return;
   }
 
+  const [device] = await db
+    .select({ orgId: devices.orgId })
+    .from(devices)
+    .where(eq(devices.id, command.deviceId))
+    .limit(1);
+  if (!device) {
+    return;
+  }
+
   const currentState = await getFilesystemScanState(command.deviceId);
   const existingAggregate = isObject(currentState?.aggregate) ? currentState.aggregate : {};
   const mergedPayload = scanMode === 'baseline'
@@ -1493,7 +1502,7 @@ export async function handleFilesystemAnalysisCommandResult(
       scanMode,
     };
 
-  await saveFilesystemSnapshot(command.deviceId, snapshotTrigger, snapshotPayload);
+  await saveFilesystemSnapshot(command.deviceId, device.orgId, snapshotTrigger, snapshotPayload);
 
   const [disk] = await db
     .select({ usedPercent: deviceDisks.usedPercent })
@@ -1512,7 +1521,7 @@ export async function handleFilesystemAnalysisCommandResult(
 
   const snapshotIsPartial = 'partial' in snapshotPayload ? Boolean(snapshotPayload.partial) : false;
   const baselineCompleted = scanMode === 'baseline' && pendingDirs.length === 0 && !snapshotIsPartial;
-  await upsertFilesystemScanState(command.deviceId, {
+  await upsertFilesystemScanState(command.deviceId, device.orgId, {
     lastRunMode: scanMode,
     lastBaselineCompletedAt: baselineCompleted
       ? new Date()

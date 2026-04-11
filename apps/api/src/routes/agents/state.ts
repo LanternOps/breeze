@@ -43,6 +43,7 @@ stateRoutes.put('/:id/registry-state', zValidator('json', updateRegistryStateSch
       .values(
         data.entries.map((entry) => ({
           deviceId: device.id,
+          orgId: device.orgId,
           registryPath: entry.registryPath,
           valueName: entry.valueName,
           valueData: normalizeStateValue(entry.valueData),
@@ -100,6 +101,7 @@ stateRoutes.put('/:id/config-state', zValidator('json', updateConfigStateSchema)
       .values(
         data.entries.map((entry) => ({
           deviceId: device.id,
+          orgId: device.orgId,
           filePath: entry.filePath,
           configKey: entry.configKey,
           configValue: normalizeStateValue(entry.configValue),

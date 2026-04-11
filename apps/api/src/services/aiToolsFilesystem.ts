@@ -159,7 +159,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         }
 
         const parsed = parseFilesystemAnalysisStdout(commandResult.stdout ?? '{}');
-        snapshot = await saveFilesystemSnapshot(deviceId, 'on_demand', parsed);
+        snapshot = await saveFilesystemSnapshot(deviceId, access.device.orgId, 'on_demand', parsed);
       }
 
       if (!snapshot) {
@@ -241,6 +241,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           .insert(deviceFilesystemCleanupRuns)
           .values({
             deviceId,
+            orgId: access.device.orgId,
             requestedBy: auth.user.id,
             plan: {
               snapshotId: snapshot.id,
@@ -308,6 +309,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         .insert(deviceFilesystemCleanupRuns)
         .values({
           deviceId,
+          orgId: access.device.orgId,
           requestedBy: auth.user.id,
           approvedAt: new Date(),
           plan: {

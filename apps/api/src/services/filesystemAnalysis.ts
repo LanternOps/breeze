@@ -62,6 +62,7 @@ export function parseFilesystemAnalysisStdout(stdout: string): AnyObject {
 
 export async function saveFilesystemSnapshot(
   deviceId: string,
+  orgId: string,
   trigger: FilesystemSnapshotTrigger,
   payload: AnyObject
 ) {
@@ -72,6 +73,7 @@ export async function saveFilesystemSnapshot(
     .insert(deviceFilesystemSnapshots)
     .values({
       deviceId,
+      orgId,
       trigger,
       partial,
       summary,
@@ -114,6 +116,7 @@ export async function getFilesystemScanState(deviceId: string) {
 
 export async function upsertFilesystemScanState(
   deviceId: string,
+  orgId: string,
   updates: {
     lastRunMode?: string;
     lastBaselineCompletedAt?: Date | null;
@@ -126,6 +129,7 @@ export async function upsertFilesystemScanState(
   const now = new Date();
   const insertValues: typeof deviceFilesystemScanState.$inferInsert = {
     deviceId,
+    orgId,
     lastRunMode: updates.lastRunMode ?? 'baseline',
     lastBaselineCompletedAt: updates.lastBaselineCompletedAt ?? null,
     lastDiskUsedPercent: updates.lastDiskUsedPercent ?? null,
