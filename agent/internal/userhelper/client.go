@@ -54,6 +54,27 @@ type Client struct {
 	pendingMu  sync.Mutex
 	pending    map[string]chan *ipc.Envelope
 	sasReqSeq  atomic.Uint64
+
+	// authenticatedAt is set when the broker accepts the helper. Zero when
+	// the client has never completed auth on this Run(). Reset on each Run().
+	authMu          sync.RWMutex
+	authenticatedAt time.Time
+}
+
+// AuthenticatedAt returns the time at which the helper completed auth with
+// the broker on the most recent Run(). Returns the zero time if the client
+// never successfully authenticated.
+func (c *Client) AuthenticatedAt() time.Time {
+	c.authMu.RLock()
+	defer c.authMu.RUnlock()
+	return c.authenticatedAt
+}
+
+// setAuthenticatedAt records the moment auth completed.
+func (c *Client) setAuthenticatedAt(t time.Time) {
+	c.authMu.Lock()
+	c.authenticatedAt = t
+	c.authMu.Unlock()
 }
 
 // New creates a new user helper client with the given role.
@@ -163,9 +184,21 @@ func (c *Client) authenticate() error {
 	uid, err := strconv.ParseUint(cu.Uid, 10, 32)
 	var sid string
 	if err != nil {
-		// On Windows, cu.Uid is the SID string (e.g., "S-1-5-21-...")
+		// On Windows, cu.Uid is the SID string (e.g., "S-1-5-21-...").
+		// When the process was spawned cross-session via CreateProcessAsUser,
+		// the first user.Current() call can occasionally return an
+		// empty/malformed Uid while the duplicated token finishes
+		// materializing in the kernel. Retry with backoff, and treat
+		// a permanent failure as fatal so the lifecycle manager can back off.
 		uid = 0
 		sid = cu.Uid
+		if runtime.GOOS == "windows" && !looksLikeSID(sid) {
+			retrySID, retryErr := lookupSIDWithRetry()
+			if retryErr != nil {
+				return retryErr
+			}
+			sid = retrySID
+		}
 	}
 
 	binaryHash, _ := computeSelfHash()
@@ -191,10 +224,22 @@ func (c *Client) authenticate() error {
 		return fmt.Errorf("send auth request: %w", err)
 	}
 
-	// Read auth response
+	// Read auth response (or pre-auth reject, if the broker bounced us
+	// before reading our auth request).
 	env, err := c.conn.Recv()
 	if err != nil {
 		return fmt.Errorf("recv auth response: %w", err)
+	}
+
+	if env.Type == ipc.TypePreAuthReject {
+		var rej ipc.PreAuthReject
+		if err := json.Unmarshal(env.Payload, &rej); err != nil {
+			return fmt.Errorf("unmarshal pre_auth_reject: %w", err)
+		}
+		if rej.Permanent {
+			return &PermanentRejectError{Code: rej.Code, Reason: rej.Reason}
+		}
+		return fmt.Errorf("broker pre-auth reject: %s (%s)", rej.Reason, rej.Code)
 	}
 
 	if env.Type != ipc.TypeAuthResponse {
@@ -207,6 +252,9 @@ func (c *Client) authenticate() error {
 	}
 
 	if !authResp.Accepted {
+		if authResp.Permanent {
+			return &PermanentRejectError{Code: "auth_rejected", Reason: authResp.Reason}
+		}
 		return fmt.Errorf("auth rejected: %s", authResp.Reason)
 	}
 
@@ -219,6 +267,7 @@ func (c *Client) authenticate() error {
 	c.sessionKey = key
 	c.agentID = authResp.AgentID
 	c.scopes = authResp.AllowedScopes
+	c.setAuthenticatedAt(time.Now())
 
 	return nil
 }

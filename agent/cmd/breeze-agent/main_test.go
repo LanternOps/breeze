@@ -1,0 +1,282 @@
+package main
+
+import (
+	"sync"
+	"testing"
+	"time"
+)
+
+// TestHelperWarnLimiterBudget verifies that the first `limit` calls with the
+// same message all emit WARN (emit=true, suppressed=0), and that the (limit+1)th
+// call does NOT emit a WARN when the info interval has not elapsed.
+func TestHelperWarnLimiterBudget(t *testing.T) {
+	t.Parallel()
+
+	// limit=3, 5-minute window (matches production default)
+	lim := newHelperWarnLimiter(3, 5*time.Minute)
+	msg := "connect: connect to /var/run/breeze.sock: connection refused"
+	now := time.Now()
+
+	// Calls 1–3 should all emit WARN.
+	for i := 1; i <= 3; i++ {
+		emit, suppressed := lim.shouldLog(msg, now)
+		if !emit {
+			t.Errorf("call %d: expected emit=true, got false", i)
+		}
+		if suppressed != 0 {
+			t.Errorf("call %d: expected suppressed=0, got %d", i, suppressed)
+		}
+		now = now.Add(time.Second)
+	}
+
+	// Call 4: over budget, info interval has not elapsed → (false, 0).
+	// NOTE: suppressedSinceInfo was 0 going in, incremented to 1, then INFO
+	// would only fire if lastInfoEmit is zero. But we check: lastInfoEmit is
+	// zero on entry here, so the first over-budget call WILL return (false, N>0).
+	// Actually, re-reading the code: on call 4, suppressed++ → suppressed=1,
+	// suppressedSinceInfo++ → 1. lastInfoEmit.IsZero() is true, so it returns
+	// (false, 1) and resets suppressedSinceInfo to 0. This matches the
+	// "INFO fires immediately at first suppression" behavior.
+	emit4, sup4 := lim.shouldLog(msg, now)
+	if emit4 {
+		t.Errorf("call 4: expected emit=false (over budget), got true")
+	}
+	// The limiter fires an INFO summary immediately on first suppression
+	// (lastInfoEmit was zero). sup4 should equal 1.
+	if sup4 != 1 {
+		t.Errorf("call 4: expected suppressed=1 (immediate first INFO), got %d", sup4)
+	}
+}
+
+// TestHelperWarnLimiterSuppressedNoInfoYet verifies that after the first INFO
+// fires, subsequent over-budget calls within the info interval return (false, 0).
+func TestHelperWarnLimiterSuppressedNoInfoYet(t *testing.T) {
+	t.Parallel()
+
+	lim := newHelperWarnLimiter(3, 5*time.Minute)
+	msg := "some error"
+	now := time.Now()
+
+	// Exhaust warn budget (3 warns + 1 INFO-emitting call).
+	for i := 0; i < 3; i++ {
+		lim.shouldLog(msg, now) //nolint: calls 1-3
+		now = now.Add(time.Second)
+	}
+	lim.shouldLog(msg, now) // call 4: first INFO fires, resets suppressedSinceInfo
+	now = now.Add(time.Second)
+
+	// Call 5: within info interval → (false, 0).
+	emit, sup := lim.shouldLog(msg, now)
+	if emit {
+		t.Errorf("call 5: expected emit=false, got true")
+	}
+	if sup != 0 {
+		t.Errorf("call 5: expected suppressed=0 (inside info interval), got %d", sup)
+	}
+}
+
+// TestHelperWarnLimiterMultipleInfos verifies that each INFO emission within a
+// single 5-minute window reports only the count since the last INFO, not cumulative.
+func TestHelperWarnLimiterMultipleInfos(t *testing.T) {
+	t.Parallel()
+
+	lim := newHelperWarnLimiter(1, 10*time.Minute) // limit=1 so budget exhausts at call 2
+	msg := "persistent error"
+	now := time.Now()
+
+	// Call 1: first warn (under budget).
+	lim.shouldLog(msg, now)
+	now = now.Add(time.Second)
+
+	// Call 2: over budget, first INFO fires immediately (lastInfoEmit was zero).
+	_, sup1 := lim.shouldLog(msg, now)
+	if sup1 != 1 {
+		t.Fatalf("first INFO: expected suppressed=1, got %d", sup1)
+	}
+	now = now.Add(time.Second)
+
+	// Calls 3-5: accumulate 3 more suppressions within infoInterval.
+	lim.shouldLog(msg, now)
+	now = now.Add(time.Second)
+	lim.shouldLog(msg, now)
+	now = now.Add(time.Second)
+	lim.shouldLog(msg, now)
+	now = now.Add(time.Second)
+
+	// Advance past infoInterval (60s) so the next call triggers a second INFO.
+	now = now.Add(61 * time.Second)
+
+	// Call 6: second INFO should report 4 (calls 3-5 plus this call = 4 suppressed since last INFO).
+	_, sup2 := lim.shouldLog(msg, now)
+	if sup2 != 4 {
+		// 3 accumulated + 1 from this call = 4 suppressed since last INFO
+		t.Errorf("second INFO: expected suppressed=4 (accumulated since last INFO), got %d", sup2)
+	}
+}
+
+// TestHelperWarnLimiterDifferentMessages verifies that different error messages
+// are tracked independently within the same window.
+func TestHelperWarnLimiterDifferentMessages(t *testing.T) {
+	t.Parallel()
+
+	lim := newHelperWarnLimiter(2, 5*time.Minute)
+	msgA := "error A: connection refused"
+	msgB := "error B: tls handshake failure"
+	now := time.Now()
+
+	// Exhaust budget for msgA (2 warns).
+	for i := 0; i < 2; i++ {
+		lim.shouldLog(msgA, now)
+		now = now.Add(time.Second)
+	}
+
+	// Next msgA call is over budget for A.
+	emitA, _ := lim.shouldLog(msgA, now)
+	if emitA {
+		t.Errorf("msgA call 3: expected emit=false (over budget), got true")
+	}
+	now = now.Add(time.Second)
+
+	// msgB is a new message — it gets its own fresh budget.
+	// Window rolls over when msg changes, so call 1 of msgB should emit.
+	emitB, supB := lim.shouldLog(msgB, now)
+	if !emitB {
+		t.Errorf("msgB call 1: expected emit=true (fresh message), got false")
+	}
+	if supB != 0 {
+		t.Errorf("msgB call 1: expected suppressed=0, got %d", supB)
+	}
+}
+
+// TestHelperWarnLimiterWindowRollover verifies that after the 5-minute window
+// elapses, the limiter resets and emits WARNs again.
+func TestHelperWarnLimiterWindowRollover(t *testing.T) {
+	t.Parallel()
+
+	// Use a 100ms window — with injectable clock we don't need a real sleep.
+	lim := newHelperWarnLimiter(2, 100*time.Millisecond)
+	msg := "some persistent error"
+	now := time.Now()
+
+	// Exhaust budget.
+	lim.shouldLog(msg, now)
+	now = now.Add(10 * time.Millisecond)
+	lim.shouldLog(msg, now)
+	now = now.Add(10 * time.Millisecond)
+
+	// Over budget.
+	emit3, _ := lim.shouldLog(msg, now)
+	if emit3 {
+		t.Errorf("call 3: expected emit=false (over budget), got true")
+	}
+
+	// Advance past the 100ms window without any real sleep.
+	now = now.Add(150 * time.Millisecond)
+
+	// Window rolled over → fresh budget, should emit again.
+	emit4, sup4 := lim.shouldLog(msg, now)
+	if !emit4 {
+		t.Errorf("post-rollover call: expected emit=true (fresh window), got false")
+	}
+	if sup4 != 0 {
+		t.Errorf("post-rollover call: expected suppressed=0, got %d", sup4)
+	}
+}
+
+// TestHelperWarnLimiterReset verifies that explicit reset() clears all state
+// so the next call treats the message as brand-new.
+func TestHelperWarnLimiterReset(t *testing.T) {
+	t.Parallel()
+
+	lim := newHelperWarnLimiter(2, 5*time.Minute)
+	msg := "connection reset by peer"
+	now := time.Now()
+
+	// Exhaust budget.
+	lim.shouldLog(msg, now)
+	now = now.Add(time.Second)
+	lim.shouldLog(msg, now)
+	now = now.Add(time.Second)
+	emit3, _ := lim.shouldLog(msg, now)
+	if emit3 {
+		t.Errorf("pre-reset call 3: expected emit=false (over budget)")
+	}
+	now = now.Add(time.Second)
+
+	// Reset clears all state.
+	lim.reset()
+
+	// Next call should behave as first call ever.
+	emit1, sup1 := lim.shouldLog(msg, now)
+	if !emit1 {
+		t.Errorf("post-reset call 1: expected emit=true, got false")
+	}
+	if sup1 != 0 {
+		t.Errorf("post-reset call 1: expected suppressed=0, got %d", sup1)
+	}
+	now = now.Add(time.Second)
+
+	// Second call should also emit (still within budget of 2).
+	emit2, sup2 := lim.shouldLog(msg, now)
+	if !emit2 {
+		t.Errorf("post-reset call 2: expected emit=true, got false")
+	}
+	if sup2 != 0 {
+		t.Errorf("post-reset call 2: expected suppressed=0, got %d", sup2)
+	}
+}
+
+// TestHelperWarnLimiterConcurrent verifies that concurrent shouldLog calls do
+// not race. Run with go test -race to catch data races.
+func TestHelperWarnLimiterConcurrent(t *testing.T) {
+	t.Parallel()
+
+	lim := newHelperWarnLimiter(3, 5*time.Minute)
+	msg := "concurrent error"
+
+	var wg sync.WaitGroup
+	const goroutines = 20
+	const callsPerGoroutine = 50
+
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < callsPerGoroutine; j++ {
+				// We don't care about the exact return values here —
+				// just verify that concurrent access doesn't race or panic.
+				lim.shouldLog(msg, time.Now())
+			}
+		}()
+	}
+
+	wg.Wait()
+}
+
+// TestHelperWarnLimiterResetConcurrent verifies that reset() is safe to call
+// concurrently with shouldLog.
+func TestHelperWarnLimiterResetConcurrent(t *testing.T) {
+	t.Parallel()
+
+	lim := newHelperWarnLimiter(3, 5*time.Minute)
+	msg := "some error"
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			lim.shouldLog(msg, time.Now())
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50; i++ {
+			lim.reset()
+		}
+	}()
+
+	wg.Wait()
+}

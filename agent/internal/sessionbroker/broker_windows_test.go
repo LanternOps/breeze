@@ -313,7 +313,14 @@ func TestNamedPipeSIDMismatchRejected(t *testing.T) {
 		t.Errorf("expected reason 'SID mismatch', got %q", authResp.Reason)
 	}
 
-	t.Logf("SID mismatch correctly rejected: %s", authResp.Reason)
+	// SID mismatch is a permanent rejection — the helper should not retry.
+	// Verifies that Part A (broker sends Permanent: true for identity rejections)
+	// is wired through to the auth response.
+	if !authResp.Permanent {
+		t.Errorf("expected Permanent=true for SID mismatch rejection, got false")
+	}
+
+	t.Logf("SID mismatch correctly rejected: %s (permanent=%v)", authResp.Reason, authResp.Permanent)
 }
 
 func TestNamedPipeMissingSIDRejected(t *testing.T) {
@@ -374,7 +381,13 @@ func TestNamedPipeMissingSIDRejected(t *testing.T) {
 		t.Fatal("expected auth to be REJECTED for missing SID, but it was accepted")
 	}
 
-	t.Logf("Missing SID correctly rejected: %s", authResp.Reason)
+	// Missing SID is a permanent rejection — helper should not retry with the
+	// same missing SID. Verifies Part A integration.
+	if !authResp.Permanent {
+		t.Errorf("expected Permanent=true for missing SID rejection, got false")
+	}
+
+	t.Logf("Missing SID correctly rejected: %s (permanent=%v)", authResp.Reason, authResp.Permanent)
 }
 
 func TestNamedPipeSessionIDCollisionRejected(t *testing.T) {

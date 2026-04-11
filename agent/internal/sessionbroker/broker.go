@@ -633,6 +633,30 @@ func (b *Broker) SendCommandAndWait(session *Session, id, cmdType string, payloa
 	return session.SendCommand(id, cmdType, payload, timeout)
 }
 
+// sendPreAuthRejectAndClose wraps rawConn, sends a PreAuthReject envelope
+// with a short write deadline so the broker isn't held up by a stuck client,
+// then closes the connection. All errors are ignored — this is best-effort.
+// The helper uses the envelope to distinguish fatal ("don't retry") from
+// transient ("retry later") rejections.
+func sendPreAuthRejectAndClose(rawConn net.Conn, code, reason string, permanent bool) {
+	defer rawConn.Close()
+	conn := ipc.NewConn(rawConn)
+	_ = rawConn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if err := conn.SendTyped("pre-auth-reject", ipc.TypePreAuthReject, ipc.PreAuthReject{
+		Code:      code,
+		Reason:    reason,
+		Permanent: permanent,
+	}); err != nil && permanent {
+		// When a permanent rejection can't be delivered, the helper won't know
+		// to back off — it will interpret the dropped connection as a transient
+		// error and resume retrying immediately (reconnect storm risk).
+		log.Warn("failed to deliver permanent pre-auth rejection to helper",
+			"code", code,
+			"error", err.Error(),
+		)
+	}
+}
+
 func (b *Broker) handleConnection(rawConn net.Conn) {
 	// Set handshake deadline
 	rawConn.SetDeadline(time.Now().Add(HandshakeTimeout))
@@ -641,7 +665,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	creds, err := ipc.GetPeerCredentials(rawConn)
 	if err != nil {
 		log.Warn("peer credential check failed", "error", err.Error())
-		rawConn.Close()
+		sendPreAuthRejectAndClose(rawConn, ipc.PreAuthCodeCredCheckFailed, err.Error(), false)
 		return
 	}
 
@@ -650,7 +674,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	// Step 2: Rate limit check (per identity: UID on Unix, SID on Windows)
 	if !b.rateLimiter.Allow(identityKey) {
 		log.Warn("connection rate limited", "identity", identityKey, "pid", creds.PID)
-		rawConn.Close()
+		sendPreAuthRejectAndClose(rawConn, ipc.PreAuthCodeRateLimited, "connection rate limited", false)
 		return
 	}
 
@@ -660,25 +684,18 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	b.mu.RUnlock()
 	if identityCount >= MaxConnectionsPerIdentity {
 		log.Warn("max connections exceeded", "identity", identityKey, "count", identityCount)
-		rawConn.Close()
-		return
-	}
-
-	// Step 4: Verify binary path
-	if !b.verifyBinaryPath(creds.BinaryPath) {
-		log.Warn("binary path verification failed",
-			"identity", identityKey,
-			"pid", creds.PID,
-			"path", creds.BinaryPath,
-		)
-		rawConn.Close()
+		sendPreAuthRejectAndClose(rawConn, ipc.PreAuthCodeMaxConnsExceeded, "too many connections for identity", false)
 		return
 	}
 
 	// Wrap connection
 	conn := ipc.NewConn(rawConn)
 
-	// Step 5: Read auth request
+	// Step 4: Read auth request
+	// (Moved ahead of binary-path verification so the hash from the auth
+	// request can serve as the authoritative binary identity signal —
+	// Windows cross-session spawns produce process paths that don't always
+	// match our allowlist after path normalization. See issue #387 part D.)
 	env, err := conn.Recv()
 	if err != nil {
 		log.Warn("auth request read failed", "identity", identityKey, "error", err.Error())
@@ -699,24 +716,26 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
-	// Step 6: Verify protocol version
+	// Step 5: Verify protocol version
 	if authReq.ProtocolVersion != ipc.ProtocolVersion {
 		log.Warn("protocol version mismatch", "got", authReq.ProtocolVersion, "want", ipc.ProtocolVersion)
 		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-			Accepted: false,
-			Reason:   fmt.Sprintf("unsupported protocol version %d (expected %d)", authReq.ProtocolVersion, ipc.ProtocolVersion),
+			Accepted:  false,
+			Reason:    fmt.Sprintf("unsupported protocol version %d (expected %d)", authReq.ProtocolVersion, ipc.ProtocolVersion),
+			Permanent: true,
 		})
 		conn.Close()
 		return
 	}
 
-	// Step 7: Verify identity — SID on Windows, UID on Unix
+	// Step 6: Verify identity — SID on Windows, UID on Unix
 	if runtime.GOOS == "windows" {
 		if authReq.SID == "" {
 			log.Warn("auth missing SID on Windows", "pid", creds.PID)
 			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-				Accepted: false,
-				Reason:   "SID required on Windows",
+				Accepted:  false,
+				Reason:    "SID required on Windows",
+				Permanent: true,
 			})
 			conn.Close()
 			return
@@ -724,8 +743,9 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		if authReq.SID != creds.SID {
 			log.Warn("auth SID mismatch", "claimed", authReq.SID, "actual", creds.SID)
 			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-				Accepted: false,
-				Reason:   "SID mismatch",
+				Accepted:  false,
+				Reason:    "SID mismatch",
+				Permanent: true,
 			})
 			conn.Close()
 			return
@@ -734,39 +754,58 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		if authReq.UID != creds.UID {
 			log.Warn("auth UID mismatch", "claimed", authReq.UID, "actual", creds.UID)
 			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-				Accepted: false,
-				Reason:   "UID mismatch",
+				Accepted:  false,
+				Reason:    "UID mismatch",
+				Permanent: true,
 			})
 			conn.Close()
 			return
 		}
 	}
 
-	// Step 8: Verify binary hash — reject helpers if no allowed helper hash could be loaded.
+	// Step 7: Verify binary hash — reject helpers if no allowed helper hash could be loaded.
 	if len(b.selfHashes) == 0 {
 		log.Error("rejecting helper connection: helper binary hash allowlist unavailable",
 			"identity", identityKey,
 			"pid", creds.PID,
 		)
 		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-			Accepted: false,
-			Reason:   "helper binary hash allowlist unavailable",
+			Accepted:  false,
+			Reason:    "helper binary hash allowlist unavailable",
+			Permanent: true,
 		})
 		conn.Close()
 		return
 	}
-	if !b.isAllowedBinaryHash(authReq.BinaryHash) {
+	hashVerified := b.isAllowedBinaryHash(authReq.BinaryHash)
+	if !hashVerified {
 		log.Warn("binary hash mismatch",
 			"identity", identityKey,
 			"expected", "allowed-helper-binary",
 			"got", authReq.BinaryHash,
 		)
 		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-			Accepted: false,
-			Reason:   "binary hash mismatch",
+			Accepted:  false,
+			Reason:    "binary hash mismatch",
+			Permanent: true,
 		})
 		conn.Close()
 		return
+	}
+
+	// Step 8: Verify binary path (defense in depth). If the hash already
+	// matched the allowlist (step 7), the binary is trusted regardless of path
+	// — on Windows, CreateProcessAsUser can report paths that don't match after
+	// normalization (8.3 short names, drive letter case, etc.), and the hash
+	// is the authoritative identity check. Log the path mismatch at DEBUG for
+	// future investigation, but do not reject; a hash-verified helper is safe.
+	if !b.verifyBinaryPath(creds.BinaryPath) {
+		log.Debug("binary path mismatch but hash verified; accepting",
+			"identity", identityKey,
+			"pid", creds.PID,
+			"path", creds.BinaryPath,
+			"allowed", b.allowedHelperPaths(),
+		)
 	}
 
 	// Step 9: Reject duplicate session IDs
@@ -809,8 +848,9 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 			log.Warn("role/identity mismatch: non-SYSTEM process claiming system role",
 				"sid", creds.SID, "pid", creds.PID)
 			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-				Accepted: false,
-				Reason:   "system role requires SYSTEM identity",
+				Accepted:  false,
+				Reason:    "system role requires SYSTEM identity",
+				Permanent: true,
 			})
 			conn.Close()
 			return
@@ -819,8 +859,9 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 			log.Warn("role/identity mismatch: SYSTEM process claiming user role",
 				"sid", creds.SID, "pid", creds.PID)
 			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-				Accepted: false,
-				Reason:   "user role requires non-SYSTEM identity",
+				Accepted:  false,
+				Reason:    "user role requires non-SYSTEM identity",
+				Permanent: true,
 			})
 			conn.Close()
 			return
@@ -829,8 +870,9 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 			log.Warn("role/identity mismatch: non-SYSTEM process claiming watchdog role",
 				"sid", creds.SID, "pid", creds.PID)
 			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-				Accepted: false,
-				Reason:   "watchdog role requires SYSTEM identity",
+				Accepted:  false,
+				Reason:    "watchdog role requires SYSTEM identity",
+				Permanent: true,
 			})
 			conn.Close()
 			return
@@ -841,8 +883,9 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 			log.Warn("role/identity mismatch: non-root process claiming watchdog role",
 				"uid", creds.UID, "pid", creds.PID)
 			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-				Accepted: false,
-				Reason:   "watchdog role requires root identity",
+				Accepted:  false,
+				Reason:    "watchdog role requires root identity",
+				Permanent: true,
 			})
 			conn.Close()
 			return
@@ -1130,12 +1173,19 @@ func (b *Broker) verifyBinaryPath(peerPath string) bool {
 		// Peer path might not be resolvable if the process has exited
 		peerResolved = peerPath
 	}
-	peerResolved = filepath.Clean(peerResolved)
-	for _, candidate := range b.allowedHelperPaths() {
-		if filepath.Clean(candidate) == peerResolved {
+	peerResolved = normalizeBinaryPath(filepath.Clean(peerResolved))
+	allowed := b.allowedHelperPaths()
+	for _, candidate := range allowed {
+		if normalizeBinaryPath(filepath.Clean(candidate)) == peerResolved {
 			return true
 		}
 	}
+	// Log the mismatch at DEBUG so investigators can see exactly which
+	// paths the broker considered trusted. Cheap and load-bearing.
+	log.Debug("verifyBinaryPath: no match",
+		"peer", peerResolved,
+		"allowed", allowed,
+	)
 	return false
 }
 

@@ -426,7 +426,17 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 	// to release DXGI Desktop Duplication locks before spawning a new one.
 	h.killDesktopStaleHelpers(targetSession)
 
-	return sessionbroker.SpawnHelperInSession(sessionNum)
+	// The heartbeat path spawns a one-off helper; we don't track its exit
+	// code here. Release the handle immediately — the lifecycle manager,
+	// which does respect exit codes, owns the canonical spawn path.
+	helper, err := sessionbroker.SpawnHelperInSession(sessionNum)
+	if err != nil {
+		return err
+	}
+	if helper != nil {
+		helper.Close()
+	}
+	return nil
 }
 
 // findGUIUserUIDs returns the UIDs of users with a loginwindow process (macOS).

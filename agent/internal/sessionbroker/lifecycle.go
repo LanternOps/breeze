@@ -29,6 +29,11 @@ type trackedSession struct {
 	spawnedAt   time.Time
 	retryCount  int
 	lastFailure time.Time
+
+	// fatalExitUntil suppresses respawns until this time when the helper
+	// exited with a fatal exit code (typically 2, meaning permanent auth
+	// rejection). Cleared on SCM session change events.
+	fatalExitUntil time.Time
 }
 
 // SCMSessionEvent is a session-change notification forwarded from the Windows
@@ -55,6 +60,15 @@ const (
 	// maxSpawnRetries stops retrying a session that is permanently broken.
 	// Tracking resets when the session disappears and reappears in WTS.
 	maxSpawnRetries = 10
+
+	// fatalCooldown is how long a session+role is blocked from respawn
+	// after a helper exits with a fatal exit code (2 — permanent auth
+	// rejection). Cleared early on SCM session change events.
+	fatalCooldown = 10 * time.Minute
+
+	// helperFatalExitCode is the exit code a helper uses to signal
+	// permanent rejection. Must match main.go's os.Exit(2).
+	helperFatalExitCode = 2
 
 	// WTS event type constants (matching windows.WTS_SESSION_*).
 	wtsSessionLogon     = 0x5
@@ -179,6 +193,18 @@ func (m *HelperLifecycleManager) handleSCMEvent(evt SCMSessionEvent) {
 
 	switch evt.EventType {
 	case wtsSessionLogon, wtsSessionUnlock, wtsSessionCreate:
+		// A session change means the environment changed — worth retrying
+		// a previously-fatal helper. Clear the fatal cooldown for both
+		// roles in this session.
+		m.mu.Lock()
+		if ts, ok := m.tracked[sessionID+"-system"]; ok {
+			ts.fatalExitUntil = time.Time{}
+		}
+		if ts, ok := m.tracked[sessionID+"-user"]; ok {
+			ts.fatalExitUntil = time.Time{}
+		}
+		m.mu.Unlock()
+
 		if !m.broker.HasHelperForWinSessionRole(sessionID, "system") {
 			m.spawnWithRetry(sessionID, "system")
 		}
@@ -216,6 +242,13 @@ func (m *HelperLifecycleManager) spawnWithRetry(winSessionID, role string) {
 		m.tracked[trackKey] = ts
 	}
 
+	// Respect fatal-exit cooldown from a previous helper that exited with
+	// exit code 2 (permanent rejection). Cleared on SCM session changes.
+	if now := time.Now(); !ts.fatalExitUntil.IsZero() && now.Before(ts.fatalExitUntil) {
+		m.mu.Unlock()
+		return
+	}
+
 	// Give up after too many failures. The tracking entry is cleaned up
 	// when the session disappears from WTS, so retries reset naturally
 	// if the user logs out and back in.
@@ -247,11 +280,12 @@ func (m *HelperLifecycleManager) spawnWithRetry(winSessionID, role string) {
 	m.broker.KillStaleHelpers(winSessionID + "-" + role)
 
 	// Spawn the appropriate helper type.
+	var spawned *SpawnedHelper
 	switch role {
 	case "user":
-		err = SpawnUserHelperInSession(uint32(sessionNum))
+		spawned, err = SpawnUserHelperInSession(uint32(sessionNum))
 	default:
-		err = SpawnHelperInSession(uint32(sessionNum))
+		spawned, err = SpawnHelperInSession(uint32(sessionNum))
 	}
 
 	// Count every spawn attempt toward the retry cap, not just errors.
@@ -287,4 +321,52 @@ func (m *HelperLifecycleManager) spawnWithRetry(winSessionID, role string) {
 	m.mu.Unlock()
 
 	log.Info("proactively spawned helper in session", "winSessionID", winSessionID, "role", role)
+
+	// Start a goroutine to wait on the helper process. When it exits, apply
+	// the fatal-cooldown policy if appropriate. SpawnedHelper.Wait() closes
+	// the handle on return.
+	if spawned != nil {
+		go m.watchHelperExit(trackKey, winSessionID, role, spawned)
+	}
+}
+
+// watchHelperExit blocks on the helper process and, when it exits, sets the
+// fatal cooldown on the tracked entry if the helper exited with the fatal
+// exit code (2 — permanent rejection).
+func (m *HelperLifecycleManager) watchHelperExit(trackKey, winSessionID, role string, spawned *SpawnedHelper) {
+	exitCode, err := spawned.Wait()
+	if err != nil {
+		log.Warn("lifecycle: wait on helper process failed",
+			"winSessionID", winSessionID,
+			"role", role,
+			"pid", spawned.PID,
+			"trackKey", trackKey,
+			"error", err.Error(),
+		)
+		return
+	}
+
+	if exitCode == helperFatalExitCode {
+		m.mu.Lock()
+		ts, ok := m.tracked[trackKey]
+		if ok {
+			ts.fatalExitUntil = time.Now().Add(fatalCooldown)
+		}
+		m.mu.Unlock()
+		log.Warn("lifecycle: helper exited with fatal code, skipping respawn",
+			"winSessionID", winSessionID,
+			"role", role,
+			"pid", spawned.PID,
+			"exitCode", exitCode,
+			"cooldown", fatalCooldown.String(),
+		)
+		return
+	}
+
+	log.Debug("lifecycle: helper exited",
+		"winSessionID", winSessionID,
+		"role", role,
+		"pid", spawned.PID,
+		"exitCode", exitCode,
+	)
 }
