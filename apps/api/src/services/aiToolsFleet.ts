@@ -776,6 +776,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           .values(deviceIdList.map((deviceId) => ({
             groupId: group.id,
             deviceId,
+            orgId: group.orgId,
             addedBy: 'manual' as const,
           })))
           .onConflictDoNothing()

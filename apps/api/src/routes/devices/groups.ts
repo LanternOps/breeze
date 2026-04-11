@@ -274,6 +274,7 @@ groupsRoutes.post(
         validDeviceIds.map(deviceId => ({
           deviceId,
           groupId,
+          orgId: group.orgId,
           addedBy: 'manual' as const
         }))
       )

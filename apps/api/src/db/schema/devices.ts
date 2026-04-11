@@ -206,6 +206,7 @@ export const deviceGroups = pgTable('device_groups', {
 export const deviceGroupMemberships = pgTable('device_group_memberships', {
   deviceId: uuid('device_id').notNull().references(() => devices.id),
   groupId: uuid('group_id').notNull().references(() => deviceGroups.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
   isPinned: boolean('is_pinned').notNull().default(false),
   addedAt: timestamp('added_at').defaultNow().notNull(),
   addedBy: membershipSourceEnum('added_by').notNull().default('manual')
@@ -227,6 +228,7 @@ export const groupMembershipLog = pgTable('group_membership_log', {
   id: uuid('id').primaryKey().defaultRandom(),
   groupId: uuid('group_id').notNull().references(() => deviceGroups.id),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
   action: groupMembershipLogActionEnum('action').notNull(),
   reason: groupMembershipLogReasonEnum('reason').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull()

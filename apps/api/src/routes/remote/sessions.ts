@@ -158,6 +158,7 @@ sessionRoutes.post(
       .insert(remoteSessions)
       .values({
         deviceId: data.deviceId,
+        orgId: device.orgId,
         userId: auth.user.id,
         type: data.type,
         status: 'pending',

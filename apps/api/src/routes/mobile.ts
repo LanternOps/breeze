@@ -777,6 +777,7 @@ mobileRoutes.post(
         .values({
           scriptId: script.id,
           deviceId: device.id,
+          orgId: device.orgId,
           triggeredBy: auth.user.id,
           triggerType: 'manual',
           parameters: data.parameters,

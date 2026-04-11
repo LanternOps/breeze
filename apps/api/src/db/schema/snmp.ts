@@ -39,6 +39,7 @@ export const snmpDevices = pgTable('snmp_devices', {
 export const snmpMetrics = pgTable('snmp_metrics', {
   id: uuid('id').primaryKey().defaultRandom(),
   deviceId: uuid('device_id').notNull().references(() => snmpDevices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
   oid: varchar('oid', { length: 200 }).notNull(),
   name: varchar('name', { length: 100 }).notNull(),
   value: text('value'),

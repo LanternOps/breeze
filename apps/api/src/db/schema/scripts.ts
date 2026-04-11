@@ -95,6 +95,7 @@ export const scriptExecutions = pgTable('script_executions', {
   id: uuid('id').primaryKey().defaultRandom(),
   scriptId: uuid('script_id').notNull().references(() => scripts.id),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
   triggeredBy: uuid('triggered_by').references(() => users.id),
   triggerType: triggerTypeEnum('trigger_type').notNull().default('manual'),
   parameters: jsonb('parameters'),

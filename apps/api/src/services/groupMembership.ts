@@ -57,11 +57,13 @@ export async function logMembershipChange(
   groupId: string,
   deviceId: string,
   action: MembershipAction,
-  reason: MembershipReason
+  reason: MembershipReason,
+  orgId: string
 ): Promise<void> {
   await db.insert(groupMembershipLog).values({
     groupId,
     deviceId,
+    orgId,
     action,
     reason
   });
@@ -106,10 +108,11 @@ export async function evaluateDeviceMembershipForGroup(
         .values({
           groupId,
           deviceId,
+          orgId: group.orgId,
           addedBy: 'dynamic_rule'
         })
         .onConflictDoNothing();
-      await logMembershipChange(groupId, deviceId, 'added', 'filter_match');
+      await logMembershipChange(groupId, deviceId, 'added', 'filter_match', group.orgId);
       return { evaluatedGroups: 1, added: 1, removed: 0 };
     }
     return { evaluatedGroups: 1, added: 0, removed: 0 };
@@ -124,7 +127,7 @@ export async function evaluateDeviceMembershipForGroup(
           eq(deviceGroupMemberships.deviceId, deviceId)
         )
       );
-    await logMembershipChange(groupId, deviceId, 'removed', 'filter_unmatch');
+    await logMembershipChange(groupId, deviceId, 'removed', 'filter_unmatch', group.orgId);
     return { evaluatedGroups: 1, added: 0, removed: 1 };
   }
 
@@ -179,12 +182,13 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
         toAdd.map(deviceId => ({
           deviceId,
           groupId,
+          orgId: group.orgId,
           addedBy: 'dynamic_rule' as const
         }))
       )
       .onConflictDoNothing();
     await Promise.all(
-      toAdd.map(deviceId => logMembershipChange(groupId, deviceId, 'added', 'filter_match'))
+      toAdd.map(deviceId => logMembershipChange(groupId, deviceId, 'added', 'filter_match', group.orgId))
     );
   }
 
@@ -198,7 +202,7 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
         )
       );
     await Promise.all(
-      toRemove.map(deviceId => logMembershipChange(groupId, deviceId, 'removed', 'filter_unmatch'))
+      toRemove.map(deviceId => logMembershipChange(groupId, deviceId, 'removed', 'filter_unmatch', group.orgId))
     );
   }
 
@@ -269,7 +273,8 @@ export async function updateDeviceMembership(
 export async function pinDeviceToGroup(
   groupId: string,
   deviceId: string,
-  pinned: boolean
+  pinned: boolean,
+  orgId: string
 ): Promise<void> {
   const [membership] = await db
     .select({
@@ -306,13 +311,14 @@ export async function pinDeviceToGroup(
         .values({
           deviceId,
           groupId,
+          orgId,
           isPinned: true,
           addedBy: 'manual'
         })
         .onConflictDoNothing();
     }
 
-    await logMembershipChange(groupId, deviceId, 'added', 'pinned');
+    await logMembershipChange(groupId, deviceId, 'added', 'pinned', orgId);
     return;
   }
 
@@ -347,7 +353,7 @@ export async function pinDeviceToGroup(
             eq(deviceGroupMemberships.deviceId, deviceId)
           )
         );
-      await logMembershipChange(groupId, deviceId, 'removed', 'unpinned');
+      await logMembershipChange(groupId, deviceId, 'removed', 'unpinned', orgId);
     }
   }
 }

@@ -1,6 +1,7 @@
 import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, bigint } from 'drizzle-orm/pg-core';
 import { devices } from './devices';
 import { users } from './users';
+import { organizations } from './orgs';
 
 export const remoteSessionTypeEnum = pgEnum('remote_session_type', ['terminal', 'desktop', 'file_transfer']);
 export const remoteSessionStatusEnum = pgEnum('remote_session_status', ['pending', 'connecting', 'active', 'disconnected', 'failed']);
@@ -10,6 +11,7 @@ export const fileTransferStatusEnum = pgEnum('file_transfer_status', ['pending',
 export const remoteSessions = pgTable('remote_sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
   userId: uuid('user_id').notNull().references(() => users.id),
   type: remoteSessionTypeEnum('type').notNull(),
   status: remoteSessionStatusEnum('status').notNull().default('pending'),

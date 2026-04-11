@@ -699,6 +699,7 @@ scriptRoutes.post(
         .values({
           scriptId,
           deviceId: device.id,
+          orgId: device.orgId,
           triggeredBy: auth.user.id,
           triggerType,
           parameters,

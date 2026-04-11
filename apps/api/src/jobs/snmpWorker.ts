@@ -165,8 +165,21 @@ async function processPollResults(data: ProcessPollResultsJobData): Promise<{
 }> {
   const now = new Date();
 
+  // Look up orgId from the SNMP device so every metric row carries it for RLS.
+  const [snmpDevice] = await db
+    .select({ orgId: snmpDevices.orgId })
+    .from(snmpDevices)
+    .where(eq(snmpDevices.id, data.deviceId))
+    .limit(1);
+
+  if (!snmpDevice) {
+    console.error(`[SnmpWorker] SNMP device ${data.deviceId} not found; cannot write metrics`);
+    return { metricsWritten: 0 };
+  }
+
   const rows = data.metrics.map((metric) => ({
     deviceId: data.deviceId,
+    orgId: snmpDevice.orgId,
     oid: metric.oid,
     name: metric.name || metric.oid,
     value: metric.value != null ? String(metric.value) : null,

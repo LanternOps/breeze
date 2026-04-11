@@ -347,6 +347,7 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
         .insert(remoteSessions)
         .values({
           deviceId,
+          orgId: access.device.orgId,
           userId: auth.user.id,
           type: sessionType as 'terminal' | 'file_transfer',
           status: 'pending',

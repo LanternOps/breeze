@@ -641,6 +641,7 @@ groupRoutes.post(
         newDeviceIds.map((deviceId) => ({
           deviceId,
           groupId: id,
+          orgId: group.orgId,
           addedBy: 'manual' as const
         }))
       );
@@ -813,7 +814,7 @@ groupRoutes.post(
       return c.json({ error: 'Device not found or belongs to a different organization' }, 404);
     }
 
-    await pinDeviceToGroup(id, deviceId, true);
+    await pinDeviceToGroup(id, deviceId, true, group.orgId);
 
     writeRouteAudit(c, {
       orgId: group.orgId,
@@ -877,7 +878,7 @@ groupRoutes.delete(
       return c.json({ error: 'Device is not pinned to this group' }, 400);
     }
 
-    await pinDeviceToGroup(id, deviceId, false);
+    await pinDeviceToGroup(id, deviceId, false, group.orgId);
 
     writeRouteAudit(c, {
       orgId: group.orgId,
