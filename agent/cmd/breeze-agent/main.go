@@ -857,7 +857,7 @@ func runHelperProcess(name, role, context, binaryKind string) {
 		wait := backoff + time.Duration(rand.Int64N(int64(backoff/2)+1))
 
 		errMsg := err.Error()
-		if emit, suppressed := warnLimiter.shouldLog(errMsg); emit {
+		if emit, suppressed := warnLimiter.shouldLog(errMsg, time.Now()); emit {
 			log.Warn("helper disconnected, reconnecting",
 				"name", name, "error", errMsg, "backoff", wait.String())
 		} else if suppressed > 0 {
@@ -910,11 +910,12 @@ func newHelperWarnLimiter(limit int, window time.Duration) *helperWarnLimiter {
 // shouldLog returns (emitWarn, suppressedCount). If emitWarn is true, the
 // caller should log a WARN. Otherwise, if suppressedCount > 0, the caller
 // should log a single INFO "still disconnected" line with that count.
-func (h *helperWarnLimiter) shouldLog(msg string) (bool, int) {
+// now is passed in by the caller (typically time.Now()) so that tests can
+// control the clock without sleeping.
+func (h *helperWarnLimiter) shouldLog(msg string, now time.Time) (bool, int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	now := time.Now()
 	if msg != h.lastMsg || now.Sub(h.firstSeenAt) > h.window {
 		// New message or window rolled over — reset counters.
 		h.lastMsg = msg
