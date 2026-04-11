@@ -10,20 +10,61 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// SpawnedHelper describes a helper process after a successful spawn. It
+// contains the PID and a duplicated process handle so callers can wait for
+// the process to exit and inspect its exit code. Close() must be called to
+// release the handle.
+type SpawnedHelper struct {
+	PID    uint32
+	Handle windows.Handle
+}
+
+// Close releases the duplicated process handle. Safe to call more than once.
+func (s *SpawnedHelper) Close() {
+	if s == nil || s.Handle == 0 {
+		return
+	}
+	_ = windows.CloseHandle(s.Handle)
+	s.Handle = 0
+}
+
+// Wait blocks until the spawned helper process exits and returns its exit
+// code. Returns -1 + error on failure. The process handle is released
+// automatically after Wait returns so callers do not need to call Close
+// in the normal path.
+func (s *SpawnedHelper) Wait() (int, error) {
+	if s == nil || s.Handle == 0 {
+		return -1, fmt.Errorf("SpawnedHelper: no handle")
+	}
+	defer s.Close()
+	event, err := windows.WaitForSingleObject(s.Handle, windows.INFINITE)
+	if err != nil {
+		return -1, fmt.Errorf("WaitForSingleObject: %w", err)
+	}
+	if event != windows.WAIT_OBJECT_0 {
+		return -1, fmt.Errorf("WaitForSingleObject: unexpected event %d", event)
+	}
+	var exitCode uint32
+	if err := windows.GetExitCodeProcess(s.Handle, &exitCode); err != nil {
+		return -1, fmt.Errorf("GetExitCodeProcess: %w", err)
+	}
+	return int(exitCode), nil
+}
+
 // SpawnHelperInSession launches a user-helper process as SYSTEM in the
-// specified Windows session. The helper inherits our SYSTEM token with the
-// session ID overridden, giving it full desktop access (Default, Winlogon,
-// Screensaver) in the target session.
-func SpawnHelperInSession(sessionID uint32) error {
+// specified Windows session. Returns a SpawnedHelper describing the child
+// process, or nil + an error on failure. The caller is responsible for
+// closing the returned handle.
+func SpawnHelperInSession(sessionID uint32) (*SpawnedHelper, error) {
 	// 1. Open our own process token (SYSTEM).
 	var processToken windows.Token
 	proc, err := windows.GetCurrentProcess()
 	if err != nil {
-		return fmt.Errorf("GetCurrentProcess: %w", err)
+		return nil, fmt.Errorf("GetCurrentProcess: %w", err)
 	}
 	err = windows.OpenProcessToken(proc, windows.TOKEN_DUPLICATE|windows.TOKEN_QUERY, &processToken)
 	if err != nil {
-		return fmt.Errorf("OpenProcessToken: %w", err)
+		return nil, fmt.Errorf("OpenProcessToken: %w", err)
 	}
 	defer processToken.Close()
 
@@ -41,7 +82,7 @@ func SpawnHelperInSession(sessionID uint32) error {
 		&dupToken,
 	)
 	if err != nil {
-		return fmt.Errorf("DuplicateTokenEx: %w", err)
+		return nil, fmt.Errorf("DuplicateTokenEx: %w", err)
 	}
 	defer dupToken.Close()
 
@@ -53,23 +94,23 @@ func SpawnHelperInSession(sessionID uint32) error {
 		uint32(unsafe.Sizeof(sessionID)),
 	)
 	if err != nil {
-		return fmt.Errorf("SetTokenInformation(TokenSessionId=%d): %w", sessionID, err)
+		return nil, fmt.Errorf("SetTokenInformation(TokenSessionId=%d): %w", sessionID, err)
 	}
 
 	// 4. Build the command line: same binary, "user-helper" subcommand.
 	exePath, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("os.Executable: %w", err)
+		return nil, fmt.Errorf("os.Executable: %w", err)
 	}
 	cmdLine, err := windows.UTF16PtrFromString(fmt.Sprintf(`"%s" user-helper`, exePath))
 	if err != nil {
-		return fmt.Errorf("UTF16PtrFromString: %w", err)
+		return nil, fmt.Errorf("UTF16PtrFromString: %w", err)
 	}
 
 	// 5. Target the interactive window station + default desktop.
 	desktop, err := windows.UTF16PtrFromString(`winsta0\Default`)
 	if err != nil {
-		return fmt.Errorf("UTF16PtrFromString desktop: %w", err)
+		return nil, fmt.Errorf("UTF16PtrFromString desktop: %w", err)
 	}
 
 	si := windows.StartupInfo{
@@ -93,11 +134,12 @@ func SpawnHelperInSession(sessionID uint32) error {
 		&pi,
 	)
 	if err != nil {
-		return fmt.Errorf("CreateProcessAsUser(session=%d): %w", sessionID, err)
+		return nil, fmt.Errorf("CreateProcessAsUser(session=%d): %w", sessionID, err)
 	}
 
+	// Release the thread handle (we don't need it). Keep the process handle
+	// so the lifecycle manager can wait on it and read the exit code.
 	windows.CloseHandle(pi.Thread)
-	windows.CloseHandle(pi.Process)
 
 	log.Info("spawned user helper in session",
 		"sessionId", sessionID,
@@ -105,7 +147,7 @@ func SpawnHelperInSession(sessionID uint32) error {
 		"pid", pi.ProcessId,
 		"exe", exePath,
 	)
-	return nil
+	return &SpawnedHelper{PID: pi.ProcessId, Handle: pi.Process}, nil
 }
 
 // SpawnUserHelperInSession launches a user-helper process using the logged-in
@@ -113,11 +155,14 @@ func SpawnHelperInSession(sessionID uint32) error {
 // falls back to explorer.exe token theft for Azure AD sessions.
 // This helper runs as the interactive user, enabling run_as_user script
 // execution and launching the Breeze Helper Tauri app.
-func SpawnUserHelperInSession(sessionID uint32) error {
+//
+// Returns a SpawnedHelper describing the child process; the caller is
+// responsible for closing the returned handle.
+func SpawnUserHelperInSession(sessionID uint32) (*SpawnedHelper, error) {
 	// Try WTSQueryUserToken first, fall back to explorer.exe token.
 	dupToken, envBlock, method, err := acquireUserToken(sessionID)
 	if err != nil {
-		return fmt.Errorf("acquire user token(session=%d): %w", sessionID, err)
+		return nil, fmt.Errorf("acquire user token(session=%d): %w", sessionID, err)
 	}
 	defer dupToken.Close()
 	if envBlock != nil {
@@ -127,16 +172,16 @@ func SpawnUserHelperInSession(sessionID uint32) error {
 	// Build command line with --role user flag.
 	exePath, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("os.Executable: %w", err)
+		return nil, fmt.Errorf("os.Executable: %w", err)
 	}
 	cmdLine, err := windows.UTF16PtrFromString(fmt.Sprintf(`"%s" user-helper --role user`, exePath))
 	if err != nil {
-		return fmt.Errorf("UTF16PtrFromString: %w", err)
+		return nil, fmt.Errorf("UTF16PtrFromString: %w", err)
 	}
 
 	desktop, err := windows.UTF16PtrFromString(`winsta0\Default`)
 	if err != nil {
-		return fmt.Errorf("UTF16PtrFromString desktop: %w", err)
+		return nil, fmt.Errorf("UTF16PtrFromString desktop: %w", err)
 	}
 
 	si := windows.StartupInfo{
@@ -158,11 +203,10 @@ func SpawnUserHelperInSession(sessionID uint32) error {
 		&si,
 		&pi,
 	); err != nil {
-		return fmt.Errorf("CreateProcessAsUser(session=%d, role=user): %w", sessionID, err)
+		return nil, fmt.Errorf("CreateProcessAsUser(session=%d, role=user): %w", sessionID, err)
 	}
 
 	windows.CloseHandle(pi.Thread)
-	windows.CloseHandle(pi.Process)
 
 	log.Info("spawned user-token helper in session",
 		"sessionId", sessionID,
@@ -171,5 +215,5 @@ func SpawnUserHelperInSession(sessionID uint32) error {
 		"exe", exePath,
 		"tokenSource", method,
 	)
-	return nil
+	return &SpawnedHelper{PID: pi.ProcessId, Handle: pi.Process}, nil
 }
