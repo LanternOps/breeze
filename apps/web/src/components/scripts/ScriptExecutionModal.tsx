@@ -8,6 +8,7 @@ import type { ScriptParameter } from './ScriptForm';
 import type { FilterConditionGroup } from '@breeze/shared';
 import { FilterBuilder, DEFAULT_FILTER_FIELDS } from '../filters/FilterBuilder';
 import { useFilterPreview } from '../../hooks/useFilterPreview';
+import ScriptParametersForm, { validateParameters as validateParamsHelper } from './ScriptParametersForm';
 
 export type Device = {
   id: string;
@@ -152,15 +153,10 @@ export default function ScriptExecutionModal({
 
   const validateParameters = (): boolean => {
     if (!script.parameters) return true;
-
-    for (const param of script.parameters) {
-      if (param.required) {
-        const value = parameters[param.name];
-        if (value === undefined || value === '' || (param.type === 'string' && String(value).trim() === '')) {
-          setErrorMessage(`Parameter "${param.name}" is required`);
-          return false;
-        }
-      }
+    const error = validateParamsHelper(script.parameters, parameters);
+    if (error) {
+      setErrorMessage(error);
+      return false;
     }
     return true;
   };
@@ -264,54 +260,11 @@ export default function ScriptExecutionModal({
 
           {/* Parameters */}
           {script.parameters && script.parameters.length > 0 && (
-            <div className="space-y-4">
-              <h3 className="text-sm font-semibold">Parameters</h3>
-              <div className="grid gap-4 sm:grid-cols-2">
-                {script.parameters.map(param => (
-                  <div key={param.name} className="space-y-1">
-                    <label className="text-sm font-medium">
-                      {param.name}
-                      {param.required && <span className="text-destructive ml-1">*</span>}
-                    </label>
-                    {param.type === 'boolean' ? (
-                      <div className="flex items-center h-10">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(parameters[param.name])}
-                          onChange={e => handleParameterChange(param.name, e.target.checked)}
-                          className="h-4 w-4 rounded border-border"
-                        />
-                        <span className="ml-2 text-sm">Enabled</span>
-                      </div>
-                    ) : param.type === 'select' && param.options ? (
-                      <select
-                        value={String(parameters[param.name] || '')}
-                        onChange={e => handleParameterChange(param.name, e.target.value)}
-                        className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                      >
-                        <option value="">Select...</option>
-                        {param.options.split(',').map(opt => (
-                          <option key={opt.trim()} value={opt.trim()}>
-                            {opt.trim()}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <input
-                        type={param.type === 'number' ? 'number' : 'text'}
-                        value={String(parameters[param.name] ?? '')}
-                        onChange={e => handleParameterChange(
-                          param.name,
-                          param.type === 'number' ? Number(e.target.value) : e.target.value
-                        )}
-                        placeholder={param.defaultValue || ''}
-                        className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                      />
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
+            <ScriptParametersForm
+              parameters={script.parameters}
+              values={parameters}
+              onChange={(name, value) => handleParameterChange(name, value as string | number | boolean)}
+            />
           )}
 
           {/* Device Selection */}

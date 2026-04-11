@@ -248,12 +248,12 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
     }
   };
 
-  const handleScriptSelect = async (script: Script, runAs: ScriptRunAsSelection) => {
+  const handleScriptSelect = async (script: Script, runAs: ScriptRunAsSelection, parameters?: Record<string, unknown>) => {
     if (actionInProgress || !device) return;
 
     try {
       setActionInProgress(true);
-      await executeScript(script.id, [device.id], undefined, runAs);
+      await executeScript(script.id, [device.id], parameters, runAs);
       showToast({ type: 'success', message: `Script "${script.name}" queued for ${device.hostname}` });
     } catch (err) {
       showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to queue script' });

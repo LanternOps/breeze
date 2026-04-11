@@ -242,13 +242,13 @@ export default function DevicesPage() {
     setScriptTargetDevices([]);
   };
 
-  const handleScriptSelect = async (script: Script, runAs: ScriptRunAsSelection) => {
+  const handleScriptSelect = async (script: Script, runAs: ScriptRunAsSelection, parameters?: Record<string, unknown>) => {
     if (actionInProgress) return;
 
     try {
       setActionInProgress(true);
       const deviceIds = scriptTargetDevices.map(d => d.id);
-      const result = await executeScript(script.id, deviceIds, undefined, runAs);
+      const result = await executeScript(script.id, deviceIds, parameters, runAs);
 
       if (scriptTargetDevices.length === 1) {
         showToast({ type: 'success', message: `Script "${script.name}" queued for ${scriptTargetDevices[0].hostname}` });
