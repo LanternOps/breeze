@@ -8,6 +8,13 @@ export const mfaMethodEnum = pgEnum('mfa_method', ['totp', 'sms']);
 
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
+  // Primary tenant: every user belongs to exactly one MSP (partner).
+  // partnerId is always set; orgId is NULL for partner-level staff and
+  // set for customer-org users (or for the MSP's own internal-org staff).
+  // A composite FK on (org_id, partner_id) → organizations(id, partner_id)
+  // enforces that the org, when set, belongs to the user's partner.
+  partnerId: uuid('partner_id').notNull().references(() => partners.id),
+  orgId: uuid('org_id').references(() => organizations.id),
   email: varchar('email', { length: 255 }).notNull().unique(),
   name: varchar('name', { length: 255 }).notNull(),
   passwordHash: text('password_hash'),

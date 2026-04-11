@@ -23,7 +23,7 @@ import {
   inviteUserRedisKey,
 } from './helpers';
 
-const { db } = dbModule;
+const { db, withSystemDbAccessContext } = dbModule;
 
 export const inviteRoutes = new Hono();
 
@@ -54,16 +54,20 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
     return c.json({ error: 'Invalid or expired invite token' }, 400);
   }
 
-  const [user] = await db
-    .select({
-      id: users.id,
-      email: users.email,
-      name: users.name,
-      status: users.status,
-    })
-    .from(users)
-    .where(eq(users.id, userId))
-    .limit(1);
+  // Pre-auth lookup — wrap in system scope so the `users` RLS policy
+  // doesn't deny the read before the real request scope is applied.
+  const [user] = await withSystemDbAccessContext(async () =>
+    db
+      .select({
+        id: users.id,
+        email: users.email,
+        name: users.name,
+        status: users.status,
+      })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1)
+  );
 
   if (!user) {
     return c.json({ error: 'User not found' }, 400);

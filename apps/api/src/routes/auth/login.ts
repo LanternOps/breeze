@@ -7,6 +7,7 @@ import {
   createTokenPair,
   verifyToken,
   verifyPassword,
+  hashPassword,
   rateLimiter,
   loginLimiter,
   getRedis,
@@ -35,7 +36,21 @@ import {
   userRequiresSetup
 } from './helpers';
 
-const { db } = dbModule;
+const { db, withSystemDbAccessContext } = dbModule;
+
+// Lazily-computed dummy argon2id hash used to constant-time the
+// user-not-found branch of the login handler. The first miss after
+// startup computes and caches it; every miss after that reuses the same
+// hash. Without this, response timing reveals whether an email exists
+// in the users table (hit runs verifyPassword → ~100-500ms argon2; miss
+// returns immediately → ~1ms), trivially enabling email enumeration.
+let dummyPasswordHashPromise: Promise<string> | null = null;
+function getDummyPasswordHash(): Promise<string> {
+  if (!dummyPasswordHashPromise) {
+    dummyPasswordHashPromise = hashPassword('__login-timing-dummy-never-matches__');
+  }
+  return dummyPasswordHashPromise;
+}
 
 export const loginRoutes = new Hono();
 
@@ -65,14 +80,23 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     }
   }
 
-  // Find user
-  const [user] = await db
-    .select()
-    .from(users)
-    .where(eq(users.email, normalizedEmail))
-    .limit(1);
+  // Find user — pre-auth lookup, must run under system scope since no
+  // request context has set breeze.scope yet. The `users` table is under
+  // RLS; without this wrap the lookup returns empty for real emails under
+  // breeze_app, and login would always 401 regardless of password.
+  const [user] = await withSystemDbAccessContext(async () =>
+    db
+      .select()
+      .from(users)
+      .where(eq(users.email, normalizedEmail))
+      .limit(1)
+  );
 
   if (!user || !user.passwordHash) {
+    // Constant-time response: run one argon2 verify against a dummy hash
+    // so the handler's latency matches the found-user branch. This blunts
+    // email enumeration via timing side-channel.
+    await verifyPassword(await getDummyPasswordHash(), password).catch(() => false);
     if (user) {
       void auditUserLoginFailure(c, {
         userId: user.id,
@@ -254,12 +278,14 @@ loginRoutes.post('/refresh', async (c) => {
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
 
-  // Check if user still exists and is active
-  const [user] = await db
-    .select({ id: users.id, email: users.email, status: users.status })
-    .from(users)
-    .where(eq(users.id, payload.sub))
-    .limit(1);
+  // Check if user still exists and is active — pre-auth, wrap in system scope.
+  const [user] = await withSystemDbAccessContext(async () =>
+    db
+      .select({ id: users.id, email: users.email, status: users.status })
+      .from(users)
+      .where(eq(users.id, payload.sub))
+      .limit(1)
+  );
 
   if (!user || user.status !== 'active') {
     clearRefreshTokenCookie(c);

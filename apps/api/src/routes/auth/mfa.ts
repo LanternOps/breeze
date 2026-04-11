@@ -33,7 +33,7 @@ import {
   userRequiresSetup
 } from './helpers';
 
-const { db } = dbModule;
+const { db, withSystemDbAccessContext } = dbModule;
 
 export const mfaRoutes = new Hono();
 
@@ -120,11 +120,15 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       return c.json({ error: 'Too many MFA attempts' }, 429);
     }
 
-    const [user] = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, pendingUserId))
-      .limit(1);
+    // Pre-auth lookup — wrap in system scope so the `users` RLS policy
+    // doesn't deny the read before the real request scope is applied.
+    const [user] = await withSystemDbAccessContext(async () =>
+      db
+        .select()
+        .from(users)
+        .where(eq(users.id, pendingUserId))
+        .limit(1)
+    );
 
     if (!user) {
       return c.json({ error: 'Invalid MFA configuration' }, 400);

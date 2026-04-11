@@ -881,10 +881,13 @@ export async function seedDefaultAdmin() {
   // Hash the password
   const passwordHash = await hashPassword(adminPassword);
 
-  // Create the admin user (setupCompletedAt left null so the setup wizard triggers on first login)
+  // Create the admin user (setupCompletedAt left null so the setup wizard
+  // triggers on first login). Partner-scope admin → partnerId set, orgId
+  // left NULL per the "MSP staff are not users of any single org" rule.
   const [adminUser] = await db
     .insert(users)
     .values({
+      partnerId,
       email: adminEmail,
       name: 'Breeze Admin',
       passwordHash,

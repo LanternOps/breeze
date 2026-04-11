@@ -20,6 +20,7 @@ import { authRoutes } from '../../routes/auth';
 import { authMiddleware } from '../../middleware/auth';
 import {
   createUser,
+  createPartner,
   setupTestEnvironment,
   createIntegrationTestClient
 } from './db-utils';
@@ -32,10 +33,16 @@ import './setup';
 
 describe('Auth Integration Tests', () => {
   let app: Hono;
+  let testPartnerId: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     app = new Hono();
     app.route('/auth', authRoutes);
+    // users.partner_id is NOT NULL; every createUser call below needs a
+    // partner to point at. Recreated per test because cleanupDatabase()
+    // truncates partners in beforeEach.
+    const partner = await createPartner();
+    testPartnerId = partner.id;
   });
 
   describe('POST /auth/register', () => {
@@ -76,7 +83,7 @@ describe('Auth Integration Tests', () => {
 
     it('should return generic success for duplicate email (prevents enumeration)', async () => {
       // Create existing user
-      await createUser({ email: 'existing@example.com' });
+      await createUser({ partnerId: testPartnerId, email: 'existing@example.com' });
 
       const res = await app.request('/auth/register', {
         method: 'POST',
@@ -115,6 +122,7 @@ describe('Auth Integration Tests', () => {
     it('should login with valid credentials', async () => {
       // Create user with known password
       await createUser({
+        partnerId: testPartnerId,
         email: 'login@example.com',
         password: 'MyPassword123!'
       });
@@ -137,6 +145,7 @@ describe('Auth Integration Tests', () => {
 
     it('should reject invalid password', async () => {
       await createUser({
+        partnerId: testPartnerId,
         email: 'wrongpass@example.com',
         password: 'CorrectPass123!'
       });
@@ -155,6 +164,7 @@ describe('Auth Integration Tests', () => {
 
     it('should reject disabled user login', async () => {
       await createUser({
+        partnerId: testPartnerId,
         email: 'disabled@example.com',
         password: 'MyPassword123!',
         status: 'disabled'
@@ -174,6 +184,7 @@ describe('Auth Integration Tests', () => {
 
     it('should update lastLoginAt on successful login', async () => {
       const user = await createUser({
+        partnerId: testPartnerId,
         email: 'lastlogin@example.com',
         password: 'MyPassword123!'
       });

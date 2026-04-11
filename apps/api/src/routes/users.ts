@@ -583,9 +583,34 @@ userRoutes.post(
       let user = existingUser;
 
       if (!user) {
+        // Resolve the new user's primary tenancy from the caller's scope.
+        // Partner admins inviting → new user is partner-level staff
+        // (partner_id set, org_id NULL). Org admins inviting → new user is
+        // a member of that org (partner_id inherited from the org's owning
+        // partner, org_id set to the caller's org).
+        let newUserPartnerId: string;
+        let newUserOrgId: string | null;
+        if (scopeContext.scope === 'partner') {
+          newUserPartnerId = scopeContext.partnerId;
+          newUserOrgId = null;
+        } else {
+          const [scopeOrg] = await tx
+            .select({ partnerId: organizations.partnerId })
+            .from(organizations)
+            .where(eq(organizations.id, scopeContext.orgId))
+            .limit(1);
+          if (!scopeOrg) {
+            throw new HTTPException(500, { message: 'Scope org not found' });
+          }
+          newUserPartnerId = scopeOrg.partnerId;
+          newUserOrgId = scopeContext.orgId;
+        }
+
         const [created] = await tx
           .insert(users)
           .values({
+            partnerId: newUserPartnerId,
+            orgId: newUserOrgId,
             email: normalizedEmail,
             name: data.name,
             status: 'invited'

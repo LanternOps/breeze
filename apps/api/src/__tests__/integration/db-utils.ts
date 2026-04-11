@@ -31,6 +31,10 @@ function db() {
 // ============================================
 
 export interface CreateUserOptions {
+  /** The MSP (partner) this user belongs to. Required — users.partner_id is NOT NULL. */
+  partnerId: string;
+  /** Customer org the user is primarily a member of. Null/undefined = MSP staff. */
+  orgId?: string | null;
   email?: string;
   name?: string;
   password?: string;
@@ -38,13 +42,15 @@ export interface CreateUserOptions {
   mfaEnabled?: boolean;
 }
 
-export async function createUser(options: CreateUserOptions = {}) {
+export async function createUser(options: CreateUserOptions) {
   const database = db();
   const passwordHash = await hashPassword(options.password || 'TestPass123!');
 
   const [user] = await database
     .insert(users)
     .values({
+      partnerId: options.partnerId,
+      orgId: options.orgId ?? null,
       email: options.email || `test-${Date.now()}@example.com`,
       name: options.name || 'Test User',
       passwordHash,
@@ -228,7 +234,10 @@ export interface TestEnvironment {
 }
 
 export interface SetupTestEnvironmentOptions {
-  userOptions?: CreateUserOptions;
+  // partnerId/orgId are derived from the partner + organization created
+  // inside setupTestEnvironment, so callers only supply overrides for the
+  // optional fields.
+  userOptions?: Partial<Omit<CreateUserOptions, 'partnerId' | 'orgId'>>;
   partnerOptions?: CreatePartnerOptions;
   scope?: 'system' | 'partner' | 'organization';
 }
@@ -248,11 +257,18 @@ export async function setupTestEnvironment(
 ): Promise<TestEnvironment> {
   const scope = options.scope || 'organization';
 
-  // Create base entities
-  const user = await createUser(options.userOptions);
+  // Create base entities. Partner/organization must exist before the
+  // user so we can populate users.partner_id / users.org_id correctly —
+  // partner-scope tests create an MSP staff user (partner_id set, org_id
+  // null); org-scope tests create a customer-org user (both set).
   const partner = await createPartner(options.partnerOptions);
   const organization = await createOrganization({ partnerId: partner.id });
   const site = await createSite({ orgId: organization.id });
+  const user = await createUser({
+    partnerId: partner.id,
+    orgId: scope === 'organization' ? organization.id : null,
+    ...options.userOptions,
+  });
 
   // Create role with appropriate scope
   const role = await createRole({

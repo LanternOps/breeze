@@ -25,7 +25,7 @@ import {
   writeAuthAudit
 } from './helpers';
 
-const { db } = dbModule;
+const { db, withSystemDbAccessContext } = dbModule;
 
 export const passwordRoutes = new Hono();
 
@@ -52,12 +52,14 @@ passwordRoutes.post('/forgot-password', zValidator('json', forgotPasswordSchema)
     return c.json({ success: true, message: 'If this email exists, a reset link will be sent.' });
   }
 
-  // Find user (don't reveal if exists)
-  const [user] = await db
-    .select({ id: users.id, email: users.email })
-    .from(users)
-    .where(eq(users.email, normalizedEmail))
-    .limit(1);
+  // Find user (don't reveal if exists). Pre-auth, system-scope wrap.
+  const [user] = await withSystemDbAccessContext(async () =>
+    db
+      .select({ id: users.id, email: users.email })
+      .from(users)
+      .where(eq(users.email, normalizedEmail))
+      .limit(1)
+  );
 
   if (user) {
     // Generate reset token

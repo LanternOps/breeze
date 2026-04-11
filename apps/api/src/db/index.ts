@@ -44,6 +44,14 @@ export interface DbAccessContext {
    * `partners` / `partner_users` to pass.
    */
   accessiblePartnerIds?: string[] | null;
+  /**
+   * The authenticated user's id, for the self-read branch of the
+   * `users` RLS policy (so a user can always SELECT their own row even
+   * when their caller scope doesn't otherwise grant access). Set from
+   * `auth.user.id` in the middleware. Omit (or set to null) for non-
+   * human callers (API keys, agents, system jobs).
+   */
+  userId?: string | null;
 }
 
 export const SYSTEM_DB_ACCESS_CONTEXT: DbAccessContext = {
@@ -51,6 +59,7 @@ export const SYSTEM_DB_ACCESS_CONTEXT: DbAccessContext = {
   orgId: null,
   accessibleOrgIds: null,
   accessiblePartnerIds: null,
+  userId: null,
 };
 
 function serializeAccessibleIds(scope: DbAccessScope, accessibleIds: string[] | null | undefined): string {
@@ -86,11 +95,13 @@ export async function withDbAccessContext<T>(
   return baseDb.transaction(async (tx) => {
     const serializedOrgIds = serializeAccessibleIds(context.scope, context.accessibleOrgIds);
     const serializedPartnerIds = serializeAccessibleIds(context.scope, context.accessiblePartnerIds);
+    const serializedUserId = context.userId ?? '';
 
     await tx.execute(sql`select set_config('breeze.scope', ${context.scope}, true)`);
     await tx.execute(sql`select set_config('breeze.org_id', ${context.orgId ?? ''}, true)`);
     await tx.execute(sql`select set_config('breeze.accessible_org_ids', ${serializedOrgIds}, true)`);
     await tx.execute(sql`select set_config('breeze.accessible_partner_ids', ${serializedPartnerIds}, true)`);
+    await tx.execute(sql`select set_config('breeze.user_id', ${serializedUserId}, true)`);
 
     return dbContextStorage.run(tx as unknown as typeof baseDb, fn);
   });

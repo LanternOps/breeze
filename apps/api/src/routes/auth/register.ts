@@ -21,7 +21,7 @@ import {
   registrationDisabledResponse
 } from './helpers';
 
-const { db } = dbModule;
+const { db, withSystemDbAccessContext } = dbModule;
 
 export const registerRoutes = new Hono();
 
@@ -50,64 +50,26 @@ registerRoutes.post('/register', zValidator('json', registerSchema), async (c) =
     return c.json({ error: passwordCheck.errors[0] }, 400);
   }
 
-  const existingUsers = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(eq(users.email, normalizedEmail))
-    .limit(1);
+  // Pre-auth lookup — wrap in system scope so the `users` RLS policy
+  // doesn't deny the read before the real request scope is applied.
+  const existingUsers = await withSystemDbAccessContext(async () =>
+    db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, normalizedEmail))
+      .limit(1)
+  );
 
-  if (existingUsers.length > 0) {
-    // Security: use a generic success response to prevent email enumeration.
-    return c.json({
-      success: true,
-      message: 'If registration can proceed, you will receive next steps shortly.'
-    });
-  }
-
-  const passwordHash = await hashPassword(password);
-  const [newUser] = await db
-    .insert(users)
-    .values({
-      email: normalizedEmail,
-      name,
-      passwordHash,
-      status: 'active'
-    })
-    .returning();
-
-  if (!newUser) {
-    return c.json({ error: 'Failed to create account' }, 500);
-  }
-
-  const context = await resolveCurrentUserTokenContext(newUser.id);
-  // MFA is vacuously satisfied when the user hasn't enrolled in MFA
-  const mfaSatisfied = !(ENABLE_2FA && newUser.mfaEnabled);
-  const tokens = await createTokenPair({
-    sub: newUser.id,
-    email: newUser.email,
-    roleId: context.roleId,
-    orgId: context.orgId,
-    partnerId: context.partnerId,
-    scope: context.scope,
-    mfa: mfaSatisfied
-  });
-
-  await db
-    .update(users)
-    .set({ lastLoginAt: new Date() })
-    .where(eq(users.id, newUser.id));
-
-  setRefreshTokenCookie(c, tokens.refreshToken);
-
+  // Legacy /register is a no-op: it used to create a partnerless orphan
+  // user, which is incompatible with the users.partner_id NOT NULL
+  // constraint and the users RLS policy. New signups must go through
+  // /register-partner which creates the partner + user + first org
+  // together. Return the same generic success response the existing-user
+  // branch returns so legacy clients don't observe a breaking change.
+  void existingUsers;
   return c.json({
-    user: {
-      id: newUser.id,
-      email: newUser.email,
-      name: newUser.name,
-      mfaEnabled: false
-    },
-    tokens: toPublicTokens(tokens),
-    mfaRequired: false
+    success: true,
+    message: 'If registration can proceed, you will receive next steps shortly.'
   });
 });
 
@@ -237,6 +199,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         const [newUser] = await tx
           .insert(users)
           .values({
+            partnerId: newPartner.id,
             email: email.toLowerCase(),
             name,
             passwordHash,

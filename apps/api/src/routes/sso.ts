@@ -3,12 +3,13 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { eq, and, gt } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import {
   ssoProviders,
   ssoSessions,
   userSsoIdentities,
   users,
+  organizations,
   organizationUsers,
   roles
 } from '../db/schema';
@@ -810,12 +811,16 @@ ssoRoutes.get('/callback', async (c) => {
       }
     }
 
-    // Find or create user
-    let [user] = await db
-      .select()
-      .from(users)
-      .where(eq(users.email, attrs.email.toLowerCase()))
-      .limit(1);
+    // Find or create user.
+    // Pre-auth lookup — wrap in system scope so the `users` RLS policy
+    // doesn't deny the read before the real request scope is applied.
+    let [user] = await withSystemDbAccessContext(async () =>
+      db
+        .select()
+        .from(users)
+        .where(eq(users.email, attrs.email.toLowerCase()))
+        .limit(1)
+    );
 
     if (!user) {
       if (!provider.autoProvision) {
@@ -826,28 +831,51 @@ ssoRoutes.get('/callback', async (c) => {
         return c.redirect('/login?error=default_role_required');
       }
 
-      // Create new user
-      const [newUser] = await db
-        .insert(users)
-        .values({
-          email: attrs.email.toLowerCase(),
-          name: attrs.name,
-          status: 'active',
-          passwordHash: null // SSO users don't have passwords
-        })
-        .returning();
+      // SSO callback runs without authMiddleware; wrap the provisioning
+      // in system scope so users + organization_users writes pass RLS.
+      // SSO-provisioned users are customer-org members: partner_id is
+      // inherited from the provider's org's owning partner, org_id is
+      // the provider's org.
+      const newUser = await withSystemDbAccessContext(async () => {
+        const [providerOrg] = await db
+          .select({ partnerId: organizations.partnerId })
+          .from(organizations)
+          .where(eq(organizations.id, provider.orgId))
+          .limit(1);
+        if (!providerOrg) {
+          return null;
+        }
+
+        const [created] = await db
+          .insert(users)
+          .values({
+            partnerId: providerOrg.partnerId,
+            orgId: provider.orgId,
+            email: attrs.email.toLowerCase(),
+            name: attrs.name,
+            status: 'active',
+            passwordHash: null // SSO users don't have passwords
+          })
+          .returning();
+
+        if (!created) {
+          return null;
+        }
+
+        await db.insert(organizationUsers).values({
+          orgId: provider.orgId,
+          userId: created.id,
+          roleId: validatedDefaultRoleId
+        });
+
+        return created;
+      });
 
       if (!newUser) {
         return c.redirect('/login?error=user_creation_failed');
       }
 
       user = newUser;
-
-      await db.insert(organizationUsers).values({
-        orgId: provider.orgId,
-        userId: user.id,
-        roleId: validatedDefaultRoleId
-      });
     }
 
     const [orgUser] = await db

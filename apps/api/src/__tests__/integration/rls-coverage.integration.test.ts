@@ -8,16 +8,19 @@ import { db } from '../../db';
  * UPDATE, DELETE) whose predicate references the appropriate access helper.
  * An ALL-cmd policy counts for all four.
  *
- * Three shapes of tenant-scoping are recognised, each with its own access
- * helper and its own assertion:
- *   1. **org-tenant tables** — tables with an `org_id` column or where the
- *      row's own id is the tenant identifier (e.g. `organizations`).
- *      Policies must reference `breeze_has_org_access`.
+ * Three shapes of tenant-scoping are recognised, each with its own assertion:
+ *   1. **org-tenant tables** — tables with an `org_id` column (auto-
+ *      discovered) or where the row's own id is the tenant identifier
+ *      (explicit list). Policies must reference `breeze_has_org_access`.
  *   2. **partner-tenant tables** — tables where the tenant is a partner:
  *      `partner_users.partner_id` or the partner row's own id. Policies
  *      must reference `breeze_has_partner_access`.
+ *   3. **dual-axis tables** — `users` is keyed on BOTH partner_id AND
+ *      org_id (OR'd in the policy), plus a self-read branch. Its four
+ *      DML commands must be covered by policies that reference either
+ *      `breeze_has_org_access` or `breeze_has_partner_access` (or both).
  *
- * Both shapes accept per-command policies (new) or a single ALL policy
+ * All shapes accept per-command policies (new) or a single ALL policy
  * (legacy migration 0008 shape). The test is semantic, not name-bound.
  */
 
@@ -36,6 +39,13 @@ const ORG_ID_KEYED_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, string>([
   ['partners', 'id'],
   ['partner_users', 'partner_id'],
+]);
+
+// Tables whose policies reference both helpers (org OR partner). `users`
+// is the canonical case: a user row is visible if the caller has access
+// to the user's partner OR the user's org OR is the user themselves.
+const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
+  'users',
 ]);
 
 const REQUIRED_CMDS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] as const;
@@ -175,6 +185,60 @@ describe('RLS coverage contract', () => {
         `Fix: add a migration that enables RLS and installs policies covering SELECT, INSERT, UPDATE, and DELETE. ` +
         `Use breeze_has_partner_access(id) or breeze_has_partner_access(partner_id) in the policy predicate. ` +
         `See 2026-04-11-partners-rls.sql for the template.`
+    ).toEqual([]);
+  });
+
+  it('every dual-axis tenant table has RLS on and all four DML commands covered by breeze_has_org_access or breeze_has_partner_access', async () => {
+    const dualTables = Array.from(DUAL_AXIS_TENANT_TABLES);
+
+    const rows = (await db.execute(sql`
+      WITH tenant_tables AS (
+        SELECT c.oid, c.relname, c.relrowsecurity
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relkind = 'r'
+          AND c.relname = ANY(${sql.raw(
+            `ARRAY[${dualTables.map((t) => `'${t}'`).join(',')}]::text[]`,
+          )})
+      ),
+      covering_policies AS (
+        SELECT
+          p.tablename,
+          CASE WHEN p.cmd = 'ALL' THEN cmd_name ELSE p.cmd END AS cmd
+        FROM pg_policies p
+        CROSS JOIN UNNEST(ARRAY['SELECT','INSERT','UPDATE','DELETE']) AS cmd_name
+        WHERE p.schemaname = 'public'
+          AND p.permissive = 'PERMISSIVE'
+          AND (
+            COALESCE(p.qual, '') LIKE '%breeze_has_org_access%'
+            OR COALESCE(p.qual, '') LIKE '%breeze_has_partner_access%'
+            OR COALESCE(p.with_check, '') LIKE '%breeze_has_org_access%'
+            OR COALESCE(p.with_check, '') LIKE '%breeze_has_partner_access%'
+          )
+          AND (p.cmd = 'ALL' OR p.cmd = cmd_name)
+      )
+      SELECT
+        t.relname AS table_name,
+        t.relrowsecurity AS rls_on,
+        ARRAY(
+          SELECT DISTINCT cp.cmd
+          FROM covering_policies cp
+          WHERE cp.tablename = t.relname
+          ORDER BY cp.cmd
+        ) AS covered_cmds
+      FROM tenant_tables t
+      ORDER BY t.relname;
+    `)) as unknown as TableRow[];
+
+    const offenders = offendersFrom(rows);
+
+    expect(
+      offenders,
+      `Dual-axis tenant tables missing RLS coverage:\n${JSON.stringify(offenders, null, 2)}\n\n` +
+        `Fix: each DML command must be covered by a policy referencing at least one of ` +
+        `breeze_has_org_access or breeze_has_partner_access. See 2026-04-11-users-rls.sql ` +
+        `for the users table template (the canonical dual-axis case with a self-read branch).`
     ).toEqual([]);
   });
 });

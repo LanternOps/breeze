@@ -23,7 +23,7 @@ import {
   writeAuthAudit
 } from './helpers';
 
-const { db } = dbModule;
+const { db, withSystemDbAccessContext } = dbModule;
 
 export const phoneRoutes = new Hono();
 
@@ -264,12 +264,16 @@ phoneRoutes.post('/mfa/sms/send', zValidator('json', smsSendSchema), async (c) =
     return c.json({ error: 'Invalid MFA session data' }, 400);
   }
 
-  // Look up phone number from DB (never store PII in Redis)
-  const [smsUser] = await db
-    .select({ phoneNumber: users.phoneNumber })
-    .from(users)
-    .where(eq(users.id, userId))
-    .limit(1);
+  // Look up phone number from DB (never store PII in Redis).
+  // Pre-auth lookup — wrap in system scope so the `users` RLS policy
+  // doesn't deny the read before the real request scope is applied.
+  const [smsUser] = await withSystemDbAccessContext(async () =>
+    db
+      .select({ phoneNumber: users.phoneNumber })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1)
+  );
 
   const phoneNumber = smsUser?.phoneNumber;
   if (!phoneNumber) {

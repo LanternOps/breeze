@@ -81,17 +81,22 @@ export async function optionalAuthMiddleware(c: Context, next: Next) {
     return;
   }
 
-  // Fetch user
-  const [user] = await db
-    .select({
-      id: users.id,
-      email: users.email,
-      name: users.name,
-      status: users.status
-    })
-    .from(users)
-    .where(eq(users.id, payload.sub))
-    .limit(1);
+  // Fetch user. Runs BEFORE withDbAccessContext is set (the outer purpose
+  // of this middleware), so under breeze_app without a scope the RLS policy
+  // on `users` denies everything. Wrap in system scope for the lookup only —
+  // the real request-scoped context is applied further down.
+  const [user] = await withSystemDbAccessContext(async () =>
+    db
+      .select({
+        id: users.id,
+        email: users.email,
+        name: users.name,
+        status: users.status
+      })
+      .from(users)
+      .where(eq(users.id, payload.sub))
+      .limit(1)
+  );
 
   if (user && user.status === 'active') {
     const accessibleOrgIds = await computeAccessibleOrgIds(
@@ -126,7 +131,8 @@ export async function optionalAuthMiddleware(c: Context, next: Next) {
         scope: payload.scope,
         orgId: payload.orgId,
         accessibleOrgIds,
-        accessiblePartnerIds
+        accessiblePartnerIds,
+        userId: user.id
       },
       async () => {
         c.set('auth', {
@@ -285,17 +291,21 @@ export async function authMiddleware(c: Context, next: Next) {
     throw new HTTPException(401, { message: 'Invalid or expired token' });
   }
 
-  // Fetch user to ensure they still exist and are active
-  const [user] = await db
-    .select({
-      id: users.id,
-      email: users.email,
-      name: users.name,
-      status: users.status
-    })
-    .from(users)
-    .where(eq(users.id, payload.sub))
-    .limit(1);
+  // Fetch user to ensure they still exist and are active. Pre-auth lookup —
+  // must run under system scope because the request's real scope isn't
+  // applied until further down (see optionalAuthMiddleware note).
+  const [user] = await withSystemDbAccessContext(async () =>
+    db
+      .select({
+        id: users.id,
+        email: users.email,
+        name: users.name,
+        status: users.status
+      })
+      .from(users)
+      .where(eq(users.id, payload.sub))
+      .limit(1)
+  );
 
   if (!user) {
     throw new HTTPException(401, { message: 'User not found' });
@@ -342,7 +352,8 @@ export async function authMiddleware(c: Context, next: Next) {
       scope: payload.scope,
       orgId: payload.orgId,
       accessibleOrgIds,
-      accessiblePartnerIds
+      accessiblePartnerIds,
+      userId: user.id
     },
     async () => {
       c.set('auth', {
