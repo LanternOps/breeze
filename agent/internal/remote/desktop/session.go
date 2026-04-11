@@ -121,10 +121,6 @@ type Session struct {
 	// Nanoseconds since epoch of the last successful video sample write.
 	lastVideoWriteUnixNano atomic.Int64
 
-	// Consecutive reattach attempts where the no-video watchdog fired and
-	// ForceReattach failed to restore video output. Used by the watchdog to
-	// escalate: log Error at 3, terminate the session at 5.
-	failedReattaches atomic.Int32
 }
 
 // SessionManager manages remote desktop sessions
@@ -353,47 +349,6 @@ func (m *SessionManager) StopAllSessions() {
 	for _, s := range sessions {
 		s.Stop()
 	}
-}
-
-// Stop stops the session
-// Watchdog escalation thresholds. The no-video watchdog enters its reattach
-// branch roughly every reattachCooldown seconds while video is stalled; these
-// counts therefore correspond to ~15s of sustained failure before an Error
-// log, and ~25s before session termination.
-const (
-	watchdogEscalateAfter  int32 = 3
-	watchdogTerminateAfter int32 = 5
-)
-
-// evaluateReattachFailure is called inside the no-video watchdog right before
-// attempting another ForceReattach. It compares current video progress against
-// the snapshot captured at the previous reattach; if video has advanced the
-// counter resets, otherwise it increments. Returns true when the watchdog has
-// exhausted its retry budget and the session should be torn down so the
-// viewer can reconnect instead of sitting on a dead stream.
-func (s *Session) evaluateReattachFailure(currentVideoNanos, priorReattachVideoNanos int64, hadPriorReattach bool) bool {
-	if !hadPriorReattach {
-		return false
-	}
-	if currentVideoNanos > priorReattachVideoNanos {
-		s.failedReattaches.Store(0)
-		return false
-	}
-	failures := s.failedReattaches.Add(1)
-	if failures == watchdogEscalateAfter {
-		slog.Error("desktop watchdog: reattach failing, escalating",
-			"session", s.id,
-			"failures", failures,
-		)
-	}
-	if failures >= watchdogTerminateAfter {
-		slog.Error("desktop watchdog: reattach exhausted, terminating session",
-			"session", s.id,
-			"failures", failures,
-		)
-		return true
-	}
-	return false
 }
 
 func (s *Session) Stop() {

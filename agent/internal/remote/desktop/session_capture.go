@@ -270,8 +270,7 @@ func (s *Session) captureLoopDXGI() captureMode {
 	// producing video before, force a thread-desktop re-attach + capturer
 	// reinit. This runs inside the pinned capture goroutine so
 	// SetThreadDesktop is legal.
-	var lastForceReattach time.Time
-	var lastReattachVideoNanos int64
+	var wd reattachWatchdog
 	const noVideoReattachTimeout = 3 * time.Second
 	const reattachCooldown = 5 * time.Second
 
@@ -298,13 +297,13 @@ func (s *Session) captureLoopDXGI() captureMode {
 		if lastWriteNanos := s.lastVideoWriteUnixNano.Load(); lastWriteNanos != 0 {
 			lastWrite := time.Unix(0, lastWriteNanos)
 			if time.Since(lastWrite) > noVideoReattachTimeout &&
-				time.Since(lastForceReattach) > reattachCooldown {
-				if s.evaluateReattachFailure(lastWriteNanos, lastReattachVideoNanos, !lastForceReattach.IsZero()) {
+				time.Since(wd.lastAttempt) > reattachCooldown {
+				if wd.evaluate(s.id, lastWriteNanos) {
+					// Spawn Stop() in a goroutine because Stop() waits on the capture goroutine via s.wg — calling inline would deadlock.
 					go s.Stop()
 					return captureModeStopped
 				}
-				lastForceReattach = time.Now()
-				lastReattachVideoNanos = lastWriteNanos
+				wd.recordAttempt(lastWriteNanos)
 				slog.Warn("Capture watchdog: no video output, forcing desktop re-attach",
 					"session", s.id,
 					"sinceLastWrite", time.Since(lastWrite).Round(time.Millisecond))
@@ -594,8 +593,7 @@ func (s *Session) captureLoopTicker() captureMode {
 	startupStallCheckedTicker := false
 
 	// No-video watchdog (see captureLoopDXGI for rationale).
-	var lastForceReattach time.Time
-	var lastReattachVideoNanos int64
+	var wd reattachWatchdog
 	const noVideoReattachTimeout = 3 * time.Second
 	const reattachCooldown = 5 * time.Second
 
@@ -604,19 +602,17 @@ func (s *Session) captureLoopTicker() captureMode {
 		case <-s.done:
 			return captureModeStopped
 		case <-ticker.C:
-			// No-video watchdog: force desktop re-attach if video has been
-			// stalled for >3s. Catches the "user logged in at lock screen"
-			// silent-fail case.
+			// No-video watchdog: force desktop re-attach if video has been stalled for >3s.
 			if lastWriteNanos := s.lastVideoWriteUnixNano.Load(); lastWriteNanos != 0 {
 				lastWrite := time.Unix(0, lastWriteNanos)
 				if time.Since(lastWrite) > noVideoReattachTimeout &&
-					time.Since(lastForceReattach) > reattachCooldown {
-					if s.evaluateReattachFailure(lastWriteNanos, lastReattachVideoNanos, !lastForceReattach.IsZero()) {
+					time.Since(wd.lastAttempt) > reattachCooldown {
+					if wd.evaluate(s.id, lastWriteNanos) {
+						// Spawn Stop() in a goroutine because Stop() waits on the capture goroutine via s.wg — calling inline would deadlock.
 						go s.Stop()
 						return captureModeStopped
 					}
-					lastForceReattach = time.Now()
-					lastReattachVideoNanos = lastWriteNanos
+					wd.recordAttempt(lastWriteNanos)
 					slog.Warn("Capture watchdog (ticker): no video output, forcing desktop re-attach",
 						"session", s.id,
 						"sinceLastWrite", time.Since(lastWrite).Round(time.Millisecond))
