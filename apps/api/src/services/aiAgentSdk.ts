@@ -9,7 +9,7 @@
  * - safeParseJson(): utility for parsing tool output
  */
 
-import { db, withSystemDbAccessContext } from '../db';
+import { db, withDbAccessContext } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions, aiActionPlans, devices, deviceSessions } from '../db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -214,7 +214,8 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
     // NOTE: This callback runs inside the background processor which operates
     // outside the request's AsyncLocalStorage DB context (via runOutsideDbContext).
     // All DB operations on RLS-protected tables (those with org_id) must be
-    // wrapped in withSystemDbAccessContext to set the correct PostgreSQL GUCs.
+    // wrapped in withDbAccessContext({scope:'organization', orgId: session.orgId, ...})
+    // to set the correct PostgreSQL GUCs under RLS.
     if (guardrailCheck.tier >= 2) {
       // Determine effective approval mode (pause overrides to per_step)
       const effectiveMode: AiApprovalMode = session.isPaused ? 'per_step' : session.approvalMode;
@@ -222,13 +223,15 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       // Auto-approve mode: skip approval dialog, just create audit record
       if (effectiveMode === 'auto_approve') {
         try {
-          await withSystemDbAccessContext(() =>
-            db.insert(aiToolExecutions).values({
-              sessionId: session.breezeSessionId,
-              toolName,
-              toolInput: input,
-              status: 'executing',
-            })
+          await withDbAccessContext(
+            { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+            () =>
+              db.insert(aiToolExecutions).values({
+                sessionId: session.breezeSessionId,
+                toolName,
+                toolInput: input,
+                status: 'executing',
+              })
           );
         } catch (err) {
           console.error('[AI-SDK] Failed to create auto-approve audit record:', toolName, err);
@@ -249,13 +252,15 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             toolName,
           });
           try {
-            await withSystemDbAccessContext(() =>
-              db.insert(aiToolExecutions).values({
-                sessionId: session.breezeSessionId,
-                toolName,
-                toolInput: input,
-                status: 'executing',
-              })
+            await withDbAccessContext(
+              { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+              () =>
+                db.insert(aiToolExecutions).values({
+                  sessionId: session.breezeSessionId,
+                  toolName,
+                  toolInput: input,
+                  status: 'executing',
+                })
             );
           } catch (err) {
             console.error('[AI-SDK] Failed to create plan-step audit record:', toolName, err);
@@ -270,16 +275,18 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       // Per-step approval flow (default behavior)
       let approvalExec: { id: string } | undefined;
       try {
-        const [row] = await withSystemDbAccessContext(() =>
-          db
-            .insert(aiToolExecutions)
-            .values({
-              sessionId: session.breezeSessionId,
-              toolName,
-              toolInput: input,
-              status: 'pending',
-            })
-            .returning()
+        const [row] = await withDbAccessContext(
+          { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+          () =>
+            db
+              .insert(aiToolExecutions)
+              .values({
+                sessionId: session.breezeSessionId,
+                toolName,
+                toolInput: input,
+                status: 'pending',
+              })
+              .returning()
         );
         approvalExec = row;
       } catch (err) {
@@ -302,26 +309,28 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       const deviceId = input.deviceId as string | undefined;
       if (deviceId) {
         try {
-          const [[dev], sessions] = await withSystemDbAccessContext(() =>
-            Promise.all([
-              db.select({
-                hostname: devices.hostname,
-                displayName: devices.displayName,
-                status: devices.status,
-                lastSeenAt: devices.lastSeenAt,
-              })
-              .from(devices)
-              .where(eq(devices.id, deviceId))
-              .limit(1),
-              db.select({
-                username: deviceSessions.username,
-                activityState: deviceSessions.activityState,
-                idleMinutes: deviceSessions.idleMinutes,
-                sessionType: deviceSessions.sessionType,
-              })
-              .from(deviceSessions)
-              .where(and(eq(deviceSessions.deviceId, deviceId), eq(deviceSessions.isActive, true))),
-            ])
+          const [[dev], sessions] = await withDbAccessContext(
+            { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+            () =>
+              Promise.all([
+                db.select({
+                  hostname: devices.hostname,
+                  displayName: devices.displayName,
+                  status: devices.status,
+                  lastSeenAt: devices.lastSeenAt,
+                })
+                .from(devices)
+                .where(eq(devices.id, deviceId))
+                .limit(1),
+                db.select({
+                  username: deviceSessions.username,
+                  activityState: deviceSessions.activityState,
+                  idleMinutes: deviceSessions.idleMinutes,
+                  sessionType: deviceSessions.sessionType,
+                })
+                .from(deviceSessions)
+                .where(and(eq(deviceSessions.deviceId, deviceId), eq(deviceSessions.isActive, true))),
+              ])
           );
           if (dev) {
             deviceContext = {
@@ -367,11 +376,13 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
 
       // Mark as executing
       try {
-        await withSystemDbAccessContext(() =>
-          db
-            .update(aiToolExecutions)
-            .set({ status: 'executing' })
-            .where(eq(aiToolExecutions.id, approvalExec!.id))
+        await withDbAccessContext(
+          { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+          () =>
+            db
+              .update(aiToolExecutions)
+              .set({ status: 'executing' })
+              .where(eq(aiToolExecutions.id, approvalExec!.id))
         );
       } catch (err) {
         console.error('[AI-SDK] Failed to update approval status to executing:', approvalExec.id, err);
@@ -442,14 +453,16 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
 
     // 2a. Save tool_result to aiMessages
     try {
-      await withSystemDbAccessContext(() =>
-        db.insert(aiMessages).values({
-          sessionId,
-          role: 'tool_result',
-          toolName,
-          toolOutput: parsedOutput,
-          toolUseId: toolUseId ?? null,
-        })
+      await withDbAccessContext(
+        { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+        () =>
+          db.insert(aiMessages).values({
+            sessionId,
+            role: 'tool_result',
+            toolName,
+            toolOutput: parsedOutput,
+            toolUseId: toolUseId ?? null,
+          })
       );
     } catch (err) {
       persistenceError = true;
@@ -459,17 +472,19 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     // 2b. Create/update aiToolExecutions record
     if (guardrailCheck.tier < 2) {
       try {
-        await withSystemDbAccessContext(() =>
-          db.insert(aiToolExecutions).values({
-            sessionId,
-            toolName,
-            toolInput: input,
-            toolOutput: parsedOutput,
-            status: isError ? 'failed' : 'completed',
-            errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : output.slice(0, 1000)) : undefined,
-            durationMs,
-            completedAt: new Date(),
-          })
+        await withDbAccessContext(
+          { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+          () =>
+            db.insert(aiToolExecutions).values({
+              sessionId,
+              toolName,
+              toolInput: input,
+              toolOutput: parsedOutput,
+              status: isError ? 'failed' : 'completed',
+              errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : output.slice(0, 1000)) : undefined,
+              durationMs,
+              completedAt: new Date(),
+            })
         );
       } catch (err) {
         persistenceError = true;
@@ -477,20 +492,22 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
       }
     } else {
       try {
-        await withSystemDbAccessContext(() =>
-          db.update(aiToolExecutions)
-            .set({
-              status: isError ? 'failed' : 'completed',
-              toolOutput: parsedOutput,
-              errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : output.slice(0, 1000)) : undefined,
-              durationMs,
-              completedAt: new Date(),
-            })
-            .where(and(
-              eq(aiToolExecutions.sessionId, sessionId),
-              eq(aiToolExecutions.toolName, toolName),
-              eq(aiToolExecutions.status, 'executing'),
-            ))
+        await withDbAccessContext(
+          { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+          () =>
+            db.update(aiToolExecutions)
+              .set({
+                status: isError ? 'failed' : 'completed',
+                toolOutput: parsedOutput,
+                errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : output.slice(0, 1000)) : undefined,
+                durationMs,
+                completedAt: new Date(),
+              })
+              .where(and(
+                eq(aiToolExecutions.sessionId, sessionId),
+                eq(aiToolExecutions.toolName, toolName),
+                eq(aiToolExecutions.status, 'executing'),
+              ))
         );
       } catch (err) {
         persistenceError = true;
@@ -504,16 +521,18 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
         const errorMsg = (typeof parsedOutput.error === 'string'
           ? parsedOutput.error
           : output).slice(0, 500);
-        await withSystemDbAccessContext(() =>
-          db.update(aiSessions)
-            .set({
-              flaggedAt: new Date(),
-              flagReason: `Tool failed: ${toolName} — ${errorMsg}`,
-            })
-            .where(and(
-              eq(aiSessions.id, sessionId),
-              isNull(aiSessions.flaggedAt),
-            ))
+        await withDbAccessContext(
+          { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+          () =>
+            db.update(aiSessions)
+              .set({
+                flaggedAt: new Date(),
+                flagReason: `Tool failed: ${toolName} — ${errorMsg}`,
+              })
+              .where(and(
+                eq(aiSessions.id, sessionId),
+                isNull(aiSessions.flaggedAt),
+              ))
         );
       } catch (err) {
         console.error('[AI-SDK] Failed to auto-flag session:', sessionId, err instanceof Error ? err.message : err);
@@ -524,10 +543,12 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     if (session.activePlanId && session.currentPlanStepIndex >= session.approvedPlanSteps.size) {
       const planId = session.activePlanId;
       try {
-        await withSystemDbAccessContext(() =>
-          db.update(aiActionPlans)
-            .set({ status: 'completed', completedAt: new Date() })
-            .where(eq(aiActionPlans.id, planId))
+        await withDbAccessContext(
+          { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+          () =>
+            db.update(aiActionPlans)
+              .set({ status: 'completed', completedAt: new Date() })
+              .where(eq(aiActionPlans.id, planId))
         );
       } catch (err) {
         persistenceError = true;
@@ -625,10 +646,12 @@ export async function abortActivePlan(session: ActiveSession): Promise<boolean> 
 
   // Update DB
   try {
-    await withSystemDbAccessContext(() =>
-      db.update(aiActionPlans)
-        .set({ status: 'aborted', completedAt: new Date() })
-        .where(eq(aiActionPlans.id, planId))
+    await withDbAccessContext(
+      { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+      () =>
+        db.update(aiActionPlans)
+          .set({ status: 'aborted', completedAt: new Date() })
+          .where(eq(aiActionPlans.id, planId))
     );
   } catch (err) {
     console.error('[AI-SDK] Failed to abort plan in DB:', planId, err);

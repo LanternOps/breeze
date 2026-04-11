@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { eq, and, or, sql } from 'drizzle-orm';
-import { db, runOutsideDbContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext } from '../../db';
 import {
   backupSnapshots,
   restoreJobs,
@@ -20,8 +20,18 @@ import {
 
 export const vmRestoreRoutes = new Hono();
 
+function runInOrg<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
+  return runOutsideDbContext(() =>
+    withDbAccessContext(
+      { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
+      fn
+    )
+  );
+}
+
 type VmRestoreDispatchOptions = {
   restoreJobId: string;
+  orgId: string;
   deviceId: string;
   commandType: typeof CommandTypes.VM_RESTORE_FROM_BACKUP | typeof CommandTypes.VM_INSTANT_BOOT;
   commandPayload: Record<string, unknown>;
@@ -42,9 +52,9 @@ function dispatchFailureReason(error: string): string {
   return error.startsWith('Device is ') ? 'device_offline' : 'enqueue_failed';
 }
 
-async function markRestoreJobFailed(restoreJobId: string, error: string): Promise<void> {
+async function markRestoreJobFailed(orgId: string, restoreJobId: string, error: string): Promise<void> {
   const now = new Date();
-  await runOutsideDbContext(async () => {
+  await runInOrg(orgId, async () => {
     await db
       .update(restoreJobs)
       .set({
@@ -58,8 +68,8 @@ async function markRestoreJobFailed(restoreJobId: string, error: string): Promis
 }
 
 async function dispatchVmRestoreCommand(options: VmRestoreDispatchOptions): Promise<VmRestoreDispatchResult> {
-  const { restoreJobId, deviceId, commandType, commandPayload, userId } = options;
-  const { command, error } = await runOutsideDbContext(() =>
+  const { restoreJobId, orgId, deviceId, commandType, commandPayload, userId } = options;
+  const { command, error } = await runInOrg(orgId, () =>
     queueCommandForExecution(
       deviceId,
       commandType,
@@ -70,18 +80,18 @@ async function dispatchVmRestoreCommand(options: VmRestoreDispatchOptions): Prom
 
   if (error) {
     recordBackupDispatchFailure('manual_restore', dispatchFailureReason(error));
-    await markRestoreJobFailed(restoreJobId, error);
+    await markRestoreJobFailed(orgId, restoreJobId, error);
     return { error };
   }
 
   if (!command?.id) {
     const fallbackError = 'Restore command was queued without a command ID';
     recordBackupDispatchFailure('manual_restore', 'missing_command_id');
-    await markRestoreJobFailed(restoreJobId, fallbackError);
+    await markRestoreJobFailed(orgId, restoreJobId, fallbackError);
     return { error: fallbackError };
   }
 
-  const [updatedRestoreJob] = await runOutsideDbContext(async () =>
+  const [updatedRestoreJob] = await runInOrg(orgId, async () =>
     db
       .update(restoreJobs)
       .set({
@@ -149,7 +159,7 @@ vmRestoreRoutes.post(
     }
 
     // Create restore job.
-    const [restoreJob] = await runOutsideDbContext(async () =>
+    const [restoreJob] = await runInOrg(orgId, async () =>
       db
         .insert(restoreJobs)
         .values({
@@ -192,6 +202,7 @@ vmRestoreRoutes.post(
     try {
       const dispatchResult = await dispatchVmRestoreCommand({
         restoreJobId: restoreJob.id,
+        orgId,
         deviceId: payload.targetDeviceId,
         commandType: CommandTypes.VM_RESTORE_FROM_BACKUP,
         commandPayload,
@@ -213,7 +224,7 @@ vmRestoreRoutes.post(
       const error = err instanceof Error ? err.message : 'Failed to dispatch restore command to agent';
       console.error('[BMR] Failed to dispatch VM restore command:', err);
       recordBackupDispatchFailure('manual_restore', 'enqueue_failed');
-      await markRestoreJobFailed(restoreJob.id, error);
+      await markRestoreJobFailed(orgId, restoreJob.id, error);
       return c.json({ error }, 502);
     }
 
@@ -296,7 +307,7 @@ vmRestoreRoutes.post(
     }
 
     // Create restore job.
-    const [restoreJob] = await runOutsideDbContext(async () =>
+    const [restoreJob] = await runInOrg(orgId, async () =>
       db
         .insert(restoreJobs)
         .values({
@@ -337,6 +348,7 @@ vmRestoreRoutes.post(
     try {
       const dispatchResult = await dispatchVmRestoreCommand({
         restoreJobId: restoreJob.id,
+        orgId,
         deviceId: payload.targetDeviceId,
         commandType: CommandTypes.VM_INSTANT_BOOT,
         commandPayload,
@@ -358,7 +370,7 @@ vmRestoreRoutes.post(
       const error = err instanceof Error ? err.message : 'Failed to dispatch instant boot command to agent';
       console.error('[BMR] Failed to dispatch instant boot command:', err);
       recordBackupDispatchFailure('manual_restore', 'enqueue_failed');
-      await markRestoreJobFailed(restoreJob.id, error);
+      await markRestoreJobFailed(orgId, restoreJob.id, error);
       return c.json({ error }, 502);
     }
 

@@ -169,6 +169,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       .insert(deviceMetrics)
       .values({
         deviceId: device.id,
+        orgId: device.orgId,
         timestamp: new Date(),
         cpuPercent: data.metrics.cpuPercent,
         ramPercent: data.metrics.ramPercent,

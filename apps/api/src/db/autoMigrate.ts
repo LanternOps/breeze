@@ -3,6 +3,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
+import { ensureAppRole } from './ensureAppRole';
 import { seed } from './seed';
 
 const MIGRATION_FILE_PATTERN = /^\d{4}-.*\.sql$/;
@@ -233,6 +234,38 @@ export async function autoMigrate(): Promise<void> {
       console.log(`[auto-migrate] Applied ${appliedCount} migration(s)`);
     } else {
       console.log('[auto-migrate] All migrations already applied');
+    }
+
+    // ── 7b. Ensure unprivileged app role exists, then verify the app
+    //        connection is NOT a superuser. Runs here (and not at general
+    //        startup) because autoMigrate is the one place that already holds
+    //        an admin connection and runs before the main app connects.
+    await ensureAppRole();
+
+    const appConnString =
+      process.env.DATABASE_URL_APP
+      || process.env.DATABASE_URL
+      || 'postgresql://breeze:breeze@localhost:5432/breeze';
+    const appClient = postgres(appConnString, { max: 1 });
+    try {
+      const rows = await appClient`
+        SELECT current_user AS user, rolsuper, rolbypassrls
+        FROM pg_roles
+        WHERE rolname = current_user
+      `;
+      const me = rows[0];
+      if (me) {
+        console.log(
+          `[auto-migrate] App DB user: ${me.user} (super=${me.rolsuper}, bypassrls=${me.rolbypassrls})`,
+        );
+        if (me.rolbypassrls || me.rolsuper) {
+          console.warn(
+            `[auto-migrate] WARNING: App DB user "${me.user}" has BYPASSRLS/SUPERUSER — RLS policies are NOT enforced. Set DATABASE_URL_APP to postgresql://breeze_app:<pw>@... to connect as the unprivileged role.`,
+          );
+        }
+      }
+    } finally {
+      await appClient.end();
     }
 
     // ── 8. Auto-seed if no users exist ───────────────────────────────────

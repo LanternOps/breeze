@@ -26,6 +26,8 @@ vi.mock('../../db', () => ({
     delete: (...args: unknown[]) => deleteMock(...(args as [])),
   },
   runOutsideDbContext: (...args: unknown[]) => runOutsideDbContextMock(...(args as [any])),
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
 }));
 
 vi.mock('../../db/schema', () => ({

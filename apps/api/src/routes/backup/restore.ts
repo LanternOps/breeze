@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { eq, and, desc, gte, lte, sql, inArray } from 'drizzle-orm';
-import { db, runOutsideDbContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext } from '../../db';
 import { backupSnapshotFiles, backupSnapshots, restoreJobs, devices, deviceCommands } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -13,6 +13,15 @@ import { restoreListSchema, restoreSchema } from './schemas';
 
 export const restoreRoutes = new Hono();
 
+function runInOrg<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
+  return runOutsideDbContext(() =>
+    withDbAccessContext(
+      { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
+      fn
+    )
+  );
+}
+
 function mapDispatchErrorStatus(error: string): number {
   return error.startsWith('Device is ') ? 409 : 502;
 }
@@ -21,9 +30,9 @@ function dispatchFailureReason(error: string): string {
   return error.startsWith('Device is ') ? 'device_offline' : 'enqueue_failed';
 }
 
-async function markRestoreJobFailed(restoreJobId: string, error: string): Promise<void> {
+async function markRestoreJobFailed(orgId: string, restoreJobId: string, error: string): Promise<void> {
   const now = new Date();
-  await runOutsideDbContext(async () => {
+  await runInOrg(orgId, async () => {
     await db
       .update(restoreJobs)
       .set({
@@ -193,7 +202,7 @@ restoreRoutes.post(
       return c.json({ error: `Device is ${targetDevice.status}, cannot execute command` }, 409);
     }
 
-    const [row] = await runOutsideDbContext(async () =>
+    const [row] = await runInOrg(orgId, async () =>
       db
         .insert(restoreJobs)
         .values({
@@ -218,7 +227,7 @@ restoreRoutes.post(
     let responseRow = row;
 
     try {
-      const { command, error } = await runOutsideDbContext(() =>
+      const { command, error } = await runInOrg(orgId, () =>
         queueCommandForExecution(
           row.deviceId,
           CommandTypes.BACKUP_RESTORE,
@@ -234,7 +243,7 @@ restoreRoutes.post(
 
       if (error) {
         recordBackupDispatchFailure('manual_restore', dispatchFailureReason(error));
-        await markRestoreJobFailed(row.id, error);
+        await markRestoreJobFailed(orgId, row.id, error);
         writeRouteAudit(c, {
           orgId,
           action: 'backup.restore.create',
@@ -254,7 +263,7 @@ restoreRoutes.post(
       if (!command?.id) {
         const fallbackError = 'Restore command was queued without a command ID';
         recordBackupDispatchFailure('manual_restore', 'missing_command_id');
-        await markRestoreJobFailed(row.id, fallbackError);
+        await markRestoreJobFailed(orgId, row.id, fallbackError);
         writeRouteAudit(c, {
           orgId,
           action: 'backup.restore.create',
@@ -271,7 +280,7 @@ restoreRoutes.post(
         return c.json({ error: fallbackError }, 502);
       }
 
-      const [updatedRestoreJob] = await runOutsideDbContext(async () =>
+      const [updatedRestoreJob] = await runInOrg(orgId, async () =>
         db
           .update(restoreJobs)
           .set({
@@ -291,7 +300,7 @@ restoreRoutes.post(
       const error = err instanceof Error ? err.message : 'Failed to dispatch restore command to agent';
       console.error('[BackupRestore] Failed to dispatch restore:', err);
       recordBackupDispatchFailure('manual_restore', 'enqueue_failed');
-      await markRestoreJobFailed(row.id, error);
+      await markRestoreJobFailed(orgId, row.id, error);
       writeRouteAudit(c, {
         orgId,
         action: 'backup.restore.create',
@@ -353,7 +362,7 @@ restoreRoutes.post(
 
     const reason = 'Cancelled by user';
     const now = new Date();
-    const [row] = await runOutsideDbContext(async () =>
+    const [row] = await runInOrg(orgId, async () =>
       db
         .update(restoreJobs)
         .set({

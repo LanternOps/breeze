@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { AuthContext } from '../middleware/auth';
 import { executeTool } from './aiTools';
-import { withSystemDbAccessContext } from '../db';
+import { withDbAccessContext } from '../db';
 import type { AiToolTier } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
 import { captureException } from './sentry';
@@ -81,8 +81,17 @@ function makeExistingHandler(
 
     try {
       const auth = getAuth();
+      // Reconstruct the user's DB access context so tool execution runs
+      // under the same RLS scope the originating request did.
       const result = await withTimeout(
-        withSystemDbAccessContext(() => executeTool(toolName, args, auth)),
+        withDbAccessContext(
+          {
+            scope: auth.scope,
+            orgId: auth.orgId,
+            accessibleOrgIds: auth.accessibleOrgIds,
+          },
+          () => executeTool(toolName, args, auth),
+        ),
         TOOL_EXECUTION_TIMEOUT_MS,
         toolName,
       );

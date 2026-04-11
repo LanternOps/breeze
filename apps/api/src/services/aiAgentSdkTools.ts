@@ -9,7 +9,7 @@
 import { z } from 'zod';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { AuthContext } from '../middleware/auth';
-import { db, withSystemDbAccessContext, withDbAccessContext, runOutsideDbContext } from '../db';
+import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
 import { executeTool } from './aiTools';
@@ -220,9 +220,9 @@ function makeHandler(
   return async (args: Record<string, unknown>) => {
     // CRITICAL: Escape any inherited AsyncLocalStorage DB context from the SDK's
     // MCP callback chain. Without this, dbContextStorage.getStore() may return a
-    // stale/committed transaction from a prior withSystemDbAccessContext call,
-    // causing withDbAccessContext to skip creating a new transaction and execute
-    // on the dead connection — which hangs until the PostgreSQL idle timeout.
+    // stale/committed transaction from a prior withDbAccessContext call,
+    // causing subsequent withDbAccessContext calls to skip creating a new transaction
+    // and execute on the dead connection — which hangs until the PostgreSQL idle timeout.
     //
     // This wraps the ENTIRE handler (preToolUse, executeTool, postToolUse) so all
     // DB operations start with a clean context. Previously only executeTool was
@@ -1353,13 +1353,15 @@ export function createBreezeMcpServer(
         // Insert plan record
         let planId: string;
         try {
-          const [row] = await withSystemDbAccessContext(() =>
-            db.insert(aiActionPlans).values({
-              sessionId: session.breezeSessionId,
-              orgId,
-              status: 'pending',
-              steps: planSteps,
-            }).returning({ id: aiActionPlans.id })
+          const [row] = await withDbAccessContext(
+            { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
+            () =>
+              db.insert(aiActionPlans).values({
+                sessionId: session.breezeSessionId,
+                orgId,
+                status: 'pending',
+                steps: planSteps,
+              }).returning({ id: aiActionPlans.id })
           );
           if (!row) {
             return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Failed to create action plan record' }) }], isError: true };
@@ -1403,10 +1405,12 @@ export function createBreezeMcpServer(
 
         // Update DB status to executing
         try {
-          await withSystemDbAccessContext(() =>
-            db.update(aiActionPlans)
-              .set({ status: 'executing' })
-              .where(eq(aiActionPlans.id, planId))
+          await withDbAccessContext(
+            { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
+            () =>
+              db.update(aiActionPlans)
+                .set({ status: 'executing' })
+                .where(eq(aiActionPlans.id, planId))
           );
         } catch (err) {
           console.error('[AI-SDK] Failed to update plan status to executing:', err);

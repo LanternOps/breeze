@@ -124,6 +124,7 @@ export const deviceDisks = pgTable('device_disks', {
 
 export const deviceMetrics = pgTable('device_metrics', {
   deviceId: uuid('device_id').notNull().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
   timestamp: timestamp('timestamp').notNull(),
   cpuPercent: real('cpu_percent').notNull(),
   ramPercent: real('ram_percent').notNull(),

@@ -9,7 +9,14 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from './schema';
 
-const connectionString = process.env.DATABASE_URL || 'postgresql://breeze:breeze@localhost:5432/breeze';
+// Prefer DATABASE_URL_APP (the unprivileged breeze_app role) so RLS policies
+// are actually enforced. Fall back to DATABASE_URL for backward compatibility
+// with existing deployments; autoMigrate will warn loudly if that connection
+// has BYPASSRLS/SUPERUSER.
+const connectionString =
+  process.env.DATABASE_URL_APP
+  || process.env.DATABASE_URL
+  || 'postgresql://breeze:breeze@localhost:5432/breeze';
 
 const client = postgres(connectionString, {
   idle_timeout: 20,

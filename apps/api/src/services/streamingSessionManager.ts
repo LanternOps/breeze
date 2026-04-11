@@ -14,7 +14,7 @@
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query, SDKResultMessage, SDKUserMessage, McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
-import { db, withSystemDbAccessContext, runOutsideDbContext } from '../db';
+import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import { aiSessions, aiMessages, aiBudgets } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -170,6 +170,13 @@ export interface AuditSnapshot {
 
 export interface ActiveSession {
   readonly breezeSessionId: string;
+  /**
+   * Canonical org ID for this session, captured at creation time from the
+   * aiSessions DB row. Use this (not `auth.orgId`) for RLS DB access context
+   * inside background callbacks — it is stable for the session's lifetime and
+   * is always set, even for system/partner-scoped users who own the session.
+   */
+  readonly orgId: string;
   sdkSessionId: string | null;
   query: Query;
   abortController: AbortController;
@@ -301,6 +308,7 @@ export class StreamingSessionManager {
     const now = Date.now();
     const session: ActiveSession = {
       breezeSessionId,
+      orgId: dbSession.orgId,
       sdkSessionId: dbSession.sdkSessionId,
       query: null as unknown as Query, // set below
       abortController,
@@ -514,10 +522,12 @@ export class StreamingSessionManager {
               session.sdkSessionId = sid;
               session.inputController.setSdkSessionId(sid);
 
-              withSystemDbAccessContext(() =>
-                db.update(aiSessions)
-                  .set({ sdkSessionId: sid })
-                  .where(eq(aiSessions.id, session.breezeSessionId))
+              withDbAccessContext(
+                { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+                () =>
+                  db.update(aiSessions)
+                    .set({ sdkSessionId: sid })
+                    .where(eq(aiSessions.id, session.breezeSessionId))
               ).catch((err) => { captureException(err); console.error('[StreamingSessionManager] Failed to store SDK session ID:', err); });
             }
 
@@ -578,15 +588,17 @@ export class StreamingSessionManager {
               .join('');
 
             try {
-              await withSystemDbAccessContext(() =>
-                db.insert(aiMessages).values({
-                  sessionId: session.breezeSessionId,
-                  role: 'assistant',
-                  content: assistantContent || null,
-                  contentBlocks: message.message.content as unknown as Record<string, unknown>[],
-                  inputTokens: message.message.usage?.input_tokens ?? 0,
-                  outputTokens: message.message.usage?.output_tokens ?? 0,
-                })
+              await withDbAccessContext(
+                { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+                () =>
+                  db.insert(aiMessages).values({
+                    sessionId: session.breezeSessionId,
+                    role: 'assistant',
+                    content: assistantContent || null,
+                    contentBlocks: message.message.content as unknown as Record<string, unknown>[],
+                    inputTokens: message.message.usage?.input_tokens ?? 0,
+                    outputTokens: message.message.usage?.output_tokens ?? 0,
+                  })
               );
             } catch (err) {
               captureException(err);
@@ -600,14 +612,16 @@ export class StreamingSessionManager {
                   : block.name;
 
                 try {
-                  await withSystemDbAccessContext(() =>
-                    db.insert(aiMessages).values({
-                      sessionId: session.breezeSessionId,
-                      role: 'tool_use',
-                      toolName: bareName,
-                      toolInput: block.input as Record<string, unknown>,
-                      toolUseId: block.id,
-                    })
+                  await withDbAccessContext(
+                    { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+                    () =>
+                      db.insert(aiMessages).values({
+                        sessionId: session.breezeSessionId,
+                        role: 'tool_use',
+                        toolName: bareName,
+                        toolInput: block.input as Record<string, unknown>,
+                        toolUseId: block.id,
+                      })
                   );
                 } catch (err) {
                   captureException(err);
@@ -660,8 +674,9 @@ export class StreamingSessionManager {
 
             if (resultMsg.subtype === 'success') {
               try {
-                await withSystemDbAccessContext(() =>
-                  recordUsageFromSdkResult(session.breezeSessionId, orgId, usageData)
+                await withDbAccessContext(
+                  { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+                  () => recordUsageFromSdkResult(session.breezeSessionId, orgId, usageData)
                 );
               } catch (err) {
                 captureException(err);
@@ -680,8 +695,9 @@ export class StreamingSessionManager {
               }
 
               try {
-                await withSystemDbAccessContext(() =>
-                  recordUsageFromSdkResult(session.breezeSessionId, orgId, usageData)
+                await withDbAccessContext(
+                  { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+                  () => recordUsageFromSdkResult(session.breezeSessionId, orgId, usageData)
                 );
               } catch (err) {
                 captureException(err);
@@ -740,10 +756,12 @@ export class StreamingSessionManager {
         this.remove(sessionId);
 
         if (age > SESSION_MAX_AGE_MS) {
-          withSystemDbAccessContext(() =>
-            db.update(aiSessions)
-              .set({ status: 'expired', updatedAt: new Date() })
-              .where(and(eq(aiSessions.id, sessionId), eq(aiSessions.status, 'active')))
+          withDbAccessContext(
+            { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+            () =>
+              db.update(aiSessions)
+                .set({ status: 'expired', updatedAt: new Date() })
+                .where(and(eq(aiSessions.id, sessionId), eq(aiSessions.status, 'active')))
           ).catch((err) => { captureException(err); console.error('[StreamingSessionManager] Failed to expire session:', err); });
         }
       }

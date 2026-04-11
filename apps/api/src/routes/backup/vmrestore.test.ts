@@ -40,6 +40,7 @@ vi.mock('../../db', () => ({
   },
   runOutsideDbContext: (...args: unknown[]) => runOutsideDbContextMock(...(args as [any])),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => unknown) => fn()),
 }));
 
 vi.mock('../../db/schema', () => ({

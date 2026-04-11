@@ -53,6 +53,20 @@ const envSchema = z
         message: 'DATABASE_URL must be a valid postgres:// or postgresql:// URL',
       }),
 
+    DATABASE_URL_APP: z
+      .string()
+      .optional()
+      .refine(
+        (v) => !v || v.startsWith('postgres://') || v.startsWith('postgresql://'),
+        { message: 'DATABASE_URL_APP must be a valid postgres:// or postgresql:// URL' },
+      )
+      .describe('Optional unprivileged application DB connection. If unset, falls back to DATABASE_URL.'),
+
+    BREEZE_APP_DB_PASSWORD: z
+      .string()
+      .optional()
+      .describe('Password for the breeze_app role. If unset, ensureAppRole falls back to POSTGRES_PASSWORD.'),
+
     JWT_SECRET: z
       .string({ required_error: 'JWT_SECRET is required' })
       .min(1, 'JWT_SECRET must not be empty'),
@@ -247,6 +261,8 @@ export function validateConfig(): AppConfig {
   // Validate required config
   const result = envSchema.safeParse({
     DATABASE_URL: env.DATABASE_URL,
+    DATABASE_URL_APP: env.DATABASE_URL_APP,
+    BREEZE_APP_DB_PASSWORD: env.BREEZE_APP_DB_PASSWORD,
     JWT_SECRET: env.JWT_SECRET,
     APP_ENCRYPTION_KEY: env.APP_ENCRYPTION_KEY,
     MFA_ENCRYPTION_KEY: env.MFA_ENCRYPTION_KEY,

@@ -1,5 +1,5 @@
 import { eq, and, inArray } from 'drizzle-orm';
-import { db, runOutsideDbContext } from '../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { deviceCommands, devices, auditLogs } from '../db/schema';
 import { sendCommandToAgent } from '../routes/agentWs';
 import { captureException } from './sentry';
@@ -469,34 +469,36 @@ export async function queueBackupStopCommand(
     userId?: string;
   } = {}
 ): Promise<QueueCommandForExecutionResult> {
-  return runOutsideDbContextSafe(async () => {
-    const result = await queueCommandForExecution(
-      deviceId,
-      CommandTypes.BACKUP_STOP,
-      { reason: 'cancelled' },
-      options
-    );
+  return runOutsideDbContextSafe(() =>
+    withSystemDbAccessContext(async () => {
+      const result = await queueCommandForExecution(
+        deviceId,
+        CommandTypes.BACKUP_STOP,
+        { reason: 'cancelled' },
+        options
+      );
 
-    if (result.error) {
+      if (result.error) {
+        return result;
+      }
+
+      if (result.command?.status !== 'sent' && result.command?.id) {
+        await db
+          .delete(deviceCommands)
+          .where(
+            and(
+              eq(deviceCommands.id, result.command.id),
+              eq(deviceCommands.status, 'pending')
+            )
+          );
+        return {
+          error: 'Backup stop could not be dispatched immediately',
+        };
+      }
+
       return result;
-    }
-
-    if (result.command?.status !== 'sent' && result.command?.id) {
-      await db
-        .delete(deviceCommands)
-        .where(
-          and(
-            eq(deviceCommands.id, result.command.id),
-            eq(deviceCommands.status, 'pending')
-          )
-        );
-      return {
-        error: 'Backup stop could not be dispatched immediately',
-      };
-    }
-
-    return result;
-  });
+    })
+  );
 }
 
 /**
@@ -573,19 +575,24 @@ export async function executeCommand(
     // Audit log for mutating commands (fire-and-forget).
     // Uses device info fetched in step 1 to avoid an RLS-gated query.
     if (AUDITED_COMMANDS.has(type)) {
-      db.insert(auditLogs)
-        .values({
-          orgId: device.orgId,
-          actorType: safeUserId ? 'user' : 'system',
-          actorId: safeUserId || '00000000-0000-0000-0000-000000000000',
-          action: `agent.command.${type}`,
-          resourceType: 'device',
-          resourceId: deviceId,
-          resourceName: device.hostname,
-          details: { commandId: command.id, type, payload },
-          result: 'success',
-        })
-        .execute()
+      withDbAccessContext(
+        { scope: 'organization', orgId: device.orgId, accessibleOrgIds: [device.orgId] },
+        () =>
+          db
+            .insert(auditLogs)
+            .values({
+              orgId: device.orgId,
+              actorType: safeUserId ? 'user' : 'system',
+              actorId: safeUserId || '00000000-0000-0000-0000-000000000000',
+              action: `agent.command.${type}`,
+              resourceType: 'device',
+              resourceId: deviceId,
+              resourceName: device.hostname,
+              details: { commandId: command.id, type, payload },
+              result: 'success',
+            })
+            .execute()
+      )
         .catch((err) => {
           console.error('Failed to write audit log', {
             commandId: command.id,
