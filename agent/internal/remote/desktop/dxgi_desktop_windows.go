@@ -365,7 +365,7 @@ func (c *dxgiCapturer) ForceReattach() {
 	threadID, _, _ := procGetCurrentThreadId.Call()
 	currentDesk, _, _ := procGetThreadDesktop.Call(threadID)
 	currentName := desktopName(currentDesk)
-	onSecure := decideReattach(currentName) == reattachUseGDI
+	onSecure := isSecureDesktop(currentName)
 
 	c.secureDesktopFlag.Store(onSecure)
 	c.desktopSwitchFlag.Store(true)

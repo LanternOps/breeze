@@ -2,23 +2,13 @@ package desktop
 
 import "strings"
 
-type reattachAction int
-
-const (
-	reattachUseDXGI reattachAction = iota
-	reattachUseGDI
-)
-
-// decideReattach maps a desktop name to the appropriate capture backend.
-// "" means Win32 couldn't read the name — safest assumption is secure desktop.
-// "Default" (case-insensitive) is the normal user desktop; use DXGI.
-// Anything else (Winlogon, Screen-saver, etc.) is a secure desktop; use GDI.
-func decideReattach(desktopName string) reattachAction {
+// isSecureDesktop returns true when the caller should fall back to GDI.
+// Empty name means Win32 couldn't read it — no confidence, so safer fallback.
+// "Default" (case-insensitive) is the normal user desktop; DXGI is safe.
+// Anything else (Winlogon, Screen-saver, etc.) is a secure desktop.
+func isSecureDesktop(desktopName string) bool {
 	if desktopName == "" {
-		return reattachUseGDI
+		return true
 	}
-	if strings.EqualFold(desktopName, "Default") {
-		return reattachUseDXGI
-	}
-	return reattachUseGDI
+	return !strings.EqualFold(desktopName, "Default")
 }

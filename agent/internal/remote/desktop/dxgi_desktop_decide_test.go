@@ -2,29 +2,29 @@ package desktop
 
 import "testing"
 
-func TestDecideReattach(t *testing.T) {
+func TestIsSecureDesktop(t *testing.T) {
 	tests := []struct {
 		name        string
 		desktopName string
-		want        reattachAction
+		want        bool
 	}{
 		// Empty name: Win32 couldn't read it — assume secure, use GDI.
-		{"empty", "", reattachUseGDI},
+		{"empty", "", true},
 		// Normal desktop — canonical casing.
-		{"Default", "Default", reattachUseDXGI},
+		{"Default", "Default", false},
 		// Case-insensitive matches for "Default".
-		{"default lowercase", "default", reattachUseDXGI},
-		{"DEFAULT uppercase", "DEFAULT", reattachUseDXGI},
+		{"default lowercase", "default", false},
+		{"DEFAULT uppercase", "DEFAULT", false},
 		// Secure desktops go to GDI.
-		{"Winlogon", "Winlogon", reattachUseGDI},
-		{"Screen-saver", "Screen-saver", reattachUseGDI},
-		{"random string", "some-random-string", reattachUseGDI},
+		{"Winlogon", "Winlogon", true},
+		{"Screen-saver", "Screen-saver", true},
+		{"random string", "some-random-string", true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := decideReattach(tc.desktopName)
+			got := isSecureDesktop(tc.desktopName)
 			if got != tc.want {
-				t.Fatalf("decideReattach(%q) = %v, want %v", tc.desktopName, got, tc.want)
+				t.Fatalf("isSecureDesktop(%q) = %v, want %v", tc.desktopName, got, tc.want)
 			}
 		})
 	}

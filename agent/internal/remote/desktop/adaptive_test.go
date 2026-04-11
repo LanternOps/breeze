@@ -306,11 +306,8 @@ func TestAdaptive_CapForSoftwareEncoder(t *testing.T) {
 	}
 }
 
-// feedEncoderThroughput drives N samples spaced 1s apart via the test-friendly
-// locked entry point. Chains across multiple calls by continuing from the
-// adapter's current lastEncoderSample, so a test can feed phase-1 samples,
-// observe state, then feed phase-2 samples that are monotonically after
-// phase-1. Caller must NOT hold a.mu.
+// feedEncoderThroughput feeds N 1-second samples. Chains across multiple calls
+// so phase-2 samples are monotonically after phase-1. Caller must NOT hold a.mu.
 func feedEncoderThroughput(a *AdaptiveBitrate, samples int, capturedPerSec, encodedPerSec uint64) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -392,13 +389,7 @@ func TestAdaptive_EncoderThroughputNoCapWhenHealthy(t *testing.T) {
 	}
 }
 
-// TestAdaptive_EncoderCapIsSticky reproduces the production oscillation
-// scenario: the encoder cap engages at ~15 fps because the encoder can't
-// keep up with the requested 50 fps capture rate; the capture FPS then
-// drops to match the encoder (16 fps), which in a ratio-based controller
-// would recover the ratio to ~1.0 and release the cap, restarting the
-// cycle. The fix requires sustained observed-FPS above cap*1.25 for 3
-// samples before releasing — so the cap must persist here.
+// Regression: cap must not release when capture FPS drops to match the encoder.
 func TestAdaptive_EncoderCapIsSticky(t *testing.T) {
 	a, _ := newTestAdaptive(4_000_000, 500_000, 4_000_000)
 	warmup(a, 50*time.Millisecond, 0.0)
@@ -431,9 +422,6 @@ func TestAdaptive_EncoderCapIsSticky(t *testing.T) {
 	}
 }
 
-// TestAdaptive_EncoderCapReleasesOnSustainedRecovery is the positive control
-// for TestAdaptive_EncoderCapIsSticky — if the release path is broken, this
-// test would fail while the sticky test continues to pass.
 func TestAdaptive_EncoderCapReleasesOnSustainedRecovery(t *testing.T) {
 	a, _ := newTestAdaptive(4_000_000, 500_000, 4_000_000)
 	warmup(a, 50*time.Millisecond, 0.0)
@@ -509,9 +497,6 @@ func abs(x int) int {
 	return x
 }
 
-// TestAdaptive_EncoderCapEngagementBoundary verifies the 0.85*maxFPS threshold.
-// With maxFPS=60 the boundary is 51 fps (60*0.85). Observed 50 fps is below
-// the threshold and must engage the cap; observed 52 fps is above and must not.
 func TestAdaptive_EncoderCapEngagementBoundary(t *testing.T) {
 	// --- below threshold: 50 fps → cap engages ---
 	a1, _ := newTestAdaptive(4_000_000, 500_000, 4_000_000)
@@ -545,10 +530,8 @@ func TestAdaptive_EncoderCapEngagementBoundary(t *testing.T) {
 	}
 }
 
-// TestAdaptive_IntervalResetClearsEWMAKeepsCap verifies the >5s gap path.
-// After a long pause the EWMA baseline resets (encoderSamples=0,
-// smoothedEncodedFPS=0) but the cap remains — parallel to
-// TestAdaptive_SoftResetPreservesEncoderCap (activity reset also keeps cap).
+// TestAdaptive_IntervalResetClearsEWMAKeepsCap verifies the >5s gap path:
+// EWMA baseline resets but the cap survives.
 func TestAdaptive_IntervalResetClearsEWMAKeepsCap(t *testing.T) {
 	a, _ := newTestAdaptive(4_000_000, 500_000, 4_000_000)
 	warmup(a, 50*time.Millisecond, 0.0)
@@ -624,11 +607,7 @@ func TestAdaptive_DeltaCapturedGuardSkipsSamples(t *testing.T) {
 }
 
 // TestAdaptive_SetEncoderClearsCap verifies that swapping the encoder wipes
-// the throughput cap. This is the deliberate opposite of
-// TestAdaptive_SoftResetPreservesEncoderCap: SoftResetForActivity keeps the
-// cap because hardware capacity doesn't change with user activity, but
-// SetEncoder represents a new encoder with an entirely different throughput
-// envelope, so the stale cap must not carry over.
+// the throughput cap — a new encoder has a different hardware capacity envelope.
 func TestAdaptive_SetEncoderClearsCap(t *testing.T) {
 	a, _ := newTestAdaptive(4_000_000, 500_000, 4_000_000)
 	warmup(a, 50*time.Millisecond, 0.0)
