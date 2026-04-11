@@ -132,6 +132,7 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 	threadID, _, _ := procGetCurrentThreadId.Call()
 	currentDesk, _, _ := procGetThreadDesktop.Call(threadID)
 	if currentDesk == 0 {
+		c.logDesktopCheckSkip("GetThreadDesktop returned 0")
 		return false
 	}
 	currentName := desktopName(currentDesk)
@@ -139,10 +140,22 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 	// Open the active input desktop (may be Secure/Winlogon during UAC)
 	inputDesk, _, _ := procOpenInputDesktop.Call(0, 0, uintptr(desktopGenericAll))
 	if inputDesk == 0 {
-		// Can't open input desktop — may lack permission. Not a switch.
+		// Can't open input desktop — may lack permission or be in transition.
+		// Rate-limited log so the watchdog can correlate.
+		c.logDesktopCheckSkip("OpenInputDesktop returned 0 (possible transition)")
 		return false
 	}
 	inputName := desktopName(inputDesk)
+
+	// Empty name from GetUserObjectInformationW is transient — comparing two
+	// empty strings would falsely assert "same desktop" and suppress switch
+	// detection. Bail out so the watchdog can retry once the names become
+	// readable again.
+	if currentName == "" || inputName == "" {
+		c.logDesktopCheckSkip(fmt.Sprintf("desktop name empty (current=%q input=%q)", currentName, inputName))
+		procCloseDesktop.Call(inputDesk)
+		return false
+	}
 
 	// Compare by name: handle values differ even for the same desktop
 	// because OpenInputDesktop returns a new handle each time.
@@ -154,9 +167,24 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 		c.gdiNoFrameCount = 0
 
 		// Startup edge-case: if capture starts while already on Winlogon/UAC,
-		// there is no "transition" event to trigger fallback. Force GDI now.
+		// there is no "transition" event to trigger fallback. Force GDI now
+		// and explicitly re-attach the capture thread to the input desktop so
+		// subsequent GetThreadDesktop / GetUserObjectInformationW calls return
+		// a consistent name. Without the explicit re-attach, the thread can
+		// remain pointed at a stale desktop handle from prepareCaptureThread
+		// and checkDesktopSwitch will fail to detect later transitions.
 		if onSecure && c.gdiFallback == nil {
 			c.releaseDXGI()
+			if ret, _, err := procSetThreadDesktop.Call(inputDesk); ret != 0 {
+				if c.currentDesktop != 0 && c.currentDesktop != inputDesk {
+					procCloseDesktop.Call(c.currentDesktop)
+				}
+				c.currentDesktop = inputDesk
+				inputDesk = 0 // prevent double-close below
+			} else {
+				slog.Warn("SetThreadDesktop failed during secure-desktop startup",
+					"desktop", inputName, "error", err.Error())
+			}
 			c.gdiFallback = &gdiCapturer{config: c.config}
 			c.desktopSwitchFlag.Store(true)
 			slog.Info("Secure desktop active without transition event, using GDI capture",
@@ -173,7 +201,9 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 		if onSecure != wasSecure {
 			c.desktopSwitchFlag.Store(true)
 		}
-		procCloseDesktop.Call(inputDesk)
+		if inputDesk != 0 {
+			procCloseDesktop.Call(inputDesk)
+		}
 		return false
 	}
 
@@ -297,4 +327,61 @@ func (c *dxgiCapturer) ConsumeDesktopSwitch() bool {
 // OnSecureDesktop implements DesktopSwitchNotifier.
 func (c *dxgiCapturer) OnSecureDesktop() bool {
 	return c.secureDesktopFlag.Load()
+}
+
+// logDesktopCheckSkip emits a rate-limited warning when checkDesktopSwitch
+// bails out before doing its comparison. Surfaces transitional Win32
+// failures (empty names, OpenInputDesktop returning 0) so the no-video
+// watchdog can be correlated to a root cause.
+func (c *dxgiCapturer) logDesktopCheckSkip(reason string) {
+	if time.Since(c.lastDesktopSkipLog) < 5*time.Second {
+		return
+	}
+	c.lastDesktopSkipLog = time.Now()
+	slog.Warn("checkDesktopSwitch skipped", "reason", reason)
+}
+
+// ForceReattach tears down the current capture backend, re-reads the current
+// thread desktop, and re-initializes DXGI (or GDI on secure desktops). It is
+// the recovery path used by the capture-loop watchdog when video output has
+// stalled — typically the silent "user logged in" case where OpenInputDesktop
+// or GetUserObjectInformationW returns empty names and the normal
+// checkDesktopSwitch path cannot detect the transition.
+//
+// MUST be called from the pinned capture goroutine: it relies on the OS
+// thread already being locked and desktop-attached (e.g. by the watchdog
+// calling switchThreadToInputDesktop before this method).
+func (c *dxgiCapturer) ForceReattach() {
+	c.releaseDXGI()
+	if c.gdiFallback != nil {
+		c.gdiFallback.releaseHandles()
+		c.gdiFallback = nil
+	}
+	c.gdiNoFrameCount = 0
+	c.consecutiveFailures = 0
+
+	// Re-read the current thread desktop after the caller's
+	// switchThreadToInputDesktop() has run.
+	threadID, _, _ := procGetCurrentThreadId.Call()
+	currentDesk, _, _ := procGetThreadDesktop.Call(threadID)
+	currentName := desktopName(currentDesk)
+	onSecure := decideReattach(currentName) == reattachUseGDI
+
+	c.secureDesktopFlag.Store(onSecure)
+	c.desktopSwitchFlag.Store(true)
+
+	if onSecure {
+		c.gdiFallback = &gdiCapturer{config: c.config}
+		slog.Warn("ForceReattach: on secure desktop, using GDI",
+			"desktop", currentName)
+		return
+	}
+
+	if err := c.initDXGI(); err != nil {
+		slog.Warn("ForceReattach: initDXGI failed, falling back to GDI",
+			"desktop", currentName, "error", err.Error())
+		c.switchToGDI()
+		return
+	}
+	slog.Info("ForceReattach: re-initialized DXGI", "desktop", currentName)
 }

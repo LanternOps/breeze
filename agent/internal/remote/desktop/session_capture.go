@@ -262,6 +262,19 @@ func (s *Session) captureLoopDXGI() captureMode {
 	startupStallDeadline := time.Now().Add(3 * time.Second)
 	startupStallChecked := false
 
+	// noVideoWatchdog: when the user logs in at the lock screen, Windows
+	// destroys the Winlogon desktop and the capture thread's desktop handle
+	// becomes stale. checkDesktopSwitch can silently return early (empty
+	// names, failed OpenInputDesktop) and never detect the transition, so we
+	// keep producing empty frames. If >3s pass with no video AND we've been
+	// producing video before, force a thread-desktop re-attach + capturer
+	// reinit. This runs inside the pinned capture goroutine so
+	// SetThreadDesktop is legal.
+	var lastForceReattach time.Time
+	var lastReattachVideoNanos int64
+	const noVideoReattachTimeout = 3 * time.Second
+	const reattachCooldown = 5 * time.Second
+
 	for {
 		loopStart := time.Now()
 		select {
@@ -277,6 +290,42 @@ func (s *Session) captureLoopDXGI() captureMode {
 				enc.Flush()
 			}
 			consecutiveSkips = 0 // exit idle on click
+		}
+
+		// No-video watchdog: if video output has been stalled for >3s and
+		// we're past the reattach cooldown, forcibly re-attach the capture
+		// thread to the current input desktop and reinit the capturer.
+		if lastWriteNanos := s.lastVideoWriteUnixNano.Load(); lastWriteNanos != 0 {
+			lastWrite := time.Unix(0, lastWriteNanos)
+			if time.Since(lastWrite) > noVideoReattachTimeout &&
+				time.Since(lastForceReattach) > reattachCooldown {
+				if s.evaluateReattachFailure(lastWriteNanos, lastReattachVideoNanos, !lastForceReattach.IsZero()) {
+					go s.Stop()
+					return captureModeStopped
+				}
+				lastForceReattach = time.Now()
+				lastReattachVideoNanos = lastWriteNanos
+				slog.Warn("Capture watchdog: no video output, forcing desktop re-attach",
+					"session", s.id,
+					"sinceLastWrite", time.Since(lastWrite).Round(time.Millisecond))
+				switchThreadToInputDesktop()
+				s.mu.RLock()
+				capForReattach := s.capturer
+				s.mu.RUnlock()
+				if r, ok := capForReattach.(interface{ ForceReattach() }); ok {
+					r.ForceReattach()
+					// Reset GPU path state so the encoder rebinds to the new
+					// D3D11 device created inside ForceReattach.
+					tp, hasTP = capForReattach.(TextureProvider)
+					gpuDisabled = false
+					if enc := s.encoder.Load(); hasTP && enc != nil {
+						enc.SetD3D11Device(tp.GetD3D11Device(), tp.GetD3D11Context())
+						_ = enc.ForceKeyframe()
+					}
+				}
+				consecutiveSkips = 0
+				wasIdle = false
+			}
 		}
 
 		// Any input event (mouse_move, key_down, scroll, etc.) exits idle mode
@@ -489,7 +538,11 @@ func (s *Session) captureLoopDXGI() captureMode {
 					}
 				} else {
 					// Scene change: screen was idle and now has activity.
-					if wasIdle || consecutiveSkips >= 30 {
+					// Only trigger on the full idle threshold (~3s) — shorter
+					// thresholds let micro-pauses repeatedly call
+					// SoftResetForActivity, which resets adaptive state and
+					// causes visible bitrate pulsing.
+					if wasIdle {
 						// Force IDR for fast decoder recovery.
 						if enc := s.encoder.Load(); enc != nil {
 							_ = enc.ForceKeyframe()
@@ -540,11 +593,55 @@ func (s *Session) captureLoopTicker() captureMode {
 	startupStallDeadlineTicker := time.Now().Add(3 * time.Second)
 	startupStallCheckedTicker := false
 
+	// No-video watchdog (see captureLoopDXGI for rationale).
+	var lastForceReattach time.Time
+	var lastReattachVideoNanos int64
+	const noVideoReattachTimeout = 3 * time.Second
+	const reattachCooldown = 5 * time.Second
+
 	for {
 		select {
 		case <-s.done:
 			return captureModeStopped
 		case <-ticker.C:
+			// No-video watchdog: force desktop re-attach if video has been
+			// stalled for >3s. Catches the "user logged in at lock screen"
+			// silent-fail case.
+			if lastWriteNanos := s.lastVideoWriteUnixNano.Load(); lastWriteNanos != 0 {
+				lastWrite := time.Unix(0, lastWriteNanos)
+				if time.Since(lastWrite) > noVideoReattachTimeout &&
+					time.Since(lastForceReattach) > reattachCooldown {
+					if s.evaluateReattachFailure(lastWriteNanos, lastReattachVideoNanos, !lastForceReattach.IsZero()) {
+						go s.Stop()
+						return captureModeStopped
+					}
+					lastForceReattach = time.Now()
+					lastReattachVideoNanos = lastWriteNanos
+					slog.Warn("Capture watchdog (ticker): no video output, forcing desktop re-attach",
+						"session", s.id,
+						"sinceLastWrite", time.Since(lastWrite).Round(time.Millisecond))
+					switchThreadToInputDesktop()
+					s.mu.RLock()
+					capForReattach := s.capturer
+					s.mu.RUnlock()
+					if r, ok := capForReattach.(interface{ ForceReattach() }); ok {
+						r.ForceReattach()
+						// Rebind the encoder to whatever D3D11 device
+						// ForceReattach created. The ticker loop normally
+						// runs with GDI on secure desktops, but if the
+						// recovery lands on Default the encoder needs the
+						// fresh device/context to avoid submitting textures
+						// from a released one.
+						if tp, hasTP := capForReattach.(TextureProvider); hasTP {
+							if enc := s.encoder.Load(); enc != nil {
+								enc.SetD3D11Device(tp.GetD3D11Device(), tp.GetD3D11Context())
+								_ = enc.ForceKeyframe()
+							}
+						}
+					}
+				}
+			}
+
 			// Check for desktop switch (Default ↔ Winlogon) and adjust offsets/keyframe.
 			// Also check if the capturer regained DXGI — switch back to tight loop.
 			s.handleDesktopSwitch()

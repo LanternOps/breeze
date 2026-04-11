@@ -60,10 +60,21 @@ type AdaptiveBitrate struct {
 	// Encoder throughput tracking — caps FPS when encoder can't keep up.
 	// Common on headless servers where GPU encoding fails and software MFT
 	// can only sustain ~15fps instead of the requested 60fps.
-	prevCaptured        uint64
-	prevEncoded         uint64
-	smoothedEncodeRatio float64
-	encoderSamples      int
+	//
+	// Uses observed encoded-frames-per-second (not an encoded/captured
+	// ratio): when the cap drops capture to match encoder output, a ratio
+	// would recover toward 1.0 and release the cap, while an observed-FPS
+	// measurement correctly stays at the encoder's true ceiling.
+	prevCaptured           uint64
+	prevEncoded            uint64
+	lastEncoderSample      time.Time
+	smoothedEncodedFPS     float64 // EWMA of observed encoder output rate
+	encoderSamples         int
+	encoderCapFPS          int // currently-applied cap (0 = no cap)
+	encoderCapReleaseCount int // consecutive samples above release threshold
+
+	// clock is overridable for tests.
+	clock func() time.Time
 }
 
 func NewAdaptiveBitrate(cfg AdaptiveConfig) (*AdaptiveBitrate, error) {
@@ -118,6 +129,7 @@ func NewAdaptiveBitrate(cfg AdaptiveConfig) (*AdaptiveBitrate, error) {
 		maxFPS:        maxFPS,
 		currentFPS:    initialFPS,
 		onFPSChange:   cfg.OnFPSChange,
+		clock:         time.Now,
 	}, nil
 }
 
@@ -133,7 +145,10 @@ func (a *AdaptiveBitrate) SetEncoder(enc *VideoEncoder) {
 	a.encoderSamples = 0
 	a.prevCaptured = 0
 	a.prevEncoded = 0
-	a.smoothedEncodeRatio = 0
+	a.smoothedEncodedFPS = 0
+	a.lastEncoderSample = time.Time{}
+	a.encoderCapFPS = 0
+	a.encoderCapReleaseCount = 0
 	a.mu.Unlock()
 }
 
@@ -185,10 +200,18 @@ func (a *AdaptiveBitrate) SoftResetForActivity() {
 	a.targetBitrate = moderate
 	a.stableCount = 0
 	a.degradeBackoff = 0
-	a.samplesCount = 0    // reset EWMA warmup for fresh conditions
-	a.encoderSamples = 0  // reset encoder ratio so it re-warms after idle
+	a.samplesCount = 0 // reset network EWMA warmup for fresh conditions
+	// Intentionally preserve encoderSamples / encoderCapFPS: the encoder's
+	// max sustainable throughput is a property of hardware/driver, not of
+	// user activity, so the cap must outlive idle→active transitions.
 
 	newFPS := clampInt(moderate/minBitsPerFrame, 10, a.maxFPS)
+	// Respect an active encoder cap — hardware capacity doesn't change with
+	// user activity, so the cap must clamp the post-reset FPS directly
+	// instead of relying on the next viewer_stats tick to re-apply it.
+	if a.encoderCapFPS > 0 && newFPS > a.encoderCapFPS {
+		newFPS = a.encoderCapFPS
+	}
 	prevFPS := a.currentFPS
 	a.currentFPS = newFPS
 	fpsCallback := a.onFPSChange
@@ -198,6 +221,7 @@ func (a *AdaptiveBitrate) SoftResetForActivity() {
 		"bitrate", moderate,
 		"fps", newFPS,
 		"prevFPS", prevFPS,
+		"encoderCap", a.encoderCapFPS,
 	)
 
 	if encoder != nil {
@@ -258,34 +282,61 @@ func (a *AdaptiveBitrate) CapForSoftwareEncoder() {
 // When the encoder produces significantly fewer frames than captured (common with
 // software MFT on servers without GPU H264 support), FPS is capped to match actual
 // encoder capacity. This prevents wasting CPU on captures the encoder discards.
+//
+// The rate is measured as encoded-frames-per-second over the wall-clock interval
+// between calls, NOT as an encoded/captured ratio. Ratio-based measurement is
+// a positive-feedback loop: capping capture makes the ratio recover to 1.0 even
+// though encoder throughput is unchanged.
 func (a *AdaptiveBitrate) UpdateEncoderThroughput(captured, encoded uint64) {
 	if a == nil {
 		return
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.updateEncoderThroughputLocked(captured, encoded, a.clock())
+}
+
+func (a *AdaptiveBitrate) updateEncoderThroughputLocked(captured, encoded uint64, now time.Time) {
+	if a.lastEncoderSample.IsZero() {
+		a.lastEncoderSample = now
+		a.prevCaptured = captured
+		a.prevEncoded = encoded
+		return
+	}
+
+	interval := now.Sub(a.lastEncoderSample)
+	// Need a meaningful interval — skip sub-100ms samples (would amplify noise).
+	// On long gaps (>5s, e.g. paused session) reset the baseline so stale data
+	// doesn't pollute the EWMA.
+	if interval < 100*time.Millisecond {
+		return
+	}
+	if interval > 5*time.Second {
+		a.lastEncoderSample = now
+		a.prevCaptured = captured
+		a.prevEncoded = encoded
+		a.encoderSamples = 0
+		a.smoothedEncodedFPS = 0
+		return
+	}
 
 	deltaCaptured := captured - a.prevCaptured
 	deltaEncoded := encoded - a.prevEncoded
+	a.lastEncoderSample = now
 	a.prevCaptured = captured
 	a.prevEncoded = encoded
 
-	// Need enough frames for a meaningful ratio — skip sparse intervals
-	// (idle desktop, session startup before first capture).
+	// Need enough captured frames to trust the measurement.
 	if deltaCaptured < 5 {
 		return
 	}
 
-	ratio := float64(deltaEncoded) / float64(deltaCaptured)
-	if ratio > 1.0 {
-		ratio = 1.0
-	}
-
+	observedFPS := float64(deltaEncoded) / interval.Seconds()
 	a.encoderSamples++
 	if a.encoderSamples == 1 {
-		a.smoothedEncodeRatio = ratio
+		a.smoothedEncodedFPS = observedFPS
 	} else {
-		a.smoothedEncodeRatio = ewmaAlpha*ratio + (1-ewmaAlpha)*a.smoothedEncodeRatio
+		a.smoothedEncodedFPS = ewmaAlpha*observedFPS + (1-ewmaAlpha)*a.smoothedEncodedFPS
 	}
 }
 
@@ -397,15 +448,40 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 	// Scale FPS with bitrate: ensure each frame gets enough bits for quality.
 	newFPS := clampInt(newBitrate/minBitsPerFrame, 10, a.maxFPS)
 
-	// Encoder throughput cap: if the software encoder can't sustain the
-	// requested FPS, reduce to match actual encoder capacity. Prevents
-	// wasting CPU on captures the encoder discards (common on headless
-	// servers where GPU encoding fails and software MFT is the fallback).
-	if a.encoderSamples >= 3 && a.smoothedEncodeRatio < 0.85 {
-		encoderCapFPS := int(float64(a.maxFPS) * a.smoothedEncodeRatio)
-		encoderCapFPS = clampInt(encoderCapFPS, 10, a.maxFPS)
-		if newFPS > encoderCapFPS {
-			newFPS = encoderCapFPS
+	// Encoder throughput cap: sticky FPS ceiling based on observed encoder
+	// output rate. Once engaged, requires 3 consecutive samples above
+	// cap*1.25 before releasing, so transient bursts can't trigger a
+	// release → overshoot → re-engage cycle.
+	if a.encoderSamples >= 3 {
+		observed := a.smoothedEncodedFPS
+		if a.encoderCapFPS == 0 {
+			// Not capped — engage if encoder can't keep up with maxFPS.
+			// 0.85 threshold keeps a little slack before intervening.
+			if observed > 0 && observed < float64(a.maxFPS)*0.85 {
+				cap := int(observed * 1.1) // 10% headroom above observed
+				a.encoderCapFPS = clampInt(cap, 10, a.maxFPS)
+				a.encoderCapReleaseCount = 0
+			}
+		} else {
+			// Already capped — check for release or lower.
+			releaseThreshold := float64(a.encoderCapFPS) * 1.25
+			if observed >= releaseThreshold {
+				a.encoderCapReleaseCount++
+				if a.encoderCapReleaseCount >= 3 {
+					a.encoderCapFPS = 0
+					a.encoderCapReleaseCount = 0
+				}
+			} else {
+				a.encoderCapReleaseCount = 0
+				// If throughput sags further, lower the cap to match.
+				if observed > 0 && observed < float64(a.encoderCapFPS)*0.8 {
+					cap := int(observed * 1.1)
+					a.encoderCapFPS = clampInt(cap, 10, a.maxFPS)
+				}
+			}
+		}
+		if a.encoderCapFPS > 0 && newFPS > a.encoderCapFPS {
+			newFPS = a.encoderCapFPS
 			action = "encoder-cap"
 		}
 	}
@@ -423,7 +499,8 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 	a.lastAdjust = now
 	encoder := a.encoder
 	fpsCallback := a.onFPSChange
-	encodeRatio := a.smoothedEncodeRatio
+	observedEncFPS := a.smoothedEncodedFPS
+	encoderCap := a.encoderCapFPS
 	a.mu.Unlock()
 
 	slog.Info("Adaptive bitrate adjustment",
@@ -435,7 +512,8 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 		"quality", newQuality,
 		"smoothedLoss", loss,
 		"smoothedRTT", smoothRTT.Round(time.Millisecond),
-		"encodeRatio", encodeRatio,
+		"observedEncFPS", observedEncFPS,
+		"encoderCap", encoderCap,
 	)
 
 	if newFPS != prevFPS && fpsCallback != nil {
