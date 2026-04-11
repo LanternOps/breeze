@@ -261,6 +261,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
                   clearTimeout(entry.timer);
                   clipboardAckMapRef.current.delete(payload.hash);
                   entry.resolve();
+                } else {
+                  console.debug('[clipboard] ack for unknown hash:', payload.hash);
                 }
               } else if (payload.type === 'text' && payload.text) {
                 lastClipboardHashRef.current = payload.text;
@@ -281,6 +283,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           };
           event.channel.onclose = () => {
             clipboardDCRef.current = null;
+            for (const entry of clipboardAckMapRef.current.values()) {
+              clearTimeout(entry.timer);
+              entry.resolve();
+            }
+            clipboardAckMapRef.current.clear();
           };
         }
       };
@@ -661,6 +668,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       const oldWebrtc = webrtcRef.current;
       webrtcRef.current = null;
       oldWebrtc?.close();
+
+      for (const entry of clipboardAckMapRef.current.values()) {
+        clearTimeout(entry.timer);
+        entry.resolve();
+      }
+      clipboardAckMapRef.current.clear();
+
 	      if (sessionRegisteredRef.current) {
 	        sessionRegisteredRef.current = false;
 	        invoke('unregister_session').catch((err) => {

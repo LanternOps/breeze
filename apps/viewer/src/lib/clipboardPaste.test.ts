@@ -33,21 +33,23 @@ describe('handleCtrlVPaste', () => {
     expect(callOrder).toEqual(['send', 'dispatch']);
   });
 
-  it('skips dc.send when text equals lastHash.current but still dispatches', async () => {
+  it('skips dc.send and waitForAck when text equals lastHash.current but still dispatches', async () => {
     const dc = makeDC();
     const dispatchPaste = vi.fn();
+    const waitForAck = makeWaitForAck();
 
     const deps: CtrlVPasteDeps = {
       dc,
       readText: async () => 'same text',
       lastHash: { current: 'same text' },
       dispatchPaste,
-      waitForAck: makeWaitForAck(),
+      waitForAck,
     };
 
     await handleCtrlVPaste(deps);
 
     expect(dc.send).not.toHaveBeenCalled();
+    expect(waitForAck).not.toHaveBeenCalled();
     expect(dispatchPaste).toHaveBeenCalledOnce();
   });
 
@@ -104,6 +106,27 @@ describe('handleCtrlVPaste', () => {
 
     await handleCtrlVPaste(deps);
 
+    expect(dispatchPaste).toHaveBeenCalledOnce();
+  });
+
+  it('dispatches paste and skips waitForAck when dc.send throws', async () => {
+    const dc = makeDC();
+    (dc.send as ReturnType<typeof vi.fn>).mockImplementation(() => { throw new DOMException('channel closing', 'InvalidStateError'); });
+    const dispatchPaste = vi.fn();
+    const waitForAck = makeWaitForAck();
+
+    const deps: CtrlVPasteDeps = {
+      dc,
+      readText: async () => 'new content',
+      lastHash: { current: '' },
+      dispatchPaste,
+      waitForAck,
+    };
+
+    await handleCtrlVPaste(deps);
+
+    expect(dc.send).toHaveBeenCalledOnce();
+    expect(waitForAck).not.toHaveBeenCalled();
     expect(dispatchPaste).toHaveBeenCalledOnce();
   });
 

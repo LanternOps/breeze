@@ -28,7 +28,8 @@ export async function handleCtrlVPaste(deps: CtrlVPasteDeps): Promise<void> {
   let text: string | null = null;
   try {
     text = await readText();
-  } catch {
+  } catch (err) {
+    console.warn('[clipboard] readText failed, dispatching paste without push:', err);
     dispatchPaste();
     return;
   }
@@ -39,15 +40,19 @@ export async function handleCtrlVPaste(deps: CtrlVPasteDeps): Promise<void> {
   }
 
   if (text === lastHash.current) {
-    // Already pushed this content; skip dc.send but still wait + dispatch.
-    await waitForAck('', 0);
     dispatchPaste();
     return;
   }
 
   lastHash.current = text;
   const hash = await textFingerprint(text);
-  dc.send(JSON.stringify({ type: 'text', text }));
+  try {
+    dc.send(JSON.stringify({ type: 'text', text }));
+  } catch (err) {
+    console.warn('[clipboard] dc.send failed:', err);
+    dispatchPaste();
+    return;
+  }
 
   await waitForAck(hash, 300);
 

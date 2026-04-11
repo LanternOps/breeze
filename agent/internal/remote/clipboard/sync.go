@@ -28,7 +28,6 @@ type dcSender interface {
 }
 
 type ClipboardSync struct {
-	dc           *webrtc.DataChannel
 	sender       dcSender
 	provider     Provider
 	pollInterval time.Duration
@@ -48,7 +47,6 @@ type clipboardPayload struct {
 
 func NewClipboardSync(dc *webrtc.DataChannel, provider Provider) *ClipboardSync {
 	syncer := &ClipboardSync{
-		dc:           dc,
 		sender:       dc,
 		provider:     provider,
 		pollInterval: defaultPollInterval,

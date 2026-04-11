@@ -1,6 +1,8 @@
 package clipboard
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -129,6 +131,46 @@ func TestClipboardReceiveSendsAckAfterSuccessfulSet(t *testing.T) {
 	expectedHash := fmt.Sprintf("%x", fingerprint(content))
 	if ack.Hash != expectedHash {
 		t.Errorf("ack hash mismatch: got %q, want %q", ack.Hash, expectedHash)
+	}
+}
+
+func TestClipboardAckHashMatchesViewerWireContract(t *testing.T) {
+	// WHY: cross-language wire contract — viewer hashes sha256("text" + text);
+	// Go fingerprint writes Type then Text then nil RTF/Image/ImageFormat (zero bytes),
+	// producing identical input bytes for a text-only payload.
+	const text = "test ack content"
+	// Precomputed: echo -n "texttest ack content" | sha256sum
+	const wantHash = "0a84fcbd48a758b11a31594d499890caef655a12fd09f98dd90839e3945e0745"
+
+	// Verify the literal matches what sha256 produces at test time.
+	sum := sha256.Sum256([]byte("text" + text))
+	if got := hex.EncodeToString(sum[:]); got != wantHash {
+		t.Fatalf("literal hash constant is wrong: got %s", got)
+	}
+
+	sender := &mockSender{}
+	provider := &stubProvider{}
+	syncer := newClipboardSyncWithSender(sender, provider)
+
+	payload, err := json.Marshal(clipboardPayload{Type: ContentTypeText, Text: text})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	if err := syncer.Receive(webrtc.DataChannelMessage{IsString: true, Data: payload}); err != nil {
+		t.Fatalf("Receive returned error: %v", err)
+	}
+	if len(sender.sent) != 1 {
+		t.Fatalf("expected 1 ack message, got %d", len(sender.sent))
+	}
+	var ack struct {
+		Type string `json:"type"`
+		Hash string `json:"hash"`
+	}
+	if err := json.Unmarshal([]byte(sender.sent[0]), &ack); err != nil {
+		t.Fatalf("ack parse error: %v", err)
+	}
+	if ack.Hash != wantHash {
+		t.Errorf("ack hash does not match viewer wire contract: got %q, want %q", ack.Hash, wantHash)
 	}
 }
 
