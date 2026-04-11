@@ -61,7 +61,32 @@ const (
 	TypeIntegrityCheck  = "integrity_check"
 	TypeIntegrityResult = "integrity_result"
 	TypeTamperAlert     = "tamper_alert"
+
+	// TypePreAuthReject is sent by the broker to a connecting helper when
+	// the connection is rejected BEFORE the auth-request/auth-response
+	// exchange (e.g. rate limit, peer credential failure, max connections
+	// exceeded, or binary path unknown). Distinct from AuthResponse so the
+	// helper can differentiate "never got to auth" from "auth was rejected".
+	TypePreAuthReject = "pre_auth_reject"
 )
+
+// PreAuthReject codes identify why the broker rejected a connection.
+// Callers can switch on these programmatically without parsing Reason.
+const (
+	PreAuthCodeRateLimited       = "rate_limited"
+	PreAuthCodeBinaryPathUnknown = "binary_path_unknown"
+	PreAuthCodeMaxConnsExceeded  = "max_conns_exceeded"
+	PreAuthCodeCredCheckFailed   = "cred_check_failed"
+)
+
+// PreAuthReject is the payload sent with TypePreAuthReject. Permanent=true
+// signals the helper that retrying will not help — the helper should exit
+// and let the lifecycle manager (on the parent side) decide when to retry.
+type PreAuthReject struct {
+	Code      string `json:"code"`
+	Reason    string `json:"reason,omitempty"`
+	Permanent bool   `json:"permanent,omitempty"`
+}
 
 // MaxMessageSize is the maximum size of a JSON IPC message (16MB).
 const MaxMessageSize = 16 * 1024 * 1024
@@ -123,12 +148,18 @@ type AuthRequest struct {
 }
 
 // AuthResponse is sent by the root daemon back to the user helper.
+//
+// Permanent is set to true when the rejection reason is not transient
+// (SID mismatch, protocol version mismatch, binary hash mismatch, etc.).
+// The helper treats Permanent=true as fatal: it exits with code 2 so the
+// lifecycle manager can back off, instead of immediately reconnecting.
 type AuthResponse struct {
 	Accepted      bool     `json:"accepted"`
 	SessionKey    string   `json:"sessionKey,omitempty"`
 	AgentID       string   `json:"agentId,omitempty"`
 	AllowedScopes []string `json:"allowedScopes,omitempty"`
 	Reason        string   `json:"reason,omitempty"`
+	Permanent     bool     `json:"permanent,omitempty"`
 }
 
 // Capabilities is sent by the user helper after successful auth.
