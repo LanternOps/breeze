@@ -336,10 +336,11 @@ func (m *HelperLifecycleManager) spawnWithRetry(winSessionID, role string) {
 func (m *HelperLifecycleManager) watchHelperExit(trackKey, winSessionID, role string, spawned *SpawnedHelper) {
 	exitCode, err := spawned.Wait()
 	if err != nil {
-		log.Debug("lifecycle: wait on helper process failed",
+		log.Warn("lifecycle: wait on helper process failed",
 			"winSessionID", winSessionID,
 			"role", role,
 			"pid", spawned.PID,
+			"trackKey", trackKey,
 			"error", err.Error(),
 		)
 		return

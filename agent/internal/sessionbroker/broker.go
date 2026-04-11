@@ -642,11 +642,19 @@ func sendPreAuthRejectAndClose(rawConn net.Conn, code, reason string, permanent 
 	defer rawConn.Close()
 	conn := ipc.NewConn(rawConn)
 	_ = rawConn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-	_ = conn.SendTyped("pre-auth-reject", ipc.TypePreAuthReject, ipc.PreAuthReject{
+	if err := conn.SendTyped("pre-auth-reject", ipc.TypePreAuthReject, ipc.PreAuthReject{
 		Code:      code,
 		Reason:    reason,
 		Permanent: permanent,
-	})
+	}); err != nil && permanent {
+		// When a permanent rejection can't be delivered, the helper won't know
+		// to back off — it will interpret the dropped connection as a transient
+		// error and resume retrying immediately (reconnect storm risk).
+		log.Warn("failed to deliver permanent pre-auth rejection to helper",
+			"code", code,
+			"error", err.Error(),
+		)
+	}
 }
 
 func (b *Broker) handleConnection(rawConn net.Conn) {
@@ -657,7 +665,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	creds, err := ipc.GetPeerCredentials(rawConn)
 	if err != nil {
 		log.Warn("peer credential check failed", "error", err.Error())
-		sendPreAuthRejectAndClose(rawConn, ipc.PreAuthCodeCredCheckFailed, err.Error(), true)
+		sendPreAuthRejectAndClose(rawConn, ipc.PreAuthCodeCredCheckFailed, err.Error(), false)
 		return
 	}
 
@@ -786,35 +794,18 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	}
 
 	// Step 8: Verify binary path (defense in depth). If the hash already
-	// matched the allowlist, the binary is trusted regardless of path — on
-	// Windows, CreateProcessAsUser can report paths that don't match after
+	// matched the allowlist (step 7), the binary is trusted regardless of path
+	// — on Windows, CreateProcessAsUser can report paths that don't match after
 	// normalization (8.3 short names, drive letter case, etc.), and the hash
-	// is the authoritative identity check. Log the path mismatch at DEBUG
-	// for future investigation, but do not reject.
+	// is the authoritative identity check. Log the path mismatch at DEBUG for
+	// future investigation, but do not reject; a hash-verified helper is safe.
 	if !b.verifyBinaryPath(creds.BinaryPath) {
-		if hashVerified {
-			log.Debug("binary path mismatch but hash verified; accepting",
-				"identity", identityKey,
-				"pid", creds.PID,
-				"path", creds.BinaryPath,
-				"allowed", b.allowedHelperPaths(),
-			)
-		} else {
-			// Unreachable today (hashVerified=false already returned above)
-			// but keep as defense in depth if step 7 ever becomes non-fatal.
-			log.Warn("binary path verification failed",
-				"identity", identityKey,
-				"pid", creds.PID,
-				"path", creds.BinaryPath,
-			)
-			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-				Accepted:  false,
-				Reason:    "binary path unknown",
-				Permanent: true,
-			})
-			conn.Close()
-			return
-		}
+		log.Debug("binary path mismatch but hash verified; accepting",
+			"identity", identityKey,
+			"pid", creds.PID,
+			"path", creds.BinaryPath,
+			"allowed", b.allowedHelperPaths(),
+		)
 	}
 
 	// Step 9: Reject duplicate session IDs

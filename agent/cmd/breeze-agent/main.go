@@ -830,7 +830,7 @@ func runHelperProcess(name, role, context, binaryKind string) {
 				"code", permErr.CodeOr("unknown"),
 				"reason", permErr.ReasonOr(err.Error()),
 			)
-			time.Sleep(1 * time.Second)
+			logging.StopShipper() // flush before os.Exit tears down goroutines
 			os.Exit(2)
 		}
 		if errors.Is(err, userhelper.ErrSIDLookupFailed) {
@@ -839,7 +839,7 @@ func runHelperProcess(name, role, context, binaryKind string) {
 				"code", "sid_lookup_failed",
 				"reason", err.Error(),
 			)
-			time.Sleep(1 * time.Second)
+			logging.StopShipper() // flush before os.Exit tears down goroutines
 			os.Exit(2)
 		}
 
@@ -881,20 +881,27 @@ func runHelperProcess(name, role, context, binaryKind string) {
 
 // helperWarnLimiter rate-limits a repeating warning message. After `limit`
 // emissions of the same message within `window`, further WARN emissions are
-// suppressed; an INFO "still disconnected" line is emitted at most once per
-// `window` with the suppressed count. Call reset() when the condition clears
-// (e.g. connection has been stably authenticated).
+// suppressed; an INFO "still disconnected" summary is emitted every
+// infoInterval so ops can confirm the helper is still thrashing (not silently
+// stuck). Call reset() when the condition clears (e.g. connection has been
+// stably authenticated).
 type helperWarnLimiter struct {
-	mu            sync.Mutex
-	limit         int
-	window        time.Duration
-	lastMsg       string
-	firstSeenAt   time.Time
-	count         int    // total emissions (incl. suppressed) in this window
-	warnsEmitted  int    // warn-level emissions in this window
-	suppressed    int    // warnings suppressed since last info emission
-	lastInfoEmit  time.Time
+	mu                   sync.Mutex
+	limit                int
+	window               time.Duration
+	lastMsg              string
+	firstSeenAt          time.Time
+	count                int // total emissions (incl. suppressed) in this window
+	warnsEmitted         int // warn-level emissions in this window
+	suppressed           int // warnings suppressed since last info emission
+	suppressedSinceInfo  int // count since last INFO — reset on each INFO emit
+	lastInfoEmit         time.Time
 }
+
+// infoInterval is the sub-window cadence for INFO summaries emitted while
+// WARN emissions are suppressed. Short enough to confirm liveliness during
+// log tail, long enough to avoid flooding.
+const infoInterval = 60 * time.Second
 
 func newHelperWarnLimiter(limit int, window time.Duration) *helperWarnLimiter {
 	return &helperWarnLimiter{limit: limit, window: window}
@@ -915,6 +922,7 @@ func (h *helperWarnLimiter) shouldLog(msg string) (bool, int) {
 		h.count = 1
 		h.warnsEmitted = 1
 		h.suppressed = 0
+		h.suppressedSinceInfo = 0
 		h.lastInfoEmit = time.Time{}
 		return true, 0
 	}
@@ -926,12 +934,15 @@ func (h *helperWarnLimiter) shouldLog(msg string) (bool, int) {
 	}
 
 	// Over the warn budget — suppress and maybe emit an INFO summary.
+	// Summaries fire every infoInterval (60s) so ops can see the helper is
+	// still thrashing; each summary reports only the count since the last INFO.
 	h.suppressed++
-	if h.lastInfoEmit.IsZero() || now.Sub(h.lastInfoEmit) >= h.window {
-		suppressed := h.suppressed
-		h.suppressed = 0
+	h.suppressedSinceInfo++
+	if h.lastInfoEmit.IsZero() || now.Sub(h.lastInfoEmit) >= infoInterval {
+		count := h.suppressedSinceInfo
+		h.suppressedSinceInfo = 0
 		h.lastInfoEmit = now
-		return false, suppressed
+		return false, count
 	}
 	return false, 0
 }
@@ -946,6 +957,7 @@ func (h *helperWarnLimiter) reset() {
 	h.count = 0
 	h.warnsEmitted = 0
 	h.suppressed = 0
+	h.suppressedSinceInfo = 0
 	h.lastInfoEmit = time.Time{}
 	h.mu.Unlock()
 }
