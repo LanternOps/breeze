@@ -670,7 +670,7 @@ func (h *Heartbeat) Start() {
 	var lastBootCheck time.Time
 
 	// Send initial heartbeat after jitter
-	h.sendHeartbeat()
+	h.sendHeartbeatWithWatchdog()
 
 	// Send initial inventory in background
 	go h.sendInventory()
@@ -683,7 +683,7 @@ func (h *Heartbeat) Start() {
 	for {
 		select {
 		case <-ticker.C:
-			h.sendHeartbeat()
+			h.sendHeartbeatWithWatchdog()
 			now := time.Now()
 			// Send inventory every 15 minutes
 			h.mu.Lock()
@@ -1824,6 +1824,44 @@ func (h *Heartbeat) sendReliabilityMetrics() {
 		"hangs", len(metrics.AppHangs),
 		"serviceFailures", len(metrics.ServiceFailures),
 		"hardwareErrors", len(metrics.HardwareErrors))
+}
+
+// sendHeartbeatWithWatchdog wraps sendHeartbeat with a 15-second watchdog that
+// dumps all goroutine stacks if the call blocks. This instruments the heartbeat
+// starvation symptom described in issue #387: the heartbeat loop can block
+// indefinitely waiting on broker mutex reads while the reconnect storm holds
+// write locks.
+func (h *Heartbeat) sendHeartbeatWithWatchdog() {
+	start := time.Now()
+	done := make(chan struct{})
+	var dumpOnce sync.Once
+
+	go func() {
+		const watchdogTimeout = 15 * time.Second
+		const maxDumpBytes = 100 * 1024 // 100 KB cap to avoid log storm
+
+		select {
+		case <-done:
+			// Normal return — watchdog cancelled.
+		case <-time.After(watchdogTimeout):
+			dumpOnce.Do(func() {
+				buf := make([]byte, 1<<20) // 1 MiB stack buffer
+				n := runtime.Stack(buf, true)
+				dump := string(buf[:n])
+				if len(dump) > maxDumpBytes {
+					dump = dump[:maxDumpBytes] + "\n... [truncated]"
+				}
+				log.Warn("heartbeat send exceeded 15s — dumping goroutine stacks",
+					"elapsed_ms", time.Since(start).Milliseconds(),
+					"goroutines", dump)
+			})
+		}
+	}()
+
+	h.sendHeartbeat()
+
+	close(done)
+	log.Debug("heartbeat sent", "duration_ms", time.Since(start).Milliseconds())
 }
 
 func (h *Heartbeat) sendHeartbeat() {

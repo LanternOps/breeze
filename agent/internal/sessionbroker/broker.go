@@ -20,6 +20,64 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
+// timedRWMutex wraps sync.RWMutex and logs a warning when Lock or RLock
+// acquisition takes longer than 1 second. This instruments the heartbeat
+// starvation symptom in issue #387: a reconnect storm generating many
+// removeSession write-locks can starve heartbeat read-path callers.
+//
+// The wrapper uses runtime.Callers to automatically identify the calling
+// function — no changes are required at individual call sites.
+type timedRWMutex struct {
+	mu sync.RWMutex
+}
+
+func callerName(skip int) string {
+	var pcs [3]uintptr
+	n := runtime.Callers(skip+2, pcs[:])
+	if n == 0 {
+		return "unknown"
+	}
+	frames := runtime.CallersFrames(pcs[:n])
+	f, _ := frames.Next()
+	// Trim package prefix for brevity: "sessionbroker.(*Broker).handleConnection"
+	// → "handleConnection"
+	name := f.Function
+	if i := strings.LastIndexByte(name, '.'); i >= 0 {
+		name = name[i+1:]
+	}
+	// Strip go method closure suffixes like "func1"
+	if i := strings.IndexByte(name, '-'); i >= 0 {
+		name = name[:i]
+	}
+	return name
+}
+
+func (t *timedRWMutex) Lock() {
+	start := time.Now()
+	t.mu.Lock()
+	if waited := time.Since(start); waited > time.Second {
+		log.Warn("broker write-lock acquisition slow",
+			"op", "Lock", "caller", callerName(1), "waited_ms", waited.Milliseconds())
+	}
+}
+
+func (t *timedRWMutex) Unlock() {
+	t.mu.Unlock()
+}
+
+func (t *timedRWMutex) RLock() {
+	start := time.Now()
+	t.mu.RLock()
+	if waited := time.Since(start); waited > time.Second {
+		log.Warn("broker read-lock acquisition slow",
+			"op", "RLock", "caller", callerName(1), "waited_ms", waited.Milliseconds())
+	}
+}
+
+func (t *timedRWMutex) RUnlock() {
+	t.mu.RUnlock()
+}
+
 const (
 	// HandshakeTimeout is the deadline for completing auth after connecting.
 	HandshakeTimeout = 5 * time.Second
@@ -61,7 +119,7 @@ type Broker struct {
 	rateLimiter *ipc.RateLimiter
 	startTime   time.Time // broker creation time, used for watchdog uptime
 
-	mu           sync.RWMutex
+	mu           timedRWMutex
 	sessions     map[string]*Session   // sessionID -> Session
 	byIdentity   map[string][]*Session // identity key -> Sessions (UID string on Unix, SID on Windows)
 	staleHelpers map[string][]int      // winSessionID -> PIDs of disconnected helpers
