@@ -664,21 +664,14 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
-	// Step 4: Verify binary path
-	if !b.verifyBinaryPath(creds.BinaryPath) {
-		log.Warn("binary path verification failed",
-			"identity", identityKey,
-			"pid", creds.PID,
-			"path", creds.BinaryPath,
-		)
-		rawConn.Close()
-		return
-	}
-
 	// Wrap connection
 	conn := ipc.NewConn(rawConn)
 
-	// Step 5: Read auth request
+	// Step 4: Read auth request
+	// (Moved ahead of binary-path verification so the hash from the auth
+	// request can serve as the authoritative binary identity signal —
+	// Windows cross-session spawns produce process paths that don't always
+	// match our allowlist after path normalization. See issue #387 part D.)
 	env, err := conn.Recv()
 	if err != nil {
 		log.Warn("auth request read failed", "identity", identityKey, "error", err.Error())
@@ -699,7 +692,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
-	// Step 6: Verify protocol version
+	// Step 5: Verify protocol version
 	if authReq.ProtocolVersion != ipc.ProtocolVersion {
 		log.Warn("protocol version mismatch", "got", authReq.ProtocolVersion, "want", ipc.ProtocolVersion)
 		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
@@ -710,7 +703,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
-	// Step 7: Verify identity — SID on Windows, UID on Unix
+	// Step 6: Verify identity — SID on Windows, UID on Unix
 	if runtime.GOOS == "windows" {
 		if authReq.SID == "" {
 			log.Warn("auth missing SID on Windows", "pid", creds.PID)
@@ -742,7 +735,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		}
 	}
 
-	// Step 8: Verify binary hash — reject helpers if no allowed helper hash could be loaded.
+	// Step 7: Verify binary hash — reject helpers if no allowed helper hash could be loaded.
 	if len(b.selfHashes) == 0 {
 		log.Error("rejecting helper connection: helper binary hash allowlist unavailable",
 			"identity", identityKey,
@@ -755,7 +748,8 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		conn.Close()
 		return
 	}
-	if !b.isAllowedBinaryHash(authReq.BinaryHash) {
+	hashVerified := b.isAllowedBinaryHash(authReq.BinaryHash)
+	if !hashVerified {
 		log.Warn("binary hash mismatch",
 			"identity", identityKey,
 			"expected", "allowed-helper-binary",
@@ -767,6 +761,33 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		})
 		conn.Close()
 		return
+	}
+
+	// Step 8: Verify binary path (defense in depth). If the hash already
+	// matched the allowlist, the binary is trusted regardless of path — on
+	// Windows, CreateProcessAsUser can report paths that don't match after
+	// normalization (8.3 short names, drive letter case, etc.), and the hash
+	// is the authoritative identity check. Log the path mismatch at DEBUG
+	// for future investigation, but do not reject.
+	if !b.verifyBinaryPath(creds.BinaryPath) {
+		if hashVerified {
+			log.Debug("binary path mismatch but hash verified; accepting",
+				"identity", identityKey,
+				"pid", creds.PID,
+				"path", creds.BinaryPath,
+				"allowed", b.allowedHelperPaths(),
+			)
+		} else {
+			// Unreachable today (hashVerified=false already returned above)
+			// but keep as defense in depth if step 7 ever becomes non-fatal.
+			log.Warn("binary path verification failed",
+				"identity", identityKey,
+				"pid", creds.PID,
+				"path", creds.BinaryPath,
+			)
+			conn.Close()
+			return
+		}
 	}
 
 	// Step 9: Reject duplicate session IDs
@@ -1130,12 +1151,19 @@ func (b *Broker) verifyBinaryPath(peerPath string) bool {
 		// Peer path might not be resolvable if the process has exited
 		peerResolved = peerPath
 	}
-	peerResolved = filepath.Clean(peerResolved)
-	for _, candidate := range b.allowedHelperPaths() {
-		if filepath.Clean(candidate) == peerResolved {
+	peerResolved = normalizeBinaryPath(filepath.Clean(peerResolved))
+	allowed := b.allowedHelperPaths()
+	for _, candidate := range allowed {
+		if normalizeBinaryPath(filepath.Clean(candidate)) == peerResolved {
 			return true
 		}
 	}
+	// Log the mismatch at DEBUG so investigators can see exactly which
+	// paths the broker considered trusted. Cheap and load-bearing.
+	log.Debug("verifyBinaryPath: no match",
+		"peer", peerResolved,
+		"allowed", allowed,
+	)
 	return false
 }
 
