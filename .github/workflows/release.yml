@@ -876,6 +876,23 @@ jobs:
           cp "$asset" "${{ matrix.asset_name }}"
           echo "path=${{ matrix.asset_name }}" >> "$GITHUB_OUTPUT"
 
+      - name: Package updater bundle (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        shell: bash
+        working-directory: apps/viewer
+        run: |
+          bundle_dir="src-tauri/target/${{ matrix.target }}/release/bundle/appimage"
+          tar_gz=$(ls "$bundle_dir"/*.AppImage.tar.gz 2>/dev/null | head -1)
+          sig_file=$(ls "$bundle_dir"/*.AppImage.tar.gz.sig 2>/dev/null | head -1)
+          if [ -z "$tar_gz" ] || [ -z "$sig_file" ]; then
+            echo "ERROR: Updater bundle not found in $bundle_dir"
+            ls -la "$bundle_dir" || true
+            ls -R src-tauri/target/*/release/bundle/ || true
+            exit 1
+          fi
+          cp "$tar_gz" breeze-viewer-linux.AppImage.tar.gz
+          cp "$sig_file" breeze-viewer-linux.AppImage.tar.gz.sig
+
       - name: Upload Viewer artifact
         uses: actions/upload-artifact@v7
         with:
@@ -883,13 +900,15 @@ jobs:
           path: apps/viewer/${{ matrix.asset_name }}
           retention-days: 30
 
-      - name: Upload Viewer update manifest
+      - name: Upload Viewer Linux updater bundle
+        if: matrix.platform == 'ubuntu-22.04'
         uses: actions/upload-artifact@v7
         with:
-          name: viewer-update-manifest-${{ matrix.target }}
-          path: apps/viewer/src-tauri/target/${{ matrix.target }}/release/bundle/*/latest.json
+          name: breeze-viewer-linux-updater
+          path: |
+            apps/viewer/breeze-viewer-linux.AppImage.tar.gz
+            apps/viewer/breeze-viewer-linux.AppImage.tar.gz.sig
           retention-days: 30
-          if-no-files-found: warn
 
   build-helper:
     name: Build Helper
@@ -1083,6 +1102,22 @@ jobs:
           fi
           cp "$asset" breeze-viewer-macos.dmg
 
+      - name: Package updater bundle (macOS)
+        shell: bash
+        working-directory: apps/viewer
+        run: |
+          bundle_dir="src-tauri/target/universal-apple-darwin/release/bundle/macos"
+          tar_gz=$(ls "$bundle_dir"/*.app.tar.gz 2>/dev/null | head -1)
+          sig_file=$(ls "$bundle_dir"/*.app.tar.gz.sig 2>/dev/null | head -1)
+          if [ -z "$tar_gz" ] || [ -z "$sig_file" ]; then
+            echo "ERROR: Updater bundle not found in $bundle_dir"
+            ls -la "$bundle_dir" || true
+            ls -R src-tauri/target/*/release/bundle/ || true
+            exit 1
+          fi
+          cp "$tar_gz" breeze-viewer-macos.app.tar.gz
+          cp "$sig_file" breeze-viewer-macos.app.tar.gz.sig
+
       - name: Upload Viewer macOS artifact
         uses: actions/upload-artifact@v7
         with:
@@ -1090,13 +1125,14 @@ jobs:
           path: apps/viewer/breeze-viewer-macos.dmg
           retention-days: 30
 
-      - name: Upload Viewer macOS update manifest
+      - name: Upload Viewer macOS updater bundle
         uses: actions/upload-artifact@v7
         with:
-          name: viewer-update-manifest-macos
-          path: apps/viewer/src-tauri/target/universal-apple-darwin/release/bundle/*/latest.json
+          name: breeze-viewer-macos-updater
+          path: |
+            apps/viewer/breeze-viewer-macos.app.tar.gz
+            apps/viewer/breeze-viewer-macos.app.tar.gz.sig
           retention-days: 30
-          if-no-files-found: warn
 
   build-helper-macos:
     name: Build Helper (macOS)
@@ -1309,71 +1345,167 @@ jobs:
           overwrite: true
           retention-days: 30
 
-  merge-viewer-update-manifest:
-    name: Merge Viewer Update Manifests
+  package-windows-updater:
+    name: Package Windows Updater Bundle
+    if: vars.ENABLE_WINDOWS_SIGNING == 'true'
     runs-on: ubuntu-latest
-    needs: [build-viewer, build-viewer-macos]
+    needs: [sign-windows-tauri]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download signed viewer MSI
+        uses: actions/download-artifact@v8
+        with:
+          name: breeze-viewer-windows.msi
+          path: staging/
+
+      - name: Create updater zip
+        run: |
+          set -euo pipefail
+          if [ ! -s staging/breeze-viewer-windows.msi ]; then
+            echo "::error::Signed MSI missing or empty at staging/breeze-viewer-windows.msi"
+            exit 1
+          fi
+          cd staging
+          zip -j breeze-viewer-windows.msi.zip breeze-viewer-windows.msi
+
+      - name: Minisign the zip with Tauri key
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          key_file=$(mktemp)
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" > "$key_file"
+          cd apps/viewer
+          pnpm exec tauri signer sign -f "$key_file" "$GITHUB_WORKSPACE/staging/breeze-viewer-windows.msi.zip"
+          if [ ! -s "$GITHUB_WORKSPACE/staging/breeze-viewer-windows.msi.zip.sig" ]; then
+            echo "::error::Tauri signer did not produce .sig file"
+            exit 1
+          fi
+
+      - name: Upload Windows updater bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: breeze-viewer-windows-updater
+          path: |
+            staging/breeze-viewer-windows.msi.zip
+            staging/breeze-viewer-windows.msi.zip.sig
+          retention-days: 30
+
+  merge-viewer-update-manifest:
+    name: Generate Viewer Update Manifest
+    runs-on: ubuntu-latest
+    needs: [build-viewer, build-viewer-macos, package-windows-updater]
     if: >-
       !cancelled()
       && (needs.build-viewer.result == 'success' || needs.build-viewer.result == 'skipped')
       && (needs.build-viewer-macos.result == 'success' || needs.build-viewer-macos.result == 'skipped')
+      && (needs.package-windows-updater.result == 'success' || needs.package-windows-updater.result == 'skipped')
     steps:
-      - name: Download all viewer update manifests
+      - name: Download viewer updater bundles
         uses: actions/download-artifact@v8
         with:
-          path: manifests
-          pattern: 'viewer-update-manifest-*'
-          merge-multiple: false
+          path: updater-bundles
+          pattern: 'breeze-viewer-*-updater'
+          merge-multiple: true
 
-      - name: Merge manifests into single latest.json
+      - name: Generate latest.json
         shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+          WIN_UPDATER_RESULT: ${{ needs.package-windows-updater.result }}
         run: |
-          # Collect all per-platform latest.json files
-          FILES=$(find manifests -name 'latest.json' -type f 2>/dev/null || true)
-          if [ -z "$FILES" ]; then
-            echo "::warning::No viewer update manifests found — auto-update will not work for this release"
-            echo '{}' > latest.json
-            exit 0
+          # Strip leading "v" and any prerelease suffix so the version matches
+          # the one injected into tauri.conf.json at build time.
+          version="${REF_NAME#v}"
+          version="${version%%-*}"
+          pub_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          release_base="${SERVER_URL}/${REPO}/releases/download/${REF_NAME}"
+          notes_url="${SERVER_URL}/${REPO}/releases/tag/${REF_NAME}"
+
+          echo "Downloaded updater bundle contents:"
+          ls -la updater-bundles/ || true
+
+          platforms='{}'
+
+          # macOS — Tauri builds a universal binary, so the same bundle
+          # satisfies both x86_64 and aarch64 clients.
+          mac_sig="updater-bundles/breeze-viewer-macos.app.tar.gz.sig"
+          if [ -f "$mac_sig" ]; then
+            sig_content=$(cat "$mac_sig")
+            url="${release_base}/breeze-viewer-macos.app.tar.gz"
+            platforms=$(jq -n \
+              --arg sig "$sig_content" \
+              --arg url "$url" \
+              '{"darwin-x86_64": {signature: $sig, url: $url}, "darwin-aarch64": {signature: $sig, url: $url}}')
+          else
+            echo "::warning::macOS updater signature not found — macOS auto-update disabled for this release"
           fi
 
-          echo "Found manifests:"
-          echo "$FILES"
+          # Linux AppImage
+          linux_sig="updater-bundles/breeze-viewer-linux.AppImage.tar.gz.sig"
+          if [ -f "$linux_sig" ]; then
+            sig_content=$(cat "$linux_sig")
+            url="${release_base}/breeze-viewer-linux.AppImage.tar.gz"
+            platforms=$(echo "$platforms" | jq \
+              --arg sig "$sig_content" \
+              --arg url "$url" \
+              '. + {"linux-x86_64": {signature: $sig, url: $url}}')
+          else
+            echo "::warning::Linux updater signature not found — Linux auto-update disabled for this release"
+          fi
 
-          # Merge: take version/notes/pub_date from first file, merge all platforms objects
-          node -e "
-            const fs = require('fs');
-            const files = process.argv.slice(1);
-            let merged = null;
-            for (const f of files) {
-              let data;
-              try {
-                data = JSON.parse(fs.readFileSync(f, 'utf8'));
-              } catch (err) {
-                console.error('ERROR: Failed to parse ' + f + ': ' + err.message);
-                process.exit(1);
-              }
-              if (!merged) {
-                merged = data;
-                if (!merged.platforms) merged.platforms = {};
-              } else {
-                Object.assign(merged.platforms, data.platforms || {});
-              }
-            }
-            if (!merged || !merged.platforms || Object.keys(merged.platforms).length === 0) {
-              console.error('ERROR: Merged manifest has no platforms');
-              process.exit(1);
-            }
-            if (!merged.version) {
-              console.error('ERROR: Merged manifest has no version');
-              process.exit(1);
-            }
-            fs.writeFileSync('latest.json', JSON.stringify(merged, null, 2));
-            console.log('Merged platforms:', Object.keys(merged.platforms));
-          " $FILES
+          # Windows MSI updater bundle
+          win_sig="updater-bundles/breeze-viewer-windows.msi.zip.sig"
+          if [ -f "$win_sig" ]; then
+            sig_content=$(cat "$win_sig")
+            url="${release_base}/breeze-viewer-windows.msi.zip"
+            platforms=$(echo "$platforms" | jq \
+              --arg sig "$sig_content" \
+              --arg url "$url" \
+              '. + {"windows-x86_64": {signature: $sig, url: $url}}')
+          elif [ "$WIN_UPDATER_RESULT" = "success" ]; then
+            echo "::error::package-windows-updater reported success but no sig found at $win_sig"
+            exit 1
+          else
+            echo "::warning::Windows updater signature not found (upstream result: $WIN_UPDATER_RESULT) — Windows auto-update disabled for this release"
+          fi
 
+          if [ "$(echo "$platforms" | jq 'keys | length')" = "0" ]; then
+            echo "::error::No updater platforms available — latest.json would be useless"
+            exit 1
+          fi
+
+          jq -n \
+            --arg version "$version" \
+            --arg notes "See release notes at $notes_url" \
+            --arg pub_date "$pub_date" \
+            --argjson platforms "$platforms" \
+            '{version: $version, notes: $notes, pub_date: $pub_date, platforms: $platforms}' > latest.json
+
+          echo "Generated latest.json:"
           cat latest.json
 
-      - name: Upload merged manifest
+      - name: Upload generated manifest
         uses: actions/upload-artifact@v7
         with:
           name: viewer-latest-json
@@ -1383,7 +1515,7 @@ jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-api, build-web, build-agent, build-windows-msi, build-macos-agent, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest]
+    needs: [build-api, build-web, build-agent, build-windows-msi, build-macos-agent, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest, package-windows-updater]
     if: >-
       !cancelled()
       && needs.build-api.result == 'success'
@@ -1392,6 +1524,7 @@ jobs:
       && (needs.build-windows-msi.result == 'success' || needs.build-windows-msi.result == 'skipped')
       && (needs.build-macos-agent.result == 'success' || needs.build-macos-agent.result == 'skipped')
       && (needs.sign-windows-tauri.result == 'success' || needs.sign-windows-tauri.result == 'skipped')
+      && (needs.package-windows-updater.result == 'success' || needs.package-windows-updater.result == 'skipped')
       && (needs.build-viewer.result == 'success' || needs.build-viewer.result == 'skipped')
       && (needs.build-helper.result == 'success' || needs.build-helper.result == 'skipped')
       && (needs.build-viewer-macos.result == 'success' || needs.build-viewer-macos.result == 'skipped')
