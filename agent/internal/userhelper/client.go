@@ -184,9 +184,21 @@ func (c *Client) authenticate() error {
 	uid, err := strconv.ParseUint(cu.Uid, 10, 32)
 	var sid string
 	if err != nil {
-		// On Windows, cu.Uid is the SID string (e.g., "S-1-5-21-...")
+		// On Windows, cu.Uid is the SID string (e.g., "S-1-5-21-...").
+		// When the process was spawned cross-session via CreateProcessAsUser,
+		// the first user.Current() call can occasionally return an
+		// empty/malformed Uid while the duplicated token finishes
+		// materializing in the kernel. Retry with backoff, and treat
+		// a permanent failure as fatal so the lifecycle manager can back off.
 		uid = 0
 		sid = cu.Uid
+		if runtime.GOOS == "windows" && !looksLikeSID(sid) {
+			retrySID, retryErr := lookupSIDWithRetry()
+			if retryErr != nil {
+				return retryErr
+			}
+			sid = retrySID
+		}
 	}
 
 	binaryHash, _ := computeSelfHash()
