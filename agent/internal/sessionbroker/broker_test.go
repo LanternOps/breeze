@@ -2,6 +2,8 @@ package sessionbroker
 
 import (
 	"encoding/json"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -584,4 +586,81 @@ func TestCloseSessionsByDesktopContext_MultipleMatches(t *testing.T) {
 	if b.CloseSessionsByDesktopContext("nonexistent") != 0 {
 		t.Fatal("expected 0 for nonexistent context")
 	}
+}
+
+// BenchmarkFindCapableSessionUnderConcurrentConnections measures FindCapableSession
+// throughput while K goroutines simultaneously simulate the write-lock storm
+// (removeSession) from the reconnect loop described in issue #387.
+//
+// Before the atomic-snapshot refactor, FindCapableSession acquired b.mu.RLock()
+// and was starved when write-lock goroutines competed. After the refactor it
+// reads from an atomic pointer, so throughput should be unaffected by writers.
+func BenchmarkFindCapableSessionUnderConcurrentConnections(b *testing.B) {
+	const nSessions = 5
+	const nWriters = 10 // simulates reconnect storm goroutines
+
+	// Build broker via New() so the snapshot is initialised.
+	broker := New("/tmp/bench.sock", nil)
+
+	// Populate sessions with capture capability.
+	// Sessions are created with a nil conn because FindCapableSession only reads
+	// metadata fields (Capabilities, WinSessionID) — no IPC I/O is performed.
+	for i := range nSessions {
+		s := &Session{
+			SessionID:     fmt.Sprintf("sess-%d", i),
+			IdentityKey:   fmt.Sprintf("%d", 1000+i),
+			AllowedScopes: systemHelperScopes,
+			Capabilities:  &ipc.Capabilities{CanCapture: true, CanClipboard: true},
+			WinSessionID:  "1",
+		}
+		broker.mu.Lock()
+		broker.sessions[s.SessionID] = s
+		broker.byIdentity[s.IdentityKey] = append(broker.byIdentity[s.IdentityKey], s)
+		broker.publishSnapshotLocked()
+		broker.mu.Unlock()
+	}
+
+	// Launch write-storm goroutines that repeatedly add and remove a session
+	// to simulate the handleConnection/removeSession lock contention.
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for w := range nWriters {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				sessID := fmt.Sprintf("storm-%d", id)
+				idKey := fmt.Sprintf("storm-identity-%d", id)
+				s := &Session{
+					SessionID:   sessID,
+					IdentityKey: idKey,
+				}
+				broker.mu.Lock()
+				broker.sessions[sessID] = s
+				broker.byIdentity[idKey] = []*Session{s}
+				broker.publishSnapshotLocked()
+				broker.mu.Unlock()
+
+				broker.mu.Lock()
+				delete(broker.sessions, sessID)
+				delete(broker.byIdentity, idKey)
+				broker.publishSnapshotLocked()
+				broker.mu.Unlock()
+			}
+		}(w)
+	}
+
+	b.ResetTimer()
+	for range b.N {
+		_ = broker.FindCapableSession("capture", "1")
+	}
+	b.StopTimer()
+
+	close(stop)
+	wg.Wait()
 }
