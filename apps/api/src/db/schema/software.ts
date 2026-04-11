@@ -105,6 +105,7 @@ export const deploymentResults = pgTable('deployment_results', {
 export const softwareInventory = pgTable('software_inventory', {
   id: uuid('id').primaryKey().defaultRandom(),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
   catalogId: uuid('catalog_id').references(() => softwareCatalog.id),
   name: varchar('name', { length: 500 }).notNull(),
   version: varchar('version', { length: 100 }),

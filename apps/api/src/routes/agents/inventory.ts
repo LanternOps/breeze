@@ -40,6 +40,7 @@ inventoryRoutes.put('/:id/hardware', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
     .insert(deviceHardware)
     .values({
       deviceId: device.id,
+      orgId: device.orgId,
       ...data,
       updatedAt: new Date()
     })
@@ -78,6 +79,7 @@ inventoryRoutes.put('/:id/software', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
       await tx.insert(softwareInventory).values(
         data.software.map((item) => ({
           deviceId: device.id,
+          orgId: device.orgId,
           name: item.name,
           version: item.version || null,
           vendor: item.vendor || null,
@@ -119,6 +121,7 @@ inventoryRoutes.put('/:id/disks', bodyLimit({ maxSize: 5 * 1024 * 1024, onError:
       await tx.insert(deviceDisks).values(
         data.disks.map((disk) => ({
           deviceId: device.id,
+          orgId: device.orgId,
           mountPoint: disk.mountPoint,
           device: disk.device || null,
           fsType: disk.fsType || null,
@@ -160,6 +163,7 @@ inventoryRoutes.put('/:id/network', bodyLimit({ maxSize: 5 * 1024 * 1024, onErro
       await tx.insert(deviceNetwork).values(
         data.adapters.map((adapter) => ({
           deviceId: device.id,
+          orgId: device.orgId,
           interfaceName: adapter.interfaceName,
           macAddress: adapter.macAddress || null,
           ipAddress: adapter.ipAddress || null,

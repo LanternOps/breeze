@@ -55,6 +55,7 @@ export const devices = pgTable('devices', {
 
 export const deviceHardware = pgTable('device_hardware', {
   deviceId: uuid('device_id').primaryKey().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
   cpuModel: varchar('cpu_model', { length: 255 }),
   cpuCores: integer('cpu_cores'),
   cpuThreads: integer('cpu_threads'),
@@ -71,6 +72,7 @@ export const deviceHardware = pgTable('device_hardware', {
 export const deviceNetwork = pgTable('device_network', {
   id: uuid('id').primaryKey().defaultRandom(),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
   interfaceName: varchar('interface_name', { length: 100 }).notNull(),
   macAddress: varchar('mac_address', { length: 17 }),
   ipAddress: varchar('ip_address', { length: 45 }),
@@ -111,6 +113,7 @@ export const deviceIpHistory = pgTable('device_ip_history', {
 export const deviceDisks = pgTable('device_disks', {
   id: uuid('id').primaryKey().defaultRandom(),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
   mountPoint: varchar('mount_point', { length: 255 }).notNull(),
   device: varchar('device', { length: 255 }),
   fsType: varchar('fs_type', { length: 50 }),
@@ -246,6 +249,7 @@ export const connectionProtocolEnum = pgEnum('connection_protocol', ['tcp', 'tcp
 export const deviceConnections = pgTable('device_connections', {
   id: uuid('id').primaryKey().defaultRandom(),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
   protocol: connectionProtocolEnum('protocol').notNull(),
   localAddr: varchar('local_addr', { length: 45 }).notNull(),
   localPort: integer('local_port').notNull(),

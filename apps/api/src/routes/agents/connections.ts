@@ -36,6 +36,7 @@ connectionsRoutes.put(
       await tx.insert(deviceConnections).values(
         data.connections.map((conn) => ({
           deviceId: device.id,
+          orgId: device.orgId,
           protocol: conn.protocol,
           localAddr: conn.localAddr,
           localPort: conn.localPort,

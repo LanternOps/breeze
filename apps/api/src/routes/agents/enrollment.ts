@@ -355,6 +355,7 @@ deviceLimitPartnerId = org.partnerId;
           .insert(deviceHardware)
           .values({
             deviceId: dev.id,
+            orgId: dev.orgId,
             cpuModel: data.hardwareInfo.cpuModel,
             cpuCores: data.hardwareInfo.cpuCores,
             cpuThreads: data.hardwareInfo.cpuThreads,
@@ -391,6 +392,7 @@ deviceLimitPartnerId = org.partnerId;
             .insert(deviceNetwork)
             .values({
               deviceId: dev.id,
+              orgId: dev.orgId,
               interfaceName: nic.name,
               macAddress: nic.mac,
               ipAddress: nic.ip,
