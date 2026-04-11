@@ -1328,7 +1328,9 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
       {
         scope: 'organization',
         orgId: agentDb.orgId,
-        accessibleOrgIds: [agentDb.orgId]
+        accessibleOrgIds: [agentDb.orgId],
+        // Agents are org-scoped; they have no access to partner-level tables.
+        accessiblePartnerIds: []
       },
       fn
     );

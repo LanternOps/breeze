@@ -153,7 +153,9 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     {
       scope: 'organization',
       orgId: apiKey.orgId,
-      accessibleOrgIds: [apiKey.orgId]
+      accessibleOrgIds: [apiKey.orgId],
+      // API keys are org-scoped; they have no access to partner-level tables.
+      accessiblePartnerIds: []
     },
     async () => {
       await next();

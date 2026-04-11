@@ -176,7 +176,9 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     {
       scope: 'organization',
       orgId: device.orgId,
-      accessibleOrgIds: [device.orgId]
+      accessibleOrgIds: [device.orgId],
+      // Agents are org-scoped; they have no access to partner-level tables.
+      accessiblePartnerIds: []
     },
     async () => {
       await next();

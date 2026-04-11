@@ -3,7 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { verifyToken, TokenPayload } from '../services/jwt';
 import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPermissions } from '../services/permissions';
 import { isUserTokenRevoked } from '../services/tokenRevocation';
-import { db, withDbAccessContext } from '../db';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { users, partnerUsers, organizationUsers, organizations } from '../db/schema';
 import { and, eq, inArray, SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
@@ -100,6 +100,10 @@ export async function optionalAuthMiddleware(c: Context, next: Next) {
       payload.orgId,
       user.id
     );
+    const accessiblePartnerIds = computeAccessiblePartnerIds(
+      payload.scope,
+      payload.partnerId
+    );
 
     const orgCondition = (orgIdColumn: PgColumn): SQL | undefined => {
       if (accessibleOrgIds === null) return undefined;
@@ -121,7 +125,8 @@ export async function optionalAuthMiddleware(c: Context, next: Next) {
       {
         scope: payload.scope,
         orgId: payload.orgId,
-        accessibleOrgIds
+        accessibleOrgIds,
+        accessiblePartnerIds
       },
       async () => {
         c.set('auth', {
@@ -169,59 +174,85 @@ async function computeAccessibleOrgIds(
   }
 
   if (scope === 'partner' && partnerId) {
-    const [partnerMembership] = await db
-      .select({
-        orgAccess: partnerUsers.orgAccess,
-        orgIds: partnerUsers.orgIds
-      })
-      .from(partnerUsers)
-      .where(
-        and(
-          eq(partnerUsers.userId, userId),
-          eq(partnerUsers.partnerId, partnerId)
+    // This lookup runs BEFORE withDbAccessContext sets the request's scope,
+    // so partner_users and organizations are queried with no breeze.* GUCs
+    // set. Once those tables are under RLS, scope='none' (the default)
+    // denies everything. Run the whole lookup under a system-scope context
+    // so the pre-auth read works; the returned list is only used to build
+    // the real (non-system) context the request then runs under.
+    return withSystemDbAccessContext(async () => {
+      const [partnerMembership] = await db
+        .select({
+          orgAccess: partnerUsers.orgAccess,
+          orgIds: partnerUsers.orgIds
+        })
+        .from(partnerUsers)
+        .where(
+          and(
+            eq(partnerUsers.userId, userId),
+            eq(partnerUsers.partnerId, partnerId)
+          )
         )
-      )
-      .limit(1);
+        .limit(1);
 
-    if (!partnerMembership) {
-      return [];
-    }
-
-    if (partnerMembership.orgAccess === 'none') {
-      return [];
-    }
-
-    if (partnerMembership.orgAccess === 'selected') {
-      const selectedOrgIds = (partnerMembership.orgIds ?? []).filter(
-        (value): value is string => typeof value === 'string' && value.length > 0
-      );
-
-      if (selectedOrgIds.length === 0) {
+      if (!partnerMembership) {
         return [];
       }
 
+      if (partnerMembership.orgAccess === 'none') {
+        return [];
+      }
+
+      if (partnerMembership.orgAccess === 'selected') {
+        const selectedOrgIds = (partnerMembership.orgIds ?? []).filter(
+          (value): value is string => typeof value === 'string' && value.length > 0
+        );
+
+        if (selectedOrgIds.length === 0) {
+          return [];
+        }
+
+        const partnerOrgs = await db
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(
+            and(
+              eq(organizations.partnerId, partnerId),
+              inArray(organizations.id, selectedOrgIds)
+            )
+          );
+
+        return partnerOrgs.map(o => o.id);
+      }
+
+      // orgAccess=all: partner users can access all orgs under their partner.
       const partnerOrgs = await db
         .select({ id: organizations.id })
         .from(organizations)
-        .where(
-          and(
-            eq(organizations.partnerId, partnerId),
-            inArray(organizations.id, selectedOrgIds)
-          )
-        );
+        .where(eq(organizations.partnerId, partnerId));
 
       return partnerOrgs.map(o => o.id);
-    }
-
-    // orgAccess=all: partner users can access all orgs under their partner.
-    const partnerOrgs = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.partnerId, partnerId));
-
-    return partnerOrgs.map(o => o.id);
+    });
   }
 
+  return [];
+}
+
+/**
+ * Compute the partner IDs a caller can access based on their token scope.
+ * Partners are flat (no hierarchy) per the project constraint, so this is
+ * a direct membership list, not a tree walk.
+ *
+ * - system → null (unrestricted, serialized to "*")
+ * - partner → exactly one partner: the token's partnerId
+ * - organization → empty (org users don't see the partners table)
+ */
+function computeAccessiblePartnerIds(
+  scope: 'system' | 'partner' | 'organization',
+  partnerId: string | null
+): string[] | null {
+  if (scope === 'system') return null;
+  if (scope === 'partner' && partnerId) return [partnerId];
   return [];
 }
 
@@ -281,6 +312,10 @@ export async function authMiddleware(c: Context, next: Next) {
     payload.orgId,
     user.id
   );
+  const accessiblePartnerIds = computeAccessiblePartnerIds(
+    payload.scope,
+    payload.partnerId
+  );
 
   // Create helper functions
   const orgCondition = (orgIdColumn: PgColumn): SQL | undefined => {
@@ -306,7 +341,8 @@ export async function authMiddleware(c: Context, next: Next) {
     {
       scope: payload.scope,
       orgId: payload.orgId,
-      accessibleOrgIds
+      accessibleOrgIds,
+      accessiblePartnerIds
     },
     async () => {
       c.set('auth', {

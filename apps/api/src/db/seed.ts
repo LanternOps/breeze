@@ -1,4 +1,4 @@
-import { db } from './index';
+import { db, withSystemDbAccessContext } from './index';
 import { roles, permissions, rolePermissions, scripts, alertTemplates, partners, organizations, sites, users, partnerUsers } from './schema';
 import { eq, and } from 'drizzle-orm';
 import { hashPassword } from '../services/password';
@@ -760,6 +760,11 @@ export async function seedEventLogAlertTemplates() {
 }
 
 export async function seedDefaultAdmin() {
+  // Wrap the whole function body in a single system-scope context so the
+  // baseline tenant-creation flow (partner → org → site → user →
+  // partner_user) passes RLS on the partner-scoped and org-scoped tables
+  // without each insert needing its own elevation.
+  return withSystemDbAccessContext(async () => {
   console.log('Seeding default admin user...');
 
   const adminEmail = 'admin@breeze.local';
@@ -900,6 +905,7 @@ export async function seedDefaultAdmin() {
   console.log('  Email: admin@breeze.local');
   console.log('  Password: BreezeAdmin123!');
   console.log('  \u26A0\uFE0F  Change this password immediately after first login!');
+  });
 }
 
 export async function seed() {

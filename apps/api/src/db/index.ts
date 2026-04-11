@@ -36,24 +36,43 @@ export interface DbAccessContext {
   scope: DbAccessScope;
   orgId: string | null;
   accessibleOrgIds: string[] | null;
+  /**
+   * UUIDs of partners the caller can access. Undefined is treated as
+   * "unset" — same behavior as the previous two-axis model: system scope
+   * sees all partners, every other scope sees none. Populate this from
+   * the JWT partnerId for partner-scope callers to enable RLS on
+   * `partners` / `partner_users` to pass.
+   */
+  accessiblePartnerIds?: string[] | null;
 }
 
 export const SYSTEM_DB_ACCESS_CONTEXT: DbAccessContext = {
   scope: 'system',
   orgId: null,
   accessibleOrgIds: null,
+  accessiblePartnerIds: null,
 };
 
-function serializeAccessibleOrgIds(scope: DbAccessScope, accessibleOrgIds: string[] | null): string {
-  if (scope === 'system' || accessibleOrgIds === null) {
+function serializeAccessibleIds(scope: DbAccessScope, accessibleIds: string[] | null | undefined): string {
+  // System scope always serializes to "*" regardless of whether the list
+  // was provided. This keeps existing callers that only populated
+  // accessibleOrgIds working as-is (system scope → system-wide access on
+  // all axes) and matches the `breeze_accessible_*_ids()` helper shape.
+  if (scope === 'system') {
     return '*';
   }
 
-  if (accessibleOrgIds.length === 0) {
+  if (accessibleIds === null || accessibleIds === undefined) {
+    // Unset for a non-system scope means "no access" — the fail-closed
+    // branch in the SQL helpers treats empty string as ARRAY[]::uuid[].
     return '';
   }
 
-  return accessibleOrgIds.join(',');
+  if (accessibleIds.length === 0) {
+    return '';
+  }
+
+  return accessibleIds.join(',');
 }
 
 export async function withDbAccessContext<T>(
@@ -65,11 +84,13 @@ export async function withDbAccessContext<T>(
   }
 
   return baseDb.transaction(async (tx) => {
-    const serializedOrgIds = serializeAccessibleOrgIds(context.scope, context.accessibleOrgIds);
+    const serializedOrgIds = serializeAccessibleIds(context.scope, context.accessibleOrgIds);
+    const serializedPartnerIds = serializeAccessibleIds(context.scope, context.accessiblePartnerIds);
 
     await tx.execute(sql`select set_config('breeze.scope', ${context.scope}, true)`);
     await tx.execute(sql`select set_config('breeze.org_id', ${context.orgId ?? ''}, true)`);
     await tx.execute(sql`select set_config('breeze.accessible_org_ids', ${serializedOrgIds}, true)`);
+    await tx.execute(sql`select set_config('breeze.accessible_partner_ids', ${serializedPartnerIds}, true)`);
 
     return dbContextStorage.run(tx as unknown as typeof baseDb, fn);
   });
