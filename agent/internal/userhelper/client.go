@@ -224,10 +224,22 @@ func (c *Client) authenticate() error {
 		return fmt.Errorf("send auth request: %w", err)
 	}
 
-	// Read auth response
+	// Read auth response (or pre-auth reject, if the broker bounced us
+	// before reading our auth request).
 	env, err := c.conn.Recv()
 	if err != nil {
 		return fmt.Errorf("recv auth response: %w", err)
+	}
+
+	if env.Type == ipc.TypePreAuthReject {
+		var rej ipc.PreAuthReject
+		if err := json.Unmarshal(env.Payload, &rej); err != nil {
+			return fmt.Errorf("unmarshal pre_auth_reject: %w", err)
+		}
+		if rej.Permanent {
+			return &PermanentRejectError{Code: rej.Code, Reason: rej.Reason}
+		}
+		return fmt.Errorf("broker pre-auth reject: %s (%s)", rej.Reason, rej.Code)
 	}
 
 	if env.Type != ipc.TypeAuthResponse {
@@ -240,6 +252,9 @@ func (c *Client) authenticate() error {
 	}
 
 	if !authResp.Accepted {
+		if authResp.Permanent {
+			return &PermanentRejectError{Code: "auth_rejected", Reason: authResp.Reason}
+		}
 		return fmt.Errorf("auth rejected: %s", authResp.Reason)
 	}
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -815,10 +816,32 @@ func runHelperProcess(name, role, context, binaryKind string) {
 		default:
 		}
 
-		// Part B (separate commit) adds a check here for
-		// *userhelper.PermanentRejectError that exits with code 2 so the
-		// lifecycle manager can skip respawn. Until then, all errors fall
-		// through to the rate-limited reconnect path.
+		// Fatal permanent rejection from the broker: exit with code 2 so
+		// the lifecycle manager knows not to respawn immediately. Sleep
+		// briefly to let the log shipper flush the exit reason.
+		//
+		// Exit code 2 semantics: signals to the lifecycle manager that
+		// this helper should not be respawned immediately — the rejection
+		// is permanent (binary hash mismatch, SID lookup failure, etc.).
+		var permErr *userhelper.PermanentRejectError
+		if errors.As(err, &permErr) {
+			log.Error("helper permanently rejected, exiting fatal",
+				"name", name,
+				"code", permErr.CodeOr("unknown"),
+				"reason", permErr.ReasonOr(err.Error()),
+			)
+			time.Sleep(1 * time.Second)
+			os.Exit(2)
+		}
+		if errors.Is(err, userhelper.ErrSIDLookupFailed) {
+			log.Error("helper permanently rejected, exiting fatal",
+				"name", name,
+				"code", "sid_lookup_failed",
+				"reason", err.Error(),
+			)
+			time.Sleep(1 * time.Second)
+			os.Exit(2)
+		}
 
 		// Only reset backoff if the connection was stably authenticated for
 		// >60s. The previous logic reset on wall-clock iteration duration
