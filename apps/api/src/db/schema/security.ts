@@ -52,6 +52,7 @@ export const securityRiskLevelEnum = pgEnum('security_risk_level', [
 export const securityStatus = pgTable('security_status', {
   id: uuid('id').primaryKey().defaultRandom(),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
   provider: securityProviderEnum('provider').notNull(),
   providerVersion: varchar('provider_version', { length: 50 }),
   definitionsVersion: varchar('definitions_version', { length: 100 }),
@@ -75,6 +76,7 @@ export const securityStatus = pgTable('security_status', {
 export const securityThreats = pgTable('security_threats', {
   id: uuid('id').primaryKey().defaultRandom(),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
   provider: securityProviderEnum('provider').notNull(),
   threatName: varchar('threat_name', { length: 200 }).notNull(),
   threatType: varchar('threat_type', { length: 100 }),
@@ -95,6 +97,7 @@ export const securityThreats = pgTable('security_threats', {
 export const securityScans = pgTable('security_scans', {
   id: uuid('id').primaryKey().defaultRandom(),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
   scanType: varchar('scan_type', { length: 50 }).notNull(),
   status: varchar('status', { length: 20 }).notNull(),
   startedAt: timestamp('started_at'),

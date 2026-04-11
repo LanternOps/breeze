@@ -171,6 +171,7 @@ export const patchApprovals = pgTable('patch_approvals', {
 export const devicePatches = pgTable('device_patches', {
   id: uuid('id').primaryKey().defaultRandom(),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
   patchId: uuid('patch_id').notNull().references(() => patches.id),
   status: devicePatchStatusEnum('status').notNull().default('pending'),
   installedAt: timestamp('installed_at'),

@@ -437,7 +437,7 @@ export function getSecurityStatusFromResult(resultData: Record<string, unknown> 
   return parsed.data;
 }
 
-export async function upsertSecurityStatusForDevice(deviceId: string, payload: SecurityStatusPayload): Promise<void> {
+export async function upsertSecurityStatusForDevice(deviceId: string, orgId: string, payload: SecurityStatusPayload): Promise<void> {
   const avProducts = Array.isArray(payload.avProducts) ? payload.avProducts : [];
   const preferredProduct = avProducts.find((p) => p.realTimeProtection) ?? avProducts[0];
   const provider = normalizeProvider(payload.provider ?? preferredProduct?.provider);
@@ -446,6 +446,7 @@ export async function upsertSecurityStatusForDevice(deviceId: string, payload: S
     .insert(securityStatus)
     .values({
       deviceId,
+      orgId,
       provider,
       providerVersion: asString(payload.providerVersion) ?? null,
       definitionsVersion: asString(payload.definitionsVersion) ?? null,
@@ -533,10 +534,18 @@ export async function handleSecurityCommandResult(
   command: typeof deviceCommands.$inferSelect,
   resultData: z.infer<typeof commandResultSchema>
 ): Promise<void> {
+  const [deviceRow] = await db
+    .select({ orgId: devices.orgId })
+    .from(devices)
+    .where(eq(devices.id, command.deviceId))
+    .limit(1);
+  const orgId = deviceRow?.orgId;
+  if (!orgId) return;
+
   const resultJson = parseResultJson(resultData.stdout);
   const parsedStatus = getSecurityStatusFromResult(resultJson);
   if (parsedStatus) {
-    await upsertSecurityStatusForDevice(command.deviceId, parsedStatus);
+    await upsertSecurityStatusForDevice(command.deviceId, orgId, parsedStatus);
   }
 
   if (command.type === securityCommandTypes.collectStatus) {
@@ -578,6 +587,7 @@ export async function handleSecurityCommandResult(
       await db.insert(securityScans).values({
         ...(isUuid(scanRecordId) ? { id: scanRecordId } : {}),
         deviceId: command.deviceId,
+        orgId,
         scanType,
         status: resultData.status === 'completed' ? 'completed' : 'failed',
         startedAt: command.createdAt ?? new Date(),
@@ -595,6 +605,7 @@ export async function handleSecurityCommandResult(
         if (!isObject(threat)) continue;
         inserts.push({
           deviceId: command.deviceId,
+          orgId,
           provider,
           threatName: asString(threat.name) ?? asString(threat.threatName) ?? 'Unknown Threat',
           threatType: asString(threat.type) ?? asString(threat.threatType) ?? asString(threat.category) ?? null,

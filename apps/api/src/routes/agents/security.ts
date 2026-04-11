@@ -24,7 +24,7 @@ agentSecurityRoutes.put('/:id/security/status', zValidator('json', securityStatu
     return c.json({ error: 'Device not found' }, 404);
   }
 
-  await upsertSecurityStatusForDevice(device.id, payload);
+  await upsertSecurityStatusForDevice(device.id, device.orgId, payload);
   writeAuditEvent(c, {
     orgId: agent?.orgId ?? device.orgId,
     actorType: 'agent',

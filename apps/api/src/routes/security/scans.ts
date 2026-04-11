@@ -41,6 +41,7 @@ scansRoutes.post(
     await db.insert(securityScans).values({
       id: scanId,
       deviceId: device.id,
+      orgId: device.orgId,
       scanType: payload.scanType,
       status: 'queued',
       startedAt: new Date(),

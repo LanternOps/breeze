@@ -79,6 +79,7 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
           .insert(devicePatches)
           .values({
             deviceId: device.id,
+            orgId: device.orgId,
             patchId: patch.id,
             status: 'pending',
             lastCheckedAt: new Date()
@@ -136,6 +137,7 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
             .insert(devicePatches)
             .values({
               deviceId: device.id,
+              orgId: device.orgId,
               patchId: patch.id,
               status: 'installed',
               installedAt: installedAt,
