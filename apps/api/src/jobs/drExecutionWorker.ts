@@ -1,5 +1,6 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
+import { withSystemDbAccessContext } from '../db';
 import { reconcileDrExecution } from '../services/drExecutionService';
 import { isReusableState } from '../services/bullmqUtils';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
@@ -38,16 +39,18 @@ function createDrExecutionWorker(): Worker<DrExecutionQueueJobData> {
   return new Worker<DrExecutionQueueJobData>(
     DR_EXECUTION_QUEUE,
     async (job: Job<DrExecutionQueueJobData>) => {
-      const data = parseQueueJobData(DR_EXECUTION_QUEUE, job, drExecutionQueueJobDataSchema);
-      if (data.type !== 'reconcile-execution') {
-        throw new Error(`Unknown DR execution job type: ${(data as { type: string }).type}`);
-      }
-      assertQueueJobName(DR_EXECUTION_QUEUE, job, 'reconcile-execution');
-      const execution = await reconcileDrExecution(data.executionId);
-      return {
-        executionId: data.executionId,
-        status: execution?.status ?? 'missing',
-      };
+      return withSystemDbAccessContext(async () => {
+        const data = parseQueueJobData(DR_EXECUTION_QUEUE, job, drExecutionQueueJobDataSchema);
+        if (data.type !== 'reconcile-execution') {
+          throw new Error(`Unknown DR execution job type: ${(data as { type: string }).type}`);
+        }
+        assertQueueJobName(DR_EXECUTION_QUEUE, job, 'reconcile-execution');
+        const execution = await reconcileDrExecution(data.executionId);
+        return {
+          executionId: data.executionId,
+          status: execution?.status ?? 'missing',
+        };
+      });
     },
     {
       connection: getBullMQConnection(),

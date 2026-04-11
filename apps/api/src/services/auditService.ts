@@ -1,4 +1,4 @@
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { auditLogs } from '../db/schema';
 import { captureException } from './sentry';
 
@@ -22,8 +22,17 @@ export interface CreateAuditLogParams {
 }
 
 export async function createAuditLog(params: CreateAuditLogParams): Promise<void> {
-  const { actorType = 'user', ...rest } = params;
-  await db.insert(auditLogs).values({ actorType, ...rest });
+  // Audit writes run under system scope because they are called from both
+  // authenticated handlers (where the request's org scope would match) AND
+  // pre-auth paths like failed-login tracking (where no scope is set yet,
+  // e.g. apps/api/src/routes/auth/login.ts:91 auditUserLoginFailure).
+  // Running in system scope keeps the audit path reliable regardless of
+  // caller context — the orgId in the row itself still identifies which
+  // tenant the event belongs to.
+  return withSystemDbAccessContext(async () => {
+    const { actorType = 'user', ...rest } = params;
+    await db.insert(auditLogs).values({ actorType, ...rest });
+  });
 }
 
 export function createAuditLogAsync(params: CreateAuditLogParams): void {

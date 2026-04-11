@@ -1,5 +1,6 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
+import { withSystemDbAccessContext } from '../db';
 import { isReusableState } from '../services/bullmqUtils';
 import { buildRecoveryMediaArtifact } from '../services/recoveryMediaService';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
@@ -34,13 +35,15 @@ function createRecoveryMediaWorker(): Worker<RecoveryMediaQueueJobData> {
   return new Worker<RecoveryMediaQueueJobData>(
     RECOVERY_MEDIA_QUEUE,
     async (job: Job<RecoveryMediaQueueJobData>) => {
-      const data = parseQueueJobData(RECOVERY_MEDIA_QUEUE, job, recoveryMediaQueueJobDataSchema);
-      if (data.type !== 'build-media') {
-        throw new Error(`Unknown recovery media job type: ${(data as { type: string }).type}`);
-      }
-      assertQueueJobName(RECOVERY_MEDIA_QUEUE, job, 'build-media');
-      await buildRecoveryMediaArtifact(data.artifactId);
-      return { artifactId: data.artifactId };
+      return withSystemDbAccessContext(async () => {
+        const data = parseQueueJobData(RECOVERY_MEDIA_QUEUE, job, recoveryMediaQueueJobDataSchema);
+        if (data.type !== 'build-media') {
+          throw new Error(`Unknown recovery media job type: ${(data as { type: string }).type}`);
+        }
+        assertQueueJobName(RECOVERY_MEDIA_QUEUE, job, 'build-media');
+        await buildRecoveryMediaArtifact(data.artifactId);
+        return { artifactId: data.artifactId };
+      });
     },
     {
       connection: getBullMQConnection(),

@@ -1202,7 +1202,9 @@ async function bootstrap(): Promise<void> {
 
   // Register local agent binaries in DB and optionally sync to S3 (BINARY_SOURCE=local only)
   try {
-    await syncBinaries();
+    await runWithSystemDbAccess(async () => {
+      await syncBinaries();
+    });
   } catch (err) {
     console.error('[startup] Binary sync failed (non-fatal):', err);
   }

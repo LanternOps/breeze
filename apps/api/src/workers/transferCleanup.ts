@@ -1,5 +1,5 @@
 import { lt, or, eq, and } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { fileTransfers } from '../db/schema';
 import { deleteTransfer } from '../services/fileStorage';
 
@@ -9,6 +9,7 @@ const MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 let cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
 async function runCleanup() {
+  return withSystemDbAccessContext(async () => {
   try {
     const cutoff = new Date(Date.now() - MAX_AGE_MS);
 
@@ -49,6 +50,7 @@ async function runCleanup() {
   } catch (err) {
     console.error('[TransferCleanup] Error during cleanup:', err);
   }
+  });
 }
 
 export function initializeTransferCleanup() {

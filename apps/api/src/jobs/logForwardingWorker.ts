@@ -8,6 +8,7 @@
 
 import { Queue, Worker, Job } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
+import { withSystemDbAccessContext } from '../db';
 import { bulkIndexEvents, clearClientCache } from '../services/logForwarding';
 
 const QUEUE_NAME = 'log-forwarding';
@@ -108,22 +109,24 @@ export async function initializeLogForwardingWorker(): Promise<void> {
   worker = new Worker<LogForwardingJobData>(
     QUEUE_NAME,
     async (job: Job<LogForwardingJobData>) => {
-      const { orgId, deviceId, hostname, events } = job.data;
+      return withSystemDbAccessContext(async () => {
+        const { orgId, deviceId, hostname, events } = job.data;
 
-      const docs = events.map((e) => ({
-        deviceId,
-        orgId,
-        hostname,
-        category: e.category,
-        level: e.level,
-        source: e.source,
-        message: e.message,
-        timestamp: e.timestamp,
-        rawData: e.rawData,
-      }));
+        const docs = events.map((e) => ({
+          deviceId,
+          orgId,
+          hostname,
+          category: e.category,
+          level: e.level,
+          source: e.source,
+          message: e.message,
+          timestamp: e.timestamp,
+          rawData: e.rawData,
+        }));
 
-      const result = await bulkIndexEvents(orgId, docs);
-      return result;
+        const result = await bulkIndexEvents(orgId, docs);
+        return result;
+      });
     },
     {
       connection: getBullMQConnection(),
