@@ -5,11 +5,13 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -762,11 +764,18 @@ func runHelperProcess(name, role, context, binaryKind string) {
 
 	// Reconnect loop: when the IPC socket disappears (e.g. agent self-update
 	// recreates it), retry with exponential backoff instead of exiting.
+	//
+	// helperMinBackoff is intentionally conservative (30s) because most helper
+	// disconnects in production are caused by permanent identity/auth problems
+	// (binary path mismatch, SID lookup failure on headless Windows, etc.),
+	// not transient socket hiccups. See issue #387.
 	const (
-		helperMinBackoff = 2 * time.Second
-		helperMaxBackoff = 30 * time.Second
+		helperMinBackoff      = 30 * time.Second
+		helperMaxBackoff      = 5 * time.Minute
+		helperStableThreshold = 60 * time.Second
 	)
 
+	warnLimiter := newHelperWarnLimiter(3, 5*time.Minute)
 	backoff := helperMinBackoff
 	for {
 		client := userhelper.NewWithOptions(socketPath, role, binaryKind, context)
@@ -785,9 +794,13 @@ func runHelperProcess(name, role, context, binaryKind string) {
 			}
 		}()
 
-		connStart := time.Now()
 		err := client.Run()
 		close(clientDone)
+
+		// Capture the auth time BEFORE the client is garbage-collected. A
+		// zero value means the client never completed auth on this iteration.
+		authAt := client.AuthenticatedAt()
+
 		if err == nil {
 			// Clean exit (e.g. Stop() was called via signal)
 			log.Info("helper stopped", "name", name)
@@ -802,22 +815,114 @@ func runHelperProcess(name, role, context, binaryKind string) {
 		default:
 		}
 
-		// If the connection was up for a meaningful period, reset backoff
-		// so the next reconnect starts fast.
-		if time.Since(connStart) > helperMaxBackoff {
+		// Part B (separate commit) adds a check here for
+		// *userhelper.PermanentRejectError that exits with code 2 so the
+		// lifecycle manager can skip respawn. Until then, all errors fall
+		// through to the rate-limited reconnect path.
+
+		// Only reset backoff if the connection was stably authenticated for
+		// >60s. The previous logic reset on wall-clock iteration duration
+		// which let the storm keep restarting from 2s after every rate limit
+		// window expired.
+		if !authAt.IsZero() && time.Since(authAt) > helperStableThreshold {
 			backoff = helperMinBackoff
+			warnLimiter.reset()
 		}
 
-		log.Warn("helper disconnected, reconnecting",
-			"name", name, "error", err.Error(), "backoff", backoff)
+		// Add jitter: [backoff, backoff + backoff/2) so concurrent helpers
+		// don't synchronise their reconnect attempts.
+		wait := backoff + time.Duration(rand.Int64N(int64(backoff/2)+1))
+
+		errMsg := err.Error()
+		if emit, suppressed := warnLimiter.shouldLog(errMsg); emit {
+			log.Warn("helper disconnected, reconnecting",
+				"name", name, "error", errMsg, "backoff", wait.String())
+		} else if suppressed > 0 {
+			log.Info("helper still disconnected, suppressing further warnings",
+				"name", name,
+				"error", errMsg,
+				"suppressed_count", suppressed,
+				"backoff", wait.String())
+		}
 
 		// Wait for backoff or shutdown signal.
 		select {
-		case <-time.After(backoff):
+		case <-time.After(wait):
 			backoff = min(backoff*2, helperMaxBackoff)
 		case <-done:
 			log.Info("helper stopped during reconnect backoff", "name", name)
 			return
 		}
 	}
+}
+
+// helperWarnLimiter rate-limits a repeating warning message. After `limit`
+// emissions of the same message within `window`, further WARN emissions are
+// suppressed; an INFO "still disconnected" line is emitted at most once per
+// `window` with the suppressed count. Call reset() when the condition clears
+// (e.g. connection has been stably authenticated).
+type helperWarnLimiter struct {
+	mu            sync.Mutex
+	limit         int
+	window        time.Duration
+	lastMsg       string
+	firstSeenAt   time.Time
+	count         int    // total emissions (incl. suppressed) in this window
+	warnsEmitted  int    // warn-level emissions in this window
+	suppressed    int    // warnings suppressed since last info emission
+	lastInfoEmit  time.Time
+}
+
+func newHelperWarnLimiter(limit int, window time.Duration) *helperWarnLimiter {
+	return &helperWarnLimiter{limit: limit, window: window}
+}
+
+// shouldLog returns (emitWarn, suppressedCount). If emitWarn is true, the
+// caller should log a WARN. Otherwise, if suppressedCount > 0, the caller
+// should log a single INFO "still disconnected" line with that count.
+func (h *helperWarnLimiter) shouldLog(msg string) (bool, int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	now := time.Now()
+	if msg != h.lastMsg || now.Sub(h.firstSeenAt) > h.window {
+		// New message or window rolled over — reset counters.
+		h.lastMsg = msg
+		h.firstSeenAt = now
+		h.count = 1
+		h.warnsEmitted = 1
+		h.suppressed = 0
+		h.lastInfoEmit = time.Time{}
+		return true, 0
+	}
+
+	h.count++
+	if h.warnsEmitted < h.limit {
+		h.warnsEmitted++
+		return true, 0
+	}
+
+	// Over the warn budget — suppress and maybe emit an INFO summary.
+	h.suppressed++
+	if h.lastInfoEmit.IsZero() || now.Sub(h.lastInfoEmit) >= h.window {
+		suppressed := h.suppressed
+		h.suppressed = 0
+		h.lastInfoEmit = now
+		return false, suppressed
+	}
+	return false, 0
+}
+
+// reset clears limiter state so the next message starts a fresh window.
+// Call after a helper has been stably connected — the next disconnect is
+// a new event and deserves a full WARN.
+func (h *helperWarnLimiter) reset() {
+	h.mu.Lock()
+	h.lastMsg = ""
+	h.firstSeenAt = time.Time{}
+	h.count = 0
+	h.warnsEmitted = 0
+	h.suppressed = 0
+	h.lastInfoEmit = time.Time{}
+	h.mu.Unlock()
 }

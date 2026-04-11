@@ -54,6 +54,27 @@ type Client struct {
 	pendingMu  sync.Mutex
 	pending    map[string]chan *ipc.Envelope
 	sasReqSeq  atomic.Uint64
+
+	// authenticatedAt is set when the broker accepts the helper. Zero when
+	// the client has never completed auth on this Run(). Reset on each Run().
+	authMu          sync.RWMutex
+	authenticatedAt time.Time
+}
+
+// AuthenticatedAt returns the time at which the helper completed auth with
+// the broker on the most recent Run(). Returns the zero time if the client
+// never successfully authenticated.
+func (c *Client) AuthenticatedAt() time.Time {
+	c.authMu.RLock()
+	defer c.authMu.RUnlock()
+	return c.authenticatedAt
+}
+
+// setAuthenticatedAt records the moment auth completed.
+func (c *Client) setAuthenticatedAt(t time.Time) {
+	c.authMu.Lock()
+	c.authenticatedAt = t
+	c.authMu.Unlock()
 }
 
 // New creates a new user helper client with the given role.
@@ -219,6 +240,7 @@ func (c *Client) authenticate() error {
 	c.sessionKey = key
 	c.agentID = authResp.AgentID
 	c.scopes = authResp.AllowedScopes
+	c.setAuthenticatedAt(time.Now())
 
 	return nil
 }
