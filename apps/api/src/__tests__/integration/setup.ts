@@ -23,6 +23,43 @@ const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6380';
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-jwt-secret-must-be-at-least-32-characters-long';
 process.env.NODE_ENV = 'test';
 
+// Safety guard: cleanupDatabase() runs TRUNCATE CASCADE on core tenant tables
+// (users, partners, organizations, sites, devices, sessions, ...) on beforeEach.
+// Running integration tests against a non-test database will wipe real data —
+// this has happened before. Refuse to proceed unless the database name is
+// explicitly allowlisted as a test DB. Override with BREEZE_ALLOW_NON_TEST_DB=1
+// only if you know what you're doing (e.g., a one-off diagnostic run that does
+// not call cleanupDatabase).
+const ALLOWED_TEST_DB_NAMES = new Set(['breeze_test']);
+
+function extractDbName(connectionUrl: string): string {
+  try {
+    return new URL(connectionUrl).pathname.replace(/^\//, '');
+  } catch {
+    return '';
+  }
+}
+
+function assertTestDatabase(connectionUrl: string, operation: string): void {
+  if (process.env.BREEZE_ALLOW_NON_TEST_DB === '1') {
+    return;
+  }
+  const dbName = extractDbName(connectionUrl);
+  if (!ALLOWED_TEST_DB_NAMES.has(dbName)) {
+    throw new Error(
+      `Integration test ${operation} refused: DATABASE_URL points at database "${dbName}", ` +
+      `which is NOT in the allowed test DB list (${Array.from(ALLOWED_TEST_DB_NAMES).join(', ')}). ` +
+      `Integration tests run TRUNCATE CASCADE on core tables on beforeEach — running against a ` +
+      `non-test DB will wipe real data.\n\n` +
+      `To run integration tests locally:\n` +
+      `  1. Start test containers: docker compose -f docker-compose.test.yml up -d\n` +
+      `  2. Unset any inherited DATABASE_URL so the default takes effect, OR set it explicitly:\n` +
+      `     DATABASE_URL=postgresql://breeze_test:breeze_test@localhost:5433/breeze_test pnpm test:integration\n\n` +
+      `Override (USE WITH EXTREME CARE): BREEZE_ALLOW_NON_TEST_DB=1`
+    );
+  }
+}
+
 export type TestDatabase = PostgresJsDatabase<typeof schema>;
 
 let testClient: Sql;
@@ -44,6 +81,10 @@ export function getTestRedis() {
 }
 
 export async function setupIntegrationTests() {
+  // Fail loud if DATABASE_URL points at anything other than a known test DB.
+  // This runs before any connection so no client is even opened on a prod/dev DB.
+  assertTestDatabase(DATABASE_URL, 'setup');
+
   // Create database connection
   testClient = postgres(DATABASE_URL, {
     max: 10,
@@ -91,6 +132,11 @@ export async function teardownIntegrationTests() {
 
 export async function cleanupDatabase() {
   if (!testDb) return;
+
+  // Defense-in-depth: the same guard fires in setupIntegrationTests, but assert
+  // again here in case a future caller invokes cleanupDatabase outside the
+  // normal beforeAll path. Wiping a prod/dev DB must require deliberate opt-in.
+  assertTestDatabase(DATABASE_URL, 'cleanupDatabase');
 
   // Truncate all tables in reverse dependency order
   // This ensures we don't hit foreign key constraints
