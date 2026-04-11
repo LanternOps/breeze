@@ -1,12 +1,61 @@
 package sessionbroker
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/logging"
 )
+
+// syncBuffer is a goroutine-safe wrapper around bytes.Buffer so multiple
+// concurrent writers (e.g. the acquiring goroutine and the holding goroutine
+// in TestTimedRWMutexWarnsOnSlowAcquire) can emit logs without racing on
+// bytes.Buffer's internal grow/write state.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+// captureLogs redirects the global logger to a buffer for the duration of the
+// test via t.Cleanup. Returns the buffer — call String() to inspect.
+func captureLogs(t *testing.T) *syncBuffer {
+	t.Helper()
+	buf := &syncBuffer{}
+	logging.Init("text", "debug", buf)
+	t.Cleanup(func() {
+		// Best-effort restore: reset to stdout so other tests see normal logs.
+		logging.Init("text", "info", nil)
+	})
+	return buf
+}
+
+// withShortLockThreshold temporarily shortens slowLockThreshold for the test
+// and restores it via t.Cleanup.
+func withShortLockThreshold(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := setSlowLockThreshold(d)
+	t.Cleanup(func() {
+		setSlowLockThreshold(prev)
+	})
+}
 
 func newTestUserSession(t *testing.T, sessionID, username string, lastSeen time.Time) (*Session, *ipc.Conn) {
 	t.Helper()
@@ -583,5 +632,235 @@ func TestCloseSessionsByDesktopContext_MultipleMatches(t *testing.T) {
 	// No-match case: returns 0 without panic.
 	if b.CloseSessionsByDesktopContext("nonexistent") != 0 {
 		t.Fatal("expected 0 for nonexistent context")
+	}
+}
+
+// BenchmarkFindCapableSessionUnderConcurrentConnections measures FindCapableSession
+// throughput while K goroutines simultaneously simulate the write-lock storm
+// (removeSession) from the reconnect loop described in issue #387.
+//
+// Before the atomic-snapshot refactor, FindCapableSession acquired b.mu.RLock()
+// and was starved when write-lock goroutines competed. After the refactor it
+// reads from an atomic pointer, so throughput should be unaffected by writers.
+func BenchmarkFindCapableSessionUnderConcurrentConnections(b *testing.B) {
+	const nSessions = 5
+	const nWriters = 10 // simulates reconnect storm goroutines
+
+	// Build broker via New() so the snapshot is initialised.
+	broker := New("/tmp/bench.sock", nil)
+
+	// Populate sessions with capture capability.
+	// Sessions are created with a nil conn because FindCapableSession only reads
+	// metadata fields (Capabilities, WinSessionID) — no IPC I/O is performed.
+	for i := range nSessions {
+		s := &Session{
+			SessionID:     fmt.Sprintf("sess-%d", i),
+			IdentityKey:   fmt.Sprintf("%d", 1000+i),
+			AllowedScopes: systemHelperScopes,
+			Capabilities:  &ipc.Capabilities{CanCapture: true, CanClipboard: true},
+			WinSessionID:  "1",
+		}
+		broker.mu.Lock()
+		broker.sessions[s.SessionID] = s
+		broker.byIdentity[s.IdentityKey] = append(broker.byIdentity[s.IdentityKey], s)
+		broker.publishSnapshotLocked()
+		broker.mu.Unlock()
+	}
+
+	// Launch write-storm goroutines that repeatedly add and remove a session
+	// to simulate the handleConnection/removeSession lock contention.
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for w := range nWriters {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				sessID := fmt.Sprintf("storm-%d", id)
+				idKey := fmt.Sprintf("storm-identity-%d", id)
+				s := &Session{
+					SessionID:   sessID,
+					IdentityKey: idKey,
+				}
+				broker.mu.Lock()
+				broker.sessions[sessID] = s
+				broker.byIdentity[idKey] = []*Session{s}
+				broker.publishSnapshotLocked()
+				broker.mu.Unlock()
+
+				broker.mu.Lock()
+				delete(broker.sessions, sessID)
+				delete(broker.byIdentity, idKey)
+				broker.publishSnapshotLocked()
+				broker.mu.Unlock()
+			}
+		}(w)
+	}
+
+	b.ResetTimer()
+	for range b.N {
+		s := broker.FindCapableSession("capture", "1")
+		if s == nil {
+			// The benchmark pre-registers five capture-capable sessions in
+			// WinSessionID "1"; the write-storm goroutines only churn their
+			// own "storm-*" sessions without touching the pre-registered
+			// ones, so FindCapableSession must never return nil. A nil
+			// result indicates a regression in the atomic-snapshot path.
+			b.Fatal("FindCapableSession returned nil under concurrent writes")
+		}
+	}
+	b.StopTimer()
+
+	close(stop)
+	wg.Wait()
+}
+
+// TestSnapshotReadAfterWrite verifies that a Broker constructed via New()
+// registers a session under b.mu.Lock() + publishSnapshotLocked(), and that
+// read-only hot-path APIs (SessionCount, AllSessions, FindCapableSession)
+// immediately observe the new session via the atomic snapshot path — not
+// via the locked-fallback path.
+func TestSnapshotReadAfterWrite(t *testing.T) {
+	broker := New("/tmp/snapshot-test.sock", nil)
+
+	// Before registering anything, the snapshot is present but empty.
+	if snap := broker.snap.Load(); snap == nil {
+		t.Fatal("New() must initialise broker.snap")
+	}
+	if got := broker.SessionCount(); got != 0 {
+		t.Fatalf("empty broker SessionCount = %d, want 0", got)
+	}
+
+	// Register a session via the same locked + publish pattern that
+	// handleConnection uses internally.
+	session := &Session{
+		SessionID:     "snap-sess-1",
+		IdentityKey:   "1001",
+		Username:      "alice",
+		WinSessionID:  "1",
+		AllowedScopes: systemHelperScopes,
+		Capabilities:  &ipc.Capabilities{CanCapture: true, CanClipboard: true, CanNotify: true},
+		HelperRole:    ipc.HelperRoleSystem,
+	}
+	broker.mu.Lock()
+	broker.sessions[session.SessionID] = session
+	broker.byIdentity[session.IdentityKey] = append(broker.byIdentity[session.IdentityKey], session)
+	broker.publishSnapshotLocked()
+	broker.mu.Unlock()
+
+	// SessionCount must go through the atomic snapshot (snap.Load() branch).
+	if got := broker.SessionCount(); got != 1 {
+		t.Fatalf("SessionCount after register = %d, want 1", got)
+	}
+
+	// AllSessions must see the session.
+	infos := broker.AllSessions()
+	if len(infos) != 1 || infos[0].SessionID != session.SessionID {
+		t.Fatalf("AllSessions = %+v, want one session %q", infos, session.SessionID)
+	}
+
+	// FindCapableSession must see it via the capture capability.
+	got := broker.FindCapableSession("capture", "1")
+	if got == nil || got.SessionID != session.SessionID {
+		t.Fatalf("FindCapableSession(capture, 1) = %v, want %q", got, session.SessionID)
+	}
+
+	// Verify we really exercised the snapshot path — the snapshot must be
+	// non-nil and the snapFallbackWarned flag must NOT have been tripped.
+	if broker.snap.Load() == nil {
+		t.Fatal("expected non-nil snapshot after register")
+	}
+	if broker.snapFallbackWarned.Load() {
+		t.Fatal("snapshot fallback should not have been triggered on a New()-constructed broker")
+	}
+
+	// Remove the session and verify snapshot reflects the removal.
+	broker.mu.Lock()
+	delete(broker.sessions, session.SessionID)
+	delete(broker.byIdentity, session.IdentityKey)
+	broker.publishSnapshotLocked()
+	broker.mu.Unlock()
+
+	if got := broker.SessionCount(); got != 0 {
+		t.Fatalf("SessionCount after remove = %d, want 0", got)
+	}
+	if broker.FindCapableSession("capture", "1") != nil {
+		t.Fatal("FindCapableSession should return nil after removal")
+	}
+}
+
+// TestTimedRWMutexWarnsOnLongHold verifies that holding a write lock past
+// slowLockThreshold emits a WARN log with held_ms and caller fields. Uses a
+// short test threshold (25ms) so the test runs fast.
+func TestTimedRWMutexWarnsOnLongHold(t *testing.T) {
+	withShortLockThreshold(t, 25*time.Millisecond)
+	buf := captureLogs(t)
+
+	var mu timedRWMutex
+	mu.Lock()
+	time.Sleep(60 * time.Millisecond) // > 25ms threshold
+	mu.Unlock()
+
+	output := buf.String()
+	if !strings.Contains(output, "broker write-lock held too long") {
+		t.Fatalf("expected hold-time warning in log output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "held_ms=") {
+		t.Fatalf("expected held_ms field in log output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "caller=") {
+		t.Fatalf("expected caller field in log output, got:\n%s", output)
+	}
+}
+
+// TestTimedRWMutexNoWarnOnFastHold verifies that a short write-lock hold
+// does NOT emit a warning.
+func TestTimedRWMutexNoWarnOnFastHold(t *testing.T) {
+	withShortLockThreshold(t, 100*time.Millisecond)
+	buf := captureLogs(t)
+
+	var mu timedRWMutex
+	mu.Lock()
+	// No sleep — hold is effectively zero.
+	mu.Unlock()
+
+	if strings.Contains(buf.String(), "broker write-lock held too long") {
+		t.Fatalf("unexpected hold-time warning on fast hold:\n%s", buf.String())
+	}
+}
+
+// TestTimedRWMutexWarnsOnSlowAcquire verifies that slow Lock acquisition
+// (contention wait) still emits the existing wait-time warning.
+func TestTimedRWMutexWarnsOnSlowAcquire(t *testing.T) {
+	withShortLockThreshold(t, 25*time.Millisecond)
+	buf := captureLogs(t)
+
+	var mu timedRWMutex
+	// Acquire-and-hold on a goroutine to starve the second acquire.
+	started := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		mu.Lock()
+		close(started)
+		<-release
+		mu.Unlock()
+	}()
+	<-started
+	// Second acquire must wait until we release; wait ~60ms before releasing.
+	time.AfterFunc(60*time.Millisecond, func() { close(release) })
+	mu.Lock()
+	mu.Unlock()
+
+	output := buf.String()
+	if !strings.Contains(output, "broker write-lock acquisition slow") {
+		t.Fatalf("expected acquisition-slow warning, got:\n%s", output)
+	}
+	if !strings.Contains(output, "waited_ms=") {
+		t.Fatalf("expected waited_ms field, got:\n%s", output)
 	}
 }

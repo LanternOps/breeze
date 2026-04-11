@@ -165,6 +165,25 @@ func (s *Session) SetCapabilities(caps *ipc.Capabilities) {
 	s.mu.Unlock()
 }
 
+// GetCapabilities returns a copy of the session's reported capabilities, or
+// nil if none have been received yet. Safe to call from any goroutine; takes
+// s.mu to serialise with SetCapabilities.
+//
+// Snapshot-path readers (FindCapableSession, preferredDesktopSessionFromSnap,
+// etc.) must use this accessor instead of reading s.Capabilities directly.
+// Before the atomic-snapshot refactor, b.mu.RLock() accidentally serialised
+// those reads with SetCapabilities writers; without it, direct reads race
+// under -race.
+func (s *Session) GetCapabilities() *ipc.Capabilities {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Capabilities == nil {
+		return nil
+	}
+	cp := *s.Capabilities
+	return &cp
+}
+
 // SetTCCStatus updates the session's macOS TCC permission status.
 func (s *Session) SetTCCStatus(status *ipc.TCCStatus) {
 	s.mu.Lock()

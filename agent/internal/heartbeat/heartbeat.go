@@ -201,6 +201,11 @@ type Heartbeat struct {
 
 	// Path to the agent state file, set by main after startup.
 	statePath string
+
+	// sendHeartbeatFn is an optional override used by tests to replace the
+	// real sendHeartbeat call inside sendHeartbeatWithWatchdog. nil in
+	// production — the real sendHeartbeat method is invoked.
+	sendHeartbeatFn func()
 }
 
 func New(cfg *config.Config) *Heartbeat {
@@ -670,7 +675,7 @@ func (h *Heartbeat) Start() {
 	var lastBootCheck time.Time
 
 	// Send initial heartbeat after jitter
-	h.sendHeartbeat()
+	h.sendHeartbeatWithWatchdog()
 
 	// Send initial inventory in background
 	go h.sendInventory()
@@ -683,7 +688,7 @@ func (h *Heartbeat) Start() {
 	for {
 		select {
 		case <-ticker.C:
-			h.sendHeartbeat()
+			h.sendHeartbeatWithWatchdog()
 			now := time.Now()
 			// Send inventory every 15 minutes
 			h.mu.Lock()
@@ -1824,6 +1829,85 @@ func (h *Heartbeat) sendReliabilityMetrics() {
 		"hangs", len(metrics.AppHangs),
 		"serviceFailures", len(metrics.ServiceFailures),
 		"hardwareErrors", len(metrics.HardwareErrors))
+}
+
+// heartbeatWatchdogTimeoutNs is the duration (in nanoseconds) after which
+// sendHeartbeatWithWatchdog dumps all goroutine stacks if the wrapped send
+// has not returned. Stored as an int64 via sync/atomic so tests can override
+// it from another goroutine without tripping -race. Production default is
+// 15s; tests may shorten it via setHeartbeatWatchdogTimeout().
+var heartbeatWatchdogTimeoutNs atomic.Int64
+
+func init() {
+	heartbeatWatchdogTimeoutNs.Store(int64(15 * time.Second))
+}
+
+// heartbeatWatchdogTimeout returns the current watchdog timeout as a duration.
+func heartbeatWatchdogTimeout() time.Duration {
+	return time.Duration(heartbeatWatchdogTimeoutNs.Load())
+}
+
+// setHeartbeatWatchdogTimeout overrides the watchdog timeout and returns the
+// previous value. Intended for tests — production code should leave the
+// default alone.
+func setHeartbeatWatchdogTimeout(d time.Duration) time.Duration {
+	return time.Duration(heartbeatWatchdogTimeoutNs.Swap(int64(d)))
+}
+
+// sendHeartbeatFn is the function invoked inside sendHeartbeatWithWatchdog.
+// Tests may replace it via the sendHeartbeatFn field on *Heartbeat to inject
+// a blocking/fast implementation without spawning a real HTTP client.
+// In production it's always h.sendHeartbeat.
+func (h *Heartbeat) runHeartbeat() {
+	if fn := h.sendHeartbeatFn; fn != nil {
+		fn()
+		return
+	}
+	h.sendHeartbeat()
+}
+
+// sendHeartbeatWithWatchdog wraps sendHeartbeat with a watchdog that dumps all
+// goroutine stacks if the call blocks longer than heartbeatWatchdogTimeout.
+// This instruments the heartbeat starvation symptom described in issue #387:
+// the heartbeat loop can block indefinitely waiting on broker mutex reads
+// while the reconnect storm holds write locks.
+//
+// `done` is closed via defer so that a panic in sendHeartbeat still cancels
+// the watchdog instead of letting it fire a misleading "exceeded" warning.
+func (h *Heartbeat) sendHeartbeatWithWatchdog() {
+	start := time.Now()
+	// Snapshot the current timeout into a local so any test that overrides
+	// heartbeatWatchdogTimeoutNs after this call returns cannot race with
+	// the watchdog goroutine.
+	timeout := heartbeatWatchdogTimeout()
+	done := make(chan struct{})
+	defer close(done)
+
+	go func() {
+		const maxDumpBytes = 100 * 1024 // 100 KB cap to avoid log storm
+
+		// The select fires at most once per invocation, so sync.Once is
+		// unnecessary — a plain select is sufficient.
+		select {
+		case <-done:
+			// Normal return — watchdog cancelled.
+		case <-time.After(timeout):
+			buf := make([]byte, 1<<20) // 1 MiB stack buffer
+			n := runtime.Stack(buf, true)
+			dump := string(buf[:n])
+			if len(dump) > maxDumpBytes {
+				dump = dump[:maxDumpBytes] + "\n... [truncated]"
+			}
+			log.Warn("heartbeat send exceeded watchdog timeout — dumping goroutine stacks",
+				"elapsed_ms", time.Since(start).Milliseconds(),
+				"timeout_ms", timeout.Milliseconds(),
+				"goroutines", dump)
+		}
+	}()
+
+	h.runHeartbeat()
+
+	log.Debug("heartbeat sent", "duration_ms", time.Since(start).Milliseconds())
 }
 
 func (h *Heartbeat) sendHeartbeat() {
