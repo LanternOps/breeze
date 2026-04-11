@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { eq, and, gt } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withSystemDbAccessContext } from '../../db';
 import { c2cConnections, c2cConsentSessions } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { captureException } from '../../services/sentry';
@@ -138,6 +138,11 @@ function safeErrorMsg(msg: string, maxLen = 400): string {
  * Error:   ?error=CODE&error_description=DESC&state=STATE
  */
 m365CallbackRoute.get('/c2c/m365/callback', async (c) => {
+  // Public callback — no authMiddleware runs, so no db scope is set.
+  // The handler writes to c2c_consent_sessions and c2c_connections, both
+  // under RLS. Run the whole body in system scope so RLS policies pass;
+  // the OAuth state cookie + signed state value provide authentication.
+  return withSystemDbAccessContext(async () => {
   const frontendBase = getFrontendBaseUrl();
   const state = c.req.query('state');
   const error = c.req.query('error');
@@ -319,4 +324,5 @@ m365CallbackRoute.get('/c2c/m365/callback', async (c) => {
     clearCookie();
     return c.redirect(`${frontendBase}/c2c?c2c_error=${encodeURIComponent(msg)}`);
   }
+  });
 });
