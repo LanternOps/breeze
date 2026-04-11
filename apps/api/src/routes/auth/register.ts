@@ -194,6 +194,14 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
     // Atomic transaction — all-or-nothing creation of partner, role, user, association
     try {
       const result = await db.transaction(async (tx) => {
+        // Signup is an unauthenticated, system-initiated tenant-creation flow.
+        // Elevate this tx to system scope so RLS policies on organizations (and
+        // any future tenant-root tables in this tx) pass for rows whose ids
+        // aren't yet in any accessible_org_ids list.
+        await tx.execute(sql`select set_config('breeze.scope', 'system', true)`);
+        await tx.execute(sql`select set_config('breeze.org_id', '', true)`);
+        await tx.execute(sql`select set_config('breeze.accessible_org_ids', '*', true)`);
+
         const [newPartner] = await tx
           .insert(partners)
           .values({

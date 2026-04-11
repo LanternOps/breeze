@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { partners, organizations, sites } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
@@ -549,10 +549,19 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
     contractEnd: data.contractEnd ? new Date(data.contractEnd) : null,
     billingContact: data.billingContact
   };
-  const [organization] = await db
-    .insert(organizations)
-    .values(insertValues)
-    .returning();
+  // Creating a new organization is a tenant-creation op: the new row's id
+  // can't be in the caller's accessible_org_ids yet, so the standard
+  // breeze_has_org_access(id) INSERT/SELECT policies on organizations would
+  // reject both the insert and its RETURNING read. The caller's
+  // partner/system authority has already been checked above; escape the
+  // request's auth-scoped tx via runOutsideDbContext and open a fresh
+  // system-scoped tx for just this insert. Atomicity with the rest of the
+  // handler isn't a concern — the only follow-up here is an audit write.
+  const [organization] = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () =>
+      db.insert(organizations).values(insertValues).returning()
+    )
+  );
 
   writeRouteAudit(c, {
     orgId: organization?.id,
