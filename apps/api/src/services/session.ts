@@ -1,4 +1,4 @@
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { sessions, users } from '../db/schema';
 import { eq, and, gt } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
@@ -28,16 +28,21 @@ export async function createSession(options: CreateSessionOptions): Promise<Sess
   const tokenHash = hashToken(token);
   const expiresAt = new Date(Date.now() + SESSION_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
 
-  const result = await db
-    .insert(sessions)
-    .values({
-      userId: options.userId,
-      tokenHash,
-      ipAddress: options.ipAddress,
-      userAgent: options.userAgent,
-      expiresAt
-    })
-    .returning();
+  // Sessions are created at login time, before any request scope is set
+  // (breeze.scope defaults to 'none' which RLS denies). Wrap in system scope
+  // so the INSERT passes the sessions RLS policy.
+  const result = await withSystemDbAccessContext(() =>
+    db
+      .insert(sessions)
+      .values({
+        userId: options.userId,
+        tokenHash,
+        ipAddress: options.ipAddress,
+        userAgent: options.userAgent,
+        expiresAt
+      })
+      .returning()
+  );
 
   const session = result[0];
   if (!session) {
