@@ -23,6 +23,7 @@ import (
 	"github.com/shirou/gopsutil/v3/host"
 
 	"github.com/breeze-rmm/agent/internal/audit"
+	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
@@ -171,6 +172,7 @@ type Heartbeat struct {
 	inventoryWg sync.WaitGroup
 	retryCfg    httputil.RetryConfig
 	stopOnce    sync.Once
+	authMon     *authstate.Monitor // NEW
 
 	// Command deduplication: prevents the same commandId from being
 	// executed twice when delivered via both WebSocket and heartbeat.
@@ -428,6 +430,11 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 // SetWebSocketClient sets the WebSocket client for terminal output streaming
 func (h *Heartbeat) SetWebSocketClient(ws *websocket.Client) {
 	h.wsClient = ws
+}
+
+// SetAuthMonitor sets the shared auth-failure monitor.
+func (h *Heartbeat) SetAuthMonitor(m *authstate.Monitor) {
+	h.authMon = m
 }
 
 // SetStatePath sets the path to the agent state file for heartbeat updates.
@@ -688,6 +695,11 @@ func (h *Heartbeat) Start() {
 	for {
 		select {
 		case <-ticker.C:
+			if h.authMon != nil && h.authMon.ShouldSkip() {
+				log.Debug("skipping heartbeat tick, auth-dead",
+					"backoff", h.authMon.BackoffDuration())
+				continue
+			}
 			h.sendHeartbeatWithWatchdog()
 			now := time.Now()
 			// Send inventory every 15 minutes
@@ -2061,6 +2073,15 @@ func (h *Heartbeat) sendHeartbeat() {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusUnauthorized {
+		log.Warn("heartbeat returned 401")
+		h.healthMon.Update("heartbeat", health.Degraded, "unauthorized")
+		if h.authMon != nil {
+			h.authMon.RecordAuthFailure()
+		}
+		return
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		log.Warn("heartbeat returned non-OK status", "status", resp.StatusCode)
 		h.healthMon.Update("heartbeat", health.Degraded, fmt.Sprintf("status %d", resp.StatusCode))
@@ -2068,6 +2089,9 @@ func (h *Heartbeat) sendHeartbeat() {
 	}
 
 	h.healthMon.Update("heartbeat", health.Healthy, "")
+	if h.authMon != nil {
+		h.authMon.RecordSuccess()
+	}
 
 	// Update state file with latest heartbeat timestamp so the watchdog
 	// can detect stale heartbeats.
