@@ -37,7 +37,7 @@ services:
       }
       :80 {
         encode zstd gzip
-        @api path /api/* /health /ready /metrics/*
+        @api path /api/* /s/* /health /ready /metrics/*
         handle @api {
           reverse_proxy api:3001
         }

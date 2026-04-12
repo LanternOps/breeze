@@ -6,7 +6,7 @@ import { mkdir, unlink, stat } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { and, eq } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { devices } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
@@ -205,16 +205,19 @@ devPushRoutes.get('/push/download/:token', async (c) => {
   }
 
   const tokenHash = createHash('sha256').update(bearerToken).digest('hex');
-  const [agentDevice] = await db
-    .select({ id: devices.id })
-    .from(devices)
-    .where(
-      and(
-        eq(devices.agentId, entry.agentId),
-        eq(devices.agentTokenHash, tokenHash)
+  const agentDevice = await withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select({ id: devices.id })
+      .from(devices)
+      .where(
+        and(
+          eq(devices.agentId, entry.agentId),
+          eq(devices.agentTokenHash, tokenHash)
+        )
       )
-    )
-    .limit(1);
+      .limit(1);
+    return row;
+  });
 
   if (!agentDevice) {
     return c.json({ error: 'Invalid agent credentials' }, 401);

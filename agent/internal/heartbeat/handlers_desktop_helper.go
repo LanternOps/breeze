@@ -188,8 +188,10 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 
 // findActiveHelper looks up a capable helper for the target session, applying
 // macOS preference and filtering out disconnected Windows sessions when no
-// specific target is requested.
-func (h *Heartbeat) findActiveHelper(targetSession string) *sessionbroker.Session {
+// specific target is requested. If allowDisconnected is true, disconnected
+// sessions are accepted as a last resort (used after failing to find any
+// active/connected session).
+func (h *Heartbeat) findActiveHelper(targetSession string, allowDisconnected ...bool) *sessionbroker.Session {
 	session := h.sessionBroker.FindCapableSession("capture", targetSession)
 	if runtime.GOOS == "darwin" {
 		if preferred := h.sessionBroker.PreferredDesktopSession(); preferred != nil {
@@ -200,7 +202,9 @@ func (h *Heartbeat) findActiveHelper(targetSession string) *sessionbroker.Sessio
 		return nil
 	}
 	if session != nil && targetSession == "" && isWinSessionDisconnected(session.WinSessionID) {
-		return nil
+		if len(allowDisconnected) == 0 || !allowDisconnected[0] {
+			return nil
+		}
 	}
 	return session
 }
@@ -212,7 +216,7 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 	// Log when an existing helper is in a disconnected Windows session.
 	if session == nil {
 		if candidate := h.sessionBroker.FindCapableSession("capture", targetSession); candidate != nil && targetSession == "" && isWinSessionDisconnected(candidate.WinSessionID) {
-			log.Warn("helper is in a disconnected Windows session, spawning new helper",
+			log.Warn("helper is in a disconnected Windows session, will try spawning new helper first",
 				"helperSession", candidate.SessionID,
 				"winSession", candidate.WinSessionID)
 		}
@@ -234,7 +238,7 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 
 	if err := h.spawnDesktopHelper(targetSession); err != nil {
 		log.Warn("helper spawn failed", "error", err.Error())
-		return nil
+		// Don't give up yet — fall through to disconnected-session fallback below.
 	}
 
 	// Poll for the helper to connect (up to 10s)
@@ -245,11 +249,23 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 		}
 	}
 
+	// Last resort: accept a helper in a disconnected Windows session.
+	// GDI/fallback capture can still work in disconnected sessions, and this
+	// is common on cloud VMs (e.g. DigitalOcean) where RDP is not always active.
+	if targetSession == "" {
+		if session = h.findActiveHelper(targetSession, true); session != nil {
+			log.Info("using helper in disconnected Windows session as fallback",
+				"helperSession", session.SessionID,
+				"winSession", session.WinSessionID)
+			return session
+		}
+	}
+
 	// Distinguish between helper not connecting at all vs connecting but lacking capture capability
 	// (e.g. TCC Screen Recording not granted on macOS).
 	if h.sessionBroker != nil {
 		if desktopSessions := h.sessionBroker.SessionsWithScope("desktop"); len(desktopSessions) > 0 {
-			log.Warn("helper connected but CanCapture is false — Screen Recording permission may not be granted",
+			log.Warn("helper connected but CanCapture is false — check Screen Recording permission (macOS) or session state (Windows)",
 				"targetSession", targetSession,
 				"connectedHelpers", len(desktopSessions),
 			)
@@ -398,7 +414,7 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 			return fmt.Errorf("failed to list sessions: %w", err)
 		}
 
-		var consoleFallback, activeFallback, connectedFallback string
+		var consoleFallback, activeFallback, connectedFallback, disconnectedFallback string
 		for _, ds := range detected {
 			if ds.Type == "services" {
 				continue
@@ -413,9 +429,12 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 			if ds.State == "connected" && connectedFallback == "" {
 				connectedFallback = ds.Session
 			}
+			if ds.State == "disconnected" && disconnectedFallback == "" {
+				disconnectedFallback = ds.Session
+			}
 		}
 
-		// Priority: console > any active > any connected
+		// Priority: console > any active > any connected > disconnected (last resort)
 		switch {
 		case consoleFallback != "":
 			targetSession = consoleFallback
@@ -423,8 +442,12 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 			targetSession = activeFallback
 		case connectedFallback != "":
 			targetSession = connectedFallback
+		case disconnectedFallback != "":
+			log.Info("no active/connected session found, using disconnected session as fallback",
+				"session", disconnectedFallback)
+			targetSession = disconnectedFallback
 		default:
-			return fmt.Errorf("no active or connected non-services session found")
+			return fmt.Errorf("no non-services session found (active, connected, or disconnected)")
 		}
 	}
 

@@ -4,7 +4,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, sql, desc, inArray, lt, isNull, or } from 'drizzle-orm';
 import { customAlphabet } from 'nanoid';
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { enrollmentKeys } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { randomBytes } from 'crypto';
@@ -893,12 +893,15 @@ publicEnrollmentRoutes.get(
     }
 
     // Look up enrollment key by token hash
+    // System context required: public endpoint with no authenticated user, RLS has no org context
     const keyHash = hashEnrollmentKey(token);
-    const [enrollmentKey] = await db
-      .select()
-      .from(enrollmentKeys)
-      .where(eq(enrollmentKeys.key, keyHash))
-      .limit(1);
+    const [enrollmentKey] = await withSystemDbAccessContext(async () =>
+      db
+        .select()
+        .from(enrollmentKeys)
+        .where(eq(enrollmentKeys.key, keyHash))
+        .limit(1)
+    );
 
     if (!enrollmentKey) {
       return c.json({ error: 'Invalid or expired download link' }, 404);
@@ -920,69 +923,72 @@ publicShortLinkRoutes.get('/:code', async (c) => {
     return c.json({ error: 'Not found' }, 404);
   }
 
-  const [row] = await db
-    .select()
-    .from(enrollmentKeys)
-    .where(eq(enrollmentKeys.shortCode, code))
-    .limit(1);
+  // System context required: public endpoint with no authenticated user, RLS has no org context
+  return withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select()
+      .from(enrollmentKeys)
+      .where(eq(enrollmentKeys.shortCode, code))
+      .limit(1);
 
-  if (!row || !row.installerPlatform) {
-    return c.json({ error: 'Not found' }, 404);
-  }
+    if (!row || !row.installerPlatform) {
+      return c.json({ error: 'Not found' }, 404);
+    }
 
-  if (row.installerPlatform !== 'windows' && row.installerPlatform !== 'macos') {
-    return c.json({ error: 'Not found' }, 404);
-  }
+    if (row.installerPlatform !== 'windows' && row.installerPlatform !== 'macos') {
+      return c.json({ error: 'Not found' }, 404);
+    }
 
-  // Check expiry on the short-code row BEFORE spawning a child key.
-  if (row.expiresAt && new Date(row.expiresAt) < new Date()) {
-    return c.json({ error: 'This link has expired.' }, 410);
-  }
+    // Check expiry on the short-code row BEFORE spawning a child key.
+    if (row.expiresAt && new Date(row.expiresAt) < new Date()) {
+      return c.json({ error: 'This link has expired.' }, 410);
+    }
 
-  // The short-link row holds only the hashed token — the raw token was never stored.
-  // Spawn a fresh single-use child key FIRST so we have something to embed in the installer.
-  const rawToken = generateEnrollmentKey();
-  const tokenHash = hashEnrollmentKey(rawToken);
+    // The short-link row holds only the hashed token — the raw token was never stored.
+    // Spawn a fresh single-use child key FIRST so we have something to embed in the installer.
+    const rawToken = generateEnrollmentKey();
+    const tokenHash = hashEnrollmentKey(rawToken);
 
-  const [downloadKey] = await db
-    .insert(enrollmentKeys)
-    .values({
-      orgId: row.orgId,
-      siteId: row.siteId,
-      name: `${row.name} (short-link download)`,
-      key: tokenHash,
-      keySecretHash: row.keySecretHash,
-      maxUsage: 1,
-      expiresAt: row.expiresAt,
-      createdBy: null,
-      installerPlatform: row.installerPlatform,
-    })
-    .returning();
+    const [downloadKey] = await db
+      .insert(enrollmentKeys)
+      .values({
+        orgId: row.orgId,
+        siteId: row.siteId,
+        name: `${row.name} (short-link download)`,
+        key: tokenHash,
+        keySecretHash: row.keySecretHash,
+        maxUsage: 1,
+        expiresAt: row.expiresAt,
+        createdBy: null,
+        installerPlatform: row.installerPlatform,
+      })
+      .returning();
 
-  if (!downloadKey) {
-    return c.json({ error: 'Failed to prepare installer' }, 500);
-  }
+    if (!downloadKey) {
+      return c.json({ error: 'Failed to prepare installer' }, 500);
+    }
 
-  // Atomic: only increment usage if still under the limit.
-  // This prevents TOCTOU races and ensures a failed insert doesn't burn a slot.
-  const claimed = await db
-    .update(enrollmentKeys)
-    .set({ usageCount: sql`${enrollmentKeys.usageCount} + 1` })
-    .where(
-      and(
-        eq(enrollmentKeys.id, row.id),
-        row.maxUsage !== null
-          ? lt(enrollmentKeys.usageCount, row.maxUsage)
-          : sql`true`
+    // Atomic: only increment usage if still under the limit.
+    // This prevents TOCTOU races and ensures a failed insert doesn't burn a slot.
+    const claimed = await db
+      .update(enrollmentKeys)
+      .set({ usageCount: sql`${enrollmentKeys.usageCount} + 1` })
+      .where(
+        and(
+          eq(enrollmentKeys.id, row.id),
+          row.maxUsage !== null
+            ? lt(enrollmentKeys.usageCount, row.maxUsage)
+            : sql`true`
+        )
       )
-    )
-    .returning({ id: enrollmentKeys.id });
+      .returning({ id: enrollmentKeys.id });
 
-  if (claimed.length === 0) {
-    // Limit was hit between our read and now — clean up the child key we just inserted.
-    await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, downloadKey.id)).catch(() => {});
-    return c.json({ error: 'This link has reached its maximum usage limit.' }, 410);
-  }
+    if (claimed.length === 0) {
+      // Limit was hit between our read and now — clean up the child key we just inserted.
+      await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, downloadKey.id)).catch(() => {});
+      return c.json({ error: 'This link has reached its maximum usage limit.' }, 410);
+    }
 
-  return serveInstaller(c, downloadKey, row.installerPlatform, rawToken, true);
+    return serveInstaller(c, downloadKey, row.installerPlatform, rawToken, true);
+  });
 });
