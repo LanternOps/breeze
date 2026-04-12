@@ -12,6 +12,7 @@ import {
   listTrash,
   restoreFromTrash,
   purgeTrash,
+  summarizeBulkResults,
   type TrashItem,
 } from './fileOperations';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
@@ -49,6 +50,7 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
   const [items, setItems] = useState<TrashItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [actionLoading, setActionLoading] = useState<
     'restore' | 'purge' | 'empty' | null
@@ -58,6 +60,7 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
   const fetchTrash = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setWarning(null);
     try {
       const data = await listTrash(deviceId);
       setItems(data);
@@ -102,13 +105,20 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
     if (ids.length === 0) return;
 
     setActionLoading('restore');
+    setError(null);
+    setWarning(null);
     try {
-      await restoreFromTrash(deviceId, ids);
+      const response = await restoreFromTrash(deviceId, ids);
+      const { result, summary } = summarizeBulkResults(response.results);
       await fetchTrash();
       onRestore();
+      if (result === 'failure') {
+        setError(summary ?? 'Restore failed');
+      } else if (result === 'unverified') {
+        setWarning(summary ?? 'Some items unverified — refresh to verify');
+      }
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Restore failed';
+      const message = err instanceof Error ? err.message : 'Restore failed';
       setError(message);
     } finally {
       setActionLoading(null);
@@ -269,6 +279,12 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
       {error && (
         <div className="border-b border-red-800 bg-red-900/30 px-4 py-2 text-xs text-red-400">
           {error}
+        </div>
+      )}
+      {/* Warning banner — unverified outcomes */}
+      {warning && (
+        <div className="border-b border-amber-800 bg-amber-900/30 px-4 py-2 text-xs text-amber-400">
+          {warning}
         </div>
       )}
 
