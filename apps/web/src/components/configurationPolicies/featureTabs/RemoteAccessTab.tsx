@@ -36,15 +36,15 @@ function ToggleRow({ label, description, checked, onChange }: {
   label: string; description: string; checked: boolean; onChange: (v: boolean) => void;
 }) {
   return (
-    <div className="flex items-center justify-between rounded-md border bg-background px-4 py-3">
-      <div>
+    <div className="flex items-center justify-between gap-4 rounded-md border bg-background px-4 py-3">
+      <div className="min-w-0 flex-1">
         <p className="text-sm font-medium">{label}</p>
         <p className="text-xs text-muted-foreground">{description}</p>
       </div>
       <button
         type="button"
         onClick={() => onChange(!checked)}
-        className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${checked ? 'bg-emerald-500/80' : 'bg-muted'}`}
+        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition ${checked ? 'bg-emerald-500/80' : 'bg-muted'}`}
       >
         <span className={`inline-block h-5 w-5 rounded-full bg-white transition ${checked ? 'translate-x-5' : 'translate-x-1'}`} />
       </button>
@@ -121,8 +121,18 @@ export default function RemoteAccessTab({ policyId, existingLink, onLinkChanged,
             <Monitor className="h-4 w-4 text-muted-foreground" />
             <h3 className="text-sm font-semibold">Desktop Access</h3>
           </div>
-          <ToggleRow label="WebRTC Desktop" description="Enable browser-based remote desktop via WebRTC." checked={settings.webrtcDesktop} onChange={(v) => update('webrtcDesktop', v)} />
-          <ToggleRow label="VNC Relay" description="Enable VNC relay connections through the platform." checked={settings.vncRelay} onChange={(v) => update('vncRelay', v)} />
+          <ToggleRow
+            label="Remote Desktop"
+            description="Allow the Breeze Viewer to connect to this device via the Connect Remote Desktop action (WebRTC)."
+            checked={settings.webrtcDesktop}
+            onChange={(v) => update('webrtcDesktop', v)}
+          />
+          <ToggleRow
+            label="VNC Relay (macOS)"
+            description="Allow browser-based VNC connections to reach the login window on older Macs. The agent will enable macOS Screen Sharing on demand when a tunnel opens."
+            checked={settings.vncRelay}
+            onChange={(v) => update('vncRelay', v)}
+          />
           <ToggleRow label="Remote System Tools" description="Allow remote process manager, services, registry, terminal, and file browser." checked={settings.remoteTools} onChange={(v) => update('remoteTools', v)} />
         </div>
 

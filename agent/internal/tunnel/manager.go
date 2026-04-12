@@ -22,6 +22,10 @@ type Manager struct {
 	stopOnce        sync.Once
 	stopped         bool
 	managedByPolicy bool
+	// screenSharingSelfEnabled is true when the agent itself turned on macOS
+	// Screen Sharing for a tunnel. When false (e.g. the user had it on
+	// manually or via MDM), the agent must not turn it off on tunnel close.
+	screenSharingSelfEnabled bool
 }
 
 // NewManager creates a Manager and starts the idle reaper goroutine.
@@ -50,6 +54,16 @@ func (m *Manager) IsManagedByPolicy() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.managedByPolicy
+}
+
+// SetScreenSharingSelfEnabled records whether the agent itself turned Screen
+// Sharing on for the current tunnel. When false (user or MDM enabled it),
+// DisableScreenSharingIfIdle becomes a no-op so we don't tear down the user's
+// pre-existing Screen Sharing configuration.
+func (m *Manager) SetScreenSharingSelfEnabled(self bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.screenSharingSelfEnabled = self
 }
 
 // OpenTunnel validates limits, dials the target, and starts a relay session.
@@ -158,12 +172,19 @@ func (m *Manager) HasVNCTunnels() bool {
 
 // DisableScreenSharingIfIdle disables macOS Screen Sharing when no VNC
 // tunnels remain active. Called after closing/reaping VNC tunnels and on
-// startup to clean up after crashes. No-op when managedByPolicy is false.
+// startup to clean up after crashes. No-op when managedByPolicy is false
+// or when the agent did not enable Screen Sharing itself (user had it on).
 func (m *Manager) DisableScreenSharingIfIdle(context string) {
-	m.mu.RLock()
+	m.mu.Lock()
 	managed := m.managedByPolicy
-	m.mu.RUnlock()
+	selfEnabled := m.screenSharingSelfEnabled
+	m.mu.Unlock()
 	if !managed {
+		return
+	}
+	if !selfEnabled {
+		log.Info("skipping Screen Sharing disable — agent did not enable it",
+			"context", context)
 		return
 	}
 	if m.HasVNCTunnels() {
@@ -171,12 +192,18 @@ func (m *Manager) DisableScreenSharingIfIdle(context string) {
 	}
 	if err := DisableScreenSharing(); err != nil {
 		log.Warn("failed to disable screen sharing", "context", context, "error", err.Error())
+		return
 	}
+	m.mu.Lock()
+	m.screenSharingSelfEnabled = false
+	m.mu.Unlock()
 }
 
 // CleanupOrphanedVNC disables Screen Sharing if it's running but there are
 // no active VNC tunnels. Called on agent startup to clean up after crashes.
-// No-op when managedByPolicy is false.
+// No-op when managedByPolicy is false. We deliberately skip this cleanup on
+// startup because we can't tell whether a running Screen Sharing listener is
+// ours or the user's.
 func (m *Manager) CleanupOrphanedVNC() {
 	m.mu.RLock()
 	managed := m.managedByPolicy
@@ -187,8 +214,8 @@ func (m *Manager) CleanupOrphanedVNC() {
 	if !IsScreenSharingRunning() {
 		return
 	}
-	log.Info("disabling orphaned Screen Sharing (no active VNC tunnels)")
-	m.DisableScreenSharingIfIdle("orphan cleanup")
+	// Don't touch the listener on startup — it may belong to the user.
+	// It will either stay running (user's config) or time out naturally.
 }
 
 // Stop closes all tunnels and stops the reaper.

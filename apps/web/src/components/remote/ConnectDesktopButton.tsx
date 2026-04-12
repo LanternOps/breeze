@@ -28,6 +28,24 @@ function tryDeepLink(url: string) {
   setTimeout(() => a.remove(), 100);
 }
 
+// Reasons where VNC relay is a viable fallback (when the user has enabled VNC Relay policy).
+// These are cases where WebRTC desktop can't work but the native macOS Screen Sharing
+// path via kickstart can still connect (login window, legacy OS, helper stuck, etc).
+const VNC_FALLBACK_REASONS = new Set([
+  'unsupported_os',
+  'helper_not_connected',
+  'virtual_display_unavailable',
+]);
+
+function canFallbackToVNC(
+  desktopAccess: DesktopAccessState | null | undefined,
+  remoteAccessPolicy?: RemoteAccessPolicy | null,
+): boolean {
+  if (!desktopAccess || desktopAccess.mode !== 'unavailable') return false;
+  if (remoteAccessPolicy?.vncRelay !== true) return false;
+  return VNC_FALLBACK_REASONS.has(desktopAccess.reason ?? '');
+}
+
 function desktopAccessUnavailableReason(
   desktopAccess: DesktopAccessState | null | undefined,
   remoteAccessPolicy?: RemoteAccessPolicy | null,
@@ -36,11 +54,14 @@ function desktopAccessUnavailableReason(
     return null;
   }
 
+  // VNC fallback masks the unavailable reason — user can click through to VNC.
+  if (canFallbackToVNC(desktopAccess, remoteAccessPolicy)) {
+    return null;
+  }
+
   switch (desktopAccess.reason) {
     case 'unsupported_os':
-      return remoteAccessPolicy?.vncRelay
-        ? null  // VNC fallback available — don't show unavailable message
-        : 'Login-window desktop requires macOS 14 (Sonoma) or later. Enable VNC Relay in the device\'s configuration policy to connect at the login screen.';
+      return 'Login-window desktop requires macOS 14 (Sonoma) or later. Enable VNC Relay in the device\'s configuration policy to connect at the login screen.';
     case 'missing_entitlement':
       return 'Login-window desktop is blocked until the required Apple entitlement is approved';
     case 'manual_install':
@@ -48,9 +69,9 @@ function desktopAccessUnavailableReason(
     case 'missing_permission':
       return 'macOS permissions required for unattended desktop access are still missing';
     case 'virtual_display_unavailable':
-      return 'No capturable display is available for this Mac';
+      return 'No capturable display is available for this Mac. Enable VNC Relay to connect via macOS Screen Sharing.';
     case 'helper_not_connected':
-      return 'The macOS desktop helper is not connected yet';
+      return 'The macOS desktop helper is not connected yet. Enable VNC Relay to connect via macOS Screen Sharing.';
     default:
       return 'Desktop is unavailable on this device';
   }
@@ -80,10 +101,10 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
     setError(null);
 
     try {
-      // Auto-detect: fall back to VNC for older macOS at login screen
-      const needsVNC = desktopAccess?.mode === 'unavailable'
-        && desktopAccess?.reason === 'unsupported_os'
-        && remoteAccessPolicy?.vncRelay === true;
+      // Auto-detect: fall back to VNC when the WebRTC path can't work but VNC relay is enabled.
+      // Covers old macOS (unsupported_os), stuck helper (helper_not_connected), and virtual
+      // display unavailable — all cases where native Screen Sharing via kickstart can still connect.
+      const needsVNC = canFallbackToVNC(desktopAccess, remoteAccessPolicy);
 
       if (needsVNC) {
         // Create VNC tunnel — API generates ephemeral password
@@ -98,7 +119,6 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
         }
 
         const tunnel = await tunnelRes.json();
-        const vncPassword = tunnel.vncPassword || '';
 
         // Get WS ticket for the tunnel
         const ticketRes = await fetchWithAuth(`/tunnels/${tunnel.id}/ws-ticket`, {
@@ -115,11 +135,11 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           throw new Error('Invalid ticket response from server');
         }
 
-        // Pass password via sessionStorage (not URL) to avoid browser history exposure
+        // Don't pre-fill the password. On modern macOS the agent can't set an
+        // ephemeral VNC password via kickstart, so Screen Sharing uses whatever
+        // password the user configured in System Settings. Let noVNC's native
+        // prompt show so the user can type their real password.
         const wsUrl = `wss://${window.location.host}/api/v1/tunnel-ws/${tunnel.id}/ws?ticket=${ticket}`;
-        if (vncPassword) {
-          sessionStorage.setItem(`vnc-pwd-${tunnel.id}`, vncPassword);
-        }
         window.location.href = `/remote/vnc/${tunnel.id}?ws=${encodeURIComponent(wsUrl)}`;
 
         setStatus('idle');
