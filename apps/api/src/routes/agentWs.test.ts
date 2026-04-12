@@ -179,12 +179,10 @@ describe('agent websocket command results', () => {
 
     vi.mocked(db.select)
       .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
-      .mockReturnValueOnce(selectAgentDevice([]) as any);
-    vi.mocked(db.update).mockReturnValue({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined)
-      })
-    } as any);
+      .mockReturnValueOnce(selectAgentDevice([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([]) as any);
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
 
     const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
     const ws = wsMock();
@@ -215,11 +213,7 @@ describe('agent websocket command results', () => {
         }
       ]) as any);
 
-    vi.mocked(db.update).mockReturnValue({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined)
-      })
-    } as any);
+    vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'cmd-1' }]) as any);
 
     const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
     const ws = wsMock();
@@ -243,7 +237,9 @@ describe('agent websocket command results', () => {
 
     vi.mocked(db.select)
       .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
-      .mockReturnValueOnce(selectAgentDevice([]) as any);
+      .mockReturnValueOnce(selectAgentDevice([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([]) as any);
     vi.mocked(db.update).mockReturnValue(updateResult() as any);
 
     const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);

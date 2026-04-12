@@ -9,6 +9,9 @@ vi.mock('../db', () => ({
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
+          orderBy: vi.fn(() => ({
+            limit: vi.fn(() => Promise.resolve([]))
+          })),
           limit: vi.fn(() => Promise.resolve([]))
         }))
       }))
@@ -940,6 +943,9 @@ describe('org routes', () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            }),
             limit: vi.fn().mockResolvedValue([currentPartner])
           })
         })
@@ -1022,6 +1028,9 @@ describe('org routes', () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            }),
             limit: vi.fn().mockResolvedValue([currentPartner])
           })
         })
@@ -1069,6 +1078,9 @@ describe('org routes', () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            }),
             limit: vi.fn().mockResolvedValue([currentPartner])
           })
         })
@@ -1104,6 +1116,9 @@ describe('org routes', () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            }),
             limit: vi.fn().mockResolvedValue([currentPartner])
           })
         })
@@ -1170,6 +1185,9 @@ describe('org routes', () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            }),
             limit: vi.fn().mockResolvedValue([currentPartner])
           })
         })

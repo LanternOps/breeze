@@ -6,6 +6,8 @@ const mockExecuteCommand = vi.fn();
 
 vi.mock('../services/commandQueue', () => ({
   executeCommand: (...args: unknown[]) => mockExecuteCommand(...args),
+  DEVICE_UNREACHABLE_ERROR: 'Device is not currently reachable over the live connection. Please try again in a moment.',
+  SEND_RETRY_ATTEMPTS: 3,
   CommandTypes: {
     LIST_PROCESSES: 'LIST_PROCESSES',
     GET_PROCESS: 'GET_PROCESS',
