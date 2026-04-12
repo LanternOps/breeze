@@ -158,16 +158,32 @@ describe('serializeAccessibleOrgIds (via withDbAccessContext)', () => {
   // The execute spy captures drizzle sql`` objects; we collect the bound
   // parameter values through a custom helper that intercepts mockExecute.
 
+  /**
+   * Extract the parameter value from a drizzle sql`` object.
+   * queryChunks alternates between { value: string[] } SQL fragments and
+   * raw parameter values. For `set_config('setting', $value, true)`, the
+   * parameter we care about is the second raw value (index 3 in chunks).
+   */
+  function extractParamFromSqlObj(sqlObj: object): string | undefined {
+    const chunks = (sqlObj as { queryChunks?: unknown[] }).queryChunks ?? [];
+    // Collect only the raw (non-object) entries — these are the interpolated params
+    const rawParams: unknown[] = [];
+    for (const chunk of chunks) {
+      if (typeof chunk === 'string' || typeof chunk === 'number' || typeof chunk === 'boolean') {
+        rawParams.push(chunk);
+      }
+    }
+    // For set_config('setting', $value, true) there is one interpolated param: $value
+    return rawParams[0] as string | undefined;
+  }
+
   async function captureOrgIdsParam(context: DbAccessContext): Promise<string | undefined> {
     // We need to capture the parameter value for `breeze.accessible_org_ids`.
-    // Intercept execute calls and pull the 3rd positional parameter (index 2).
-    const paramsByCall: Array<unknown[]> = [];
+    // Intercept execute calls and pull the interpolated param from each.
+    const paramsByCall: Array<string | undefined> = [];
 
     mockExecute.mockImplementation(async (sqlObj: object) => {
-      // drizzle-orm's sql`` objects expose their parameter list via a non-public
-      // `params` property that postgres-js reads during query execution.
-      const params = (sqlObj as { params?: unknown[] }).params ?? [];
-      paramsByCall.push(params);
+      paramsByCall.push(extractParamFromSqlObj(sqlObj));
       return [];
     });
 
@@ -175,9 +191,8 @@ describe('serializeAccessibleOrgIds (via withDbAccessContext)', () => {
       return 'done';
     });
 
-    // The 3rd execute call (index 2) sets `breeze.accessible_org_ids`
-    const thirdCallParams = paramsByCall[2] ?? [];
-    return thirdCallParams[0] as string | undefined;
+    // Call order: scope(0), org_id(1), accessible_org_ids(2), accessible_partner_ids(3), user_id(4)
+    return paramsByCall[2];
   }
 
   it("returns '*' for system scope", async () => {
@@ -189,13 +204,13 @@ describe('serializeAccessibleOrgIds (via withDbAccessContext)', () => {
     expect(value).toBe('*');
   });
 
-  it("returns '*' when accessibleOrgIds is null (regardless of scope)", async () => {
+  it("returns '' when accessibleOrgIds is null for non-system scope (fail-closed)", async () => {
     const value = await captureOrgIdsParam({
       scope: 'partner',
       orgId: null,
       accessibleOrgIds: null
     });
-    expect(value).toBe('*');
+    expect(value).toBe('');
   });
 
   it("returns '' for an empty accessibleOrgIds array", async () => {
@@ -251,19 +266,32 @@ describe('serializeAccessibleOrgIds (via withDbAccessContext)', () => {
 describe('withDbAccessContext sets session variables', () => {
   // Helper: run withDbAccessContext and collect all (setting, value) pairs
   // that were passed to set_config.
+  //
+  // Each execute call receives a drizzle sql`` object whose queryChunks look
+  // like: [{ value: ["select set_config('breeze.scope', "] }, "system", { value: [", true)"] }]
+  // The setting name is embedded in the SQL text and the value is the raw param.
   async function captureSetConfigParams(
     context: DbAccessContext
   ): Promise<Record<string, string>> {
     const result: Record<string, string> = {};
 
-    // Intercept each execute call and read the params array
     mockExecute.mockImplementation(async (sqlObj: object) => {
-      const params = (sqlObj as { params?: string[] }).params ?? [];
-      // params[0] = setting name, params[1] = value
-      const key = params[0];
-      const val = params[1];
-      if (key !== undefined && val !== undefined) {
-        result[key] = val;
+      const chunks = (sqlObj as { queryChunks?: unknown[] }).queryChunks ?? [];
+      // Extract the setting name from the first SQL fragment
+      const firstChunk = chunks[0];
+      const sqlText = (firstChunk as { value?: string[] })?.value?.[0] ?? '';
+      // Match the setting name from set_config('breeze.xxx',
+      const match = sqlText.match(/set_config\('([^']+)'/);
+      // Extract the interpolated value (first raw param in chunks)
+      let paramValue: string | undefined;
+      for (const chunk of chunks) {
+        if (typeof chunk === 'string') {
+          paramValue = chunk;
+          break;
+        }
+      }
+      if (match?.[1] && paramValue !== undefined) {
+        result[match[1]] = paramValue;
       }
       return [];
     });
@@ -325,14 +353,16 @@ describe('withDbAccessContext sets session variables', () => {
     expect(params['breeze.accessible_org_ids']).toBe('');
   });
 
-  it('always sets exactly three session variables per call', async () => {
+  it('always sets exactly five session variables per call', async () => {
     const settingNames: string[] = [];
 
     mockExecute.mockImplementation(async (sqlObj: object) => {
-      const params = (sqlObj as { params?: string[] }).params ?? [];
-      const key = params[0];
-      if (key !== undefined) {
-        settingNames.push(key);
+      const chunks = (sqlObj as { queryChunks?: unknown[] }).queryChunks ?? [];
+      const firstChunk = chunks[0];
+      const sqlText = (firstChunk as { value?: string[] })?.value?.[0] ?? '';
+      const match = sqlText.match(/set_config\('([^']+)'/);
+      if (match?.[1]) {
+        settingNames.push(match[1]);
       }
       return [];
     });
@@ -342,10 +372,12 @@ describe('withDbAccessContext sets session variables', () => {
       async () => 'ok'
     );
 
-    expect(settingNames).toHaveLength(3);
+    expect(settingNames).toHaveLength(5);
     expect(settingNames).toContain('breeze.scope');
     expect(settingNames).toContain('breeze.org_id');
     expect(settingNames).toContain('breeze.accessible_org_ids');
+    expect(settingNames).toContain('breeze.accessible_partner_ids');
+    expect(settingNames).toContain('breeze.user_id');
   });
 
   it('wraps set_config calls in a transaction', async () => {
@@ -497,11 +529,17 @@ describe('RLS function contracts (documented expectations)', () => {
     const capturedScopes: string[] = [];
 
     mockExecute.mockImplementation(async (sqlObj: object) => {
-      const params = (sqlObj as { params?: string[] }).params ?? [];
-      const key = params[0];
-      const val = params[1];
-      if (key === 'breeze.scope' && val !== undefined) {
-        capturedScopes.push(val);
+      const chunks = (sqlObj as { queryChunks?: unknown[] }).queryChunks ?? [];
+      const firstChunk = chunks[0];
+      const sqlText = (firstChunk as { value?: string[] })?.value?.[0] ?? '';
+      if (sqlText.includes("'breeze.scope'")) {
+        // The scope value is the first raw param in chunks
+        for (const chunk of chunks) {
+          if (typeof chunk === 'string') {
+            capturedScopes.push(chunk);
+            break;
+          }
+        }
       }
       return [];
     });
@@ -524,15 +562,20 @@ describe('RLS function contracts (documented expectations)', () => {
   //   - '*'  → NULL (unrestricted): any org_id passes ANY() check
   //   - ''   → ARRAY[]::uuid[] (deny all)
   //   - UUIDs → parsed list; only matching rows pass
-  it("'*' is only written for system scope or null accessibleOrgIds", async () => {
+  it("'*' is only written for system scope (fail-closed for non-system null)", async () => {
     const capturedOrgIdValues: string[] = [];
 
     mockExecute.mockImplementation(async (sqlObj: object) => {
-      const params = (sqlObj as { params?: string[] }).params ?? [];
-      const key = params[0];
-      const val = params[1];
-      if (key === 'breeze.accessible_org_ids' && val !== undefined) {
-        capturedOrgIdValues.push(val);
+      const chunks = (sqlObj as { queryChunks?: unknown[] }).queryChunks ?? [];
+      const firstChunk = chunks[0];
+      const sqlText = (firstChunk as { value?: string[] })?.value?.[0] ?? '';
+      if (sqlText.includes("'breeze.accessible_org_ids'")) {
+        for (const chunk of chunks) {
+          if (typeof chunk === 'string') {
+            capturedOrgIdValues.push(chunk);
+            break;
+          }
+        }
       }
       return [];
     });
@@ -553,7 +596,7 @@ describe('RLS function contracts (documented expectations)', () => {
       async () => 'ok'
     );
 
-    // partner with null → '*' (defensive: null still grants system-like access)
+    // partner with null → '' (fail-closed: null for non-system scope = no access)
     await withDbAccessContext(
       { scope: 'partner', orgId: null, accessibleOrgIds: null },
       async () => 'ok'
@@ -561,7 +604,7 @@ describe('RLS function contracts (documented expectations)', () => {
 
     expect(capturedOrgIdValues[0]).toBe('*'); // system
     expect(capturedOrgIdValues[1]).toBe('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'); // partner/selected
-    expect(capturedOrgIdValues[2]).toBe('*'); // partner/null → unrestricted
+    expect(capturedOrgIdValues[2]).toBe(''); // partner/null → fail-closed (no access)
   });
 
   // breeze_has_org_access(target_org_id) contract:
