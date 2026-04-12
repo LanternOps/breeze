@@ -113,9 +113,13 @@ func (s *Session) handleInputMessage(data []byte) {
 
 	// On mouse down, signal the capture loop to flush the encoder pipeline so
 	// stale buffered frames are dropped and the click result appears immediately.
-	if event.Type == "mouse_down" {
-		s.clickFlush.Store(true)
-	}
+	// NOTE: disabled for now — on AMF this forces an IDR keyframe on the next
+	// frame, which is visibly larger than a P-frame and causes a brief
+	// whole-screen glitch/quality drop every click. The click result still
+	// appears promptly because inputActive above wakes the capture loop.
+	// if event.Type == "mouse_down" {
+	// 	s.clickFlush.Store(true)
+	// }
 
 	if err := s.inputHandler.HandleEvent(event); err != nil {
 		slog.Warn("Failed to handle input event", "session", s.id, "error", err.Error())
