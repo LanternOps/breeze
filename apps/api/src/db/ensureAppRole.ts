@@ -30,14 +30,24 @@ export async function ensureAppRole(): Promise<void> {
   const client = postgres(connectionString, { max: 1 });
 
   try {
-    // 1. Create or reconcile the role itself. NOSUPERUSER + NOBYPASSRLS is the
+    // 1. Create the role if it doesn't exist. NOSUPERUSER + NOBYPASSRLS is the
     //    whole point — these flags are why RLS will actually apply.
+    //
+    //    If the role already exists we deliberately do NOT run
+    //    `ALTER ROLE ... WITH NOSUPERUSER NOBYPASSRLS`, because on managed
+    //    Postgres platforms (DigitalOcean, AWS RDS, etc.) the admin user is
+    //    itself non-superuser and is blocked from altering the SUPERUSER
+    //    attribute — even a no-op `NOSUPERUSER → NOSUPERUSER` call raises
+    //    "ERROR: permission denied to alter role / Only roles with the
+    //    SUPERUSER attribute may change the SUPERUSER attribute."
+    //    The role was created with the right attributes on first run;
+    //    there is nothing to reconcile on subsequent runs. The probe in
+    //    autoMigrate already verifies rolsuper=false / rolbypassrls=false
+    //    and hard-fails startup if either has drifted.
     await client.unsafe(`
       DO $$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'breeze_app') THEN
           CREATE ROLE breeze_app WITH LOGIN NOSUPERUSER NOBYPASSRLS NOINHERIT;
-        ELSE
-          ALTER ROLE breeze_app WITH LOGIN NOSUPERUSER NOBYPASSRLS NOINHERIT;
         END IF;
       END $$;
     `);

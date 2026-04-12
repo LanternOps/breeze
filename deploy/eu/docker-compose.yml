@@ -83,6 +83,16 @@ services:
       NODE_ENV: production
       API_PORT: 3001
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+      # Optional: unprivileged app-role password. If set, autoMigrate auto-
+      # derives DATABASE_URL_APP from DATABASE_URL by swapping user/password
+      # so queries run as `breeze_app` with RLS enforced. Required on managed
+      # Postgres platforms where DATABASE_URL points at a BYPASSRLS admin.
+      BREEZE_APP_DB_PASSWORD: ${BREEZE_APP_DB_PASSWORD:-}
+      # Optional: explicit unprivileged connection string. Takes precedence
+      # over BREEZE_APP_DB_PASSWORD-based auto-derivation. Set this when you
+      # want a fully distinct connection string (different host, different
+      # user name, etc.) rather than swapping user+password on DATABASE_URL.
+      DATABASE_URL_APP: ${DATABASE_URL_APP:-}
       REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
