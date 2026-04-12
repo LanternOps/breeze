@@ -225,6 +225,20 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	// good keyframes; too high and it bursts the jitter buffer.
 	initBitrate := 2_500_000
 
+	// Probe the active input desktop BEFORE creating the encoder. On
+	// Windows, if we're starting on Winlogon / Screen-saver / UAC, DXGI
+	// Desktop Duplication can't capture it and GPU-only encoders (AMF,
+	// NVENC) can't process the GDI fallback's CPU pixels. Start directly
+	// on a software encoder in that case; when the desktop transitions to
+	// Default (user logs in), handleDesktopSwitch swaps us back to
+	// hardware. Non-Windows platforms return "" and skip this check.
+	preferHardware := true
+	if deskName := getCurrentInputDesktopName(); deskName != "" && isSecureDesktop(deskName) {
+		slog.Info("StartSession: starting on secure desktop, preferring software encoder",
+			"session", sessionID, "desktop", deskName)
+		preferHardware = false
+	}
+
 	// Create H264 encoder via factory (will use MFT on Windows).
 	// Always configure the encoder for maxFrameRate so hardware MFT rate control
 	// is correct from first frame. The capture loop throttles if needed.
@@ -234,7 +248,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		Quality:        QualityAuto,
 		Bitrate:        initBitrate,
 		FPS:            maxFrameRate,
-		PreferHardware: true,
+		PreferHardware: preferHardware,
 		GPUVendor:      m.gpuVendor,
 	})
 	if err != nil {

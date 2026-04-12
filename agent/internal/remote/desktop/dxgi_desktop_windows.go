@@ -78,6 +78,28 @@ func (c *dxgiCapturer) switchToInputDesktop() bool {
 	return true
 }
 
+// getCurrentInputDesktopName returns the name of the currently active input
+// desktop without pinning the calling thread or changing any state.
+// Intended to be called from StartSession before the capture loop is spawned,
+// so the encoder can be chosen based on whether we're starting on a secure
+// desktop (Winlogon/lock screen/UAC — cannot be captured by DXGI + hardware
+// encoders) vs the normal Default desktop.
+//
+// Returns the desktop name (e.g. "Default", "Winlogon", "Screen-saver") or
+// an empty string on failure (transient Win32 read error).
+func getCurrentInputDesktopName() string {
+	hDesk, _, _ := procOpenInputDesktop.Call(
+		0,                          // dwFlags
+		0,                          // fInherit (FALSE)
+		uintptr(desktopGenericAll), // dwDesiredAccess
+	)
+	if hDesk == 0 {
+		return ""
+	}
+	defer procCloseDesktop.Call(hDesk)
+	return desktopName(hDesk)
+}
+
 // desktopName returns the name of the given desktop handle using
 // GetUserObjectInformationW(UOI_NAME). Returns "" on failure.
 func desktopName(hDesk uintptr) string {
