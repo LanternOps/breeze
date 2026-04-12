@@ -182,6 +182,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	session.capturer = capturer
 	session.displayIndex = capConfig.DisplayIndex
 	session.captureConfig = capConfig
+	session.gpuVendor = m.gpuVendor
 
 	// Set display offset so input handler translates viewer-relative coords
 	// to virtual screen coords (required for multi-monitor setups).

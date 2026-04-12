@@ -113,6 +113,11 @@ type Session struct {
 	displayIndex int
 	// captureConfig stores the context needed to recreate capturers on monitor switches.
 	captureConfig CaptureConfig
+	// gpuVendor is the GPU vendor hint ("amd", "nvidia", "") used to pick
+	// the vendor-specific hardware encoder. Carried from SessionManager so
+	// handleDesktopSwitch can recreate a hardware encoder when the session
+	// transitions from a secure desktop (Winlogon) back to Default.
+	gpuVendor string
 
 	// Cached encoded H264 frame used as a fallback resend source when secure
 	// desktop capture yields temporary no-frame periods.

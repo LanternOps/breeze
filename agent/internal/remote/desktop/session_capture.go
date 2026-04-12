@@ -1031,11 +1031,21 @@ func (s *Session) handleDesktopSwitch() {
 		// Force repaint so DXGI gets dirty rects for the first frame after
 		// reinitializing Desktop Duplication on the Default desktop.
 		forceDesktopRepaint()
+		// If the session started on a secure desktop, the encoder is a
+		// software fallback (OpenH264). Now that we're on the Default
+		// desktop with a working DXGI TextureProvider, try to swap back
+		// to a hardware encoder so the user gets full AMF/NVENC quality.
+		tp, hasTP := cap.(TextureProvider)
+		if hasTP {
+			if enc := s.encoder.Load(); enc != nil && !enc.BackendIsHardware() {
+				s.restoreHardwareEncoder(tp)
+			}
+		}
 		// CRITICAL: DXGI reinit creates a new D3D11 device. The encoder's MFT
 		// and GPU converter hold the OLD device/context pointers. Without this
 		// update, the GPU encode path produces no frames after ~2-3 cycles.
 		if enc := s.encoder.Load(); enc != nil {
-			if tp, ok := cap.(TextureProvider); ok {
+			if hasTP {
 				enc.SetD3D11Device(tp.GetD3D11Device(), tp.GetD3D11Context())
 				slog.Info("Updated encoder D3D11 device after desktop switch", "session", s.id)
 			}
@@ -1100,6 +1110,88 @@ func (s *Session) atomicEncoderSwap(newEnc *VideoEncoder) {
 	if oldEnc != nil {
 		oldEnc.Close()
 	}
+}
+
+// restoreHardwareEncoder swaps from a software encoder (OpenH264) back to
+// a hardware encoder (AMF/NVENC/MFT). Called from handleDesktopSwitch when
+// the session transitions from a secure desktop (Winlogon/Screen-saver) back
+// to the Default desktop — the moment the user logs in. Only succeeds if
+// the factory returns an actual hardware backend; if hardware is unavailable
+// the current software encoder is kept unchanged.
+//
+// Must be called from the capture loop goroutine (same goroutine as
+// swapToSoftwareEncoder). The caller must already have verified the
+// capturer implements TextureProvider.
+func (s *Session) restoreHardwareEncoder(tp TextureProvider) {
+	cur := s.encoder.Load()
+	if cur == nil || cur.BackendIsHardware() {
+		return
+	}
+
+	var w, h int
+	if c := s.capturer; c != nil {
+		if bw, bh, err := c.GetScreenBounds(); err == nil {
+			w, h = bw, bh
+		}
+	}
+	if w == 0 || h == 0 {
+		return
+	}
+
+	fps := s.getFPS()
+	if fps <= 0 {
+		fps = 30
+	}
+	newEnc, err := NewVideoEncoder(EncoderConfig{
+		Codec:          CodecH264,
+		Quality:        QualityAuto,
+		Bitrate:        2_500_000,
+		FPS:            fps,
+		PreferHardware: true,
+		GPUVendor:      s.gpuVendor,
+	})
+	if err != nil {
+		slog.Info("restoreHardwareEncoder: factory failed, keeping software",
+			"session", s.id, "error", err.Error())
+		return
+	}
+	if newEnc.BackendIsPlaceholder() || !newEnc.BackendIsHardware() {
+		// No hardware backend available on this machine — keep software.
+		newEnc.Close()
+		return
+	}
+
+	if err := newEnc.SetDimensions(w, h); err != nil {
+		slog.Warn("restoreHardwareEncoder: SetDimensions failed, keeping software",
+			"session", s.id, "error", err.Error())
+		newEnc.Close()
+		return
+	}
+	newEnc.SetPixelFormat(s.encoderPF)
+	// Bind the fresh D3D11 device from the DXGI TextureProvider so
+	// EncodeTexture has a valid context on the first frame.
+	newEnc.SetD3D11Device(tp.GetD3D11Device(), tp.GetD3D11Context())
+
+	s.atomicEncoderSwap(newEnc)
+	s.cpuEncodeErrors = 0
+	s.gpuEncodeErrors = 0
+
+	// Rebind the adaptive controller to the new encoder and lift the
+	// software bitrate cap — hardware can sustain much higher rates.
+	// Mirror the resolution-based ceiling used in StartSession.
+	if s.adaptive != nil {
+		s.adaptive.SetEncoder(newEnc)
+		hwMaxBitrate := 8_000_000
+		if w*h > 1920*1080 {
+			hwMaxBitrate = 15_000_000
+		}
+		s.adaptive.SetMaxBitrate(hwMaxBitrate)
+	}
+
+	slog.Info("Restored hardware encoder after desktop transition",
+		"session", s.id,
+		"backend", newEnc.BackendName(),
+		"dimensions", fmt.Sprintf("%dx%d", w, h))
 }
 
 // swapToSoftwareEncoder replaces the current hardware encoder with a software
