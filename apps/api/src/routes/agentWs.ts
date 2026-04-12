@@ -880,14 +880,15 @@ async function processOrphanedCommandResult(
     const tunnelId = result.commandId.slice('tun-open-'.length);
     if (result.status !== 'completed') {
       try {
-        await db
-          .update(tunnelSessions)
-          .set({
-            status: 'failed',
-            errorMessage: result.error || result.stderr || 'Agent failed to open tunnel',
-            endedAt: new Date(),
-          })
-          .where(eq(tunnelSessions.id, tunnelId));
+        await withSystemDbAccessContext(() =>
+          db.update(tunnelSessions)
+            .set({
+              status: 'failed',
+              errorMessage: result.error || result.stderr || 'Agent failed to open tunnel',
+              endedAt: new Date(),
+            })
+            .where(eq(tunnelSessions.id, tunnelId))
+        );
         console.warn(`[AgentWs] Tunnel ${tunnelId} open failed: ${result.error || result.stderr}`);
       } catch (err) {
         console.error(`[AgentWs] Failed to update tunnel session ${tunnelId}:`, err);
@@ -896,16 +897,20 @@ async function processOrphanedCommandResult(
       try {
         // Only transition to 'connecting' if still 'pending' — avoids resurrecting
         // a tunnel the user already closed while the agent was still opening it.
-        const [current] = await db
-          .select({ status: tunnelSessions.status })
-          .from(tunnelSessions)
-          .where(eq(tunnelSessions.id, tunnelId))
-          .limit(1);
+        const current = await withSystemDbAccessContext(async () => {
+          const [row] = await db
+            .select({ status: tunnelSessions.status })
+            .from(tunnelSessions)
+            .where(eq(tunnelSessions.id, tunnelId))
+            .limit(1);
+          return row;
+        });
         if (current && current.status === 'pending') {
-          await db
-            .update(tunnelSessions)
-            .set({ status: 'connecting' })
-            .where(eq(tunnelSessions.id, tunnelId));
+          await withSystemDbAccessContext(() =>
+            db.update(tunnelSessions)
+              .set({ status: 'connecting' })
+              .where(eq(tunnelSessions.id, tunnelId))
+          );
           // Register ownership so agent binary frames are accepted
           // and early data can be buffered before the browser connects.
           registerTunnelOwnership(tunnelId, agentId);
@@ -926,14 +931,15 @@ async function processOrphanedCommandResult(
   if (result.commandId.startsWith('tun-closed-')) {
     const tunnelId = result.commandId.slice('tun-closed-'.length);
     try {
-      await db
-        .update(tunnelSessions)
-        .set({
-          status: 'disconnected',
-          endedAt: new Date(),
-          errorMessage: result.error || null,
-        })
-        .where(eq(tunnelSessions.id, tunnelId));
+      await withSystemDbAccessContext(() =>
+        db.update(tunnelSessions)
+          .set({
+            status: 'disconnected',
+            endedAt: new Date(),
+            errorMessage: result.error || null,
+          })
+          .where(eq(tunnelSessions.id, tunnelId))
+      );
       console.log(`[AgentWs] Tunnel ${tunnelId} closed by agent${result.error ? ': ' + result.error : ''}`);
     } catch (err) {
       console.error(`[AgentWs] Failed to update tunnel session ${tunnelId} on close:`, err);

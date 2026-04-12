@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import type { WSContext } from 'hono/ws';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { remoteSessions, devices, users } from '../db/schema';
 import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
 import { createWsTicket, consumeDesktopConnectCode, consumeWsTicket, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
@@ -157,41 +157,45 @@ async function validateViewerSessionAccess(
     return { valid: false, status: 403, error: 'Viewer token does not match session' };
   }
 
-  const [result] = await db
-    .select({
-      session: remoteSessions,
-      device: devices,
-      user: {
-        id: users.id,
-        email: users.email,
-        status: users.status,
-      },
-    })
-    .from(remoteSessions)
-    .innerJoin(devices, eq(remoteSessions.deviceId, devices.id))
-    .innerJoin(users, eq(remoteSessions.userId, users.id))
-    .where(eq(remoteSessions.id, sessionId))
-    .limit(1);
+  // Viewer auth bypasses JWT middleware so no RLS context is set.
+  // Use system scope — the viewer token already verified ownership.
+  return withSystemDbAccessContext(async () => {
+    const [result] = await db
+      .select({
+        session: remoteSessions,
+        device: devices,
+        user: {
+          id: users.id,
+          email: users.email,
+          status: users.status,
+        },
+      })
+      .from(remoteSessions)
+      .innerJoin(devices, eq(remoteSessions.deviceId, devices.id))
+      .innerJoin(users, eq(remoteSessions.userId, users.id))
+      .where(eq(remoteSessions.id, sessionId))
+      .limit(1);
 
-  if (!result) {
-    return { valid: false, status: 404, error: 'Session not found' };
-  }
+    if (!result) {
+      return { valid: false as const, status: 404 as const, error: 'Session not found' };
+    }
 
-  const { session, device, user } = result;
+    const { session, device, user } = result;
 
-  if (session.type !== 'desktop') {
-    return { valid: false, status: 400, error: 'Session is not a desktop session' };
-  }
+    if (session.type !== 'desktop') {
+      return { valid: false as const, status: 400 as const, error: 'Session is not a desktop session' };
+    }
 
-  if (session.userId !== payload.sub || user.id !== payload.sub || user.email !== payload.email) {
-    return { valid: false, status: 403, error: 'Viewer token does not match session owner' };
-  }
+    if (session.userId !== payload.sub || user.id !== payload.sub || user.email !== payload.email) {
+      return { valid: false as const, status: 403 as const, error: 'Viewer token does not match session owner' };
+    }
 
-  if (user.status !== 'active') {
-    return { valid: false, status: 403, error: 'User not found or inactive' };
-  }
+    if (user.status !== 'active') {
+      return { valid: false as const, status: 403 as const, error: 'User not found or inactive' };
+    }
 
-  return { valid: true, session, device, user };
+    return { valid: true as const, session, device, user };
+  });
 }
 
 /**
@@ -214,55 +218,59 @@ async function validateDesktopAccess(
     return { valid: false, error: 'Connection ticket does not match desktop session' };
   }
 
-  const [user] = await db
-    .select({ id: users.id, status: users.status })
-    .from(users)
-    .where(eq(users.id, ticketRecord.userId))
-    .limit(1);
+  // WS ticket auth bypasses JWT middleware so no RLS context is set.
+  // Use system scope — the ticket already verified ownership.
+  return withSystemDbAccessContext(async () => {
+    const [user] = await db
+      .select({ id: users.id, status: users.status })
+      .from(users)
+      .where(eq(users.id, ticketRecord.userId))
+      .limit(1);
 
-  if (!user || user.status !== 'active') {
-    return { valid: false, error: 'User not found or inactive' };
-  }
+    if (!user || user.status !== 'active') {
+      return { valid: false, error: 'User not found or inactive' };
+    }
 
-  const [result] = await db
-    .select({
-      session: remoteSessions,
-      device: devices
-    })
-    .from(remoteSessions)
-    .innerJoin(devices, eq(remoteSessions.deviceId, devices.id))
-    .where(eq(remoteSessions.id, sessionId))
-    .limit(1);
+    const [result] = await db
+      .select({
+        session: remoteSessions,
+        device: devices
+      })
+      .from(remoteSessions)
+      .innerJoin(devices, eq(remoteSessions.deviceId, devices.id))
+      .where(eq(remoteSessions.id, sessionId))
+      .limit(1);
 
-  if (!result) {
-    return { valid: false, error: 'Session not found' };
-  }
+    if (!result) {
+      return { valid: false, error: 'Session not found' };
+    }
 
-  const { session, device } = result;
+    const { session, device } = result;
 
-  if (session.type !== 'desktop') {
-    return { valid: false, error: 'Session is not a desktop session' };
-  }
+    if (session.type !== 'desktop') {
+      return { valid: false, error: 'Session is not a desktop session' };
+    }
 
-  if (session.userId !== user.id) {
-    return { valid: false, error: 'Session does not belong to this user' };
-  }
+    if (session.userId !== user.id) {
+      return { valid: false, error: 'Session does not belong to this user' };
+    }
 
-  if (!['pending', 'connecting', 'active'].includes(session.status)) {
-    return { valid: false, error: `Session is ${session.status}` };
-  }
+    if (!['pending', 'connecting', 'active'].includes(session.status)) {
+      return { valid: false, error: `Session is ${session.status}` };
+    }
 
-  if (device.status !== 'online') {
-    return { valid: false, error: 'Device is not online' };
-  }
+    if (device.status !== 'online') {
+      return { valid: false, error: 'Device is not online' };
+    }
 
-  // Remote access policy enforcement (defense-in-depth)
-  const policyCheck = await checkRemoteAccess(device.id, 'webrtcDesktop');
-  if (!policyCheck.allowed) {
-    return { valid: false, error: policyCheck.reason ?? 'Remote desktop disabled by policy' };
-  }
+    // Remote access policy enforcement (defense-in-depth)
+    const policyCheck = await checkRemoteAccess(device.id, 'webrtcDesktop');
+    if (!policyCheck.allowed) {
+      return { valid: false, error: policyCheck.reason ?? 'Remote desktop disabled by policy' };
+    }
 
-  return { valid: true, session, device, userId: user.id };
+    return { valid: true, session, device, userId: user.id };
+  });
 }
 
 /**
@@ -366,14 +374,12 @@ function createDesktopWsHandlers(sessionId: string, ticket: string | undefined) 
         }
       });
 
-      // Update session status
-      await db
-        .update(remoteSessions)
-        .set({
-          status: 'active',
-          startedAt: new Date()
-        })
-        .where(eq(remoteSessions.id, sessionId));
+      // Update session status (system scope — WS auth bypasses JWT middleware)
+      await withSystemDbAccessContext(() =>
+        db.update(remoteSessions)
+          .set({ status: 'active', startedAt: new Date() })
+          .where(eq(remoteSessions.id, sessionId))
+      );
 
       // Send desktop_stream_start command to agent
       const startCommand = {
@@ -542,18 +548,15 @@ function createDesktopWsHandlers(sessionId: string, ticket: string | undefined) 
         activeDesktopSessions.delete(sessionId);
         unregisterDesktopFrameCallback(sessionId);
 
-        // Update session status
+        // Update session status (system scope — WS auth bypasses JWT middleware)
         const endedAt = new Date();
         const durationSeconds = Math.round((endedAt.getTime() - desktopSession.startedAt.getTime()) / 1000);
 
-        await db
-          .update(remoteSessions)
-          .set({
-            status: 'disconnected',
-            endedAt,
-            durationSeconds
-          })
-          .where(eq(remoteSessions.id, sessionId));
+        await withSystemDbAccessContext(() =>
+          db.update(remoteSessions)
+            .set({ status: 'disconnected', endedAt, durationSeconds })
+            .where(eq(remoteSessions.id, sessionId))
+        );
 
         console.log(`Desktop session ${sessionId} disconnected (duration: ${durationSeconds}s)`);
       }
@@ -579,14 +582,11 @@ function createDesktopWsHandlers(sessionId: string, ticket: string | undefined) 
           const endedAt = new Date();
           const durationSeconds = Math.round((endedAt.getTime() - desktopSession.startedAt.getTime()) / 1000);
 
-          await db
-            .update(remoteSessions)
-            .set({
-              status: 'disconnected',
-              endedAt,
-              durationSeconds
-            })
-            .where(eq(remoteSessions.id, sessionId));
+          await withSystemDbAccessContext(() =>
+            db.update(remoteSessions)
+              .set({ status: 'disconnected', endedAt, durationSeconds })
+              .where(eq(remoteSessions.id, sessionId))
+          );
         } catch (dbError) {
           console.error(`Failed to update session ${sessionId} status after error:`, dbError);
         }
@@ -630,17 +630,41 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
         return c.json({ error: 'Invalid or expired connect code' }, 401); // Reject pre-deployment codes missing email field
       }
 
-      const [session] = await db
-        .select({
-          id: remoteSessions.id,
-          userId: remoteSessions.userId,
-          type: remoteSessions.type,
-          status: remoteSessions.status,
-          deviceId: remoteSessions.deviceId,
-        })
-        .from(remoteSessions)
-        .where(eq(remoteSessions.id, sessionId))
-        .limit(1);
+      // Connect-code exchange bypasses JWT middleware so no RLS context is set.
+      // Use system scope — the one-time code already verified ownership.
+      const dbResult = await withSystemDbAccessContext(async () => {
+        const [session] = await db
+          .select({
+            id: remoteSessions.id,
+            userId: remoteSessions.userId,
+            type: remoteSessions.type,
+            status: remoteSessions.status,
+            deviceId: remoteSessions.deviceId,
+          })
+          .from(remoteSessions)
+          .where(eq(remoteSessions.id, sessionId))
+          .limit(1);
+
+        let hostname: string | undefined;
+        let osType: string | undefined;
+        if (session?.deviceId) {
+          try {
+            const [device] = await db
+              .select({ hostname: devices.hostname, osType: devices.osType })
+              .from(devices)
+              .where(eq(devices.id, session.deviceId))
+              .limit(1);
+            hostname = device?.hostname ?? undefined;
+            osType = device?.osType ?? undefined;
+          } catch (err) {
+            console.error('Failed to look up device hostname for viewer title:', err);
+          }
+        }
+
+        return { session, hostname, osType };
+      });
+
+      const { session, hostname, osType } = dbResult;
 
       if (!session || session.type !== 'desktop' || session.userId !== codeRecord.userId) {
         return c.json({ error: 'Invalid or expired connect code' }, 401);
@@ -648,23 +672,6 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
 
       if (!['pending', 'connecting', 'active'].includes(session.status)) {
         return c.json({ error: 'Session is not available for connection' }, 400);
-      }
-
-      // Look up device hostname + OS for the viewer window title and OS-specific UI
-      let hostname: string | undefined;
-      let osType: string | undefined;
-      if (session.deviceId) {
-        try {
-          const [device] = await db
-            .select({ hostname: devices.hostname, osType: devices.osType })
-            .from(devices)
-            .where(eq(devices.id, session.deviceId))
-            .limit(1);
-          hostname = device?.hostname ?? undefined;
-          osType = device?.osType ?? undefined;
-        } catch (err) {
-          console.error('Failed to look up device hostname for viewer title:', err);
-        }
       }
 
       const accessToken = await createViewerAccessToken({
@@ -757,16 +764,17 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
         }, 400);
       }
 
-      const [updated] = await db
-        .update(remoteSessions)
-        .set({
-          webrtcOffer: data.offer,
-          webrtcAnswer: null,
-          status: 'connecting',
-          ...(access.session.status === 'disconnected' || access.session.status === 'active' ? { endedAt: null } : {}),
-        })
-        .where(eq(remoteSessions.id, sessionId))
-        .returning();
+      const [updated] = await withSystemDbAccessContext(() =>
+        db.update(remoteSessions)
+          .set({
+            webrtcOffer: data.offer,
+            webrtcAnswer: null,
+            status: 'connecting',
+            ...(access.session.status === 'disconnected' || access.session.status === 'active' ? { endedAt: null } : {}),
+          })
+          .where(eq(remoteSessions.id, sessionId))
+          .returning()
+      );
 
       if (!updated) {
         return c.json({ error: 'Failed to update session' }, 500);
