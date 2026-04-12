@@ -8,6 +8,7 @@ export type FileOpResult = {
   restoredPath?: string;
   status: 'success' | 'failure';
   error?: string;
+  unverified?: boolean;
 };
 
 export type TrashItem = {
