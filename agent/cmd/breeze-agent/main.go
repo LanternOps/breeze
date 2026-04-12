@@ -41,6 +41,8 @@ var (
 	enrollmentSecret string
 	enrollSiteID     string
 	enrollDeviceRole string
+	forceEnroll      bool
+	quietEnroll      bool
 	helperRole       string
 	desktopContext   string
 )
@@ -112,6 +114,8 @@ func init() {
 	enrollCmd.Flags().StringVar(&enrollmentSecret, "enrollment-secret", "", "Enrollment secret (AGENT_ENROLLMENT_SECRET on the server)")
 	enrollCmd.Flags().StringVar(&enrollSiteID, "site-id", "", "Site ID to enroll into (optional, overrides enrollment key default)")
 	enrollCmd.Flags().StringVar(&enrollDeviceRole, "device-role", "", "Device role override (e.g. workstation, server)")
+	enrollCmd.Flags().BoolVar(&forceEnroll, "force", false, "Re-enroll even if the agent already has a valid enrollment (wipes existing AgentID/AuthToken)")
+	enrollCmd.Flags().BoolVar(&quietEnroll, "quiet", false, "Suppress stdout progress output (errors still go to stderr). Intended for unattended installs.")
 	userHelperCmd.Flags().StringVar(&helperRole, "role", "system", "Helper role: 'system' (desktop capture) or 'user' (script execution)")
 	desktopHelperCmd.Flags().StringVar(&desktopContext, "context", ipc.DesktopContextUserSession, "Desktop context: 'user_session' or 'login_window'")
 
