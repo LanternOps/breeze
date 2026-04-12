@@ -15,7 +15,7 @@
   }
 
   # Regular API routes (with compression)
-  @api path /api/* /health /ready /metrics/*
+  @api path /api/* /s/* /health /ready /metrics/*
   handle @api {
     encode zstd gzip
     reverse_proxy api:3001
