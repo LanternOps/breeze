@@ -457,11 +457,33 @@ pub fn run() {
                         let mut map = lock_or_recover(&links.0, "deep_link_state");
                         map.remove(&label);
                     }
+
+                    // When the last session window closes, exit the app cleanly.
+                    // The hidden anchor window serves no purpose on its own.
+                    if label.starts_with("session-") {
+                        let counter = app_handle.state::<WindowCounter>();
+                        let n = *lock_or_recover(&counter.0, "window_counter");
+                        let has_remaining = (1..=n).any(|i| {
+                            let l = format!("session-{}", i);
+                            l != label && app_handle.get_webview_window(&l).is_some()
+                        });
+                        if !has_remaining {
+                            app_handle.exit(0);
+                        }
+                    }
                 }
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => {
                 focus_any_session_window(app_handle);
+            }
+            // Force a clean exit code on macOS. Without this, the
+            // NSApplication terminate sequence can conflict with Rust
+            // runtime cleanup (tokio, threads, mutexes) and trigger
+            // SIGABRT, which macOS interprets as a crash.
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Exit => {
+                std::process::exit(0);
             }
             _ => {}
         }
