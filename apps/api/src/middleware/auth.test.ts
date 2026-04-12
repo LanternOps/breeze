@@ -27,7 +27,8 @@ vi.mock('../db', () => ({
   db: {
     select: vi.fn()
   },
-  withDbAccessContext: vi.fn(async (_context, fn) => fn())
+  withDbAccessContext: vi.fn(async (_context, fn) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn())
 }));
 
 vi.mock('../db/schema', () => ({

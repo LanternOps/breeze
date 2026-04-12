@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 // Mock all DB and service dependencies so we can test registration without a database
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({

@@ -174,7 +174,12 @@ const rateLimiterMock = vi.fn(async () => ({
 }));
 
 vi.mock('../../services/redis', () => ({
-  getRedis: vi.fn(() => ({ multi: vi.fn() })),
+  getRedis: vi.fn(() => ({
+    multi: vi.fn(),
+    get: vi.fn().mockResolvedValue(null),
+    set: vi.fn().mockResolvedValue('OK'),
+    del: vi.fn().mockResolvedValue(1),
+  })),
 }));
 
 vi.mock('../../services/rate-limit', () => ({

@@ -110,6 +110,14 @@ vi.mock('../db/schema', () => ({
   backupJobs: {},
   patchPolicies: {},
   alertRules: {},
+  backupConfigs: { orgId: 'orgId' },
+  securityPolicies: { orgId: 'orgId' },
+  configurationPolicies: {},
+  deviceGroupMemberships: {},
+  maintenanceWindows: {},
+  softwarePolicies: {},
+  sensitiveDataPolicies: {},
+  peripheralPolicies: {},
 }));
 
 vi.mock('../services/enrollmentKeySecurity', () => ({
