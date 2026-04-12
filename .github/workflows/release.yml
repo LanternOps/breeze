@@ -1393,6 +1393,7 @@ jobs:
           key_file=$(mktemp)
           trap 'rm -f "$key_file"' EXIT
           printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" > "$key_file"
+          unset TAURI_SIGNING_PRIVATE_KEY
           cd apps/viewer
           pnpm exec tauri signer sign -f "$key_file" "$GITHUB_WORKSPACE/staging/breeze-viewer-windows.msi.zip"
           if [ ! -s "$GITHUB_WORKSPACE/staging/breeze-viewer-windows.msi.zip.sig" ]; then
