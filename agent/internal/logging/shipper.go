@@ -197,11 +197,14 @@ func (s *Shipper) shipBatch(entries []LogEntry) {
 		// stopChan is checked first (priority select) before attempting
 		// the buffer send, because when both are ready Go picks randomly
 		// and we need shutdown to win deterministically.
-		for _, e := range entries {
+		for i, e := range entries {
 			select {
 			case <-s.stopChan:
-				// Shutting down: drop all remaining entries with count.
-				s.droppedCount.Add(int64(len(entries)))
+				// Shutting down: drop entries we haven't re-buffered yet.
+				// Entries [0..i-1] are already back in the buffer and will
+				// be handled by the drain path (which also drops when
+				// auth-dead).
+				s.droppedCount.Add(int64(len(entries) - i))
 				return
 			default:
 			}
