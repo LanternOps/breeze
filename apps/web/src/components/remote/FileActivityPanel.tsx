@@ -11,6 +11,7 @@ import {
   ChevronRight,
   Clock,
   AlertCircle,
+  AlertTriangle,
   CheckCircle2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -20,7 +21,7 @@ export type FileActivity = {
   timestamp: string;
   action: 'copy' | 'move' | 'delete' | 'restore' | 'upload' | 'download' | 'purge';
   paths: string[];
-  result: 'success' | 'failure';
+  result: 'success' | 'failure' | 'unverified';
   error?: string;
 };
 
@@ -136,6 +137,7 @@ export default function FileActivityPanel({
               const config = actionConfig[activity.action];
               const ActionIcon = config.icon;
               const isFailure = activity.result === 'failure';
+              const isUnverified = activity.result === 'unverified';
 
               return (
                 <div
@@ -151,13 +153,21 @@ export default function FileActivityPanel({
                       </span>
                     </div>
                     <div className="flex items-center gap-2">
-                      {isFailure ? (
+                      {activity.result === 'failure' ? (
                         <span
                           className="inline-flex items-center gap-1 rounded-full bg-red-500/15 px-1.5 py-0.5 text-[10px] font-medium text-red-400"
                           title={activity.error || 'Operation failed'}
                         >
                           <AlertCircle className="h-2.5 w-2.5" />
                           Failed
+                        </span>
+                      ) : activity.result === 'unverified' ? (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-400"
+                          title={activity.error || "Device didn't respond in time — refresh to verify"}
+                        >
+                          <AlertTriangle className="h-2.5 w-2.5" />
+                          Unverified
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-400">
@@ -185,9 +195,12 @@ export default function FileActivityPanel({
                   </div>
 
                   {/* Error message */}
-                  {isFailure && activity.error && (
+                  {(isFailure || isUnverified) && activity.error && (
                     <p
-                      className="mt-1 truncate text-[11px] text-red-400/80"
+                      className={cn(
+                        'mt-1 truncate text-[11px]',
+                        isUnverified ? 'text-amber-400/80' : 'text-red-400/80',
+                      )}
                       title={activity.error}
                     >
                       {activity.error}

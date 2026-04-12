@@ -12,6 +12,7 @@ import {
   X,
   CheckCircle,
   AlertCircle,
+  AlertTriangle,
   HardDrive,
   Sparkles,
   FileText,
@@ -31,7 +32,14 @@ import {
 import { cn, leftPxClass, topPxClass, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
 import { buildBreadcrumbs, getParentPath, isPathRoot, joinRemotePath } from './filePathUtils';
-import { copyFiles, moveFiles, deleteFiles } from './fileOperations';
+import {
+  copyFiles,
+  moveFiles,
+  deleteFiles,
+  uploadFile,
+  summarizeBulkResults,
+  UnverifiedOperationError,
+} from './fileOperations';
 import FolderPickerDialog from './FolderPickerDialog';
 import DeleteConfirmDialog from './DeleteConfirmDialog';
 import TrashView from './TrashView';
@@ -52,7 +60,7 @@ export type TransferItem = {
   id: string;
   filename: string;
   direction: 'upload' | 'download';
-  status: 'pending' | 'transferring' | 'completed' | 'failed';
+  status: 'pending' | 'transferring' | 'completed' | 'failed' | 'unverified';
   progress: number;
   size: number;
   error?: string;
@@ -488,24 +496,14 @@ export default function FileManager({
         // Large files transit API → DB → WS → agent → disk; allow up to 2 minutes.
         const uploadController = new AbortController();
         const uploadTimeout = setTimeout(() => uploadController.abort(), 120_000);
-        let response: Response;
         try {
-          response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files/upload`, {
-            method: 'POST',
-            body: JSON.stringify({
-              path: remotePath,
-              content,
-              encoding: 'base64'
-            }),
-            signal: uploadController.signal
-          });
+          await uploadFile(
+            deviceId,
+            { path: remotePath, content, encoding: 'base64' },
+            { signal: uploadController.signal },
+          );
         } finally {
           clearTimeout(uploadTimeout);
-        }
-
-        if (!response.ok) {
-          const err = await response.json().catch(() => ({ error: 'Upload failed' }));
-          throw new Error(err.error || 'Upload failed');
         }
 
         setTransfers(prev => prev.map(t =>
@@ -516,12 +514,11 @@ export default function FileManager({
         fetchDirectory(currentPath);
       } catch (error) {
         console.error('[FileManager] Upload failed:', error);
+        const message = error instanceof Error ? error.message : 'Upload failed';
+        const status: TransferItem['status'] =
+          error instanceof UnverifiedOperationError ? 'unverified' : 'failed';
         setTransfers(prev => prev.map(t =>
-          t.id === transferId ? {
-            ...t,
-            status: 'failed',
-            error: error instanceof Error ? error.message : 'Upload failed'
-          } : t
+          t.id === transferId ? { ...t, status, error: message } : t
         ));
       }
     }
@@ -603,7 +600,7 @@ export default function FileManager({
   }, [entries, selectedItems, initiateDownload]);
 
   // Add activity log entry
-  const addActivity = useCallback((action: FileActivity['action'], paths: string[], result: 'success' | 'failure', error?: string) => {
+  const addActivity = useCallback((action: FileActivity['action'], paths: string[], result: FileActivity['result'], error?: string) => {
     setActivities(prev => [{
       id: crypto.randomUUID(),
       timestamp: new Date().toISOString(),
@@ -625,12 +622,8 @@ export default function FileManager({
         destPath: joinRemotePath(destPath, sourcePath.split('/').pop() || sourcePath.split('\\').pop() || 'file'),
       }));
       const response = await copyFiles(deviceId, items);
-      const failures = response.results.filter(r => r.status === 'failure');
-      if (failures.length > 0) {
-        addActivity('copy', selectedPaths, 'failure', `${failures.length} items failed`);
-      } else {
-        addActivity('copy', selectedPaths, 'success');
-      }
+      const { result, summary } = summarizeBulkResults(response.results);
+      addActivity('copy', selectedPaths, result, summary);
       fetchDirectory(currentPath);
       setSelectedItems(new Set());
     } catch (err) {
@@ -651,12 +644,8 @@ export default function FileManager({
         destPath: joinRemotePath(destPath, sourcePath.split('/').pop() || sourcePath.split('\\').pop() || 'file'),
       }));
       const response = await moveFiles(deviceId, items);
-      const failures = response.results.filter(r => r.status === 'failure');
-      if (failures.length > 0) {
-        addActivity('move', selectedPaths, 'failure', `${failures.length} items failed`);
-      } else {
-        addActivity('move', selectedPaths, 'success');
-      }
+      const { result, summary } = summarizeBulkResults(response.results);
+      addActivity('move', selectedPaths, result, summary);
       fetchDirectory(currentPath);
       setSelectedItems(new Set());
     } catch (err) {
@@ -673,12 +662,8 @@ export default function FileManager({
     const selectedPaths = Array.from(selectedItems);
     try {
       const response = await deleteFiles(deviceId, selectedPaths, permanent);
-      const failures = response.results.filter(r => r.status === 'failure');
-      if (failures.length > 0) {
-        addActivity('delete', selectedPaths, 'failure', `${failures.length} items failed`);
-      } else {
-        addActivity('delete', selectedPaths, 'success');
-      }
+      const { result, summary } = summarizeBulkResults(response.results);
+      addActivity('delete', selectedPaths, result, summary);
       fetchDirectory(currentPath);
       setSelectedItems(new Set());
     } catch (err) {
@@ -1509,7 +1494,12 @@ export default function FileManager({
                     </div>
                   )}
                   {transfer.error && (
-                    <p className="mt-1 text-xs text-red-500">{transfer.error}</p>
+                    <p className={cn(
+                      'mt-1 text-xs',
+                      transfer.status === 'unverified' ? 'text-amber-500' : 'text-red-500',
+                    )}>
+                      {transfer.error}
+                    </p>
                   )}
                 </div>
                 <div className="flex items-center gap-2">
@@ -1518,6 +1508,9 @@ export default function FileManager({
                   )}
                   {transfer.status === 'failed' && (
                     <AlertCircle className="h-4 w-4 text-red-500" />
+                  )}
+                  {transfer.status === 'unverified' && (
+                    <AlertTriangle className="h-4 w-4 text-amber-500" />
                   )}
                   {transfer.status === 'transferring' && (
                     <span className="text-xs text-muted-foreground">

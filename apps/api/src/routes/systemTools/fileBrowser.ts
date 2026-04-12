@@ -9,6 +9,7 @@ import {
   isCommandFailure,
   mapCommandFailure,
   buildBulkItemFailure,
+  buildSingleItemUploadBody,
   auditErrorMessage,
 } from './fileBrowserHelpers';
 import { deviceIdParamSchema, fileListQuerySchema, fileDownloadQuerySchema, fileCopyBodySchema, fileMoveBodySchema, fileDeleteBodySchema, fileTrashRestoreBodySchema, fileTrashPurgeBodySchema, fileUploadBodySchema } from './schemas';
@@ -190,8 +191,9 @@ fileBrowserRoutes.post(
     });
 
     if (isCommandFailure(result)) {
-      const { message, status } = mapCommandFailure(result, 'Failed to write file.', { mutating: true });
-      return c.json({ error: message }, status);
+      const body = buildSingleItemUploadBody(result, 'Failed to write file.');
+      const { status, ...payload } = body;
+      return c.json(payload, status);
     }
 
     try {

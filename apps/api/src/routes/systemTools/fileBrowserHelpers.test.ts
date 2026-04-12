@@ -4,6 +4,7 @@ import {
   mapCommandFailure,
   buildBulkItemFailure,
   auditErrorMessage,
+  buildSingleItemUploadBody,
 } from './fileBrowserHelpers';
 import { DEVICE_UNREACHABLE_ERROR, type CommandResult } from '../../services/commandQueue';
 
@@ -159,5 +160,38 @@ describe('auditErrorMessage', () => {
   it('returns undefined when there is no error to record', () => {
     const result: CommandResult = { status: 'completed' };
     expect(auditErrorMessage(result)).toBeUndefined();
+  });
+});
+
+describe('buildSingleItemUploadBody', () => {
+  it('marks timeout results as unverified with the mutating message', () => {
+    const result: CommandResult = { status: 'timeout', error: 'Command timed out after 30000ms' };
+    const body = buildSingleItemUploadBody(result, 'Upload failed.');
+    expect(body.unverified).toBe(true);
+    expect(body.error).toMatch(/may have completed/i);
+    expect(body.error).toMatch(/refresh to verify/i);
+    expect(body.status).toBe(504);
+  });
+
+  it('does not mark hard failures as unverified', () => {
+    const result: CommandResult = { status: 'failed', error: 'permission denied' };
+    const body = buildSingleItemUploadBody(result, 'Upload failed.');
+    expect(body.unverified).toBeUndefined();
+    expect(body.error).toBe('permission denied');
+    expect(body.status).toBe(502);
+  });
+
+  it('maps timeout-shaped error strings on failed status to unverified', () => {
+    const result: CommandResult = { status: 'failed', error: 'agent: command timed out at 30s' };
+    const body = buildSingleItemUploadBody(result, 'Upload failed.');
+    expect(body.unverified).toBe(true);
+    expect(body.status).toBe(504);
+  });
+
+  it('maps DEVICE_UNREACHABLE_ERROR to 503 without unverified', () => {
+    const result: CommandResult = { status: 'failed', error: DEVICE_UNREACHABLE_ERROR };
+    const body = buildSingleItemUploadBody(result, 'Upload failed.');
+    expect(body.unverified).toBeUndefined();
+    expect(body.status).toBe(503);
   });
 });
