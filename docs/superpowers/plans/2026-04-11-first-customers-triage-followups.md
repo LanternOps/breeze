@@ -47,6 +47,46 @@ what's in flight, and what still needs attention.
   (seed), `olivetech` (personal), `vix-it` (real abandoned prospect), `biglobe`
   (paying customer).
 
+- **`/billing/success` post-checkout page** in `breeze-billing` (PR #1, squash
+  `5f2ccab`). Replaced the inline tri-state banner on `/billing/` with a
+  dedicated route: hero + activation pill polling the subscription endpoint
+  for up to 30s, plan summary card with receipt download (retries the invoice
+  fetch 4× at 3s to work around Stripe's async PDF attachment), and a 3-card
+  "next steps" checklist deep-linking back to the main Breeze app
+  (`/settings/enrollment-keys`, `/settings/users`, `/`). Stripe checkout
+  `success_url` now points at `/billing/success?plan=<plan>`. Reviewed by
+  parallel agent pass (code quality + silent-failure hunt + comment audit);
+  fixes for poll race, `plan!` non-null assertion, receipt URL race, and
+  silent error swallowing all applied before merge.
+
+## Deploy gap (corrected 2026-04-12)
+
+The "Stripe `dahlia` shape migration" and webhook handler hardening above were
+marked **shipped** earlier in the session, but they were merged to
+`breeze-billing:main` only — the running prod containers on `breeze-us` and
+`breeze-eu` were never rebuilt. The container `recreate` after the US
+`STRIPE_WEBHOOK_SECRET` env-var change refreshed env but reused the existing
+`breeze-billing:local` image, which was still at commit `305de60` (pre-dahlia).
+
+**The dahlia fix was running in production for ~6 hours unfixed despite the
+"shipped" label.** Discovered during the `/billing/success` deploy and corrected
+in the same `git pull && docker compose build && up -d` cycle.
+
+**Lesson:** "merged to `breeze-billing:main`" ≠ "deployed". The billing service
+has no CI/CD — both droplets pull from a local git clone at `/opt/breeze-billing`
+and rebuild on demand via `docker compose build billing`. Future PRs to
+`breeze-billing` need an explicit deploy step on each droplet:
+
+```bash
+ssh root@<droplet> 'cd /opt/breeze-billing && git pull && \
+  cd /opt/breeze && docker compose build billing && docker compose up -d billing'
+```
+
+Both droplets are now at `5f2ccab` as of 2026-04-12 ~00:07 UTC. This deploy
+gap is also a candidate for the "Open — not yet scheduled" section: a CI/CD
+pipeline (or even a webhook-triggered pull-and-rebuild script) would prevent
+the next instance.
+
 ## In-flight
 
 - **Agent issue #387** — desktop helper reconnect storm on headless Windows Server.
@@ -114,10 +154,16 @@ not blocking merge. Worth picking up as a follow-up PR or during a refactor pass
   remote-browse code paths and whether any first-hour initialization could leave
   the file-listing handler in a bad state.
 
-- **`/billing/?result=success` landing page polish**. The tri-state banner is a
-  start, but the full page could be redesigned to be a proper post-purchase
-  experience: confirmation of plan, next-step CTA (enroll first device), receipt
-  download link, etc.
+- ~~**`/billing/?result=success` landing page polish**.~~ **Done** (`breeze-billing`
+  PR #1, squash `5f2ccab`). Replaced the inline tri-state banner on `/billing/`
+  with a dedicated `/billing/success` route. Hero with activation pill (polls
+  the subscription endpoint every 2s up to 30s waiting for the Stripe webhook),
+  plan summary card with receipt download (retries the invoice fetch 4× at 3s
+  to work around Stripe's async `invoice_pdf` attachment), and a 3-card "next
+  steps" checklist deep-linking back into the main Breeze app
+  (`/settings/enrollment-keys`, `/settings/users`, `/`). Stripe checkout
+  `success_url` now points at `/billing/success?plan=<plan>`. Deployed to US
+  and EU at 2026-04-12 ~00:07 UTC.
 
 ## Open — not yet scheduled (systemic / infrastructure)
 
@@ -152,6 +198,15 @@ not blocking merge. Worth picking up as a follow-up PR or during a refactor pass
   at the top level, etc.). Could be a simple Github Action. The 17-day silent
   failure window on the `dahlia` migration could have been caught on day 1 with
   this check.
+
+- **`breeze-billing` deploy automation**. Today the service has no CI/CD —
+  both droplets pull from a local git clone at `/opt/breeze-billing` and rebuild
+  on demand. This caused the dahlia fix to sit on `main` for ~6 hours unfixed
+  in prod (see "Deploy gap" above). Minimum viable: a GitHub Action that SSHes
+  to each droplet on push to `main` and runs `git pull && docker compose build
+  billing && docker compose up -d billing`. Better: GHCR-built images pulled
+  by the droplets. Either way, removing the manual step prevents the next
+  "merged ≠ deployed" incident.
 
 - **Agent log-storm protection**. The reconnect-loop bug shipped 1,500+ identical
   warnings in 24h from a single device. There should be a per-component,

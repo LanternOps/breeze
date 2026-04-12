@@ -30,13 +30,31 @@ in a single transaction. Real partners preserved.
 
 ## Immediate next moves (user chooses, roughly priority-ordered)
 
-1. **`file_list` / `file_list_drives` command timeout investigation.** First
-   paying customer hit this on her Windows 11 workstation ~1h after enrollment.
-   Highest visibility per unit effort. Root cause unknown — could be product
-   bug, her network, or first-hour init state. Start by pulling the agent logs
-   around `2026-04-11 16:12:55 UTC` on her MSI device and seeing whether the
-   commands were received / handled / responded to. Full context in tracking
-   doc section 6.
+1. **`file_list` / `file_list_drives` command timeout investigation. — DONE.**
+   Investigated against EU prod logs. Root cause was **client-side DNS
+   flakiness** on the customer's Win11 box: her local resolver logged 9×
+   `dial tcp: lookup eu.2breeze.app: no such host` in the 37 min before her
+   click. No other EU device saw a single DNS failure in the same window;
+   `eu.2breeze.app` resolves fine via 1.1.1.1 / 8.8.8.8 / 9.9.9.9. The agent
+   was unreachable at the moment she clicked, the API still considered her
+   device `online` (offline threshold not yet crossed), so the commands were
+   queued and timed out (15 s / 30 s) with a misleading "device may be
+   offline" message.
+
+   The pre-existing `sessionbroker: auth missing SID on Windows` warnings
+   firing every 30 s on her device are real but **unrelated** — the file_list
+   handler is a trivial sync call that doesn't touch the broker, and #387's
+   SID retry fix was committed 4 hours **after** her timeout anyway (her
+   agent 0.62.11 doesn't have it).
+
+   Three secondary product issues filed as **issue #391**:
+   - File browser routes return generic "device may be offline" on any
+     failure — should distinguish timeout vs offline.
+   - `executeCommand` accepts commands for devices whose WS is actually dead
+     because `devices.status='online'` lags by the offline-threshold window.
+     Should pre-check live WS for interactive commands.
+   - `sendCommandToAgent` failure releases the claim and waits for the full
+     15–30 s timeout. Should retry 3× 500 ms before giving up.
 
 2. **Systemic test infrastructure** (tracking doc: "Open — not yet scheduled").
    Highest leverage for preventing the next class of bugs:
@@ -46,7 +64,11 @@ in a single transaction. Real partners preserved.
    - Agent log-storm protection (generalize `helperWarnLimiter` across all log sites)
    - Customer onboarding watcher (pending >24h → email operator)
 
-3. **Deferred PR #388 review suggestions.** Type-design polish. Low urgency,
+3. **Implement issue #391** (file browser timeout UX). Three changes scoped
+   in the issue body. Good "ship a real customer-facing improvement in one
+   PR" candidate.
+
+4. **Deferred PR #388 review suggestions.** Type-design polish. Low urgency,
    good for a quiet session. See the "Deferred" section in the tracker.
 
 The user's original session backlog (abandoned-cart recovery worker, region

@@ -21,6 +21,35 @@ Breeze is a fast, modern Remote Monitoring and Management (RMM) platform for MSP
 Partner (MSP) → Organization (Customer) → Site (Location) → Device Group → Device
 ```
 
+### Tenant Isolation / RLS (READ BEFORE ADDING TABLES)
+The API connects to Postgres as the unprivileged `breeze_app` role. Every tenant-scoped table MUST have RLS enabled + forced + policies — there is no app-layer-only fallback. Migration `0008-tenant-rls.sql` only auto-loops tables existing at that moment; every table added since must opt in explicitly.
+
+**Five tenancy shapes** (see `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` — the contract test enforces all of them):
+1. **Direct `org_id` column** — standard 4 policies calling `breeze_has_org_access(org_id)`. Auto-discovered by the contract test; no allowlist needed.
+2. **Id-keyed (`organizations`)** — the row's own `id` is the tenant; policy calls `breeze_has_org_access(id)`. Add to `ORG_ID_KEYED_TENANT_TABLES`.
+3. **Partner-axis (`partners`, `partner_users`)** — uses `breeze_has_partner_access(partner_id)` + `breeze.accessible_partner_ids` GUC. Flat membership check, never a tree traversal. Add to `PARTNER_TENANT_TABLES`.
+4. **Dual-axis (`users`)** — partner OR org OR self-read via `breeze_current_user_id()`. Composite FK `(org_id, partner_id) → organizations(id, partner_id)` enforces structural integrity so a user row cannot point at an org from another MSP even through a policy bug.
+5. **Device-id scoped** — for tables joined to `devices`. **Heuristic:** hot agent-write-path tables get a denormalized `org_id` column (Phase 1-4 shape, faster); admin/cold tables use a `EXISTS (SELECT 1 FROM devices d WHERE d.id = t.device_id AND breeze_has_org_access(d.org_id))` join policy (Phase 5 shape, no schema churn). Add join-policy tables to `DEVICE_ID_JOIN_POLICY_TABLES`.
+6. **User-id-scoped** — `push_notifications`, `mobile_devices`, etc. Reference `breeze_current_user_id()`. Add to `USER_ID_SCOPED_TABLES`.
+
+**DB context helpers** (`apps/api/src/db/index.ts`):
+- `withDbAccessContext(ctx, fn)` — sets `breeze.scope`, `breeze.org_id`, `breeze.accessible_org_ids`, `breeze.accessible_partner_ids`, `breeze.user_id` GUCs inside a transaction. Standard request path.
+- `withSystemDbAccessContext(fn)` — system scope (`*` on all axes). Use ONLY for legitimate system-scope work (background workers, seeds, audit log writes, cross-tenant catalog reads).
+- `runOutsideDbContext(fn)` — exits AsyncLocalStorage so the next `db` access uses the bare pool. Required before calling `withSystemDbAccessContext` from inside a request to escape the request-scoped transaction.
+
+**Intentionally system-scoped (do not add RLS):** `device_commands` (agent WS path reads/writes from system scope). Anything else flagged "INTENTIONAL_UNSCOPED" in a plan doc.
+
+**Workflow when adding a new tenant-scoped table:**
+1. Pick the shape from the six above. Add policies in the same migration that creates the table — never defer.
+2. Use `IF NOT EXISTS` / `DO $$` blocks like every other migration. Never edit a shipped migration.
+3. If the new table needs an entry in any of the contract test's allowlists (shapes 2-6), add it to `rls-coverage.integration.test.ts` in the same PR.
+4. Run the contract test locally — it uses `pg_catalog` and needs a real DB.
+5. Verify locally as `breeze_app`: `docker exec -it breeze-postgres psql -U breeze_app -d breeze` and try a forged cross-tenant insert — it should fail with `new row violates row-level security policy`.
+
+**Production rollout for backfilling `org_id` columns on hot tables:** batch with `UPDATE ... WHERE ctid IN (SELECT ctid ... LIMIT N)` loops. The `SET NOT NULL` after backfill takes a brief ACCESS EXCLUSIVE lock — check `pg_stat_user_tables.n_live_tup` on the prod replica first. Tables > 1M rows must use the batched path. JOIN_POLICY shape (Phase 5) is policy-only and safe to apply in one shot regardless of row count.
+
+**Reference doc:** `docs/superpowers/plans/2026-04-11-rls-coverage-gaps.md` — source-of-truth narrative covering Buckets A/B/C (64 tables across 13 commits as of 2026-04-11) and the rationale for each shape choice.
+
 ### Database Schema Location
 - `apps/api/src/db/schema/` - All Drizzle schema definitions
 - Key tables: devices, users, organizations, sites, alerts, scripts, automations
