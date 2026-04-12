@@ -127,9 +127,9 @@ func (e *openH264Encoder) initEncoder() error {
 	params.BEnableBackgroundDetection = true
 	params.BEnableAdaptiveQuant = true
 	params.IEntropyCodingModeFlag = 0 // CAVLC (Baseline profile)
-	params.IComplexityMode = openh264.LOW_COMPLEXITY
-	params.IMinQp = 22
-	params.IMaxQp = 42
+	params.IComplexityMode = openh264.MEDIUM_COMPLEXITY
+	params.IMinQp = 18
+	params.IMaxQp = 36
 
 	// IDR every 10 seconds
 	idrInterval := uint32(fps * 10)

@@ -187,10 +187,10 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 }
 
 // findActiveHelper looks up a capable helper for the target session, applying
-// macOS preference and filtering out disconnected Windows sessions when no
-// specific target is requested. If allowDisconnected is true, disconnected
-// sessions are accepted as a last resort (used after failing to find any
-// active/connected session).
+// macOS preference and preferring the console session on Windows. If the best
+// session is disconnected, iterates all capable sessions looking for a
+// non-disconnected one (preferring the console). Falls back to a disconnected
+// session only when allowDisconnected is true.
 func (h *Heartbeat) findActiveHelper(targetSession string, allowDisconnected ...bool) *sessionbroker.Session {
 	session := h.sessionBroker.FindCapableSession("capture", targetSession)
 	if runtime.GOOS == "darwin" {
@@ -201,9 +201,55 @@ func (h *Heartbeat) findActiveHelper(targetSession string, allowDisconnected ...
 	if targetSession != "" && session != nil && session.WinSessionID != targetSession {
 		return nil
 	}
-	if session != nil && targetSession == "" && isWinSessionDisconnected(session.WinSessionID) {
-		if len(allowDisconnected) == 0 || !allowDisconnected[0] {
-			return nil
+
+	// On Windows with no target specified, prefer the console session and
+	// avoid disconnected sessions. The console is the physical display and
+	// should always be the first pick; the viewer shows RDP sessions to
+	// switch to if needed.
+	if session != nil && targetSession == "" && runtime.GOOS == "windows" {
+		consoleID := sessionbroker.GetConsoleSessionID()
+
+		// If the best session IS the console and it's not disconnected, use it.
+		if session.WinSessionID == consoleID && !isWinSessionDisconnected(session.WinSessionID) {
+			return session
+		}
+
+		// Otherwise, look for a better alternative among all capable sessions.
+		if alternatives := h.sessionBroker.SessionsWithScope("desktop"); len(alternatives) > 0 {
+			var consoleAlt, nonDisconnectedAlt *sessionbroker.Session
+			for _, alt := range alternatives {
+				caps := alt.GetCapabilities()
+				if caps == nil || !caps.CanCapture {
+					continue
+				}
+				// Console session is always preferred
+				if alt.WinSessionID == consoleID && consoleAlt == nil {
+					consoleAlt = alt
+				}
+				if !isWinSessionDisconnected(alt.WinSessionID) && nonDisconnectedAlt == nil {
+					nonDisconnectedAlt = alt
+				}
+			}
+			if consoleAlt != nil && !isWinSessionDisconnected(consoleAlt.WinSessionID) {
+				return consoleAlt
+			}
+			if nonDisconnectedAlt != nil {
+				return nonDisconnectedAlt
+			}
+			// Console is disconnected but exists — prefer it over other disconnected sessions
+			if consoleAlt != nil {
+				if len(allowDisconnected) > 0 && allowDisconnected[0] {
+					return consoleAlt
+				}
+				return nil
+			}
+		}
+
+		// Original session is disconnected, no alternatives found
+		if isWinSessionDisconnected(session.WinSessionID) {
+			if len(allowDisconnected) == 0 || !allowDisconnected[0] {
+				return nil
+			}
 		}
 	}
 	return session
@@ -419,8 +465,9 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 			if ds.Type == "services" {
 				continue
 			}
-			// Console session is always preferred
-			if ds.Session == consoleID && (ds.State == "active" || ds.State == "connected") {
+			// Console session is always preferred regardless of state —
+			// it's the physical display and should be the first pick.
+			if ds.Session == consoleID && consoleFallback == "" {
 				consoleFallback = ds.Session
 			}
 			if ds.State == "active" && activeFallback == "" {

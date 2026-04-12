@@ -134,14 +134,15 @@ func NewAdaptiveBitrate(cfg AdaptiveConfig) (*AdaptiveBitrate, error) {
 }
 
 // SetEncoder updates the encoder pointer after a mid-session encoder swap.
-// Resets encoder throughput EWMA so stale data from the old encoder doesn't
-// incorrectly cap FPS on the new encoder.
+// Resets encoder throughput EWMA AND AIMD control state so stale degradation
+// history from the old encoder doesn't cause bitrate cycling on the new one.
 func (a *AdaptiveBitrate) SetEncoder(enc *VideoEncoder) {
 	if a == nil {
 		return
 	}
 	a.mu.Lock()
 	a.encoder = enc
+	// Reset encoder throughput tracking
 	a.encoderSamples = 0
 	a.prevCaptured = 0
 	a.prevEncoded = 0
@@ -149,6 +150,11 @@ func (a *AdaptiveBitrate) SetEncoder(enc *VideoEncoder) {
 	a.lastEncoderSample = time.Time{}
 	a.encoderCapFPS = 0
 	a.encoderCapReleaseCount = 0
+	// Reset AIMD control state — old degradation backoff and stable counts
+	// don't apply to the new encoder and cause boom-bust bitrate cycling.
+	a.stableCount = 0
+	a.degradeBackoff = 0
+	a.samplesCount = 0
 	a.mu.Unlock()
 }
 
