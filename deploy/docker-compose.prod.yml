@@ -1,3 +1,11 @@
+# Breeze RMM - Production Deployment (US + EU)
+#
+# Identical on both droplets. Region-specific values come from .env.
+# See deploy/.env.example for required variables.
+#
+# Usage:
+#   docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d
+
 x-healthcheck-defaults: &healthcheck
   interval: 30s
   timeout: 10s
@@ -21,22 +29,43 @@ services:
     command: |
       sh -c 'cat > /etc/caddy/Caddyfile <<CADDYEOF
       :80 {
-        encode zstd gzip
+        # --- SSE / streaming: no compression, no buffering ---
+        @streaming {
+          path /api/v1/helper/chat/sessions/*/messages
+          path /api/v1/ai/sessions/*/stream
+        }
+        handle @streaming {
+          reverse_proxy api:3001 {
+            flush_interval -1
+          }
+        }
+
+        # --- Billing auth init ---
         @billing_auth path /api/v1/auth/billing-init
         handle @billing_auth {
           reverse_proxy billing:3002
         }
-        @api path /api/* /health /ready /metrics/*
+
+        # --- API (with compression) ---
+        @api path /api/* /s/* /health /ready /metrics/*
         handle @api {
+          encode zstd gzip
           reverse_proxy api:3001
         }
+
+        # --- Billing UI ---
         @billing path /billing /billing/*
         handle @billing {
+          encode zstd gzip
           reverse_proxy billing:3002
         }
+
+        # --- Web frontend (with compression) ---
         handle {
+          encode zstd gzip
           reverse_proxy web:4321
         }
+
         header {
           X-Content-Type-Options "nosniff"
           Referrer-Policy "strict-origin-when-cross-origin"
@@ -83,25 +112,17 @@ services:
       NODE_ENV: production
       API_PORT: 3001
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
-      # Optional: unprivileged app-role password. If set, autoMigrate auto-
-      # derives DATABASE_URL_APP from DATABASE_URL by swapping user/password
-      # so queries run as `breeze_app` with RLS enforced. Required on managed
-      # Postgres platforms where DATABASE_URL points at a BYPASSRLS admin.
-      BREEZE_APP_DB_PASSWORD: ${BREEZE_APP_DB_PASSWORD:-}
-      # Optional: explicit unprivileged connection string. Takes precedence
-      # over BREEZE_APP_DB_PASSWORD-based auto-derivation. Set this when you
-      # want a fully distinct connection string (different host, different
-      # user name, etc.) rather than swapping user+password on DATABASE_URL.
       DATABASE_URL_APP: ${DATABASE_URL_APP:-}
+      BREEZE_APP_DB_PASSWORD: ${BREEZE_APP_DB_PASSWORD:-}
       REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
       REFRESH_TOKEN_EXPIRES_IN: ${REFRESH_TOKEN_EXPIRES_IN:-7d}
       AGENT_ENROLLMENT_SECRET: ${AGENT_ENROLLMENT_SECRET:?Set AGENT_ENROLLMENT_SECRET in .env}
-      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://eu.2breeze.app}
-      PUBLIC_APP_URL: https://eu.2breeze.app
-      DASHBOARD_URL: https://eu.2breeze.app
-      PUBLIC_API_URL: https://eu.2breeze.app
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://${BREEZE_DOMAIN}}
+      PUBLIC_APP_URL: https://${BREEZE_DOMAIN}
+      DASHBOARD_URL: https://${BREEZE_DOMAIN}
+      PUBLIC_API_URL: https://${BREEZE_DOMAIN}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
       MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?Set MFA_ENCRYPTION_KEY in .env}
       ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER:-}
@@ -112,10 +133,14 @@ services:
       LOG_JSON: "true"
       METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-}
       SENTRY_DSN: ${SENTRY_DSN:-}
-      SENTRY_ENVIRONMENT: production
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-auto}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM: ${EMAIL_FROM:-noreply@2breeze.app}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       APP_VERSION: ${BREEZE_VERSION:-latest}
       BREEZE_VERSION: ${BREEZE_VERSION:-latest}
@@ -124,6 +149,12 @@ services:
       VIEWER_BINARY_DIR: /data/binaries/viewer
       HELPER_BINARY_DIR: /data/binaries/helper
       BINARY_VERSION_FILE: /data/binaries/VERSION
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_REGION: ${S3_REGION:-}
+      S3_PRESIGN_TTL: ${S3_PRESIGN_TTL:-900}
       TURN_HOST: ${TURN_HOST:-}
       TURN_PORT: ${TURN_PORT:-3478}
       TURN_SECRET: ${TURN_SECRET:-}
@@ -131,7 +162,6 @@ services:
       PARTNER_HOOKS_URL: http://billing:3002/hooks
       BILLING_SERVICE_URL: http://billing:3002
       BILLING_SERVICE_API_KEY: ${BILLING_SERVICE_API_KEY:-}
-      # MSI Signing (remote Windows signing service via Cloudflare Access)
       MSI_SIGNING_URL: ${MSI_SIGNING_URL:-}
       MSI_SIGNING_CF_ACCESS_ID: ${MSI_SIGNING_CF_ACCESS_ID:-}
       MSI_SIGNING_CF_ACCESS_SECRET: ${MSI_SIGNING_CF_ACCESS_SECRET:-}
@@ -161,8 +191,8 @@ services:
       NODE_ENV: production
       HOST: 0.0.0.0
       PORT: 4321
-      PUBLIC_API_URL: https://eu.2breeze.app
-      PUBLIC_BILLING_URL: https://eu.2breeze.app
+      PUBLIC_API_URL: https://${BREEZE_DOMAIN}
+      PUBLIC_BILLING_URL: https://${BREEZE_DOMAIN}
     depends_on:
       api:
         condition: service_healthy
@@ -192,7 +222,7 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM: ${EMAIL_FROM:-billing@2breeze.app}
-      APP_BASE_URL: https://eu.2breeze.app
+      APP_BASE_URL: https://${BREEZE_DOMAIN}
     depends_on:
       redis:
         condition: service_healthy
@@ -207,12 +237,12 @@ services:
     image: redis:7-alpine
     container_name: breeze-redis
     restart: unless-stopped
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction --maxclients 10000 --requirepass ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+    command: redis-server --appendonly yes --maxmemory ${REDIS_MAXMEMORY:-256mb} --maxmemory-policy noeviction --maxclients 10000 --requirepass ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
     volumes:
       - redis_data:/data
     healthcheck:
       <<: *healthcheck
-      test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD}', '--no-auth-warning', 'ping']
+      test: ['CMD-SHELL', 'redis-cli -a "$$REDIS_PASSWORD" --no-auth-warning ping']
       interval: 10s
       timeout: 5s
       retries: 5
@@ -226,17 +256,42 @@ services:
     restart: unless-stopped
     environment:
       WATCHTOWER_POLL_INTERVAL: 300
-      # Cleanup disabled so one previous image stays on disk for rollback.
-      # A weekly host cron prunes images older than 14 days to prevent
-      # unbounded growth: 0 3 * * 0 docker image prune -a --filter "until=336h" -f
-      WATCHTOWER_CLEANUP: "false"
       WATCHTOWER_LABEL_ENABLE: "true"
+      # Cleanup disabled so previous image stays on disk for rollback.
+      # Weekly host cron prunes images older than 14 days:
+      # 0 3 * * 0 docker image prune -a --filter "until=336h" -f
+      WATCHTOWER_CLEANUP: "false"
       DOCKER_API_VERSION: "1.54"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /root/.docker/config.json:/config.json:ro
     networks:
       - breeze
+
+  # TURN relay for WebRTC remote desktop. Opt-in via: docker compose --profile turn up -d
+  coturn:
+    image: coturn/coturn:4-alpine
+    container_name: breeze-coturn
+    restart: unless-stopped
+    profiles:
+      - turn
+    network_mode: host
+    command: >
+      turnserver
+      --listening-port=3478
+      --tls-listening-port=5349
+      --fingerprint
+      --lt-cred-mech
+      --relay-threads=4
+      --max-allocations-quota=12
+      --log-file=stdout
+      --verbose
+      --min-port=49152
+      --max-port=65535
+      --no-cli
+      --static-auth-secret=${TURN_SECRET:-}
+      --realm=${TURN_REALM:-breeze.local}
+      --external-ip=${TURN_HOST:-}
 
 networks:
   breeze:

@@ -74,6 +74,12 @@ The API connects to Postgres as the unprivileged `breeze_app` role. Every tenant
 - Use `window.location.hash` (`#value`) for client-side UI state like selected tabs, selected items in lists, etc. See `DeviceDetails.tsx` and `OrganizationsPage.tsx` for examples.
 - Do **not** use query params (`?key=value`) for transient UI state — keep the pattern consistent.
 
+### No Internal Infrastructure Details in Public Code
+- **Never commit** IP addresses, server hostnames, datacenter regions, droplet IPs, or internal domain mappings to the public repo.
+- Region-specific values belong in `.env` files (gitignored), not in code or config templates.
+- `.env.example` files should use generic placeholders (`host`, `password`, `your-domain.example.com`), not real values.
+- The `internal/` directory is gitignored and safe for strategy docs, internal notes, and infra-specific details.
+
 ### Shared Code
 - `packages/shared/src/types/` - TypeScript interfaces
 - `packages/shared/src/validators/` - Zod schemas
