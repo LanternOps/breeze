@@ -19,15 +19,20 @@ type Session struct {
 	Cols     uint16
 	Rows     uint16
 	Shell    string
-	pty      *os.File       // used on Unix/macOS for real PTY master fd
-	stdin    io.WriteCloser // used on Windows for pipe-based stdin
-	cmd      *exec.Cmd
+	pty      *os.File       // used on Unix/macOS for real PTY master fd; on Windows ConPTY for output pipe
+	stdin    io.WriteCloser // used on Windows for pipe-based stdin (both ConPTY and legacy pipes)
+	cmd      *exec.Cmd      // process command (Unix/macOS; nil on Windows ConPTY)
 	mu       sync.Mutex
 	closed   bool
-	waitOnce sync.Once // ensures cmd.Wait() is called exactly once
+	waitOnce sync.Once // ensures process wait is called exactly once
 	endOnce  sync.Once // ensures terminal close callback runs once
 	onOutput func(data []byte)
 	onClose  func(err error)
+
+	// Windows ConPTY handles (zero on Unix/macOS).
+	hConPty uintptr // HPCON pseudo console handle
+	hProc   uintptr // child process handle
+	hThread uintptr // child primary thread handle
 }
 
 // Manager manages terminal sessions
@@ -222,11 +227,9 @@ func (s *Session) close() error {
 		}
 	}
 
-	// Kill process if still running
-	if s.cmd != nil && s.cmd.Process != nil {
-		s.cmd.Process.Kill()
-		s.waitCmd()
-	}
+	// Kill and wait for process — platform-specific
+	s.killProcess()
+	s.waitCmd()
 
 	log.Debug("session closed", "sessionId", s.ID)
 
@@ -239,9 +242,7 @@ func (s *Session) close() error {
 func (s *Session) waitCmd() error {
 	var err error
 	s.waitOnce.Do(func() {
-		if s.cmd != nil {
-			err = s.cmd.Wait()
-		}
+		err = s.awaitProcess()
 	})
 	return err
 }
