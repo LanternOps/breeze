@@ -8,8 +8,11 @@ func TestIsSecureDesktop(t *testing.T) {
 		desktopName string
 		want        bool
 	}{
-		// Empty name: Win32 couldn't read it — assume secure, use GDI.
-		{"empty", "", true},
+		// Empty name: Win32 couldn't read it — treat as NOT secure so
+		// callers retry DXGI. If DXGI truly can't attach it will fail on
+		// its own and the caller falls to GDI then. Treating empty as
+		// secure caused permanent GDI fallback on transient Win32 failures.
+		{"empty", "", false},
 		// Normal desktop — canonical casing.
 		{"Default", "Default", false},
 		// Case-insensitive matches for "Default".

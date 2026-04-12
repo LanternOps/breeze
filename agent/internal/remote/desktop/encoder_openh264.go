@@ -129,7 +129,7 @@ func (e *openH264Encoder) initEncoder() error {
 	params.IEntropyCodingModeFlag = 0 // CAVLC (Baseline profile)
 	params.IComplexityMode = openh264.MEDIUM_COMPLEXITY
 	params.IMinQp = 18
-	params.IMaxQp = 36
+	params.IMaxQp = 42
 
 	// IDR every 10 seconds
 	idrInterval := uint32(fps * 10)
@@ -167,7 +167,7 @@ func (e *openH264Encoder) initEncoder() error {
 		"bitrate", bitrate,
 		"fps", fps,
 		"profile", "baseline",
-		"complexity", "low",
+		"complexity", "medium",
 	)
 	return nil
 }

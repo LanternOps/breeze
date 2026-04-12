@@ -15,8 +15,8 @@ type AdaptiveConfig struct {
 	MinQuality     QualityPreset
 	MaxQuality     QualityPreset
 	Cooldown       time.Duration
-	MaxFPS         int        // maximum FPS ceiling (from encoder/session)
-	OnFPSChange    func(int)  // called when adaptive FPS changes
+	MaxFPS         int       // maximum FPS ceiling (from encoder/session)
+	OnFPSChange    func(int) // called when adaptive FPS changes
 }
 
 // minBitsPerFrame is the minimum bits each frame should receive to maintain
@@ -56,25 +56,6 @@ type AdaptiveBitrate struct {
 	// before upgrading to prevent the boom-bust cycle where the controller
 	// ramps back to the same bitrate that caused congestion.
 	degradeBackoff int
-
-	// Encoder throughput tracking — caps FPS when encoder can't keep up.
-	// Common on headless servers where GPU encoding fails and software MFT
-	// can only sustain ~15fps instead of the requested 60fps.
-	//
-	// Uses observed encoded-frames-per-second (not an encoded/captured
-	// ratio): when the cap drops capture to match encoder output, a ratio
-	// would recover toward 1.0 and release the cap, while an observed-FPS
-	// measurement correctly stays at the encoder's true ceiling.
-	prevCaptured           uint64
-	prevEncoded            uint64
-	lastEncoderSample      time.Time
-	smoothedEncodedFPS     float64 // EWMA of observed encoder output rate
-	encoderSamples         int
-	encoderCapFPS          int // currently-applied cap (0 = no cap)
-	encoderCapReleaseCount int // consecutive samples above release threshold
-
-	// clock is overridable for tests.
-	clock func() time.Time
 }
 
 func NewAdaptiveBitrate(cfg AdaptiveConfig) (*AdaptiveBitrate, error) {
@@ -129,32 +110,16 @@ func NewAdaptiveBitrate(cfg AdaptiveConfig) (*AdaptiveBitrate, error) {
 		maxFPS:        maxFPS,
 		currentFPS:    initialFPS,
 		onFPSChange:   cfg.OnFPSChange,
-		clock:         time.Now,
 	}, nil
 }
 
 // SetEncoder updates the encoder pointer after a mid-session encoder swap.
-// Resets encoder throughput EWMA AND AIMD control state so stale degradation
-// history from the old encoder doesn't cause bitrate cycling on the new one.
 func (a *AdaptiveBitrate) SetEncoder(enc *VideoEncoder) {
 	if a == nil {
 		return
 	}
 	a.mu.Lock()
 	a.encoder = enc
-	// Reset encoder throughput tracking
-	a.encoderSamples = 0
-	a.prevCaptured = 0
-	a.prevEncoded = 0
-	a.smoothedEncodedFPS = 0
-	a.lastEncoderSample = time.Time{}
-	a.encoderCapFPS = 0
-	a.encoderCapReleaseCount = 0
-	// Reset AIMD control state — old degradation backoff and stable counts
-	// don't apply to the new encoder and cause boom-bust bitrate cycling.
-	a.stableCount = 0
-	a.degradeBackoff = 0
-	a.samplesCount = 0
 	a.mu.Unlock()
 }
 
@@ -207,17 +172,8 @@ func (a *AdaptiveBitrate) SoftResetForActivity() {
 	a.stableCount = 0
 	a.degradeBackoff = 0
 	a.samplesCount = 0 // reset network EWMA warmup for fresh conditions
-	// Intentionally preserve encoderSamples / encoderCapFPS: the encoder's
-	// max sustainable throughput is a property of hardware/driver, not of
-	// user activity, so the cap must outlive idle→active transitions.
 
 	newFPS := clampInt(moderate/minBitsPerFrame, 10, a.maxFPS)
-	// Respect an active encoder cap — hardware capacity doesn't change with
-	// user activity, so the cap must clamp the post-reset FPS directly
-	// instead of relying on the next viewer_stats tick to re-apply it.
-	if a.encoderCapFPS > 0 && newFPS > a.encoderCapFPS {
-		newFPS = a.encoderCapFPS
-	}
 	prevFPS := a.currentFPS
 	a.currentFPS = newFPS
 	fpsCallback := a.onFPSChange
@@ -227,7 +183,6 @@ func (a *AdaptiveBitrate) SoftResetForActivity() {
 		"bitrate", moderate,
 		"fps", newFPS,
 		"prevFPS", prevFPS,
-		"encoderCap", a.encoderCapFPS,
 	)
 
 	if encoder != nil {
@@ -238,18 +193,19 @@ func (a *AdaptiveBitrate) SoftResetForActivity() {
 	}
 }
 
-// CapForSoftwareEncoder reduces the ABR ceiling when GPU H264 encoding is
-// unavailable and the software MFT is the fallback. The software encoder can't
-// sustain high bitrate/FPS without stalling, so we cap to conservative limits
-// that keep the MFT's rate controller happy (fewer buffering stalls).
+// CapForSoftwareEncoder clamps the bitrate ceiling when a software encoder
+// (OpenH264) is in use. At 1440p, targeting >4Mbps with a software encoder
+// wastes CPU on per-frame compression work without producing proportionally
+// better quality for remote support. The cap is bitrate-only — FPS is left
+// at the encoder's native rate; if the CPU can't keep up, frames drop
+// naturally at the capture loop.
 func (a *AdaptiveBitrate) CapForSoftwareEncoder() {
 	if a == nil {
 		return
 	}
 	a.mu.Lock()
 
-	const swMaxBitrate = 3_000_000 // 3 Mbps — OpenH264 handles this well
-	const swMaxFPS = 45            // 45fps — OpenH264 is deterministic, no stalls
+	const swMaxBitrate = 4_000_000 // 4 Mbps
 
 	if a.maxBitrate > swMaxBitrate {
 		a.maxBitrate = swMaxBitrate
@@ -257,20 +213,12 @@ func (a *AdaptiveBitrate) CapForSoftwareEncoder() {
 	if a.targetBitrate > a.maxBitrate {
 		a.targetBitrate = a.maxBitrate
 	}
-	a.maxFPS = swMaxFPS
-	newFPS := clampInt(a.targetBitrate/minBitsPerFrame, 10, swMaxFPS)
-	prevFPS := a.currentFPS
-	a.currentFPS = newFPS
 	encoder := a.encoder
-	fpsCallback := a.onFPSChange
 	targetBitrate := a.targetBitrate
 
-	slog.Info("Adaptive: capped for software encoder (no GPU H264)",
+	slog.Info("Adaptive: capped for software encoder",
 		"maxBitrate", a.maxBitrate,
 		"targetBitrate", targetBitrate,
-		"maxFPS", swMaxFPS,
-		"fps", newFPS,
-		"prevFPS", prevFPS,
 	)
 	a.mu.Unlock()
 
@@ -278,71 +226,6 @@ func (a *AdaptiveBitrate) CapForSoftwareEncoder() {
 		if err := encoder.SetBitrate(targetBitrate); err != nil {
 			slog.Warn("failed to apply software encoder bitrate cap", "bitrate", targetBitrate, "error", err.Error())
 		}
-	}
-	if newFPS != prevFPS && fpsCallback != nil {
-		fpsCallback(newFPS)
-	}
-}
-
-// UpdateEncoderThroughput feeds encoder-side metrics into the adaptive controller.
-// When the encoder produces significantly fewer frames than captured (common with
-// software MFT on servers without GPU H264 support), FPS is capped to match actual
-// encoder capacity. This prevents wasting CPU on captures the encoder discards.
-//
-// The rate is measured as encoded-frames-per-second over the wall-clock interval
-// between calls, NOT as an encoded/captured ratio. Ratio-based measurement is
-// a positive-feedback loop: capping capture makes the ratio recover to 1.0 even
-// though encoder throughput is unchanged.
-func (a *AdaptiveBitrate) UpdateEncoderThroughput(captured, encoded uint64) {
-	if a == nil {
-		return
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.updateEncoderThroughputLocked(captured, encoded, a.clock())
-}
-
-func (a *AdaptiveBitrate) updateEncoderThroughputLocked(captured, encoded uint64, now time.Time) {
-	if a.lastEncoderSample.IsZero() {
-		a.lastEncoderSample = now
-		a.prevCaptured = captured
-		a.prevEncoded = encoded
-		return
-	}
-
-	interval := now.Sub(a.lastEncoderSample)
-	// Need a meaningful interval — skip sub-100ms samples (would amplify noise).
-	// On long gaps (>5s, e.g. paused session) reset the baseline so stale data
-	// doesn't pollute the EWMA.
-	if interval < 100*time.Millisecond {
-		return
-	}
-	if interval > 5*time.Second {
-		a.lastEncoderSample = now
-		a.prevCaptured = captured
-		a.prevEncoded = encoded
-		a.encoderSamples = 0
-		a.smoothedEncodedFPS = 0
-		return
-	}
-
-	deltaCaptured := captured - a.prevCaptured
-	deltaEncoded := encoded - a.prevEncoded
-	a.lastEncoderSample = now
-	a.prevCaptured = captured
-	a.prevEncoded = encoded
-
-	// Need enough captured frames to trust the measurement.
-	if deltaCaptured < 5 {
-		return
-	}
-
-	observedFPS := float64(deltaEncoded) / interval.Seconds()
-	a.encoderSamples++
-	if a.encoderSamples == 1 {
-		a.smoothedEncodedFPS = observedFPS
-	} else {
-		a.smoothedEncodedFPS = ewmaAlpha*observedFPS + (1-ewmaAlpha)*a.smoothedEncodedFPS
 	}
 }
 
@@ -454,44 +337,6 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 	// Scale FPS with bitrate: ensure each frame gets enough bits for quality.
 	newFPS := clampInt(newBitrate/minBitsPerFrame, 10, a.maxFPS)
 
-	// Encoder throughput cap: sticky FPS ceiling based on observed encoder
-	// output rate. Once engaged, requires 3 consecutive samples above
-	// cap*1.25 before releasing, so transient bursts can't trigger a
-	// release → overshoot → re-engage cycle.
-	if a.encoderSamples >= 3 {
-		observed := a.smoothedEncodedFPS
-		if a.encoderCapFPS == 0 {
-			// Not capped — engage if encoder can't keep up with maxFPS.
-			// 0.85 threshold keeps a little slack before intervening.
-			if observed > 0 && observed < float64(a.maxFPS)*0.85 {
-				cap := int(observed * 1.1) // 10% headroom above observed
-				a.encoderCapFPS = clampInt(cap, 10, a.maxFPS)
-				a.encoderCapReleaseCount = 0
-			}
-		} else {
-			// Already capped — check for release or lower.
-			releaseThreshold := float64(a.encoderCapFPS) * 1.25
-			if observed >= releaseThreshold {
-				a.encoderCapReleaseCount++
-				if a.encoderCapReleaseCount >= 3 {
-					a.encoderCapFPS = 0
-					a.encoderCapReleaseCount = 0
-				}
-			} else {
-				a.encoderCapReleaseCount = 0
-				// If throughput sags further, lower the cap to match.
-				if observed > 0 && observed < float64(a.encoderCapFPS)*0.8 {
-					cap := int(observed * 1.1)
-					a.encoderCapFPS = clampInt(cap, 10, a.maxFPS)
-				}
-			}
-		}
-		if a.encoderCapFPS > 0 && newFPS > a.encoderCapFPS {
-			newFPS = a.encoderCapFPS
-			action = "encoder-cap"
-		}
-	}
-
 	if newBitrate == a.targetBitrate && newQuality == a.targetQuality && newFPS == a.currentFPS {
 		a.mu.Unlock()
 		return
@@ -505,8 +350,6 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 	a.lastAdjust = now
 	encoder := a.encoder
 	fpsCallback := a.onFPSChange
-	observedEncFPS := a.smoothedEncodedFPS
-	encoderCap := a.encoderCapFPS
 	a.mu.Unlock()
 
 	slog.Info("Adaptive bitrate adjustment",
@@ -518,8 +361,6 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 		"quality", newQuality,
 		"smoothedLoss", loss,
 		"smoothedRTT", smoothRTT.Round(time.Millisecond),
-		"observedEncFPS", observedEncFPS,
-		"encoderCap", encoderCap,
 	)
 
 	if newFPS != prevFPS && fpsCallback != nil {

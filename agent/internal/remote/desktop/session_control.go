@@ -376,12 +376,6 @@ func (s *Session) handleControlMessage(data []byte) {
 			if s.adaptive != nil {
 				rtt := time.Duration(vs.RTTMs) * time.Millisecond
 				s.adaptive.Update(rtt, effectiveLoss)
-				// Feed encoder throughput so ABR can cap FPS when the
-				// encoder can't keep up (common with software MFT).
-				s.adaptive.UpdateEncoderThroughput(
-					s.metrics.FramesCaptured.Load(),
-					s.metrics.FramesEncoded.Load(),
-				)
 			}
 		}
 	case "switch_monitor":

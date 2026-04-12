@@ -278,13 +278,12 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		session.fps = maxFrameRate
 	}
 
-	// Create adaptive bitrate controller — conservative ceiling.
-	// Remote support doesn't need high bitrate, and over-provisioning
-	// causes jitter-buffer drops on tunnel connections. Viewer slider
-	// can override via set_bitrate control message.
-	maxAdaptiveBitrate := 4_000_000
+	// Create adaptive bitrate controller — ceiling scales with resolution.
+	// Hardware encoders (AMF, NVENC) sustain high bitrate without stalling;
+	// CapForSoftwareEncoder() clamps to 4Mbps when the backend is software.
+	maxAdaptiveBitrate := 8_000_000
 	if w*h > 1920*1080 {
-		maxAdaptiveBitrate = 5_000_000
+		maxAdaptiveBitrate = 15_000_000
 	}
 	adaptive, err := NewAdaptiveBitrate(AdaptiveConfig{
 		Encoder:        enc,
@@ -305,6 +304,12 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	})
 	if err == nil {
 		session.adaptive = adaptive
+		// If the encoder factory fell through to software (e.g. AMF init
+		// failed silently), cap the adaptive controller immediately so it
+		// doesn't target 4-5Mbps on a software encoder that can't sustain it.
+		if !enc.BackendIsHardware() {
+			adaptive.CapForSoftwareEncoder()
+		}
 	}
 
 	// Create clipboard DataChannel
