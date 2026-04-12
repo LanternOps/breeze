@@ -208,7 +208,7 @@ func (c *Client) reconnectLoop() {
 		}
 
 		if err := c.connect(); err != nil {
-			log.Warn("connection failed", "error", err)
+			log.Warn("connection failed", "error", err.Error())
 
 			jitter := time.Duration(float64(backoff) * jitterFactor * (rand.Float64()*2 - 1))
 			sleep := backoff + jitter
@@ -276,7 +276,7 @@ func (c *Client) readPump() {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
-				log.Warn("read error", "error", err)
+				log.Warn("read error", "error", err.Error())
 			}
 			return
 		}
@@ -287,7 +287,7 @@ func (c *Client) readPump() {
 			ID   string `json:"id"`
 		}
 		if err := json.Unmarshal(message, &msg); err != nil {
-			log.Warn("failed to parse message", "error", err)
+			log.Warn("failed to parse message", "error", err.Error())
 			continue
 		}
 
@@ -312,7 +312,7 @@ func (c *Client) readPump() {
 
 		var cmd Command
 		if err := json.Unmarshal(message, &cmd); err != nil {
-			log.Warn("failed to parse command", "error", err)
+			log.Warn("failed to parse command", "error", err.Error())
 			continue
 		}
 
@@ -343,7 +343,7 @@ func (c *Client) writePump(done <-chan struct{}, exited chan<- struct{}) {
 
 			conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := conn.WriteMessage(websocket.TextMessage, message); err != nil {
-				log.Warn("write error", "error", err)
+				log.Warn("write error", "error", err.Error())
 				return
 			}
 
@@ -358,7 +358,7 @@ func (c *Client) writePump(done <-chan struct{}, exited chan<- struct{}) {
 
 			conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
-				log.Warn("binary write error", "error", err)
+				log.Warn("binary write error", "error", err.Error())
 				return
 			}
 
@@ -387,7 +387,7 @@ func (c *Client) processCommand(cmd Command) {
 	result.CommandID = cmd.ID
 
 	if err := c.SendResult(result); err != nil {
-		log.Error("failed to send command result", "commandId", cmd.ID, "error", err)
+		log.Error("failed to send command result", "commandId", cmd.ID, "error", err.Error())
 	}
 }
 
@@ -430,7 +430,11 @@ func (c *Client) SendDesktopFrame(sessionId string, data []byte) error {
 
 // SendTunnelData sends binary tunnel data to the server.
 // Format: [0x03][36-byte tunnelId UTF-8][payload]
-// Non-blocking: drops data if channel is full.
+//
+// Unlike WebRTC frames, tunnel data is a bidirectional byte stream and dropped
+// chunks corrupt the underlying protocol (VNC, proxy, etc.). This call BLOCKS
+// when the send channel is full, which naturally pushes back on the TCP read
+// loop and lets the OS's TCP flow control throttle the remote end.
 func (c *Client) SendTunnelData(tunnelId string, data []byte) error {
 	msg := make([]byte, 1+36+len(data))
 	msg[0] = 0x03
@@ -442,8 +446,6 @@ func (c *Client) SendTunnelData(tunnelId string, data []byte) error {
 		return nil
 	case <-c.done:
 		return fmt.Errorf("client is stopped")
-	default:
-		return fmt.Errorf("tunnel data channel full, dropping data")
 	}
 }
 

@@ -2445,7 +2445,8 @@ func isEphemeralCommand(cmdType string) bool {
 	switch cmdType {
 	case tools.CmdTerminalStart, tools.CmdTerminalData, tools.CmdTerminalResize, tools.CmdTerminalStop,
 		tools.CmdStartDesktop, tools.CmdStopDesktop,
-		tools.CmdDesktopStreamStart, tools.CmdDesktopStreamStop, tools.CmdDesktopInput, tools.CmdDesktopConfig:
+		tools.CmdDesktopStreamStart, tools.CmdDesktopStreamStop, tools.CmdDesktopInput, tools.CmdDesktopConfig,
+		tools.CmdTunnelOpen, tools.CmdTunnelData, tools.CmdTunnelClose:
 		return true
 	}
 	return false
