@@ -406,9 +406,19 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	// On "disconnected", wait a grace period for ICE to recover (NAT rebinding,
 	// TURN fallback) before tearing down. This prevents premature session kills
 	// on transient network blips.
+	// Log ICE connection state transitions at warn level so they ship from
+	// the helper process. Helps distinguish ICE-level failures (network /
+	// STUN / TURN) from peer-connection-level failures (DTLS / cert).
+	peerConn.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
+		slog.Warn("Desktop WebRTC ICE state", "session", sessionID, "state", state.String())
+	})
+
 	var disconnectTimer *time.Timer
 	peerConn.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		slog.Info("Desktop WebRTC connection state", "session", sessionID, "state", state.String())
+		// Promoted to warn so helper state transitions ship — we need to
+		// see exactly when a session enters Disconnected state relative to
+		// the last video frame. Revert to info once 5-frame death is fixed.
+		slog.Warn("Desktop WebRTC connection state", "session", sessionID, "state", state.String())
 
 		// Cancel any pending disconnect timer when state changes
 		if disconnectTimer != nil {

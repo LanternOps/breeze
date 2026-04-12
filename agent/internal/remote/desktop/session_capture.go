@@ -957,7 +957,9 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 
 	s.frameIdx++
 	// Log the first 5 frames sent (catches monitor switch + encoder re-init)
-	if s.frameIdx <= 5 {
+	// and a heartbeat every 150 frames (~5s at 30fps) so we can see whether
+	// frames are still flowing past the initial burst when diagnosing stalls.
+	if s.frameIdx <= 5 || s.frameIdx%150 == 0 {
 		slog.Warn("H264 frame sent",
 			"session", s.id,
 			"frameIdx", s.frameIdx,
@@ -972,7 +974,7 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 	// Skip the check for the first 5 frames to allow initial keyframes through.
 	// Never drop IDR keyframes — without them the decoder accumulates corruption.
 	if s.frameIdx > 5 && len(h264Data) > maxFrameSizeBytes && !h264ContainsIDR(h264Data) {
-		slog.Debug("Dropping oversized P-frame to prevent jitter burst",
+		slog.Warn("Dropping oversized P-frame to prevent jitter burst",
 			"session", s.id, "bytes", len(h264Data), "maxBytes", maxFrameSizeBytes)
 		s.metrics.RecordDrop()
 		// Force a keyframe so the encoder produces a fresh IDR for decoder recovery.
@@ -985,7 +987,7 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 		Duration: frameDuration,
 	}
 	if err := s.videoTrack.WriteSample(sample); err != nil {
-		slog.Debug("Failed to write H264 sample (GPU)", "session", s.id, "error", err.Error())
+		slog.Warn("Failed to write H264 sample (GPU)", "session", s.id, "error", err.Error())
 		s.metrics.RecordDrop()
 		return true, false, false
 	}
