@@ -5,6 +5,12 @@ import { authMiddleware, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { createAuditLog } from '../../services/auditService';
 import { getDeviceWithOrgCheck } from './helpers';
+import {
+  isCommandFailure,
+  mapCommandFailure,
+  buildBulkItemFailure,
+  auditErrorMessage,
+} from './fileBrowserHelpers';
 import { deviceIdParamSchema, fileListQuerySchema, fileDownloadQuerySchema, fileCopyBodySchema, fileMoveBodySchema, fileDeleteBodySchema, fileTrashRestoreBodySchema, fileTrashPurgeBodySchema, fileUploadBodySchema } from './schemas';
 
 export const fileBrowserRoutes = new Hono();
@@ -30,8 +36,9 @@ fileBrowserRoutes.get(
       path
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    if (result.status === 'failed') {
-      return c.json({ error: result.error || 'Agent failed to list files. The device may be offline.' }, 502);
+    if (isCommandFailure(result)) {
+      const { message, status } = mapCommandFailure(result, 'Failed to list files.');
+      return c.json({ error: message }, status);
     }
 
     try {
@@ -63,8 +70,9 @@ fileBrowserRoutes.get(
       timeoutMs: 15000,
     });
 
-    if (result.status === 'failed') {
-      return c.json({ error: result.error || 'Agent failed to list drives. The device may be offline.' }, 502);
+    if (isCommandFailure(result)) {
+      const { message, status } = mapCommandFailure(result, 'Failed to list drives.');
+      return c.json({ error: message }, status);
     }
 
     try {
@@ -98,9 +106,13 @@ fileBrowserRoutes.get(
       encoding: 'base64'
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to read file';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const raw = result.error || '';
+      if (raw.toLowerCase().includes('not found')) {
+        return c.json({ error: raw }, 404);
+      }
+      const { message, status } = mapCommandFailure(result, 'Failed to read file.');
+      return c.json({ error: message }, status);
     }
 
     try {
@@ -173,11 +185,13 @@ fileBrowserRoutes.post(
         sizeBytes: body.content.length
       },
       ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
-      result: result.status === 'failed' ? 'failure' : 'success'
+      result: isCommandFailure(result) ? 'failure' : 'success',
+      errorMessage: isCommandFailure(result) ? auditErrorMessage(result) : undefined,
     });
 
-    if (result.status === 'failed') {
-      return c.json({ error: result.error || 'Failed to write file' }, 500);
+    if (isCommandFailure(result)) {
+      const { message, status } = mapCommandFailure(result, 'Failed to write file.', { mutating: true });
+      return c.json({ error: message }, status);
     }
 
     try {
@@ -224,12 +238,14 @@ fileBrowserRoutes.post(
           destPath: item.destPath,
         }, { userId: auth.user?.id, timeoutMs: 60000 });
 
-        const success = result.status !== 'failed';
+        const success = !isCommandFailure(result);
+        const failure = success ? null : buildBulkItemFailure(result);
         results.push({
           sourcePath: item.sourcePath,
           destPath: item.destPath,
           status: success ? 'success' : 'failure',
-          error: success ? undefined : result.error,
+          error: failure?.message,
+          unverified: failure?.unverified || undefined,
         });
 
         await createAuditLog({
@@ -240,10 +256,10 @@ fileBrowserRoutes.post(
           resourceType: 'device',
           resourceId: deviceId,
           resourceName: device.hostname ?? device.id,
-          details: { sourcePath: item.sourcePath, destPath: item.destPath },
+          details: { sourcePath: item.sourcePath, destPath: item.destPath, unverified: failure?.unverified || undefined },
           ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
           result: success ? 'success' : 'failure',
-          errorMessage: success ? undefined : result.error,
+          errorMessage: success ? undefined : auditErrorMessage(result),
         }).catch(auditErr => console.error(`[fileBrowser] audit log failed for device ${deviceId}:`, auditErr instanceof Error ? auditErr.message : auditErr));
       } catch (err) {
         results.push({
@@ -285,12 +301,14 @@ fileBrowserRoutes.post(
           newPath: item.destPath,
         }, { userId: auth.user?.id, timeoutMs: 60000 });
 
-        const success = result.status !== 'failed';
+        const success = !isCommandFailure(result);
+        const failure = success ? null : buildBulkItemFailure(result);
         results.push({
           sourcePath: item.sourcePath,
           destPath: item.destPath,
           status: success ? 'success' : 'failure',
-          error: success ? undefined : result.error,
+          error: failure?.message,
+          unverified: failure?.unverified || undefined,
         });
 
         await createAuditLog({
@@ -301,10 +319,10 @@ fileBrowserRoutes.post(
           resourceType: 'device',
           resourceId: deviceId,
           resourceName: device.hostname ?? device.id,
-          details: { sourcePath: item.sourcePath, destPath: item.destPath },
+          details: { sourcePath: item.sourcePath, destPath: item.destPath, unverified: failure?.unverified || undefined },
           ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
           result: success ? 'success' : 'failure',
-          errorMessage: success ? undefined : result.error,
+          errorMessage: success ? undefined : auditErrorMessage(result),
         }).catch(auditErr => console.error(`[fileBrowser] audit log failed for device ${deviceId}:`, auditErr instanceof Error ? auditErr.message : auditErr));
       } catch (err) {
         results.push({
@@ -348,11 +366,13 @@ fileBrowserRoutes.post(
           deletedBy: auth.user?.email || auth.user?.id,
         }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-        const success = result.status !== 'failed';
+        const success = !isCommandFailure(result);
+        const failure = success ? null : buildBulkItemFailure(result);
         results.push({
           path,
           status: success ? 'success' : 'failure',
-          error: success ? undefined : result.error,
+          error: failure?.message,
+          unverified: failure?.unverified || undefined,
         });
 
         await createAuditLog({
@@ -363,10 +383,10 @@ fileBrowserRoutes.post(
           resourceType: 'device',
           resourceId: deviceId,
           resourceName: device.hostname ?? device.id,
-          details: { path, permanent },
+          details: { path, permanent, unverified: failure?.unverified || undefined },
           ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
           result: success ? 'success' : 'failure',
-          errorMessage: success ? undefined : result.error,
+          errorMessage: success ? undefined : auditErrorMessage(result),
         }).catch(auditErr => console.error(`[fileBrowser] audit log failed for device ${deviceId}:`, auditErr instanceof Error ? auditErr.message : auditErr));
       } catch (err) {
         results.push({
@@ -399,8 +419,9 @@ fileBrowserRoutes.get(
 
     const result = await executeCommand(deviceId, CommandTypes.FILE_TRASH_LIST, {}, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    if (result.status === 'failed') {
-      return c.json({ error: result.error || 'Failed to list trash' }, 502);
+    if (isCommandFailure(result)) {
+      const { message, status } = mapCommandFailure(result, 'Failed to list trash.');
+      return c.json({ error: message }, status);
     }
 
     try {
@@ -436,7 +457,8 @@ fileBrowserRoutes.post(
           trashId,
         }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-        const success = result.status !== 'failed';
+        const success = !isCommandFailure(result);
+        const failure = success ? null : buildBulkItemFailure(result);
         let restoredPath: string | undefined;
         if (success) {
           try {
@@ -451,7 +473,8 @@ fileBrowserRoutes.post(
           trashId,
           status: success ? 'success' : 'failure',
           restoredPath,
-          error: success ? undefined : result.error,
+          error: failure?.message,
+          unverified: failure?.unverified || undefined,
         });
 
         await createAuditLog({
@@ -462,10 +485,10 @@ fileBrowserRoutes.post(
           resourceType: 'device',
           resourceId: deviceId,
           resourceName: device.hostname ?? device.id,
-          details: { trashId, restoredPath },
+          details: { trashId, restoredPath, unverified: failure?.unverified || undefined },
           ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
           result: success ? 'success' : 'failure',
-          errorMessage: success ? undefined : result.error,
+          errorMessage: success ? undefined : auditErrorMessage(result),
         }).catch(auditErr => console.error(`[fileBrowser] audit log failed for device ${deviceId}:`, auditErr instanceof Error ? auditErr.message : auditErr));
       } catch (err) {
         results.push({
@@ -501,7 +524,7 @@ fileBrowserRoutes.post(
       trashIds: body.trashIds || [],
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    const success = result.status !== 'failed';
+    const success = !isCommandFailure(result);
 
     await createAuditLog({
       orgId: device.orgId,
@@ -511,14 +534,19 @@ fileBrowserRoutes.post(
       resourceType: 'device',
       resourceId: deviceId,
       resourceName: device.hostname ?? device.id,
-      details: { trashIds: body.trashIds, purgeAll: !body.trashIds },
+      details: {
+        trashIds: body.trashIds,
+        purgeAll: !body.trashIds,
+        unverified: result.status === 'timeout' ? true : undefined,
+      },
       ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
       result: success ? 'success' : 'failure',
-      errorMessage: success ? undefined : result.error,
+      errorMessage: success ? undefined : auditErrorMessage(result),
     }).catch(auditErr => console.error(`[fileBrowser] audit log failed for device ${deviceId}:`, auditErr instanceof Error ? auditErr.message : auditErr));
 
-    if (result.status === 'failed') {
-      return c.json({ error: result.error || 'Failed to purge trash' }, 502);
+    if (isCommandFailure(result)) {
+      const { message, status } = mapCommandFailure(result, 'Failed to purge trash.', { mutating: true });
+      return c.json({ error: message }, status);
     }
 
     try {
