@@ -198,6 +198,10 @@ type dxgiCapturer struct {
 	// may just cause timeouts instead).
 	lastDesktopCheck time.Time
 
+	// Rate limit the "desktop check skipped" diagnostic so logs don't
+	// explode when the skip condition persists across many 500ms ticks.
+	lastDesktopSkipLog time.Time
+
 	// Desktop switch notification for the session layer.
 	desktopSwitchFlag atomic.Bool // set on switch, cleared by ConsumeDesktopSwitch
 	secureDesktopFlag atomic.Bool // true when on Winlogon/Screen-saver
