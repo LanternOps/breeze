@@ -1542,6 +1542,18 @@ func (b *Broker) allowedHelperPaths() []string {
 	return out
 }
 
+// RefreshAllowedHashes recomputes the helper binary hash allowlist from the
+// binaries currently present on disk. Call this after a dev push that
+// replaces a helper binary so the next connection from the newly spawned
+// helper (which will hash to a new value) is accepted.
+func (b *Broker) RefreshAllowedHashes() {
+	newHashes := b.computeAllowedHashes()
+	b.mu.Lock()
+	b.selfHashes = newHashes
+	b.mu.Unlock()
+	log.Info("refreshed helper binary hash allowlist", "count", len(newHashes))
+}
+
 func (b *Broker) computeAllowedHashes() map[string]struct{} {
 	hashes := make(map[string]struct{})
 	for _, path := range b.allowedHelperPaths() {
