@@ -29,9 +29,9 @@ type Monitor struct {
 
 // NewMonitor creates an auth monitor that trips after `threshold`
 // consecutive 401 responses.
-func NewMonitor(threshold int32) *Monitor {
+func NewMonitor(threshold int) *Monitor {
 	return &Monitor{
-		threshold: threshold,
+		threshold: int32(threshold),
 		backoff:   initialBackoff,
 	}
 }
@@ -40,34 +40,40 @@ func NewMonitor(threshold int32) *Monitor {
 // reaches the threshold, the monitor enters auth-dead state.
 func (m *Monitor) RecordAuthFailure() {
 	n := m.consecutive.Add(1)
-	if n >= m.threshold {
-		if m.dead.CompareAndSwap(false, true) {
-			slog.Warn("auth-dead: consecutive 401s reached threshold, backing off",
-				"consecutive", n, "threshold", m.threshold)
-			// First trip: backoff stays at initialBackoff (1s).
-			return
-		}
-		// Already dead: advance backoff for each additional failure.
-		m.mu.Lock()
-		m.backoff = time.Duration(float64(m.backoff) * backoffFactor)
-		if m.backoff > maxBackoff {
-			m.backoff = maxBackoff
-		}
-		m.mu.Unlock()
+	if n < m.threshold {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	firstTrip := m.dead.CompareAndSwap(false, true)
+	if firstTrip {
+		slog.Warn("auth-dead: consecutive 401s reached threshold, backing off",
+			"consecutive", n, "threshold", m.threshold)
+		// Keep backoff at initialBackoff for the first trip — do NOT advance here.
+		return
+	}
+
+	// Already dead — advance backoff for the subsequent failure.
+	m.backoff = time.Duration(float64(m.backoff) * backoffFactor)
+	if m.backoff > maxBackoff {
+		m.backoff = maxBackoff
 	}
 }
 
 // RecordSuccess clears the auth-dead state and resets the counter
 // and backoff.
 func (m *Monitor) RecordSuccess() {
-	m.consecutive.Store(0)
+	m.mu.Lock()
 	wasDead := m.dead.Swap(false)
+	m.consecutive.Store(0)
+	m.backoff = initialBackoff
+	m.mu.Unlock()
+
 	if wasDead {
 		slog.Info("auth recovered, resuming normal cadence")
 	}
-	m.mu.Lock()
-	m.backoff = initialBackoff
-	m.mu.Unlock()
 }
 
 // ShouldSkip returns true if the agent is in auth-dead state.

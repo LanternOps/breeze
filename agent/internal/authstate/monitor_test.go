@@ -80,8 +80,11 @@ func TestMonitor_BackoffCapsAt30s(t *testing.T) {
 		m.RecordAuthFailure()
 	}
 	d := m.BackoffDuration()
-	if d > 36*time.Second { // 30s + 20% jitter
+	if d > 36*time.Second {
 		t.Fatalf("expected backoff capped near 30s, got %v", d)
+	}
+	if d < 24*time.Second {
+		t.Fatalf("expected backoff near 30s cap (>=24s with jitter), got %v", d)
 	}
 }
 
