@@ -2,7 +2,7 @@ import { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { createHash } from 'crypto';
 import { eq, and } from 'drizzle-orm';
-import { db, withDbAccessContext } from '../db';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { apiKeys, organizations } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
 
@@ -60,23 +60,28 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
   // Hash the key and look it up
   const keyHash = hashApiKey(apiKeyHeader);
 
-  const [apiKey] = await db
-    .select({
-      id: apiKeys.id,
-      orgId: apiKeys.orgId,
-      name: apiKeys.name,
-      keyPrefix: apiKeys.keyPrefix,
-      keyHash: apiKeys.keyHash,
-      scopes: apiKeys.scopes,
-      expiresAt: apiKeys.expiresAt,
-      rateLimit: apiKeys.rateLimit,
-      usageCount: apiKeys.usageCount,
-      status: apiKeys.status,
-      createdBy: apiKeys.createdBy
-    })
-    .from(apiKeys)
-    .where(eq(apiKeys.keyHash, keyHash))
-    .limit(1);
+  // Authentication must work even when tenant RLS is deny-by-default.
+  // Use system DB context for lookup, then scope all downstream queries to the key's org.
+  const apiKey = await withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select({
+        id: apiKeys.id,
+        orgId: apiKeys.orgId,
+        name: apiKeys.name,
+        keyPrefix: apiKeys.keyPrefix,
+        keyHash: apiKeys.keyHash,
+        scopes: apiKeys.scopes,
+        expiresAt: apiKeys.expiresAt,
+        rateLimit: apiKeys.rateLimit,
+        usageCount: apiKeys.usageCount,
+        status: apiKeys.status,
+        createdBy: apiKeys.createdBy
+      })
+      .from(apiKeys)
+      .where(eq(apiKeys.keyHash, keyHash))
+      .limit(1);
+    return row ?? null;
+  });
 
   if (!apiKey) {
     throw new HTTPException(401, { message: 'Invalid API key' });
@@ -90,10 +95,12 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
   // Check if key is expired
   if (apiKey.expiresAt && new Date(apiKey.expiresAt) < new Date()) {
     // Update status to expired
-    await db
-      .update(apiKeys)
-      .set({ status: 'expired', updatedAt: new Date() })
-      .where(eq(apiKeys.id, apiKey.id));
+    await withSystemDbAccessContext(async () => {
+      await db
+        .update(apiKeys)
+        .set({ status: 'expired', updatedAt: new Date() })
+        .where(eq(apiKeys.id, apiKey.id));
+    });
 
     throw new HTTPException(401, { message: 'API key has expired' });
   }
@@ -125,17 +132,19 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
   c.header('X-RateLimit-Remaining', String(rateCheck.remaining));
   c.header('X-RateLimit-Reset', String(Math.ceil(rateCheck.resetAt.getTime() / 1000)));
 
-  // Update lastUsedAt and usageCount (async, don't wait)
-  db.update(apiKeys)
-    .set({
-      lastUsedAt: new Date(),
-      usageCount: apiKey.usageCount !== undefined ? apiKey.usageCount + 1 : 1
-    })
-    .where(eq(apiKeys.id, apiKey.id))
-    .execute()
-    .catch(err => {
-      console.error('Failed to update API key usage stats:', err);
-    });
+  // Update lastUsedAt and usageCount (async, don't wait).
+  // Wrapped in system context so it runs regardless of RLS scope.
+  withSystemDbAccessContext(async () => {
+    await db
+      .update(apiKeys)
+      .set({
+        lastUsedAt: new Date(),
+        usageCount: apiKey.usageCount !== undefined ? apiKey.usageCount + 1 : 1
+      })
+      .where(eq(apiKeys.id, apiKey.id));
+  }).catch(err => {
+    console.error('Failed to update API key usage stats:', err);
+  });
 
   // Set API key context for route handlers
   c.set('apiKey', {

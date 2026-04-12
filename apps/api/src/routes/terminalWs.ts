@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { remoteSessions, devices, users } from '../db/schema';
 import { consumeWsTicket } from '../services/remoteSessionAuth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
@@ -94,61 +94,67 @@ async function validateTerminalAccess(
     return { valid: false, error: 'Connection ticket does not match terminal session' };
   }
 
-  // Check user exists and is active
-  const [user] = await db
-    .select({ id: users.id, status: users.status })
-    .from(users)
-    .where(eq(users.id, ticketRecord.userId))
-    .limit(1);
+  // Ticket consumption is the entire auth boundary for terminal WS — the
+  // WS routes mount before auth middleware. Run lookups in system DB
+  // context so RLS doesn't fail-close the query. Subsequent checks
+  // (session.userId === user.id) enforce tenant scoping in app code.
+  return withSystemDbAccessContext(async () => {
+    // Check user exists and is active
+    const [user] = await db
+      .select({ id: users.id, status: users.status })
+      .from(users)
+      .where(eq(users.id, ticketRecord.userId))
+      .limit(1);
 
-  if (!user || user.status !== 'active') {
-    return { valid: false, error: 'User not found or inactive' };
-  }
+    if (!user || user.status !== 'active') {
+      return { valid: false, error: 'User not found or inactive' };
+    }
 
-  // Get session with device info
-  const [result] = await db
-    .select({
-      session: remoteSessions,
-      device: devices
-    })
-    .from(remoteSessions)
-    .innerJoin(devices, eq(remoteSessions.deviceId, devices.id))
-    .where(eq(remoteSessions.id, sessionId))
-    .limit(1);
+    // Get session with device info
+    const [result] = await db
+      .select({
+        session: remoteSessions,
+        device: devices
+      })
+      .from(remoteSessions)
+      .innerJoin(devices, eq(remoteSessions.deviceId, devices.id))
+      .where(eq(remoteSessions.id, sessionId))
+      .limit(1);
 
-  if (!result) {
-    return { valid: false, error: 'Session not found' };
-  }
+    if (!result) {
+      return { valid: false, error: 'Session not found' };
+    }
 
-  const { session, device } = result;
+    const { session, device } = result;
 
-  // Check session is for terminal
-  if (session.type !== 'terminal') {
-    return { valid: false, error: 'Session is not a terminal session' };
-  }
+    // Check session is for terminal
+    if (session.type !== 'terminal') {
+      return { valid: false, error: 'Session is not a terminal session' };
+    }
 
-  // Check session belongs to this user
-  if (session.userId !== user.id) {
-    return { valid: false, error: 'Session does not belong to this user' };
-  }
+    // Check session belongs to this user
+    if (session.userId !== user.id) {
+      return { valid: false, error: 'Session does not belong to this user' };
+    }
 
-  // Check session status
-  if (!['pending', 'connecting', 'active'].includes(session.status)) {
-    return { valid: false, error: `Session is ${session.status}` };
-  }
+    // Check session status
+    if (!['pending', 'connecting', 'active'].includes(session.status)) {
+      return { valid: false, error: `Session is ${session.status}` };
+    }
 
-  // Check device is online
-  if (device.status !== 'online') {
-    return { valid: false, error: 'Device is not online' };
-  }
+    // Check device is online
+    if (device.status !== 'online') {
+      return { valid: false, error: 'Device is not online' };
+    }
 
-  // Remote access policy enforcement (defense-in-depth)
-  const policyCheck = await checkRemoteAccess(device.id, 'remoteTools');
-  if (!policyCheck.allowed) {
-    return { valid: false, error: policyCheck.reason ?? 'Remote tools disabled by policy' };
-  }
+    // Remote access policy enforcement (defense-in-depth)
+    const policyCheck = await checkRemoteAccess(device.id, 'remoteTools');
+    if (!policyCheck.allowed) {
+      return { valid: false, error: policyCheck.reason ?? 'Remote tools disabled by policy' };
+    }
 
-  return { valid: true, session, device, userId: user.id };
+    return { valid: true, session, device, userId: user.id };
+  });
 }
 
 /**
@@ -269,13 +275,15 @@ function createTerminalWsHandlers(sessionId: string, ticket: string | undefined)
         console.log(`Terminal session ${sessionId} connected for device ${device.hostname}`);
 
         // Update session status
-        await db
-          .update(remoteSessions)
-          .set({
-            status: 'active',
-            startedAt: new Date()
-          })
-          .where(eq(remoteSessions.id, sessionId));
+        await withSystemDbAccessContext(async () => {
+          await db
+            .update(remoteSessions)
+            .set({
+              status: 'active',
+              startedAt: new Date()
+            })
+            .where(eq(remoteSessions.id, sessionId));
+        });
 
         // Send connected message to user
         ws.send(JSON.stringify({
@@ -311,10 +319,12 @@ function createTerminalWsHandlers(sessionId: string, ticket: string | undefined)
           activeTerminalSessions.delete(sessionId);
           unregisterTerminalOutputCallback(sessionId);
           try {
-            await db
-              .update(remoteSessions)
-              .set({ status: 'failed', endedAt: new Date() })
-              .where(eq(remoteSessions.id, sessionId));
+            await withSystemDbAccessContext(async () => {
+              await db
+                .update(remoteSessions)
+                .set({ status: 'failed', endedAt: new Date() })
+                .where(eq(remoteSessions.id, sessionId));
+            });
           } catch (dbErr) {
             console.error(`[TerminalWs] Failed to update session ${sessionId} after agent send failure:`, dbErr);
           }
@@ -364,10 +374,12 @@ function createTerminalWsHandlers(sessionId: string, ticket: string | undefined)
         // Best-effort: mark DB session as failed — only if auth/validation already passed
         if (validated) {
           try {
-            await db
-              .update(remoteSessions)
-              .set({ status: 'failed', endedAt: new Date() })
-              .where(eq(remoteSessions.id, sessionId));
+            await withSystemDbAccessContext(async () => {
+              await db
+                .update(remoteSessions)
+                .set({ status: 'failed', endedAt: new Date() })
+                .where(eq(remoteSessions.id, sessionId));
+            });
           } catch (dbError) {
             console.error(`[TerminalWs] Failed to update session ${sessionId} status to failed:`, dbError);
           }
@@ -481,14 +493,16 @@ function createTerminalWsHandlers(sessionId: string, ticket: string | undefined)
         const startedAt = termSession.startedAt;
         const durationSeconds = Math.round((endedAt.getTime() - startedAt.getTime()) / 1000);
 
-        await db
-          .update(remoteSessions)
-          .set({
-            status: 'disconnected',
-            endedAt,
-            durationSeconds
-          })
-          .where(eq(remoteSessions.id, sessionId));
+        await withSystemDbAccessContext(async () => {
+          await db
+            .update(remoteSessions)
+            .set({
+              status: 'disconnected',
+              endedAt,
+              durationSeconds
+            })
+            .where(eq(remoteSessions.id, sessionId));
+        });
 
         console.log(`Terminal session ${sessionId} disconnected (duration: ${durationSeconds}s)`);
       }
@@ -509,14 +523,16 @@ function createTerminalWsHandlers(sessionId: string, ticket: string | undefined)
           const endedAt = new Date();
           const durationSeconds = Math.round((endedAt.getTime() - termSession.startedAt.getTime()) / 1000);
 
-          await db
-            .update(remoteSessions)
-            .set({
-              status: 'disconnected',
-              endedAt,
-              durationSeconds
-            })
-            .where(eq(remoteSessions.id, sessionId));
+          await withSystemDbAccessContext(async () => {
+            await db
+              .update(remoteSessions)
+              .set({
+                status: 'disconnected',
+                endedAt,
+                durationSeconds
+              })
+              .where(eq(remoteSessions.id, sessionId));
+          });
 
           console.log(`Terminal session ${sessionId} errored and cleaned up (duration: ${durationSeconds}s)`);
         } catch (dbError) {

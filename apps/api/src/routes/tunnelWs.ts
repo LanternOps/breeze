@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
 import { eq } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { tunnelSessions, devices, users } from '../db/schema';
 import { consumeWsTicket } from '../services/remoteSessionAuth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
@@ -38,7 +38,11 @@ const earlyFrameBuffers = new Map<string, Uint8Array[]>();
 
 // Server-side ping/pong constants
 const PING_INTERVAL_MS = 30_000;
-const PONG_TIMEOUT_MS = 10_000;
+// Generous tolerance: noVNC-driven tunnels have no JSON-level pong reply, so
+// we rely on any inbound message (binary or text) as liveness. Backgrounded
+// tabs can throttle client timers, so give the client up to ~2 minutes of
+// silence before declaring the tunnel dead.
+const PONG_TIMEOUT_MS = 90_000;
 
 // Rate limiting
 const USER_WS_RATE_WINDOW_MS = 60_000;
@@ -137,54 +141,60 @@ async function validateTunnelAccess(
     return { valid: false, error: 'Connection ticket does not match tunnel session' };
   }
 
-  // Check user exists and is active
-  const [user] = await db
-    .select({ id: users.id, status: users.status })
-    .from(users)
-    .where(eq(users.id, ticketRecord.userId))
-    .limit(1);
+  // Ticket consumption is the entire auth boundary for tunnel WS — the
+  // WS routes mount before auth middleware. Run lookups in system DB
+  // context so RLS doesn't fail-close the query. The session.userId ===
+  // user.id check below enforces tenant scoping in app code.
+  return withSystemDbAccessContext(async () => {
+    // Check user exists and is active
+    const [user] = await db
+      .select({ id: users.id, status: users.status })
+      .from(users)
+      .where(eq(users.id, ticketRecord.userId))
+      .limit(1);
 
-  if (!user || user.status !== 'active') {
-    return { valid: false, error: 'User not found or inactive' };
-  }
+    if (!user || user.status !== 'active') {
+      return { valid: false, error: 'User not found or inactive' };
+    }
 
-  // Get tunnel session with device info
-  const [result] = await db
-    .select({
-      session: tunnelSessions,
-      device: devices
-    })
-    .from(tunnelSessions)
-    .innerJoin(devices, eq(tunnelSessions.deviceId, devices.id))
-    .where(eq(tunnelSessions.id, tunnelId))
-    .limit(1);
+    // Get tunnel session with device info
+    const [result] = await db
+      .select({
+        session: tunnelSessions,
+        device: devices
+      })
+      .from(tunnelSessions)
+      .innerJoin(devices, eq(tunnelSessions.deviceId, devices.id))
+      .where(eq(tunnelSessions.id, tunnelId))
+      .limit(1);
 
-  if (!result) {
-    return { valid: false, error: 'Tunnel session not found' };
-  }
+    if (!result) {
+      return { valid: false, error: 'Tunnel session not found' };
+    }
 
-  const { session, device } = result;
+    const { session, device } = result;
 
-  if (session.userId !== user.id) {
-    return { valid: false, error: 'Tunnel session does not belong to this user' };
-  }
+    if (session.userId !== user.id) {
+      return { valid: false, error: 'Tunnel session does not belong to this user' };
+    }
 
-  if (!['pending', 'connecting', 'active'].includes(session.status)) {
-    return { valid: false, error: `Tunnel session is ${session.status}` };
-  }
+    if (!['pending', 'connecting', 'active'].includes(session.status)) {
+      return { valid: false, error: `Tunnel session is ${session.status}` };
+    }
 
-  if (device.status !== 'online') {
-    return { valid: false, error: 'Device is not online' };
-  }
+    if (device.status !== 'online') {
+      return { valid: false, error: 'Device is not online' };
+    }
 
-  // Remote access policy enforcement (defense-in-depth)
-  const tunnelCapability = session.type === 'vnc' ? 'vncRelay' as const : 'proxy' as const;
-  const policyCheck = await checkRemoteAccess(device.id, tunnelCapability);
-  if (!policyCheck.allowed) {
-    return { valid: false, error: policyCheck.reason ?? 'Tunnel access disabled by policy' };
-  }
+    // Remote access policy enforcement (defense-in-depth)
+    const tunnelCapability = session.type === 'vnc' ? 'vncRelay' as const : 'proxy' as const;
+    const policyCheck = await checkRemoteAccess(device.id, tunnelCapability);
+    if (!policyCheck.allowed) {
+      return { valid: false, error: policyCheck.reason ?? 'Tunnel access disabled by policy' };
+    }
 
-  return { valid: true, session, agentId: device.agentId ?? undefined, userId: user.id };
+    return { valid: true, session, agentId: device.agentId ?? undefined, userId: user.id };
+  });
 }
 
 function cleanupTunnelConnection(tunnelId: string) {
@@ -292,11 +302,14 @@ function createTunnelWsHandlers(tunnelId: string, ticket: string | undefined) {
 
         // Only transition to active if the tunnel_open succeeded (status = connecting).
         // If the agent already failed, session.status will be 'failed' and we should not override.
-        const [currentSession] = await db
-          .select({ status: tunnelSessions.status })
-          .from(tunnelSessions)
-          .where(eq(tunnelSessions.id, tunnelId))
-          .limit(1);
+        const currentSession = await withSystemDbAccessContext(async () => {
+          const [row] = await db
+            .select({ status: tunnelSessions.status })
+            .from(tunnelSessions)
+            .where(eq(tunnelSessions.id, tunnelId))
+            .limit(1);
+          return row ?? null;
+        });
 
         if (currentSession?.status === 'failed') {
           ws.send(JSON.stringify({ type: 'error', message: 'Tunnel failed to open on agent' }));
@@ -305,10 +318,12 @@ function createTunnelWsHandlers(tunnelId: string, ticket: string | undefined) {
           return;
         }
 
-        await db
-          .update(tunnelSessions)
-          .set({ status: 'active', startedAt: new Date() })
-          .where(eq(tunnelSessions.id, tunnelId));
+        await withSystemDbAccessContext(async () => {
+          await db
+            .update(tunnelSessions)
+            .set({ status: 'active', startedAt: new Date() })
+            .where(eq(tunnelSessions.id, tunnelId));
+        });
 
         ws.send(JSON.stringify({ type: 'connected', tunnelId }));
       } catch (error) {
@@ -324,6 +339,12 @@ function createTunnelWsHandlers(tunnelId: string, ticket: string | undefined) {
         ws.close(4001, 'No active tunnel connection');
         return;
       }
+
+      // Any inbound message (binary or text) is liveness evidence — noVNC
+      // consumes the WebSocket directly and never sees or replies to our JSON
+      // ping/pong, but it does send incremental FramebufferUpdateRequests and
+      // input events as binary frames. Treat every message as a keepalive.
+      conn.lastPongAt = Date.now();
 
       try {
         // Binary data — relay directly to agent
@@ -403,13 +424,15 @@ function createTunnelWsHandlers(tunnelId: string, ticket: string | undefined) {
 
       // Update session status
       try {
-        await db
-          .update(tunnelSessions)
-          .set({
-            status: 'disconnected',
-            endedAt: new Date(),
-          })
-          .where(eq(tunnelSessions.id, tunnelId));
+        await withSystemDbAccessContext(async () => {
+          await db
+            .update(tunnelSessions)
+            .set({
+              status: 'disconnected',
+              endedAt: new Date(),
+            })
+            .where(eq(tunnelSessions.id, tunnelId));
+        });
       } catch (err) {
         console.error(`[TunnelWs] Failed to update tunnel ${tunnelId} status on close:`, err);
       }
