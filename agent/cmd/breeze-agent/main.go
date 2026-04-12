@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -227,7 +228,16 @@ func startAgent() (*agentComponents, error) {
 	}
 
 	if cfg.AgentID == "" {
-		return nil, fmt.Errorf("agent not enrolled — run 'breeze-agent enroll <key>' first")
+		// Check for pending enrollment from a failed MSI install
+		if tryPendingEnrollment() {
+			cfg, err = config.Load(cfgFile)
+			if err != nil {
+				return nil, fmt.Errorf("failed to reload config after pending enrollment: %w", err)
+			}
+		}
+		if cfg.AgentID == "" {
+			return nil, fmt.Errorf("agent not enrolled — run 'breeze-agent enroll <key>' first")
+		}
 	}
 
 	// Loosen config directory (0755) and agent.yaml (0644) so the Helper can read
@@ -496,6 +506,103 @@ func runAgent() {
 
 	shutdownAgent(comps)
 	log.Info("agent stopped")
+}
+
+// pendingEnrollment is the JSON structure written by the MSI enrollment
+// custom action when enrollment fails during install.
+type pendingEnrollment struct {
+	ServerURL     string `json:"serverUrl"`
+	EnrollmentKey string `json:"enrollmentKey"`
+}
+
+// pendingEnrollmentPath returns the path to the enrollment-pending.json file.
+func pendingEnrollmentPath() string {
+	return filepath.Join(config.ConfigDir(), "enrollment-pending.json")
+}
+
+// tryPendingEnrollment checks for enrollment-pending.json (written by the MSI
+// installer when enrollment fails during install) and attempts enrollment.
+// Returns true if enrollment succeeded, false otherwise.
+func tryPendingEnrollment() bool {
+	pendingPath := pendingEnrollmentPath()
+	data, err := os.ReadFile(pendingPath)
+	if err != nil {
+		return false // no pending file or can't read it
+	}
+
+	var pending pendingEnrollment
+	if err := json.Unmarshal(data, &pending); err != nil {
+		log.Warn("invalid enrollment-pending.json, removing", "error", err.Error())
+		os.Remove(pendingPath)
+		return false
+	}
+
+	if pending.ServerURL == "" || pending.EnrollmentKey == "" {
+		log.Warn("enrollment-pending.json has empty server URL or key, removing")
+		os.Remove(pendingPath)
+		return false
+	}
+
+	log.Info("found pending enrollment from MSI install, attempting enrollment",
+		"server", pending.ServerURL)
+
+	hwCollector := collectors.NewHardwareCollector()
+	systemInfo, err := hwCollector.CollectSystemInfo()
+	if err != nil {
+		systemInfo = &collectors.SystemInfo{}
+	}
+	hardwareInfo := &collectors.HardwareInfo{}
+
+	client := api.NewClient(pending.ServerURL, "", "")
+	deviceRole := collectors.ClassifyDeviceRole(systemInfo, hardwareInfo)
+
+	enrollResp, err := client.Enroll(&api.EnrollRequest{
+		EnrollmentKey: pending.EnrollmentKey,
+		Hostname:      systemInfo.Hostname,
+		OSType:        systemInfo.OSType,
+		OSVersion:     systemInfo.OSVersion,
+		Architecture:  systemInfo.Architecture,
+		AgentVersion:  version,
+		DeviceRole:    deviceRole,
+		HardwareInfo: &api.HardwareInfo{
+			CPUModel:   hardwareInfo.CPUModel,
+			CPUCores:   hardwareInfo.CPUCores,
+			CPUThreads: hardwareInfo.CPUThreads,
+			RAMTotalMB: hardwareInfo.RAMTotalMB,
+			DiskTotalGB: hardwareInfo.DiskTotalGB,
+		},
+	})
+	if err != nil {
+		log.Warn("pending enrollment failed, will retry on next start", "error", err.Error())
+		return false
+	}
+
+	cfg := config.Default()
+	cfg.ServerURL = pending.ServerURL
+	cfg.AgentID = enrollResp.AgentID
+	cfg.AuthToken = enrollResp.AuthToken
+	cfg.OrgID = enrollResp.OrgID
+	cfg.SiteID = enrollResp.SiteID
+	if enrollResp.Config.HeartbeatIntervalSeconds > 0 {
+		cfg.HeartbeatIntervalSeconds = enrollResp.Config.HeartbeatIntervalSeconds
+	}
+	if enrollResp.Config.MetricsCollectionIntervalSeconds > 0 {
+		cfg.MetricsIntervalSeconds = enrollResp.Config.MetricsCollectionIntervalSeconds
+	}
+	if enrollResp.Mtls != nil {
+		cfg.MtlsCertPEM = enrollResp.Mtls.Certificate
+		cfg.MtlsKeyPEM = enrollResp.Mtls.PrivateKey
+		cfg.MtlsCertExpires = enrollResp.Mtls.ExpiresAt
+	}
+
+	if err := config.SaveTo(cfg, cfgFile); err != nil {
+		log.Error("pending enrollment succeeded but failed to save config", "error", err.Error())
+		return false
+	}
+
+	os.Remove(pendingPath)
+	log.Info("pending enrollment succeeded", "agentId", enrollResp.AgentID)
+	return true
 }
 
 // enrollDevice handles the enrollment process to register this agent with the Breeze server.
