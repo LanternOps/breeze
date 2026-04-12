@@ -260,7 +260,9 @@ describe('remote routes', () => {
 
       // expireStaleSessions -> db.update (stale cleanup)
       // expireStaleSessionsForUser -> db.update (user stale cleanup)
+      // terminate stale device+type sessions -> db.update
       vi.mocked(db.update)
+        .mockReturnValueOnce(mockUpdateNoReturn())
         .mockReturnValueOnce(mockUpdateNoReturn())
         .mockReturnValueOnce(mockUpdateNoReturn());
 

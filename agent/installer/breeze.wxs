@@ -149,6 +149,11 @@
         <Component Id="cmpProgramDataRoot" Guid="{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}" Permanent="yes">
           <CreateFolder />
         </Component>
+        <Component Id="cmpCleanConfigOnUninstall" Guid="{D4E5F6A7-B8C9-0123-DEFA-456789012345}">
+          <RegistryValue Root="HKLM" Key="SOFTWARE\Breeze" Name="ConfigCleanup" Type="integer" Value="1" KeyPath="yes" />
+          <RemoveFile Id="rmfAgentYaml" Name="agent.yaml" On="uninstall" />
+          <RemoveFile Id="rmfAgentYamlBak" Name="agent.yaml.bak" On="uninstall" />
+        </Component>
         <Directory Id="ProgramDataBreezeDataDir" Name="data">
           <Component Id="cmpProgramDataData" Guid="{B2C3D4E5-F6A7-8901-BCDE-F12345678901}" Permanent="yes">
             <CreateFolder />
@@ -219,6 +224,7 @@
       <ComponentRef Id="cmpRemoveWindowsTaskPs1" />
       <ComponentRef Id="cmpEnrollAgentPs1" />
       <ComponentRef Id="cmpProgramDataRoot" />
+      <ComponentRef Id="cmpCleanConfigOnUninstall" />
       <ComponentRef Id="cmpProgramDataData" />
       <ComponentRef Id="cmpProgramDataLogs" />
     </Feature>

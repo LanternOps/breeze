@@ -78,20 +78,25 @@ if (-not (Test-Path $agentExe)) {
     throw "breeze-agent.exe not found at expected location: $agentExe"
 }
 
-# Avoid failing upgrades/reinstalls if already enrolled.
+# Config from a previous install may linger after uninstall (ProgramData is
+# Permanent). Back it up and re-enroll so the agent gets a fresh token.
+$backupPath = "$configPath.bak"
+$hadExistingConfig = $false
 if (Test-Path $configPath) {
-    if (Get-Service -Name "BreezeAgent" -ErrorAction SilentlyContinue) {
-        & sc.exe config BreezeAgent start= auto | Out-Null
-        # Don't block on service startup here — surface failures as warnings
-        # so they land in the MSI log. This script exits immediately after,
-        # so there's no later StartServices retry in the upgrade path.
-        try {
-            Start-Service -Name "BreezeAgent" -ErrorAction Stop
-        } catch {
-            Write-Warning "Start-Service failed during enrollment custom action: $($_.Exception.Message)"
+    $hadExistingConfig = $true
+    try {
+        if (Get-Service -Name "BreezeAgent" -ErrorAction SilentlyContinue) {
+            Stop-Service -Name "BreezeAgent" -Force -ErrorAction SilentlyContinue
         }
+        Copy-Item -Path $configPath -Destination $backupPath -Force
+        Remove-Item -Path $configPath -Force
+        "[$(Get-Date -Format 'o')] found stale config from prior install, backed up to $backupPath and re-enrolling" |
+            Out-File -FilePath $enrollLog -Encoding utf8 -Append
+    } catch {
+        "[$(Get-Date -Format 'o')] ERROR: failed to back up/remove stale config: $($_.Exception.Message)" |
+            Out-File -FilePath $enrollLog -Encoding utf8 -Append
+        throw "Cannot prepare for re-enrollment: failed to remove stale config at $configPath ($($_.Exception.Message))"
     }
-    exit 0
 }
 
 $enrollArgs = @("enroll", $enrollmentKey, "--server", $serverUrl)
@@ -102,6 +107,11 @@ if (-not [string]::IsNullOrWhiteSpace($enrollmentSecret)) {
 "[$(Get-Date -Format 'o')] enrolling against $serverUrl" | Out-File -FilePath $enrollLog -Encoding utf8 -Append
 & $agentExe @enrollArgs *>&1 | Tee-Object -FilePath $enrollLog -Append
 if ($LASTEXITCODE -ne 0) {
+    if ($hadExistingConfig -and (Test-Path $backupPath)) {
+        Copy-Item -Path $backupPath -Destination $configPath -Force
+        "[$(Get-Date -Format 'o')] enrollment failed, restored backup config from $backupPath" |
+            Out-File -FilePath $enrollLog -Encoding utf8 -Append
+    }
     throw "Enrollment command failed with exit code $LASTEXITCODE — see $enrollLog"
 }
 

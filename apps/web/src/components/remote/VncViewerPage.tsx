@@ -81,12 +81,13 @@ export default function VncViewerPage({ tunnelId, wsUrl, password: initialPasswo
           </button>
         </div>
       </div>
-      <div className="flex-1">
+      <div className="flex-1 min-h-0">
         <VncViewer
           wsUrl={wsUrl}
           tunnelId={tunnelId}
           password={password}
           onDisconnect={handleDisconnect}
+          className="h-full"
         />
       </div>
     </div>

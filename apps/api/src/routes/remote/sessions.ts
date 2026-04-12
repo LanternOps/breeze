@@ -153,6 +153,24 @@ sessionRoutes.post(
       }
     }
 
+    // Terminate any lingering sessions for this device+type. A browser
+    // hard-refresh may not fire the WS onClose, leaving stale rows that
+    // block new connections or confuse the agent's session broker.
+    try {
+      await db
+        .update(remoteSessions)
+        .set({ status: 'disconnected', endedAt: new Date() })
+        .where(
+          and(
+            eq(remoteSessions.deviceId, data.deviceId),
+            eq(remoteSessions.type, data.type),
+            inArray(remoteSessions.status, ['pending', 'connecting', 'active'])
+          )
+        );
+    } catch (err) {
+      console.error('[remote] Failed to terminate stale sessions for device', data.deviceId, err);
+    }
+
     // Create session
     const [session] = await db
       .insert(remoteSessions)
