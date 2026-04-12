@@ -95,6 +95,17 @@ devPushRoutes.post('/push', bodyLimit({ maxSize: 150 * 1024 * 1024, onError: (c)
       : `dev-${Math.floor(Date.now() / 1000)}`;
   const file = body.binary;
 
+  const allowedComponents = ['agent', 'desktop-helper'] as const;
+  type Component = (typeof allowedComponents)[number];
+  const rawComponent = typeof body.component === 'string' ? body.component : 'agent';
+  if (!allowedComponents.includes(rawComponent as Component)) {
+    return c.json(
+      { error: `invalid component ${rawComponent}; must be one of: ${allowedComponents.join(', ')}` },
+      400,
+    );
+  }
+  const component: Component = rawComponent as Component;
+
   if (!agentId) {
     return c.json({ error: 'agentId is required' }, 400);
   }
@@ -155,6 +166,7 @@ devPushRoutes.post('/push', bodyLimit({ maxSize: 150 * 1024 * 1024, onError: (c)
       downloadUrl,
       checksum,
       version,
+      component,
     },
   };
 
@@ -165,6 +177,7 @@ devPushRoutes.post('/push', bodyLimit({ maxSize: 150 * 1024 * 1024, onError: (c)
     downloadToken,
     checksum,
     version,
+    component,
     agentId: device.agentId,
     deviceId: device.id,
     wsSent: sent,

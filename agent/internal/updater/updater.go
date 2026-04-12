@@ -387,6 +387,23 @@ func (u *Updater) replaceBinary(newPath string) error {
 	return nil
 }
 
+// DownloadAndVerify downloads a binary from the URL and verifies its
+// SHA-256 checksum, returning the path to the verified temp file. The
+// caller is responsible for moving the file into place and removing the
+// temp file. Used by dev_push when updating a non-agent binary (e.g. the
+// desktop helper) so the updater's automatic replace+restart flow is skipped.
+func (u *Updater) DownloadAndVerify(url, expectedChecksum string) (string, error) {
+	tempPath, err := u.downloadFromURL(url)
+	if err != nil {
+		return "", fmt.Errorf("failed to download binary: %w", err)
+	}
+	if err := u.verifyChecksum(tempPath, expectedChecksum); err != nil {
+		removeCleanup(tempPath)
+		return "", fmt.Errorf("checksum verification failed: %w", err)
+	}
+	return tempPath, nil
+}
+
 // UpdateFromURL downloads a binary directly from a URL (skipping the version-lookup
 // API call used by UpdateTo). Used by dev_push for fast iteration.
 func (u *Updater) UpdateFromURL(url, expectedChecksum string) error {
