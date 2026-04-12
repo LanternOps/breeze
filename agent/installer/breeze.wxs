@@ -20,9 +20,6 @@
 <?ifndef RemoveUserHelperScriptPath?>
 <?define RemoveUserHelperScriptPath=remove-windows-task.ps1?>
 <?endif?>
-<?ifndef EnrollAgentScriptPath?>
-<?define EnrollAgentScriptPath=enroll-agent.ps1?>
-<?endif?>
 
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package
@@ -136,9 +133,6 @@
             <Component Id="cmpRemoveWindowsTaskPs1" Guid="*">
               <File Id="filRemoveWindowsTaskPs1" Source="$(var.RemoveUserHelperScriptPath)" KeyPath="yes" />
             </Component>
-            <Component Id="cmpEnrollAgentPs1" Guid="*">
-              <File Id="filEnrollAgentPs1" Source="$(var.EnrollAgentScriptPath)" KeyPath="yes" />
-            </Component>
           </Directory>
         </Directory>
       </Directory>
@@ -168,11 +162,6 @@
     </StandardDirectory>
 
     <CustomAction
-      Id="SetEnrollAgentData"
-      Property="EnrollAgent"
-      Value="SERVER_URL=[SERVER_URL];ENROLLMENT_KEY=[ENROLLMENT_KEY];ENROLLMENT_SECRET=[ENROLLMENT_SECRET]" />
-
-    <CustomAction
       Id="RegisterUserHelperTask"
       Property="POWERSHELL_EXE"
       ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#filInstallWindowsPs1]&quot;"
@@ -198,8 +187,8 @@
 
     <CustomAction
       Id="EnrollAgent"
-      Property="POWERSHELL_EXE"
-      ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#filEnrollAgentPs1]&quot; -CustomActionData &quot;[EnrollAgent]&quot;"
+      FileRef="filBreezeAgentExe"
+      ExeCommand="enroll &quot;[ENROLLMENT_KEY]&quot; --server &quot;[SERVER_URL]&quot; --enrollment-secret &quot;[ENROLLMENT_SECRET]&quot; --quiet"
       Execute="deferred"
       Impersonate="no"
       Return="ignore"
@@ -209,8 +198,10 @@
       <Custom Action="SetPowerShellPath" After="InstallInitialize" />
       <Custom Action="RollbackRegisterUserHelperTask" Before="RegisterUserHelperTask" Condition="NOT Installed AND NOT REMOVE AND NOT WIX_UPGRADE_DETECTED" />
       <Custom Action="RegisterUserHelperTask" After="InstallServices" Condition="NOT Installed AND NOT REMOVE" />
-      <Custom Action="SetEnrollAgentData" Before="EnrollAgent" Condition="NOT Installed AND SERVER_URL AND ENROLLMENT_KEY" />
-      <Custom Action="EnrollAgent" After="RegisterUserHelperTask" Condition="NOT Installed AND SERVER_URL AND ENROLLMENT_KEY" />
+      <!-- Run enrollment after file copy but before InstallServices so the
+           BreezeAgent service starts with a valid agent.yaml already in
+           place — no restart dance required. -->
+      <Custom Action="EnrollAgent" After="InstallFiles" Before="InstallServices" Condition="NOT Installed AND SERVER_URL AND ENROLLMENT_KEY" />
       <Custom Action="UnregisterUserHelperTask" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
     </InstallExecuteSequence>
 
@@ -222,7 +213,6 @@
       <ComponentRef Id="cmpUserTaskXml" />
       <ComponentRef Id="cmpInstallWindowsPs1" />
       <ComponentRef Id="cmpRemoveWindowsTaskPs1" />
-      <ComponentRef Id="cmpEnrollAgentPs1" />
       <ComponentRef Id="cmpProgramDataRoot" />
       <ComponentRef Id="cmpCleanConfigOnUninstall" />
       <ComponentRef Id="cmpProgramDataData" />
