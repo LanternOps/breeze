@@ -226,7 +226,10 @@ services:
     restart: unless-stopped
     environment:
       WATCHTOWER_POLL_INTERVAL: 300
-      WATCHTOWER_CLEANUP: "true"
+      # Cleanup disabled so one previous image stays on disk for rollback.
+      # A weekly host cron prunes images older than 14 days to prevent
+      # unbounded growth: 0 3 * * 0 docker image prune -a --filter "until=336h" -f
+      WATCHTOWER_CLEANUP: "false"
       WATCHTOWER_LABEL_ENABLE: "true"
       DOCKER_API_VERSION: "1.54"
     volumes:
