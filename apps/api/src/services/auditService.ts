@@ -1,4 +1,4 @@
-import { db, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { auditLogs } from '../db/schema';
 import { captureException } from './sentry';
 
@@ -22,17 +22,30 @@ export interface CreateAuditLogParams {
 }
 
 export async function createAuditLog(params: CreateAuditLogParams): Promise<void> {
-  // Audit writes run under system scope because they are called from both
-  // authenticated handlers (where the request's org scope would match) AND
-  // pre-auth paths like failed-login tracking (where no scope is set yet,
-  // e.g. apps/api/src/routes/auth/login.ts:91 auditUserLoginFailure).
-  // Running in system scope keeps the audit path reliable regardless of
-  // caller context — the orgId in the row itself still identifies which
-  // tenant the event belongs to.
-  return withSystemDbAccessContext(async () => {
-    const { actorType = 'user', ...rest } = params;
-    await db.insert(auditLogs).values({ actorType, ...rest });
-  });
+  // Audit writes must run on a connection OUTSIDE the caller's request
+  // transaction. Two reasons:
+  //   1. System-scope semantics. Audits are written from both pre-auth paths
+  //      (no tx yet) and authenticated handlers where the caller's scope
+  //      can't insert rows with NULL or cross-org org_id under RLS. The
+  //      previous `withSystemDbAccessContext` call was a no-op when already
+  //      inside a tx (see `withDbAccessContext`'s short-circuit), leaving
+  //      the insert running under the caller's scope and failing the
+  //      `audit_logs` insert policy for partner-scope callers with a
+  //      NULL-org audit row.
+  //   2. Tx isolation. A failed audit insert inside the request tx aborts
+  //      the whole transaction in Postgres, silently rolling back the
+  //      caller's real work (e.g. password change) even though the route
+  //      returned 200 — because `createAuditLogAsync` swallows the error.
+  //
+  // `runOutsideDbContext` exits the AsyncLocalStorage so the nested
+  // `withSystemDbAccessContext` actually opens a fresh system-scope
+  // transaction on its own pooled connection.
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const { actorType = 'user', ...rest } = params;
+      await db.insert(auditLogs).values({ actorType, ...rest });
+    })
+  );
 }
 
 export function createAuditLogAsync(params: CreateAuditLogParams): void {
