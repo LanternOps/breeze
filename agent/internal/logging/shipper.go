@@ -188,10 +188,23 @@ const (
 
 func (s *Shipper) shipBatch(entries []LogEntry) {
 	if s.authMon != nil && s.authMon.ShouldSkip() {
-		// Auth-dead: don't drop entries, re-buffer them. If the buffer is
-		// full, drop with count — callers will see the drop count in the
-		// next successful heartbeat.
+		// Auth-dead: don't drop entries on the ticker path — re-buffer
+		// them so they ship once auth recovers. On the drain path
+		// (stopChan closed) we must NOT re-buffer, or the drain loop
+		// pulls them right back out and hangs forever. Drop with count
+		// in that case.
+		//
+		// stopChan is checked first (priority select) before attempting
+		// the buffer send, because when both are ready Go picks randomly
+		// and we need shutdown to win deterministically.
 		for _, e := range entries {
+			select {
+			case <-s.stopChan:
+				// Shutting down: drop all remaining entries with count.
+				s.droppedCount.Add(int64(len(entries)))
+				return
+			default:
+			}
 			select {
 			case s.buffer <- e:
 			default:
