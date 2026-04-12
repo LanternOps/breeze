@@ -882,16 +882,16 @@ jobs:
         working-directory: apps/viewer
         run: |
           bundle_dir="src-tauri/target/${{ matrix.target }}/release/bundle/appimage"
-          tar_gz=$(ls "$bundle_dir"/*.AppImage.tar.gz 2>/dev/null | head -1)
-          sig_file=$(ls "$bundle_dir"/*.AppImage.tar.gz.sig 2>/dev/null | head -1)
-          if [ -z "$tar_gz" ] || [ -z "$sig_file" ]; then
+          appimage=$(ls "$bundle_dir"/*.AppImage 2>/dev/null | grep -v '\.sig$' | grep -v '\.tar\.gz' | head -1)
+          sig_file=$(ls "$bundle_dir"/*.AppImage.sig 2>/dev/null | head -1)
+          if [ -z "$appimage" ] || [ -z "$sig_file" ]; then
             echo "ERROR: Updater bundle not found in $bundle_dir"
             ls -la "$bundle_dir" || true
             ls -R src-tauri/target/*/release/bundle/ || true
             exit 1
           fi
-          cp "$tar_gz" breeze-viewer-linux.AppImage.tar.gz
-          cp "$sig_file" breeze-viewer-linux.AppImage.tar.gz.sig
+          cp "$appimage" breeze-viewer-linux.AppImage
+          cp "$sig_file" breeze-viewer-linux.AppImage.sig
 
       - name: Upload Viewer artifact
         uses: actions/upload-artifact@v7
@@ -906,8 +906,8 @@ jobs:
         with:
           name: breeze-viewer-linux-updater
           path: |
-            apps/viewer/breeze-viewer-linux.AppImage.tar.gz
-            apps/viewer/breeze-viewer-linux.AppImage.tar.gz.sig
+            apps/viewer/breeze-viewer-linux.AppImage
+            apps/viewer/breeze-viewer-linux.AppImage.sig
           retention-days: 30
 
   build-helper:
@@ -1462,10 +1462,10 @@ jobs:
           fi
 
           # Linux AppImage
-          linux_sig="updater-bundles/breeze-viewer-linux.AppImage.tar.gz.sig"
+          linux_sig="updater-bundles/breeze-viewer-linux.AppImage.sig"
           if [ -f "$linux_sig" ]; then
             sig_content=$(cat "$linux_sig")
-            url="${release_base}/breeze-viewer-linux.AppImage.tar.gz"
+            url="${release_base}/breeze-viewer-linux.AppImage"
             platforms=$(echo "$platforms" | jq \
               --arg sig "$sig_content" \
               --arg url "$url" \
