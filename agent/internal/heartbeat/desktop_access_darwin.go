@@ -4,14 +4,13 @@ package heartbeat
 
 import (
 	"os"
-	"strings"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
-func (h *Heartbeat) computeDesktopAccess(sysInfo *collectors.SystemInfo) *DesktopAccessState {
+func (h *Heartbeat) computeDesktopAccess(_ *collectors.SystemInfo) *DesktopAccessState {
 	now := time.Now().UTC()
 	state := &DesktopAccessState{
 		Mode:                "unavailable",
@@ -19,8 +18,6 @@ func (h *Heartbeat) computeDesktopAccess(sysInfo *collectors.SystemInfo) *Deskto
 		VirtualDisplayReady: false,
 		CheckedAt:           now,
 	}
-
-	unsupportedOS := isUnsupportedDarwinVersion(sysInfo)
 
 	desktopSession := h.sessionBroker.PreferredDesktopSession()
 	tccStatus := h.sessionBroker.TCCStatus()
@@ -57,13 +54,13 @@ func (h *Heartbeat) computeDesktopAccess(sysInfo *collectors.SystemInfo) *Deskto
 		default:
 			switch desktopSession.DesktopContext {
 			case ipc.DesktopContextLoginWindow:
-				if unsupportedOS {
-					state.Reason = "unsupported_os"
-				} else {
-					state.Mode = "login_window"
-					state.LoginUIReachable = true
-					return state
-				}
+				// Apple blocks synthetic input at the login window on all macOS
+				// versions for third-party agents without a private entitlement,
+				// so WebRTC desktop can never drive the login screen. Report
+				// unsupported_os so the UI falls back to VNC Relay, which uses
+				// native macOS Screen Sharing via `kickstart` and doesn't need
+				// the synthetic-input path.
+				state.Reason = "unsupported_os"
 			case ipc.DesktopContextUserSession, "":
 				state.Mode = "user_session"
 				return state
@@ -93,23 +90,4 @@ func (h *Heartbeat) computeDesktopAccess(sysInfo *collectors.SystemInfo) *Deskto
 		state.Reason = "helper_not_connected"
 	}
 	return state
-}
-
-func isUnsupportedDarwinVersion(sysInfo *collectors.SystemInfo) bool {
-	if sysInfo == nil {
-		return false
-	}
-
-	version := strings.TrimSpace(strings.TrimPrefix(strings.ToLower(sysInfo.OSVersion), "darwin"))
-	if version == "" {
-		return false
-	}
-
-	major := strings.SplitN(version, ".", 2)[0]
-	switch major {
-	case "20", "21", "22":
-		return true
-	default:
-		return false
-	}
 }

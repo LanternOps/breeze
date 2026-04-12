@@ -16,6 +16,7 @@ package desktop
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
 static io_connect_t g_hidConnection = 0;
+static int g_hidLastKernReturn = 0;
 
 static int openHIDConnection(void) {
     if (g_hidConnection != 0) return 0;
@@ -23,11 +24,19 @@ static int openHIDConnection(void) {
         kIOMainPortDefault,
         IOServiceMatching("IOHIDSystem")
     );
-    if (!service) return -1;
+    if (!service) {
+        g_hidLastKernReturn = 0;
+        return -1;
+    }
     kern_return_t kr = IOServiceOpen(service, mach_task_self(),
                                      kIOHIDServerConnectType, &g_hidConnection);
     IOObjectRelease(service);
+    g_hidLastKernReturn = (int)kr;
     return (kr == KERN_SUCCESS) ? 0 : -2;
+}
+
+static int hidLastKernReturn(void) {
+    return g_hidLastKernReturn;
 }
 
 static void closeHIDConnection(void) {
@@ -205,6 +214,94 @@ static void inputKeyUp(int keycode, int flags) {
         CFRelease(event);
     }
 }
+
+// ---- CGEvent wrappers posted to kCGSessionEventTap ----
+// At the macOS login window, IOHIDSystem is typically held exclusively
+// (WindowServer / loginagent) so IOHIDPostEvent fails. CGEvents posted
+// to kCGHIDEventTap also tend to be dropped at the login window. But
+// posting to kCGSessionEventTap delivers events into the session-level
+// tap, which on modern macOS is the correct target for login-window
+// input injection from a privileged helper.
+
+static void sessionMouseMove(int x, int y) {
+    CGEventRef event = CGEventCreateMouseEvent(NULL, kCGEventMouseMoved, CGPointMake(x, y), 0);
+    if (event) {
+        CGEventPost(kCGSessionEventTap, event);
+        CFRelease(event);
+    }
+}
+
+static void sessionMouseDown(int x, int y, int button) {
+    CGEventType type;
+    switch (button) {
+        case 1: type = kCGEventRightMouseDown; break;
+        case 2: type = kCGEventOtherMouseDown; break;
+        default: type = kCGEventLeftMouseDown; break;
+    }
+    CGEventRef event = CGEventCreateMouseEvent(NULL, type, CGPointMake(x, y), (CGMouseButton)button);
+    if (event) {
+        CGEventPost(kCGSessionEventTap, event);
+        CFRelease(event);
+    }
+}
+
+static void sessionMouseUp(int x, int y, int button) {
+    CGEventType type;
+    switch (button) {
+        case 1: type = kCGEventRightMouseUp; break;
+        case 2: type = kCGEventOtherMouseUp; break;
+        default: type = kCGEventLeftMouseUp; break;
+    }
+    CGEventRef event = CGEventCreateMouseEvent(NULL, type, CGPointMake(x, y), (CGMouseButton)button);
+    if (event) {
+        CGEventPost(kCGSessionEventTap, event);
+        CFRelease(event);
+    }
+}
+
+static void sessionMouseDrag(int x, int y, int button) {
+    CGEventType type;
+    switch (button) {
+        case 1: type = kCGEventRightMouseDragged; break;
+        case 2: type = kCGEventOtherMouseDragged; break;
+        default: type = kCGEventLeftMouseDragged; break;
+    }
+    CGEventRef event = CGEventCreateMouseEvent(NULL, type, CGPointMake(x, y), (CGMouseButton)button);
+    if (event) {
+        CGEventPost(kCGSessionEventTap, event);
+        CFRelease(event);
+    }
+}
+
+static void sessionMouseScroll(int delta) {
+    CGEventRef event = CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitLine, 1, delta);
+    if (event) {
+        CGEventPost(kCGSessionEventTap, event);
+        CFRelease(event);
+    }
+}
+
+static void sessionKeyDown(int keycode, int flags) {
+    CGEventRef event = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)keycode, true);
+    if (event) {
+        if (flags != 0) {
+            CGEventSetFlags(event, (CGEventFlags)flags);
+        }
+        CGEventPost(kCGSessionEventTap, event);
+        CFRelease(event);
+    }
+}
+
+static void sessionKeyUp(int keycode, int flags) {
+    CGEventRef event = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)keycode, false);
+    if (event) {
+        if (flags != 0) {
+            CGEventSetFlags(event, (CGEventFlags)flags);
+        }
+        CGEventPost(kCGSessionEventTap, event);
+        CFRelease(event);
+    }
+}
 */
 // #cgo LDFLAGS: -framework IOKit
 import "C"
@@ -281,14 +378,17 @@ func NewInputHandler(desktopContext string) InputHandler {
 	h := &DarwinInputHandler{scaleFactor: sf, inputAvailable: true}
 
 	// Always try to open HID connection regardless of context.
-	// IOHIDPostEvent is the only way to inject clicks/keyboard at the
-	// macOS login window. The helper has Accessibility TCC permission.
+	// IOHIDPostEvent is the preferred way to inject clicks/keyboard at the
+	// macOS login window but is typically held exclusively on modern macOS.
+	// When unavailable we fall back to CGEvent posted to kCGSessionEventTap
+	// which is the next-best option for login-window input injection.
 	if rc := C.openHIDConnection(); rc == 0 {
 		h.hidAvailable = true
 		slog.Info("IOHIDSystem connection opened for login-window input support")
 	} else {
-		slog.Warn("IOHIDSystem unavailable — input at login window will be limited to mouse movement",
-			"rc", int(rc))
+		slog.Warn("IOHIDSystem unavailable — falling back to CGEvent session tap at login window",
+			"rc", int(rc),
+			"kernReturn", fmt.Sprintf("0x%x", int(C.hidLastKernReturn())))
 	}
 
 	// If launched in login_window context, start in login window mode.
@@ -304,12 +404,9 @@ func (h *DarwinInputHandler) SetDisplayOffset(x, y int) {
 }
 
 // InputAvailable reports whether this handler can inject full input.
-// Returns false when at the login window without IOHIDSystem — CGEvent
-// clicks and keyboard are blocked there, only mouse movement works.
+// At the login window we always attempt input, falling back from HID to
+// CGEvent session tap when IOHIDSystem is unavailable.
 func (h *DarwinInputHandler) InputAvailable() bool {
-	if h.atLoginWindow.Load() && !h.hidAvailable {
-		return false
-	}
 	return h.inputAvailable
 }
 
@@ -327,6 +424,15 @@ func (h *DarwinInputHandler) SetAtLoginWindow(atLoginWindow bool) {
 // shouldUseHID returns true when input should use IOHIDPostEvent.
 func (h *DarwinInputHandler) shouldUseHID() bool {
 	return h.atLoginWindow.Load() && h.hidAvailable
+}
+
+// shouldUseSessionTap returns true when input should use CGEvent posted to
+// kCGSessionEventTap. This is the fallback path for login-window input when
+// IOHIDSystem is unavailable (typical on modern macOS where WindowServer
+// holds the exclusive IOHIDServerConnect). Session-tap events have a better
+// chance of reaching the loginwindow input handler than HID-tap events.
+func (h *DarwinInputHandler) shouldUseSessionTap() bool {
+	return h.atLoginWindow.Load() && !h.hidAvailable
 }
 
 var errInputUnavailable = fmt.Errorf("input injection unavailable in login_window context (IOHIDSystem not connected)")
@@ -374,15 +480,22 @@ func (h *DarwinInputHandler) SendMouseMove(x, y int) error {
 		return errInputUnavailable
 	}
 	sx, sy := h.scaleXY(x, y)
-	if h.shouldUseHID() {
+	switch {
+	case h.shouldUseHID():
 		if h.mouseDown {
 			C.hidMouseDrag(sx, sy, C.int(h.mouseBtn))
 		} else {
 			C.hidMouseMove(sx, sy)
 		}
-	} else if h.mouseDown {
+	case h.shouldUseSessionTap():
+		if h.mouseDown {
+			C.sessionMouseDrag(sx, sy, C.int(h.mouseBtn))
+		} else {
+			C.sessionMouseMove(sx, sy)
+		}
+	case h.mouseDown:
 		C.inputMouseDrag(sx, sy, C.int(h.mouseBtn))
-	} else {
+	default:
 		C.inputMouseMove(sx, sy)
 	}
 	return nil
@@ -394,10 +507,14 @@ func (h *DarwinInputHandler) SendMouseClick(x, y int, button string) error {
 	}
 	sx, sy := h.scaleXY(x, y)
 	btn := C.int(buttonToInt(button))
-	if h.shouldUseHID() {
+	switch {
+	case h.shouldUseHID():
 		C.hidMouseDown(sx, sy, btn)
 		C.hidMouseUp(sx, sy, btn)
-	} else {
+	case h.shouldUseSessionTap():
+		C.sessionMouseDown(sx, sy, btn)
+		C.sessionMouseUp(sx, sy, btn)
+	default:
 		C.inputMouseDown(sx, sy, btn)
 		C.inputMouseUp(sx, sy, btn)
 	}
@@ -411,9 +528,12 @@ func (h *DarwinInputHandler) SendMouseDown(x, y int, button string) error {
 	h.mouseBtn = buttonToInt(button)
 	h.mouseDown = true
 	sx, sy := h.scaleXY(x, y)
-	if h.shouldUseHID() {
+	switch {
+	case h.shouldUseHID():
 		C.hidMouseDown(sx, sy, C.int(h.mouseBtn))
-	} else {
+	case h.shouldUseSessionTap():
+		C.sessionMouseDown(sx, sy, C.int(h.mouseBtn))
+	default:
 		C.inputMouseDown(sx, sy, C.int(h.mouseBtn))
 	}
 	return nil
@@ -426,9 +546,12 @@ func (h *DarwinInputHandler) SendMouseUp(x, y int, button string) error {
 	h.mouseDown = false
 	sx, sy := h.scaleXY(x, y)
 	btn := C.int(buttonToInt(button))
-	if h.shouldUseHID() {
+	switch {
+	case h.shouldUseHID():
 		C.hidMouseUp(sx, sy, btn)
-	} else {
+	case h.shouldUseSessionTap():
+		C.sessionMouseUp(sx, sy, btn)
+	default:
 		C.inputMouseUp(sx, sy, btn)
 	}
 	return nil
@@ -439,10 +562,14 @@ func (h *DarwinInputHandler) SendMouseScroll(x, y int, delta int) error {
 		return errInputUnavailable
 	}
 	sx, sy := h.scaleXY(x, y)
-	if h.shouldUseHID() {
+	switch {
+	case h.shouldUseHID():
 		C.hidMouseMove(sx, sy)
 		C.hidMouseScroll(C.int(-delta))
-	} else {
+	case h.shouldUseSessionTap():
+		C.sessionMouseMove(sx, sy)
+		C.sessionMouseScroll(C.int(-delta))
+	default:
 		C.inputMouseMove(sx, sy)
 		C.inputMouseScroll(C.int(-delta)) // negate: browser deltaY+ = scroll down
 	}
@@ -459,10 +586,14 @@ func (h *DarwinInputHandler) SendKeyPress(key string, modifiers []string) error 
 		return fmt.Errorf("unknown key: %s", key)
 	}
 	flags := modifiersToFlags(modifiers)
-	if h.shouldUseHID() {
+	switch {
+	case h.shouldUseHID():
 		C.hidKeyDown(C.int(keycode), flags)
 		C.hidKeyUp(C.int(keycode), flags)
-	} else {
+	case h.shouldUseSessionTap():
+		C.sessionKeyDown(C.int(keycode), flags)
+		C.sessionKeyUp(C.int(keycode), flags)
+	default:
 		C.inputKeyDown(C.int(keycode), flags)
 		C.inputKeyUp(C.int(keycode), flags)
 	}
@@ -478,9 +609,12 @@ func (h *DarwinInputHandler) SendKeyDown(key string) error {
 	if !ok {
 		return fmt.Errorf("unknown key: %s", key)
 	}
-	if h.shouldUseHID() {
+	switch {
+	case h.shouldUseHID():
 		C.hidKeyDown(C.int(keycode), 0)
-	} else {
+	case h.shouldUseSessionTap():
+		C.sessionKeyDown(C.int(keycode), 0)
+	default:
 		C.inputKeyDown(C.int(keycode), 0)
 	}
 	return nil
@@ -495,9 +629,12 @@ func (h *DarwinInputHandler) SendKeyUp(key string) error {
 	if !ok {
 		return fmt.Errorf("unknown key: %s", key)
 	}
-	if h.shouldUseHID() {
+	switch {
+	case h.shouldUseHID():
 		C.hidKeyUp(C.int(keycode), 0)
-	} else {
+	case h.shouldUseSessionTap():
+		C.sessionKeyUp(C.int(keycode), 0)
+	default:
 		C.inputKeyUp(C.int(keycode), 0)
 	}
 	return nil
