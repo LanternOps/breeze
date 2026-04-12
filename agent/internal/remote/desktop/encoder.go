@@ -82,6 +82,15 @@ type optionalStallDetector interface {
 	AdvanceStallDetection()
 }
 
+// optionalGPUOnlyMarker is implemented by hardware encoders that cannot
+// accept CPU pixel data via Encode([]byte) and require EncodeTexture()
+// exclusively (e.g., AMF, NVENC). When the capture path falls back to
+// GDI, these encoders must be swapped to a CPU-capable software encoder
+// rather than receiving Encode() calls that will always error.
+type optionalGPUOnlyMarker interface {
+	IsGPUOnly() bool
+}
+
 type encoderBackend interface {
 	Encode(frame []byte) ([]byte, error)
 	SetCodec(codec Codec) error
@@ -305,6 +314,21 @@ func (v *VideoEncoder) BackendIsPlaceholder() bool {
 		return true
 	}
 	return v.backend.IsPlaceholder()
+}
+
+// IsGPUOnly returns true if the backend rejects CPU pixel data via Encode().
+// Used by the capture loop's CPU fallback path to swap to a CPU-capable
+// encoder instead of calling Encode() and hitting a guaranteed error.
+func (v *VideoEncoder) IsGPUOnly() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.backend == nil {
+		return false
+	}
+	if m, ok := v.backend.(optionalGPUOnlyMarker); ok {
+		return m.IsGPUOnly()
+	}
+	return false
 }
 
 func (v *VideoEncoder) SetD3D11Device(device, context uintptr) {

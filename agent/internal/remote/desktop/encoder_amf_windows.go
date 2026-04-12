@@ -170,6 +170,13 @@ func (e *amfEncoder) SupportsGPUInput() bool {
 	return e.d3d11Device != 0
 }
 
+// IsGPUOnly reports that AMF cannot accept CPU pixel data via Encode().
+// Callers must use EncodeTexture() with a D3D11 texture, or swap to a
+// CPU-capable encoder (OpenH264) before falling back to the CPU path.
+func (e *amfEncoder) IsGPUOnly() bool {
+	return true
+}
+
 func (e *amfEncoder) ForceKeyframe() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()

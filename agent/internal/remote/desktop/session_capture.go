@@ -739,6 +739,19 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 		return
 	}
 
+	// GPU-only encoders (AMF, NVENC) cannot accept CPU pixel data via
+	// Encode(). If we've reached the CPU path, the GPU/DXGI pipeline is
+	// not available — swap to a CPU-capable software encoder (OpenH264)
+	// immediately. Without this, the CPU path would call enc.Encode()
+	// which errors every frame until the 5-strike swapToSoftwareEncoder
+	// threshold fires.
+	if enc.IsGPUOnly() {
+		slog.Info("GPU-only encoder reached CPU path, swapping to software",
+			"session", s.id, "backend", enc.BackendName())
+		s.swapToSoftwareEncoder()
+		return
+	}
+
 	// 1. Capture screen
 	t0 := time.Now()
 	img, err := cap.Capture()
