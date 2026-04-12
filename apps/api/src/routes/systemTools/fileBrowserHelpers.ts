@@ -66,6 +66,19 @@ export function buildBulkItemFailure(result: CommandResult): {
   };
 }
 
+// Single-item upload variant. Mirrors buildBulkItemFailure, but returns the
+// full { error, unverified?, status } shape the upload route needs.
+export function buildSingleItemUploadBody(
+  result: CommandResult,
+  fallback: string,
+): { error: string; status: ContentfulStatusCode; unverified?: true } {
+  const { message, status } = mapCommandFailure(result, fallback, { mutating: true });
+  if (status === 504) {
+    return { error: message, status, unverified: true };
+  }
+  return { error: message, status };
+}
+
 // Tag audit-log errorMessage so admins reviewing the audit trail can spot
 // commands whose final state on the device is unverified. Returns undefined
 // for successes so callers can pass the result through unchanged.
