@@ -65,10 +65,18 @@ export default function ScriptsPage() {
 
   const fetchDevices = useCallback(async () => {
     try {
-      const response = await fetchWithAuth('/devices');
+      const response = await fetchWithAuth('/devices?limit=10000');
       if (response.ok) {
         const data = await response.json();
-        setDevices(data.data ?? data.devices ?? (Array.isArray(data) ? data : []));
+        const raw = data.data ?? data.devices ?? (Array.isArray(data) ? data : []);
+        setDevices(raw.map((d: Record<string, unknown>) => ({
+          id: d.id as string,
+          hostname: (d.hostname ?? '') as string,
+          os: (d.osType ?? d.os ?? '') as Device['os'],
+          status: (d.status ?? 'offline') as Device['status'],
+          siteId: (d.siteId ?? '') as string,
+          siteName: (d.siteName ?? '') as string,
+        })));
       }
     } catch {
       // Silently fail - devices will be empty
@@ -92,6 +100,16 @@ export default function ScriptsPage() {
     fetchDevices();
     fetchSites();
   }, [fetchScripts, fetchDevices, fetchSites]);
+
+  // Enrich devices with site names once both are loaded
+  const enrichedDevices = useMemo(() => {
+    if (sites.length === 0) return devices;
+    const siteMap = new Map(sites.map(s => [s.id, s.name]));
+    return devices.map(d => ({
+      ...d,
+      siteName: d.siteName || siteMap.get(d.siteId) || '',
+    }));
+  }, [devices, sites]);
 
   const handleRun = async (script: Script) => {
     // Fetch full script details including parameters
@@ -379,7 +397,7 @@ export default function ScriptsPage() {
       {modalMode === 'execute' && selectedScript && (
         <ScriptExecutionModal
           script={selectedScript}
-          devices={devices}
+          devices={enrichedDevices}
           sites={sites}
           isOpen={true}
           onClose={handleCloseModal}
