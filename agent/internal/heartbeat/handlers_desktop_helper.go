@@ -245,6 +245,17 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 		}
 	}
 
+	// Distinguish between helper not connecting at all vs connecting but lacking capture capability
+	// (e.g. TCC Screen Recording not granted on macOS).
+	if h.sessionBroker != nil {
+		if desktopSessions := h.sessionBroker.SessionsWithScope("desktop"); len(desktopSessions) > 0 {
+			log.Warn("helper connected but CanCapture is false — Screen Recording permission may not be granted",
+				"targetSession", targetSession,
+				"connectedHelpers", len(desktopSessions),
+			)
+			return nil
+		}
+	}
 	log.Warn("helper spawned but did not connect within 10s", "targetSession", targetSession)
 	return nil
 }
