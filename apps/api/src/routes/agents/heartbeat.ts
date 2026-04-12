@@ -25,6 +25,7 @@ import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { publishEvent } from '../../services/eventBus';
 import { isAgentTokenRotationDue } from '../../middleware/agentAuth';
 import { captureException } from '../../services/sentry';
+import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
 
 export const heartbeatRoutes = new Hono();
 
@@ -391,6 +392,14 @@ if (latestHelper) {
   const authenticatedWithPreviousToken = c.get('agentTokenRotationRequired') === true;
   const rotateToken = !authenticatedWithPreviousToken && isAgentTokenRotationDue(device.tokenIssuedAt);
 
+  let manageRemoteManagement = false;
+  try {
+    const remoteAccess = await resolveRemoteAccessForDevice(device.id);
+    manageRemoteManagement = remoteAccess.settings.vncRelay === true;
+  } catch (err) {
+    console.error('[heartbeat] Failed to resolve remote access policy:', err);
+  }
+
   return c.json({
     commands: commands.map(cmd => ({
       id: cmd.id,
@@ -405,6 +414,7 @@ if (latestHelper) {
     rotateToken: rotateToken || undefined,
     helperEnabled: helperSettings?.enabled ?? false,
     helperSettings: helperSettings ?? undefined,
+    manageRemoteManagement: manageRemoteManagement || undefined,
   });
 });
 

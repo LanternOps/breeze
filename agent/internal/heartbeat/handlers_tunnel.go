@@ -84,7 +84,7 @@ func handleTunnelOpen(h *Heartbeat, cmd Command) tools.CommandResult {
 		if !running && !managedByPolicy {
 			return tools.CommandResult{
 				Status:     "failed",
-				Error:      "Screen Sharing is disabled on this device. Enable 'Manage Remote Management' in Config Policy to allow Breeze to control this, or enable it manually in System Preferences > Sharing.",
+				Error:      "Screen Sharing is disabled on this device. Enable 'VNC Relay (macOS)' in Config Policy, or enable Screen Sharing manually in System Settings > General > Sharing.",
 				DurationMs: time.Since(start).Milliseconds(),
 			}
 		}
@@ -96,6 +96,10 @@ func handleTunnelOpen(h *Heartbeat, cmd Command) tools.CommandResult {
 					Error:      fmt.Sprintf("failed to enable VNC screen sharing: %s", err.Error()),
 					DurationMs: time.Since(start).Milliseconds(),
 				}
+			}
+			// We flipped it on — remember so we can turn it off on tunnel close.
+			if h.tunnelMgr != nil {
+				h.tunnelMgr.SetScreenSharingSelfEnabled(true)
 			}
 		}
 	}
