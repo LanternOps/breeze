@@ -211,15 +211,23 @@ func (h *Heartbeat) findActiveHelper(targetSession string, allowDisconnected ...
 
 		// If the best session IS the console and it's not disconnected, use it.
 		if session.WinSessionID == consoleID && !isWinSessionDisconnected(session.WinSessionID) {
+			log.Warn("findActiveHelper: picked console session directly",
+				"winSession", session.WinSessionID, "helperSession", session.SessionID,
+				"consoleID", consoleID)
 			return session
 		}
 
 		// Otherwise, look for a better alternative among all capable sessions.
 		if alternatives := h.sessionBroker.SessionsWithScope("desktop"); len(alternatives) > 0 {
 			var consoleAlt, nonDisconnectedAlt *sessionbroker.Session
+			altSummaries := make([]string, 0, len(alternatives))
 			for _, alt := range alternatives {
 				caps := alt.GetCapabilities()
-				if caps == nil || !caps.CanCapture {
+				canCapture := caps != nil && caps.CanCapture
+				altSummaries = append(altSummaries,
+					fmt.Sprintf("{win=%s disc=%v cap=%v}",
+						alt.WinSessionID, isWinSessionDisconnected(alt.WinSessionID), canCapture))
+				if !canCapture {
 					continue
 				}
 				// Console session is always preferred
@@ -231,14 +239,24 @@ func (h *Heartbeat) findActiveHelper(targetSession string, allowDisconnected ...
 				}
 			}
 			if consoleAlt != nil && !isWinSessionDisconnected(consoleAlt.WinSessionID) {
+				log.Warn("findActiveHelper: picked console alternative",
+					"winSession", consoleAlt.WinSessionID, "helperSession", consoleAlt.SessionID,
+					"consoleID", consoleID, "firstPick", session.WinSessionID,
+					"alternatives", strings.Join(altSummaries, ","))
 				return consoleAlt
 			}
 			if nonDisconnectedAlt != nil {
+				log.Warn("findActiveHelper: picked non-disconnected alternative (no live console helper)",
+					"winSession", nonDisconnectedAlt.WinSessionID, "helperSession", nonDisconnectedAlt.SessionID,
+					"consoleID", consoleID, "firstPick", session.WinSessionID,
+					"alternatives", strings.Join(altSummaries, ","))
 				return nonDisconnectedAlt
 			}
 			// Console is disconnected but exists — prefer it over other disconnected sessions
 			if consoleAlt != nil {
 				if len(allowDisconnected) > 0 && allowDisconnected[0] {
+					log.Warn("findActiveHelper: picked disconnected console as last resort",
+						"winSession", consoleAlt.WinSessionID, "consoleID", consoleID)
 					return consoleAlt
 				}
 				return nil
@@ -251,6 +269,9 @@ func (h *Heartbeat) findActiveHelper(targetSession string, allowDisconnected ...
 				return nil
 			}
 		}
+		log.Warn("findActiveHelper: falling through to first-pick session",
+			"winSession", session.WinSessionID, "helperSession", session.SessionID,
+			"consoleID", consoleID)
 	}
 	return session
 }
