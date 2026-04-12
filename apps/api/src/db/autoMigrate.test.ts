@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { detectState, hashSql } from './autoMigrate';
+import { detectState, hashSql, deriveAppConnectionString } from './autoMigrate';
 import { createHash } from 'node:crypto';
 
 describe('autoMigrate', () => {
@@ -57,6 +57,76 @@ describe('autoMigrate', () => {
       `;
       const expected = createHash('sha256').update(sql).digest('hex');
       expect(hashSql(sql)).toBe(expected);
+    });
+  });
+
+  describe('deriveAppConnectionString', () => {
+    it('swaps user and password on a basic URL', () => {
+      const result = deriveAppConnectionString(
+        'postgresql://breeze:secret@db:5432/breeze',
+        'breeze_app',
+        'app_secret',
+      );
+      expect(result).toBe('postgresql://breeze_app:app_secret@db:5432/breeze');
+    });
+
+    it('preserves query params like sslmode', () => {
+      const result = deriveAppConnectionString(
+        'postgresql://breeze:secret@db:5432/breeze?sslmode=require',
+        'breeze_app',
+        'app_secret',
+      );
+      expect(result).toBe('postgresql://breeze_app:app_secret@db:5432/breeze?sslmode=require');
+    });
+
+    it('preserves host and port', () => {
+      const result = deriveAppConnectionString(
+        'postgresql://admin:x@pg.internal.example.com:6432/production',
+        'breeze_app',
+        'pw',
+      );
+      expect(result).toBe('postgresql://breeze_app:pw@pg.internal.example.com:6432/production');
+    });
+
+    it('URL-encodes special characters in the password', () => {
+      const result = deriveAppConnectionString(
+        'postgresql://breeze:x@db:5432/breeze',
+        'breeze_app',
+        'p@ss/word:with spaces',
+      );
+      // The URL class percent-encodes @ / : and space in password position.
+      expect(result).toContain('breeze_app:');
+      // parsed.password returns the raw percent-encoded form; decoding it
+      // should round-trip to the original (that's what postgres-js does
+      // when it parses the connection string).
+      const parsed = new URL(result!);
+      expect(decodeURIComponent(parsed.password)).toBe('p@ss/word:with spaces');
+      expect(parsed.username).toBe('breeze_app');
+    });
+
+    it('returns null when password is undefined', () => {
+      expect(
+        deriveAppConnectionString('postgresql://breeze:x@db:5432/breeze', 'breeze_app', undefined),
+      ).toBeNull();
+    });
+
+    it('returns null when password is empty string', () => {
+      expect(
+        deriveAppConnectionString('postgresql://breeze:x@db:5432/breeze', 'breeze_app', ''),
+      ).toBeNull();
+    });
+
+    it('returns null when admin URL is unparseable', () => {
+      expect(deriveAppConnectionString('not a url', 'breeze_app', 'pw')).toBeNull();
+    });
+
+    it('works with postgres:// scheme as well as postgresql://', () => {
+      const result = deriveAppConnectionString(
+        'postgres://breeze:secret@db:5432/breeze',
+        'breeze_app',
+        'app_secret',
+      );
+      expect(result).toBe('postgres://breeze_app:app_secret@db:5432/breeze');
     });
   });
 

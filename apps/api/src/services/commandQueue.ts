@@ -1,13 +1,26 @@
 import { eq, and, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { deviceCommands, devices, auditLogs } from '../db/schema';
-import { sendCommandToAgent } from '../routes/agentWs';
+import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
 import { captureException } from './sentry';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from './backupMetrics';
 import {
   claimPendingCommandForDelivery,
   releaseClaimedCommandDelivery,
 } from './commandDispatch';
+
+// Sentinel error string for the WS-pre-check fast-fail path. The fileBrowser
+// route (and any other interactive caller) matches on this substring to map
+// the failure to a "transiently unreachable" UI message distinct from offline.
+export const DEVICE_UNREACHABLE_ERROR =
+  'Device is not currently reachable over the live connection. Please try again in a moment.';
+
+// Number of times we attempt sendCommandToAgent before releasing the claim
+// and short-circuiting with DEVICE_UNREACHABLE_ERROR. With a 500 ms gap this
+// gives a transient WS hiccup ~1s of grace before the user sees a failure.
+// Exported so tests can derive the expected call count.
+export const SEND_RETRY_ATTEMPTS = 3;
+export const SEND_RETRY_DELAY_MS = 500;
 
 // Command types for system tools
 export const CommandTypes = {
@@ -272,6 +285,30 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   // Incident response
   CommandTypes.COLLECT_EVIDENCE,
   CommandTypes.EXECUTE_CONTAINMENT,
+]);
+
+// User-interactive command types — the UI is actively waiting on the result
+// and a 15–30 s silent timeout is a bad experience. For these, executeCommand
+// pre-checks the WS pool and short-circuits with DEVICE_UNREACHABLE_ERROR if
+// no live connection exists, instead of queueing and waiting for the timeout.
+const INTERACTIVE_COMMAND_TYPES: Set<string> = new Set([
+  CommandTypes.FILE_LIST,
+  CommandTypes.FILE_LIST_DRIVES,
+  CommandTypes.FILE_READ,
+  CommandTypes.FILE_WRITE,
+  CommandTypes.FILE_DELETE,
+  CommandTypes.FILE_MKDIR,
+  CommandTypes.FILE_RENAME,
+  CommandTypes.FILE_COPY,
+  CommandTypes.FILE_TRASH_LIST,
+  CommandTypes.FILE_TRASH_RESTORE,
+  CommandTypes.FILE_TRASH_PURGE,
+  CommandTypes.TERMINAL_START,
+  CommandTypes.TERMINAL_DATA,
+  CommandTypes.TERMINAL_RESIZE,
+  CommandTypes.TERMINAL_STOP,
+  CommandTypes.TAKE_SCREENSHOT,
+  CommandTypes.COMPUTER_ACTION,
 ]);
 
 /**
@@ -548,6 +585,28 @@ export async function executeCommand(
     return { status: 'failed', error: `Device is ${device.status}, cannot execute command` };
   }
 
+  // Fast-fail interactive commands when the WS is known-dead. The user is
+  // actively waiting in the UI; queueing and burning the full timeout when
+  // we already know the connection is gone wastes ~15–30 s and surfaces a
+  // misleading error. Non-interactive callers (and the heartbeat fallback)
+  // can still queue normally.
+  if (
+    device.agentId &&
+    !preferHeartbeat &&
+    INTERACTIVE_COMMAND_TYPES.has(type) &&
+    !isAgentConnected(device.agentId)
+  ) {
+    // Log so ops can correlate spikes of unreachable-fast-fails with WS pool
+    // health. This is the single most useful signal for diagnosing recurrences
+    // of issue #391 — without it the failure is invisible until users complain.
+    console.warn('[commandQueue] interactive command fast-fail (WS not connected)', {
+      deviceId,
+      agentId: device.agentId,
+      type,
+    });
+    return { status: 'failed' as const, error: DEVICE_UNREACHABLE_ERROR };
+  }
+
   // 2. Queue, dispatch, and poll OUTSIDE the auth transaction so the
   //    INSERT commits immediately and is visible to the WS handler.
   return runOutsideDbContextSafe(async () => {
@@ -605,17 +664,62 @@ export async function executeCommand(
         });
     }
 
-    // Dispatch via WebSocket
+    // Dispatch via WebSocket. Retry briefly on send failure: a transient WS
+    // hiccup (e.g. mid-reconnect) can fail a single send even when the
+    // connection comes back ~hundreds of ms later. Retrying gives the pool a
+    // chance to recover before we fall through to the multi-second timeout.
     if (device.agentId && !preferHeartbeat) {
       const claimed = await claimPendingCommandForDelivery(command.id);
       if (claimed) {
-        const sent = sendCommandToAgent(device.agentId, {
-          id: command.id,
-          type,
-          payload,
-        });
+        let sent = false;
+        for (let attempt = 0; attempt < SEND_RETRY_ATTEMPTS; attempt++) {
+          sent = sendCommandToAgent(device.agentId, {
+            id: command.id,
+            type,
+            payload,
+          });
+          if (sent) {
+            if (attempt > 0) {
+              console.warn('[commandQueue] sendCommandToAgent recovered after retry', {
+                commandId: command.id,
+                deviceId,
+                agentId: device.agentId,
+                type,
+                attempt: attempt + 1,
+              });
+            }
+            break;
+          }
+          console.warn('[commandQueue] sendCommandToAgent failed, will retry', {
+            commandId: command.id,
+            deviceId,
+            agentId: device.agentId,
+            type,
+            attempt: attempt + 1,
+            maxAttempts: SEND_RETRY_ATTEMPTS,
+          });
+          if (attempt < SEND_RETRY_ATTEMPTS - 1) {
+            await new Promise((resolve) => setTimeout(resolve, SEND_RETRY_DELAY_MS));
+          }
+        }
         if (!sent) {
           await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
+          console.warn('[commandQueue] sendCommandToAgent exhausted retries', {
+            commandId: command.id,
+            deviceId,
+            agentId: device.agentId,
+            type,
+            attempts: SEND_RETRY_ATTEMPTS,
+          });
+          // All retries exhausted with no successful send. For interactive
+          // commands the user is staring at a spinner — short-circuit with
+          // the unreachable error rather than burning the full poll timeout.
+          // For non-interactive commands, fall through to polling: the agent
+          // may still pick the command up via the heartbeat path before the
+          // timeout fires, in which case the user gets a real result.
+          if (INTERACTIVE_COMMAND_TYPES.has(type)) {
+            return { status: 'failed' as const, error: DEVICE_UNREACHABLE_ERROR };
+          }
         }
       }
     }
