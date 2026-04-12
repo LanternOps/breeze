@@ -1,9 +1,20 @@
-{
-  email {$ACME_EMAIL}
-}
+# Breeze RMM - Canonical Caddy Config
+#
+# Single source of truth for ALL environments. Every docker-compose
+# file mounts this file instead of inlining a Caddyfile via heredoc.
+#
+# Environment variables (set in docker-compose or .env):
+#
+#   CADDY_SITE_ADDRESS  Site address. Defaults to :80 (plain HTTP).
+#                       Set to a domain name (e.g. breeze.example.com)
+#                       for automatic HTTPS via Let's Encrypt.
+#
+#   ACME_EMAIL          Email for ACME / Let's Encrypt account.
+#                       Only used when CADDY_SITE_ADDRESS is a domain.
+#                       Ignored for :80 (no TLS).
 
-{$BREEZE_DOMAIN} {
-  # SSE / streaming endpoints: no compression, no buffering
+{$CADDY_SITE_ADDRESS::80} {
+  # --- SSE / streaming: no compression, no buffering ---
   @streaming {
     path /api/v1/helper/chat/sessions/*/messages
     path /api/v1/ai/sessions/*/stream
@@ -14,14 +25,27 @@
     }
   }
 
-  # Regular API routes (with compression)
+  # --- Billing auth init (proxied to billing sidecar) ---
+  @billing_auth path /api/v1/auth/billing-init
+  handle @billing_auth {
+    reverse_proxy billing:3002
+  }
+
+  # --- API routes (with compression) ---
   @api path /api/* /s/* /health /ready /metrics/*
   handle @api {
     encode zstd gzip
     reverse_proxy api:3001
   }
 
-  # Frontend (with compression)
+  # --- Billing UI (proxied to billing sidecar) ---
+  @billing path /billing /billing/*
+  handle @billing {
+    encode zstd gzip
+    reverse_proxy billing:3002
+  }
+
+  # --- Web frontend (catch-all, with compression) ---
   handle {
     encode zstd gzip
     reverse_proxy web:4321

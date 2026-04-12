@@ -30,27 +30,8 @@ services:
       PUBLIC_API_URL: ${PUBLIC_API_URL:-https://2breeze.app}
 
   caddy:
-    command: |
-      sh -c 'cat > /etc/caddy/Caddyfile <<CADDYEOF
-      {
-        auto_https off
-      }
-      :80 {
-        encode zstd gzip
-        @api path /api/* /s/* /health /ready /metrics/*
-        handle @api {
-          reverse_proxy api:3001
-        }
-        handle {
-          reverse_proxy web:4321
-        }
-        header {
-          X-Content-Type-Options "nosniff"
-          Referrer-Policy "strict-origin-when-cross-origin"
-        }
-      }
-      CADDYEOF
-      caddy run --config /etc/caddy/Caddyfile --adapter caddyfile'
+    # Uses canonical docker/Caddyfile.prod mounted by the base compose.
+    # No command override needed — Caddy reads the volume-mounted config.
 
   web:
     image: breeze-web:local

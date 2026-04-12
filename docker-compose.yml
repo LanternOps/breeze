@@ -28,35 +28,14 @@ services:
     image: caddy:2.8-alpine
     container_name: breeze-caddy
     restart: unless-stopped
-    command: |
-      sh -c 'cat > /etc/caddy/Caddyfile <<CADDYEOF
-      {
-        email $${ACME_EMAIL}
-      }
-      $${BREEZE_DOMAIN} {
-        encode zstd gzip
-        @api path /api/* /s/* /health /ready /metrics/*
-        handle @api {
-          reverse_proxy api:3001
-        }
-        handle {
-          reverse_proxy web:4321
-        }
-        header {
-          Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-          X-Content-Type-Options "nosniff"
-          Referrer-Policy "strict-origin-when-cross-origin"
-        }
-      }
-      CADDYEOF
-      caddy run --config /etc/caddy/Caddyfile --adapter caddyfile'
     ports:
       - '80:80'
       - '443:443'
     environment:
-      BREEZE_DOMAIN: ${BREEZE_DOMAIN:?Set BREEZE_DOMAIN in .env}
-      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env}
+      CADDY_SITE_ADDRESS: ${BREEZE_DOMAIN:-:80}
+      ACME_EMAIL: ${ACME_EMAIL:-}
     volumes:
+      - ./docker/Caddyfile.prod:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
