@@ -172,7 +172,7 @@ type Heartbeat struct {
 	inventoryWg sync.WaitGroup
 	retryCfg    httputil.RetryConfig
 	stopOnce    sync.Once
-	authMon     *authstate.Monitor // NEW
+	authMon     *authstate.Monitor
 
 	// Command deduplication: prevents the same commandId from being
 	// executed twice when delivered via both WebSocket and heartbeat.
@@ -698,6 +698,9 @@ func (h *Heartbeat) Start() {
 			if h.authMon != nil && h.authMon.ShouldSkip() {
 				log.Debug("skipping heartbeat tick, auth-dead",
 					"backoff", h.authMon.BackoffDuration())
+				// continue here re-arms the ticker without running
+				// sendHeartbeatWithWatchdog or any inventory/posture/security
+				// scheduling — all of that work requires a valid auth token.
 				continue
 			}
 			h.sendHeartbeatWithWatchdog()
