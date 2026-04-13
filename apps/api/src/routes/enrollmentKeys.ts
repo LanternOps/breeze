@@ -881,11 +881,15 @@ async function serveInstaller(
       filename = 'breeze-agent-macos.zip';
     }
 
-    // Increment usage only after successful build
-    await db
-      .update(enrollmentKeys)
-      .set({ usageCount: sql`${enrollmentKeys.usageCount} + 1` })
-      .where(eq(enrollmentKeys.id, keyRow.id));
+    // NOTE: we DO NOT bump keyRow.usageCount here. The child key's
+    // max_usage semantic is "max successful enrollments," not "max
+    // downloads" — bumping on download burns the slot before the agent
+    // has even tried to enroll, and the subsequent /agents/enroll call
+    // then sees usage_count >= max_usage and returns an opaque 401.
+    // The enroll endpoint at routes/agents/enrollment.ts owns the
+    // increment via a TOCTOU-safe UPDATE ... WHERE usage_count < max_usage
+    // so the slot is only consumed when enrollment actually succeeds.
+    // Downloads are still tracked, but via the audit log below.
 
     createAuditLogAsync({
       orgId: keyRow.orgId,

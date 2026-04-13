@@ -474,20 +474,27 @@ describe('GET /public-download/:platform', () => {
     app.route('/enrollment-keys', publicEnrollmentRoutes);
   });
 
-  it('runs usage_count bump inside withSystemDbAccessContext (not the bare pool)', async () => {
-    // Regression test: the public-download handler previously wrapped only
-    // the initial SELECT in withSystemDbAccessContext and then called
-    // serveInstaller OUTSIDE that wrapper. serveInstaller's usage_count
-    // UPDATE therefore ran under the request's default (bare-pool, no
-    // breeze_app GUCs set) scope, and the RLS policy on enrollment_keys
-    // silently dropped the UPDATE. Download quotas were never enforced.
-    //
-    // This test asserts that after entering the public-download handler,
-    // the first call into db.update happens INSIDE a withSystemDbAccessContext
-    // scope — i.e. the system-context mock was called BEFORE db.update.
+  it('does not bump child key usage_count on download — leaves the slot for the agent enroll call', async () => {
+    // Regression test for the root cause of the MSI "401 Invalid or
+    // expired enrollment key" bug. Previously serveInstaller ran
+    // `UPDATE enrollment_keys SET usage_count = usage_count + 1 WHERE
+    // id = :keyRow.id` right after a successful build. Combined with
+    // max_usage = 1 on single-use child keys (short-link downloads and
+    // single-count installer links), this burned the enrollment slot
+    // at *download* time: by the time the agent POSTed to
+    // /agents/enroll, the child row already had usage_count >=
+    // max_usage, the enroll endpoint's `usage_count < max_usage`
+    // filter rejected the row, and the agent saw the deliberately-opaque
+    // "Invalid or expired enrollment key" 401. The enroll endpoint
+    // itself owns the slot-consuming UPDATE under a TOCTOU-safe
+    // `UPDATE ... WHERE usage_count < max_usage`, so downloads must
+    // NOT bump usage_count. max_usage is "max successful enrollments,"
+    // not "max downloads."
     const row = makeKeyRow({
       shortCode: 'pubcode1234',
       installerPlatform: 'windows',
+      maxUsage: 1,
+      usageCount: 0,
     });
 
     vi.mocked(db.select).mockReturnValue({
@@ -498,37 +505,18 @@ describe('GET /public-download/:platform', () => {
       }),
     } as any);
 
-    const callOrder: string[] = [];
-    vi.mocked(withSystemDbAccessContext).mockImplementation(async (fn: () => Promise<unknown>) => {
-      callOrder.push('withSystemDbAccessContext:enter');
-      const result = await fn();
-      callOrder.push('withSystemDbAccessContext:exit');
-      return result;
+    // Fail loudly if anything inside the download path touches
+    // db.update — the whole point of the fix is that the download path
+    // is now read-only against the enrollment_keys row.
+    vi.mocked(db.update).mockImplementation(() => {
+      throw new Error('db.update called on public-download — regression of the usage_count-burn bug');
     });
-
-    vi.mocked(db.update).mockImplementation(
-      ((..._args: unknown[]) => {
-        callOrder.push('db.update');
-        return {
-          set: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue(undefined),
-          }),
-        } as any;
-      }) as any
-    );
 
     const res = await app.request(
       '/enrollment-keys/public-download/windows?token=abc123',
     );
 
     expect(res.status).toBe(200);
-    // withSystemDbAccessContext must have been entered first, and the
-    // db.update must have been invoked between its enter and exit.
-    const enterIdx = callOrder.indexOf('withSystemDbAccessContext:enter');
-    const updateIdx = callOrder.indexOf('db.update');
-    const exitIdx = callOrder.indexOf('withSystemDbAccessContext:exit');
-    expect(enterIdx).toBeGreaterThanOrEqual(0);
-    expect(updateIdx).toBeGreaterThan(enterIdx);
-    expect(exitIdx).toBeGreaterThan(updateIdx);
+    expect(db.update).not.toHaveBeenCalled();
   });
 });
