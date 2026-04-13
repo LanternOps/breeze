@@ -194,7 +194,7 @@ func waitForEnrollment(ctx context.Context, cfgFile string) *config.Config {
 
 **Change 1.d — console-mode runner (`runAgent`):**
 
-The cross-platform console-mode path (invoked by `breeze-agent run` from a terminal) now handles the wait loop directly before calling `startAgent`:
+The cross-platform console-mode path (invoked by `breeze-agent run` from a terminal, and by the macOS/Linux service managers that exec the agent binary as PID 1 of their service unit) now handles the wait loop directly before calling `startAgent`. The context is wired to `SIGINT`/`SIGTERM` via `signal.NotifyContext` so Ctrl+C in a terminal and `systemctl stop` / `launchctl kickstart -k` from the service manager all cancel the wait cleanly:
 
 ```go
 func runAgent() {
@@ -202,20 +202,32 @@ func runAgent() {
     if err != nil { /* fatal */ }
     initBootstrapLogging(cfg) // minimal init; full init happens in startAgent
 
+    // Wire cancellation to OS signals so waitForEnrollment, startAgent,
+    // and the main event loop all observe the same shutdown trigger.
+    // signal.NotifyContext installs a signal handler that cancels ctx
+    // on SIGINT or SIGTERM and restores the default handler on stop().
+    ctx, stop := signal.NotifyContext(context.Background(),
+        os.Interrupt, syscall.SIGTERM)
+    defer stop()
+
     if !config.IsEnrolled(cfg) {
-        ctx, cancel := context.WithCancel(context.Background())
-        defer cancel()
         cfg = waitForEnrollment(ctx, cfgFile)
         if cfg == nil {
-            os.Exit(0) // cancelled, clean exit
+            // ctx cancelled before enrollment arrived — clean exit.
+            log.Info("agent shutting down without enrollment",
+                "reason", ctx.Err().Error())
+            return
         }
     }
 
     comps, err := startAgent(cfg)
     if err != nil { /* fatal */ }
-    // enter run loop as today
+    // enter run loop as today; ctx is passed through to shutdown plumbing
+    // where it replaces the existing ad-hoc signal handling.
 }
 ```
+
+**Note on `service_windows.go`:** the Windows SCM service wrapper does NOT use `signal.NotifyContext` — SCM `Stop`/`Shutdown` requests arrive on the `<-chan svc.ChangeRequest` channel, not via `os.Interrupt`. The Windows wait loop uses its own `context.WithCancel` and cancels explicitly when it observes `svc.Stop` / `svc.Shutdown` on the request channel (see Component 4). Both paths converge on the same guarantee: `ctx.Done()` fires on legitimate shutdown signals for the host platform, and `waitForEnrollment` returns `nil` cleanly.
 
 **Caveat — bootstrap logging:** today's `startAgent` calls `initLogging(cfg)` once, inline. We need logging available *before* the enrollment check (so `waitForEnrollment` can emit Warn/Info lines). Introduce a small `initBootstrapLogging(cfg)` that initializes only the stderr + file writers — no log shipper, no event-log init beyond the eventlog package's lazy path. `startAgent` retains `initLogging(cfg)` as today for any call-site that needs a re-init after enrollment arrives (if logging configuration can change on enrollment — it probably can't, but the re-init is a no-op in that case). Verify during implementation that `logging.Init` is idempotent.
 
@@ -362,12 +374,30 @@ func classifyEnrollError(err error, serverURL string) (enrollErrCategory, string
 
 **Changes to `enrollDevice` in `main.go`:**
 
-Every `fmt.Fprintf(os.Stderr, ...)` + `os.Exit(1)` pair gets replaced with a call to `enrollError`. Additionally, `enrollDevice` now clears any stale `enroll-last-error.txt` **at the start of every attempt** (P3 fix) so a successful retry leaves no residual error file for admins to find:
+Every `fmt.Fprintf(os.Stderr, ...)` + `os.Exit(1)` pair gets replaced with a call to `enrollError`. Additionally, `enrollDevice` now clears any stale `enroll-last-error.txt` **immediately after logging init and before any validation or early return** — Decision 8's contract is that every attempt starts with a clean slate, including attempts that fail on server-URL validation before reaching the HTTP call. Placing the clear after validation would leave a stale marker behind whenever the current attempt fails early, which defeats the point:
 
 ```go
-// Near the top of enrollDevice, after arg validation:
-clearEnrollLastError() // removes enroll-last-error.txt if present;
-                       // no-op if it doesn't exist.
+func enrollDevice(enrollmentKey string) {
+    cfg, err := config.Load(cfgFile)
+    if err != nil {
+        cfg = config.Default()
+    }
+    initEnrollLogging(cfg, quietEnroll)
+
+    // Clear any stale marker from a previous failed attempt FIRST —
+    // before any validation or early return. Decision 8 says every
+    // attempt starts from a clean state; a validation failure later in
+    // this function must not leave a stale file behind.
+    clearEnrollLastError()
+
+    if serverURL != "" {
+        cfg.ServerURL = serverURL
+    }
+    if cfg.ServerURL == "" {
+        enrollError(catConfig, "server URL required — pass --server or set in config", nil)
+    }
+    // ... rest of enrollDevice unchanged apart from the failure-site swaps below.
+}
 ```
 
 On the success path (after `config.SaveTo` returns nil), nothing further is required — the file was already removed at the start of the attempt.
@@ -615,11 +645,13 @@ The following scenarios must be verified on a Windows Server 2022 VM before merg
 |---|---|---|
 | 1 | `msiexec /i breeze-agent.msi /qn /l*v install.log` (no creds) | msiexec exit 0. Service installed + Running. `agent.yaml` absent. `enroll-last-error.txt` absent. Event Viewer: BreezeAgent info "Waiting for enrollment". |
 | 2 | `msiexec /i breeze-agent.msi ENROLLMENT_KEY=brz_valid SERVER_URL=https://valid.example /qn /l*v install.log` (good creds) | msiexec exit 0. Service installed + Running. `agent.yaml` present with AgentID. No enroll error files. |
-| 3 | `msiexec /i breeze-agent.msi ENROLLMENT_KEY=brz_typo SERVER_URL=https://valid.example /qn /l*v install.log` (bad key) | msiexec exit 1603. No residual files in `C:\Program Files\Breeze`. Service not installed. `install.log` contains `Enrollment failed: enrollment key not recognized`. `enroll-last-error.txt` absent (it's in ProgramData which is also rolled back? verify — may need to be in a non-rollback directory). Event Viewer: BreezeAgent error entry. |
-| 4 | `msiexec /i breeze-agent.msi ENROLLMENT_KEY=brz_valid SERVER_URL=https://unreachable.example /qn /l*v install.log` (network) | msiexec exit 1603. Install.log contains `Enrollment failed: server unreachable ...`. |
-| 5 | Scenario 1 followed by `breeze-agent enroll brz_valid --server https://valid.example` run interactively (elevated shell) | Enroll succeeds. Running service picks up new config within 10s (one wait-loop tick). No service restart required. |
+| 3 | `msiexec /i breeze-agent.msi ENROLLMENT_KEY=brz_typo SERVER_URL=https://valid.example /qn /l*v install.log` (bad key) | msiexec exit 1603. No residual files in `C:\Program Files\Breeze` (InstallFiles rolled back). Service not installed. `C:\ProgramData\Breeze\logs\` **directory exists** (kept by `cmpProgramDataLogs Permanent="yes"`). `C:\ProgramData\Breeze\logs\enroll-last-error.txt` **PRESENT**, one line, containing `<RFC3339 timestamp> — Enrollment failed: enrollment key not recognized ...`. `install.log` contains the same friendly line captured from the CA's stderr. Event Viewer → Windows Logs → Application → source `BreezeAgent` → one Error entry. |
+| 4 | `msiexec /i breeze-agent.msi ENROLLMENT_KEY=brz_valid SERVER_URL=https://unreachable.example /qn /l*v install.log` (network) | Same as scenario 3 but the friendly line is `Enrollment failed: server unreachable at https://unreachable.example — check firewall, DNS, and that SERVER_URL is correct ...`. `enroll-last-error.txt` PRESENT with this content. |
+| 5 | Scenario 1 followed by `breeze-agent enroll brz_valid --server https://valid.example` run interactively (elevated shell) | Enroll succeeds. Running service picks up new config within 10s (one wait-loop tick). No service restart required. `enroll-last-error.txt` still absent (scenario 1 never created it; scenario 5 is a clean success). |
 
-**Caveat on test 3:** `enroll-last-error.txt` lives in `C:\ProgramData\Breeze\logs\`, which is managed by `cmpProgramDataLogs` with `Permanent="yes"`. The `Permanent` attribute means the directory is not removed on rollback, so the file should survive a 1603 rollback. Must verify during testing — if the file does get removed, move the last-error path to `%TEMP%\breeze-enroll-last-error.txt` as a fallback.
+**On `enroll-last-error.txt` surviving rollback (definitive expected state for scenarios 3 and 4):** the file **is expected to survive**, and scenarios 3/4 assert its presence. Rationale: MSI's rollback reverses actions that MSI tracked (`InstallFiles`, `InstallServices`, property table writes). Files written by a CA via `os.WriteFile` are opaque to MSI — the installer has no record that they were created and therefore has no mechanism to remove them on rollback. The parent directory (`C:\ProgramData\Breeze\logs\`) additionally has `Permanent="yes"` on its component, so even the directory itself is preserved through rollback (which in turn preserves the file). This is not reliance on a fragile edge case — it is the standard MSI contract for CA-written artifacts, and it is what makes the "read the error after 1603" design possible.
+
+Manual verification is still required to confirm no surprise (UAC redirection, `ProgramData` permissions on non-English locales, antivirus auto-quarantine of freshly-written root-owned files, etc.). If verification fails in a specific environment, the documented fallback is `%ProgramData%\Breeze\logs\` → `%TEMP%\breeze-enroll-last-error.txt`. `%TEMP%` is out of the MSI's purview for the same reason and is writable from any CA context. The spec does not switch preemptively because `%ProgramData%` is the discoverable path an admin would look in for a persistent agent-managed log.
 
 ## File-by-file summary
 
@@ -664,7 +696,7 @@ The following scenarios must be verified on a Windows Server 2022 VM before merg
 | Waiter observes torn SaveTo write (AgentID set but AuthToken not yet persisted) | Low | `IsEnrolled` checks both fields. Torn read causes one extra poll cycle (10s); no incorrect bring-up. |
 | `startAgent` fails on the async post-enrollment path and the service ends up Stopped without rolling back the install | **Accepted** | The admin chose `/qn` with no creds; a failure after deferred enrollment is debugged via `agent-start-failed.txt`, `agent.log`, and Event Log. They re-run `breeze-agent enroll` with corrected parameters and `sc start BreezeAgent`. |
 | Session change events arrive during `waitLoop` before `comps` is wired up | Medium | Drop events during the wait window; session broker reconciliation loop is the authoritative source and will catch up once `startAgent` completes. Only `Interrogate`/`Stop`/`Shutdown` are handled during the wait. |
-| `enroll-last-error.txt` is removed during MSI rollback on the bad-creds path | Medium | `cmpProgramDataLogs` uses `Permanent="yes"`; verify during manual testing. Fallback: write to `%TEMP%\breeze-enroll-last-error.txt`. |
+| `enroll-last-error.txt` is removed during MSI rollback on the bad-creds path | Low | The file is written by a CA via `os.WriteFile` — MSI has no record of it and cannot roll it back. `cmpProgramDataLogs` is `Permanent="yes"` so the parent directory also survives. Expected state is codified in smoke-test scenarios 3 and 4 (file PRESENT post-1603). Fallback if a specific environment breaks this: write to `%TEMP%\breeze-enroll-last-error.txt`. |
 | Stale `enroll-last-error.txt` from an earlier failed attempt confuses admins after a successful retry | **Avoided** — `enrollDevice` calls `clearEnrollLastError()` at the start of every attempt (Decision 8). |
 | Goroutine leak in `waitForEnrollment` tests | **Avoided** — `waitForEnrollment` takes `context.Context`, tests cancel via `context.WithCancel` (Decision 9). |
 | Event Log source registration fails (non-admin helper process) | Low | Registration is best-effort wrapped in `sync.Once`; failure is silent and the other three sinks still fire. |
