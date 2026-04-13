@@ -119,6 +119,17 @@ type Config struct {
 	IsHeadless bool `mapstructure:"-"`
 }
 
+// IsEnrolled reports whether cfg represents a complete enrollment — both
+// the AgentID (written to agent.yaml) and the AuthToken (written to
+// secrets.yaml). Callers that poll for enrollment readiness MUST use
+// this predicate rather than checking AgentID alone, because SaveTo
+// writes agent.yaml before secrets.yaml and a concurrent reader can
+// otherwise observe a torn write (AgentID set but AuthToken not yet
+// persisted). A torn read simply causes one more poll cycle.
+func IsEnrolled(cfg *Config) bool {
+	return cfg != nil && cfg.AgentID != "" && cfg.AuthToken != ""
+}
+
 // defaultLogFile returns the platform-specific default log file path.
 func defaultLogFile() string {
 	switch runtime.GOOS {
