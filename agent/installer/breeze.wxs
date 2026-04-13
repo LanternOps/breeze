@@ -215,9 +215,11 @@
            (condition below requires both SERVER_URL and ENROLLMENT_KEY).
            The service starts anyway and idles in a wait-for-enrollment
            loop (see waitForEnrollment in cmd/breeze-agent/main.go), so
-           a later "breeze-agent enroll KEY -server URL" is picked up
-           live without a service restart. This is the intended flow
-           for imaged/sysprep'd deployments. -->
+           a later manual enrollment (running breeze-agent.exe enroll
+           with the key and the server URL flag, same arguments used
+           by the CA above) is picked up live without a service
+           restart. This is the intended flow for imaged/sysprep'd
+           deployments. -->
       <Custom Action="EnrollAgent" Before="InstallServices" Condition="NOT Installed AND SERVER_URL AND ENROLLMENT_KEY" />
       <Custom Action="UnregisterUserHelperTask" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
     </InstallExecuteSequence>
