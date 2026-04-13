@@ -200,15 +200,14 @@
       <Custom Action="RegisterUserHelperTask" After="InstallServices" Condition="NOT Installed AND NOT REMOVE" />
       <!-- Run enrollment after file copy but before InstallServices so the
            BreezeAgent service starts with a valid agent.yaml already in
-           place — no restart dance required.
+           place; no restart dance required.
 
            Return="ignore" on the EnrollAgent CA means enrollment failure
            does NOT roll back the install. If enrollment fails, the service
            will still start but the device stays unenrolled. To debug:
            check %ProgramData%\Breeze\logs\agent.log for the structured
-           error trail, or re-run manually:
-             "C:\Program Files\Breeze\breeze-agent.exe" enroll <key> --server <url>
-        -->
+           error trail, or re-run breeze-agent.exe enroll manually from an
+           elevated shell with the enrollment key and server flags. -->
       <Custom Action="EnrollAgent" After="InstallFiles" Before="InstallServices" Condition="NOT Installed AND SERVER_URL AND ENROLLMENT_KEY" />
       <Custom Action="UnregisterUserHelperTask" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
     </InstallExecuteSequence>
