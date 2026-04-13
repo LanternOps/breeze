@@ -191,23 +191,35 @@
       ExeCommand="enroll &quot;[ENROLLMENT_KEY]&quot; --server &quot;[SERVER_URL]&quot; --enrollment-secret &quot;[ENROLLMENT_SECRET]&quot; --quiet"
       Execute="deferred"
       Impersonate="no"
-      Return="ignore"
+      Return="check"
       HideTarget="yes" />
 
     <InstallExecuteSequence>
       <Custom Action="SetPowerShellPath" After="InstallInitialize" />
       <Custom Action="RollbackRegisterUserHelperTask" Before="RegisterUserHelperTask" Condition="NOT Installed AND NOT REMOVE AND NOT WIX_UPGRADE_DETECTED" />
       <Custom Action="RegisterUserHelperTask" After="InstallServices" Condition="NOT Installed AND NOT REMOVE" />
-      <!-- Run enrollment after file copy but before InstallServices so the
-           BreezeAgent service starts with a valid agent.yaml already in
-           place; no restart dance required.
+      <!-- Enrollment runs after file copy but before InstallServices.
 
-           Return="ignore" on the EnrollAgent CA means enrollment failure
-           does NOT roll back the install. If enrollment fails, the service
-           will still start but the device stays unenrolled. To debug:
-           check %ProgramData%\Breeze\logs\agent.log for the structured
-           error trail, or re-run breeze-agent.exe enroll manually from an
-           elevated shell with the enrollment key and server flags. -->
+           Return="check" on the EnrollAgent CA means a non-zero exit
+           from breeze-agent.exe enroll rolls back the install cleanly.
+           Admins see a specific cause in four places:
+
+             1. install.log (captured from the CA's stderr)
+             2. C:\ProgramData\Breeze\logs\agent.log (slog structured)
+             3. C:\ProgramData\Breeze\logs\enroll-last-error.txt
+                (single-line timestamped, survives rollback because
+                CA-written files are opaque to MSI)
+             4. Event Viewer, Application, BreezeAgent (Error)
+
+           Installs without ENROLLMENT_KEY skip this CA entirely
+           (condition below requires both SERVER_URL and ENROLLMENT_KEY).
+           The service starts anyway and idles in a wait-for-enrollment
+           loop (see waitForEnrollment in cmd/breeze-agent/main.go), so
+           a later manual enrollment (running breeze-agent.exe enroll
+           with the key and the server URL flag, same arguments used
+           by the CA above) is picked up live without a service
+           restart. This is the intended flow for imaged/sysprep'd
+           deployments. -->
       <Custom Action="EnrollAgent" Before="InstallServices" Condition="NOT Installed AND SERVER_URL AND ENROLLMENT_KEY" />
       <Custom Action="UnregisterUserHelperTask" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
     </InstallExecuteSequence>

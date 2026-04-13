@@ -1,10 +1,15 @@
 package main
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/config"
 )
 
 // TestHelperWarnLimiterBudget verifies that the first `limit` calls with the
@@ -390,5 +395,137 @@ func TestTrimEnrollInputs(t *testing.T) {
 				t.Errorf("secret: got %q, want %q", gotSecret, tc.wantSecret)
 			}
 		})
+	}
+}
+
+// writeEnrolledConfig writes a minimal agent.yaml + secrets.yaml pair
+// that config.Load will parse into a config with both AgentID and
+// AuthToken set (IsEnrolled returns true).
+func writeEnrolledConfig(t *testing.T, dir string) string {
+	t.Helper()
+	agentPath := filepath.Join(dir, "agent.yaml")
+	if err := os.WriteFile(agentPath, []byte("agent_id: aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\nserver_url: https://test.example\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	secretsPath := filepath.Join(dir, "secrets.yaml")
+	if err := os.WriteFile(secretsPath, []byte("auth_token: test-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return agentPath
+}
+
+// writeTornConfig writes only agent.yaml (with AgentID) but no secrets
+// file, simulating the race window where SaveTo has flushed agent.yaml
+// but not yet written secrets.yaml.
+func writeTornConfig(t *testing.T, dir string) string {
+	t.Helper()
+	agentPath := filepath.Join(dir, "agent.yaml")
+	if err := os.WriteFile(agentPath, []byte("agent_id: aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\nserver_url: https://test.example\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return agentPath
+}
+
+func TestWaitForEnrollment_UnblocksWhenConfigBecomesValid(t *testing.T) {
+	origInterval := waitForEnrollmentPollInterval
+	waitForEnrollmentPollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { waitForEnrollmentPollInterval = origInterval })
+
+	dir := t.TempDir()
+	agentPath := filepath.Join(dir, "agent.yaml")
+
+	// Start with no config file at all.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan *config.Config, 1)
+	go func() {
+		done <- waitForEnrollment(ctx, agentPath)
+	}()
+
+	// Write a valid enrolled config after 50ms.
+	time.Sleep(50 * time.Millisecond)
+	_ = writeEnrolledConfig(t, dir)
+
+	select {
+	case cfg := <-done:
+		if cfg == nil {
+			t.Fatal("waitForEnrollment returned nil; expected enrolled config")
+		}
+		if cfg.AgentID != "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" {
+			t.Errorf("AgentID = %q, want aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", cfg.AgentID)
+		}
+	case <-time.After(1500 * time.Millisecond):
+		t.Fatal("waitForEnrollment did not return within 1.5s")
+	}
+}
+
+func TestWaitForEnrollment_RespectsContextCancel(t *testing.T) {
+	origInterval := waitForEnrollmentPollInterval
+	waitForEnrollmentPollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { waitForEnrollmentPollInterval = origInterval })
+
+	dir := t.TempDir()
+	agentPath := filepath.Join(dir, "does-not-exist.yaml")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan *config.Config, 1)
+	go func() {
+		done <- waitForEnrollment(ctx, agentPath)
+	}()
+
+	// Cancel after 30ms — waitForEnrollment should return nil within
+	// another 30ms (next ticker fire).
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+
+	select {
+	case cfg := <-done:
+		if cfg != nil {
+			t.Errorf("expected nil on ctx cancel, got %+v", cfg)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("waitForEnrollment did not return within 500ms of cancel")
+	}
+}
+
+func TestWaitForEnrollment_IgnoresTornWrite(t *testing.T) {
+	origInterval := waitForEnrollmentPollInterval
+	waitForEnrollmentPollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { waitForEnrollmentPollInterval = origInterval })
+
+	dir := t.TempDir()
+	// Write only agent.yaml — no secrets file (torn SaveTo state).
+	agentPath := writeTornConfig(t, dir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	done := make(chan *config.Config, 1)
+	go func() {
+		done <- waitForEnrollment(ctx, agentPath)
+	}()
+
+	// Verify it stays blocked for 100ms (IsEnrolled returns false on torn state).
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case cfg := <-done:
+		t.Fatalf("waitForEnrollment returned %+v on torn write; must stay blocked until secrets.yaml lands", cfg)
+	default:
+	}
+
+	// Now write secrets.yaml — waitForEnrollment should unblock on the next tick.
+	secretsPath := filepath.Join(dir, "secrets.yaml")
+	if err := os.WriteFile(secretsPath, []byte("auth_token: test-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case cfg := <-done:
+		if cfg == nil {
+			t.Fatal("expected enrolled config, got nil")
+		}
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("waitForEnrollment did not unblock after secrets.yaml was written")
 	}
 }
