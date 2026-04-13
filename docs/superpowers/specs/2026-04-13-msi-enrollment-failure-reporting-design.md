@@ -134,12 +134,17 @@ Declare two package-level function vars in `main.go` that the service wrapper an
 // without running the real startup pipeline. Production callers must
 // use these vars, not the unexported symbols they wrap.
 var (
-    startAgentFn        func(*config.Config) (*agentComponents, error) = startAgent
-    waitForEnrollmentFn func(context.Context, string) *config.Config   = waitForEnrollment
+    startAgentFn        func(*config.Config) (*agentComponents, error)                              = startAgent
+    waitForEnrollmentFn func(context.Context, string) *config.Config                                = waitForEnrollment
+    runServiceLoopFn    func(*agentComponents, <-chan svc.ChangeRequest, chan<- svc.Status) (bool, uint32) = runServiceLoop
 )
 ```
 
-Every call site described in Components 1.d and 4 uses `startAgentFn(cfg)` and `waitForEnrollmentFn(ctx, cfgFile)` — the unadorned symbols `startAgent` and `waitForEnrollment` are referenced only by the vars themselves and by tests that want to exercise the real implementations. A linter/CI check could enforce this; for now it's a code-review discipline.
+Every call site described in Components 1.e and 4 uses `startAgentFn(cfg)`, `waitForEnrollmentFn(ctx, cfgFile)`, and `runServiceLoopFn(comps, r, changes)`. The unadorned symbols are referenced only by the vars themselves and by tests that want to exercise the real implementations. A linter/CI check could enforce this; for now it's a code-review discipline.
+
+**Why `runServiceLoopFn` is needed as a seam:** today's `shutdownAgent` (at `main.go:187-222`) unconditionally dereferences `comps.hb.SessionBroker()`, `comps.hb.StopAcceptingCommands()`, `comps.hb.DrainAndWait(ctx)`, `comps.wsClient.Stop()`, and `comps.hb.Stop()`. Any test that lets `Execute` reach `runServiceLoop` with a nil-filled fake `*agentComponents` will panic on the first stop/shutdown. A stub `runServiceLoopFn` that ignores its `*agentComponents` argument lets tests verify the state-transition ordering (`StartPending → startAgentFn → Running → runServiceLoopFn entered`) without constructing a real `Heartbeat` + `websocket.Client` + `SecureString` — which would otherwise require real network I/O, a running API server, and a valid auth token. The seam adds 1 line of production code and eliminates an entire class of "tests need integration fixtures" problems.
+
+`runServiceLoopFn` takes the same signature as the extracted `runServiceLoop` helper mentioned in Component 4 (which encapsulates the `for { select { r } }` block and the call to `shutdownAgent` on stop).
 
 **Change 1.c — split `startAgent` into config load + real startup:**
 
@@ -521,7 +526,7 @@ func (s *breezeService) Execute(args []string, r <-chan svc.ChangeRequest, chang
         }
         changes <- svc.Status{State: svc.Running, Accepts: accepted}
         log.Info("agent running as Windows service")
-        return runServiceLoop(comps, r, changes)
+        return runServiceLoopFn(comps, r, changes)
     }
 
     // --- Async unenrolled path (MSI install with no creds) ---
@@ -581,11 +586,11 @@ waitLoop:
         changes <- svc.Status{State: svc.StopPending}
         return true, 1
     }
-    return runServiceLoop(comps, r, changes)
+    return runServiceLoopFn(comps, r, changes)
 }
 ```
 
-`runServiceLoop(comps, r, changes)` is a small refactor of the current `for { select { r }}` block at lines 135-163 — extracted so both paths can share it.
+`runServiceLoopFn(comps, r, changes)` is a small refactor of the current `for { select { r }}` block at lines 135-163 — extracted so both paths can share it.
 
 **Post-install failure semantics.** On the async path, a failure from `startAgent(enrolledCfg)` cannot roll back the MSI (the install has long completed). The failure is logged to `agent.log`, `agent-start-failed.txt`, and Event Log, and the service transitions to Stopped. Admins debug by checking those sinks and re-running `breeze-agent enroll` with corrected parameters plus `sc start BreezeAgent`. This matches how every other agent-style product handles deferred-enrollment startup failures and is an acceptable trade-off because the admin explicitly chose a no-creds install.
 
@@ -654,26 +659,63 @@ func Error(source, message string)   {}
 **`agent/internal/config/config_test.go`**:
 - `TestIsEnrolled`: table-driven — `{nil → false, empty → false, agentIDOnly → false, tokenOnly → false, both → true}`.
 
-**`agent/cmd/breeze-agent/service_windows_test.go`** (`//go:build windows`) — create if absent. All three tests rely on the package-level hooks declared in Component 1.b (`startAgentFn`, `waitForEnrollmentFn`). Each test saves the original hook value, installs a stub, and restores in `t.Cleanup`:
+**`agent/cmd/breeze-agent/service_windows_test.go`** (`//go:build windows`) — create if absent. All three tests rely on the package-level hooks declared in Component 1.b (`startAgentFn`, `waitForEnrollmentFn`, `runServiceLoopFn`). Because `runServiceLoopFn` is stubbed in every test, the `*agentComponents` value returned by the stubbed `startAgentFn` never reaches any code that dereferences `comps.hb` or `comps.wsClient` — a zero-value pointer or a nil is sufficient. No `heartbeat.Heartbeat`, `websocket.Client`, or `secmem.SecureString` is constructed in these tests.
+
+Shared test helper:
 
 ```go
-func TestExecute_EnrolledPath_SignalsRunningAfterStartFn(t *testing.T) {
-    origStart := startAgentFn
-    t.Cleanup(func() { startAgentFn = origStart })
+// installServiceStubs wires all three test seams to stubs that record
+// call ordering into events. Returns a release() func that unblocks any
+// stub waiting on releaseCh (used by the unenrolled-path tests). The
+// t.Cleanup restoration is registered automatically.
+func installServiceStubs(t *testing.T) (events chan string, release func()) {
+    t.Helper()
+    origStart, origWait, origLoop := startAgentFn, waitForEnrollmentFn, runServiceLoopFn
+    t.Cleanup(func() {
+        startAgentFn, waitForEnrollmentFn, runServiceLoopFn = origStart, origWait, origLoop
+    })
+    events = make(chan string, 16)
+    releaseCh := make(chan struct{})
+    release = func() { close(releaseCh) }
 
-    var startCalled atomic.Bool
     startAgentFn = func(cfg *config.Config) (*agentComponents, error) {
-        startCalled.Store(true)
-        return &agentComponents{ /* minimal fake */ }, nil
+        events <- "startAgent"
+        return &agentComponents{}, nil // zero-value; runServiceLoopFn never dereferences
     }
-    // ... write enrolled config, drive Execute with mock changes chan,
-    // assert order: StartPending → (startCalled=true) → Running.
+    waitForEnrollmentFn = func(ctx context.Context, cfgFile string) *config.Config {
+        events <- "waitForEnrollment.enter"
+        select {
+        case <-releaseCh:
+            events <- "waitForEnrollment.release"
+            // Re-load cfg from disk so the post-wait startAgentFn sees
+            // the enrolled state the test arranged.
+            cfg, _ := config.Load(cfgFile)
+            return cfg
+        case <-ctx.Done():
+            events <- "waitForEnrollment.cancelled"
+            return nil
+        }
+    }
+    runServiceLoopFn = func(comps *agentComponents, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
+        events <- "runServiceLoop"
+        // Wait for a stop request so the test can terminate Execute cleanly.
+        for cr := range r {
+            if cr.Cmd == svc.Stop || cr.Cmd == svc.Shutdown {
+                changes <- svc.Status{State: svc.StopPending}
+                return false, 0
+            }
+        }
+        return false, 0
+    }
+    return events, release
 }
 ```
 
-- `TestExecute_EnrolledPath_SignalsRunningAfterStartFn`: override `startAgentFn` to return a fake `*agentComponents` after recording that it was called. Write a valid enrolled config to a temp file, drive `Execute` with a mock `changes` chan, assert the ordering `StartPending → (startAgentFn called) → Running` — the Running signal MUST arrive only after the stub observed its call. Proves the enrolled path is still synchronous (Decision 6).
-- `TestExecute_UnenrolledPath_SignalsRunningBeforeWait`: override `waitForEnrollmentFn` to block on a test-controlled channel until released. Write an empty config, drive `Execute`, assert `Running` is emitted *before* the stub is released. Then write an enrolled config to the temp file and release the stub by returning the loaded config; assert `Execute` proceeds into `startAgentFn` (also stubbed) and emits no additional Running transitions.
-- `TestExecute_StopWhileWaiting`: same stubs as the previous test, send `svc.Stop` on the mock request channel while `waitForEnrollmentFn` is still blocked. Assert the stub's `ctx.Done()` fires (i.e., the test stub observes cancellation) and that `Execute` emits `StopPending` and returns `false, 0`. Proves the SCM control loop stays responsive during the wait.
+- **`TestExecute_EnrolledPath_SignalsRunningAfterStartFn`**: write a valid enrolled `agent.yaml` + `secrets.yaml` to a temp dir. Call `installServiceStubs(t)`. Drive `Execute` in a goroutine with a mock `changes` channel and a mock request channel; send `svc.Stop` on the request channel to terminate the stubbed `runServiceLoopFn`. Assert: the `events` channel records `startAgent` before any `runServiceLoop` event, and the `changes` channel records `StartPending, Running` with the `Running` state arriving strictly after the `events` channel's `startAgent` entry. Proves the enrolled path remains synchronous (Decision 6) — if the implementation regressed and moved `Running` before `startAgentFn`, the assertion on `changes[Running]` vs `events[startAgent]` ordering would fail.
+
+- **`TestExecute_UnenrolledPath_SignalsRunningBeforeWait`**: write an empty `agent.yaml` (no AgentID, no AuthToken) to a temp dir. Call `installServiceStubs(t)`. Drive `Execute` in a goroutine. Assert the `changes` channel records `StartPending, Running` and the `events` channel records `waitForEnrollment.enter` — the `Running` signal MUST arrive before `waitForEnrollment.enter`. Then overwrite the config files with an enrolled state, call `release()`, and assert the events sequence continues with `waitForEnrollment.release, startAgent, runServiceLoop`. Send `svc.Stop` to terminate.
+
+- **`TestExecute_StopWhileWaiting`**: same temp-dir setup as the previous test, same `installServiceStubs`. Drive `Execute` in a goroutine. Wait for `events` to record `waitForEnrollment.enter`. Send `svc.Stop` on the request channel WITHOUT calling `release()`. Assert `events` records `waitForEnrollment.cancelled` (proves the stub observed `ctx.Done()`), `changes` records `StopPending`, and `Execute` returns `false, 0`. Proves the SCM control loop is responsive to Stop while waiting.
 
 ### Manual MSI smoke tests
 
@@ -711,7 +753,8 @@ Manual verification is still required to confirm no surprise (UAC redirection, `
 - `agent/cmd/breeze-agent/service_windows.go` —
   - `runAsService` now takes `cfgFile string` instead of a `startFn` closure.
   - `Execute` splits into enrolled (synchronous, preserves today's failure semantics) and unenrolled (reports Running early, then `waitForEnrollment` with SCM control-loop responsiveness, then `startAgent`) branches.
-  - Extract the post-startup `for { select { r } }` block into a shared `runServiceLoop(comps, r, changes)` helper used by both branches.
+  - Extract the post-startup `for { select { r } }` block and its `shutdownAgent(comps)` call into a shared `runServiceLoop(comps, r, changes)` helper used by both branches via the `runServiceLoopFn` seam.
+  - All three call paths (`startAgentFn`, `waitForEnrollmentFn`, `runServiceLoopFn`) use the package-level function vars declared in Component 1.b so Windows service tests can stub them without constructing real `*agentComponents`.
 - `agent/cmd/breeze-agent/main_test.go` — `TestWaitForEnrollment_UnblocksWhenConfigBecomesValid`, `TestWaitForEnrollment_RespectsContextCancel`, `TestWaitForEnrollment_IgnoresTornWrite`.
 - `agent/cmd/breeze-agent/service_windows_test.go` — may not exist; create if absent. `TestExecute_EnrolledPath_SignalsRunningAfterStartFn`, `TestExecute_UnenrolledPath_SignalsRunningBeforeWait`, `TestExecute_StopWhileWaiting`.
 - `agent/internal/config/config.go` — add `IsEnrolled(cfg *Config) bool` helper.
