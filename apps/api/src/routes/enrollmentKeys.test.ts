@@ -79,8 +79,8 @@ vi.mock('../services/rate-limit', () => ({
 // ============================================================
 // Import after mocks
 // ============================================================
-import { enrollmentKeyRoutes, publicShortLinkRoutes } from './enrollmentKeys';
-import { db } from '../db';
+import { enrollmentKeyRoutes, publicEnrollmentRoutes, publicShortLinkRoutes } from './enrollmentKeys';
+import { db, withSystemDbAccessContext } from '../db';
 
 // ============================================================
 // Helpers
@@ -183,6 +183,88 @@ describe('POST /enrollment-keys/:id/installer-link', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.shortUrl).toMatch(/^https?:\/\/.+\/s\/[A-Za-z0-9]{10}$/);
+  });
+
+  it('refuses to build an installer when parent key is within 60s of expiry', async () => {
+    // Parent with only 30s of life left. Previously the child inherited this
+    // and was DOA. Now the route refuses with 410 so the admin can regenerate.
+    // NOTE: handler returns 410 before calling db.insert. Using the persistent
+    // mockReturnValue here (not mockReturnValueOnce) so unconsumed entries
+    // do not leak onto the queue and poison subsequent tests.
+    const parentRow = makeKeyRow({
+      expiresAt: new Date(Date.now() + 30_000),
+    });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([parentRow]),
+        }),
+      }),
+    } as any);
+
+    const insertValues = vi.fn();
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const res = await app.request(`/enrollment-keys/${KEY_ID}/installer-link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ platform: 'windows' }),
+    });
+    expect(res.status).toBe(410);
+    const body = await res.json();
+    expect(body.error).toContain('expires too soon');
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it('child key gets a 24h TTL when parent has enough remaining life', async () => {
+    // Parent has 1h remaining (plenty) — child insert should fire with a
+    // fresh ~24h expiresAt, independent of parent.
+    const parentRow = makeKeyRow({
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000), // 1h
+    });
+    const childRow = makeChildKeyRow();
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([parentRow]),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+    const insertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([childRow]),
+    });
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const before = Date.now();
+    const res = await app.request(`/enrollment-keys/${KEY_ID}/installer-link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ platform: 'windows' }),
+    });
+    const after = Date.now();
+    expect(res.status).toBe(200);
+
+    expect(insertValues).toHaveBeenCalledTimes(1);
+    const firstCall = insertValues.mock.calls[0]!;
+    const insertedRow = firstCall[0] as { expiresAt: Date };
+    const childExpiryMs = insertedRow.expiresAt.getTime();
+    // Child TTL must be at least 23 hours past "before" (well above parent's 1h)
+    expect(childExpiryMs).toBeGreaterThan(before + 23 * 60 * 60 * 1000);
+    // And no more than 25 hours past "after" (guards against runaway values)
+    expect(childExpiryMs).toBeLessThan(after + 25 * 60 * 60 * 1000);
+    // Explicitly NOT the parent's expiresAt
+    expect(childExpiryMs).not.toBe(parentRow.expiresAt.getTime());
   });
 
   it('shortUrl and url share the same origin', async () => {
@@ -375,5 +457,78 @@ describe('GET /s/:code', () => {
 
     const res = await app.request('/s/noplatform1');
     expect(res.status).toBe(404);
+  });
+});
+
+// ============================================================
+// GET /public-download/:platform — RLS scoping regression test
+// ============================================================
+
+describe('GET /public-download/:platform', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.PUBLIC_API_URL = 'https://api.example.com';
+    app = new Hono();
+    app.route('/enrollment-keys', publicEnrollmentRoutes);
+  });
+
+  it('runs usage_count bump inside withSystemDbAccessContext (not the bare pool)', async () => {
+    // Regression test: the public-download handler previously wrapped only
+    // the initial SELECT in withSystemDbAccessContext and then called
+    // serveInstaller OUTSIDE that wrapper. serveInstaller's usage_count
+    // UPDATE therefore ran under the request's default (bare-pool, no
+    // breeze_app GUCs set) scope, and the RLS policy on enrollment_keys
+    // silently dropped the UPDATE. Download quotas were never enforced.
+    //
+    // This test asserts that after entering the public-download handler,
+    // the first call into db.update happens INSIDE a withSystemDbAccessContext
+    // scope — i.e. the system-context mock was called BEFORE db.update.
+    const row = makeKeyRow({
+      shortCode: 'pubcode1234',
+      installerPlatform: 'windows',
+    });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([row]),
+        }),
+      }),
+    } as any);
+
+    const callOrder: string[] = [];
+    vi.mocked(withSystemDbAccessContext).mockImplementation(async (fn: () => Promise<unknown>) => {
+      callOrder.push('withSystemDbAccessContext:enter');
+      const result = await fn();
+      callOrder.push('withSystemDbAccessContext:exit');
+      return result;
+    });
+
+    vi.mocked(db.update).mockImplementation(
+      ((..._args: unknown[]) => {
+        callOrder.push('db.update');
+        return {
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue(undefined),
+          }),
+        } as any;
+      }) as any
+    );
+
+    const res = await app.request(
+      '/enrollment-keys/public-download/windows?token=abc123',
+    );
+
+    expect(res.status).toBe(200);
+    // withSystemDbAccessContext must have been entered first, and the
+    // db.update must have been invoked between its enter and exit.
+    const enterIdx = callOrder.indexOf('withSystemDbAccessContext:enter');
+    const updateIdx = callOrder.indexOf('db.update');
+    const exitIdx = callOrder.indexOf('withSystemDbAccessContext:exit');
+    expect(enterIdx).toBeGreaterThanOrEqual(0);
+    expect(updateIdx).toBeGreaterThan(enterIdx);
+    expect(exitIdx).toBeGreaterThan(updateIdx);
   });
 });

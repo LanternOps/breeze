@@ -32,8 +32,39 @@ function envInt(name: string, defaultValue: number): number {
 
 const DEFAULT_ENROLLMENT_KEY_TTL_MINUTES = envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60);
 
+// Child enrollment keys (installer downloads, installer-link downloads, and
+// short-link redemptions) get a fresh, independent TTL rather than inheriting
+// the parent's remaining lifetime. The previous "inherit parentKey.expiresAt"
+// behaviour made installers DOA whenever the parent was near expiry at
+// download time — a minute-59 download against a 60-minute parent produced a
+// child good for only 60 seconds. 24h by default, overridable.
+const CHILD_ENROLLMENT_KEY_TTL_MINUTES = envInt('CHILD_ENROLLMENT_KEY_TTL_MINUTES', 60 * 24);
+
+// Parent keys that are within this window of expiry are refused as installer
+// sources. Prevents a race where the admin-side parent is already live on
+// this side of the API but the install on a remote device fires 30 seconds
+// later, after the parent expired.
+const INSTALLER_PARENT_MIN_REMAINING_SECONDS = envInt('INSTALLER_PARENT_MIN_REMAINING_SECONDS', 60);
+
 function generateEnrollmentKey(): string {
   return randomBytes(32).toString('hex'); // 64-char hex string
+}
+
+/** Fresh absolute expiry for a child enrollment key, independent of parent. */
+function freshChildExpiresAt(): Date {
+  return new Date(Date.now() + CHILD_ENROLLMENT_KEY_TTL_MINUTES * 60 * 1000);
+}
+
+/**
+ * Guard against building an installer from a parent key whose remaining
+ * lifetime is so short the child would already be dead by the time the
+ * installer reaches the target machine. Callers that hit this should
+ * surface the returned error directly.
+ */
+function parentKeyTooCloseToExpiry(expiresAt: Date | null): boolean {
+  if (!expiresAt) return false;
+  const remainingMs = expiresAt.getTime() - Date.now();
+  return remainingMs < INSTALLER_PARENT_MIN_REMAINING_SECONDS * 1000;
 }
 
 function getPagination(query: { page?: string; limit?: string }) {
@@ -483,6 +514,11 @@ enrollmentKeyRoutes.get(
     if (parentKey.maxUsage !== null && parentKey.usageCount >= parentKey.maxUsage) {
       return c.json({ error: 'Enrollment key usage exhausted' }, 410);
     }
+    if (parentKeyTooCloseToExpiry(parentKey.expiresAt)) {
+      return c.json({
+        error: 'Parent enrollment key expires too soon to build an installer — regenerate the key with a longer TTL',
+      }, 410);
+    }
 
     // Require siteId on the parent key
     if (!parentKey.siteId) {
@@ -515,7 +551,9 @@ enrollmentKeyRoutes.get(
       return c.json({ error: `${platform === 'windows' ? 'MSI' : 'macOS PKG'} not available` }, 503);
     }
 
-    // Generate a child enrollment key (single-use, same org/site/expiry)
+    // Generate a child enrollment key. Child gets a FRESH TTL independent
+    // of the parent's remaining lifetime — otherwise late-in-life parents
+    // produce dead-on-arrival installers (see CHILD_ENROLLMENT_KEY_TTL_MINUTES).
     const rawChildKey = generateEnrollmentKey();
     const childKeyHash = hashEnrollmentKey(rawChildKey);
     const shortCode = await allocateShortCode();
@@ -529,7 +567,7 @@ enrollmentKeyRoutes.get(
         key: childKeyHash,
         keySecretHash: parentKey.keySecretHash,
         maxUsage: childMaxUsage,
-        expiresAt: parentKey.expiresAt,
+        expiresAt: freshChildExpiresAt(),
         createdBy: auth.user.id,
         shortCode,
         installerPlatform: platform,
@@ -668,6 +706,11 @@ enrollmentKeyRoutes.post(
     if (parentKey.maxUsage !== null && parentKey.usageCount >= parentKey.maxUsage) {
       return c.json({ error: 'Enrollment key usage exhausted' }, 410);
     }
+    if (parentKeyTooCloseToExpiry(parentKey.expiresAt)) {
+      return c.json({
+        error: 'Parent enrollment key expires too soon to build an installer link — regenerate the key with a longer TTL',
+      }, 410);
+    }
 
     // Require siteId on the parent key
     if (!parentKey.siteId) {
@@ -686,7 +729,7 @@ enrollmentKeyRoutes.post(
       return c.json({ error: `${platform === 'windows' ? 'MSI' : 'macOS PKG'} not available` }, 503);
     }
 
-    // Generate a child enrollment key
+    // Generate a child enrollment key with a fresh TTL independent of parent
     const rawChildKey = generateEnrollmentKey();
     const childKeyHash = hashEnrollmentKey(rawChildKey);
     const shortCode = await allocateShortCode();
@@ -700,7 +743,7 @@ enrollmentKeyRoutes.post(
         key: childKeyHash,
         keySecretHash: parentKey.keySecretHash,
         maxUsage: childMaxUsage,
-        expiresAt: parentKey.expiresAt,
+        expiresAt: freshChildExpiresAt(),
         createdBy: auth.user.id,
         shortCode,
         installerPlatform: platform,
@@ -892,22 +935,26 @@ publicEnrollmentRoutes.get(
       return c.json({ error: 'Invalid platform. Must be "windows" or "macos".' }, 400);
     }
 
-    // Look up enrollment key by token hash
-    // System context required: public endpoint with no authenticated user, RLS has no org context
+    // System context required: public endpoint with no authenticated user,
+    // RLS has no org context. The system context wraps BOTH the lookup and
+    // serveInstaller so that the usage_count bump inside serveInstaller is
+    // also scoped correctly — otherwise the breeze_app role's RLS UPDATE
+    // policy silently drops the row modification and download quotas are
+    // never enforced.
     const keyHash = hashEnrollmentKey(token);
-    const [enrollmentKey] = await withSystemDbAccessContext(async () =>
-      db
+    return withSystemDbAccessContext(async () => {
+      const [enrollmentKey] = await db
         .select()
         .from(enrollmentKeys)
         .where(eq(enrollmentKeys.key, keyHash))
-        .limit(1)
-    );
+        .limit(1);
 
-    if (!enrollmentKey) {
-      return c.json({ error: 'Invalid or expired download link' }, 404);
-    }
+      if (!enrollmentKey) {
+        return c.json({ error: 'Invalid or expired download link' }, 404);
+      }
 
-    return serveInstaller(c, enrollmentKey, platform, token);
+      return serveInstaller(c, enrollmentKey, platform, token);
+    });
   }
 );
 
@@ -946,6 +993,9 @@ publicShortLinkRoutes.get('/:code', async (c) => {
 
     // The short-link row holds only the hashed token — the raw token was never stored.
     // Spawn a fresh single-use child key FIRST so we have something to embed in the installer.
+    // Child gets a FRESH TTL independent of the short-link row's remaining
+    // lifetime so the installer survives the trip to the target machine even
+    // if the short-link row is near its own expiry.
     const rawToken = generateEnrollmentKey();
     const tokenHash = hashEnrollmentKey(rawToken);
 
@@ -958,7 +1008,7 @@ publicShortLinkRoutes.get('/:code', async (c) => {
         key: tokenHash,
         keySecretHash: row.keySecretHash,
         maxUsage: 1,
-        expiresAt: row.expiresAt,
+        expiresAt: freshChildExpiresAt(),
         createdBy: null,
         installerPlatform: row.installerPlatform,
       })
