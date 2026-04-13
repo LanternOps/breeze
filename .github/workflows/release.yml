@@ -1102,6 +1102,22 @@ jobs:
           fi
           cp "$asset" breeze-viewer-macos.dmg
 
+      - name: Notarize and staple DMG
+        shell: bash
+        working-directory: apps/viewer
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool submit breeze-viewer-macos.dmg \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 30m
+          xcrun stapler staple breeze-viewer-macos.dmg
+          xcrun stapler validate breeze-viewer-macos.dmg
+
       - name: Package updater bundle (macOS)
         shell: bash
         working-directory: apps/viewer
@@ -1210,6 +1226,22 @@ jobs:
             exit 1
           fi
           cp "$asset" breeze-helper-macos.dmg
+
+      - name: Notarize and staple DMG
+        shell: bash
+        working-directory: apps/helper
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool submit breeze-helper-macos.dmg \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 30m
+          xcrun stapler staple breeze-helper-macos.dmg
+          xcrun stapler validate breeze-helper-macos.dmg
 
       - name: Upload Helper macOS artifact
         uses: actions/upload-artifact@v7
