@@ -19,6 +19,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/audit"
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/eventlog"
 	"github.com/breeze-rmm/agent/internal/heartbeat"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
@@ -47,6 +48,91 @@ var (
 )
 
 var log = logging.L("main")
+
+// waitForEnrollmentPollInterval is the interval between config reloads
+// in the wait-for-enrollment loop. Tests override this via t.Cleanup to
+// shrink the loop to milliseconds.
+var waitForEnrollmentPollInterval = 10 * time.Second
+
+// Package-level indirection for testability. Tests override these in
+// t.Cleanup-guarded setup to observe Execute and runAgent ordering
+// without running the real startup pipeline. Production callers MUST
+// use these vars, not the unexported symbols they wrap.
+//
+// startAgentFn and waitForEnrollmentFn are cross-platform; runServiceLoopFn
+// is defined in service_seams_windows.go because its signature references
+// Windows-only types.
+var (
+	startAgentFn        func() (*agentComponents, error)             = startAgent
+	waitForEnrollmentFn func(context.Context, string) *config.Config = waitForEnrollment
+)
+
+// initBootstrapLogging initializes the logging package with stderr +
+// the configured log file so waitForEnrollment can emit Warn/Info
+// lines before full startAgent runs. Does NOT start the log shipper,
+// heartbeat, or any network I/O — those are initialized later in
+// startAgent once enrollment is complete. Safe to call multiple times
+// (logging.Init is idempotent).
+func initBootstrapLogging(cfg *config.Config) {
+	logFile := cfg.LogFile
+	if logFile == "" {
+		logFile = filepath.Join(config.LogDir(), "agent.log")
+	}
+	// Best effort: if the log file can't be opened (permissions, missing
+	// dir), fall back to stderr only. Bootstrap logging must never fail
+	// the agent start.
+	if err := os.MkdirAll(filepath.Dir(logFile), 0o755); err != nil {
+		logging.Init(cfg.LogFormat, cfg.LogLevel, os.Stderr)
+		return
+	}
+	rw, err := logging.NewRotatingWriter(logFile, cfg.LogMaxSizeMB, cfg.LogMaxBackups)
+	if err != nil {
+		logging.Init(cfg.LogFormat, cfg.LogLevel, os.Stderr)
+		return
+	}
+	logging.Init(cfg.LogFormat, cfg.LogLevel, logging.TeeWriter(os.Stderr, rw))
+}
+
+// waitForEnrollment polls agent.yaml + secrets.yaml every
+// waitForEnrollmentPollInterval until config.IsEnrolled returns true,
+// then returns the enrolled config. Returns nil if ctx is cancelled
+// before enrollment completes.
+//
+// Intended for post-MSI-install scenarios where the service starts
+// before a later `breeze-agent enroll` call populates the config. The
+// ctx allows the caller to cancel the wait on shutdown (SIGINT/SIGTERM
+// via signal.NotifyContext in runAgent, or SCM Stop in the Windows
+// service wrapper).
+func waitForEnrollment(ctx context.Context, cfgFile string) *config.Config {
+	log.Warn("agent not enrolled — waiting for enrollment. "+
+		"Run 'breeze-agent enroll <key> --server <url>' to complete setup.",
+		"pollInterval", waitForEnrollmentPollInterval)
+	eventlog.Info("BreezeAgent",
+		"Waiting for enrollment. Run 'breeze-agent enroll <key> --server <url>'.")
+
+	ticker := time.NewTicker(waitForEnrollmentPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info("waitForEnrollment cancelled", "reason", ctx.Err().Error())
+			return nil
+		case <-ticker.C:
+			cfg, err := config.Load(cfgFile)
+			if err != nil {
+				log.Debug("config reload failed while waiting for enrollment",
+					"error", err.Error())
+				continue
+			}
+			if config.IsEnrolled(cfg) {
+				log.Info("enrollment detected, continuing startup",
+					"agentId", cfg.AgentID)
+				return cfg
+			}
+		}
+	}
+}
 
 var rootCmd = &cobra.Command{
 	Use:   "breeze-agent",
