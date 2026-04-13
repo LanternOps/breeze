@@ -508,6 +508,18 @@ func runAgent() {
 // structured logs to the agent log file so MSI-initiated enrollments leave
 // the same diagnostic trail as service-initiated ones.
 func enrollDevice(enrollmentKey string) {
+	// Trim whitespace from flag inputs. Template MSIs (served by the
+	// installerBuilder API) space-pad SERVER_URL / ENROLLMENT_KEY /
+	// ENROLLMENT_SECRET to a fixed 512-char width so the API can byte-
+	// patch them in-place without relocating other MSI structures. The
+	// padding survives all the way to our argv here, and url.Parse
+	// chokes on trailing spaces in a host name. The old PowerShell CA
+	// wrapper trimmed these before exec; the direct-exe CA does not,
+	// so the agent has to handle it.
+	enrollmentKey = strings.TrimSpace(enrollmentKey)
+	serverURL = strings.TrimSpace(serverURL)
+	enrollmentSecret = strings.TrimSpace(enrollmentSecret)
+
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
 		cfg = config.Default()
