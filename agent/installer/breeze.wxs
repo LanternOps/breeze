@@ -208,7 +208,7 @@
            check %ProgramData%\Breeze\logs\agent.log for the structured
            error trail, or re-run breeze-agent.exe enroll manually from an
            elevated shell with the enrollment key and server flags. -->
-      <Custom Action="EnrollAgent" After="InstallFiles" Before="InstallServices" Condition="NOT Installed AND SERVER_URL AND ENROLLMENT_KEY" />
+      <Custom Action="EnrollAgent" Before="InstallServices" Condition="NOT Installed AND SERVER_URL AND ENROLLMENT_KEY" />
       <Custom Action="UnregisterUserHelperTask" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
     </InstallExecuteSequence>
 
