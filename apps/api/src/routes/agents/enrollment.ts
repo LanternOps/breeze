@@ -72,21 +72,29 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
   const hashedEnrollmentKey = hashEnrollmentKey(data.enrollmentKey);
 
   return withSystemDbAccessContext(async () => {
+    // Re-validated in the UPDATE WHERE below to close the TOCTOU window between
+    // this initial lookup and the usage_count bump.
     const validEnrollmentKeyConditions = [
       eq(enrollmentKeys.key, hashedEnrollmentKey),
       sql`(${enrollmentKeys.expiresAt} IS NULL OR ${enrollmentKeys.expiresAt} > NOW())`,
       sql`(${enrollmentKeys.maxUsage} IS NULL OR ${enrollmentKeys.usageCount} < ${enrollmentKeys.maxUsage})`,
     ] as const;
 
+    // Step 1: look up by hash ONLY, so we can tell the admin *why* the key
+    // was rejected instead of conflating three distinct failure modes into
+    // one opaque "Invalid or expired enrollment key" string.
     const [matchingKey] = await db
       .select({
         id: enrollmentKeys.id,
         orgId: enrollmentKeys.orgId,
         siteId: enrollmentKeys.siteId,
         keySecretHash: enrollmentKeys.keySecretHash,
+        expiresAt: enrollmentKeys.expiresAt,
+        maxUsage: enrollmentKeys.maxUsage,
+        usageCount: enrollmentKeys.usageCount,
       })
       .from(enrollmentKeys)
-      .where(and(...validEnrollmentKeyConditions))
+      .where(eq(enrollmentKeys.key, hashedEnrollmentKey))
       .limit(1);
 
     if (!matchingKey) {
@@ -96,11 +104,51 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         action: 'agent.enroll',
         resourceType: 'device',
         resourceName: data.hostname,
-        details: { reason: 'invalid_or_expired_enrollment_key' },
+        details: { reason: 'enrollment_key_not_found' },
         result: 'denied',
-        errorMessage: 'Invalid or expired enrollment key',
+        errorMessage: 'Enrollment key not recognized',
       });
-      return c.json({ error: 'Invalid or expired enrollment key' }, 401);
+      return c.json({
+        error: 'Enrollment key not recognized',
+        reason: 'enrollment_key_not_found',
+      }, 401);
+    }
+
+    // Step 2: the row exists — now tell the admin precisely which invariant
+    // it's violating. Both branches stay on 401 for backwards compatibility
+    // with older agents that don't parse `reason`.
+    if (matchingKey.expiresAt && new Date(matchingKey.expiresAt) <= new Date()) {
+      writeAuditEvent(c, {
+        orgId: matchingKey.orgId,
+        actorType: 'system',
+        action: 'agent.enroll',
+        resourceType: 'device',
+        resourceName: data.hostname,
+        details: { reason: 'enrollment_key_expired', keyId: matchingKey.id },
+        result: 'denied',
+        errorMessage: 'Enrollment key has expired',
+      });
+      return c.json({
+        error: 'Enrollment key has expired — regenerate the key or installer link and retry',
+        reason: 'enrollment_key_expired',
+      }, 401);
+    }
+
+    if (matchingKey.maxUsage !== null && matchingKey.usageCount >= matchingKey.maxUsage) {
+      writeAuditEvent(c, {
+        orgId: matchingKey.orgId,
+        actorType: 'system',
+        action: 'agent.enroll',
+        resourceType: 'device',
+        resourceName: data.hostname,
+        details: { reason: 'enrollment_key_exhausted', keyId: matchingKey.id },
+        result: 'denied',
+        errorMessage: 'Enrollment key usage exhausted',
+      });
+      return c.json({
+        error: 'Enrollment key has reached its maximum usage count — regenerate a fresh key or installer link',
+        reason: 'enrollment_key_exhausted',
+      }, 401);
     }
 
     const providedSecret = getProvidedEnrollmentSecret(c, data);
@@ -199,17 +247,24 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       .returning();
 
     if (!key) {
+      // The row existed at step 1 but the re-validated UPDATE affected 0
+      // rows — the key expired or was exhausted between the initial lookup
+      // and the claim. Distinct reason so this specific race is visible in
+      // the audit log and the client can retry with a fresh installer.
       writeAuditEvent(c, {
-        orgId: null,
+        orgId: matchingKey.orgId,
         actorType: 'system',
         action: 'agent.enroll',
         resourceType: 'device',
         resourceName: data.hostname,
-        details: { reason: 'invalid_or_expired_enrollment_key' },
+        details: { reason: 'enrollment_key_race_lost', keyId: matchingKey.id },
         result: 'denied',
-        errorMessage: 'Invalid or expired enrollment key',
+        errorMessage: 'Enrollment key was claimed by another enrollment in the same moment',
       });
-      return c.json({ error: 'Invalid or expired enrollment key' }, 401);
+      return c.json({
+        error: 'Enrollment key was just exhausted or expired — regenerate a fresh key or installer link',
+        reason: 'enrollment_key_race_lost',
+      }, 401);
     }
 
     const siteId = key.siteId!; // non-null asserted: matchingKey.siteId guard at line 180

@@ -79,8 +79,8 @@ vi.mock('../services/rate-limit', () => ({
 // ============================================================
 // Import after mocks
 // ============================================================
-import { enrollmentKeyRoutes, publicShortLinkRoutes } from './enrollmentKeys';
-import { db } from '../db';
+import { enrollmentKeyRoutes, publicEnrollmentRoutes, publicShortLinkRoutes } from './enrollmentKeys';
+import { db, withSystemDbAccessContext } from '../db';
 
 // ============================================================
 // Helpers
@@ -183,6 +183,88 @@ describe('POST /enrollment-keys/:id/installer-link', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.shortUrl).toMatch(/^https?:\/\/.+\/s\/[A-Za-z0-9]{10}$/);
+  });
+
+  it('refuses to build an installer when parent key is within 60s of expiry', async () => {
+    // Parent with only 30s of life left. Previously the child inherited this
+    // and was DOA. Now the route refuses with 410 so the admin can regenerate.
+    // NOTE: handler returns 410 before calling db.insert. Using the persistent
+    // mockReturnValue here (not mockReturnValueOnce) so unconsumed entries
+    // do not leak onto the queue and poison subsequent tests.
+    const parentRow = makeKeyRow({
+      expiresAt: new Date(Date.now() + 30_000),
+    });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([parentRow]),
+        }),
+      }),
+    } as any);
+
+    const insertValues = vi.fn();
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const res = await app.request(`/enrollment-keys/${KEY_ID}/installer-link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ platform: 'windows' }),
+    });
+    expect(res.status).toBe(410);
+    const body = await res.json();
+    expect(body.error).toContain('expires too soon');
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it('child key gets a 24h TTL when parent has enough remaining life', async () => {
+    // Parent has 1h remaining (plenty) — child insert should fire with a
+    // fresh ~24h expiresAt, independent of parent.
+    const parentRow = makeKeyRow({
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000), // 1h
+    });
+    const childRow = makeChildKeyRow();
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([parentRow]),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+    const insertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([childRow]),
+    });
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const before = Date.now();
+    const res = await app.request(`/enrollment-keys/${KEY_ID}/installer-link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ platform: 'windows' }),
+    });
+    const after = Date.now();
+    expect(res.status).toBe(200);
+
+    expect(insertValues).toHaveBeenCalledTimes(1);
+    const firstCall = insertValues.mock.calls[0]!;
+    const insertedRow = firstCall[0] as { expiresAt: Date };
+    const childExpiryMs = insertedRow.expiresAt.getTime();
+    // Child TTL must be at least 23 hours past "before" (well above parent's 1h)
+    expect(childExpiryMs).toBeGreaterThan(before + 23 * 60 * 60 * 1000);
+    // And no more than 25 hours past "after" (guards against runaway values)
+    expect(childExpiryMs).toBeLessThan(after + 25 * 60 * 60 * 1000);
+    // Explicitly NOT the parent's expiresAt
+    expect(childExpiryMs).not.toBe(parentRow.expiresAt.getTime());
   });
 
   it('shortUrl and url share the same origin', async () => {
@@ -375,5 +457,66 @@ describe('GET /s/:code', () => {
 
     const res = await app.request('/s/noplatform1');
     expect(res.status).toBe(404);
+  });
+});
+
+// ============================================================
+// GET /public-download/:platform — RLS scoping regression test
+// ============================================================
+
+describe('GET /public-download/:platform', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.PUBLIC_API_URL = 'https://api.example.com';
+    app = new Hono();
+    app.route('/enrollment-keys', publicEnrollmentRoutes);
+  });
+
+  it('does not bump child key usage_count on download — leaves the slot for the agent enroll call', async () => {
+    // Regression test for the root cause of the MSI "401 Invalid or
+    // expired enrollment key" bug. Previously serveInstaller ran
+    // `UPDATE enrollment_keys SET usage_count = usage_count + 1 WHERE
+    // id = :keyRow.id` right after a successful build. Combined with
+    // max_usage = 1 on single-use child keys (short-link downloads and
+    // single-count installer links), this burned the enrollment slot
+    // at *download* time: by the time the agent POSTed to
+    // /agents/enroll, the child row already had usage_count >=
+    // max_usage, the enroll endpoint's `usage_count < max_usage`
+    // filter rejected the row, and the agent saw the deliberately-opaque
+    // "Invalid or expired enrollment key" 401. The enroll endpoint
+    // itself owns the slot-consuming UPDATE under a TOCTOU-safe
+    // `UPDATE ... WHERE usage_count < max_usage`, so downloads must
+    // NOT bump usage_count. max_usage is "max successful enrollments,"
+    // not "max downloads."
+    const row = makeKeyRow({
+      shortCode: 'pubcode1234',
+      installerPlatform: 'windows',
+      maxUsage: 1,
+      usageCount: 0,
+    });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([row]),
+        }),
+      }),
+    } as any);
+
+    // Fail loudly if anything inside the download path touches
+    // db.update — the whole point of the fix is that the download path
+    // is now read-only against the enrollment_keys row.
+    vi.mocked(db.update).mockImplementation(() => {
+      throw new Error('db.update called on public-download — regression of the usage_count-burn bug');
+    });
+
+    const res = await app.request(
+      '/enrollment-keys/public-download/windows?token=abc123',
+    );
+
+    expect(res.status).toBe(200);
+    expect(db.update).not.toHaveBeenCalled();
   });
 });
