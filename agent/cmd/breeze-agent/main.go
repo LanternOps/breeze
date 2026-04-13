@@ -113,7 +113,7 @@ func init() {
 	enrollCmd.Flags().StringVar(&enrollmentSecret, "enrollment-secret", "", "Enrollment secret (AGENT_ENROLLMENT_SECRET on the server)")
 	enrollCmd.Flags().StringVar(&enrollSiteID, "site-id", "", "Site ID to enroll into (optional, overrides enrollment key default)")
 	enrollCmd.Flags().StringVar(&enrollDeviceRole, "device-role", "", "Device role override (e.g. workstation, server)")
-	enrollCmd.Flags().BoolVar(&forceEnroll, "force", false, "Re-enroll even if the agent already has a valid enrollment (wipes existing AgentID/AuthToken)")
+	enrollCmd.Flags().BoolVar(&forceEnroll, "force", false, "Re-enroll even if already enrolled; replaces AgentID/AuthToken on success (no-op on failure)")
 	enrollCmd.Flags().BoolVar(&quietEnroll, "quiet", false, "Suppress stdout progress output (errors still go to stderr). Intended for unattended installs.")
 	userHelperCmd.Flags().StringVar(&helperRole, "role", "system", "Helper role: 'system' (desktop capture) or 'user' (script execution)")
 	desktopHelperCmd.Flags().StringVar(&desktopContext, "context", ipc.DesktopContextUserSession, "Desktop context: 'user_session' or 'login_window'")
@@ -569,6 +569,10 @@ func enrollDevice(enrollmentKey string) {
 	go func() {
 		info, hwErr := hwCollector.CollectHardware()
 		if hwErr != nil {
+			// Can't use enrollLog here — this goroutine may still be running
+			// after enrollDevice has returned or called os.Exit. stderr is
+			// safe from any goroutine and lands in the MSI install.log.
+			fmt.Fprintf(os.Stderr, "Warning: Hardware collection failed: %v; using defaults for enrollment\n", hwErr)
 			hwDone <- &collectors.HardwareInfo{}
 			return
 		}
@@ -708,16 +712,20 @@ func enrollDevice(enrollmentKey string) {
 // initEnrollLogging configures the agent logging package for the enroll
 // command. In quiet mode the slog sink is the log file only; otherwise it
 // tees stdout + file (or file-only when no console is attached, matching
-// the runtime behaviour of initLogging). Errors always additionally go to
-// stderr via explicit fmt.Fprintln calls at error sites.
+// the runtime behaviour of initLogging). Errors within enrollDevice
+// always additionally go to stderr via explicit fmt.Fprintln calls at
+// error sites. Logging-setup failures inside this helper fall back to
+// stdout logging and also write a warning to stderr.
 func initEnrollLogging(cfg *config.Config, quiet bool) {
 	if cfg.LogFile == "" {
 		cfg.LogFile = filepath.Join(config.LogDir(), "agent.log")
 	}
 
 	if err := os.MkdirAll(filepath.Dir(cfg.LogFile), 0o755); err != nil {
-		// Can't create log dir — fall back to stdout logging. Rare: MSI CA
-		// runs as SYSTEM which has full rights.
+		// Rare in production (MSI CA runs as SYSTEM), but if it happens
+		// the admin needs to see it in install.log — write to stderr
+		// unconditionally so the MSI verbose log captures it.
+		fmt.Fprintf(os.Stderr, "Warning: could not create log directory %s: %v — structured logs will go to stdout\n", filepath.Dir(cfg.LogFile), err)
 		logging.Init(cfg.LogFormat, cfg.LogLevel, os.Stdout)
 		log = logging.L("main")
 		return
@@ -725,6 +733,7 @@ func initEnrollLogging(cfg *config.Config, quiet bool) {
 
 	rw, err := logging.NewRotatingWriter(cfg.LogFile, cfg.LogMaxSizeMB, cfg.LogMaxBackups)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not open log file %s: %v — structured logs will go to stdout\n", cfg.LogFile, err)
 		logging.Init(cfg.LogFormat, cfg.LogLevel, os.Stdout)
 		log = logging.L("main")
 		return
