@@ -193,7 +193,13 @@ waitLoop:
 	}
 
 	if enrolledCfg == nil {
-		// ctx cancelled without enrollment; handled above.
+		// Defensive guard. In the current control flow this is
+		// unreachable — the Stop/Shutdown branch of waitLoop returns
+		// directly, so no break path exits waitLoop with a nil
+		// enrolledCfg. If a future change makes it reachable (e.g.
+		// switching to a deadline context), emit StopPending so the
+		// SCM sees a clean transition.
+		changes <- svc.Status{State: svc.StopPending}
 		return false, 0
 	}
 
