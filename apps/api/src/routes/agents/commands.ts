@@ -104,7 +104,7 @@ function normalizeCriticalResultIfNeeded(
 }
 
 const commandResultParamSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().min(1),
   commandId: z.string().min(1),
 });
 

@@ -4,6 +4,124 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## Reboot to Safe Mode with Networking — 2026-04-13
+
+**Branch:** `main`
+**Commit:** `44e9d458`
+**Tested by:** Claude
+**Result:** PASS (feature works end-to-end) — but surfaced two unrelated bugs during verification: a critical API validation bug (bug #2) and an observability gap in startup logging (bug #3). Bug #1 in the original version of this entry was a wrong hypothesis; see "Hypothesis correction" below.
+
+### Environment
+- VM: `WIN-DHQNR1F8LO2` (Windows Server 2022 Standard Eval, 10.0.20348.587)
+- Agent version: `0.62.24` (MSI-installed, includes `SafeBoot\Network\BreezeAgent` registry component from PR #304)
+- Tailscale: `100.101.150.55`
+- Server: local docker `https://2breeze.app`
+- Device id (local): `668299a1-a473-4a05-9701-c069c843b3e4`
+
+### What was tested
+- [x] API: `POST /devices/:id/commands` with `{type:"reboot_safe_mode", payload:{delay:0}}` accepts + audits
+- [x] Agent: picks up `reboot_safe_mode` on heartbeat (~60s after queue), runs `bcdedit /set {current} safeboot network`, then `shutdown /r /t 0`
+- [x] Windows: reboots into Safe Mode with Networking (confirmed — `device_boot_metrics` logs new boot at `2026-04-13T20:53:56Z`, ~10s after agent invocation)
+- [x] Safe mode correctly restricts services: `device_connections` snapshot at 20:56:03 shows only 135/139/49664-49667 (RPC/DCOM only) — no sshd/Tailscale/WinRM/SMB. `wuauserv` fails to start with error "This service cannot be started in Safe Mode" (confirmed in local agent log).
+- [x] MSI: `SafeBoot\Network\BreezeAgent` registry component correctly registers agent under safe mode whitelist (verified via `reg query` — value `Service`)
+- [x] Agent continues heartbeating from safe mode (`SafeBoot\Network\BreezeAgent` registration works — service starts in Safe Mode with Networking)
+- [x] **Agent auto-clears BCD flag on startup in safe mode** — confirmed via local agent log (`C:\ProgramData\Breeze\logs\agent.log`):
+  ```
+  20:54:07.891Z WARN  system is in Safe Mode — clearing safeboot BCD flag for normal reboot
+  20:54:08.042Z INFO  safeboot BCD flag cleared, next reboot will be normal mode
+  ```
+- [x] Second reboot (via plain `reboot` command) returns to normal mode — new boot at `21:18:09Z`, `device_connections` now shows 22/445/5985/47001/5357/WinRM/SMB — full normal-mode service set. Verified via remote `bcdedit /enum {current}` script probe: no `safeboot` line in BCD.
+
+### Hypothesis correction (important)
+
+Initial hypothesis blamed `safemode.IsSafeMode()` — claiming it returns false in service context because `SAFEBOOT_OPTION` env var isn't exposed to SCM-started services. **This was wrong.** `SAFEBOOT_OPTION` *is* set at the system-environment level by the Windows kernel during safe-mode boot, and SCM services *do* inherit it. Local agent log definitively shows the `log.Warn("system is in Safe Mode — clearing safeboot BCD flag...")` line fired at startup in the safe-mode boot. The feature works as designed.
+
+The reason I wasn't seeing that log in server-side diagnostic logs (which is what led me down the wrong path) turned out to be bug #3 below.
+
+### Diagnostic detours during test (not feature failures)
+
+- Attempted "recovery" scripts to reproduce bcdedit state — **all 3 failed with `"script content is empty"`** because I was calling `POST /devices/:id/commands` with `{type:"script", payload:{scriptId}}` which only stores `scriptId` in the payload. The handleScript handler reads `payload.content` directly — it doesn't hydrate content from scriptId. Correct API is `POST /scripts/:id/execute`, which inserts a `device_commands` row with hydrated `{scriptId, content, language, parameters, timeoutSeconds, runAs}` (see `apps/api/src/routes/scripts.ts:720-733`). Consider rejecting or hydrating on the direct path — silently running with empty content is confusing.
+- Initial recovery attempts appeared to fail because the result POST was returning 400 (bug #2 below), so I couldn't see that the scripts were erroring out with "script content is empty" — the error was invisible. Fixing bug #2 immediately made the error visible.
+- Plain `reboot` command (native `exec.Command("shutdown", ...)` from Go agent process) worked first try — reboot at `21:18:09Z` into normal mode, confirming BCD flag had already been cleared by the in-safe-mode agent startup path.
+
+### Bug #2: `POST /agents/:id/commands/:commandId/result` returns 400 for all HTTP-heartbeat agents (CONFIRMED + FIXED)
+
+**File:** `apps/api/src/routes/agents/commands.ts:106-109`
+
+```ts
+const commandResultParamSchema = z.object({
+  id: z.string().uuid(),        // ← WRONG: agent IDs are 64-char SHA-256 hex, not UUIDs
+  commandId: z.string().min(1),
+});
+```
+
+**Diagnosis:** After switching compose to dev-mode (`docker-compose.override.yml.dev`) and adding a zValidator `json` error hook, my hook never fired — which means the 400 was coming from the *previous* `zValidator('param', ...)` call. The agent's URL path uses `cfg.AgentID`, which is a 64-char SHA-256 hash (e.g. `ab3c20eddb470acffd33bbe00f25e0348e89298ab80cece542bb1fbf921e5776`), NOT a UUID. `z.string().uuid()` rejects it → 400 → agent logs `failed to submit command result status=400` → command stays `sent` forever, never reports stdout/stderr/exitCode.
+
+**Scope:** Affects every HTTP-heartbeat-mode agent's command results. WS-connected agents unaffected because they go through a parallel code path in `agentWs.ts:516` that doesn't use this schema. Introduced in commit `6f6129770` (PR #220, 2026-03-13) — has been silently live on `main` for ~1 month. Undiagnosed this long because (a) most prod agents are WS-connected, (b) the GHCR image is the one running, so nobody notices until they try to do one-shot debugging against a heartbeat agent, (c) the 400 was silently swallowed by the agent's `log.Error` without capturing response body.
+
+**Fix (one-line, already applied to branch):**
+```ts
+const commandResultParamSchema = z.object({
+  id: z.string().min(1),        // matches heartbeat.ts and other agent routes
+  commandId: z.string().min(1),
+});
+```
+
+**Verified** by re-running probe script `a4b22f23-e6d0-44ec-82a7-a91aff90dd16` after the fix:
+```
+POST /api/v1/agents/.../commands/a4b22f23.../result  200
+```
+Command moved to `status=completed` with `result.stdout` populated.
+
+### Bug #3: Critical startup logs not shipped (observability gap)
+
+**File:** `agent/cmd/breeze-agent/main.go` (startAgent function)
+
+**Problem:** In `startAgent`, the order is:
+1. `initLogging(cfg)` — local file logger up
+2. Safe-mode check block (`if safemode.IsSafeMode() { log.Warn(...); ClearSafeBootFlag(); }`)
+3. (dozens of lines later) `logging.InitShipper(...)` — shipper starts forwarding logs to server
+
+Any log emitted between steps 1 and 3 lands in the local file (`C:\ProgramData\Breeze\logs\agent.log` on Windows, `/var/log/breeze-agent/agent.log` on Linux) but is **never shipped to the server**. That means:
+- BCD safeboot auto-clear events (audit-relevant: we just modified the machine's boot config) — **never seen on server**
+- mTLS cert renewal attempts (security-relevant) — see lines 368-398, also pre-shipper
+- Config permission fix (`config.FixConfigPermissions()`) — pre-shipper
+- Enrollment-check and waitForEnrollment blocking — pre-shipper
+
+This is the only reason I wasted an hour hypothesizing bug #1. If the "system is in Safe Mode — clearing safeboot BCD flag" line had been shipped, I would have seen it in `agent_logs` and known the feature worked on the first check.
+
+**Severity:** Medium. Not a correctness bug (the feature works), but a significant observability gap for anything the agent does at startup. Specifically blocks post-incident forensics: "did the agent actually run safe-mode recovery on that customer's box?" — today the only answer is "SSH in and cat the local log".
+
+**Fix options:**
+1. **Move shipper init earlier** — right after `initLogging`, before the safe-mode block. Shipper only needs `AgentID` + `ServerURL` from config, which are available immediately after `IsEnrolled` check.
+2. **Buffer + replay** — have `initLogging` buffer to an in-memory ring buffer until shipper is ready, then flush.
+3. **Ship the local file** — have a one-shot backfill on startup that reads the last N lines of the local log and ships anything not yet sent (deduped by timestamp).
+
+Option 1 is simplest and correct. Shipper init should be one of the first things after local logging.
+
+### Evidence
+- Command record: `53132912-8ea2-432a-9cd6-c0add4047d18` `reboot_safe_mode` executedAt `20:53:44.581Z`
+- Boot metrics: `device_boot_metrics` — two rows: `2026-04-13 20:53:56+00` (safe mode) and `2026-04-13 21:18:09+00` (normal mode recovery)
+- Connection snapshot in safe mode (20:56:03): 135, 139, 49664-49667 LISTEN — only RPC/DCOM, no sshd/Tailscale/RDP/WinRM/SMB
+- Connection snapshot after recovery (21:19:44): 22, 135, 139, 445, 5357, 5985, 47001, 49664-49671 LISTEN — full normal-mode service set
+- **Local agent log** (`C:\ProgramData\Breeze\logs\agent.log`) read via `Get-Content | Select-String`:
+  ```
+  20:53:43.977Z INFO  safe mode reboot initiated        delayMinutes=0
+  20:54:07.891Z WARN  system is in Safe Mode — clearing safeboot BCD flag for normal reboot
+  20:54:08.042Z INFO  safeboot BCD flag cleared, next reboot will be normal mode
+  20:54:08.043Z INFO  starting agent                     version=0.62.24
+  20:55:09.347Z WARN  patch inventory collection warning: wuauserv is Stopped and failed to start: This service cannot be started in Safe Mode
+  ```
+- Final BCD probe (via `/scripts/:id/execute` after all fixes, command `1552e478`): `bcdedit /enum {current} | Select-String safeboot` returned no match → BCD is clean. `sshd Running`, `Tailscale Running`.
+
+### Follow-ups
+1. **[shipped in this session]** Bug #2 fix: `commandResultParamSchema.id` changed from `.uuid()` to `.min(1)`.
+2. Bug #3 — move `logging.InitShipper(...)` earlier in `startAgent` (before the safe-mode block) so startup events are visible on the server.
+3. Add a server-side validation test that all `agents/:id/*` routes accept a 64-char hex agent ID, not just UUIDs — prevents recurrence of bug #2.
+4. `POST /devices/:id/commands` with `{type:"script", payload:{scriptId}}` silently runs with empty content and returns "script content is empty" from the agent. Options: (a) reject at API with clear error directing to `/scripts/:id/execute`, (b) hydrate `content` server-side when only `scriptId` is provided. Option (a) is probably better since `/scripts/:id/execute` also handles `scriptExecutions` tracking which the direct path skips.
+5. Consider how test/debugging workflows can reach heartbeat-mode agents quickly — this test took much longer than it should have because I didn't realize HTTP heartbeat and WS paths diverge for command result handling.
+
+
 ## MSI Builder Enrollment Injection — 2026-04-09
 
 **Branch:** `main`
