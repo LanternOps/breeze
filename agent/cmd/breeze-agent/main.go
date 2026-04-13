@@ -63,8 +63,8 @@ var waitForEnrollmentPollInterval = 10 * time.Second
 // is defined in service_seams_windows.go because its signature references
 // Windows-only types.
 var (
-	startAgentFn        func() (*agentComponents, error)             = startAgent
-	waitForEnrollmentFn func(context.Context, string) *config.Config = waitForEnrollment
+	startAgentFn        func(*config.Config) (*agentComponents, error) = startAgent
+	waitForEnrollmentFn func(context.Context, string) *config.Config   = waitForEnrollment
 )
 
 // initBootstrapLogging initializes the logging package with stderr +
@@ -307,17 +307,16 @@ func shutdownAgent(comps *agentComponents) {
 	}
 }
 
-// startAgent performs all agent initialisation and returns the running
-// components. It is used by both the console-mode runAgent and the Windows
-// SCM service wrapper so the startup logic lives in one place.
-func startAgent() (*agentComponents, error) {
-	cfg, err := config.Load(cfgFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load config: %w", err)
-	}
-
-	if cfg.AgentID == "" {
-		return nil, fmt.Errorf("agent not enrolled — run 'breeze-agent enroll <key>' first")
+// startAgent performs all agent initialisation assuming cfg is already
+// enrolled. Returns the running components or an error if any
+// initialization step fails (mTLS load, log shipper init, heartbeat
+// bring-up, etc.). Callers (runAgent on console/Unix, the Windows
+// service wrapper) MUST check config.IsEnrolled first and call
+// waitForEnrollment if needed — this function no longer performs the
+// enrollment check itself.
+func startAgent(cfg *config.Config) (*agentComponents, error) {
+	if !config.IsEnrolled(cfg) {
+		return nil, fmt.Errorf("startAgent called with unenrolled config — caller must waitForEnrollment first")
 	}
 
 	// Loosen config directory (0755) and agent.yaml (0644) so the Helper can read
@@ -540,17 +539,43 @@ func runAgent() {
 	healLaunchdPlistsIfNeeded()
 
 	// On Windows, if launched by the SCM, run under the service framework
-	// so we report Running/Stopped status back to the SCM correctly.
+	// so we report Running/Stopped status back to the SCM correctly. The
+	// service wrapper owns its own config loading, enrollment check, and
+	// cancellation via the SCM request channel.
 	if isWindowsService() {
-		if err := runAsService(startAgent); err != nil {
+		if err := runAsService(cfgFile); err != nil {
 			log.Error("service failed", "error", err.Error())
 			os.Exit(1)
 		}
 		return
 	}
 
-	// Console mode — start components and wait for OS signal.
-	comps, err := startAgent()
+	// Console / Unix service-manager mode. Load config, prepare bootstrap
+	// logging, and wait for enrollment if needed. signal.NotifyContext
+	// wires SIGINT/SIGTERM to ctx so Ctrl+C in a terminal and
+	// `systemctl stop` / `launchctl kickstart -k` all cancel any active
+	// wait cleanly.
+	cfg, err := config.Load(cfgFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+	initBootstrapLogging(cfg)
+
+	ctx, stop := signal.NotifyContext(context.Background(),
+		os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if !config.IsEnrolled(cfg) {
+		cfg = waitForEnrollmentFn(ctx, cfgFile)
+		if cfg == nil {
+			log.Info("agent shutting down without enrollment",
+				"reason", ctx.Err().Error())
+			return
+		}
+	}
+
+	comps, err := startAgentFn(cfg)
 	if err != nil {
 		if isPermissionError(err) {
 			fmt.Fprintln(os.Stderr, "Error: Permission denied reading agent configuration.")
@@ -573,16 +598,13 @@ func runAgent() {
 	}
 	defer logging.StopShipper()
 
-	// Ignore SIGINT — as a daemon, PTY child processes can propagate
-	// SIGINT to our process group via Ctrl+C. Only SIGTERM should trigger shutdown.
-	signal.Ignore(syscall.SIGINT)
-
-	// Wait for shutdown signal
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGTERM)
-
-	<-sigChan
-	log.Info("shutting down agent")
+	// Wait for ctx to be cancelled — SIGINT or SIGTERM via
+	// signal.NotifyContext above. Behaviour change: console-mode
+	// breeze-agent now treats SIGINT as shutdown instead of ignoring
+	// it. The Windows service path is unaffected (SCM signals arrive
+	// via the request channel, not Unix signals).
+	<-ctx.Done()
+	log.Info("shutting down agent", "reason", ctx.Err().Error())
 
 	shutdownAgent(comps)
 	log.Info("agent stopped")

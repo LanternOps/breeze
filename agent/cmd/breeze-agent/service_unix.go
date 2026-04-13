@@ -3,11 +3,14 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"runtime"
 	"syscall"
 
+	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/logging"
 )
 
@@ -83,21 +86,37 @@ func redirectStderr(f *os.File) {
 }
 
 // runAsService runs the agent as a system daemon on Unix (launchd / systemd).
-// Unlike Windows, there is no SCM handshake — just start components and block
-// on SIGTERM, same as console mode.
-func runAsService(start func() (*agentComponents, error)) error {
-	comps, err := start()
+// Unlike Windows, there is no SCM handshake. We load config, wait for
+// enrollment if needed, then start components and block on SIGTERM.
+// cfgFile is the path to the agent config file (same as the global cfgFile var).
+func runAsService(cfgFile string) error {
+	cfg, err := config.Load(cfgFile)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+	initBootstrapLogging(cfg)
+
+	ctx, cancel := signal.NotifyContext(context.Background(),
+		os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	if !config.IsEnrolled(cfg) {
+		cfg = waitForEnrollmentFn(ctx, cfgFile)
+		if cfg == nil {
+			log.Info("agent shutting down without enrollment (service mode)",
+				"reason", ctx.Err().Error())
+			return nil
+		}
+	}
+
+	comps, err := startAgentFn(cfg)
 	if err != nil {
 		return err
 	}
 	defer logging.StopShipper()
 
-	signal.Ignore(syscall.SIGINT)
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGTERM)
-	<-sigChan
-
-	log.Info("shutting down agent (service mode)")
+	<-ctx.Done()
+	log.Info("shutting down agent (service mode)", "reason", ctx.Err().Error())
 	shutdownAgent(comps)
 	return nil
 }
