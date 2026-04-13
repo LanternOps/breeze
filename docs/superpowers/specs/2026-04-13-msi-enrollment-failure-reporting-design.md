@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-13
 **Issue:** [#411](https://github.com/LanternOps/breeze/issues/411) — `[Installer] MSI install rolls back with 1603 when enrollment fails or is skipped`
-**Status:** Draft — pending user review
+**Status:** Draft v2 — addresses P1/P2/P3/P4 from first review
 **Target release:** v0.63.x (not a hotfix)
 
 ## Problem
@@ -40,9 +40,13 @@ In both cases the *cause* of the failure is invisible to the admin. `install.log
 |---|---|---|
 | 1 | Scenario "no creds" → install succeeds, service runs idle | Imaged/sysprep'd deployment, golden images. Matches modern agent UX (Datto, Ninja). |
 | 2 | Scenario "bad creds" → install fails cleanly | Prevents silent half-success on typos in mass deployments. |
-| 3 | `startAgent` wait-for-enrollment loop is **unconditional**, not gated on a config flag | Gating on `cfg.WaitForEnrollment` is a chicken-and-egg problem — the flag lives in `agent.yaml` which is exactly what's missing. Applies cross-platform for symmetry. |
+| 3 | Wait-for-enrollment loop is **unconditional** (not gated on a config flag) but runs **only on the unenrolled branch** | Gating on `cfg.WaitForEnrollment` is a chicken-and-egg problem — the flag lives in `agent.yaml` which is exactly what's missing. But the enrolled path must stay synchronous (see Decision 6) so today's "bad mTLS / bad heartbeat init fails the install" guarantee is preserved. |
 | 4 | Error text is delivered via **four sinks simultaneously**: stderr, `agent.log`, `enroll-last-error.txt`, Windows Event Log | Admins look in different places depending on deployment tool (GPO, Intune, manual msiexec). Write once, route everywhere. |
 | 5 | No MSI dialog path (no DLL CA wrapper) | Keeps build simple. `/qn` is the dominant deployment mode; dialog value is marginal. |
+| 6 | Service `Execute` uses **two distinct start paths**: synchronous when already enrolled (today's behavior), async-after-Running when waiting for enrollment | P1 fix. Keeps today's "post-enroll mTLS / heartbeat / state-file failures fail the MSI install" guarantee on the happy path. Only the deferred-enrollment branch signals Running early, and only there can post-Running startup failures occur — which is acceptable because the install was intentionally no-creds and the admin expects async completion. |
+| 7 | Waiter gates on a **complete enrolled state** (`AgentID != "" && AuthToken != ""`), exposed as `config.IsEnrolled(cfg)` | P2 fix. `config.SaveTo` writes `agent.yaml` before `secrets.yaml` (`agent/internal/config/config.go:313-376`); `AgentID` alone would let the waiter observe a torn write. Checking both fields is self-healing — on the rare torn read, the loop simply tries again 10s later. |
+| 8 | `enroll-last-error.txt` is **removed at the start of each enroll attempt**, and `enrollError` rewrites it on failure | P3 fix. Prevents stale error files from lingering after a successful retry. Smoke-test scenario 1 (no-creds success) now verifies the file is absent. |
+| 9 | `waitForEnrollment` takes `context.Context` and a pluggable `pollInterval` | P4 fix. Tests pass a cancellable context and a short interval (e.g. 10ms) so they can assert wait/unblock behavior without leaking goroutines or waiting 10s. Production callers pass `context.Background()` and the default 10s interval. |
 
 ## Architecture
 
@@ -75,70 +79,150 @@ In both cases the *cause* of the failure is invisible to the admin. `install.log
                BreezeAgent service starts
                               │
                               ▼
-              startAgent() — configuration check
+              Execute() — config.Load + IsEnrolled(cfg)
                               │
-         ┌────────── AgentID present? ──────────┐
-         │                                      │
-         │ yes                                  │ no
-         ▼                                      ▼
-  Normal startup path              waitForEnrollment() loop:
-  (heartbeat, shipper, mTLS,         reload config every 10s;
-   WS connection)                    unblock on non-empty AgentID.
-                                     SCM sees Running throughout.
+         ┌── IsEnrolled(cfg)? ──┐
+         │                      │
+         │ yes                  │ no
+         ▼                      ▼
+  Synchronous path        Async path
+  (today's behavior)      ───────────
+  ────────────────        1. signal Running immediately
+  1. startAgent(cfg)      2. waitForEnrollment(ctx, cfgFile)
+     initializes heart-      polls every 10s, unblocks on
+     beat, shipper,          IsEnrolled; SCM control loop
+     mTLS, WS                still processes Stop/Shutdown
+  2. any failure →        3. startAgent(enrolledCfg) runs
+     MSI rollback           post-install; failures are
+     (goal 3 preserved)     logged and stop the service
+  3. signal Running         but cannot roll back the MSI
+  4. enter service          (install already succeeded)
+     control loop        4. enter service control loop
 ```
 
-The service is always in `Running` state from SCM's perspective, whether or not enrollment has completed. "Enrolled" is an internal state, not an SCM state. This matches how Datto/Ninja/etc. behave and avoids the "did I start the service" footgun.
+Decision 6 is the key architectural principle: enrolled installs keep today's strict semantics (any post-enroll init failure fails the install), while unenrolled installs are allowed to succeed early and finish setup later. This preserves goal 3 for the happy path and delivers goal 1 for imaged/sysprep'd deployments, without conflating the two.
 
 ## Components
 
-### Component 1 — Go agent: wait-for-enrollment loop
+### Component 1 — Go agent: split startAgent, add `waitForEnrollment` and `IsEnrolled`
 
-**File:** `agent/cmd/breeze-agent/main.go`
+**Files:**
+- Modify: `agent/cmd/breeze-agent/main.go`
+- Modify: `agent/internal/config/config.go` (add `IsEnrolled` helper)
 
-**Change:** Replace the hard error at line 239 (`return nil, fmt.Errorf("agent not enrolled ...")`) with a new helper `waitForEnrollment()` that polls `config.Load(cfgFile)` every 10 seconds until `AgentID` is non-empty.
+**Change 1.a — `config.IsEnrolled` helper:**
 
 ```go
-// waitForEnrollment blocks until agent.yaml contains a valid AgentID.
+// IsEnrolled reports whether cfg represents a complete enrollment — both
+// the AgentID (written to agent.yaml) and the AuthToken (written to
+// secrets.yaml). Callers that poll for enrollment readiness MUST use this
+// predicate rather than checking AgentID alone, because SaveTo writes
+// agent.yaml before secrets.yaml and a concurrent reader can otherwise
+// observe a torn write.
+func IsEnrolled(cfg *Config) bool {
+    return cfg != nil && cfg.AgentID != "" && cfg.AuthToken != ""
+}
+```
+
+**Change 1.b — split `startAgent` into config load + real startup:**
+
+`startAgent()` today does three things: load config, check enrollment, and run the full startup pipeline. Split those:
+
+```go
+// startAgent performs the full startup pipeline assuming cfg is already
+// enrolled. Returns the running components or an error if any
+// initialization step fails (mTLS load, log shipper init, heartbeat
+// bring-up, etc.). This function MUST NOT be called with an unenrolled
+// cfg — callers must check config.IsEnrolled first and wait if needed.
+func startAgent(cfg *config.Config) (*agentComponents, error) {
+    // (existing body of startAgent from line 243 onward — FixConfigPermissions,
+    //  initLogging, safemode check, mTLS cert load, log shipper, heartbeat,
+    //  websocket connect. No behavior change.)
+}
+```
+
+The enrollment check currently at `main.go:230-240` is removed from `startAgent`; callers (the service wrapper and the console-mode runner) are responsible for ensuring the config is enrolled before calling `startAgent`.
+
+**Change 1.c — `waitForEnrollment` with context and pluggable interval:**
+
+```go
+// waitForEnrollmentPollInterval is the default wait-loop poll interval.
+// Exposed as a package-level var so tests can shrink it without waiting
+// real seconds.
+var waitForEnrollmentPollInterval = 10 * time.Second
+
+// waitForEnrollment polls agent.yaml + secrets.yaml every pollInterval
+// until config.IsEnrolled(cfg) returns true, then returns the enrolled
+// config. Returns nil if ctx is cancelled before enrollment completes.
+//
 // Intended for post-MSI-install scenarios where the service starts before
-// a later breeze-agent enroll call populates the config. Unconditional on
-// all platforms; callers that need a timeout must wrap this.
-func waitForEnrollment() *config.Config {
-    log.Warn("agent not enrolled — waiting for enrollment (poll every 10s). " +
-        "Run 'breeze-agent enroll <key> --server <url>' to complete setup.")
+// a later `breeze-agent enroll` call populates the config. The ctx allows
+// the caller (service wrapper or console-mode runner) to cancel the wait
+// on shutdown, preventing goroutine leaks in tests and clean service
+// stops in production.
+func waitForEnrollment(ctx context.Context, cfgFile string) *config.Config {
+    log.Warn("agent not enrolled — waiting for enrollment. " +
+        "Run 'breeze-agent enroll <key> --server <url>' to complete setup.",
+        "pollInterval", waitForEnrollmentPollInterval)
     eventlog.Info("BreezeAgent",
         "Waiting for enrollment. Run 'breeze-agent enroll <key> --server <url>'.")
 
+    ticker := time.NewTicker(waitForEnrollmentPollInterval)
+    defer ticker.Stop()
+
     for {
-        time.Sleep(10 * time.Second)
-        cfg, err := config.Load(cfgFile)
-        if err != nil {
-            log.Debug("config reload failed while waiting for enrollment",
-                "error", err.Error())
-            continue
-        }
-        if cfg.AgentID != "" {
-            log.Info("enrollment detected, continuing startup",
-                "agentId", cfg.AgentID)
-            return cfg
+        select {
+        case <-ctx.Done():
+            log.Info("waitForEnrollment cancelled", "reason", ctx.Err().Error())
+            return nil
+        case <-ticker.C:
+            cfg, err := config.Load(cfgFile)
+            if err != nil {
+                log.Debug("config reload failed while waiting for enrollment",
+                    "error", err.Error())
+                continue
+            }
+            if config.IsEnrolled(cfg) {
+                log.Info("enrollment detected, continuing startup",
+                    "agentId", cfg.AgentID)
+                return cfg
+            }
         }
     }
 }
 ```
 
-Inside `startAgent()`:
+**Change 1.d — console-mode runner (`runAgent`):**
+
+The cross-platform console-mode path (invoked by `breeze-agent run` from a terminal) now handles the wait loop directly before calling `startAgent`:
 
 ```go
-if cfg.AgentID == "" {
-    cfg = waitForEnrollment()
+func runAgent() {
+    cfg, err := config.Load(cfgFile)
+    if err != nil { /* fatal */ }
+    initBootstrapLogging(cfg) // minimal init; full init happens in startAgent
+
+    if !config.IsEnrolled(cfg) {
+        ctx, cancel := context.WithCancel(context.Background())
+        defer cancel()
+        cfg = waitForEnrollment(ctx, cfgFile)
+        if cfg == nil {
+            os.Exit(0) // cancelled, clean exit
+        }
+    }
+
+    comps, err := startAgent(cfg)
+    if err != nil { /* fatal */ }
+    // enter run loop as today
 }
 ```
 
-**Caveat — logging order:** today's `startAgent` calls `initLogging(cfg)` *after* the AgentID check. For the wait loop to log, `initLogging(cfg)` must be hoisted to run *before* the check. This is safe: `config.Load` returns `config.Default()` with env merges when `agent.yaml` is absent (verified in `agent/internal/config/config.go:185-204`), so `cfg.LogFile` has a default value and the file logger can initialize. Log shipping, heartbeat registration, and mTLS init stay downstream of the wait loop — they require an AgentID to function and are meaningless until enrollment completes.
+**Caveat — bootstrap logging:** today's `startAgent` calls `initLogging(cfg)` once, inline. We need logging available *before* the enrollment check (so `waitForEnrollment` can emit Warn/Info lines). Introduce a small `initBootstrapLogging(cfg)` that initializes only the stderr + file writers — no log shipper, no event-log init beyond the eventlog package's lazy path. `startAgent` retains `initLogging(cfg)` as today for any call-site that needs a re-init after enrollment arrives (if logging configuration can change on enrollment — it probably can't, but the re-init is a no-op in that case). Verify during implementation that `logging.Init` is idempotent.
 
 **Platform behaviour:**
-- **Windows service:** relies on Component 4 to signal Running before this blocks.
-- **macOS launchd / Linux systemd:** no start deadline, wait loop is free. Service state is "running" from the init system's view throughout.
-- **Console mode (`breeze-agent run` from a terminal):** identical wait loop, prints the Warn line to the terminal and idles until interrupted or enrolled.
+- **Windows service:** the service wrapper (Component 4) decides which path to take and only the unenrolled branch enters `waitForEnrollment`. The enrolled branch calls `startAgent` directly with its existing synchronous failure semantics.
+- **macOS launchd / Linux systemd:** no SCM deadline concerns. The console-mode `runAgent` path above is what's invoked by the service; the wait loop is free.
+- **Manual console (`breeze-agent run` from a terminal):** identical wait loop, prints the Warn line to the terminal and idles until Ctrl+C or enrollment arrives.
 
 ### Component 2 — Go enroll command: structured errors + four output sinks
 
@@ -205,6 +289,39 @@ func enrollError(cat enrollErrCategory, friendly string, detail error) {
     osExit(cat.exitCode())
 }
 
+// clearEnrollLastError removes enroll-last-error.txt if present. Called
+// at the start of every enrollment attempt so a successful retry leaves
+// no residual error file for admins to find. Errors from os.Remove are
+// silently ignored — the file may legitimately not exist, and we cannot
+// fail an enrollment attempt over cleanup bookkeeping.
+func clearEnrollLastError() {
+    path := enrollLastErrorPath()
+    if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+        log.Debug("could not clear stale enroll-last-error file",
+            "path", path, "error", err.Error())
+    }
+}
+
+// enrollLastErrorPath returns the platform-specific path to the
+// single-line enrollment error marker. Windows: under ProgramData\Breeze\logs.
+// Unix: under the existing LogDir() path.
+func enrollLastErrorPath() string {
+    return filepath.Join(config.LogDir(), "enroll-last-error.txt")
+}
+
+// writeLastErrorFile overwrites enroll-last-error.txt with a single line
+// containing the RFC3339 timestamp and the friendly failure message.
+// Intended to be called only by enrollError; exposed as a package-level
+// var so tests can inject a fake.
+var writeLastErrorFile = func(line string) {
+    path := enrollLastErrorPath()
+    if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+        return
+    }
+    content := fmt.Sprintf("%s — %s\n", time.Now().Format(time.RFC3339), line)
+    _ = os.WriteFile(path, []byte(content), 0o644)
+}
+
 // classifyEnrollError inspects an error from api.Client.Enroll and returns
 // the appropriate category + user-facing message.
 func classifyEnrollError(err error, serverURL string) (enrollErrCategory, string) {
@@ -245,7 +362,17 @@ func classifyEnrollError(err error, serverURL string) (enrollErrCategory, string
 
 **Changes to `enrollDevice` in `main.go`:**
 
-Every `fmt.Fprintf(os.Stderr, ...)` + `os.Exit(1)` pair gets replaced with a call to `enrollError`:
+Every `fmt.Fprintf(os.Stderr, ...)` + `os.Exit(1)` pair gets replaced with a call to `enrollError`. Additionally, `enrollDevice` now clears any stale `enroll-last-error.txt` **at the start of every attempt** (P3 fix) so a successful retry leaves no residual error file for admins to find:
+
+```go
+// Near the top of enrollDevice, after arg validation:
+clearEnrollLastError() // removes enroll-last-error.txt if present;
+                       // no-op if it doesn't exist.
+```
+
+On the success path (after `config.SaveTo` returns nil), nothing further is required — the file was already removed at the start of the attempt.
+
+The failure-site replacements:
 
 | Line | Before | After |
 |---|---|---|
@@ -288,79 +415,129 @@ When the enroll CA exits non-zero, `Return="check"` makes MSI treat it as fatal 
 
 **No change** to `InstallExecuteSequence` conditions, `SetEnrollAgentData` (already removed by #410), or the launch conditions.
 
-### Component 4 — Windows service wrapper: signal Running before startFn blocks
+### Component 4 — Windows service wrapper: split sync/async by enrollment state
 
 **File:** `agent/cmd/breeze-agent/service_windows.go`
+
+**Goal:** preserve today's synchronous failure semantics on the enrolled path (Decision 6) while allowing the unenrolled path to report `Running` early and finish startup later.
 
 **Current code (lines 117-133):**
 
 ```go
 func (s *breezeService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
     const accepted = svc.AcceptStop | svc.AcceptShutdown | svc.AcceptSessionChange
-
     changes <- svc.Status{State: svc.StartPending}
-
-    comps, err := s.startFn()        // BLOCKS if wait loop is active
-    if err != nil {
-        ...
-    }
-
-    changes <- svc.Status{State: svc.Running, Accepts: accepted}  // too late
-    log.Info("agent running as Windows service")
-
+    comps, err := s.startFn()        // synchronous — failures fail install
+    if err != nil { ... }
+    changes <- svc.Status{State: svc.Running, Accepts: accepted}
     for { /* SCM control loop */ }
 }
 ```
 
-The Running transition happens *after* `startFn` returns, which is fine today (startFn exits quickly) but breaks once `waitForEnrollment` can block for minutes or hours. SCM's default start deadline is 30 seconds; exceeding it kills the process.
-
-**New flow:**
+**New shape.** `runAsService` is updated to take a `cfgFile` and pass it through instead of wrapping a `startFn` closure (so the service wrapper can do its own config load and decide which path to use):
 
 ```go
+func runAsService(cfgFile string) error {
+    h := &breezeService{
+        cfgFile: cfgFile,
+        stopCh:  make(chan struct{}),
+    }
+    return svc.Run("BreezeAgent", h)
+}
+
 func (s *breezeService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
     const accepted = svc.AcceptStop | svc.AcceptShutdown | svc.AcceptSessionChange
-
     changes <- svc.Status{State: svc.StartPending}
-    // Promote to Running immediately. The startFn goroutine may spend a
-    // long time in waitForEnrollment, but from SCM's perspective the
-    // service is healthy and responding to control requests.
-    changes <- svc.Status{State: svc.Running, Accepts: accepted}
-    log.Info("agent running as Windows service (enrollment status pending)")
 
-    compsCh := make(chan *agentComponents, 1)
-    errCh := make(chan error, 1)
-    go func() {
-        comps, err := s.startFn()
+    // Load config synchronously to decide which path to take. A load
+    // error is fatal on both paths — fail the install.
+    cfg, err := config.Load(s.cfgFile)
+    if err != nil {
+        log.Error("failed to load config", "error", err.Error())
+        writeStartupFailureMarker(err)
+        changes <- svc.Status{State: svc.StopPending}
+        return true, 1
+    }
+    initBootstrapLogging(cfg)
+
+    if config.IsEnrolled(cfg) {
+        // --- Synchronous enrolled path (preserves today's behaviour) ---
+        comps, err := startAgent(cfg)
         if err != nil {
-            errCh <- err
-            return
-        }
-        compsCh <- comps
-    }()
-
-    var comps *agentComponents
-    for {
-        select {
-        case c := <-compsCh:
-            comps = c
-            // SCM session dispatch only works once comps is available.
-            if comps != nil {
-                // wire up session change channel as before
-            }
-        case err := <-errCh:
             log.Error("agent start failed", "error", err.Error())
             writeStartupFailureMarker(err)
             changes <- svc.Status{State: svc.StopPending}
             return true, 1
+        }
+        changes <- svc.Status{State: svc.Running, Accepts: accepted}
+        log.Info("agent running as Windows service")
+        return runServiceLoop(comps, r, changes)
+    }
+
+    // --- Async unenrolled path (MSI install with no creds) ---
+    // SCM MUST see Running before we block in waitForEnrollment or the
+    // service start deadline (~30s) will kill the process.
+    changes <- svc.Status{State: svc.Running, Accepts: accepted}
+    log.Info("agent running as Windows service (waiting for enrollment)")
+
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
+
+    enrolledCh := make(chan *config.Config, 1)
+    go func() {
+        enrolledCh <- waitForEnrollment(ctx, s.cfgFile)
+    }()
+
+    // Stay responsive to SCM control requests while waiting. Drop session
+    // change events — we have no heartbeat wired up yet, and the session
+    // broker's reconciliation loop will catch up once startAgent runs.
+    var enrolledCfg *config.Config
+waitLoop:
+    for {
+        select {
+        case cfg := <-enrolledCh:
+            enrolledCfg = cfg
+            break waitLoop
         case cr := <-r:
-            // (existing SCM control request handling, gated on comps != nil
-            //  for session-change events)
+            switch cr.Cmd {
+            case svc.Interrogate:
+                changes <- cr.CurrentStatus
+            case svc.Stop, svc.Shutdown:
+                log.Info("SCM stop while waiting for enrollment")
+                cancel()
+                changes <- svc.Status{State: svc.StopPending}
+                return false, 0
+            }
+            // svc.SessionChange: ignore. No comps yet.
         }
     }
+
+    if enrolledCfg == nil {
+        // ctx was cancelled without enrollment — SCM stop path above
+        // already handled the status transition.
+        return false, 0
+    }
+
+    // Now run the real startup pipeline. Failures here are post-install
+    // (the MSI already believes the service started); we log, write the
+    // failure marker, and stop the service.
+    comps, err := startAgent(enrolledCfg)
+    if err != nil {
+        log.Error("agent start failed after deferred enrollment",
+            "error", err.Error())
+        writeStartupFailureMarker(err)
+        changes <- svc.Status{State: svc.StopPending}
+        return true, 1
+    }
+    return runServiceLoop(comps, r, changes)
 }
 ```
 
-**Implication:** the `SessionChange` event handling (lines 146-158) currently dereferences `comps.hb` directly. Once we make start asynchronous, those events may arrive before `comps` is set. The fix is to buffer the most recent session-change event and replay it once `comps` becomes available, or to simply drop events that arrive before startup completes (the session broker will catch up on its next reconcile tick). The design prefers the drop-and-reconcile path — session change events are advisory, and the reconciliation loop is already the authoritative source for session state.
+`runServiceLoop(comps, r, changes)` is a small refactor of the current `for { select { r }}` block at lines 135-163 — extracted so both paths can share it.
+
+**Post-install failure semantics.** On the async path, a failure from `startAgent(enrolledCfg)` cannot roll back the MSI (the install has long completed). The failure is logged to `agent.log`, `agent-start-failed.txt`, and Event Log, and the service transitions to Stopped. Admins debug by checking those sinks and re-running `breeze-agent enroll` with corrected parameters plus `sc start BreezeAgent`. This matches how every other agent-style product handles deferred-enrollment startup failures and is an acceptable trade-off because the admin explicitly chose a no-creds install.
+
+**Why the enrolled path is unchanged for SCM purposes.** Today's behaviour — post-enroll mTLS failure, heartbeat init error, log shipper failure → SCM Error 1920 → MSI 1603 — is preserved exactly. The enrolled path never reaches the async code.
 
 ### Component 5 — Event log wrapper
 
@@ -418,11 +595,17 @@ func Error(source, message string)   {}
 - Windows-gated: compile only (runtime registration requires admin in CI, skip).
 
 **`agent/cmd/breeze-agent/main_test.go`** (cross-platform):
-- Add `TestWaitForEnrollment` — writes an empty agent.yaml, spawns `waitForEnrollment` in a goroutine, writes a valid agent.yaml 500ms later, asserts the goroutine returns with the populated config. Use a test hook to shrink the poll interval from 10s to 50ms.
-- Add `TestWaitForEnrollmentStaysBlockedOnEmptyConfig` — poll never unblocks for 1s, test cancels via `runtime.Goexit` or a context.
+- `TestWaitForEnrollment_UnblocksWhenConfigBecomesValid`: set `waitForEnrollmentPollInterval = 10 * time.Millisecond` for the test (restore via `t.Cleanup`), write a minimal agent.yaml + secrets.yaml with both `AgentID` and `AuthToken` populated after ~30ms, spawn `waitForEnrollment(ctx, tmpCfgFile)` in a goroutine, assert it returns the populated config within 500ms.
+- `TestWaitForEnrollment_RespectsContextCancel`: point at a non-existent config file, `ctx, cancel := context.WithCancel(context.Background())`, run `waitForEnrollment` in a goroutine, cancel the context after 50ms, assert the goroutine returns `nil` within another 50ms. This is the test the previous draft could not implement — now the `ctx.Done()` branch in the select makes it trivial.
+- `TestWaitForEnrollment_IgnoresTornWrite`: write only agent.yaml (with AgentID) but no secrets.yaml; `waitForEnrollment` must stay blocked. After 100ms, add secrets.yaml with AuthToken; waitForEnrollment must unblock. This is the P2 regression test — `IsEnrolled` prevents the torn-read footgun.
 
-**`agent/cmd/breeze-agent/service_windows_test.go`** (`//go:build windows`):
-- Mock `svc.Handler` — drive `Execute` with a fake `changes` channel, assert `svc.Running` is sent *before* `startFn` is called. Use a `startFn` that blocks on a channel so the test can observe the state transition without racing.
+**`agent/internal/config/config_test.go`**:
+- `TestIsEnrolled`: table-driven — `{nil → false, empty → false, agentIDOnly → false, tokenOnly → false, both → true}`.
+
+**`agent/cmd/breeze-agent/service_windows_test.go`** (`//go:build windows`) — create if absent:
+- `TestExecute_EnrolledPath_SignalsRunningAfterStartFn`: write a valid enrolled config to a temp file, stub `startAgent` to return a fake `*agentComponents` without doing real work (via a package-level hook, similar to `waitForEnrollmentPollInterval`), drive `Execute` with a mock `changes` chan, assert the order of emitted states is `StartPending → Running` and that `Running` arrives *after* the stub `startAgent` is called.
+- `TestExecute_UnenrolledPath_SignalsRunningBeforeWait`: write an empty config to a temp file, stub `waitForEnrollment` to block on a test-controlled channel, assert `Execute` emits `StartPending → Running` *before* any interaction with the stub. Then unblock the stub and assert it proceeds into `startAgent`.
+- `TestExecute_StopWhileWaiting`: same setup as above, emit `svc.Stop` on the request channel while `waitForEnrollment` is still blocked, assert `Execute` cancels the wait context and returns.
 
 ### Manual MSI smoke tests
 
@@ -449,10 +632,20 @@ The following scenarios must be verified on a Windows Server 2022 VM before merg
 - `docs/superpowers/specs/2026-04-13-msi-enrollment-failure-reporting-design.md` (this file)
 
 **Modify:**
-- `agent/cmd/breeze-agent/main.go` — `startAgent` calls `waitForEnrollment` instead of erroring; `enrollDevice` routes all failure paths through `enrollError`; add `waitForEnrollment` helper.
-- `agent/cmd/breeze-agent/service_windows.go` — `Execute` signals Running before `startFn`, runs `startFn` in a goroutine, handles session-change events defensively.
-- `agent/cmd/breeze-agent/main_test.go` — `TestWaitForEnrollment` + staying-blocked variant.
-- `agent/cmd/breeze-agent/service_windows_test.go` — may not exist; create if absent. Windows-gated test for Running-before-startFn ordering.
+- `agent/cmd/breeze-agent/main.go` —
+  - Refactor `startAgent` to take `cfg *config.Config` and assume it is already enrolled (callers do the wait).
+  - Add `waitForEnrollment(ctx, cfgFile)` helper + `waitForEnrollmentPollInterval` package var.
+  - Add `initBootstrapLogging(cfg)` for pre-start logging used by the wait loop.
+  - Update `runAgent` console-mode path to call `config.Load` → `IsEnrolled` check → `waitForEnrollment` → `startAgent`.
+  - `enrollDevice`: call `clearEnrollLastError()` at the start of every attempt; route all failure paths through `enrollError`.
+- `agent/cmd/breeze-agent/service_windows.go` —
+  - `runAsService` now takes `cfgFile string` instead of a `startFn` closure.
+  - `Execute` splits into enrolled (synchronous, preserves today's failure semantics) and unenrolled (reports Running early, then `waitForEnrollment` with SCM control-loop responsiveness, then `startAgent`) branches.
+  - Extract the post-startup `for { select { r } }` block into a shared `runServiceLoop(comps, r, changes)` helper used by both branches.
+- `agent/cmd/breeze-agent/main_test.go` — `TestWaitForEnrollment_UnblocksWhenConfigBecomesValid`, `TestWaitForEnrollment_RespectsContextCancel`, `TestWaitForEnrollment_IgnoresTornWrite`.
+- `agent/cmd/breeze-agent/service_windows_test.go` — may not exist; create if absent. `TestExecute_EnrolledPath_SignalsRunningAfterStartFn`, `TestExecute_UnenrolledPath_SignalsRunningBeforeWait`, `TestExecute_StopWhileWaiting`.
+- `agent/internal/config/config.go` — add `IsEnrolled(cfg *Config) bool` helper.
+- `agent/internal/config/config_test.go` — `TestIsEnrolled` table test.
 - `agent/pkg/api/client.go` — add `ErrHTTPStatus` type; `Enroll` returns it on non-200.
 - `agent/installer/breeze.wxs` — `EnrollAgent` CA `Return="check"`; updated XML comment.
 
@@ -467,9 +660,13 @@ The following scenarios must be verified on a Windows Server 2022 VM before merg
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
-| SCM start deadline fires during startFn before `comps` is ready | Low (Running is signaled immediately) | Component 4 signals Running on Execute entry; SCM treats the process as started regardless of startFn progress. |
-| Session change events arrive before `comps` is wired up | Medium | Drop events during the pre-comps window; session broker reconciliation loop is the authoritative source and will catch up. |
-| `enroll-last-error.txt` is removed during MSI rollback | Medium | `cmpProgramDataLogs` uses `Permanent="yes"`; verify during manual testing. Fallback: write to `%TEMP%`. |
+| Enrolled-path install fails more silently than today (post-enroll mTLS/heartbeat init errors no longer fail the install) | **Avoided** — Decision 6 explicitly preserves synchronous start semantics on the enrolled path. Only the unenrolled branch reports Running early. |
+| Waiter observes torn SaveTo write (AgentID set but AuthToken not yet persisted) | Low | `IsEnrolled` checks both fields. Torn read causes one extra poll cycle (10s); no incorrect bring-up. |
+| `startAgent` fails on the async post-enrollment path and the service ends up Stopped without rolling back the install | **Accepted** | The admin chose `/qn` with no creds; a failure after deferred enrollment is debugged via `agent-start-failed.txt`, `agent.log`, and Event Log. They re-run `breeze-agent enroll` with corrected parameters and `sc start BreezeAgent`. |
+| Session change events arrive during `waitLoop` before `comps` is wired up | Medium | Drop events during the wait window; session broker reconciliation loop is the authoritative source and will catch up once `startAgent` completes. Only `Interrogate`/`Stop`/`Shutdown` are handled during the wait. |
+| `enroll-last-error.txt` is removed during MSI rollback on the bad-creds path | Medium | `cmpProgramDataLogs` uses `Permanent="yes"`; verify during manual testing. Fallback: write to `%TEMP%\breeze-enroll-last-error.txt`. |
+| Stale `enroll-last-error.txt` from an earlier failed attempt confuses admins after a successful retry | **Avoided** — `enrollDevice` calls `clearEnrollLastError()` at the start of every attempt (Decision 8). |
+| Goroutine leak in `waitForEnrollment` tests | **Avoided** — `waitForEnrollment` takes `context.Context`, tests cancel via `context.WithCancel` (Decision 9). |
 | Event Log source registration fails (non-admin helper process) | Low | Registration is best-effort wrapped in `sync.Once`; failure is silent and the other three sinks still fire. |
 | `classifyEnrollError` miscategorizes a new server response | Low | The classifier falls through to `catUnknown` which still produces a readable error message using the raw error string. |
 | Cross-platform `waitForEnrollment` blocks macOS/Linux console users unexpectedly | Low | The Warn line is explicit about what's happening and how to exit. Console users can Ctrl+C. Systemd/launchd users see the wait state in `journalctl` / `log show`. |
