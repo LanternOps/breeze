@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -41,6 +40,8 @@ var (
 	enrollmentSecret string
 	enrollSiteID     string
 	enrollDeviceRole string
+	forceEnroll      bool
+	quietEnroll      bool
 	helperRole       string
 	desktopContext   string
 )
@@ -112,6 +113,8 @@ func init() {
 	enrollCmd.Flags().StringVar(&enrollmentSecret, "enrollment-secret", "", "Enrollment secret (AGENT_ENROLLMENT_SECRET on the server)")
 	enrollCmd.Flags().StringVar(&enrollSiteID, "site-id", "", "Site ID to enroll into (optional, overrides enrollment key default)")
 	enrollCmd.Flags().StringVar(&enrollDeviceRole, "device-role", "", "Device role override (e.g. workstation, server)")
+	enrollCmd.Flags().BoolVar(&forceEnroll, "force", false, "Re-enroll even if already enrolled; replaces AgentID/AuthToken on success (no-op on failure)")
+	enrollCmd.Flags().BoolVar(&quietEnroll, "quiet", false, "Suppress stdout progress output (errors still go to stderr). Intended for unattended installs.")
 	userHelperCmd.Flags().StringVar(&helperRole, "role", "system", "Helper role: 'system' (desktop capture) or 'user' (script execution)")
 	desktopHelperCmd.Flags().StringVar(&desktopContext, "context", ipc.DesktopContextUserSession, "Desktop context: 'user_session' or 'login_window'")
 
@@ -228,16 +231,7 @@ func startAgent() (*agentComponents, error) {
 	}
 
 	if cfg.AgentID == "" {
-		// Check for pending enrollment from a failed MSI install
-		if tryPendingEnrollment() {
-			cfg, err = config.Load(cfgFile)
-			if err != nil {
-				return nil, fmt.Errorf("failed to reload config after pending enrollment: %w", err)
-			}
-		}
-		if cfg.AgentID == "" {
-			return nil, fmt.Errorf("agent not enrolled — run 'breeze-agent enroll <key>' first")
-		}
+		return nil, fmt.Errorf("agent not enrolled — run 'breeze-agent enroll <key>' first")
 	}
 
 	// Loosen config directory (0755) and agent.yaml (0644) so the Helper can read
@@ -508,104 +502,11 @@ func runAgent() {
 	log.Info("agent stopped")
 }
 
-// pendingEnrollment is the JSON structure written by the MSI enrollment
-// custom action when enrollment fails during install.
-type pendingEnrollment struct {
-	ServerURL     string `json:"serverUrl"`
-	EnrollmentKey string `json:"enrollmentKey"`
-}
-
-// pendingEnrollmentPath returns the path to the enrollment-pending.json file.
-func pendingEnrollmentPath() string {
-	return filepath.Join(config.ConfigDir(), "enrollment-pending.json")
-}
-
-// tryPendingEnrollment checks for enrollment-pending.json (written by the MSI
-// installer when enrollment fails during install) and attempts enrollment.
-// Returns true if enrollment succeeded, false otherwise.
-func tryPendingEnrollment() bool {
-	pendingPath := pendingEnrollmentPath()
-	data, err := os.ReadFile(pendingPath)
-	if err != nil {
-		return false // no pending file or can't read it
-	}
-
-	var pending pendingEnrollment
-	if err := json.Unmarshal(data, &pending); err != nil {
-		log.Warn("invalid enrollment-pending.json, removing", "error", err.Error())
-		os.Remove(pendingPath)
-		return false
-	}
-
-	if pending.ServerURL == "" || pending.EnrollmentKey == "" {
-		log.Warn("enrollment-pending.json has empty server URL or key, removing")
-		os.Remove(pendingPath)
-		return false
-	}
-
-	log.Info("found pending enrollment from MSI install, attempting enrollment",
-		"server", pending.ServerURL)
-
-	hwCollector := collectors.NewHardwareCollector()
-	systemInfo, err := hwCollector.CollectSystemInfo()
-	if err != nil {
-		systemInfo = &collectors.SystemInfo{}
-	}
-	hardwareInfo := &collectors.HardwareInfo{}
-
-	client := api.NewClient(pending.ServerURL, "", "")
-	deviceRole := collectors.ClassifyDeviceRole(systemInfo, hardwareInfo)
-
-	enrollResp, err := client.Enroll(&api.EnrollRequest{
-		EnrollmentKey: pending.EnrollmentKey,
-		Hostname:      systemInfo.Hostname,
-		OSType:        systemInfo.OSType,
-		OSVersion:     systemInfo.OSVersion,
-		Architecture:  systemInfo.Architecture,
-		AgentVersion:  version,
-		DeviceRole:    deviceRole,
-		HardwareInfo: &api.HardwareInfo{
-			CPUModel:   hardwareInfo.CPUModel,
-			CPUCores:   hardwareInfo.CPUCores,
-			CPUThreads: hardwareInfo.CPUThreads,
-			RAMTotalMB: hardwareInfo.RAMTotalMB,
-			DiskTotalGB: hardwareInfo.DiskTotalGB,
-		},
-	})
-	if err != nil {
-		log.Warn("pending enrollment failed, will retry on next start", "error", err.Error())
-		return false
-	}
-
-	cfg := config.Default()
-	cfg.ServerURL = pending.ServerURL
-	cfg.AgentID = enrollResp.AgentID
-	cfg.AuthToken = enrollResp.AuthToken
-	cfg.OrgID = enrollResp.OrgID
-	cfg.SiteID = enrollResp.SiteID
-	if enrollResp.Config.HeartbeatIntervalSeconds > 0 {
-		cfg.HeartbeatIntervalSeconds = enrollResp.Config.HeartbeatIntervalSeconds
-	}
-	if enrollResp.Config.MetricsCollectionIntervalSeconds > 0 {
-		cfg.MetricsIntervalSeconds = enrollResp.Config.MetricsCollectionIntervalSeconds
-	}
-	if enrollResp.Mtls != nil {
-		cfg.MtlsCertPEM = enrollResp.Mtls.Certificate
-		cfg.MtlsKeyPEM = enrollResp.Mtls.PrivateKey
-		cfg.MtlsCertExpires = enrollResp.Mtls.ExpiresAt
-	}
-
-	if err := config.SaveTo(cfg, cfgFile); err != nil {
-		log.Error("pending enrollment succeeded but failed to save config", "error", err.Error())
-		return false
-	}
-
-	os.Remove(pendingPath)
-	log.Info("pending enrollment succeeded", "agentId", enrollResp.AgentID)
-	return true
-}
-
-// enrollDevice handles the enrollment process to register this agent with the Breeze server.
+// enrollDevice handles the enrollment process to register this agent with
+// the Breeze server. Respects --force (re-enroll over existing config) and
+// --quiet (suppress stdout progress, errors still go to stderr). Writes
+// structured logs to the agent log file so MSI-initiated enrollments leave
+// the same diagnostic trail as service-initiated ones.
 func enrollDevice(enrollmentKey string) {
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
@@ -616,23 +517,46 @@ func enrollDevice(enrollmentKey string) {
 		cfg.ServerURL = serverURL
 	}
 
+	// Initialise logging so this enrollment leaves a record in agent.log.
+	// In quiet mode, force file-only output — errors still reach stderr
+	// via explicit fmt.Fprintln calls at error sites below.
+	initEnrollLogging(cfg, quietEnroll)
+
+	enrollLog := logging.L("enroll")
+
 	if cfg.ServerURL == "" {
+		enrollLog.Error("server URL required, use --server or set in config")
 		fmt.Fprintln(os.Stderr, "Server URL required. Use --server flag or set in config.")
 		os.Exit(1)
 	}
 
-	if cfg.AgentID != "" {
-		fmt.Printf("Agent is already enrolled with ID: %s\n", cfg.AgentID)
-		fmt.Println("To re-enroll, delete the config file first.")
-		return // exit 0 — not an error, allows && chains to continue
+	if cfg.AgentID != "" && !forceEnroll {
+		enrollLog.Info("agent already enrolled, skipping (use --force to re-enroll)",
+			"agentId", cfg.AgentID,
+			"server", cfg.ServerURL)
+		if !quietEnroll {
+			fmt.Printf("Agent is already enrolled with ID: %s\n", cfg.AgentID)
+			fmt.Println("Use --force to re-enroll, or delete the config file.")
+		}
+		return // exit 0 — not an error, allows && chains and MSI CAs to continue
 	}
 
-	fmt.Printf("Enrolling with server: %s\n", cfg.ServerURL)
+	if cfg.AgentID != "" && forceEnroll {
+		enrollLog.Warn("force re-enrollment — existing AgentID will be overwritten on success",
+			"previousAgentId", cfg.AgentID,
+			"server", cfg.ServerURL)
+	}
+
+	enrollLog.Info("starting enrollment", "server", cfg.ServerURL)
+	if !quietEnroll {
+		fmt.Printf("Enrolling with server: %s\n", cfg.ServerURL)
+	}
 
 	hwCollector := collectors.NewHardwareCollector()
 
 	systemInfo, err := hwCollector.CollectSystemInfo()
 	if err != nil {
+		enrollLog.Warn("system info collection failed, using defaults", "error", err.Error())
 		fmt.Fprintf(os.Stderr, "Warning: Failed to collect system info: %v\n", err)
 		systemInfo = &collectors.SystemInfo{}
 	}
@@ -645,6 +569,10 @@ func enrollDevice(enrollmentKey string) {
 	go func() {
 		info, hwErr := hwCollector.CollectHardware()
 		if hwErr != nil {
+			// Can't use enrollLog here — this goroutine may still be running
+			// after enrollDevice has returned or called os.Exit. stderr is
+			// safe from any goroutine and lands in the MSI install.log.
+			fmt.Fprintf(os.Stderr, "Warning: Hardware collection failed: %v; using defaults for enrollment\n", hwErr)
 			hwDone <- &collectors.HardwareInfo{}
 			return
 		}
@@ -654,11 +582,18 @@ func enrollDevice(enrollmentKey string) {
 	case info := <-hwDone:
 		hardwareInfo = info
 	case <-time.After(10 * time.Second):
-		fmt.Fprintf(os.Stderr, "Warning: Hardware collection timed out; using defaults for enrollment\n")
+		enrollLog.Warn("hardware collection timed out, using defaults for enrollment")
+		fmt.Fprintln(os.Stderr, "Warning: Hardware collection timed out; using defaults for enrollment")
 	}
 
-	fmt.Printf("Hostname: %s\n", systemInfo.Hostname)
-	fmt.Printf("OS: %s (%s)\n", systemInfo.OSVersion, systemInfo.Architecture)
+	enrollLog.Info("collected system info",
+		"hostname", systemInfo.Hostname,
+		"os", systemInfo.OSVersion,
+		"arch", systemInfo.Architecture)
+	if !quietEnroll {
+		fmt.Printf("Hostname: %s\n", systemInfo.Hostname)
+		fmt.Printf("OS: %s (%s)\n", systemInfo.OSVersion, systemInfo.Architecture)
+	}
 
 	client := api.NewClient(cfg.ServerURL, "", "")
 
@@ -671,7 +606,10 @@ func enrollDevice(enrollmentKey string) {
 	if deviceRole == "" {
 		deviceRole = collectors.ClassifyDeviceRole(systemInfo, hardwareInfo)
 	}
-	fmt.Printf("Device role: %s\n", deviceRole)
+	enrollLog.Info("classified device role", "role", deviceRole)
+	if !quietEnroll {
+		fmt.Printf("Device role: %s\n", deviceRole)
+	}
 
 	enrollReq := &api.EnrollRequest{
 		EnrollmentKey:    enrollmentKey,
@@ -696,10 +634,16 @@ func enrollDevice(enrollmentKey string) {
 		},
 	}
 
-	fmt.Println("Sending enrollment request...")
+	enrollLog.Info("sending enrollment request")
+	if !quietEnroll {
+		fmt.Println("Sending enrollment request...")
+	}
 
 	enrollResp, err := client.Enroll(enrollReq)
 	if err != nil {
+		enrollLog.Error("enrollment request failed",
+			"error", err.Error(),
+			"server", cfg.ServerURL)
 		fmt.Fprintf(os.Stderr, "Enrollment failed: %v\n", err)
 		os.Exit(1)
 	}
@@ -719,33 +663,94 @@ func enrollDevice(enrollmentKey string) {
 		cfg.EnabledCollectors = enrollResp.Config.EnabledCollectors
 	}
 
-	// Save mTLS certificate if issued
 	if enrollResp.Mtls != nil {
 		cfg.MtlsCertPEM = enrollResp.Mtls.Certificate
 		cfg.MtlsKeyPEM = enrollResp.Mtls.PrivateKey
 		cfg.MtlsCertExpires = enrollResp.Mtls.ExpiresAt
-		fmt.Printf("mTLS certificate issued (expires: %s)\n", enrollResp.Mtls.ExpiresAt)
+		enrollLog.Info("mTLS certificate issued", "expiresAt", enrollResp.Mtls.ExpiresAt)
+		if !quietEnroll {
+			fmt.Printf("mTLS certificate issued (expires: %s)\n", enrollResp.Mtls.ExpiresAt)
+		}
 	}
 
 	if err := config.SaveTo(cfg, cfgFile); err != nil {
+		enrollLog.Error("enrollment succeeded but failed to save config",
+			"error", err.Error(),
+			"agentId", cfg.AgentID)
 		fmt.Fprintf(os.Stderr, "Warning: Failed to save config: %v\n", err)
 		fmt.Fprintf(os.Stderr, "Agent ID: %s\n", cfg.AgentID)
 		fmt.Fprintln(os.Stderr, "You may need to manually save the configuration.")
 		os.Exit(1)
 	}
 
-	fmt.Println("Enrollment successful!")
-	fmt.Printf("Agent ID: %s\n", cfg.AgentID)
-	fmt.Println("Configuration saved.")
+	enrollLog.Info("enrollment successful",
+		"agentId", cfg.AgentID,
+		"orgId", cfg.OrgID,
+		"siteId", cfg.SiteID)
+	if !quietEnroll {
+		fmt.Println("Enrollment successful!")
+		fmt.Printf("Agent ID: %s\n", cfg.AgentID)
+		fmt.Println("Configuration saved.")
+	}
 
 	if isSystemServiceRunning() {
-		fmt.Println("Agent is already running via system service.")
+		if !quietEnroll {
+			fmt.Println("Agent is already running via system service.")
+		}
 	} else if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
-		fmt.Println("Start the agent with:")
-		fmt.Println("  sudo breeze-agent service start")
+		if !quietEnroll {
+			fmt.Println("Start the agent with:")
+			fmt.Println("  sudo breeze-agent service start")
+		}
 	} else {
-		fmt.Println("Run 'breeze-agent run' to start the agent.")
+		if !quietEnroll {
+			fmt.Println("Run 'breeze-agent run' to start the agent.")
+		}
 	}
+}
+
+// initEnrollLogging configures the agent logging package for the enroll
+// command. In quiet mode the slog sink is the log file only; otherwise it
+// tees stdout + file (or file-only when no console is attached, matching
+// the runtime behaviour of initLogging). Errors within enrollDevice
+// always additionally go to stderr via explicit fmt.Fprintln calls at
+// error sites. Logging-setup failures inside this helper fall back to
+// stdout logging and also write a warning to stderr.
+func initEnrollLogging(cfg *config.Config, quiet bool) {
+	if cfg.LogFile == "" {
+		cfg.LogFile = filepath.Join(config.LogDir(), "agent.log")
+	}
+
+	if err := os.MkdirAll(filepath.Dir(cfg.LogFile), 0o755); err != nil {
+		// Rare in production (MSI CA runs as SYSTEM), but if it happens
+		// the admin needs to see it in install.log — write to stderr
+		// unconditionally so the MSI verbose log captures it.
+		fmt.Fprintf(os.Stderr, "Warning: could not create log directory %s: %v — structured logs will go to stdout\n", filepath.Dir(cfg.LogFile), err)
+		logging.Init(cfg.LogFormat, cfg.LogLevel, os.Stdout)
+		log = logging.L("main")
+		return
+	}
+
+	rw, err := logging.NewRotatingWriter(cfg.LogFile, cfg.LogMaxSizeMB, cfg.LogMaxBackups)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not open log file %s: %v — structured logs will go to stdout\n", cfg.LogFile, err)
+		logging.Init(cfg.LogFormat, cfg.LogLevel, os.Stdout)
+		log = logging.L("main")
+		return
+	}
+
+	var output io.Writer
+	switch {
+	case quiet:
+		output = rw
+	case !hasConsole():
+		output = rw
+	default:
+		output = logging.TeeWriter(os.Stdout, rw)
+	}
+
+	logging.Init(cfg.LogFormat, cfg.LogLevel, output)
+	log = logging.L("main")
 }
 
 func checkStatus() {
