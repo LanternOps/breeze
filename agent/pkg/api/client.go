@@ -10,6 +10,19 @@ import (
 	"time"
 )
 
+// ErrHTTPStatus is returned by the api client when an HTTP request
+// completes but the server returned a non-success status code. Callers
+// can type-assert via errors.As to classify the failure (auth, not
+// found, rate limit, server error).
+type ErrHTTPStatus struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *ErrHTTPStatus) Error() string {
+	return fmt.Sprintf("http %d: %s", e.StatusCode, e.Body)
+}
+
 type Client struct {
 	baseURL    string
 	authToken  string
@@ -124,7 +137,7 @@ func (c *Client) Enroll(req *EnrollRequest) (*EnrollResponse, error) {
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("enrollment failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+		return nil, &ErrHTTPStatus{StatusCode: resp.StatusCode, Body: string(bodyBytes)}
 	}
 
 	var enrollResp EnrollResponse

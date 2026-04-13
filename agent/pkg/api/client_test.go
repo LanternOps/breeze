@@ -1,10 +1,31 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+func TestErrHTTPStatus_Error(t *testing.T) {
+	err := &ErrHTTPStatus{StatusCode: 401, Body: `{"error":"invalid key"}`}
+	got := err.Error()
+	want := `http 401: {"error":"invalid key"}`
+	if got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestErrHTTPStatus_ErrorsAs(t *testing.T) {
+	var wrapped error = &ErrHTTPStatus{StatusCode: 404, Body: "not found"}
+	var target *ErrHTTPStatus
+	if !errors.As(wrapped, &target) {
+		t.Fatal("errors.As should match *ErrHTTPStatus")
+	}
+	if target.StatusCode != 404 {
+		t.Errorf("StatusCode = %d, want 404", target.StatusCode)
+	}
+}
 
 func TestRotateToken(t *testing.T) {
 	t.Parallel()
