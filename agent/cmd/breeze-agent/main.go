@@ -507,18 +507,22 @@ func runAgent() {
 // --quiet (suppress stdout progress, errors still go to stderr). Writes
 // structured logs to the agent log file so MSI-initiated enrollments leave
 // the same diagnostic trail as service-initiated ones.
+// trimEnrollInputs strips whitespace from the three enrollment argument
+// values the MSI passes on the command line. Template MSIs (served by the
+// installerBuilder API) space-pad SERVER_URL / ENROLLMENT_KEY /
+// ENROLLMENT_SECRET to a fixed 512-char width so the API can byte-patch
+// them in-place without relocating any other MSI structures. The padding
+// survives argv all the way to this function, and url.Parse rejects
+// trailing spaces in a host name — the old PowerShell wrapper trimmed the
+// values before exec, and the direct-exe CA has to do the same here.
+func trimEnrollInputs(key, server, secret string) (string, string, string) {
+	return strings.TrimSpace(key), strings.TrimSpace(server), strings.TrimSpace(secret)
+}
+
 func enrollDevice(enrollmentKey string) {
-	// Trim whitespace from flag inputs. Template MSIs (served by the
-	// installerBuilder API) space-pad SERVER_URL / ENROLLMENT_KEY /
-	// ENROLLMENT_SECRET to a fixed 512-char width so the API can byte-
-	// patch them in-place without relocating other MSI structures. The
-	// padding survives all the way to our argv here, and url.Parse
-	// chokes on trailing spaces in a host name. The old PowerShell CA
-	// wrapper trimmed these before exec; the direct-exe CA does not,
-	// so the agent has to handle it.
-	enrollmentKey = strings.TrimSpace(enrollmentKey)
-	serverURL = strings.TrimSpace(serverURL)
-	enrollmentSecret = strings.TrimSpace(enrollmentSecret)
+	enrollmentKey, serverURL, enrollmentSecret = trimEnrollInputs(
+		enrollmentKey, serverURL, enrollmentSecret,
+	)
 
 	cfg, err := config.Load(cfgFile)
 	if err != nil {

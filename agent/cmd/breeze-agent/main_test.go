@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -279,4 +280,115 @@ func TestHelperWarnLimiterResetConcurrent(t *testing.T) {
 	}()
 
 	wg.Wait()
+}
+
+// TestTrimEnrollInputs verifies that the template-MSI space-padded sentinel
+// format is stripped before the values reach url.Parse / HTTP request
+// construction. Regression test for the v0.62.22 → v0.62.23 hotfix where the
+// direct-exe enrollment CA introduced in #410 dropped the .Trim() calls that
+// the old enroll-agent.ps1 wrapper used to do. Without trimming, a byte-
+// patched template MSI would pass a 512-char right-padded server URL to the
+// agent and url.Parse would reject it with "invalid character \" \" in host
+// name".
+func TestTrimEnrollInputs(t *testing.T) {
+	t.Parallel()
+
+	// Mirrors the padding size used by installer/build-msi.ps1 when -Template
+	// is set. Keep in sync if that padding width changes.
+	const templatePadWidth = 512
+
+	pad := func(s string) string {
+		if len(s) >= templatePadWidth {
+			return s
+		}
+		return s + strings.Repeat(" ", templatePadWidth-len(s))
+	}
+
+	tests := []struct {
+		name                                   string
+		inKey, inServer, inSecret              string
+		wantKey, wantServer, wantSecret        string
+	}{
+		{
+			name:       "all clean",
+			inKey:      "brz_abc123",
+			inServer:   "https://app.example.com",
+			inSecret:   "secret456",
+			wantKey:    "brz_abc123",
+			wantServer: "https://app.example.com",
+			wantSecret: "secret456",
+		},
+		{
+			name:       "empty inputs",
+			inKey:      "",
+			inServer:   "",
+			inSecret:   "",
+			wantKey:    "",
+			wantServer: "",
+			wantSecret: "",
+		},
+		{
+			name:       "whitespace-only inputs collapse to empty",
+			inKey:      "   ",
+			inServer:   "\t\t",
+			inSecret:   " \r\n ",
+			wantKey:    "",
+			wantServer: "",
+			wantSecret: "",
+		},
+		{
+			name:       "trailing space only",
+			inKey:      "brz_abc123 ",
+			inServer:   "https://app.example.com   ",
+			inSecret:   "secret456\n",
+			wantKey:    "brz_abc123",
+			wantServer: "https://app.example.com",
+			wantSecret: "secret456",
+		},
+		{
+			name:       "leading whitespace only",
+			inKey:      "  brz_abc123",
+			inServer:   "\thttps://app.example.com",
+			inSecret:   " secret456",
+			wantKey:    "brz_abc123",
+			wantServer: "https://app.example.com",
+			wantSecret: "secret456",
+		},
+		{
+			name:       "template MSI 512-char space padding (the regression)",
+			inKey:      pad("enroll_b9297caef01ceb804a59af044f5f02aa08605178a06c1833"),
+			inServer:   pad("https://us.2breeze.app"),
+			inSecret:   pad("41d9a8a62f54c28e12b1055dec82173fd7e073c4c7f2314442da7abbc2c5e68d"),
+			wantKey:    "enroll_b9297caef01ceb804a59af044f5f02aa08605178a06c1833",
+			wantServer: "https://us.2breeze.app",
+			wantSecret: "41d9a8a62f54c28e12b1055dec82173fd7e073c4c7f2314442da7abbc2c5e68d",
+		},
+		{
+			name:       "optional secret left empty after padding trim",
+			inKey:      pad("brz_abc123"),
+			inServer:   pad("https://app.example.com"),
+			inSecret:   strings.Repeat(" ", templatePadWidth),
+			wantKey:    "brz_abc123",
+			wantServer: "https://app.example.com",
+			wantSecret: "",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			gotKey, gotServer, gotSecret := trimEnrollInputs(tc.inKey, tc.inServer, tc.inSecret)
+			if gotKey != tc.wantKey {
+				t.Errorf("key: got %q, want %q", gotKey, tc.wantKey)
+			}
+			if gotServer != tc.wantServer {
+				t.Errorf("server: got %q, want %q", gotServer, tc.wantServer)
+			}
+			if gotSecret != tc.wantSecret {
+				t.Errorf("secret: got %q, want %q", gotSecret, tc.wantSecret)
+			}
+		})
+	}
 }
