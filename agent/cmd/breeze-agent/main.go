@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -980,6 +981,30 @@ func runHelperProcess(name, role, context, binaryKind string) {
 		})
 		defer logging.StopShipper()
 	}
+
+	// Top-level panic recovery. Without this, a goroutine panic crashes
+	// the helper with a stderr stack trace that never reaches the shipper,
+	// and the lifecycle manager sees "exit code 2" (Go's panic default)
+	// and misclassifies the death as a permanent-reject cooldown. Catch
+	// the panic, log the stack trace at error level (which ships), flush
+	// synchronously, then exit with code 3 so the lifecycle manager
+	// treats it as transient and respawns normally.
+	defer func() {
+		if r := recover(); r != nil {
+			stack := debug.Stack()
+			log.Error("helper panic caught at top level",
+				"name", name,
+				"role", role,
+				"panic", fmt.Sprint(r),
+				"stack", string(stack),
+			)
+			// Also write directly to stderr so the panic is in the on-disk
+			// log file regardless of the shipper state.
+			fmt.Fprintf(os.Stderr, "helper panic: %v\n%s\n", r, stack)
+			logging.StopShipper() // synchronous flush
+			os.Exit(3)            // code 3 = panic, not permanent reject
+		}
+	}()
 
 	log.Info("starting helper",
 		"name", name,
