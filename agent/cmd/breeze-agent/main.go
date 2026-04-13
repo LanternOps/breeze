@@ -540,10 +540,17 @@ func enrollDevice(enrollmentKey string) {
 
 	enrollLog := logging.L("enroll")
 
+	// Clear any stale enroll-last-error.txt from a previous failed
+	// attempt BEFORE any validation or early return. Every attempt
+	// starts from a clean marker state; a validation failure later
+	// in this function must not leave a stale file behind (spec
+	// decision 8, issue #411).
+	clearEnrollLastError()
+
 	if cfg.ServerURL == "" {
-		enrollLog.Error("server URL required, use --server or set in config")
-		fmt.Fprintln(os.Stderr, "Server URL required. Use --server flag or set in config.")
-		os.Exit(1)
+		enrollError(catConfig,
+			"server URL required — pass --server or set it in config",
+			nil)
 	}
 
 	if cfg.AgentID != "" && !forceEnroll {
@@ -657,11 +664,8 @@ func enrollDevice(enrollmentKey string) {
 
 	enrollResp, err := client.Enroll(enrollReq)
 	if err != nil {
-		enrollLog.Error("enrollment request failed",
-			"error", err.Error(),
-			"server", cfg.ServerURL)
-		fmt.Fprintf(os.Stderr, "Enrollment failed: %v\n", err)
-		os.Exit(1)
+		cat, friendly := classifyEnrollError(err, cfg.ServerURL)
+		enrollError(cat, friendly, err)
 	}
 
 	cfg.AgentID = enrollResp.AgentID
@@ -690,13 +694,11 @@ func enrollDevice(enrollmentKey string) {
 	}
 
 	if err := config.SaveTo(cfg, cfgFile); err != nil {
-		enrollLog.Error("enrollment succeeded but failed to save config",
-			"error", err.Error(),
-			"agentId", cfg.AgentID)
-		fmt.Fprintf(os.Stderr, "Warning: Failed to save config: %v\n", err)
-		fmt.Fprintf(os.Stderr, "Agent ID: %s\n", cfg.AgentID)
-		fmt.Fprintln(os.Stderr, "You may need to manually save the configuration.")
-		os.Exit(1)
+		enrollError(catConfig,
+			fmt.Sprintf(
+				"enrollment succeeded but could not save config to %s — check that the directory exists and SYSTEM has write access (agentID=%s)",
+				cfgFile, cfg.AgentID),
+			err)
 	}
 
 	enrollLog.Info("enrollment successful",
