@@ -1,6 +1,6 @@
 import { and, eq, sql, inArray, lte, or } from 'drizzle-orm';
 import { createHmac } from 'crypto';
-import { db } from '../../db';
+import { db, withDbAccessContext } from '../../db';
 import {
   remoteSessions,
   fileTransfers,
@@ -244,7 +244,14 @@ export async function checkUserSessionRateLimit(userId: string, maxConcurrent: n
   };
 }
 
-// Log audit event for session activity
+// Log audit event for session activity.
+//
+// Wraps the insert in an org-scoped DB access context so the write satisfies
+// `audit_logs` RLS on paths that don't otherwise establish one (e.g. the
+// viewer-token desktop WS handlers, which authenticate off a signed session
+// ticket rather than a JWT and have no request-scoped access context).
+// `withDbAccessContext` short-circuits when a context is already active, so
+// JWT-authenticated call sites keep running under the caller's existing scope.
 export async function logSessionAudit(
   action: string,
   actorId: string,
@@ -253,17 +260,25 @@ export async function logSessionAudit(
   ipAddress?: string
 ) {
   try {
-    await db.insert(auditLogs).values({
-      orgId,
-      actorType: 'user',
-      actorId,
-      action,
-      resourceType: 'remote_session',
-      resourceId: details.sessionId as string,
-      details,
-      ipAddress,
-      result: 'success'
-    });
+    await withDbAccessContext(
+      {
+        scope: 'organization',
+        orgId,
+        accessibleOrgIds: [orgId],
+      },
+      () =>
+        db.insert(auditLogs).values({
+          orgId,
+          actorType: 'user',
+          actorId,
+          action,
+          resourceType: 'remote_session',
+          resourceId: details.sessionId as string,
+          details,
+          ipAddress,
+          result: 'success'
+        })
+    );
   } catch (error) {
     console.error('Failed to log session audit:', error);
   }

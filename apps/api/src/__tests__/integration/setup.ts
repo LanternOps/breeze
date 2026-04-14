@@ -8,12 +8,21 @@
  * 1. Start test containers: docker compose -f docker-compose.test.yml up -d
  * 2. Run integration tests: pnpm test:integration
  * 3. Stop containers: docker compose -f docker-compose.test.yml down -v
+ *
+ * Env-var loading order matters: this file MUST set DATABASE_URL_APP before
+ * the first time `apps/api/src/db/index.ts` is imported, because that module
+ * opens its postgres pool at module-load time off DATABASE_URL_APP. The
+ * `loadEnv` side-effect import on the first line takes care of that by
+ * loading `.env.test` from the monorepo root before anything else.
  */
+import './loadEnv';
+
 import { beforeAll, afterAll, beforeEach } from 'vitest';
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import postgres, { type Sql } from 'postgres';
 import Redis, { type RedisOptions } from 'ioredis';
 import * as schema from '../../db/schema';
+import { autoMigrate } from '../../db/autoMigrate';
 
 // Load test environment variables
 const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';
@@ -85,7 +94,11 @@ export async function setupIntegrationTests() {
   // This runs before any connection so no client is even opened on a prod/dev DB.
   assertTestDatabase(DATABASE_URL, 'setup');
 
-  // Create database connection
+  // Create database connection. This client connects as the superuser
+  // (breeze_test) so test helpers can seed and truncate without tripping
+  // RLS. Code-under-test that imports `db` from `apps/api/src/db` goes
+  // through a separate pool that connects as `breeze_app` — that's the
+  // pool where RLS is actually enforced.
   testClient = postgres(DATABASE_URL, {
     max: 10,
     idle_timeout: 20,
@@ -110,8 +123,14 @@ export async function setupIntegrationTests() {
     await testRedis.ping();
     console.log('Redis connection established');
 
-    // Push schema to test database using drizzle-kit push approach
-    // For integration tests, we use db:push which is simpler than migrations
+    // Run all hand-written SQL migrations against the test DB and ensure
+    // the unprivileged `breeze_app` role exists with the right password
+    // and privileges. `autoMigrate()` is idempotent and internally calls
+    // `ensureAppRole()`, so integration tests see the same schema state
+    // as a freshly-started API process.
+    console.log('Running migrations...');
+    await autoMigrate();
+
     console.log('Database ready for testing');
   } catch (error) {
     console.error('Failed to connect to test services:', error);

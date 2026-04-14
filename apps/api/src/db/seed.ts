@@ -523,6 +523,7 @@ fi`,
 ];
 
 export async function seedScripts() {
+  return withSystemDbAccessContext(async () => {
   console.log('Seeding system scripts...');
 
   for (const scriptDef of SYSTEM_SCRIPTS) {
@@ -559,9 +560,11 @@ export async function seedScripts() {
   }
 
   console.log('Scripts seeded.');
+  });
 }
 
 export async function seedPermissions() {
+  return withSystemDbAccessContext(async () => {
   console.log('Seeding permissions...');
 
   for (const perm of DEFAULT_PERMISSIONS) {
@@ -580,9 +583,11 @@ export async function seedPermissions() {
   }
 
   console.log('Permissions seeded.');
+  });
 }
 
 export async function seedRoles() {
+  return withSystemDbAccessContext(async () => {
   console.log('Seeding system roles...');
 
   // Get all permissions for lookup
@@ -638,6 +643,7 @@ export async function seedRoles() {
   }
 
   console.log('Roles seeded.');
+  });
 }
 
 // Built-in alert templates for event log conditions
@@ -723,6 +729,7 @@ const EVENT_LOG_ALERT_TEMPLATES = [
 ];
 
 export async function seedEventLogAlertTemplates() {
+  return withSystemDbAccessContext(async () => {
   console.log('Seeding event log alert templates...');
 
   for (const tmpl of EVENT_LOG_ALERT_TEMPLATES) {
@@ -757,6 +764,7 @@ export async function seedEventLogAlertTemplates() {
   }
 
   console.log('Event log alert templates seeded.');
+  });
 }
 
 export async function seedDefaultAdmin() {
