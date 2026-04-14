@@ -726,6 +726,18 @@ func enrollDevice(enrollmentKey string) {
 		fmt.Printf("OS: %s (%s)\n", systemInfo.OSVersion, systemInfo.Architecture)
 	}
 
+	// Refuse to enroll with an empty hostname rather than let a fallback
+	// downstream (or an older server) substitute the device UUID. See
+	// issue #439 — one prod device ended up with its UUID in the hostname
+	// column, which is worse than a loud failure because it looks legit.
+	if strings.TrimSpace(systemInfo.Hostname) == "" {
+		enrollError(catConfig,
+			"hostname resolution failed on this machine — tried os.Hostname(), "+
+				"COMPUTERNAME env var, and WMI (win32_computersystem.Name); all "+
+				"returned empty. Refusing to enroll with an empty hostname.",
+			errors.New("empty hostname after fallback chain"))
+	}
+
 	client := api.NewClient(cfg.ServerURL, "", "")
 
 	secret := enrollmentSecret
