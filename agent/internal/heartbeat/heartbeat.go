@@ -2488,8 +2488,22 @@ func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 	cmdLog := logging.WithCommand(log, cmd.ID, cmd.Type)
 
 	// Deduplicate: skip if we've already seen this command ID
-	// (can arrive via both WebSocket and heartbeat response)
-	if !h.markCommandSeen(cmd.ID) {
+	// (can arrive via both WebSocket and heartbeat response).
+	//
+	// EXCEPTION (#434): start_desktop and stop_desktop are idempotent
+	// state-setting commands that the viewer may legitimately re-invoke with
+	// the same commandId. The commandId is derived from the viewer's
+	// desktop-ws session UUID, which does NOT change across reconnect
+	// attempts. When the remote user logs out, the helper process dies, the
+	// agent tears down the WebRTC session, and the viewer retries the same
+	// start_desktop offer to attach to the new loginwindow helper. If that
+	// retry is dedup'd, the handoff silently fails and the viewer countdown
+	// expires into "session ended". SessionManager.StartSession enforces
+	// single-active-session and tears down any existing session before
+	// creating the new one, so re-invocation is safe.
+	dedupable := cmd.Type != tools.CmdStartDesktop && cmd.Type != tools.CmdStopDesktop
+
+	if dedupable && !h.markCommandSeen(cmd.ID) {
 		cmdLog.Debug("skipping duplicate command")
 		return tools.CommandResult{
 			Status: "duplicate",

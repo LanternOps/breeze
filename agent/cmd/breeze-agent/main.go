@@ -358,6 +358,12 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		if strings.HasPrefix(version, "dev-") && cfg.LogShippingLevel == "warn" {
 			logging.SetShipperLevel("info")
 		}
+		// desktop_debug forces info-level shipping so the chatty remote-desktop
+		// diagnostics surface to the API. Leave off in production. See
+		// docs/superpowers/plans/2026-04-13-ice-turn-fallback-diagnostics.md.
+		if cfg.DesktopDebug && (cfg.LogShippingLevel == "" || cfg.LogShippingLevel == "warn") {
+			logging.SetShipperLevel("info")
+		}
 	}
 
 	log.Info("starting agent",
@@ -979,6 +985,16 @@ func runHelperProcess(name, role, context, binaryKind string) {
 			AgentVersion: version + "-helper",
 			MinLevel:     cfg.LogShippingLevel,
 		})
+		// Dev builds ship info-level logs for performance tuning and diagnostics.
+		if strings.HasPrefix(version, "dev-") && cfg.LogShippingLevel == "warn" {
+			logging.SetShipperLevel("info")
+		}
+		// desktop_debug forces info-level shipping so the chatty remote-desktop
+		// diagnostics surface to the API. Leave off in production. See
+		// docs/superpowers/plans/2026-04-13-ice-turn-fallback-diagnostics.md.
+		if cfg.DesktopDebug && (cfg.LogShippingLevel == "" || cfg.LogShippingLevel == "warn") {
+			logging.SetShipperLevel("info")
+		}
 		defer logging.StopShipper()
 	}
 

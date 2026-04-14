@@ -3,6 +3,7 @@ package desktop
 import (
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/pion/rtcp"
@@ -409,16 +410,68 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	// Log ICE connection state transitions at warn level so they ship from
 	// the helper process. Helps distinguish ICE-level failures (network /
 	// STUN / TURN) from peer-connection-level failures (DTLS / cert).
+
+	// logSelectedPair emits the currently-selected ICE candidate pair so we
+	// can tell a Tailscale peer-reflexive path apart from a TURN relay
+	// fallback in logs. Safe to call once ICE has reached connected; before
+	// then GetSelectedCandidatePair may return nil.
+	logSelectedPair := func(context string) {
+		sctp := peerConn.SCTP()
+		if sctp == nil {
+			return
+		}
+		dtls := sctp.Transport()
+		if dtls == nil {
+			return
+		}
+		ice := dtls.ICETransport()
+		if ice == nil {
+			return
+		}
+		pair, perr := ice.GetSelectedCandidatePair()
+		if perr != nil || pair == nil {
+			slog.Info("ICE selected pair", "session", sessionID, "context", context, "pair", "none")
+			return
+		}
+		localType, remoteType := "nil", "nil"
+		localAddr, remoteAddr := "", ""
+		if pair.Local != nil {
+			localType = pair.Local.Typ.String()
+			localAddr = fmt.Sprintf("%s:%d", pair.Local.Address, pair.Local.Port)
+		}
+		if pair.Remote != nil {
+			remoteType = pair.Remote.Typ.String()
+			remoteAddr = fmt.Sprintf("%s:%d", pair.Remote.Address, pair.Remote.Port)
+		}
+		slog.Info("ICE selected pair",
+			"session", sessionID,
+			"context", context,
+			"localType", localType,
+			"localAddr", localAddr,
+			"remoteType", remoteType,
+			"remoteAddr", remoteAddr,
+		)
+	}
+
+	// State transitions are info-level routine diagnostics. Operators who
+	// need them flip `desktop_debug: true` in agent.yaml to elevate the
+	// shipper's minimum level. Disconnect-timeout and real failures are
+	// still emitted at warn below — those always ship.
 	peerConn.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
-		slog.Warn("Desktop WebRTC ICE state", "session", sessionID, "state", state.String())
+		slog.Info("Desktop WebRTC ICE state", "session", sessionID, "state", state.String())
+		switch state {
+		case webrtc.ICEConnectionStateConnected, webrtc.ICEConnectionStateCompleted:
+			logSelectedPair("ice-" + state.String())
+		}
 	})
 
 	var disconnectTimer *time.Timer
 	peerConn.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		// Promoted to warn so helper state transitions ship — we need to
-		// see exactly when a session enters Disconnected state relative to
-		// the last video frame. Revert to info once 5-frame death is fixed.
-		slog.Warn("Desktop WebRTC connection state", "session", sessionID, "state", state.String())
+		// Routine state transition — info level. `desktop_debug: true` in
+		// agent.yaml elevates the shipper to surface these. The real
+		// session-death event (disconnect grace timeout) and Failed /
+		// Closed paths below stay at warn regardless.
+		slog.Info("Desktop WebRTC connection state", "session", sessionID, "state", state.String())
 
 		// Cancel any pending disconnect timer when state changes
 		if disconnectTimer != nil {
@@ -428,16 +481,23 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 
 		switch state {
 		case webrtc.PeerConnectionStateConnected:
+			logSelectedPair("connected")
 			session.startStreaming()
 
 		case webrtc.PeerConnectionStateDisconnected:
-			// Grace period: ICE may recover via keepalive or TURN fallback.
-			// If still disconnected after 8s, stop the session.
-			disconnectTimer = time.AfterFunc(8*time.Second, func() {
+			logSelectedPair("disconnected")
+			// 20s grace — dimensioned for Tailscale flaps and short transient
+			// path loss. During this window pion's ICE agent retries all
+			// gathered candidate pairs (including TURN relay) and can recover
+			// without any agent<->viewer signaling. A true ICE restart would
+			// require the viewer to re-offer with ICERestart=true (agent is
+			// the answerer) — tracked as follow-up.
+			disconnectTimer = time.AfterFunc(20*time.Second, func() {
 				currentState := peerConn.ConnectionState()
 				if currentState != webrtc.PeerConnectionStateConnected {
 					slog.Warn("Desktop WebRTC did not recover from disconnected state, stopping",
 						"session", sessionID, "finalState", currentState.String())
+					logSelectedPair("disconnect-timeout")
 					m.StopSession(sessionID)
 					if m.OnSessionStopped != nil {
 						go m.OnSessionStopped(sessionID)
@@ -446,6 +506,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			})
 
 		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
+			logSelectedPair("failed-or-closed")
 			m.StopSession(sessionID)
 			if m.OnSessionStopped != nil {
 				go m.OnSessionStopped(sessionID)
@@ -482,20 +543,48 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 
 	// Channel signalled on first candidate
 	firstCandidate := make(chan struct{}, 1)
+	var candMu sync.Mutex
+	candCounts := map[string]int{}
 	peerConn.OnICECandidate(func(c *webrtc.ICECandidate) {
-		if c != nil {
-			slog.Info("ICE candidate gathered",
-				"session", sessionID,
-				"type", c.Typ.String(),
-				"protocol", c.Protocol.String(),
-				"address", c.Address,
-				"port", c.Port,
-				"relatedAddr", c.RelatedAddress,
-			)
-			select {
-			case firstCandidate <- struct{}{}:
-			default:
+		if c == nil {
+			// pion signals end-of-gathering with a nil candidate. Summarize
+			// what we gathered so we can tell whether TURN was reachable.
+			// Relay candidates are the fallback path when host/srflx/prflx
+			// become unreachable mid-session (e.g. Tailscale flap); no relay
+			// means the session has no backup path.
+			candMu.Lock()
+			total := 0
+			for _, n := range candCounts {
+				total += n
 			}
+			summary := make(map[string]int, len(candCounts))
+			for k, v := range candCounts {
+				summary[k] = v
+			}
+			candMu.Unlock()
+			if summary["relay"] == 0 {
+				slog.Warn("ICE gathering complete with no relay candidates — TURN unreachable or unconfigured, session has no fallback path",
+					"session", sessionID, "total", total, "counts", summary)
+			} else {
+				slog.Info("ICE gathering complete",
+					"session", sessionID, "total", total, "counts", summary)
+			}
+			return
+		}
+		candMu.Lock()
+		candCounts[c.Typ.String()]++
+		candMu.Unlock()
+		slog.Info("ICE candidate gathered",
+			"session", sessionID,
+			"type", c.Typ.String(),
+			"protocol", c.Protocol.String(),
+			"address", c.Address,
+			"port", c.Port,
+			"relatedAddr", c.RelatedAddress,
+		)
+		select {
+		case firstCandidate <- struct{}{}:
+		default:
 		}
 	})
 

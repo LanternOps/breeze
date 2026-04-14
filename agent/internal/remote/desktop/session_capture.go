@@ -959,8 +959,9 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 	// Log the first 5 frames sent (catches monitor switch + encoder re-init)
 	// and a heartbeat every 150 frames (~5s at 30fps) so we can see whether
 	// frames are still flowing past the initial burst when diagnosing stalls.
+	// Info-level; flip `desktop_debug: true` in agent.yaml to ship.
 	if s.frameIdx <= 5 || s.frameIdx%150 == 0 {
-		slog.Warn("H264 frame sent",
+		slog.Info("H264 frame sent",
 			"session", s.id,
 			"frameIdx", s.frameIdx,
 			"bytes", len(h264Data),
