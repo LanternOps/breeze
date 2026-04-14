@@ -9,6 +9,7 @@ import { enrollmentKeys } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { randomBytes } from 'crypto';
 import { createAuditLogAsync } from '../services/auditService';
+import { ANONYMOUS_ACTOR_ID } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
 import { hashEnrollmentKey } from '../services/enrollmentKeySecurity';
 import {
@@ -891,9 +892,16 @@ async function serveInstaller(
     // so the slot is only consumed when enrollment actually succeeds.
     // Downloads are still tracked, but via the audit log below.
 
+    // Public endpoint — no authenticated user. `audit_logs.actor_id` is a
+    // non-null UUID column, so a string literal like 'public' fails parsing
+    // and Postgres drops the row (silently, via createAuditLogAsync's catch).
+    // Represent the caller as system-scope with the nil-UUID sentinel; the
+    // `enrollment_key.public_download` action name already carries the
+    // "unauthenticated public download" semantic.
     createAuditLogAsync({
       orgId: keyRow.orgId,
-      actorId: 'public',
+      actorType: 'system',
+      actorId: ANONYMOUS_ACTOR_ID,
       action: 'enrollment_key.public_download',
       resourceType: 'enrollment_key',
       resourceId: keyRow.id,
