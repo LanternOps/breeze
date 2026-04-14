@@ -122,27 +122,18 @@ describe('auth routes', () => {
   });
 
   describe('POST /auth/register', () => {
-    it('should register a new user successfully', async () => {
+    it('returns generic success for legacy /register (no-op shim)', async () => {
+      // Legacy /register is now a no-op that returns a generic success
+      // message. Real registration flows go through /register-partner which
+      // creates the partner + user + first org together. This test exists
+      // to catch accidental reintroduction of the pre-RLS partnerless-user
+      // path, not to validate real registration behavior.
       vi.mocked(isPasswordStrong).mockReturnValue({ valid: true, errors: [] });
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([]) // No existing user
           })
-        })
-      } as any);
-      vi.mocked(db.insert).mockReturnValue({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{
-            id: 'new-user-id',
-            email: 'new@example.com',
-            name: 'New User'
-          }])
-        })
-      } as any);
-      vi.mocked(db.update).mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined)
         })
       } as any);
 
@@ -158,8 +149,9 @@ describe('auth routes', () => {
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.tokens).toBeDefined();
-      expect(body.user).toBeDefined();
+      expect(body.success).toBe(true);
+      expect(body.tokens).toBeUndefined();
+      expect(body.user).toBeUndefined();
     });
 
     it('should reject weak passwords', async () => {

@@ -1056,11 +1056,12 @@ describe('agent routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(saveFilesystemSnapshot).toHaveBeenCalledWith(
-        'device-123',
-        'threshold',
-        expect.any(Object)
-      );
+      expect(saveFilesystemSnapshot).toHaveBeenCalled();
+      const [sfDeviceId, , sfTrigger, sfPayload] =
+        vi.mocked(saveFilesystemSnapshot).mock.calls[0];
+      expect(sfDeviceId).toBe('device-123');
+      expect(sfTrigger).toBe('threshold');
+      expect(sfPayload).toEqual(expect.any(Object));
     });
 
     it('persists on-demand filesystem analysis command results', async () => {
@@ -1098,11 +1099,12 @@ describe('agent routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(saveFilesystemSnapshot).toHaveBeenCalledWith(
-        'device-123',
-        'on_demand',
-        expect.any(Object)
-      );
+      expect(saveFilesystemSnapshot).toHaveBeenCalled();
+      const [sfDeviceId, , sfTrigger, sfPayload] =
+        vi.mocked(saveFilesystemSnapshot).mock.calls[0];
+      expect(sfDeviceId).toBe('device-123');
+      expect(sfTrigger).toBe('on_demand');
+      expect(sfPayload).toEqual(expect.any(Object));
     });
 
     it('queues post-apply audit policy collection outside request transaction', async () => {

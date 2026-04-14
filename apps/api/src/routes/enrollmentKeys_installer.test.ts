@@ -113,8 +113,16 @@ function mockSelectFromWhereLimit(rows: any[]) {
   } as any);
 }
 
-/** Mock for db.insert().values().returning() */
+/** Mock for db.insert().values().returning()
+ *
+ * Also queues a single empty db.select().from().where().limit() ahead of
+ * the insert to satisfy allocateShortCode()'s uniqueness probe — the
+ * installer-download route now generates a short code via a DB lookup
+ * before creating the child enrollment key, and returning an empty row
+ * set signals "this code is free, use it".
+ */
 function mockInsertValuesReturning(rows: any[]) {
+  mockSelectFromWhereLimit([]); // allocateShortCode uniqueness probe
   vi.mocked(db.insert).mockReturnValueOnce({
     values: vi.fn().mockReturnValue({
       returning: vi.fn().mockResolvedValue(rows),
@@ -356,9 +364,12 @@ describe('enrollment key routes — installer download', () => {
       );
     });
 
+    // Query-param validation is enforced by the Hono zValidator middleware
+    // before any route-body code runs, so these tests do NOT need to stage
+    // db.select mocks. Staging them caused `mockReturnValueOnce` queues to
+    // leak into the next test (the audit-log test) and the parent-key
+    // lookup there would consume the stale mock instead of its own.
     it('returns 400 for count=0', async () => {
-      mockSelectFromWhereLimit([makeEnrollmentKey()]);
-
       const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows?count=0`, {
         method: 'GET',
         headers: { Authorization: 'Bearer token' },
@@ -368,8 +379,6 @@ describe('enrollment key routes — installer download', () => {
     });
 
     it('returns 400 for negative count', async () => {
-      mockSelectFromWhereLimit([makeEnrollmentKey()]);
-
       const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows?count=-1`, {
         method: 'GET',
         headers: { Authorization: 'Bearer token' },
@@ -379,8 +388,6 @@ describe('enrollment key routes — installer download', () => {
     });
 
     it('returns 400 for non-numeric count', async () => {
-      mockSelectFromWhereLimit([makeEnrollmentKey()]);
-
       const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows?count=abc`, {
         method: 'GET',
         headers: { Authorization: 'Bearer token' },
@@ -390,8 +397,6 @@ describe('enrollment key routes — installer download', () => {
     });
 
     it('returns 400 for count exceeding max (100001)', async () => {
-      mockSelectFromWhereLimit([makeEnrollmentKey()]);
-
       const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows?count=100001`, {
         method: 'GET',
         headers: { Authorization: 'Bearer token' },
@@ -401,8 +406,6 @@ describe('enrollment key routes — installer download', () => {
     });
 
     it('returns 400 for fractional count', async () => {
-      mockSelectFromWhereLimit([makeEnrollmentKey()]);
-
       const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows?count=1.5`, {
         method: 'GET',
         headers: { Authorization: 'Bearer token' },

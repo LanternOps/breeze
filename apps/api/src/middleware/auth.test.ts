@@ -215,11 +215,11 @@ describe('authMiddleware', () => {
       scope: basePayload.scope
     });
     expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledWith(
-      {
+      expect.objectContaining({
         scope: basePayload.scope,
         orgId: basePayload.orgId,
         accessibleOrgIds: [basePayload.orgId]
-      },
+      }),
       expect.any(Function)
     );
   });

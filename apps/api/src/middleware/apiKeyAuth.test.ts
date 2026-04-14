@@ -246,12 +246,12 @@ describe('apiKeyAuth middleware', () => {
       resetAt
     });
 
-    const execute = vi.fn().mockResolvedValue(undefined);
+    // apiKeyAuth awaits `db.update(...).set(...).where(...)` directly — the
+    // terminal value is the awaited `.where()` promise, no `.execute()` step.
+    const whereFn = vi.fn().mockResolvedValue(undefined);
     vi.mocked(db.update).mockReturnValueOnce({
       set: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          execute
-        })
+        where: whereFn
       })
     } as any);
 
@@ -273,12 +273,13 @@ describe('apiKeyAuth middleware', () => {
     });
     expect(c.get('apiKeyOrgId')).toBe('org-2');
     expect(next).toHaveBeenCalled();
-    expect(execute).toHaveBeenCalled();
+    expect(whereFn).toHaveBeenCalled();
     expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledWith(
       {
         scope: 'organization',
         orgId: 'org-2',
-        accessibleOrgIds: ['org-2']
+        accessibleOrgIds: ['org-2'],
+        accessiblePartnerIds: []
       },
       expect.any(Function)
     );
