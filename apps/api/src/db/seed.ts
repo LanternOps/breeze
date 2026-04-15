@@ -629,15 +629,23 @@ export async function seedRoles() {
     // Assign permissions to role
     for (const permKey of roleDef.permissions) {
       const permId = permMap.get(permKey);
-      if (permId) {
-        try {
-          await db.insert(rolePermissions).values({
-            roleId,
-            permissionId: permId
-          });
-        } catch {
-          // Permission already assigned, ignore
+      if (!permId) {
+        console.warn(`  Role "${roleDef.name}" references unknown permission "${permKey}" — skipping`);
+        continue;
+      }
+      try {
+        await db.insert(rolePermissions).values({
+          roleId,
+          permissionId: permId
+        });
+      } catch (err) {
+        // 23505 = unique_violation. Permission already assigned — safe to
+        // ignore. Any other error (RLS, connection loss, FK) must surface
+        // so a broken seed doesn't silently leave partial role grants.
+        if ((err as { code?: string } | null)?.code === '23505') {
+          continue;
         }
+        throw err;
       }
     }
   }

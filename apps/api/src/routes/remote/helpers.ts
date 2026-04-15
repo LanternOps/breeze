@@ -1,6 +1,6 @@
 import { and, eq, sql, inArray, lte, or } from 'drizzle-orm';
 import { createHmac } from 'crypto';
-import { db, withDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { captureException } from '../../services/sentry';
 import {
   remoteSessions,
@@ -247,12 +247,19 @@ export async function checkUserSessionRateLimit(userId: string, maxConcurrent: n
 
 // Log audit event for session activity.
 //
-// Wraps the insert in an org-scoped DB access context so the write satisfies
-// `audit_logs` RLS on paths that don't otherwise establish one (e.g. the
-// viewer-token desktop WS handlers, which authenticate off a signed session
-// ticket rather than a JWT and have no request-scoped access context).
-// `withDbAccessContext` short-circuits when a context is already active, so
-// JWT-authenticated call sites keep running under the caller's existing scope.
+// Runs on a connection OUTSIDE the caller's request transaction — same pattern
+// as `createAuditLog` in `services/auditService.ts`. Two reasons:
+//   1. RLS satisfaction on paths that don't establish their own DB context
+//      (e.g. the viewer-token desktop WS handlers). A nested `withDbAccessContext`
+//      would short-circuit to a no-op under an existing context, so we explicitly
+//      `runOutsideDbContext` → `withSystemDbAccessContext` to force a fresh
+//      system-scope transaction on a separate pooled connection.
+//   2. Tx isolation. If the audit insert fails inside the caller's request
+//      transaction, Postgres aborts the whole tx and silently rolls back the
+//      caller's real work (session creation, transfer creation) even though
+//      the route returned 200 — because this function swallows the error.
+//      Running outside the caller's tx isolates audit-write failures from
+//      business writes.
 export async function logSessionAudit(
   action: string,
   actorId: string,
@@ -261,14 +268,9 @@ export async function logSessionAudit(
   ipAddress?: string
 ) {
   try {
-    await withDbAccessContext(
-      {
-        scope: 'organization',
-        orgId,
-        accessibleOrgIds: [orgId],
-      },
-      () =>
-        db.insert(auditLogs).values({
+    await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        await db.insert(auditLogs).values({
           orgId,
           actorType: 'user',
           actorId,
@@ -278,7 +280,8 @@ export async function logSessionAudit(
           details,
           ipAddress,
           result: 'success'
-        })
+        });
+      })
     );
   } catch (error) {
     // Escalate to Sentry as well as stdout: #437 went undetected for months
