@@ -9,11 +9,11 @@ shipping-level noise before merge.
 
 From the Apr 12 handoff (work item B):
 
-> ICE media path runs over Tailscale (100.110.202.23 / fd7a:115c:a1e0::) with
+> ICE media path runs over Tailscale (`<agent-tailscale-v4>` / `<agent-tailscale-v6>`) with
 > prflx/host pairing, no TURN relay fallback. Any Tailscale flap (or similar
 > transient IP path loss) makes the ICE state go `disconnected` → 8s grace
 > timer expires → session killed. We have TURN configured
-> (`134.199.215.131:3478`) but never used.
+> (`<turn-host>:3478`) but never used.
 
 Two distinct sub-problems:
 1. **"Never used"** may mean TURN candidates are never gathered, or they
@@ -220,7 +220,7 @@ All four passed cleanly in the original session before revert.
 -- Did TURN candidates gather at all?
 SELECT timestamp, message, fields
 FROM agent_logs
-WHERE device_id = '85ff0d63-fe61-4a89-ac48-a5da02ccbd17'
+WHERE device_id = '<device-uuid>'
   AND message LIKE 'ICE gathering complete%'
 ORDER BY timestamp DESC LIMIT 10;
 
@@ -229,7 +229,7 @@ SELECT timestamp, fields->>'context' AS ctx,
        fields->>'localType' AS lt, fields->>'remoteType' AS rt,
        fields->>'localAddr' AS la, fields->>'remoteAddr' AS ra
 FROM agent_logs
-WHERE device_id = '85ff0d63-fe61-4a89-ac48-a5da02ccbd17'
+WHERE device_id = '<device-uuid>'
   AND message = 'ICE selected pair'
 ORDER BY timestamp DESC LIMIT 20;
 ```

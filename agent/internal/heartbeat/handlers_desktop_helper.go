@@ -307,6 +307,14 @@ func winSessionStillExists(targetSession string) bool {
 	detector := sessionbroker.NewSessionDetector()
 	sessions, err := detector.ListSessions()
 	if err != nil {
+		// Conservative default: if the probe fails we claim the session
+		// still exists so we don't aggressively substitute. But log it at
+		// warn so the operator can see the substitution safety net has
+		// been silently disabled — otherwise a reliably-failing probe
+		// looks identical to a genuinely-live session.
+		log.Warn("winSessionStillExists: WTS probe failed, assuming session still exists (#434 safety net disabled for this call)",
+			"targetSession", targetSession,
+			"error", err.Error())
 		return true
 	}
 	for _, s := range sessions {

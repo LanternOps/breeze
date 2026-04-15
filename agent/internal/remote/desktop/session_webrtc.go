@@ -16,6 +16,16 @@ import (
 // StartSession creates and starts a new remote desktop session.
 // iceServers is optional; if nil, falls back to Google STUN.
 func (m *SessionManager) StartSession(sessionID string, offer string, iceServers []ICEServerConfig, displayIndex ...int) (answer string, err error) {
+	// Serialize concurrent StartSession calls. Without this, two retries
+	// with the same sessionID (e.g. heartbeat-poll + WS fast path delivering
+	// the same dedup-bypassed start_desktop command) would both drain the
+	// map, both build peerConns/capturers/encoders under their own cloned
+	// state, and the second m.sessions[sessionID] = ... write would orphan
+	// the first Session with a live frameLoop goroutine. #434 dedup bypass
+	// made this race reachable.
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
+
 	sessionStart := time.Now()
 	// Desktop Duplication and GPU pipelines get unstable with multiple concurrent
 	// sessions in one process. Enforce single active desktop session per agent.
@@ -485,6 +495,12 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			session.startStreaming()
 
 		case webrtc.PeerConnectionStateDisconnected:
+			// Ship at warn regardless of desktop_debug — operators
+			// debugging "stream freezes for ~20s sometimes" need this
+			// event in the shipped logs. logSelectedPair is still info
+			// level; this line is the always-on marker.
+			slog.Warn("Desktop WebRTC entered disconnected state, starting 20s grace",
+				"session", sessionID)
 			logSelectedPair("disconnected")
 			// 20s grace — dimensioned for Tailscale flaps and short transient
 			// path loss. During this window pion's ICE agent retries all

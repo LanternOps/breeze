@@ -998,13 +998,20 @@ func runHelperProcess(name, role, context, binaryKind string) {
 		defer logging.StopShipper()
 	}
 
-	// Top-level panic recovery. Without this, a goroutine panic crashes
-	// the helper with a stderr stack trace that never reaches the shipper,
-	// and the lifecycle manager sees "exit code 2" (Go's panic default)
-	// and misclassifies the death as a permanent-reject cooldown. Catch
-	// the panic, log the stack trace at error level (which ships), flush
-	// synchronously, then exit with code 3 so the lifecycle manager
-	// treats it as transient and respawns normally.
+	// Top-level panic recovery for the main goroutine of runHelperProcess.
+	// NOTE: recover() only catches panics in THIS goroutine. Panics in
+	// sub-goroutines (pion RTCP reader, capture loops, IPC dispatch in
+	// userhelper.Client.safeGo, etc.) still exit the process with code 2
+	// (Go's default panic exit code), which the lifecycle manager
+	// classifies as a permanent-reject cooldown. For sub-goroutines that
+	// need the same transient classification, wrap them in their own
+	// recover() + os.Exit(3).
+	//
+	// What this defer DOES catch: startup/shutdown panics on the main
+	// goroutine. Without it, those surface as exit code 2 and trigger the
+	// 10-minute lockout meant for genuinely fatal errors. Catch the panic,
+	// log the stack trace at error level (which ships), flush synchronously,
+	// then exit with code 3 so lifecycle.go treats it as transient.
 	defer func() {
 		if r := recover(); r != nil {
 			stack := debug.Stack()
