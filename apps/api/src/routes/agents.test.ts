@@ -1058,7 +1058,7 @@ describe('agent routes', () => {
       expect(res.status).toBe(200);
       expect(saveFilesystemSnapshot).toHaveBeenCalled();
       const [sfDeviceId, , sfTrigger, sfPayload] =
-        vi.mocked(saveFilesystemSnapshot).mock.calls[0];
+        vi.mocked(saveFilesystemSnapshot).mock.calls[0]!;
       expect(sfDeviceId).toBe('device-123');
       expect(sfTrigger).toBe('threshold');
       expect(sfPayload).toEqual(expect.any(Object));
@@ -1101,7 +1101,7 @@ describe('agent routes', () => {
       expect(res.status).toBe(200);
       expect(saveFilesystemSnapshot).toHaveBeenCalled();
       const [sfDeviceId, , sfTrigger, sfPayload] =
-        vi.mocked(saveFilesystemSnapshot).mock.calls[0];
+        vi.mocked(saveFilesystemSnapshot).mock.calls[0]!;
       expect(sfDeviceId).toBe('device-123');
       expect(sfTrigger).toBe('on_demand');
       expect(sfPayload).toEqual(expect.any(Object));
