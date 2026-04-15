@@ -572,9 +572,35 @@ export async function executeCommand(
     userId?: string;
     timeoutMs?: number;
     preferHeartbeat?: boolean;
+    /**
+     * Which polling consumer on the device picks up this command.
+     * - 'agent' (default): the long-lived Go agent. Has a WS connection, so
+     *   executeCommand dispatches over WS for low latency.
+     * - 'watchdog': the separate breeze-watchdog process. Has NO WebSocket —
+     *   it polls via heartbeat (`claimPendingCommandsForDevice(..., 'watchdog')`
+     *   in routes/agents/heartbeat.ts). When targetRole is 'watchdog' we
+     *   MUST skip the WS dispatch path entirely and just write the row;
+     *   otherwise the command is sent to the agent WS (wrong consumer) and
+     *   the row's default target_role='agent' hides it from the heartbeat
+     *   claim query, leaving it pending forever.
+     *
+     * NOTE: because the watchdog polls every heartbeat (~5–10s per device,
+     * sometimes slower), callers targeting the watchdog should pass a larger
+     * timeoutMs than they would for an agent command.
+     */
+    targetRole?: 'agent' | 'watchdog';
   } = {}
 ): Promise<CommandResult> {
-  const { timeoutMs = 30000, userId, preferHeartbeat = false } = options;
+  const {
+    timeoutMs = 30000,
+    userId,
+    preferHeartbeat = false,
+    targetRole = 'agent',
+  } = options;
+  // Watchdog-targeted commands have no WS consumer; the WS pre-check /
+  // dispatch path below must be skipped entirely for them. The heartbeat
+  // poll path in routes/agents/heartbeat.ts picks them up.
+  const dispatchViaWs = targetRole === 'agent' && !preferHeartbeat;
 
   // 1. Verify device inside the auth transaction (RLS-protected).
   const [device] = await db
@@ -604,7 +630,7 @@ export async function executeCommand(
   // can still queue normally.
   if (
     device.agentId &&
-    !preferHeartbeat &&
+    dispatchViaWs &&
     INTERACTIVE_COMMAND_TYPES.has(type) &&
     !isAgentConnected(device.agentId)
   ) {
@@ -636,6 +662,7 @@ export async function executeCommand(
         payload,
         status: 'pending',
         createdBy: safeUserId,
+        targetRole,
       })
       .returning();
 
@@ -680,7 +707,9 @@ export async function executeCommand(
     // hiccup (e.g. mid-reconnect) can fail a single send even when the
     // connection comes back ~hundreds of ms later. Retrying gives the pool a
     // chance to recover before we fall through to the multi-second timeout.
-    if (device.agentId && !preferHeartbeat) {
+    // Watchdog-targeted commands skip this entirely — the watchdog has no WS
+    // and is picked up by the heartbeat claim query in heartbeat.ts.
+    if (device.agentId && dispatchViaWs) {
       const claimed = await claimPendingCommandForDelivery(command.id);
       if (claimed) {
         let sent = false;
