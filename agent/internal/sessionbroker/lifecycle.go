@@ -70,6 +70,11 @@ const (
 	// permanent rejection. Must match main.go's os.Exit(2).
 	helperFatalExitCode = 2
 
+	// helperPanicExitCode is the exit code the helper uses from its
+	// top-level panic recovery. Must match main.go's os.Exit(3). Treated
+	// as transient — no fatal cooldown.
+	helperPanicExitCode = 3
+
 	// WTS event type constants (matching windows.WTS_SESSION_*).
 	wtsSessionLogon     = 0x5
 	wtsSessionLogoff    = 0x6
@@ -359,6 +364,21 @@ func (m *HelperLifecycleManager) watchHelperExit(trackKey, winSessionID, role st
 			"pid", spawned.PID,
 			"exitCode", exitCode,
 			"cooldown", fatalCooldown.String(),
+		)
+		return
+	}
+
+	if exitCode == helperPanicExitCode {
+		// Panic, not permanent rejection. No fatal cooldown — the helper
+		// caught the panic at the top level, logged the stack trace, and
+		// exited with code 3. Respawn normally so the next desk-start can
+		// retry; if the panic reproduces the on-disk log and the shipped
+		// error will tell us what's broken.
+		log.Warn("lifecycle: helper panicked (exit code 3), will respawn",
+			"winSessionID", winSessionID,
+			"role", role,
+			"pid", spawned.PID,
+			"exitCode", exitCode,
 		)
 		return
 	}

@@ -81,6 +81,7 @@ vi.mock('../services/rate-limit', () => ({
 // ============================================================
 import { enrollmentKeyRoutes, publicEnrollmentRoutes, publicShortLinkRoutes } from './enrollmentKeys';
 import { db, withSystemDbAccessContext } from '../db';
+import { createAuditLogAsync } from '../services/auditService';
 
 // ============================================================
 // Helpers
@@ -518,5 +519,44 @@ describe('GET /public-download/:platform', () => {
 
     expect(res.status).toBe(200);
     expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('writes the public-download audit with a UUID actorId, not the literal "public"', async () => {
+    // Regression for #444. The public-download path previously passed
+    // `actorId: 'public'` to createAuditLogAsync. Because audit_logs.actor_id
+    // is `uuid NOT NULL`, Postgres rejected every insert with
+    // `invalid input syntax for type uuid: "public"` and the audit row was
+    // silently dropped via createAuditLogAsync's catch. The path has no
+    // authenticated user, so the actor must be represented as system-scope
+    // with a real UUID sentinel.
+    const row = makeKeyRow({
+      shortCode: 'pubcode1234',
+      installerPlatform: 'windows',
+      maxUsage: 1,
+      usageCount: 0,
+    });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([row]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request(
+      '/enrollment-keys/public-download/windows?token=abc123',
+    );
+
+    expect(res.status).toBe(200);
+    expect(createAuditLogAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'enrollment_key.public_download',
+        actorType: 'system',
+        actorId: expect.stringMatching(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+        ),
+      }),
+    );
   });
 });

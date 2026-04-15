@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -355,6 +356,12 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		})
 		// Dev builds ship info-level logs for performance tuning and diagnostics.
 		if strings.HasPrefix(version, "dev-") && cfg.LogShippingLevel == "warn" {
+			logging.SetShipperLevel("info")
+		}
+		// desktop_debug forces info-level shipping so the chatty remote-desktop
+		// diagnostics surface to the API. Leave off in production. See
+		// docs/superpowers/plans/2026-04-13-ice-turn-fallback-diagnostics.md.
+		if cfg.DesktopDebug && (cfg.LogShippingLevel == "" || cfg.LogShippingLevel == "warn") {
 			logging.SetShipperLevel("info")
 		}
 	}
@@ -1005,8 +1012,49 @@ func runHelperProcess(name, role, context, binaryKind string) {
 			AgentVersion: version + "-helper",
 			MinLevel:     cfg.LogShippingLevel,
 		})
+		// Dev builds ship info-level logs for performance tuning and diagnostics.
+		if strings.HasPrefix(version, "dev-") && cfg.LogShippingLevel == "warn" {
+			logging.SetShipperLevel("info")
+		}
+		// desktop_debug forces info-level shipping so the chatty remote-desktop
+		// diagnostics surface to the API. Leave off in production. See
+		// docs/superpowers/plans/2026-04-13-ice-turn-fallback-diagnostics.md.
+		if cfg.DesktopDebug && (cfg.LogShippingLevel == "" || cfg.LogShippingLevel == "warn") {
+			logging.SetShipperLevel("info")
+		}
 		defer logging.StopShipper()
 	}
+
+	// Top-level panic recovery for the main goroutine of runHelperProcess.
+	// NOTE: recover() only catches panics in THIS goroutine. Panics in
+	// sub-goroutines (pion RTCP reader, capture loops, IPC dispatch in
+	// userhelper.Client.safeGo, etc.) still exit the process with code 2
+	// (Go's default panic exit code), which the lifecycle manager
+	// classifies as a permanent-reject cooldown. For sub-goroutines that
+	// need the same transient classification, wrap them in their own
+	// recover() + os.Exit(3).
+	//
+	// What this defer DOES catch: startup/shutdown panics on the main
+	// goroutine. Without it, those surface as exit code 2 and trigger the
+	// 10-minute lockout meant for genuinely fatal errors. Catch the panic,
+	// log the stack trace at error level (which ships), flush synchronously,
+	// then exit with code 3 so lifecycle.go treats it as transient.
+	defer func() {
+		if r := recover(); r != nil {
+			stack := debug.Stack()
+			log.Error("helper panic caught at top level",
+				"name", name,
+				"role", role,
+				"panic", fmt.Sprint(r),
+				"stack", string(stack),
+			)
+			// Also write directly to stderr so the panic is in the on-disk
+			// log file regardless of the shipper state.
+			fmt.Fprintf(os.Stderr, "helper panic: %v\n%s\n", r, stack)
+			logging.StopShipper() // synchronous flush
+			os.Exit(3)            // code 3 = panic, not permanent reject
+		}
+	}()
 
 	log.Info("starting helper",
 		"name", name,
