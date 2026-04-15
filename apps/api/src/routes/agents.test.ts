@@ -923,6 +923,26 @@ describe('agent routes', () => {
       expect(db.select).not.toHaveBeenCalled();
     });
 
+    // Regression for PR #435: agent IDs in the URL path are 64-char SHA-256
+    // hex (cfg.AgentID), not UUIDs. Exercises the full agentRoutes mount so
+    // the dispatch chain (`/:id/*` use → commandsRoutes → param validator)
+    // is verified end-to-end against the production identifier format.
+    it('accepts 64-char SHA-256 hex agent IDs end-to-end', async () => {
+      const hexAgentId = 'ab3c20eddb470acffd33bbe00f25e0348e89298ab80cece542bb1fbf921e5776';
+      const res = await app.request(`/agents/${hexAgentId}/commands/mon-test-456/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'completed',
+          durationMs: 25
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+    });
+
     it('should store command results', async () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
