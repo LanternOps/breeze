@@ -16,7 +16,6 @@ let _instance: MsiSigningService | null | undefined;
  * owns. Self-hosters may legitimately use `"latest"` for `version` or
  * `http://` for `SERVER_URL` in dev, so neither is rejected here.
  */
-/* eslint-disable @typescript-eslint/naming-convention */
 export const BuildAndSignRequestSchema = z.object({
   version: z
     .string()
@@ -39,7 +38,6 @@ export const BuildAndSignRequestSchema = z.object({
       .optional(),
   }),
 });
-/* eslint-enable @typescript-eslint/naming-convention */
 
 export type BuildAndSignRequest = z.infer<typeof BuildAndSignRequestSchema>;
 export type BuildAndSignProperties = BuildAndSignRequest['properties'];
