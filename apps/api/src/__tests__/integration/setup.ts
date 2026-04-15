@@ -26,6 +26,7 @@ import { autoMigrate } from '../../db/autoMigrate';
 
 // Load test environment variables
 const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';
+const DATABASE_URL_APP = process.env.DATABASE_URL_APP || 'postgresql://breeze_app:breeze_test@localhost:5433/breeze_test';
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6380';
 
 // Ensure JWT_SECRET is set for auth tests
@@ -93,6 +94,11 @@ export async function setupIntegrationTests() {
   // Fail loud if DATABASE_URL points at anything other than a known test DB.
   // This runs before any connection so no client is even opened on a prod/dev DB.
   assertTestDatabase(DATABASE_URL, 'setup');
+  // Same guard for DATABASE_URL_APP: code-under-test connects through the app
+  // pool (see `apps/api/src/db/index.ts`), so a misconfigured DATABASE_URL_APP
+  // would let `breeze_app` writes land in a dev/prod DB even if DATABASE_URL is
+  // correct. Guard both so there is no way to half-configure.
+  assertTestDatabase(DATABASE_URL_APP, 'setup (DATABASE_URL_APP)');
 
   // Create database connection. This client connects as the superuser
   // (breeze_test) so test helpers can seed and truncate without tripping

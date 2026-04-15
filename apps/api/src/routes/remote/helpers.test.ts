@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { insert, insertValues, withDbAccessContext } = vi.hoisted(() => {
+const { insert, insertValues, withDbAccessContext, captureException } = vi.hoisted(() => {
   const insertValues = vi.fn(() => Promise.resolve());
   const insert = vi.fn(() => ({ values: insertValues }));
   // Capture the context passed to withDbAccessContext so we can assert it
@@ -8,7 +8,8 @@ const { insert, insertValues, withDbAccessContext } = vi.hoisted(() => {
   const withDbAccessContext = vi.fn(
     async (_ctx: unknown, fn: () => unknown) => fn()
   );
-  return { insert, insertValues, withDbAccessContext };
+  const captureException = vi.fn();
+  return { insert, insertValues, withDbAccessContext, captureException };
 });
 
 vi.mock('../../db', () => ({
@@ -21,6 +22,10 @@ vi.mock('../../db/schema', () => ({
   fileTransfers: {},
   devices: {},
   auditLogs: { __table: 'audit_logs' }
+}));
+
+vi.mock('../../services/sentry', () => ({
+  captureException
 }));
 
 import { logSessionAudit } from './helpers';
@@ -69,7 +74,7 @@ describe('logSessionAudit', () => {
     );
   });
 
-  it('swallows insert errors so the request path is not broken', async () => {
+  it('swallows insert errors so the request path is not broken, and escalates to Sentry', async () => {
     insertValues.mockImplementationOnce(() => Promise.reject(new Error('boom')));
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
@@ -83,6 +88,7 @@ describe('logSessionAudit', () => {
     ).resolves.toBeUndefined();
 
     expect(errSpy).toHaveBeenCalledWith('Failed to log session audit:', expect.any(Error));
+    expect(captureException).toHaveBeenCalledWith(expect.any(Error));
     errSpy.mockRestore();
   });
 });

@@ -99,6 +99,163 @@ describe('command queue service', () => {
     expect(db.insert).toHaveBeenCalled();
   });
 
+  // Regression: queueCommand wraps BOTH the `devices` lookup and the
+  // `audit_logs` insert in runOutsideDbContext + withSystemDbAccessContext
+  // so BullMQ workers (which invoke queueCommand from system scope with no
+  // request DB context) can both read `devices` and write `audit_logs`
+  // under RLS. Sibling bug to #437. Prior to the fix, a naive wrapper only
+  // around the insert would still silently no-op because the pre-wrapper
+  // devices lookup is itself RLS-gated and returns zero rows from system
+  // scope.
+  it('wraps queueCommand audit block in runOutsideDbContext + withSystemDbAccessContext', async () => {
+    const dbModule = await import('../db');
+    const queued = {
+      id: 'cmd-audit-1',
+      deviceId: 'dev-1',
+      type: CommandTypes.KILL_PROCESS,
+      payload: { pid: 1234 },
+      status: 'pending',
+      createdBy: 'user-1',
+      createdAt: new Date(),
+      executedAt: null,
+      completedAt: null,
+      result: null,
+    };
+
+    // Order tracker: prove that both the devices SELECT and the audit INSERT
+    // fire INSIDE the withSystemDbAccessContext callback. If a future edit
+    // hoists the lookup back outside the wrapper, these calls will land
+    // before 'enter-system' and the assertions below will fail.
+    const callOrder: string[] = [];
+    // mockImplementationOnce queues a single-use impl so the default
+    // passthrough mock from vi.mock('../db', ...) is restored after this
+    // test's one call — other tests using runOutsideDbContext /
+    // withSystemDbAccessContext via runOutsideDbContextSafe keep working.
+    vi.mocked(dbModule.runOutsideDbContext).mockImplementationOnce(async (fn: () => unknown) => {
+      callOrder.push('enter-outside');
+      const result = await fn();
+      callOrder.push('exit-outside');
+      return result;
+    });
+    vi.mocked(dbModule.withSystemDbAccessContext).mockImplementationOnce(async (fn: () => unknown) => {
+      callOrder.push('enter-system');
+      const result = await fn();
+      callOrder.push('exit-system');
+      return result;
+    });
+
+    const commandInsertChain = {
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([queued]),
+      }),
+    };
+    const auditInsertValues = vi.fn().mockImplementation(() => {
+      callOrder.push('audit-insert');
+      return Promise.resolve();
+    });
+    const auditInsertChain = { values: auditInsertValues };
+
+    vi.mocked(db.insert)
+      .mockReturnValueOnce(commandInsertChain as any)
+      .mockReturnValueOnce(auditInsertChain as any);
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockImplementation(() => {
+            callOrder.push('devices-select');
+            return Promise.resolve([{ orgId: 'org-42', hostname: 'host-1' }]);
+          }),
+        }),
+      }),
+    } as any);
+
+    await queueCommand('dev-1', CommandTypes.KILL_PROCESS, { pid: 1234 }, 'user-1');
+    // Audit block is fire-and-forget; drain microtasks so the inner chain runs.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(dbModule.runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(dbModule.withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    // Both the devices lookup and the audit insert must happen between
+    // enter-system and exit-system — this is the contract that guards the
+    // worker-path regression.
+    expect(callOrder).toEqual([
+      'enter-outside',
+      'enter-system',
+      'devices-select',
+      'audit-insert',
+      'exit-system',
+      'exit-outside',
+    ]);
+    expect(auditInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: 'org-42',
+        actorType: 'user',
+        actorId: 'user-1',
+        action: `agent.command.${CommandTypes.KILL_PROCESS}`,
+        resourceType: 'device',
+        resourceId: 'dev-1',
+        resourceName: 'host-1',
+        result: 'success',
+      })
+    );
+  });
+
+  // Guard the branch the codex review flagged: if the devices lookup
+  // returns empty (simulating an RLS rejection or a deleted device), we
+  // must NOT attempt the audit insert, and we must NOT throw — the block
+  // is fire-and-forget and a no-op on missing device is correct.
+  it('queueCommand audit block is a no-op when the devices lookup returns empty', async () => {
+    const queued = {
+      id: 'cmd-audit-2',
+      deviceId: 'dev-missing',
+      type: CommandTypes.KILL_PROCESS,
+      payload: {},
+      status: 'pending',
+      createdBy: 'user-1',
+      createdAt: new Date(),
+      executedAt: null,
+      completedAt: null,
+      result: null,
+    };
+
+    const commandInsertChain = {
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([queued]),
+      }),
+    };
+    const auditInsertValues = vi.fn();
+    const auditInsertChain = { values: auditInsertValues };
+
+    // Only queue the command-insert chain. The audit insert should never
+    // be reached when the devices lookup returns empty; if it were, db.insert
+    // would fall through to its default mock (undefined) and the test would
+    // still fail — which is what we want.
+    vi.mocked(db.insert).mockReturnValueOnce(commandInsertChain as any);
+    // Keep a reference to auditInsertChain/Values so eslint-unused is happy
+    // and so the negative assertion below is obviously about this spy.
+    void auditInsertChain;
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([]),
+        }),
+      }),
+    } as any);
+
+    await expect(
+      queueCommand('dev-missing', CommandTypes.KILL_PROCESS, {}, 'user-1')
+    ).resolves.toMatchObject({ id: 'cmd-audit-2' });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(auditInsertValues).not.toHaveBeenCalled();
+  });
+
   it('should return a completed command after polling', async () => {
     vi.useFakeTimers();
     const pending = {

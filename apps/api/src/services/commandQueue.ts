@@ -331,17 +331,30 @@ export async function queueCommand(
     })
     .returning();
 
-  // Audit log for mutating commands
+  // Audit log for mutating commands — fire-and-forget under a system-scope
+  // connection outside any caller tx, matching `services/auditService.ts`.
+  // Both the `devices` lookup and the `audit_logs` insert must run under
+  // system scope: BullMQ workers (e.g. `jobs/softwareRemediationWorker.ts`,
+  // `jobs/cisJobs.ts`, `jobs/peripheralJobs.ts`) call `queueCommand` with no
+  // request DB context, so an org-scoped `devices` SELECT would be rejected
+  // by RLS and the audit block would silently no-op before ever reaching
+  // the insert. `runOutsideDbContext` escapes any caller tx so a failed
+  // audit can't poison the caller's transaction.
   if (command && AUDITED_COMMANDS.has(type)) {
-    const [device] = await db
-      .select({ orgId: devices.orgId, hostname: devices.hostname })
-      .from(devices)
-      .where(eq(devices.id, deviceId))
-      .limit(1);
+    const commandId = command.id;
+    runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        const [device] = await db
+          .select({ orgId: devices.orgId, hostname: devices.hostname })
+          .from(devices)
+          .where(eq(devices.id, deviceId))
+          .limit(1);
 
-    if (device) {
-      db.insert(auditLogs)
-        .values({
+        if (!device) {
+          return;
+        }
+
+        await db.insert(auditLogs).values({
           orgId: device.orgId,
           actorType: userId ? 'user' : 'system',
           actorId: userId || '00000000-0000-0000-0000-000000000000',
@@ -349,20 +362,19 @@ export async function queueCommand(
           resourceType: 'device',
           resourceId: deviceId,
           resourceName: device.hostname,
-          details: { commandId: command.id, type, payload },
+          details: { commandId, type, payload },
           result: 'success',
-        })
-        .execute()
-        .catch((err) => {
-          console.error('Failed to write audit log', {
-            commandId: command.id,
-            deviceId,
-            type,
-            error: err,
-          });
-          captureException(err);
         });
-    }
+      })
+    ).catch((err) => {
+      console.error('Failed to write audit log', {
+        commandId,
+        deviceId,
+        type,
+        error: err,
+      });
+      captureException(err);
+    });
   }
 
   return command as QueuedCommand;

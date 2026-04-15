@@ -1,6 +1,7 @@
 import { and, eq, sql, inArray, lte, or } from 'drizzle-orm';
 import { createHmac } from 'crypto';
 import { db, withDbAccessContext } from '../../db';
+import { captureException } from '../../services/sentry';
 import {
   remoteSessions,
   fileTransfers,
@@ -280,6 +281,9 @@ export async function logSessionAudit(
         })
     );
   } catch (error) {
+    // Escalate to Sentry as well as stdout: #437 went undetected for months
+    // because the helper only logged to stdout and nobody alerts on that.
     console.error('Failed to log session audit:', error);
+    captureException(error);
   }
 }
