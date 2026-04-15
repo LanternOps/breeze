@@ -62,6 +62,10 @@ services:
       # Unprivileged app role connection — RLS policies are enforced against this user.
       # Falls back to DATABASE_URL (superuser) if unset — but RLS will be bypassed in that case.
       DATABASE_URL_APP: postgresql://breeze_app:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-breeze}
+      # ensureAppRole reads one of these from the api container env to CREATE/ALTER the
+      # breeze_app role on first boot. Without one of these, DATABASE_URL_APP fails auth.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      BREEZE_APP_DB_PASSWORD: ${BREEZE_APP_DB_PASSWORD:-}
       REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
