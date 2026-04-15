@@ -485,10 +485,29 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Integration tests need their own Postgres/Redis on :5433/:6380 — they
+      # run TRUNCATE CASCADE on beforeEach, so `assertTestDatabase` refuses to
+      # touch the production stack's `breeze` DB on :5432. Spin up the
+      # ephemeral test stack alongside the running production stack.
+      - name: Start test-stack containers for integration tests
+        run: |
+          docker compose -f docker-compose.test.yml up -d
+          timeout 60 bash -c 'until docker exec breeze-postgres-test pg_isready -U breeze_test -d breeze_test; do sleep 1; done'
+          timeout 60 bash -c 'until docker exec breeze-redis-test redis-cli ping | grep -q PONG; do sleep 1; done'
+
       - name: Run integration tests
         env:
-          DATABASE_URL: postgresql://breeze:smoketest@localhost:5432/breeze
-          REDIS_URL: redis://localhost:6379
+          # Point at the ephemeral test stack, not the running production
+          # stack on :5432. DATABASE_URL_APP is the unprivileged role the
+          # integration tests actually hit (set up by autoMigrate's
+          # ensureAppRole on first run); DATABASE_URL is the superuser used
+          # for seeding + verification reads. See apps/api/src/__tests__/
+          # integration/loadEnv.ts for the full contract.
+          DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
+          DATABASE_URL_APP: postgresql://breeze_app:breeze_test@localhost:5433/breeze_test
+          BREEZE_APP_DB_PASSWORD: breeze_test
+          POSTGRES_PASSWORD: breeze_test
+          REDIS_URL: redis://localhost:6380
           JWT_SECRET: ci-smoke-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
           APP_ENCRYPTION_KEY: ci-smoke-Xz9Lm3Kp7Wn2Qr5Tv8Yb0Hd4Fg6Jc1Ae3
           MFA_ENCRYPTION_KEY: ci-smoke-Nm4Rp8Ws2Kv6Tq0Yh3Bd7Fg1Jc5Le9Ax2
@@ -497,11 +516,17 @@ jobs:
 
       - name: Show container logs on failure
         if: failure()
-        run: docker compose -f docker-compose.yml -f docker-compose.override.yml.ci logs --tail=200
+        run: |
+          echo "=== production stack logs ==="
+          docker compose -f docker-compose.yml -f docker-compose.override.yml.ci logs --tail=200 || true
+          echo "=== test stack logs ==="
+          docker compose -f docker-compose.test.yml logs --tail=200 || true
 
       - name: Teardown
         if: always()
-        run: docker compose -f docker-compose.yml -f docker-compose.override.yml.ci down -v
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.override.yml.ci down -v || true
+          docker compose -f docker-compose.test.yml down -v || true
 
   # Summary job that depends on all other jobs for branch protection
   ci-success:
