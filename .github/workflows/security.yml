@@ -45,6 +45,12 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run pnpm audit
+        # pnpm 9.15.0 calls the legacy POST /-/npm/v1/security/audits endpoint
+        # which the npm registry retired in April 2026 (returns 410). The bulk
+        # advisory endpoint is used by pnpm 9.15.7+ and 10.x. Until we bump
+        # PNPM_VERSION, the audit step is advisory-only so registry outages
+        # don't block every PR. Remove continue-on-error after the pnpm bump.
+        continue-on-error: true
         run: pnpm audit --audit-level=critical
 
   go-vuln:
