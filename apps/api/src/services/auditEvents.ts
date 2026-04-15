@@ -1,7 +1,7 @@
 import { createAuditLogAsync, type InitiatedByType } from './auditService';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 
-const ANONYMOUS_ACTOR_ID = '00000000-0000-0000-0000-000000000000';
+export const ANONYMOUS_ACTOR_ID = '00000000-0000-0000-0000-000000000000';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type AuditActorType = 'user' | 'api_key' | 'agent' | 'system';
