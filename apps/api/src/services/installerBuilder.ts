@@ -1,115 +1,9 @@
 import archiver from 'archiver';
 import { readFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
-import { getBinarySource, getGithubTemplateMsiUrl, getGithubAgentPkgUrl, getGithubRegularMsiUrl } from './binarySource';
+import { getBinarySource, getGithubAgentPkgUrl, getGithubRegularMsiUrl } from './binarySource';
 
-const PLACEHOLDER_CHAR_LENGTH = 512;
-
-/** Sentinel strings padded to 512 chars with spaces -- must match build-msi.ps1 */
-export const PLACEHOLDERS = {
-  SERVER_URL: '@@BREEZE_SERVER_URL@@'.padEnd(PLACEHOLDER_CHAR_LENGTH, ' '),
-  ENROLLMENT_KEY: '@@BREEZE_ENROLLMENT_KEY@@'.padEnd(PLACEHOLDER_CHAR_LENGTH, ' '),
-  ENROLLMENT_SECRET: '@@BREEZE_ENROLLMENT_SECRET@@'.padEnd(PLACEHOLDER_CHAR_LENGTH, ' '),
-};
-
-interface InstallerValues {
-  serverUrl: string;
-  enrollmentKey: string;
-  enrollmentSecret: string;
-}
-
-/** Bare sentinel prefixes (without padding) for fallback matching */
-const SENTINEL_PREFIXES = {
-  SERVER_URL: '@@BREEZE_SERVER_URL@@',
-  ENROLLMENT_KEY: '@@BREEZE_ENROLLMENT_KEY@@',
-  ENROLLMENT_SECRET: '@@BREEZE_ENROLLMENT_SECRET@@',
-};
-
-/**
- * Replace placeholder sentinels in an MSI buffer with real values.
- * Supports space-padded sentinels (new template builds) and unpadded
- * sentinels (older builds where WiX stripped null padding).
- * Returns a new buffer, or null if placeholders can't be found/replaced safely.
- */
-export function replaceMsiPlaceholders(template: Buffer, values: InstallerValues): Buffer | null {
-  if (template.length < 1024) {
-    throw new Error(`Template MSI is suspiciously small (${template.length} bytes) — may be corrupt or a failed download`);
-  }
-
-  const result = Buffer.from(template); // copy
-
-  const replacements: Array<{ name: string; sentinel: string; prefix: string; value: string }> = [
-    { name: 'SERVER_URL', sentinel: PLACEHOLDERS.SERVER_URL, prefix: SENTINEL_PREFIXES.SERVER_URL, value: values.serverUrl },
-    { name: 'ENROLLMENT_KEY', sentinel: PLACEHOLDERS.ENROLLMENT_KEY, prefix: SENTINEL_PREFIXES.ENROLLMENT_KEY, value: values.enrollmentKey },
-    { name: 'ENROLLMENT_SECRET', sentinel: PLACEHOLDERS.ENROLLMENT_SECRET, prefix: SENTINEL_PREFIXES.ENROLLMENT_SECRET, value: values.enrollmentSecret },
-  ];
-
-  for (const { name, sentinel, prefix, value } of replacements) {
-    if (value.length > PLACEHOLDER_CHAR_LENGTH) {
-      throw new Error(`${name} value too long: ${value.length} chars exceeds ${PLACEHOLDER_CHAR_LENGTH} limit`);
-    }
-
-    // Try full space-padded sentinel (new template builds) in ASCII then UTF-16LE
-    const sentinelAscii = Buffer.from(sentinel, 'ascii');
-    const sentinelUtf16 = Buffer.from(sentinel, 'utf16le');
-    let offset = result.indexOf(sentinelAscii);
-    let encoding: BufferEncoding = 'ascii';
-    let sentinelLen = sentinelAscii.length;
-
-    if (offset === -1) {
-      offset = result.indexOf(sentinelUtf16);
-      encoding = 'utf16le';
-      sentinelLen = sentinelUtf16.length;
-    }
-
-    // Fallback: try unpadded prefix (old template where WiX stripped null padding)
-    if (offset === -1) {
-      const prefixAscii = Buffer.from(prefix, 'ascii');
-      offset = result.indexOf(prefixAscii);
-      if (offset !== -1) {
-        encoding = 'ascii';
-        sentinelLen = prefixAscii.length;
-        // Can only replace if value fits in the sentinel's footprint
-        if (Buffer.from(value, 'ascii').length > sentinelLen) {
-          console.warn(`[installer] ${name}: value (${value.length} chars) exceeds unpadded sentinel (${prefix.length} chars) — cannot do in-place MSI replacement`);
-          return null;
-        }
-      }
-    }
-
-    if (offset === -1) {
-      console.warn(`[installer] ${name} placeholder not found in template MSI`);
-      return null;
-    }
-
-    // Pad replacement with spaces (matches template build-msi.ps1). Null
-    // padding would be read back by MSI as U+0000 and truncate the string
-    // when it's expanded into a command line for deferred custom actions,
-    // silently losing the ENROLLMENT_KEY/ENROLLMENT_SECRET fields that come
-    // after SERVER_URL in CustomActionData.
-    const replacementPadded = value.padEnd(PLACEHOLDER_CHAR_LENGTH, ' ');
-    const replacementBuf = Buffer.from(replacementPadded, encoding);
-    // Only write up to the sentinel length to avoid overwriting adjacent data
-    const writeLen = Math.min(replacementBuf.length, sentinelLen);
-    replacementBuf.copy(result, offset, 0, writeLen);
-
-    // Post-patch validation: decode the sentinel region back and verify it
-    // round-trips to the expected value with no embedded nulls. Null bytes
-    // in the padding truncate command-line arguments when MSI expands this
-    // property into a deferred custom action's CustomActionData.
-    const decoded = result.slice(offset, offset + writeLen).toString(encoding);
-    if (decoded.includes('\0')) {
-      throw new Error(`[installer] ${name}: patched region contains null characters — would truncate downstream (bug in replacement logic)`);
-    }
-    if (decoded.trimEnd() !== value) {
-      throw new Error(`[installer] ${name}: post-patch round-trip failed — expected ${JSON.stringify(value)}, got ${JSON.stringify(decoded.trimEnd())}`);
-    }
-  }
-
-  return result;
-}
-
-// --- Windows zip bundle builder (fallback when MSI placeholder replacement fails) ---
+// --- Windows zip bundle builder (fallback when remote signing service is not configured) ---
 
 const WINDOWS_INSTALL_SCRIPT = `@echo off
 setlocal EnableDelayedExpansion
@@ -279,17 +173,6 @@ export async function buildMacosInstallerZip(
 }
 
 // --- Binary fetch helpers (moved from enrollmentKeys.ts) ---
-
-export async function fetchTemplateMsi(): Promise<Buffer> {
-  if (getBinarySource() === 'github') {
-    const url = getGithubTemplateMsiUrl();
-    const resp = await fetch(url, { redirect: 'follow' });
-    if (!resp.ok) throw new Error(`Failed to fetch template MSI: ${resp.status}`);
-    return Buffer.from(await resp.arrayBuffer());
-  }
-  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
-  return readFile(join(binaryDir, 'breeze-agent-template.msi'));
-}
 
 export async function fetchRegularMsi(): Promise<Buffer> {
   if (getBinarySource() === 'github') {

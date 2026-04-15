@@ -63,10 +63,8 @@ vi.mock('../services/enrollmentKeySecurity', () => ({
 }));
 
 vi.mock('../services/installerBuilder', () => ({
-  replaceMsiPlaceholders: vi.fn((buf: Buffer) => buf),
   buildMacosInstallerZip: vi.fn(async () => Buffer.from('fake-zip')),
   buildWindowsInstallerZip: vi.fn(async () => Buffer.from('fake-windows-zip')),
-  fetchTemplateMsi: vi.fn(async () => Buffer.alloc(2048, 0xaa)),
   fetchRegularMsi: vi.fn(async () => Buffer.alloc(2048, 0xbb)),
   fetchMacosPkg: vi.fn(async () => Buffer.alloc(2048, 0xcc)),
 }));
@@ -81,6 +79,7 @@ vi.mock('../services/msiSigning', () => ({
 import { enrollmentKeyRoutes } from './enrollmentKeys';
 import { db } from '../db';
 import { createAuditLogAsync } from '../services/auditService';
+import { MsiSigningService } from '../services/msiSigning';
 
 const ORG_ID = 'org-111';
 const KEY_ID = '11111111-1111-1111-1111-111111111111';
@@ -142,6 +141,10 @@ describe('enrollment key routes — installer download', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // vi.clearAllMocks clears call history but NOT implementations — tests
+    // that set mockReturnValue for fromEnv would otherwise leak into
+    // subsequent tests. Explicitly reset fromEnv to "signing disabled".
+    vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
     process.env.PUBLIC_API_URL = 'https://breeze.example.com';
     app = new Hono();
     app.route('/enrollment-keys', enrollmentKeyRoutes);
@@ -259,9 +262,11 @@ describe('enrollment key routes — installer download', () => {
     });
 
     it('returns signed MSI for windows when signing configured', async () => {
-      const { MsiSigningService } = await import('../services/msiSigning');
-      vi.mocked(MsiSigningService.fromEnv).mockReturnValueOnce({
-        signMsi: vi.fn(async () => Buffer.from('signed-msi-content')),
+      process.env.BINARY_VERSION = '0.62.24';
+      const buildAndSignMsi = vi.fn(async () => Buffer.from('signed-msi-content'));
+      vi.mocked(MsiSigningService.fromEnv).mockReturnValue({
+        buildAndSignMsi,
+        probe: vi.fn(async () => {}),
       } as any);
 
       mockSelectFromWhereLimit([makeEnrollmentKey()]);
@@ -277,12 +282,105 @@ describe('enrollment key routes — installer download', () => {
       expect(res.status).toBe(200);
       expect(res.headers.get('Content-Type')).toBe('application/octet-stream');
       expect(res.headers.get('Content-Disposition')).toContain('breeze-agent.msi');
+
+      // When signing is configured, the route must NOT fetch any local
+      // binary — the signing service owns template fetching.
+      const { fetchRegularMsi } = await import('../services/installerBuilder');
+      expect(fetchRegularMsi).not.toHaveBeenCalled();
+
+      delete process.env.BINARY_VERSION;
     });
 
-    it('returns 500 when signing configured but fails', async () => {
-      const { MsiSigningService } = await import('../services/msiSigning');
-      vi.mocked(MsiSigningService.fromEnv).mockReturnValueOnce({
-        signMsi: vi.fn(async () => { throw new Error('signing failed'); }),
+    it('passes v-prefixed version and 64-hex key to buildAndSignMsi', async () => {
+      process.env.BINARY_VERSION = '0.62.24';
+      const buildAndSignMsi = vi.fn(async () => Buffer.from('signed-msi-content'));
+      vi.mocked(MsiSigningService.fromEnv).mockReturnValue({
+        buildAndSignMsi,
+        probe: vi.fn(async () => {}),
+      } as any);
+
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+      mockInsertValuesReturning([
+        makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer)', maxUsage: 1 }),
+      ]);
+
+      await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(buildAndSignMsi).toHaveBeenCalledTimes(1);
+      const req = (buildAndSignMsi.mock.calls[0] as unknown as [{
+        version: string;
+        properties: { SERVER_URL: string; ENROLLMENT_KEY: string; ENROLLMENT_SECRET?: string };
+      }])[0];
+      // Signing service uses GitHub release tags (v-prefixed) as cache keys
+      expect(req.version).toBe('v0.62.24');
+      expect(req.properties.SERVER_URL).toBe('https://breeze.example.com');
+      expect(req.properties.ENROLLMENT_KEY).toMatch(/^[a-f0-9]{64}$/);
+
+      delete process.env.BINARY_VERSION;
+    });
+
+    it('omits ENROLLMENT_SECRET when AGENT_ENROLLMENT_SECRET is unset', async () => {
+      delete process.env.AGENT_ENROLLMENT_SECRET;
+      process.env.BINARY_VERSION = '0.62.24';
+      const buildAndSignMsi = vi.fn(async () => Buffer.from('signed-msi-content'));
+      vi.mocked(MsiSigningService.fromEnv).mockReturnValue({
+        buildAndSignMsi,
+        probe: vi.fn(async () => {}),
+      } as any);
+
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+      mockInsertValuesReturning([
+        makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer)', maxUsage: 1 }),
+      ]);
+
+      await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      const req = (buildAndSignMsi.mock.calls[0] as unknown as [{
+        properties: Record<string, unknown>;
+      }])[0];
+      expect(req.properties).not.toHaveProperty('ENROLLMENT_SECRET');
+
+      delete process.env.BINARY_VERSION;
+    });
+
+    it('passes ENROLLMENT_SECRET when AGENT_ENROLLMENT_SECRET is set', async () => {
+      process.env.AGENT_ENROLLMENT_SECRET = 'deployment-wide-secret';
+      process.env.BINARY_VERSION = '0.62.24';
+      const buildAndSignMsi = vi.fn(async () => Buffer.from('signed-msi-content'));
+      vi.mocked(MsiSigningService.fromEnv).mockReturnValue({
+        buildAndSignMsi,
+        probe: vi.fn(async () => {}),
+      } as any);
+
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+      mockInsertValuesReturning([
+        makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer)', maxUsage: 1 }),
+      ]);
+
+      await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      const req = (buildAndSignMsi.mock.calls[0] as unknown as [{
+        properties: { ENROLLMENT_SECRET?: string };
+      }])[0];
+      expect(req.properties.ENROLLMENT_SECRET).toBe('deployment-wide-secret');
+
+      delete process.env.AGENT_ENROLLMENT_SECRET;
+      delete process.env.BINARY_VERSION;
+    });
+
+    it('returns 500 with error detail when signing configured but fails', async () => {
+      vi.mocked(MsiSigningService.fromEnv).mockReturnValue({
+        buildAndSignMsi: vi.fn(async () => { throw new Error('signing service returned 401: CF Access denied'); }),
+        probe: vi.fn(async () => {}),
       } as any);
 
       mockSelectFromWhereLimit([makeEnrollmentKey()]);
@@ -297,6 +395,10 @@ describe('enrollment key routes — installer download', () => {
       });
 
       expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toBe('Failed to build installer');
+      // Route is MFA-gated — admin debugging a misconfig sees the cause.
+      expect(body.detail).toContain('CF Access denied');
     });
 
     it('returns zip for macos platform', async () => {

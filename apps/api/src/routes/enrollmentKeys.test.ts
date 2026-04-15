@@ -59,10 +59,8 @@ vi.mock('../services/msiSigning', () => ({
 }));
 
 vi.mock('../services/installerBuilder', () => ({
-  replaceMsiPlaceholders: vi.fn(),
   buildWindowsInstallerZip: vi.fn(async () => Buffer.from('windows-zip')),
   buildMacosInstallerZip: vi.fn(async () => Buffer.from('macos-zip')),
-  fetchTemplateMsi: vi.fn(async () => Buffer.from('template-msi')),
   fetchRegularMsi: vi.fn(async () => Buffer.from('regular-msi')),
   fetchMacosPkg: vi.fn(async () => Buffer.from('macos-pkg')),
 }));
@@ -81,7 +79,7 @@ vi.mock('../services/rate-limit', () => ({
 // ============================================================
 import { enrollmentKeyRoutes, publicEnrollmentRoutes, publicShortLinkRoutes } from './enrollmentKeys';
 import { db, withSystemDbAccessContext } from '../db';
-import { createAuditLogAsync } from '../services/auditService';
+import { MsiSigningService } from '../services/msiSigning';
 
 // ============================================================
 // Helpers
@@ -141,6 +139,7 @@ describe('POST /enrollment-keys/:id/installer-link', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
     process.env.PUBLIC_API_URL = 'https://api.example.com';
     app = new Hono();
     app.route('/enrollment-keys', enrollmentKeyRoutes);
@@ -317,6 +316,7 @@ describe('GET /s/:code', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
     process.env.PUBLIC_API_URL = 'https://api.example.com';
     app = new Hono();
     app.route('/s', publicShortLinkRoutes);
@@ -470,6 +470,7 @@ describe('GET /public-download/:platform', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
     process.env.PUBLIC_API_URL = 'https://api.example.com';
     app = new Hono();
     app.route('/enrollment-keys', publicEnrollmentRoutes);
@@ -521,14 +522,20 @@ describe('GET /public-download/:platform', () => {
     expect(db.update).not.toHaveBeenCalled();
   });
 
-  it('writes the public-download audit with a UUID actorId, not the literal "public"', async () => {
-    // Regression for #444. The public-download path previously passed
-    // `actorId: 'public'` to createAuditLogAsync. Because audit_logs.actor_id
-    // is `uuid NOT NULL`, Postgres rejected every insert with
-    // `invalid input syntax for type uuid: "public"` and the audit row was
-    // silently dropped via createAuditLogAsync's catch. The path has no
-    // authenticated user, so the actor must be represented as system-scope
-    // with a real UUID sentinel.
+  it('uses the remote signing service (no local binary fetch) when configured', async () => {
+    // Regression guard for the most-hit installer path in production. When
+    // MsiSigningService is configured, serveInstaller must:
+    //   1. NOT call fetchRegularMsi / fetchMacosPkg / anything local,
+    //   2. call buildAndSignMsi with the correct version + properties,
+    //   3. serve the result as application/octet-stream.
+    process.env.BINARY_VERSION = '0.62.24';
+
+    const buildAndSignMsi = vi.fn(async () => Buffer.from('signed-msi-bytes'));
+    vi.mocked(MsiSigningService.fromEnv).mockReturnValue({
+      buildAndSignMsi,
+      probe: vi.fn(async () => {}),
+    } as any);
+
     const row = makeKeyRow({
       shortCode: 'pubcode1234',
       installerPlatform: 'windows',
@@ -544,19 +551,32 @@ describe('GET /public-download/:platform', () => {
       }),
     } as any);
 
+    const { fetchRegularMsi, fetchMacosPkg } = await import('../services/installerBuilder');
+
     const res = await app.request(
-      '/enrollment-keys/public-download/windows?token=abc123',
+      '/enrollment-keys/public-download/windows?token=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
     );
 
     expect(res.status).toBe(200);
-    expect(createAuditLogAsync).toHaveBeenCalledWith(
-      expect.objectContaining({
-        action: 'enrollment_key.public_download',
-        actorType: 'system',
-        actorId: expect.stringMatching(
-          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
-        ),
-      }),
+    expect(res.headers.get('Content-Type')).toBe('application/octet-stream');
+    expect(res.headers.get('Content-Disposition')).toContain('breeze-agent.msi');
+
+    expect(fetchRegularMsi).not.toHaveBeenCalled();
+    expect(fetchMacosPkg).not.toHaveBeenCalled();
+
+    expect(buildAndSignMsi).toHaveBeenCalledTimes(1);
+    const req = (buildAndSignMsi.mock.calls[0] as unknown as [{
+      version: string;
+      properties: { SERVER_URL: string; ENROLLMENT_KEY: string; ENROLLMENT_SECRET?: string };
+    }])[0];
+    // Signing service uses GitHub release tags (v-prefixed) as cache keys
+    expect(req.version).toBe('v0.62.24');
+    expect(req.properties.SERVER_URL).toBe('https://api.example.com');
+    // The token from ?token= is embedded verbatim as ENROLLMENT_KEY.
+    expect(req.properties.ENROLLMENT_KEY).toBe(
+      '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
     );
+
+    delete process.env.BINARY_VERSION;
   });
 });

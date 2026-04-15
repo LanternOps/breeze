@@ -51,10 +51,6 @@ export function getGithubAgentPkgUrl(os: string, arch: string): string {
   return `${githubDownloadBase()}/${filename}`;
 }
 
-export function getGithubTemplateMsiUrl(): string {
-  return `${githubDownloadBase()}/breeze-agent-template.msi`;
-}
-
 export function getGithubRegularMsiUrl(): string {
   return `${githubDownloadBase()}/breeze-agent.msi`;
 }
