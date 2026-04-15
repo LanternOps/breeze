@@ -161,7 +161,13 @@ const (
 	IdleTimeout = 30 * time.Minute
 
 	// MaxConnectionsPerIdentity limits concurrent connections per user identity.
-	MaxConnectionsPerIdentity = 3
+	// Bumped from 3 to 5 so reconnect overlap has headroom — paired with
+	// evict-on-admit below, which frees any slot whose holder has gone idle.
+	MaxConnectionsPerIdentity = 5
+
+	// EvictIdleThreshold is how idle a session must be before evict-on-admit
+	// reclaims its slot for a new connection from the same identity.
+	EvictIdleThreshold = 60 * time.Second
 
 	// RateLimitAttempts is max connection attempts per identity per window.
 	RateLimitAttempts = 5
@@ -171,6 +177,13 @@ const (
 
 	// IdleCheckInterval is how often to scan for idle sessions.
 	IdleCheckInterval = 60 * time.Second
+)
+
+// Keepalive tuning. Vars (not consts) so tests can override them to drive
+// the goroutine on a short schedule without real sleeps.
+var (
+	keepalivePingInterval = 30 * time.Second
+	keepaliveTimeout      = 45 * time.Second
 )
 
 // Role-based scopes: SYSTEM helpers own desktop capture, user-token helpers own script execution.
@@ -946,6 +959,75 @@ func sendPreAuthRejectAndClose(rawConn net.Conn, code, reason string, permanent 
 	}
 }
 
+// tryAdmitLocked decides whether a new connection for identityKey can be
+// accepted. The caller must hold b.mu.Lock() for the full duration of this
+// call and any subsequent registration step — otherwise concurrent admits
+// for the same identity can each observe a stale `existing` slice and
+// collectively push the count past MaxConnectionsPerIdentity.
+//
+// If under the cap, returns (true, nil). If at the cap and an idle victim
+// over EvictIdleThreshold exists, removes the victim from b.sessions /
+// b.byIdentity in place (atomic with the cap check) and returns (true,
+// victim). If nothing evictable, returns (false, nil).
+//
+// The caller owns the returned victim and must Close() it outside the lock
+// (Close() does I/O) and call onSessionClosed, if any.
+func (b *Broker) tryAdmitLocked(identityKey string) (admitted bool, victim *Session) {
+	existing := b.byIdentity[identityKey]
+	if len(existing) < MaxConnectionsPerIdentity {
+		return true, nil
+	}
+
+	var oldest time.Duration
+	for _, s := range existing {
+		idle := s.IdleDuration()
+		if idle > EvictIdleThreshold && idle > oldest {
+			victim = s
+			oldest = idle
+		}
+	}
+	if victim == nil {
+		return false, nil
+	}
+
+	log.Warn("evicting idle session to admit reconnect",
+		"identity", identityKey,
+		"sessionId", victim.SessionID,
+		"idleMs", oldest.Milliseconds(),
+	)
+	b.removeSessionMapsLocked(victim)
+	return true, victim
+}
+
+// admitOrEvict is the pre-auth admission check called from handleConnection
+// before the auth handshake runs, so DoS attempts are rejected cheaply.
+// Caller must NOT hold b.mu. The register step later calls tryAdmitLocked
+// again under its own write lock as the authoritative decision, so a race
+// between this pre-check returning true and the register site cannot
+// actually exceed the cap.
+func (b *Broker) admitOrEvict(identityKey string) bool {
+	b.mu.Lock()
+	admitted, victim := b.tryAdmitLocked(identityKey)
+	if victim != nil {
+		b.publishSnapshotLocked()
+	}
+	onClosed := b.onSessionClosed
+	b.mu.Unlock()
+
+	if victim != nil {
+		if err := victim.Close(); err != nil {
+			log.Error("error closing evicted session",
+				"sessionId", victim.SessionID,
+				"error", err.Error(),
+			)
+		}
+		if onClosed != nil {
+			onClosed(victim)
+		}
+	}
+	return admitted
+}
+
 func (b *Broker) handleConnection(rawConn net.Conn) {
 	// Set handshake deadline
 	rawConn.SetDeadline(time.Now().Add(HandshakeTimeout))
@@ -967,11 +1049,16 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
-	// Step 3: Check max connections per identity
-	b.mu.RLock()
-	identityCount := len(b.byIdentity[identityKey])
-	b.mu.RUnlock()
-	if identityCount >= MaxConnectionsPerIdentity {
+	// Step 3: Check max connections per identity. If the cap is hit, try to
+	// evict a single stranded session (idle > EvictIdleThreshold) so a
+	// reconnecting helper isn't permanently locked out by a dead predecessor.
+	// This is the cheap pre-auth reject path; the register step below
+	// re-runs the same check under a held write lock as the authoritative
+	// decision. See issue #443.
+	if !b.admitOrEvict(identityKey) {
+		b.mu.RLock()
+		identityCount := len(b.byIdentity[identityKey])
+		b.mu.RUnlock()
 		log.Warn("max connections exceeded", "identity", identityKey, "count", identityCount)
 		sendPreAuthRejectAndClose(rawConn, ipc.PreAuthCodeMaxConnsExceeded, "too many connections for identity", false)
 		return
@@ -1237,8 +1324,23 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		session.WinSessionID = fmt.Sprintf("%d", authReq.WinSessionID)
 	}
 
-	// Register session
+	// Register session. Re-run tryAdmitLocked under the write lock: this
+	// is the authoritative cap check. Without it, two concurrent admits
+	// for the same identity could both pass admitOrEvict (or both see
+	// room after one of them evicted), then both append here and push the
+	// count past MaxConnectionsPerIdentity. Also captures any victim so we
+	// can Close() it outside the lock below.
 	b.mu.Lock()
+	admitted, victim := b.tryAdmitLocked(identityKey)
+	if !admitted {
+		b.mu.Unlock()
+		log.Warn("max connections exceeded at register (admit race)",
+			"identity", identityKey,
+			"sessionId", authReq.SessionID,
+		)
+		conn.Close()
+		return
+	}
 	b.sessions[authReq.SessionID] = session
 	b.byIdentity[identityKey] = append(b.byIdentity[identityKey], session)
 	// Track backup helper session for direct access
@@ -1249,7 +1351,20 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		b.backup.session = session
 	}
 	b.publishSnapshotLocked()
+	registerOnClosed := b.onSessionClosed
 	b.mu.Unlock()
+
+	if victim != nil {
+		if err := victim.Close(); err != nil {
+			log.Error("error closing evicted session at register",
+				"sessionId", victim.SessionID,
+				"error", err.Error(),
+			)
+		}
+		if registerOnClosed != nil {
+			registerOnClosed(victim)
+		}
+	}
 
 	log.Info("user helper connected",
 		"identity", identityKey,
@@ -1262,110 +1377,14 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		"desktopContext", session.DesktopContext,
 	)
 
+	// Keepalive: send periodic pings and close the session if pongs stop
+	// arriving. Without this, a wedged helper (e.g. a capture process killed
+	// mid-stream) can hold a slot forever because RecvLoop blocks on a read
+	// with no deadline. See issue #443.
+	go b.runKeepalive(session)
+
 	// Start receive loop — blocks until disconnect
-	session.RecvLoop(func(s *Session, env *ipc.Envelope) {
-		switch env.Type {
-		case ipc.TypePing:
-			if err := s.conn.SendTyped(env.ID, ipc.TypePong, nil); err != nil {
-				log.Warn("failed to send pong", "uid", s.UID, "error", err.Error())
-				return
-			}
-		case ipc.TypeCapabilities:
-			var caps ipc.Capabilities
-			if err := json.Unmarshal(env.Payload, &caps); err != nil {
-				log.Warn("invalid capabilities payload", "uid", s.UID, "error", err.Error())
-			} else {
-				sanitized := sanitizeCapabilitiesForSession(s, &caps)
-				s.SetCapabilities(sanitized)
-				// Log from the locally-held copy to avoid a post-Set read of
-				// s.Capabilities that would race with any concurrent reader.
-				log.Info("capabilities received",
-					"uid", s.UID,
-					"canNotify", sanitized.CanNotify,
-					"canTray", sanitized.CanTray,
-					"canCapture", sanitized.CanCapture,
-					"canClipboard", sanitized.CanClipboard,
-					"displayServer", sanitized.DisplayServer,
-				)
-			}
-		case ipc.TypeTCCStatus:
-			var status ipc.TCCStatus
-			if err := json.Unmarshal(env.Payload, &status); err != nil {
-				log.Warn("invalid tcc_status payload", "uid", s.UID, "error", err.Error())
-			} else {
-				sanitized := sanitizeTCCStatusForSession(s, &status)
-				if sanitized == nil {
-					log.Warn("dropping unauthorized tcc_status message",
-						"sessionId", s.SessionID, "role", s.HelperRole)
-					return
-				}
-				s.SetTCCStatus(sanitized)
-				log.Info("TCC permissions received",
-					"uid", s.UID,
-					"screenRecording", sanitized.ScreenRecording,
-					"accessibility", sanitized.Accessibility,
-					"fullDiskAccess", sanitized.FullDiskAccess,
-					"remoteDesktop", sanitized.RemoteDesktop,
-				)
-			}
-		case ipc.TypeDisconnect:
-			log.Info("user helper disconnecting", "uid", s.UID, "sessionId", s.SessionID)
-			s.Close()
-		case ipc.TypeWatchdogPing:
-			if !s.HasScope("watchdog") {
-				log.Warn("dropping watchdog_ping from non-watchdog session",
-					"sessionId", s.SessionID, "role", s.HelperRole)
-				return
-			}
-			var ping ipc.WatchdogPing
-			if err := json.Unmarshal(env.Payload, &ping); err != nil {
-				log.Warn("invalid watchdog_ping payload", "error", err.Error())
-				return
-			}
-			pong := ipc.WatchdogPong{
-				Healthy: true,
-				Uptime:  int64(time.Since(b.startTime).Seconds()),
-			}
-			if ping.RequestHealthSummary && b.onMessage != nil {
-				// Health summary is populated by the heartbeat module via onMessage;
-				// for the broker-level ping we include uptime only.
-			}
-			if err := s.SendNotify(env.ID, ipc.TypeWatchdogPong, pong); err != nil {
-				log.Warn("failed to send watchdog_pong", "error", err.Error())
-			}
-		case ipc.TypeWatchdogCommandResult:
-			if !shouldForwardUnsolicitedHelperMessage(s, env) {
-				log.Warn("dropping unauthorized watchdog_command_result",
-					"sessionId", s.SessionID, "role", s.HelperRole)
-				return
-			}
-			if b.onMessage != nil {
-				b.onMessage(s, env)
-			}
-		case backupipc.TypeBackupResult, backupipc.TypeBackupProgress, backupipc.TypeBackupReady:
-			if !shouldForwardUnsolicitedHelperMessage(s, env) {
-				log.Warn("dropping unauthorized backup helper message",
-					"type", env.Type, "sessionId", s.SessionID, "role", s.HelperRole)
-				return
-			}
-			if b.onMessage != nil {
-				b.onMessage(s, env)
-			}
-		case ipc.TypeTrayAction, ipc.TypeNotifyResult, ipc.TypeClipboardData, ipc.TypeCommandResult, ipc.TypeSASRequest, ipc.TypeDesktopPeerDisconnected,
-			ipc.TypeDesktopStart, ipc.TypeDesktopStop, ipc.TypeLaunchResult:
-			if !shouldForwardUnsolicitedHelperMessage(s, env) {
-				log.Warn("dropping unsolicited or unauthorized helper message",
-					"type", env.Type, "sessionId", s.SessionID, "role", s.HelperRole)
-				return
-			}
-			if b.onMessage != nil {
-				b.onMessage(s, env)
-			}
-		default:
-			log.Warn("unknown message type from helper, ignoring",
-				"type", env.Type, "identity", s.IdentityKey, "sessionId", s.SessionID)
-		}
-	})
+	session.RecvLoop(b.dispatchHelperMessage)
 
 	// Clean up after disconnect
 	b.removeSession(session)
@@ -1375,8 +1394,11 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	log.Info("user helper disconnected", "uid", session.UID, "sessionId", session.SessionID)
 }
 
-func (b *Broker) removeSession(session *Session) {
-	b.mu.Lock()
+// removeSessionMapsLocked removes session from b.sessions and b.byIdentity
+// and records the PID as stale. Caller must hold b.mu.Lock(). Does NOT
+// Close() the session, publish a snapshot, or fire onSessionClosed; the
+// caller is responsible for those.
+func (b *Broker) removeSessionMapsLocked(session *Session) {
 	delete(b.sessions, session.SessionID)
 
 	key := session.IdentityKey
@@ -1398,6 +1420,11 @@ func (b *Broker) removeSession(session *Session) {
 		staleKey := session.WinSessionID + "-" + session.HelperRole
 		b.trackStaleHelper(staleKey, session.PID)
 	}
+}
+
+func (b *Broker) removeSession(session *Session) {
+	b.mu.Lock()
+	b.removeSessionMapsLocked(session)
 	b.publishSnapshotLocked()
 	onSessionClosed := b.onSessionClosed
 	b.mu.Unlock()
@@ -1604,6 +1631,199 @@ func hashFileSHA256(path string) (string, error) {
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
+// dispatchHelperMessage is the RecvLoop callback for an authed helper
+// session. Extracted from the handleConnection closure so keepalive/pong
+// tests can drive the real dispatch through a paired ipc.Conn without
+// replicating the switch.
+func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
+	switch env.Type {
+	case ipc.TypePing:
+		if err := s.conn.SendTyped(env.ID, ipc.TypePong, nil); err != nil {
+			log.Warn("failed to send pong", "uid", s.UID, "error", err.Error())
+			return
+		}
+	case ipc.TypePong:
+		// Reply to broker-initiated keepalive ping. RecvLoop has already
+		// called s.Touch(), so the idle reaper won't claim this session.
+		s.NotePong()
+	case ipc.TypeCapabilities:
+		var caps ipc.Capabilities
+		if err := json.Unmarshal(env.Payload, &caps); err != nil {
+			log.Warn("invalid capabilities payload", "uid", s.UID, "error", err.Error())
+		} else {
+			sanitized := sanitizeCapabilitiesForSession(s, &caps)
+			s.SetCapabilities(sanitized)
+			// Log from the locally-held copy to avoid a post-Set read of
+			// s.Capabilities that would race with any concurrent reader.
+			log.Info("capabilities received",
+				"uid", s.UID,
+				"canNotify", sanitized.CanNotify,
+				"canTray", sanitized.CanTray,
+				"canCapture", sanitized.CanCapture,
+				"canClipboard", sanitized.CanClipboard,
+				"displayServer", sanitized.DisplayServer,
+			)
+		}
+	case ipc.TypeTCCStatus:
+		var status ipc.TCCStatus
+		if err := json.Unmarshal(env.Payload, &status); err != nil {
+			log.Warn("invalid tcc_status payload", "uid", s.UID, "error", err.Error())
+		} else {
+			sanitized := sanitizeTCCStatusForSession(s, &status)
+			if sanitized == nil {
+				log.Warn("dropping unauthorized tcc_status message",
+					"sessionId", s.SessionID, "role", s.HelperRole)
+				return
+			}
+			s.SetTCCStatus(sanitized)
+			log.Info("TCC permissions received",
+				"uid", s.UID,
+				"screenRecording", sanitized.ScreenRecording,
+				"accessibility", sanitized.Accessibility,
+				"fullDiskAccess", sanitized.FullDiskAccess,
+				"remoteDesktop", sanitized.RemoteDesktop,
+			)
+		}
+	case ipc.TypeDisconnect:
+		log.Info("user helper disconnecting", "uid", s.UID, "sessionId", s.SessionID)
+		s.Close()
+	case ipc.TypeWatchdogPing:
+		if !s.HasScope("watchdog") {
+			log.Warn("dropping watchdog_ping from non-watchdog session",
+				"sessionId", s.SessionID, "role", s.HelperRole)
+			return
+		}
+		var ping ipc.WatchdogPing
+		if err := json.Unmarshal(env.Payload, &ping); err != nil {
+			log.Warn("invalid watchdog_ping payload", "error", err.Error())
+			return
+		}
+		pong := ipc.WatchdogPong{
+			Healthy: true,
+			Uptime:  int64(time.Since(b.startTime).Seconds()),
+		}
+		if ping.RequestHealthSummary && b.onMessage != nil {
+			// Health summary is populated by the heartbeat module via onMessage;
+			// for the broker-level ping we include uptime only.
+		}
+		if err := s.SendNotify(env.ID, ipc.TypeWatchdogPong, pong); err != nil {
+			log.Warn("failed to send watchdog_pong", "error", err.Error())
+		}
+	case ipc.TypeWatchdogCommandResult:
+		if !shouldForwardUnsolicitedHelperMessage(s, env) {
+			log.Warn("dropping unauthorized watchdog_command_result",
+				"sessionId", s.SessionID, "role", s.HelperRole)
+			return
+		}
+		if b.onMessage != nil {
+			b.onMessage(s, env)
+		}
+	case backupipc.TypeBackupResult, backupipc.TypeBackupProgress, backupipc.TypeBackupReady:
+		if !shouldForwardUnsolicitedHelperMessage(s, env) {
+			log.Warn("dropping unauthorized backup helper message",
+				"type", env.Type, "sessionId", s.SessionID, "role", s.HelperRole)
+			return
+		}
+		if b.onMessage != nil {
+			b.onMessage(s, env)
+		}
+	case ipc.TypeTrayAction, ipc.TypeNotifyResult, ipc.TypeClipboardData, ipc.TypeCommandResult, ipc.TypeSASRequest, ipc.TypeDesktopPeerDisconnected,
+		ipc.TypeDesktopStart, ipc.TypeDesktopStop, ipc.TypeLaunchResult:
+		if !shouldForwardUnsolicitedHelperMessage(s, env) {
+			log.Warn("dropping unsolicited or unauthorized helper message",
+				"type", env.Type, "sessionId", s.SessionID, "role", s.HelperRole)
+			return
+		}
+		if b.onMessage != nil {
+			b.onMessage(s, env)
+		}
+	default:
+		log.Warn("unknown message type from helper, ignoring",
+			"type", env.Type, "identity", s.IdentityKey, "sessionId", s.SessionID)
+	}
+}
+
+// keepaliveMaxSendFailures is the number of consecutive ping sends that may
+// fail before runKeepalive gives up and closes the session. A single failure
+// can be a transient EAGAIN on a full socket buffer or a slow drain — the
+// real "helper is wedged" signal is the pong-age check, not the send side.
+const keepaliveMaxSendFailures = 3
+
+// runKeepalive pings the helper every keepalivePingInterval and closes the
+// session if no pong has arrived for keepaliveTimeout. Exits when the session
+// is closed by anything else (RecvLoop return, explicit Close, reaper, etc).
+//
+// Order inside the ticker branch is `check age → send ping`, not the other
+// way around. If we sent first and then checked age, a tick that happens to
+// straddle a just-arriving pong would read a stale "previous pong" age and
+// spuriously close a healthy session. Checking first means we only close
+// when the most recent pong we actually have is already too old — a
+// decision that is independent of this tick's outgoing ping.
+func (b *Broker) runKeepalive(session *Session) {
+	ticker := time.NewTicker(keepalivePingInterval)
+	defer ticker.Stop()
+
+	sendFailures := 0
+	for {
+		select {
+		case <-session.Done():
+			return
+		case <-ticker.C:
+			if session.IsClosed() {
+				return
+			}
+
+			// Authoritative wedge check: the age here is the time since the
+			// most recently received pong (seeded to session creation time
+			// in NewSession), not the time since the ping we're about to
+			// send below.
+			if age := session.LastPongAge(); age > keepaliveTimeout {
+				log.Warn("keepalive pong timeout, closing stranded session",
+					"sessionId", session.SessionID,
+					"identity", session.IdentityKey,
+					"ageMs", age.Milliseconds(),
+				)
+				if err := session.Close(); err != nil {
+					log.Error("keepalive close returned error",
+						"sessionId", session.SessionID,
+						"error", err.Error(),
+					)
+				}
+				return
+			}
+
+			// Send is mutex-serialised by ipc.Conn (see protocol.go), so
+			// this is safe to call concurrently with RecvLoop/SendCommand
+			// paths.
+			if err := session.conn.SendTyped("keepalive", ipc.TypePing, nil); err != nil {
+				sendFailures++
+				log.Warn("keepalive ping send failed",
+					"sessionId", session.SessionID,
+					"identity", session.IdentityKey,
+					"consecutive", sendFailures,
+					"error", err.Error(),
+				)
+				if sendFailures >= keepaliveMaxSendFailures {
+					log.Warn("keepalive ping send failed repeatedly, closing session",
+						"sessionId", session.SessionID,
+						"identity", session.IdentityKey,
+						"consecutive", sendFailures,
+					)
+					if err := session.Close(); err != nil {
+						log.Error("keepalive close returned error",
+							"sessionId", session.SessionID,
+							"error", err.Error(),
+						)
+					}
+					return
+				}
+				continue
+			}
+			sendFailures = 0
+		}
+	}
+}
+
 func (b *Broker) idleReaper(stopChan <-chan struct{}) {
 	ticker := time.NewTicker(IdleCheckInterval)
 	defer ticker.Stop()
@@ -1621,10 +1841,10 @@ func (b *Broker) reapIdleSessions() {
 	b.mu.RLock()
 	var toClose []*Session
 	for _, s := range b.sessions {
-		caps := s.GetCapabilities()
-		if caps != nil && caps.CanCapture {
-			continue
-		}
+		// CanCapture is no longer exempt: a streaming helper touches the
+		// session on every frame, so a capture session only reaches
+		// IdleTimeout if its helper is stranded (killed pipe / WER hang).
+		// See issue #443.
 		if s.IdleDuration() > IdleTimeout {
 			toClose = append(toClose, s)
 		}

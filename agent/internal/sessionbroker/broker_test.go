@@ -218,9 +218,11 @@ func TestLaunchProcessViaUserHelperForSessionTargetsMatchingHelper(t *testing.T)
 	}
 }
 
-func TestReapIdleSessionsSkipsCaptureSessions(t *testing.T) {
+// Previously the reaper skipped capture-capable sessions. Issue #443: a
+// streaming helper Touches on every frame, so a genuinely idle capture
+// session over IdleTimeout is stranded and must be reaped.
+func TestReapIdleSessionsReapsStrandedCaptureSessions(t *testing.T) {
 	session, clientIPC := createTestSession(t)
-	defer session.Close()
 	defer clientIPC.Close()
 
 	session.Capabilities = &ipc.Capabilities{CanCapture: true}
@@ -236,11 +238,11 @@ func TestReapIdleSessionsSkipsCaptureSessions(t *testing.T) {
 
 	b.reapIdleSessions()
 
-	if got := b.SessionCount(); got != 1 {
-		t.Fatalf("SessionCount after reap = %d, want 1", got)
+	if got := b.SessionCount(); got != 0 {
+		t.Fatalf("SessionCount after reap = %d, want 0 (capture session must be reaped when stranded)", got)
 	}
-	if b.SessionForIdentity(session.IdentityKey) != session {
-		t.Fatal("capture-capable session should not be reaped")
+	if !session.IsClosed() {
+		t.Fatal("stranded capture session should have been Close()d by reaper")
 	}
 }
 

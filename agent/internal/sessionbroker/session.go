@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backupipc"
@@ -42,11 +43,16 @@ type Session struct {
 	done    chan struct{}
 	closed  bool
 	pending map[string]pendingResponse // command ID -> response channel + expected response type
+
+	// lastPongAt is the UnixNano timestamp of the most recent pong received
+	// from the helper in response to a broker-initiated keepalive ping.
+	// Read/written atomically so the keepalive goroutine doesn't need s.mu.
+	lastPongAt atomic.Int64
 }
 
 // NewSession creates a new session for a verified user helper connection.
 func NewSession(conn *ipc.Conn, uid uint32, identityKey, username, displayEnv, sessionID string, scopes []string) *Session {
-	return &Session{
+	s := &Session{
 		UID:           uid,
 		IdentityKey:   identityKey,
 		Username:      username,
@@ -59,6 +65,37 @@ func NewSession(conn *ipc.Conn, uid uint32, identityKey, username, displayEnv, s
 		done:          make(chan struct{}),
 		pending:       make(map[string]pendingResponse),
 	}
+	// Seed so NoteKeepalivePong is not needed before the first ping fires.
+	s.lastPongAt.Store(time.Now().UnixNano())
+	return s
+}
+
+// NotePong records that a keepalive pong has just been received.
+func (s *Session) NotePong() {
+	s.lastPongAt.Store(time.Now().UnixNano())
+}
+
+// LastPongAge returns how long it has been since the helper last responded
+// to a broker-initiated keepalive ping.
+func (s *Session) LastPongAge() time.Duration {
+	t := s.lastPongAt.Load()
+	if t == 0 {
+		return 0
+	}
+	return time.Since(time.Unix(0, t))
+}
+
+// Done returns the channel that is closed when the session is Close()d.
+// Used by the broker's keepalive goroutine to exit on disconnect.
+func (s *Session) Done() <-chan struct{} {
+	return s.done
+}
+
+// IsClosed reports whether Close has been called on the session.
+func (s *Session) IsClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
 }
 
 // ErrDuplicateCommand is returned when SendCommand is called with an id that
