@@ -74,7 +74,10 @@ import { commandsRoutes } from './commands';
 
 describe('agent commands routes', () => {
   let app: Hono;
-  const agentId = '11111111-1111-4111-8111-111111111111';
+  // 64-char SHA-256 hex — matches the production agent ID format (cfg.AgentID).
+  // Using a UUID here previously hid the bug fixed in PR #435 where the route's
+  // param schema rejected anything that wasn't a UUID.
+  const agentId = 'ab3c20eddb470acffd33bbe00f25e0348e89298ab80cece542bb1fbf921e5776';
   const commandId = '22222222-2222-4222-8222-222222222222';
 
   beforeEach(() => {
