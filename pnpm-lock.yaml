@@ -260,8 +260,8 @@ importers:
         specifier: ~55.0.13
         version: 55.0.13(expo@55.0.8)(react-native@0.83.2(@babel/core@7.28.6)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.28.6))(@types/react@19.2.8)(react@19.2.0))(react@19.2.0)(typescript@5.9.3)
       expo-secure-store:
-        specifier: ~55.0.9
-        version: 55.0.9(expo@55.0.8)
+        specifier: ~55.0.13
+        version: 55.0.13(expo@55.0.8)
       expo-status-bar:
         specifier: ~55.0.4
         version: 55.0.4(react-native@0.83.2(@babel/core@7.28.6)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.28.6))(@types/react@19.2.8)(react@19.2.0))(react@19.2.0)
@@ -6288,8 +6288,8 @@ packages:
       react: '*'
       react-native: '*'
 
-  expo-secure-store@55.0.9:
-    resolution: {integrity: sha512-TIPGjM73LKlebpXwgAu/yL7lNWr6RQYmFw3vgYHOqLFYQMpsBqkQmopovbNX3c/0+RCE9KZlLAkcz8r6detILQ==}
+  expo-secure-store@55.0.13:
+    resolution: {integrity: sha512-I6r0JNO1Fd4o0Gu7Ixiic7s89lqgdUHq17uBH9y1f/AntoyKn71TdtYJH82RgfsBbu5qNVzrwImmvlANyOlITQ==}
     peerDependencies:
       expo: '*'
 
@@ -17351,7 +17351,7 @@ snapshots:
       - supports-color
       - typescript
 
-  expo-secure-store@55.0.9(expo@55.0.8):
+  expo-secure-store@55.0.13(expo@55.0.8):
     dependencies:
       expo: 55.0.8(@babel/core@7.28.6)(@expo/dom-webview@55.0.3)(react-dom@19.2.3(react@19.2.0))(react-native@0.83.2(@babel/core@7.28.6)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.28.6))(@types/react@19.2.8)(react@19.2.0))(react@19.2.0)(typescript@5.9.3)
 
