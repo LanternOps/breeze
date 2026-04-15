@@ -588,6 +588,109 @@ describe('command queue service', () => {
       expect(result.status).toBe('completed');
     });
 
+    // Regression guard: executeCommand with targetRole='watchdog' must
+    // insert target_role='watchdog' on the row AND must skip the WS
+    // dispatch path entirely — the watchdog has no WS connection and is
+    // picked up by the heartbeat claim query
+    // (routes/agents/heartbeat.ts -> claimPendingCommandsForDevice(..., 'watchdog')).
+    // Before the fix, the AI upgrade tool queued `agent_upgrade` with default
+    // target_role='agent', which dispatched to the agent WS (wrong handler)
+    // and never reached the watchdog heartbeat poll.
+    it('routes watchdog-targeted commands to the row insert without WS dispatch', async () => {
+      const device = {
+        id: 'dev-watchdog',
+        status: 'online',
+        agentId: 'agent-wd',
+        orgId: 'org-1',
+        hostname: 'host-wd',
+      };
+      const queued = { id: 'cmd-wd', type: 'update_agent' };
+      const completed = {
+        id: 'cmd-wd',
+        type: 'update_agent',
+        status: 'completed',
+        result: { status: 'completed', stdout: 'updated' },
+      };
+
+      let pollCall = 0;
+      vi.mocked(db.select).mockImplementation(() => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockImplementation(() => {
+              pollCall += 1;
+              if (pollCall === 1) return Promise.resolve([device]);
+              return Promise.resolve([completed]);
+            }),
+          }),
+        }),
+      }) as any);
+
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([queued]),
+        execute: vi.fn().mockResolvedValue(undefined),
+      });
+      vi.mocked(db.insert).mockReturnValue({
+        values: insertValues,
+      } as any);
+
+      // Even if the WS pool says the agent is connected, a watchdog-targeted
+      // command must NOT hit the WS dispatch path.
+      vi.mocked(isAgentConnected).mockReturnValue(true);
+
+      const result = await executeCommand(
+        'dev-watchdog',
+        'update_agent',
+        { version: '0.62.25-rc.2' },
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      // Row must be inserted with target_role='watchdog'.
+      expect(insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          deviceId: 'dev-watchdog',
+          type: 'update_agent',
+          payload: { version: '0.62.25-rc.2' },
+          status: 'pending',
+          targetRole: 'watchdog',
+        }),
+      );
+      // WS dispatch path must be fully skipped.
+      expect(claimPendingCommandForDelivery).not.toHaveBeenCalled();
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+      expect(releaseClaimedCommandDelivery).not.toHaveBeenCalled();
+      // Polling still returns the completed result (set by the watchdog's
+      // command_result path, same as agent commands).
+      expect(result.status).toBe('completed');
+    });
+
+    // Regression guard: default options (no targetRole) must still insert
+    // target_role='agent' so existing agent-bound commands continue working.
+    // A subtle regression here would break every non-watchdog command.
+    it("defaults target_role to 'agent' when targetRole is not provided", async () => {
+      setupOnlineDeviceMocks();
+      vi.mocked(isAgentConnected).mockReturnValue(true);
+      vi.mocked(sendCommandToAgent).mockReturnValue(true);
+
+      // Capture the values passed to db.insert(...).values(...).
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'cmd-x' }]),
+        execute: vi.fn().mockResolvedValue(undefined),
+      });
+      vi.mocked(db.insert).mockReturnValue({
+        values: insertValues,
+      } as any);
+
+      await executeCommand('dev-online', CommandTypes.PATCH_SCAN);
+
+      expect(insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          targetRole: 'agent',
+        }),
+      );
+      // Normal agent path must still dispatch over WS.
+      expect(sendCommandToAgent).toHaveBeenCalled();
+    });
+
     it('skips the WS pre-check when preferHeartbeat is true', async () => {
       // Heartbeat-preferred callers (e.g. Tauri helper) intentionally let the
       // command queue and wait for the next agent poll, so the WS pre-check

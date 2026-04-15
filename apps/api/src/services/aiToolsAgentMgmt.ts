@@ -220,9 +220,19 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
 
       for (const deviceId of deviceIds) {
         try {
-          await executeCommand(deviceId, 'agent_upgrade', {
-            targetVersion,
-          }, { userId: auth.user.id, timeoutMs: 60000 });
+          // Agent upgrades are executed by the breeze-watchdog process, not
+          // the agent. The watchdog handles type `update_agent` and reads
+          // `payload.version` — see agent/cmd/breeze-watchdog/main.go:605.
+          // It has no WS connection and polls via heartbeat, so we must tag
+          // the command with target_role='watchdog' or it will be dispatched
+          // to the agent WS and never picked up.
+          await executeCommand(deviceId, 'update_agent', {
+            version: targetVersion,
+          }, {
+            userId: auth.user.id,
+            timeoutMs: 60000,
+            targetRole: 'watchdog',
+          });
           queued++;
         } catch (err) {
           errors[deviceId] = err instanceof Error ? err.message : 'Failed to queue upgrade';
