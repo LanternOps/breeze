@@ -176,40 +176,57 @@ func (c *Client) connect() error {
 // dialIPC is implemented in client_windows.go and client_unix.go.
 
 func (c *Client) authenticate() error {
-	cu, err := user.Current()
-	if err != nil {
-		return fmt.Errorf("get current user: %w", err)
+	var (
+		uid      uint64
+		sid      string
+		username string
+	)
+
+	if runtime.GOOS == "windows" {
+		// Bypass os/user on Windows entirely: user.Current() caches its
+		// result via sync.Once, so a CreateProcessAsUser race that fails
+		// the first lookup poisons every subsequent call. Query the kernel
+		// token directly instead (see sid_windows.go).
+		retrySID, retryErr := lookupSIDWithRetry()
+		if retryErr != nil {
+			return retryErr
+		}
+		sid = retrySID
+
+		uname, unameErr := lookupUsernameDirect()
+		if unameErr != nil {
+			return fmt.Errorf("get current username: %w", unameErr)
+		}
+		username = uname
+	} else {
+		cu, err := user.Current()
+		if err != nil {
+			return fmt.Errorf("get current user: %w", err)
+		}
+		parsed, parseErr := strconv.ParseUint(cu.Uid, 10, 32)
+		if parseErr != nil {
+			return fmt.Errorf("parse uid %q: %w", cu.Uid, parseErr)
+		}
+		uid = parsed
+		username = cu.Username
 	}
 
-	uid, err := strconv.ParseUint(cu.Uid, 10, 32)
-	var sid string
-	if err != nil {
-		// On Windows, cu.Uid is the SID string (e.g., "S-1-5-21-...").
-		// When the process was spawned cross-session via CreateProcessAsUser,
-		// the first user.Current() call can occasionally return an
-		// empty/malformed Uid while the duplicated token finishes
-		// materializing in the kernel. Retry with backoff, and treat
-		// a permanent failure as fatal so the lifecycle manager can back off.
-		uid = 0
-		sid = cu.Uid
-		if runtime.GOOS == "windows" && !looksLikeSID(sid) {
-			retrySID, retryErr := lookupSIDWithRetry()
-			if retryErr != nil {
-				return retryErr
-			}
-			sid = retrySID
-		}
+	if username == "" {
+		return fmt.Errorf("authenticate: empty username after platform lookup")
+	}
+	if runtime.GOOS == "windows" && !looksLikeSID(sid) {
+		return fmt.Errorf("authenticate: invalid SID %q after platform lookup", sid)
 	}
 
 	binaryHash, _ := computeSelfHash()
 	displayEnv := detectDisplayEnv()
-	sessionID := fmt.Sprintf("helper-%s-%d", cu.Username, os.Getpid())
+	sessionID := fmt.Sprintf("helper-%s-%d", username, os.Getpid())
 
 	authReq := ipc.AuthRequest{
 		ProtocolVersion: ipc.ProtocolVersion,
 		UID:             uint32(uid),
 		SID:             sid,
-		Username:        cu.Username,
+		Username:        username,
 		SessionID:       sessionID,
 		DisplayEnv:      displayEnv,
 		PID:             os.Getpid(),

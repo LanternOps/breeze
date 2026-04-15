@@ -2,10 +2,17 @@
 
 package userhelper
 
-// lookupSIDWithRetry is a no-op on non-Windows platforms: there's no SID on
-// Unix. Callers should use the UID from user.Current() directly instead.
-// Kept to satisfy cross-platform calling code without build tags at the
-// call site.
+import "errors"
+
+// lookupSIDWithRetry only exists on Windows. The non-Windows stub returns
+// an explicit error so any accidental cross-platform call fails loudly
+// rather than silently returning an empty SID. client.go gates the call
+// behind runtime.GOOS == "windows".
 func lookupSIDWithRetry() (string, error) {
-	return "", nil
+	return "", errors.New("lookupSIDWithRetry: not supported on non-Windows")
+}
+
+// lookupUsernameDirect only exists on Windows. See lookupSIDWithRetry.
+func lookupUsernameDirect() (string, error) {
+	return "", errors.New("lookupUsernameDirect: not supported on non-Windows")
 }
