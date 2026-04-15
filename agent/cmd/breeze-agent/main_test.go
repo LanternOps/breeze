@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
 )
 
@@ -527,5 +528,36 @@ func TestWaitForEnrollment_IgnoresTornWrite(t *testing.T) {
 		}
 	case <-time.After(300 * time.Millisecond):
 		t.Fatal("waitForEnrollment did not unblock after secrets.yaml was written")
+	}
+}
+
+// TestAssertHostnameNonEmpty guards the #439 contract at the enroll
+// boundary: enrollment must refuse to proceed with an empty or
+// whitespace-only hostname. This is the last line of defense against a
+// regression in the collectors fallback chain or a new code path that
+// bypasses it — the message string and the os.Exit flow both live in
+// enrollDevice, so this test pins the pure predicate. A failure here
+// would mean the predicate itself drifted; a review of enrollDevice
+// would still be required to confirm the call site still fires.
+func TestAssertHostnameNonEmpty(t *testing.T) {
+	tests := []struct {
+		name    string
+		info    *collectors.SystemInfo
+		wantErr bool
+	}{
+		{"nil info", nil, true},
+		{"empty hostname", &collectors.SystemInfo{Hostname: ""}, true},
+		{"whitespace only", &collectors.SystemInfo{Hostname: "  \n\t"}, true},
+		{"single space", &collectors.SystemInfo{Hostname: " "}, true},
+		{"valid hostname", &collectors.SystemInfo{Hostname: "desktop-01"}, false},
+		{"leading/trailing whitespace around valid name", &collectors.SystemInfo{Hostname: "  desktop-02  "}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := assertHostnameNonEmpty(tc.info)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("got err=%v, wantErr=%v", err, tc.wantErr)
+			}
+		})
 	}
 }

@@ -2,6 +2,7 @@ package collectors
 
 import (
 	"errors"
+	"runtime"
 	"testing"
 )
 
@@ -46,6 +47,17 @@ func TestResolveHostnameFromSources(t *testing.T) {
 				staticSource("desktop-04\r\n"),
 			},
 			want: "desktop-04",
+		},
+		{
+			// Internal whitespace is preserved (not stripped by
+			// TrimSpace). Server-side validation is the source of
+			// truth for whether this is an acceptable hostname — we
+			// just don't want the resolver silently mangling it.
+			name: "internal whitespace is preserved",
+			sources: []hostnameSource{
+				staticSource("my host  \n"),
+			},
+			want: "my host",
 		},
 		{
 			name: "nil source is skipped",
@@ -158,8 +170,41 @@ func TestHostnameSourceChain_FirstElementIsOsHostname(t *testing.T) {
 	// verify by behavior: the first source should match os.Hostname()'s
 	// output on this machine.
 	first := chain[0]()
-	real := osHostname()
-	if first != real {
-		t.Fatalf("first source returned %q, expected os.Hostname()=%q", first, real)
+	want := osHostname()
+	if first != want {
+		t.Fatalf("first source returned %q, expected os.Hostname()=%q", first, want)
+	}
+}
+
+// TestCollectSystemInfo_HostnameFallbackFailureLeavesEmpty locks in the
+// contract that the enroll guard in cmd/breeze-agent/main.go relies on:
+// when the hostname resolver fails, CollectSystemInfo must leave
+// info.Hostname empty rather than silently keeping a stale value from
+// gopsutil. The guard's assertHostnameNonEmpty check then catches it
+// and aborts enrollment. See issue #439.
+//
+// Skipped on darwin because the scutil LocalHostName override can still
+// populate info.Hostname even when our resolver fails — that's the
+// intended darwin behavior and not what this test is about.
+func TestCollectSystemInfo_HostnameFallbackFailureLeavesEmpty(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("darwin uses scutil LocalHostName as an additional hostname source")
+	}
+	orig := resolveHostnameFn
+	t.Cleanup(func() { resolveHostnameFn = orig })
+	resolveHostnameFn = func() (string, error) {
+		return "", errHostnameResolutionFailed
+	}
+
+	c := NewHardwareCollector()
+	info, err := c.CollectSystemInfo()
+	if err != nil {
+		t.Fatalf("CollectSystemInfo returned error: %v", err)
+	}
+	if info == nil {
+		t.Fatal("CollectSystemInfo returned nil info")
+	}
+	if info.Hostname != "" {
+		t.Fatalf("expected empty hostname on resolver failure, got %q", info.Hostname)
 	}
 }

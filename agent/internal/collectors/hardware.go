@@ -56,7 +56,7 @@ func (c *HardwareCollector) CollectSystemInfo() (*SystemInfo, error) {
 	// sources). gopsutil's hostInfo.Hostname is just os.Hostname() with
 	// no fallbacks, so relying on it lets empty values through on
 	// Windows service-start edge cases. See issue #439.
-	if resolved, rhErr := resolveHostname(); rhErr == nil {
+	if resolved, rhErr := resolveHostnameFn(); rhErr == nil {
 		info.Hostname = resolved
 	} else {
 		slog.Warn("hostname resolution failed", "error", rhErr.Error())

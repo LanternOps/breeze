@@ -2,6 +2,7 @@ package collectors
 
 import (
 	"errors"
+	"log/slog"
 	"os"
 	"strings"
 )
@@ -11,6 +12,12 @@ import (
 // the enroll path) must fail loudly instead of substituting a synthetic
 // identifier — see issue #439.
 var errHostnameResolutionFailed = errors.New("hostname resolution failed: all sources empty")
+
+// resolveHostnameFn is the indirection hardware.go uses to call the
+// resolver. Exposed at package level so tests can inject a failing
+// resolver and verify the warn-and-leave-empty branch in
+// CollectSystemInfo without having to break os.Hostname() for real.
+var resolveHostnameFn = resolveHostname
 
 // hostnameSource produces a single candidate hostname. A return value
 // that is empty or whitespace-only means "this source had nothing
@@ -51,12 +58,15 @@ func hostnameSourceChain() []hostnameSource {
 }
 
 // osHostname wraps os.Hostname() so it satisfies the hostnameSource
-// signature and swallows its error (an error from os.Hostname is
-// indistinguishable from "empty" for our purposes — the next source
-// should still be tried).
+// signature. An error is indistinguishable from "empty" for control
+// flow (the next source is tried either way), but the error is logged
+// at Warn so operators hunting a future #439 regression see which
+// source broke — the resolver's overall-failure log alone doesn't
+// tell you which link in the chain gave out.
 func osHostname() string {
 	name, err := os.Hostname()
 	if err != nil {
+		slog.Warn("os.Hostname() failed, trying platform fallbacks", "error", err.Error())
 		return ""
 	}
 	return name
