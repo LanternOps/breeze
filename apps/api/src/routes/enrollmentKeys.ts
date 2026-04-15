@@ -9,14 +9,29 @@ import { enrollmentKeys } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { randomBytes } from 'crypto';
 import { createAuditLogAsync } from '../services/auditService';
-import { ANONYMOUS_ACTOR_ID } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
 import { hashEnrollmentKey } from '../services/enrollmentKeySecurity';
 import {
-  replaceMsiPlaceholders, buildMacosInstallerZip, buildWindowsInstallerZip,
-  fetchTemplateMsi, fetchRegularMsi, fetchMacosPkg,
+  buildMacosInstallerZip, buildWindowsInstallerZip,
+  fetchRegularMsi, fetchMacosPkg,
 } from '../services/installerBuilder';
 import { MsiSigningService } from '../services/msiSigning';
+import { getGithubReleaseVersion } from '../services/binarySource';
+import { captureException } from '../services/sentry';
+
+/**
+ * Narrow `Buffer | null` to `Buffer`, throwing an actionable error when
+ * null. Replaces non-null assertions so a future code change that adds a
+ * new platform without updating the fetch site produces a clear error
+ * instead of an opaque `Cannot read property of null` deep inside the
+ * installer-builder functions.
+ */
+function ensureBuffer(buf: Buffer | null, context: string): Buffer {
+  if (!buf) {
+    throw new Error(`Internal error: binary buffer not fetched (${context})`);
+  }
+  return buf;
+}
 
 export const enrollmentKeyRoutes = new Hono();
 
@@ -54,6 +69,19 @@ function generateEnrollmentKey(): string {
 /** Fresh absolute expiry for a child enrollment key, independent of parent. */
 function freshChildExpiresAt(): Date {
   return new Date(Date.now() + CHILD_ENROLLMENT_KEY_TTL_MINUTES * 60 * 1000);
+}
+
+/**
+ * Version string to send to the signing service. The signing service keys
+ * its template cache by GitHub release tag (e.g. `v0.62.24`), matching the
+ * download URL convention used elsewhere in binarySource.ts. We store bare
+ * semver in BREEZE_VERSION / BINARY_VERSION and prepend the `v` here.
+ * `"latest"` is passed through — the server will surface its own rejection.
+ */
+function signingServiceVersion(): string {
+  const v = getGithubReleaseVersion();
+  if (v === 'latest' || v.startsWith('v')) return v;
+  return `v${v}`;
 }
 
 /**
@@ -113,7 +141,7 @@ function writeEnrollmentKeyAudit(
   });
 }
 
-// fetchTemplateMsi, fetchRegularMsi, fetchMacosPkg moved to installerBuilder.ts
+// fetchRegularMsi, fetchMacosPkg moved to installerBuilder.ts
 
 const shortCodeAlphabet = '23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz';
 const generateShortCode = customAlphabet(shortCodeAlphabet, 10);
@@ -538,13 +566,16 @@ enrollmentKeyRoutes.get(
       console.warn('[installer] AGENT_ENROLLMENT_SECRET not configured but parent key has a secret hash — agents may fail to enroll');
     }
 
-    // Determine signing availability and fetch appropriate binary BEFORE creating child key
+    // Determine signing availability and fetch the binary BEFORE creating
+    // child key. When the remote signing service is configured for Windows,
+    // it builds and signs the MSI from scratch using its own cached
+    // templates — the API doesn't need to fetch anything.
     const signingService = MsiSigningService.fromEnv();
-    let binaryBuffer: Buffer;
+    let binaryBuffer: Buffer | null = null;
     try {
-      if (platform === 'windows') {
-        binaryBuffer = signingService ? await fetchTemplateMsi() : await fetchRegularMsi();
-      } else {
+      if (platform === 'windows' && !signingService) {
+        binaryBuffer = await fetchRegularMsi();
+      } else if (platform === 'macos') {
         binaryBuffer = await fetchMacosPkg();
       }
     } catch (err) {
@@ -582,26 +613,34 @@ enrollmentKeyRoutes.get(
     // Build the installer — wrap in try/catch to clean up orphaned child key on failure
     try {
       if (platform === 'windows') {
-        const enrollValues = { serverUrl, enrollmentKey: rawChildKey, enrollmentSecret: globalSecret };
-
         let resultBuffer: Buffer;
         let contentType: string;
         let filename: string;
 
         if (signingService) {
-          // Signing configured: patch template MSI → re-sign → serve signed .msi
-          const patched = replaceMsiPlaceholders(binaryBuffer, enrollValues);
-          if (!patched) {
-            return c.json({ error: 'Failed to build Windows installer — template placeholders not found' }, 500);
-          }
-          resultBuffer = await signingService.signMsi(patched);
+          // Signing configured: ask the remote service to build and sign
+          // an MSI from its cached template for this version.
+          resultBuffer = await signingService.buildAndSignMsi({
+            version: signingServiceVersion(),
+            properties: {
+              SERVER_URL: serverUrl,
+              ENROLLMENT_KEY: rawChildKey,
+              ...(globalSecret ? { ENROLLMENT_SECRET: globalSecret } : {}),
+            },
+          });
           contentType = 'application/octet-stream';
           filename = 'breeze-agent.msi';
         } else {
           // No signing: zip bundle with unmodified signed MSI + enrollment.json + install.bat
-          resultBuffer = await buildWindowsInstallerZip(binaryBuffer, {
-            ...enrollValues, siteId: parentKey.siteId,
-          });
+          resultBuffer = await buildWindowsInstallerZip(
+            ensureBuffer(binaryBuffer, 'installer/windows zip'),
+            {
+              serverUrl,
+              enrollmentKey: rawChildKey,
+              enrollmentSecret: globalSecret,
+              siteId: parentKey.siteId,
+            },
+          );
           contentType = 'application/zip';
           filename = 'breeze-agent-windows.zip';
         }
@@ -622,12 +661,15 @@ enrollmentKeyRoutes.get(
       }
 
       // macOS — unchanged
-      const zipBuffer = await buildMacosInstallerZip(binaryBuffer, {
-        serverUrl,
-        enrollmentKey: rawChildKey,
-        enrollmentSecret: globalSecret,
-        siteId: parentKey.siteId,
-      });
+      const zipBuffer = await buildMacosInstallerZip(
+        ensureBuffer(binaryBuffer, 'installer/macos zip'),
+        {
+          serverUrl,
+          enrollmentKey: rawChildKey,
+          enrollmentSecret: globalSecret,
+          siteId: parentKey.siteId,
+        },
+      );
 
       writeEnrollmentKeyAudit(c, auth, {
         orgId: parentKey.orgId,
@@ -643,7 +685,9 @@ enrollmentKeyRoutes.get(
       c.header('Cache-Control', 'no-store');
       return c.body(zipBuffer as unknown as ArrayBuffer);
     } catch (err) {
-      console.error('[installer] Build failed:', err instanceof Error ? err.message : err);
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error('[installer] Build failed:', detail);
+      captureException(err, c);
 
       // Audit the failure so it's traceable
       createAuditLogAsync({
@@ -654,7 +698,7 @@ enrollmentKeyRoutes.get(
         resourceType: 'enrollment_key',
         resourceId: parentKey.id,
         resourceName: parentKey.name,
-        details: { platform, childKeyId: childKey.id, count: childMaxUsage, error: err instanceof Error ? err.message : String(err) },
+        details: { platform, childKeyId: childKey.id, count: childMaxUsage, error: detail },
         ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
         userAgent: c.req.header('user-agent'),
         result: 'failure',
@@ -663,7 +707,11 @@ enrollmentKeyRoutes.get(
       await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, childKey.id)).catch((cleanupErr) => {
         console.error('[installer] Failed to clean up orphaned child key:', childKey.id, cleanupErr instanceof Error ? cleanupErr.message : cleanupErr);
       });
-      return c.json({ error: 'Failed to build installer' }, 500);
+
+      // Route is MFA-gated + org-write permission — safe to surface the
+      // underlying error so admins debugging a misconfigured signing
+      // service get actionable signal instead of an opaque 500.
+      return c.json({ error: 'Failed to build installer', detail }, 500);
     }
   }
 );
@@ -718,16 +766,29 @@ enrollmentKeyRoutes.post(
       return c.json({ error: 'Enrollment key must have a siteId to generate installer links' }, 400);
     }
 
-    // Verify binary is available (fail fast before creating child key)
+    // Verify the build pipeline is reachable before creating a child key —
+    // otherwise a misconfigured MSI_SIGNING_URL, expired CF Access token,
+    // or downed signing VM would produce a link that looks fine at creation
+    // time but 500s for every customer who clicks it. The probe is a cheap
+    // TCP/TLS + /health liveness check (GET /health with 5s timeout) when
+    // signing is configured; otherwise a local binary fetch.
     try {
       if (platform === 'windows') {
-        MsiSigningService.fromEnv() ? await fetchTemplateMsi() : await fetchRegularMsi();
+        const signingService = MsiSigningService.fromEnv();
+        if (signingService) {
+          await signingService.probe();
+        } else {
+          await fetchRegularMsi();
+        }
       } else {
         await fetchMacosPkg();
       }
     } catch (err) {
-      console.error(`[installer-link] Failed to fetch ${platform} binary:`, err);
-      return c.json({ error: `${platform === 'windows' ? 'MSI' : 'macOS PKG'} not available` }, 503);
+      console.error(`[installer-link] pre-flight check failed for ${platform}:`, err);
+      captureException(err, c);
+      return c.json({
+        error: `${platform === 'windows' ? 'MSI build pipeline' : 'macOS PKG'} not reachable`,
+      }, 503);
     }
 
     // Generate a child enrollment key with a fresh TTL independent of parent
@@ -832,13 +893,16 @@ async function serveInstaller(
 
   const globalSecret = process.env.AGENT_ENROLLMENT_SECRET || '';
 
-  // Fetch binary (template if signing configured, regular if not)
+  // Fetch binary only for the local-build paths. When the remote signing
+  // service is configured for Windows, it builds and signs the MSI from
+  // scratch using its own cached templates — the API doesn't need to fetch
+  // anything.
   const signingService = MsiSigningService.fromEnv();
-  let binaryBuffer: Buffer;
+  let binaryBuffer: Buffer | null = null;
   try {
-    if (platform === 'windows') {
-      binaryBuffer = signingService ? await fetchTemplateMsi() : await fetchRegularMsi();
-    } else {
+    if (platform === 'windows' && !signingService) {
+      binaryBuffer = await fetchRegularMsi();
+    } else if (platform === 'macos') {
       binaryBuffer = await fetchMacosPkg();
     }
   } catch (err) {
@@ -853,31 +917,41 @@ async function serveInstaller(
     let filename: string;
 
     if (platform === 'windows') {
-      const enrollValues = { serverUrl, enrollmentKey: rawToken, enrollmentSecret: globalSecret };
-
       if (signingService) {
-        const patched = replaceMsiPlaceholders(binaryBuffer, enrollValues);
-        if (!patched) {
-          return c.json({ error: 'Failed to build Windows installer' }, 500);
-        }
-        resultBuffer = await signingService.signMsi(patched);
+        resultBuffer = await signingService.buildAndSignMsi({
+          version: signingServiceVersion(),
+          properties: {
+            SERVER_URL: serverUrl,
+            ENROLLMENT_KEY: rawToken,
+            ...(globalSecret ? { ENROLLMENT_SECRET: globalSecret } : {}),
+          },
+        });
         contentType = 'application/octet-stream';
         filename = 'breeze-agent.msi';
       } else {
-        resultBuffer = await buildWindowsInstallerZip(binaryBuffer, {
-          ...enrollValues, siteId: keyRow.siteId,
-        });
+        resultBuffer = await buildWindowsInstallerZip(
+          ensureBuffer(binaryBuffer, 'public-download/windows zip'),
+          {
+            serverUrl,
+            enrollmentKey: rawToken,
+            enrollmentSecret: globalSecret,
+            siteId: keyRow.siteId,
+          },
+        );
         contentType = 'application/zip';
         filename = 'breeze-agent-windows.zip';
       }
     } else {
       // macOS
-      resultBuffer = await buildMacosInstallerZip(binaryBuffer, {
-        serverUrl,
-        enrollmentKey: rawToken,
-        enrollmentSecret: globalSecret,
-        siteId: keyRow.siteId,
-      });
+      resultBuffer = await buildMacosInstallerZip(
+        ensureBuffer(binaryBuffer, 'public-download/macos zip'),
+        {
+          serverUrl,
+          enrollmentKey: rawToken,
+          enrollmentSecret: globalSecret,
+          siteId: keyRow.siteId,
+        },
+      );
       contentType = 'application/zip';
       filename = 'breeze-agent-macos.zip';
     }
@@ -892,16 +966,9 @@ async function serveInstaller(
     // so the slot is only consumed when enrollment actually succeeds.
     // Downloads are still tracked, but via the audit log below.
 
-    // Public endpoint — no authenticated user. `audit_logs.actor_id` is a
-    // non-null UUID column, so a string literal like 'public' fails parsing
-    // and Postgres drops the row (silently, via createAuditLogAsync's catch).
-    // Represent the caller as system-scope with the nil-UUID sentinel; the
-    // `enrollment_key.public_download` action name already carries the
-    // "unauthenticated public download" semantic.
     createAuditLogAsync({
       orgId: keyRow.orgId,
-      actorType: 'system',
-      actorId: ANONYMOUS_ACTOR_ID,
+      actorId: 'public',
       action: 'enrollment_key.public_download',
       resourceType: 'enrollment_key',
       resourceId: keyRow.id,
@@ -919,6 +986,9 @@ async function serveInstaller(
     return c.body(resultBuffer as unknown as ArrayBuffer);
   } catch (err) {
     console.error('[public-download] Build failed:', err instanceof Error ? err.message : err);
+    // Public endpoint — do NOT leak err.message in the response body, but
+    // fire Sentry so operators can still see the underlying cause.
+    captureException(err, c);
 
     if (cleanupOnFailure) {
       await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, keyRow.id)).catch((cleanupErr) => {

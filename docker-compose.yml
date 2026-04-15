@@ -112,6 +112,7 @@ services:
       MSI_SIGNING_URL: ${MSI_SIGNING_URL:-}
       MSI_SIGNING_CF_ACCESS_ID: ${MSI_SIGNING_CF_ACCESS_ID:-}
       MSI_SIGNING_CF_ACCESS_SECRET: ${MSI_SIGNING_CF_ACCESS_SECRET:-}
+      MSI_SIGNING_API_KEY: ${MSI_SIGNING_API_KEY:-}
     volumes:
       - api_data:/data
       - binaries:/data/binaries:ro
