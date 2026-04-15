@@ -105,6 +105,12 @@ export async function syncBinaries(): Promise<void> {
   if (getBinarySource() === 'github') {
     console.log('[binarySync] BINARY_SOURCE=github, syncing from GitHub releases');
     await syncFromGitHub();
+    // Safety net: syncFromGitHub() with no args hits /releases/latest which
+    // EXCLUDES pre-releases, so RC deploys (APP_VERSION=x.y.z-rc.N) would
+    // otherwise never land in agent_versions. ensureCurrentVersionRegistered()
+    // reads APP_VERSION and explicitly fetches that tag if it's missing.
+    // It's idempotent and cheap for non-RC releases (early-returns on hit).
+    await ensureCurrentVersionRegistered();
     return;
   }
 
