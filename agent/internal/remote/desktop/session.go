@@ -135,6 +135,14 @@ type SessionManager struct {
 	config    CaptureConfig
 	gpuVendor string // "nvidia", "amd", "intel", or "" for auto-detect
 
+	// startMu serializes StartSession calls so concurrent retries that share
+	// the same commandId/sessionID can't interleave their unlocked setup
+	// phases and leave two live Session objects in the process (only one of
+	// which is in m.sessions). The full body of StartSession runs under this
+	// lock; m.mu is reserved for the map + config, so reads/stops remain
+	// responsive while a start is in progress.
+	startMu sync.Mutex
+
 	// OnSASRequest is called when a viewer requests Ctrl+Alt+Del. In service
 	// mode the helper sets this to route the request via IPC to the SCM service
 	// which can call SendSAS(FALSE). In direct mode it defaults to InvokeSAS().

@@ -327,3 +327,21 @@ func TestFatalExitCodeConsistency(t *testing.T) {
 			helperFatalExitCode, expectedFatalExitCode)
 	}
 }
+
+// TestPanicExitCodeConsistency mirrors TestFatalExitCodeConsistency for the
+// panic-recovery path added in PR #450. main.go's top-level panic defer uses
+// os.Exit(3) to signal "transient panic, respawn normally"; lifecycle.go's
+// watchHelperExit branches on this value to skip the permanent-reject
+// cooldown. A drift here would silently send every helper panic into the
+// 10-minute lockout meant for genuine permanent rejection.
+func TestPanicExitCodeConsistency(t *testing.T) {
+	const expectedPanicExitCode = 3
+	if helperPanicExitCode != expectedPanicExitCode {
+		t.Errorf("helperPanicExitCode = %d; if this is intentional, update main.go os.Exit call to match %d",
+			helperPanicExitCode, expectedPanicExitCode)
+	}
+	if helperPanicExitCode == helperFatalExitCode {
+		t.Errorf("helperPanicExitCode (%d) must differ from helperFatalExitCode (%d)",
+			helperPanicExitCode, helperFatalExitCode)
+	}
+}

@@ -71,6 +71,16 @@ type Config struct {
 	LogMaxBackups    int    `mapstructure:"log_max_backups"`
 	LogShippingLevel string `mapstructure:"log_shipping_level"`
 
+	// DesktopDebug enables verbose remote-desktop diagnostics. When true,
+	// the agent's log shipper is forced up to info-level shipping for the
+	// desktop and heartbeat components, surfacing per-frame heartbeats,
+	// per-candidate ICE gathering, WebRTC state transitions, and the
+	// hot-path findActiveHelper routing decision. Leave off in production;
+	// flip on via agent.yaml when debugging a specific device. Always-on
+	// warn-level events (findActiveHelper fallback, helper panic, zero-
+	// relay TURN, disconnect timeout, etc.) ship regardless.
+	DesktopDebug bool `mapstructure:"desktop_debug"`
+
 	// Concurrency limits
 	MaxConcurrentCommands int `mapstructure:"max_concurrent_commands"`
 	CommandQueueSize      int `mapstructure:"command_queue_size"`

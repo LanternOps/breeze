@@ -199,7 +199,21 @@ func (h *Heartbeat) findActiveHelper(targetSession string, allowDisconnected ...
 		}
 	}
 	if targetSession != "" && session != nil && session.WinSessionID != targetSession {
-		return nil
+		session = nil
+	}
+
+	// Issue #434: on Windows, if the caller pinned a target WTS session and we
+	// can't find a helper for it, check whether the target session still exists
+	// at the OS level. If it's gone (user logout tore it down), substitute any
+	// capable helper so the viewer attaches to the new loginwindow / console
+	// instead of endlessly retrying a vanished session. Logged at warn so we
+	// can see the substitution in the shipper.
+	if session == nil && targetSession != "" && runtime.GOOS == "windows" {
+		if !winSessionStillExists(targetSession) {
+			log.Warn("findActiveHelper: target WTS session no longer exists, falling back to any capable helper",
+				"targetSession", targetSession)
+			return h.findActiveHelper("", allowDisconnected...)
+		}
 	}
 
 	// On Windows with no target specified, prefer the console session and
@@ -210,16 +224,28 @@ func (h *Heartbeat) findActiveHelper(targetSession string, allowDisconnected ...
 		consoleID := sessionbroker.GetConsoleSessionID()
 
 		// If the best session IS the console and it's not disconnected, use it.
+		// Hot path — fires on every start_desktop. Info-level; flip
+		// `desktop_debug: true` in agent.yaml to ship. The "alternative",
+		// "fallback", and "falling through" branches below remain at warn
+		// because they're the interesting cases.
 		if session.WinSessionID == consoleID && !isWinSessionDisconnected(session.WinSessionID) {
+			log.Info("findActiveHelper: picked console session directly",
+				"winSession", session.WinSessionID, "helperSession", session.SessionID,
+				"consoleID", consoleID)
 			return session
 		}
 
 		// Otherwise, look for a better alternative among all capable sessions.
 		if alternatives := h.sessionBroker.SessionsWithScope("desktop"); len(alternatives) > 0 {
 			var consoleAlt, nonDisconnectedAlt *sessionbroker.Session
+			altSummaries := make([]string, 0, len(alternatives))
 			for _, alt := range alternatives {
 				caps := alt.GetCapabilities()
-				if caps == nil || !caps.CanCapture {
+				canCapture := caps != nil && caps.CanCapture
+				altSummaries = append(altSummaries,
+					fmt.Sprintf("{win=%s disc=%v cap=%v}",
+						alt.WinSessionID, isWinSessionDisconnected(alt.WinSessionID), canCapture))
+				if !canCapture {
 					continue
 				}
 				// Console session is always preferred
@@ -231,14 +257,24 @@ func (h *Heartbeat) findActiveHelper(targetSession string, allowDisconnected ...
 				}
 			}
 			if consoleAlt != nil && !isWinSessionDisconnected(consoleAlt.WinSessionID) {
+				log.Warn("findActiveHelper: picked console alternative",
+					"winSession", consoleAlt.WinSessionID, "helperSession", consoleAlt.SessionID,
+					"consoleID", consoleID, "firstPick", session.WinSessionID,
+					"alternatives", strings.Join(altSummaries, ","))
 				return consoleAlt
 			}
 			if nonDisconnectedAlt != nil {
+				log.Warn("findActiveHelper: picked non-disconnected alternative (no live console helper)",
+					"winSession", nonDisconnectedAlt.WinSessionID, "helperSession", nonDisconnectedAlt.SessionID,
+					"consoleID", consoleID, "firstPick", session.WinSessionID,
+					"alternatives", strings.Join(altSummaries, ","))
 				return nonDisconnectedAlt
 			}
 			// Console is disconnected but exists — prefer it over other disconnected sessions
 			if consoleAlt != nil {
 				if len(allowDisconnected) > 0 && allowDisconnected[0] {
+					log.Warn("findActiveHelper: picked disconnected console as last resort",
+						"winSession", consoleAlt.WinSessionID, "consoleID", consoleID)
 					return consoleAlt
 				}
 				return nil
@@ -251,8 +287,42 @@ func (h *Heartbeat) findActiveHelper(targetSession string, allowDisconnected ...
 				return nil
 			}
 		}
+		log.Warn("findActiveHelper: falling through to first-pick session",
+			"winSession", session.WinSessionID, "helperSession", session.SessionID,
+			"consoleID", consoleID)
 	}
 	return session
+}
+
+// winSessionStillExists probes WTS to determine whether the given Windows
+// session ID is still enumerated by the OS. Used to distinguish "helper hasn't
+// spawned yet in this session" (retry worthwhile) from "session has been torn
+// down by logout" (retry futile — substitute a different helper). On non-Windows
+// or on probe failure, returns true as a conservative default so we don't
+// over-substitute. Issue #434.
+func winSessionStillExists(targetSession string) bool {
+	if runtime.GOOS != "windows" || targetSession == "" {
+		return true
+	}
+	detector := sessionbroker.NewSessionDetector()
+	sessions, err := detector.ListSessions()
+	if err != nil {
+		// Conservative default: if the probe fails we claim the session
+		// still exists so we don't aggressively substitute. But log it at
+		// warn so the operator can see the substitution safety net has
+		// been silently disabled — otherwise a reliably-failing probe
+		// looks identical to a genuinely-live session.
+		log.Warn("winSessionStillExists: WTS probe failed, assuming session still exists (#434 safety net disabled for this call)",
+			"targetSession", targetSession,
+			"error", err.Error())
+		return true
+	}
+	for _, s := range sessions {
+		if s.Session == targetSession {
+			return true
+		}
+	}
+	return false
 }
 
 // findOrSpawnHelper locates a capable helper session, spawning one if needed.

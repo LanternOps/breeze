@@ -61,6 +61,13 @@ func NewSession(conn *ipc.Conn, uid uint32, identityKey, username, displayEnv, s
 	}
 }
 
+// ErrDuplicateCommand is returned when SendCommand is called with an id that
+// already has an in-flight pending response. Callers must serialize or use
+// distinct ids; the previous behavior of silently overwriting the map entry
+// orphaned the first caller's channel (30s timeout) and mis-routed the helper's
+// response.
+var ErrDuplicateCommand = fmt.Errorf("duplicate in-flight command id")
+
 // SendCommand sends a command to the user helper and waits for a response.
 // Returns the response envelope or an error if the timeout is reached.
 func (s *Session) SendCommand(id, cmdType string, payload any, timeout time.Duration) (*ipc.Envelope, error) {
@@ -69,6 +76,10 @@ func (s *Session) SendCommand(id, cmdType string, payload any, timeout time.Dura
 	if s.closed {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("session closed")
+	}
+	if _, exists := s.pending[id]; exists {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("%w: %q (session %q)", ErrDuplicateCommand, id, s.SessionID)
 	}
 	s.pending[id] = pendingResponse{
 		ch:           ch,
