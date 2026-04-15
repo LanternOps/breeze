@@ -1,20 +1,33 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { insert, insertValues, withDbAccessContext, captureException } = vi.hoisted(() => {
+const {
+  insert,
+  insertValues,
+  runOutsideDbContext,
+  withSystemDbAccessContext,
+  captureException
+} = vi.hoisted(() => {
   const insertValues = vi.fn(() => Promise.resolve());
   const insert = vi.fn(() => ({ values: insertValues }));
-  // Capture the context passed to withDbAccessContext so we can assert it
-  // matches the org scope of the session being audited.
-  const withDbAccessContext = vi.fn(
-    async (_ctx: unknown, fn: () => unknown) => fn()
-  );
+  // `runOutsideDbContext` is synchronous (wraps AsyncLocalStorage.exit); the
+  // real impl just calls its argument outside the current context. The mock
+  // passes through so we can assert ordering separately.
+  const runOutsideDbContext = vi.fn(<T>(fn: () => T): T => fn());
+  const withSystemDbAccessContext = vi.fn(async (fn: () => unknown) => fn());
   const captureException = vi.fn();
-  return { insert, insertValues, withDbAccessContext, captureException };
+  return {
+    insert,
+    insertValues,
+    runOutsideDbContext,
+    withSystemDbAccessContext,
+    captureException
+  };
 });
 
 vi.mock('../../db', () => ({
   db: { insert },
-  withDbAccessContext
+  runOutsideDbContext,
+  withSystemDbAccessContext
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -38,7 +51,11 @@ describe('logSessionAudit', () => {
   // Regression: the viewer-token desktop WS path has no request-scoped DB
   // context, so the audit insert was hitting `audit_logs` RLS and silently
   // failing. See issue #437.
-  it('wraps the insert in an org-scoped DB access context', async () => {
+  //
+  // Follow-up: the fix must also isolate the audit write from the caller's
+  // request transaction to avoid rolling back real work on audit failure.
+  // See `services/auditService.ts` for the same pattern.
+  it('runs outside the caller context and under a system DB scope', async () => {
     const orgId = '11111111-1111-1111-1111-111111111111';
     const actorId = '22222222-2222-2222-2222-222222222222';
     const sessionId = '33333333-3333-3333-3333-333333333333';
@@ -51,13 +68,13 @@ describe('logSessionAudit', () => {
       '10.0.0.1'
     );
 
-    expect(withDbAccessContext).toHaveBeenCalledTimes(1);
-    const firstCall = withDbAccessContext.mock.calls[0]!;
-    expect(firstCall[0]).toEqual({
-      scope: 'organization',
-      orgId,
-      accessibleOrgIds: [orgId]
-    });
+    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    // Ordering: runOutsideDbContext must wrap withSystemDbAccessContext so the
+    // nested system-scope call actually opens a fresh tx on its own connection.
+    const outsideOrder = runOutsideDbContext.mock.invocationCallOrder[0]!;
+    const systemOrder = withSystemDbAccessContext.mock.invocationCallOrder[0]!;
+    expect(outsideOrder).toBeLessThan(systemOrder);
 
     expect(insert).toHaveBeenCalledTimes(1);
     expect(insertValues).toHaveBeenCalledWith(
