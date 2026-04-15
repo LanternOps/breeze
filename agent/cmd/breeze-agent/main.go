@@ -634,6 +634,21 @@ func trimEnrollInputs(key, server, secret string) (string, string, string) {
 	return strings.TrimSpace(key), strings.TrimSpace(server), strings.TrimSpace(secret)
 }
 
+// assertHostnameNonEmpty enforces the #439 contract: enrollment must
+// never proceed with an empty or whitespace-only hostname, because the
+// downstream substitution used to write the device UUID there and
+// operators couldn't tell real rows from synthetic ones. Returns nil
+// iff info is non-nil and info.Hostname has at least one non-whitespace
+// character. Exists as a named helper so it's unit-testable — the call
+// site in enrollDevice goes through enrollError which calls os.Exit
+// and can't be exercised directly from a test.
+func assertHostnameNonEmpty(info *collectors.SystemInfo) error {
+	if info == nil || strings.TrimSpace(info.Hostname) == "" {
+		return errors.New("empty hostname after fallback chain")
+	}
+	return nil
+}
+
 func enrollDevice(enrollmentKey string) {
 	enrollmentKey, serverURL, enrollmentSecret = trimEnrollInputs(
 		enrollmentKey, serverURL, enrollmentSecret,
@@ -731,6 +746,18 @@ func enrollDevice(enrollmentKey string) {
 	if !quietEnroll {
 		fmt.Printf("Hostname: %s\n", systemInfo.Hostname)
 		fmt.Printf("OS: %s (%s)\n", systemInfo.OSVersion, systemInfo.Architecture)
+	}
+
+	// Refuse to enroll with an empty hostname rather than let a fallback
+	// downstream (or an older server) substitute the device UUID. See
+	// issue #439 — one prod device ended up with its UUID in the hostname
+	// column, which is worse than a loud failure because it looks legit.
+	if err := assertHostnameNonEmpty(systemInfo); err != nil {
+		enrollError(catConfig,
+			"hostname resolution failed on this machine — tried "+
+				collectors.HostnameSourcesDescription()+
+				"; all returned empty. Refusing to enroll with an empty hostname.",
+			err)
 	}
 
 	client := api.NewClient(cfg.ServerURL, "", "")

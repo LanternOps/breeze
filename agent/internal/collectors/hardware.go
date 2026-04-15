@@ -1,6 +1,7 @@
 package collectors
 
 import (
+	"log/slog"
 	"os"
 	"runtime"
 	"strings"
@@ -46,10 +47,19 @@ func (c *HardwareCollector) CollectSystemInfo() (*SystemInfo, error) {
 
 	hostInfo, err := host.Info()
 	if err == nil {
-		info.Hostname = hostInfo.Hostname
 		info.OSType = normalizeOSType(hostInfo.OS)
 		info.OSVersion = hostInfo.Platform + " " + hostInfo.PlatformVersion
 		info.OSBuild = hostInfo.KernelVersion
+	}
+
+	// Resolve hostname via the fallback chain (os.Hostname → platform
+	// sources). gopsutil's hostInfo.Hostname is just os.Hostname() with
+	// no fallbacks, so relying on it lets empty values through on
+	// Windows service-start edge cases. See issue #439.
+	if resolved, rhErr := resolveHostnameFn(); rhErr == nil {
+		info.Hostname = resolved
+	} else {
+		slog.Warn("hostname resolution failed", "error", rhErr.Error())
 	}
 
 	// On macOS, prefer LocalHostName (e.g. "MacBook-Pro-3") over the
