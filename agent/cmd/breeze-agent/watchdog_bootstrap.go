@@ -49,7 +49,7 @@ func locateSiblingWatchdog(agentPath string) (string, bool) {
 
 const (
 	watchdogMinSize       = 1 * 1024 * 1024 // 1 MB sanity check (real binary is several MB)
-	watchdogDownloadTimeo = 60 * time.Second
+	watchdogDownloadTimeout = 60 * time.Second
 )
 
 // downloadWatchdog fetches the watchdog binary from url and writes it to destPath.
@@ -57,7 +57,7 @@ const (
 // so a partial download never leaves a broken binary behind. On unix the file is
 // marked executable (0755).
 func downloadWatchdog(url, destPath string) error {
-	client := &http.Client{Timeout: watchdogDownloadTimeo}
+	client := &http.Client{Timeout: watchdogDownloadTimeout}
 	resp, err := client.Get(url)
 	if err != nil {
 		return fmt.Errorf("http get %s: %w", url, err)
