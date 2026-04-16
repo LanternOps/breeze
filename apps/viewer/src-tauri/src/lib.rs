@@ -139,10 +139,27 @@ fn register_session(
 
 /// Called by the frontend on disconnect (session no longer active).
 #[tauri::command]
-fn unregister_session(window: tauri::WebviewWindow, state: tauri::State<'_, SessionMap>) {
-    let mut map = lock_or_recover(&state.0, "session_map");
-    // Remove all entries that point to this window
-    map.retain(|_, entry| entry.window_label != window.label());
+fn unregister_session(
+    window: tauri::WebviewWindow,
+    sessions: tauri::State<'_, SessionMap>,
+    devices: tauri::State<'_, DeviceMap>,
+) {
+    let mut session_map = lock_or_recover(&sessions.0, "session_map");
+    session_map.retain(|_, entry| entry.window_label != window.label());
+    let mut device_map = lock_or_recover(&devices.0, "device_map");
+    device_map.retain(|_, label| label != window.label());
+}
+
+/// Called by DesktopViewer when the device id is known.
+/// Maps device_id → calling window so duplicate connects to the same device focus it.
+#[tauri::command]
+fn register_device(
+    window: tauri::WebviewWindow,
+    device_id: String,
+    state: tauri::State<'_, DeviceMap>,
+) {
+    let mut map = lock_or_recover(&state.0, "device_map");
+    map.insert(device_id, window.label().to_string());
 }
 
 /// Called by DesktopViewer when the remote hostname is learned.
@@ -380,6 +397,7 @@ pub fn run() {
             clear_pending_deep_link,
             register_session,
             unregister_session,
+            register_device,
             update_session_hostname,
         ]);
 
@@ -474,6 +492,10 @@ pub fn run() {
                     if let Some(sessions) = app_handle.try_state::<SessionMap>() {
                         let mut map = lock_or_recover(&sessions.0, "session_map");
                         map.retain(|_, entry| entry.window_label != label);
+                    }
+                    if let Some(devices) = app_handle.try_state::<DeviceMap>() {
+                        let mut map = lock_or_recover(&devices.0, "device_map");
+                        map.retain(|_, l| l != &label);
                     }
                     if let Some(links) = app_handle.try_state::<DeepLinkState>() {
                         let mut map = lock_or_recover(&links.0, "deep_link_state");
