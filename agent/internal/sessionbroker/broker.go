@@ -186,6 +186,17 @@ var (
 	keepaliveTimeout      = 45 * time.Second
 )
 
+// roleSupportsKeepalive reports whether the broker should drive its generic
+// TypePing/TypePong keepalive on a session of the given helper role.
+//
+// Watchdog is excluded: its IPC client (internal/watchdog/ipcclient.go) only
+// handles TypeWatchdogPong and never replies to TypePing, so running keepalive
+// against it would evict every watchdog connection at keepaliveTimeout.
+// Watchdog has its own end-to-end liveness probe via WatchdogPing/Pong.
+func roleSupportsKeepalive(role string) bool {
+	return role != ipc.HelperRoleWatchdog
+}
+
 // Role-based scopes: SYSTEM helpers own desktop capture, user-token helpers own script execution.
 var (
 	systemHelperScopes   = []string{"notify", "tray", "clipboard", "desktop"}
@@ -1388,7 +1399,9 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	// arriving. Without this, a wedged helper (e.g. a capture process killed
 	// mid-stream) can hold a slot forever because RecvLoop blocks on a read
 	// with no deadline. See issue #443.
-	go b.runKeepalive(session)
+	if roleSupportsKeepalive(helperRole) {
+		go b.runKeepalive(session)
+	}
 
 	// Start receive loop — blocks until disconnect
 	session.RecvLoop(b.dispatchHelperMessage)

@@ -150,6 +150,28 @@ func TestKeepaliveKeepsHealthySessionAlive(t *testing.T) {
 	}
 }
 
+// roleSupportsKeepalive must keep watchdog connections out of the generic
+// keepalive path. Regression for the eviction loop introduced when PR #443
+// added unconditional runKeepalive: the watchdog IPC client only handles
+// TypeWatchdogPong and never replies to TypePing, so every watchdog
+// connection was being evicted at keepaliveTimeout and reconnecting forever.
+func TestRoleSupportsKeepalive_ExcludesWatchdog(t *testing.T) {
+	cases := []struct {
+		role string
+		want bool
+	}{
+		{ipc.HelperRoleSystem, true},
+		{ipc.HelperRoleUser, true},
+		{ipc.HelperRoleWatchdog, false},
+		{"", true}, // unknown roles default to system in handleConnection — keepalive applies
+	}
+	for _, c := range cases {
+		if got := roleSupportsKeepalive(c.role); got != c.want {
+			t.Errorf("roleSupportsKeepalive(%q) = %v, want %v", c.role, got, c.want)
+		}
+	}
+}
+
 // When the cap is hit, a new connection for the same identity must evict the
 // oldest-idle existing session rather than being rejected.
 func TestAdmitOrEvictEvictsIdleSession(t *testing.T) {
