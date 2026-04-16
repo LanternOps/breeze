@@ -63,6 +63,13 @@ describe('parseDeepLink', () => {
     expect(result).not.toBeNull();
     expect(result!).not.toHaveProperty('deviceId');
   });
+
+  it('omits deviceId when device param is empty', () => {
+    const url = 'breeze://connect?session=abc&code=def&api=https%3A%2F%2Fexample.com&device=';
+    const result = parseDeepLink(url);
+    expect(result).not.toBeNull();
+    expect(result!).not.toHaveProperty('deviceId');
+  });
 });
 
 describe('buildWsUrl', () => {

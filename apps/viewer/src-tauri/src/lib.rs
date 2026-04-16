@@ -553,3 +553,27 @@ pub fn run() {
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_device_id_cases() {
+        let cases = [
+            ("breeze://connect?session=s&device=d1", Some("d1")),
+            ("breeze://connect?device=d1&session=s", Some("d1")),
+            ("breeze://connect?session=s&device=", None),
+            ("breeze://connect?session=s", None),
+            ("breeze://connect", None),
+            ("breeze://connect?session=s&xdevice=d1", None),
+        ];
+        for (url, expected) in cases {
+            assert_eq!(
+                extract_device_id(url).as_deref(),
+                expected,
+                "extract_device_id({url:?})"
+            );
+        }
+    }
+}
