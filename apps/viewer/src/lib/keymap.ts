@@ -45,6 +45,13 @@ const codeToKey: Record<string, string> = {
   // Other
   PrintScreen: 'printscreen', ScrollLock: 'scrolllock',
   Pause: 'pause', NumLock: 'numlock', CapsLock: 'capslock',
+
+  // Modifiers — forwarded as standalone key_down/key_up so Shift+Click,
+  // Ctrl+Click, etc. work for multi-select on the remote machine.
+  ShiftLeft: 'shift', ShiftRight: 'shift',
+  ControlLeft: 'ctrl', ControlRight: 'ctrl',
+  AltLeft: 'alt', AltRight: 'alt',
+  MetaLeft: 'meta', MetaRight: 'meta',
 };
 
 /**

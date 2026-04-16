@@ -1170,7 +1170,24 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     e.preventDefault();
-    if (isModifierOnly(e.nativeEvent)) return;
+
+    // Modifier keys pressed alone: forward as key_down so Shift+Click,
+    // Ctrl+Click, etc. hold the modifier on the remote machine for
+    // multi-select. Skip the rest of the handler (no modifiers bundle,
+    // no paste shortcut — those are handled when a non-modifier follows).
+    if (isModifierOnly(e.nativeEvent)) {
+      let modKey = mapKey(e.nativeEvent);
+      if (!modKey) return;
+      if (remapCmdCtrl) {
+        if (modKey === 'ctrl') modKey = 'meta';
+        else if (modKey === 'meta') modKey = 'ctrl';
+      }
+      if (e.repeat) return;
+      if (pressedKeysRef.current.has(modKey)) return;
+      pressedKeysRef.current.add(modKey);
+      sendInputFn({ type: 'key_down', key: modKey });
+      return;
+    }
 
     // Ctrl+Shift+V / Cmd+Shift+V → paste as keystrokes
     const ne = e.nativeEvent;
@@ -1244,15 +1261,21 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
   const handleKeyUp = useCallback((e: React.KeyboardEvent) => {
     e.preventDefault();
-    if (isModifierOnly(e.nativeEvent)) return;
 
-    const key = mapKey(e.nativeEvent);
+    let key = mapKey(e.nativeEvent);
     if (!key) return;
+
+    // Apply the same ctrl↔meta remap used on key_down so the agent sees
+    // the matching release for the key that was pressed.
+    if (isModifierOnly(e.nativeEvent) && remapCmdCtrl) {
+      if (key === 'ctrl') key = 'meta';
+      else if (key === 'meta') key = 'ctrl';
+    }
 
     if (!pressedKeysRef.current.has(key)) return;
     pressedKeysRef.current.delete(key);
     sendInputFn({ type: 'key_up', key });
-  }, [sendInputFn]);
+  }, [sendInputFn, remapCmdCtrl]);
 
   // ── Toolbar: config changes ────────────────────────────────────────
 
