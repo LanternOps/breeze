@@ -128,7 +128,7 @@ When running `breeze-agent service install` manually, the agent fetches the matc
   </TabItem>
 </Tabs>
 
-If a previously agent-only install needs the watchdog added, simply re-run `breeze-agent service install` (without `--no-watchdog`). The agent service is unaffected; only the watchdog is added.
+If a previously agent-only install needs the watchdog added, re-run `breeze-agent service install`. This reinstalls the agent binary and restarts the agent service (safe for upgrades) and registers the missing watchdog. To add *only* the watchdog without touching the agent service, run `breeze-watchdog service install` directly.
 
 ---
 
