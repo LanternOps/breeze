@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/config"
@@ -131,6 +132,7 @@ var serviceCmd = &cobra.Command{
 }
 
 var withUserHelper bool
+var noWatchdog bool
 
 func init() {
 	rootCmd.AddCommand(serviceCmd)
@@ -140,6 +142,7 @@ func init() {
 	serviceCmd.AddCommand(serviceStopCmd)
 	serviceCmd.AddCommand(serviceStatusCmd)
 	serviceInstallCmd.Flags().BoolVar(&withUserHelper, "with-user-helper", false, "Also install the per-user desktop helper LaunchAgent")
+	serviceInstallCmd.Flags().BoolVar(&noWatchdog, "no-watchdog", false, "Skip automatic watchdog installation")
 }
 
 var serviceInstallCmd = &cobra.Command{
@@ -263,6 +266,26 @@ var serviceInstallCmd = &cobra.Command{
 			fmt.Printf("  3. Status:  sudo breeze-agent service status\n")
 			fmt.Printf("  4. Logs:    tail -f %s/agent.log\n", darwinLogDir)
 		}
+		if !noWatchdog {
+			err := bootstrapWatchdog(bootstrapOptions{
+				agentPath: exePath,
+				version:   version,
+				goos:      runtime.GOOS,
+				goarch:    runtime.GOARCH,
+			})
+			if err != nil {
+				fmt.Fprintf(os.Stderr,
+					"Warning: watchdog bootstrap failed: %v\n"+
+						"The agent service is installed and running. The watchdog is NOT installed.\n"+
+						"To retry, choose one of:\n"+
+						"  1. Re-run `sudo breeze-agent service install` (will retry the download).\n"+
+						"  2. Download %s manually, place it next to breeze-agent,\n"+
+						"     then run `sudo breeze-watchdog service install`.\n"+
+						"  3. To skip the watchdog entirely, use `--no-watchdog`.\n",
+					err, watchdogDownloadURL(version, runtime.GOOS, runtime.GOARCH))
+			}
+		}
+
 		return nil
 	},
 }

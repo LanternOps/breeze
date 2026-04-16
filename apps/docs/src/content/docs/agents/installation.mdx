@@ -113,6 +113,23 @@ All platform installers (MSI, PKG, and manual service install) include two compo
 
 The watchdog runs alongside the agent as a separate process. You do not need to configure it -- it starts automatically with the agent service. See the [Watchdog documentation](/features/watchdog) for details.
 
+When running `breeze-agent service install` manually, the agent fetches the matching-version watchdog binary from GitHub releases if one is not already present next to the agent executable. If you need to skip this (for example on an air-gapped host), pass `--no-watchdog`:
+
+<Tabs>
+  <TabItem label="Linux / macOS">
+    ```bash
+    sudo ./breeze-agent service install --no-watchdog
+    ```
+  </TabItem>
+  <TabItem label="Windows">
+    ```powershell
+    .\breeze-agent.exe service install --no-watchdog
+    ```
+  </TabItem>
+</Tabs>
+
+If a previously agent-only install needs the watchdog added, re-run `breeze-agent service install`. This reinstalls the agent binary and restarts the agent service (safe for upgrades) and registers the missing watchdog. To add *only* the watchdog without touching the agent service, run `breeze-watchdog service install` directly.
+
 ---
 
 ## What Enrollment Does
