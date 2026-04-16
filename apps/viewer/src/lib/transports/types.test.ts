@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { TransportSession, TransportCapabilities } from './types';
+import type { TransportCapabilities } from './types';
 import { capabilitiesFor } from './types';
 
 describe('capabilitiesFor', () => {

@@ -2,7 +2,8 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { buildWsUrl, type ConnectionParams } from '../lib/protocol';
 import { createDesktopWsTicket, exchangeDesktopConnectCode } from '../lib/api';
-import { createWebRTCSession, scaleVideoCoords, AgentSessionError, type AuthenticatedConnectionParams, type WebRTCSession } from '../lib/webrtc';
+import { scaleVideoCoords, AgentSessionError, type AuthenticatedConnectionParams } from '../lib/webrtc';
+import { connectWebRTC as connectWebRTCTransport, type WebRTCSessionWrapper } from '../lib/transports/webrtc';
 import { mapKey, getModifiers, isModifierOnly } from '../lib/keymap';
 import { textToKeyEvents } from '../lib/paste';
 import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
@@ -25,7 +26,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const webrtcRef = useRef<WebRTCSession | null>(null);
+  const webrtcRef = useRef<WebRTCSessionWrapper | null>(null);
   const transportRef = useRef<Transport | null>(null);
   const wsCleanupRef = useRef<(() => void) | null>(null);
   const authRef = useRef<AuthenticatedConnectionParams | null>(null);
@@ -67,6 +68,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [activeSessionId, setActiveSessionId] = useState<number | null>(params.targetSessionId ?? null);
   const [switchingSession, setSwitchingSession] = useState<string | null>(null);
   const switchingSessionRef = useRef(false);
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [hasAudioTrack, setHasAudioTrack] = useState(false);
   const [showRemoteCursor, setShowRemoteCursor] = useState(false);
@@ -116,197 +118,105 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     const videoEl = videoRef.current;
     if (!videoEl) return false;
 
-	    try {
-	      const session = await createWebRTCSession(auth, videoEl, undefined, targetSessionId ?? params.targetSessionId);
-	      webrtcRef.current = session;
-
-	      // Reduce input lag under loss: coalesce mouse moves, and avoid unbounded buffering.
-	      try {
-	        session.inputChannel.bufferedAmountLowThreshold = 256 * 1024;
-	        session.inputChannel.onbufferedamountlow = () => {
-	          if (webrtcMouseMovePendingRef.current && webrtcMouseMoveRafRef.current === null) {
-	            webrtcMouseMoveRafRef.current = requestAnimationFrame(flushWebRTCMouseMove);
-	          }
-	        };
-	      } catch {
-	        // Some environments may not support these fields.
-	      }
-
-	      // Handle audio tracks from the agent (WASAPI loopback)
-	      const origOnTrack = session.pc.ontrack;
-	      session.pc.ontrack = (event) => {
-	        // Call the original handler from webrtc.ts (wires video)
-	        if (origOnTrack) (origOnTrack as (ev: RTCTrackEvent) => void)(event);
-	        if (event.track.kind === 'audio') {
-	          setHasAudioTrack(true);
-	          // Create a dedicated Audio element for the remote audio track.
-          // The video element's MediaStream (set up in webrtc.ts) only carries
-          // the video track, so audio needs its own playback element.
-		          const audioEl = new Audio();
-		          audioEl.srcObject = new MediaStream([event.track]);
-		          audioEl.muted = true; // start muted (user toggles)
-		          audioEl.play().catch((err) => {
-		            console.warn('Failed to auto-play remote audio track:', err);
-		          });
-		          // Store ref for mute toggle
-		          (session as any)._audioEl = audioEl;
-		        }
-	      };
-
-	      // Monitor connection state
-	      session.pc.onconnectionstatechange = () => {
-	        if (webrtcRef.current !== session) return;
-	        const state = session.pc.connectionState;
-	        if (state === 'connected') {
-	          setStatus('connected');
-	          setConnectedAt(new Date());
-	          setErrorMessage(null);
-	          // Ensure keyboard input is captured without an extra click.
-	          videoRef.current?.focus();
-	        } else if (state === 'failed' || state === 'disconnected') {
-	          // If user clicked disconnect, don't auto-reconnect
-	          if (userDisconnectRef.current) return;
-	          startReconnectRef.current();
-	        } else if (state === 'closed') {
-	          if (userDisconnectRef.current) return;
-	          setStatus('disconnected');
-	          setConnectedAt(null);
-	        }
-	      };
-
-      // Listen for agent-created data channels (cursor, clipboard, filedrop)
-      session.pc.ondatachannel = (event) => {
-        if (event.channel.label === 'cursor') {
-          event.channel.onopen = () => setCursorStreamActive(true);
-          event.channel.onclose = () => setCursorStreamActive(false);
-          event.channel.onmessage = (msg) => {
-            const overlay = cursorOverlayRef.current;
-            const videoEl = videoRef.current;
-            if (!overlay || !videoEl) return;
-
-            try {
-              const data = JSON.parse(msg.data);
-              const { x, y, v, s } = data;
-
-              // Update cursor shape when the agent sends a new shape.
-              // "s" is only included when it differs from the last sent value.
-              const VALID_CURSORS = new Set([
-                'default', 'pointer', 'text', 'crosshair', 'move', 'grab', 'grabbing',
-                'ew-resize', 'ns-resize', 'nwse-resize', 'nesw-resize', 'not-allowed',
-                'wait', 'progress', 'help', 'context-menu', 'cell', 'none',
-              ]);
-              if (s && typeof s === 'string' && VALID_CURSORS.has(s)) {
-                remoteCursorShapeRef.current = s;
-                // Apply CSS cursor to the video element immediately. When the
-                // remote cursor overlay is hidden, the user's OS cursor adopts
-                // the remote shape (text beam, pointer hand, resize arrows, etc.).
-                if (!showRemoteCursorRef.current) {
-                  videoEl.style.cursor = s;
-                }
-              }
-
-              if (!showRemoteCursorRef.current) {
-                overlay.style.display = 'none';
-                return;
-              }
-
-              if (!v) {
-                overlay.style.display = 'none';
-                return;
-              }
-
-              const videoW = videoEl.videoWidth;
-              const videoH = videoEl.videoHeight;
-              if (!videoW || !videoH) return;
-
-              const rect = videoEl.getBoundingClientRect();
-              const containerRect = overlay.parentElement?.getBoundingClientRect();
-              if (!containerRect) return;
-
-              // Same letterboxing math as scaleVideoCoords (remote→local)
-              const videoAspect = videoW / videoH;
-              const rectAspect = rect.width / rect.height;
-              let displayW: number, displayH: number, offsetX: number, offsetY: number;
-              if (rectAspect > videoAspect) {
-                displayH = rect.height;
-                displayW = rect.height * videoAspect;
-                offsetX = (rect.width - displayW) / 2;
-                offsetY = 0;
+    const sessionWrapper = await connectWebRTCTransport(auth, {
+      videoElement: videoEl,
+      cursorOverlayRef,
+      targetSessionId: targetSessionId ?? params.targetSessionId,
+      showRemoteCursorRef,
+      remoteCursorShapeRef,
+      onConnected: () => {
+        // Guard: ignore stale session events after the ref has moved on
+        if (webrtcRef.current !== sessionWrapper) return;
+        setStatus('connected');
+        setConnectedAt(new Date());
+        setErrorMessage(null);
+        // Ensure keyboard input is captured without an extra click.
+        videoRef.current?.focus();
+      },
+      onDisconnected: () => {
+        if (webrtcRef.current !== sessionWrapper) return;
+        if (userDisconnectRef.current) return;
+        startReconnectRef.current();
+      },
+      onFailed: () => {
+        if (webrtcRef.current !== sessionWrapper) return;
+        if (userDisconnectRef.current) return;
+        startReconnectRef.current();
+      },
+      onClosed: () => {
+        if (webrtcRef.current !== sessionWrapper) return;
+        if (userDisconnectRef.current) return;
+        setStatus('disconnected');
+        setConnectedAt(null);
+      },
+      onAudioTrack: (audioEl) => {
+        audioElRef.current = audioEl;
+        setHasAudioTrack(true);
+      },
+      onClipboardChannel: (channel) => {
+        clipboardDCRef.current = channel;
+        channel.onmessage = (msg) => {
+          try {
+            const payload = JSON.parse(msg.data);
+            if (payload.type === 'ack' && payload.hash) {
+              const entry = clipboardAckMapRef.current.get(payload.hash);
+              if (entry) {
+                clearTimeout(entry.timer);
+                clipboardAckMapRef.current.delete(payload.hash);
+                entry.resolve();
               } else {
-                displayW = rect.width;
-                displayH = rect.width / videoAspect;
-                offsetX = 0;
-                offsetY = (rect.height - displayH) / 2;
+                console.debug('[clipboard] ack for unknown hash:', payload.hash);
               }
+            } else if (payload.type === 'text' && payload.text) {
+              lastClipboardHashRef.current = payload.text;
+              // navigator.clipboard.writeText requires a user activation in
+              // WKWebView/WebView2; invoking it from an onmessage handler
+              // silently rejects with NotAllowedError. Route through the
+              // Tauri plugin, which goes via the Rust side and does not
+              // require a gesture.
+              import('@tauri-apps/plugin-clipboard-manager').then(({ writeText }) =>
+                writeText(payload.text)
+              ).catch((err) => {
+                console.warn('[clipboard] failed to write remote→local:', err);
+              });
+            }
+          } catch (err) {
+            console.warn('[clipboard] message handling failed:', err);
+          }
+        };
+        channel.onclose = () => {
+          clipboardDCRef.current = null;
+          for (const entry of clipboardAckMapRef.current.values()) {
+            clearTimeout(entry.timer);
+            entry.resolve();
+          }
+          clipboardAckMapRef.current.clear();
+        };
+      },
+      onCursorChannelOpen: () => setCursorStreamActive(true),
+      onCursorChannelClose: () => setCursorStreamActive(false),
+    });
 
-              const remoteX = Math.max(0, Math.min(videoW - 1, Number(x) || 0));
-              const remoteY = Math.max(0, Math.min(videoH - 1, Number(y) || 0));
-              const localX = (remoteX / videoW) * displayW + offsetX + (rect.left - containerRect.left);
-              const localY = (remoteY / videoH) * displayH + offsetY + (rect.top - containerRect.top);
+    if (!sessionWrapper) return false;
 
-              overlay.style.display = 'block';
-              overlay.style.transform = `translate(${localX}px, ${localY}px)`;
-            } catch (err) {
-              console.debug('Cursor message handling failed:', err);
-            }
-          };
-        } else if (event.channel.label === 'clipboard') {
-          clipboardDCRef.current = event.channel;
-          event.channel.onmessage = (msg) => {
-            try {
-              const payload = JSON.parse(msg.data);
-              if (payload.type === 'ack' && payload.hash) {
-                const entry = clipboardAckMapRef.current.get(payload.hash);
-                if (entry) {
-                  clearTimeout(entry.timer);
-                  clipboardAckMapRef.current.delete(payload.hash);
-                  entry.resolve();
-                } else {
-                  console.debug('[clipboard] ack for unknown hash:', payload.hash);
-                }
-              } else if (payload.type === 'text' && payload.text) {
-                lastClipboardHashRef.current = payload.text;
-                // navigator.clipboard.writeText requires a user activation in
-                // WKWebView/WebView2; invoking it from an onmessage handler
-                // silently rejects with NotAllowedError. Route through the
-                // Tauri plugin, which goes via the Rust side and does not
-                // require a gesture.
-                import('@tauri-apps/plugin-clipboard-manager').then(({ writeText }) =>
-                  writeText(payload.text)
-                ).catch((err) => {
-                  console.warn('[clipboard] failed to write remote→local:', err);
-                });
-              }
-            } catch (err) {
-              console.warn('[clipboard] message handling failed:', err);
-            }
-          };
-          event.channel.onclose = () => {
-            clipboardDCRef.current = null;
-            for (const entry of clipboardAckMapRef.current.values()) {
-              clearTimeout(entry.timer);
-              entry.resolve();
-            }
-            clipboardAckMapRef.current.clear();
-          };
+    webrtcRef.current = sessionWrapper;
+
+    // Reduce input lag under loss: coalesce mouse moves, avoid unbounded buffering.
+    try {
+      sessionWrapper.inputChannel.onbufferedamountlow = () => {
+        if (webrtcMouseMovePendingRef.current && webrtcMouseMoveRafRef.current === null) {
+          webrtcMouseMoveRafRef.current = requestAnimationFrame(flushWebRTCMouseMove);
         }
       };
-
-      setTransportState('webrtc');
-      // Hostname is already set from the exchange response before connectWebRTC is called.
-      // Connection state will flip to 'connected' via onconnectionstatechange
-      return true;
-    } catch (err) {
-      // If the agent reported a session failure (e.g. capture unsupported,
-      // no encoder), propagate it so the viewer shows the real error instead
-      // of silently falling back to WebSocket which will also fail.
-      if (err instanceof AgentSessionError) {
-        throw err;
-      }
-      console.warn('WebRTC connection failed:', err);
-      return false;
+    } catch {
+      // Some environments may not support onbufferedamountlow.
     }
-  }, []);
+
+    setTransportState('webrtc');
+    // Hostname is already set from the exchange response before connectWebRTC is called.
+    // Connection state will flip to 'connected' via onConnected callback.
+    return true;
+  }, [params.targetSessionId]);
 
   // ── WebSocket connection (fallback) ────────────────────────────────
 
@@ -1344,10 +1254,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
     const prevSession = webrtcRef.current;
     webrtcRef.current = null;
-    const audioEl = (prevSession as any)?._audioEl as HTMLAudioElement | undefined;
+    const audioEl = audioElRef.current;
     if (audioEl) {
       audioEl.pause();
       audioEl.srcObject = null;
+      audioElRef.current = null;
     }
     prevSession?.close();
 
@@ -1385,7 +1296,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     const newEnabled = !audioEnabled;
     setAudioEnabled(newEnabled);
     // Mute/unmute the audio element
-    const audioEl = (webrtcRef.current as any)?._audioEl as HTMLAudioElement | undefined;
+    const audioEl = audioElRef.current;
     if (audioEl) {
       audioEl.muted = !newEnabled;
       if (newEnabled) audioEl.play().catch((err) => {
@@ -1443,12 +1354,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     wsCleanupRef.current?.();
     wsCleanupRef.current = null;
     // Clean up audio element to release MediaStream resources
-    const rtcSession = webrtcRef.current;
-    const audioEl = (rtcSession as any)?._audioEl as HTMLAudioElement | undefined;
+    const audioEl = audioElRef.current;
     if (audioEl) {
       audioEl.pause();
       audioEl.srcObject = null;
+      audioElRef.current = null;
     }
+    const rtcSession = webrtcRef.current;
     webrtcRef.current = null;
     rtcSession?.close();
     onDisconnect();
