@@ -150,6 +150,99 @@ func TestKeepaliveKeepsHealthySessionAlive(t *testing.T) {
 	}
 }
 
+// roleSupportsKeepalive must keep watchdog connections out of the generic
+// keepalive path. Regression for the eviction loop introduced when PR #443
+// added unconditional runKeepalive: the watchdog IPC client only handles
+// TypeWatchdogPong and never replies to TypePing, so every watchdog
+// connection was being evicted at keepaliveTimeout and reconnecting forever.
+func TestRoleSupportsKeepalive_ExcludesWatchdog(t *testing.T) {
+	cases := []struct {
+		role string
+		want bool
+	}{
+		{ipc.HelperRoleSystem, true},
+		{ipc.HelperRoleUser, true},
+		{ipc.HelperRoleWatchdog, false},
+		{"", true}, // unknown roles default to system in handleConnection — keepalive applies
+	}
+	for _, c := range cases {
+		if got := roleSupportsKeepalive(c.role); got != c.want {
+			t.Errorf("roleSupportsKeepalive(%q) = %v, want %v", c.role, got, c.want)
+		}
+	}
+}
+
+// maybeStartKeepalive must NOT start the keepalive goroutine for a watchdog
+// session: a never-ponging watchdog session must remain alive past the
+// keepalive timeout. This is the integration-level guard against a future
+// refactor accidentally re-introducing the unconditional runKeepalive call
+// at the handleConnection site. See PR #443 / #462.
+func TestMaybeStartKeepalive_WatchdogSessionStaysAlive(t *testing.T) {
+	withKeepaliveTiming(t, 10*time.Millisecond, 25*time.Millisecond)
+
+	session, clientIPC := newPairedSession(t, "watchdog-1", "S-1-5-18")
+	defer clientIPC.Close()
+
+	// Force lastPongAt deep into the past so that IF runKeepalive ran, the
+	// very first tick would close the session. The test asserts the opposite.
+	session.lastPongAt.Store(time.Now().Add(-time.Hour).UnixNano())
+
+	b := &Broker{
+		sessions:     map[string]*Session{session.SessionID: session},
+		byIdentity:   map[string][]*Session{session.IdentityKey: {session}},
+		staleHelpers: make(map[string][]int),
+	}
+
+	b.maybeStartKeepalive(session, ipc.HelperRoleWatchdog)
+
+	// Wait well past 2× keepaliveTimeout to give any rogue keepalive goroutine
+	// multiple ticks to fire. Session must still be open.
+	time.Sleep(60 * time.Millisecond)
+
+	if session.IsClosed() {
+		t.Fatal("watchdog session was closed by keepalive — gating regressed")
+	}
+
+	_ = session.Close()
+}
+
+// Conversely, maybeStartKeepalive MUST start the keepalive goroutine for a
+// system-role session, so a stranded system helper is still reaped. Pairs
+// with the watchdog test above to lock in the gating direction.
+func TestMaybeStartKeepalive_SystemSessionIsReaped(t *testing.T) {
+	withKeepaliveTiming(t, 10*time.Millisecond, 20*time.Millisecond)
+
+	session, clientIPC := newPairedSession(t, "system-1", "S-1-5-18")
+	defer clientIPC.Close()
+
+	session.lastPongAt.Store(time.Now().Add(-time.Hour).UnixNano())
+
+	go func() {
+		for {
+			if _, err := clientIPC.Recv(); err != nil {
+				return
+			}
+		}
+	}()
+
+	b := &Broker{
+		sessions:     map[string]*Session{session.SessionID: session},
+		byIdentity:   map[string][]*Session{session.IdentityKey: {session}},
+		staleHelpers: make(map[string][]int),
+	}
+
+	b.maybeStartKeepalive(session, ipc.HelperRoleSystem)
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if session.IsClosed() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("system session was not closed by keepalive within deadline")
+}
+
 // When the cap is hit, a new connection for the same identity must evict the
 // oldest-idle existing session rather than being rejected.
 func TestAdmitOrEvictEvictsIdleSession(t *testing.T) {
