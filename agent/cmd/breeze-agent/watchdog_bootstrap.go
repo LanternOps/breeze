@@ -5,8 +5,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -89,6 +91,48 @@ func downloadWatchdog(url, destPath string) error {
 	if err := os.Rename(tmpPath, destPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("rename %s -> %s: %w", tmpPath, destPath, err)
+	}
+	return nil
+}
+
+// bootstrapOptions is the inputs for bootstrapWatchdog. Kept as a struct so the
+// callers on each OS stay short and the test helpers don't need long arg lists.
+type bootstrapOptions struct {
+	agentPath string // absolute path to the currently running agent binary
+	version   string // agent version (main.version), e.g. "0.62.24" or "dev"
+	goos      string // runtime.GOOS
+	goarch    string // runtime.GOARCH
+
+	// urlOverride, if non-empty, replaces the full download URL. Test-only.
+	urlOverride string
+}
+
+// bootstrapWatchdog resolves a watchdog binary (sibling first, GitHub download
+// fallback) and then invokes `<watchdog> service install` to register it as a
+// system service. All errors are returned — callers are expected to downgrade
+// them to warnings so that a watchdog problem never aborts the agent install.
+func bootstrapWatchdog(opts bootstrapOptions) error {
+	watchdogPath, ok := locateSiblingWatchdog(opts.agentPath)
+	if !ok {
+		if opts.version == "" || opts.version == "dev" || strings.HasPrefix(opts.version, "dev-") {
+			return fmt.Errorf("no sibling watchdog found and agent is a dev build (version=%q); run `breeze-watchdog service install` manually", opts.version)
+		}
+		url := opts.urlOverride
+		if url == "" {
+			url = watchdogDownloadURL(opts.version, opts.goos, opts.goarch)
+		}
+		watchdogPath = filepath.Join(filepath.Dir(opts.agentPath), watchdogBinaryName(opts.goos))
+		fmt.Fprintf(os.Stderr, "Downloading watchdog from %s ...\n", url)
+		if err := downloadWatchdog(url, watchdogPath); err != nil {
+			return fmt.Errorf("download watchdog: %w", err)
+		}
+	}
+
+	cmd := exec.Command(watchdogPath, "service", "install")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("run %s service install: %w", watchdogPath, err)
 	}
 	return nil
 }

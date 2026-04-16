@@ -156,3 +156,79 @@ func TestDownloadWatchdog_TooSmall(t *testing.T) {
 		t.Errorf("downloadWatchdog: dest file should not exist after failure")
 	}
 }
+
+func TestBootstrapWatchdog_SiblingFound_RunsInstall(t *testing.T) {
+	dir := t.TempDir()
+	agentPath := filepath.Join(dir, "breeze-agent")
+	if err := os.WriteFile(agentPath, []byte("fake"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	siblingPath := filepath.Join(dir, watchdogBinaryName(runtime.GOOS))
+	marker := filepath.Join(dir, "invoked")
+	var script string
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping exec-sibling test on Windows (need real .exe)")
+	} else {
+		script = "#!/bin/sh\necho invoked > \"" + marker + "\"\n"
+	}
+	if err := os.WriteFile(siblingPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := bootstrapOptions{
+		agentPath: agentPath,
+		version:   "0.62.24",
+		goos:      runtime.GOOS,
+		goarch:    runtime.GOARCH,
+	}
+	if err := bootstrapWatchdog(opts); err != nil {
+		t.Fatalf("bootstrapWatchdog: %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("expected sibling watchdog to be invoked (marker %q not found): %v", marker, err)
+	}
+}
+
+func TestBootstrapWatchdog_DevVersionSkipsDownload(t *testing.T) {
+	dir := t.TempDir()
+	agentPath := filepath.Join(dir, "breeze-agent")
+	if err := os.WriteFile(agentPath, []byte("fake"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := bootstrapOptions{
+		agentPath: agentPath,
+		version:   "dev",
+		goos:      runtime.GOOS,
+		goarch:    runtime.GOARCH,
+	}
+	err := bootstrapWatchdog(opts)
+	if err == nil {
+		t.Fatalf("bootstrapWatchdog: expected error for dev version, got nil")
+	}
+}
+
+func TestBootstrapWatchdog_DownloadFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	agentPath := filepath.Join(dir, "breeze-agent")
+	if err := os.WriteFile(agentPath, []byte("fake"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := bootstrapOptions{
+		agentPath:   agentPath,
+		version:     "0.62.24",
+		goos:        runtime.GOOS,
+		goarch:      runtime.GOARCH,
+		urlOverride: srv.URL,
+	}
+	err := bootstrapWatchdog(opts)
+	if err == nil {
+		t.Fatalf("bootstrapWatchdog: expected error on download 404, got nil")
+	}
+}
