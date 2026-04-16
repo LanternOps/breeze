@@ -240,8 +240,13 @@ var serviceInstallCmd = &cobra.Command{
 			if err != nil {
 				fmt.Fprintf(os.Stderr,
 					"Warning: watchdog bootstrap failed: %v\n"+
-						"The agent service is installed. To install the watchdog manually, run:\n"+
-						"    sudo breeze-watchdog service install\n", err)
+						"The agent service is installed and running. The watchdog is NOT installed.\n"+
+						"To retry, choose one of:\n"+
+						"  1. Re-run `sudo breeze-agent service install` (will retry the download).\n"+
+						"  2. Download %s manually, place it next to breeze-agent,\n"+
+						"     then run `sudo breeze-watchdog service install`.\n"+
+						"  3. To skip the watchdog entirely, use `--no-watchdog`.\n",
+					err, watchdogDownloadURL(version, runtime.GOOS, runtime.GOARCH))
 			}
 		}
 
