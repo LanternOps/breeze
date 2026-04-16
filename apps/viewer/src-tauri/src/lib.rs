@@ -48,6 +48,10 @@ struct SessionEntry {
 /// Used to detect duplicate deep links and focus the existing window.
 struct SessionMap(Mutex<HashMap<String, SessionEntry>>);
 
+/// Maps device_id → window_label for active sessions.
+/// Used to focus an existing window when the same device is connected again.
+struct DeviceMap(Mutex<HashMap<String, String>>);
+
 /// Monotonic counter for unique window labels.
 struct WindowCounter(Mutex<u32>);
 
@@ -83,6 +87,23 @@ fn extract_session_id(url: &str) -> Option<String> {
         }
     }
     eprintln!("Deep link missing session parameter");
+    None
+}
+
+/// Extract the `device=` query parameter from a breeze:// deep link URL.
+fn extract_device_id(url: &str) -> Option<String> {
+    let query_start = url.find('?')?;
+    let query = &url[query_start + 1..];
+    for pair in query.split('&') {
+        if let Some(value) = pair.strip_prefix("device=") {
+            let end = value.find('&').unwrap_or(value.len());
+            let id = &value[..end];
+            if !id.is_empty() {
+                return Some(id.to_string());
+            }
+            return None;
+        }
+    }
     None
 }
 
@@ -403,6 +424,7 @@ pub fn run() {
 
             app.manage(DeepLinkState(Mutex::new(HashMap::new())));
             app.manage(SessionMap(Mutex::new(HashMap::new())));
+            app.manage(DeviceMap(Mutex::new(HashMap::new())));
             app.manage(WindowCounter(Mutex::new(0)));
 
             // If launched with a deep link, defer session window creation to
