@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -83,5 +85,74 @@ func TestLocateSiblingWatchdog_NotFound(t *testing.T) {
 	_, ok := locateSiblingWatchdog(agentPath)
 	if ok {
 		t.Errorf("locateSiblingWatchdog returned ok=true, want false")
+	}
+}
+
+func TestDownloadWatchdog_Success(t *testing.T) {
+	body := make([]byte, 2*1024*1024)
+	for i := range body {
+		body[i] = byte(i % 256)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	destDir := t.TempDir()
+	destPath := filepath.Join(destDir, "breeze-watchdog")
+
+	if err := downloadWatchdog(srv.URL, destPath); err != nil {
+		t.Fatalf("downloadWatchdog: %v", err)
+	}
+
+	got, err := os.ReadFile(destPath)
+	if err != nil {
+		t.Fatalf("read downloaded file: %v", err)
+	}
+	if len(got) != len(body) {
+		t.Errorf("downloaded size = %d, want %d", len(got), len(body))
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(destPath)
+		if err != nil {
+			t.Fatalf("stat: %v", err)
+		}
+		if info.Mode().Perm()&0100 == 0 {
+			t.Errorf("downloaded file is not executable: mode=%v", info.Mode())
+		}
+	}
+}
+
+func TestDownloadWatchdog_404(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	destPath := filepath.Join(t.TempDir(), "breeze-watchdog")
+	err := downloadWatchdog(srv.URL, destPath)
+	if err == nil {
+		t.Fatalf("downloadWatchdog: expected error on 404, got nil")
+	}
+	if _, statErr := os.Stat(destPath); statErr == nil {
+		t.Errorf("downloadWatchdog: dest file should not exist after failure")
+	}
+}
+
+func TestDownloadWatchdog_TooSmall(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("not a real binary"))
+	}))
+	defer srv.Close()
+
+	destPath := filepath.Join(t.TempDir(), "breeze-watchdog")
+	err := downloadWatchdog(srv.URL, destPath)
+	if err == nil {
+		t.Fatalf("downloadWatchdog: expected error on too-small body, got nil")
+	}
+	if _, statErr := os.Stat(destPath); statErr == nil {
+		t.Errorf("downloadWatchdog: dest file should not exist after failure")
 	}
 }
