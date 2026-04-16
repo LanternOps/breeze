@@ -1162,9 +1162,13 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	}
 	hashVerified := b.isAllowedBinaryHash(authReq.BinaryHash)
 	if !hashVerified {
+		allowed := make([]string, 0, len(b.selfHashes))
+		for h := range b.selfHashes {
+			allowed = append(allowed, h)
+		}
 		log.Warn("binary hash mismatch",
 			"identity", identityKey,
-			"expected", "allowed-helper-binary",
+			"expected", allowed,
 			"got", authReq.BinaryHash,
 		)
 		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
