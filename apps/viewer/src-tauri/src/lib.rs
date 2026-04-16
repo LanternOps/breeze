@@ -205,10 +205,31 @@ fn focus_any_session_window(app: &tauri::AppHandle) {
 /// - If the session is already active in a window, focus that window.
 /// - Otherwise, create a new session window for it.
 fn route_deep_link(app: &tauri::AppHandle, url: String) {
-    // Check if this session is already being viewed.
-    // Clone the label and drop the lock BEFORE calling set_focus(),
-    // which on macOS pumps the AppKit run loop and can re-enter Tauri
-    // command handlers that also need the SessionMap lock.
+    // Check device-id dedup first: if a window is already viewing this device,
+    // focus it and discard the new deep link entirely.
+    // Clone the label and drop the lock BEFORE calling set_focus(); on macOS
+    // set_focus pumps the AppKit run loop and can re-enter Tauri command
+    // handlers that also need this lock.
+    if let Some(device_id) = extract_device_id(&url) {
+        let existing_label = {
+            let devices = app.state::<DeviceMap>();
+            let map = lock_or_recover(&devices.0, "device_map");
+            map.get(&device_id).cloned()
+        }; // lock released here
+        if let Some(label) = existing_label {
+            if let Some(window) = app.get_webview_window(&label) {
+                if let Err(err) = window.set_focus() {
+                    eprintln!(
+                        "Failed to focus existing device window {}: {}",
+                        label, err
+                    );
+                }
+                return;
+            }
+        }
+    }
+
+    // Fallback: dedup by session id (covers older web builds and edge cases).
     if let Some(session_id) = extract_session_id(&url) {
         let existing_label = {
             let sessions = app.state::<SessionMap>();
@@ -228,8 +249,7 @@ fn route_deep_link(app: &tauri::AppHandle, url: String) {
         }
     }
 
-    // Always open a new session window immediately.
-    // Updates are handled by the background auto_update task at startup.
+    // No existing window matched — open a new session window.
     create_session_window(app, url);
 }
 
