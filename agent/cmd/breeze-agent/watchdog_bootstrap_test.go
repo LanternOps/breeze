@@ -190,21 +190,24 @@ func TestBootstrapWatchdog_SiblingFound_RunsInstall(t *testing.T) {
 }
 
 func TestBootstrapWatchdog_DevVersionSkipsDownload(t *testing.T) {
-	dir := t.TempDir()
-	agentPath := filepath.Join(dir, "breeze-agent")
-	if err := os.WriteFile(agentPath, []byte("fake"), 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	opts := bootstrapOptions{
-		agentPath: agentPath,
-		version:   "dev",
-		goos:      runtime.GOOS,
-		goarch:    runtime.GOARCH,
-	}
-	err := bootstrapWatchdog(opts)
-	if err == nil {
-		t.Fatalf("bootstrapWatchdog: expected error for dev version, got nil")
+	cases := []string{"dev", "dev-abc123", ""}
+	for _, v := range cases {
+		t.Run(v, func(t *testing.T) {
+			dir := t.TempDir()
+			agentPath := filepath.Join(dir, "breeze-agent")
+			if err := os.WriteFile(agentPath, []byte("fake"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			opts := bootstrapOptions{
+				agentPath: agentPath,
+				version:   v,
+				goos:      runtime.GOOS,
+				goarch:    runtime.GOARCH,
+			}
+			if err := bootstrapWatchdog(opts); err == nil {
+				t.Fatalf("bootstrapWatchdog(version=%q): expected error, got nil", v)
+			}
+		})
 	}
 }
 
@@ -230,5 +233,30 @@ func TestBootstrapWatchdog_DownloadFailure(t *testing.T) {
 	err := bootstrapWatchdog(opts)
 	if err == nil {
 		t.Fatalf("bootstrapWatchdog: expected error on download 404, got nil")
+	}
+}
+
+func TestBootstrapWatchdog_SiblingExitsNonZero(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping exec-sibling test on Windows (need real .exe)")
+	}
+	dir := t.TempDir()
+	agentPath := filepath.Join(dir, "breeze-agent")
+	if err := os.WriteFile(agentPath, []byte("fake"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	siblingPath := filepath.Join(dir, watchdogBinaryName(runtime.GOOS))
+	if err := os.WriteFile(siblingPath, []byte("#!/bin/sh\nexit 1\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := bootstrapOptions{
+		agentPath: agentPath,
+		version:   "0.62.24",
+		goos:      runtime.GOOS,
+		goarch:    runtime.GOARCH,
+	}
+	if err := bootstrapWatchdog(opts); err == nil {
+		t.Fatalf("bootstrapWatchdog: expected error when sibling exits non-zero, got nil")
 	}
 }
