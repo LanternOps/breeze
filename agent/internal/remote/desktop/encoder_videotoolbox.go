@@ -371,9 +371,13 @@ func (v *videotoolboxEncoder) Encode(frame []byte) ([]byte, error) {
 		return nil, fmt.Errorf("videotoolbox encoder: call SetDimensions before Encode")
 	}
 
-	pixelCount := len(frame) / 4
-	if pixelCount != width*height {
-		return nil, fmt.Errorf("videotoolbox: frame size mismatch: got %d pixels, want %dx%d", pixelCount, width, height)
+	// Defense-in-depth: silently accept a capture buffer that is exactly one
+	// row of pixels too tall. Keeps macOS parity with the Windows encoders
+	// in case a future capturer change forgets to AlignEven its output.
+	var fitErr error
+	frame, fitErr = FitRGBAFrame(frame, width, height)
+	if fitErr != nil {
+		return nil, fmt.Errorf("videotoolbox: %w", fitErr)
 	}
 
 	// Convert RGBA → NV12 (video-range).

@@ -1104,38 +1104,45 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
-	// Step 6: Verify identity — SID on Windows, UID on Unix
-	if runtime.GOOS == "windows" {
-		if authReq.SID == "" {
-			log.Warn("auth missing SID on Windows", "pid", creds.PID)
-			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-				Accepted:  false,
-				Reason:    "SID required on Windows",
-				Permanent: true,
-			})
-			conn.Close()
-			return
-		}
-		if authReq.SID != creds.SID {
-			log.Warn("auth SID mismatch", "claimed", authReq.SID, "actual", creds.SID)
-			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-				Accepted:  false,
-				Reason:    "SID mismatch",
-				Permanent: true,
-			})
-			conn.Close()
-			return
-		}
-	} else {
-		if authReq.UID != creds.UID {
-			log.Warn("auth UID mismatch", "claimed", authReq.UID, "actual", creds.UID)
-			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-				Accepted:  false,
-				Reason:    "UID mismatch",
-				Permanent: true,
-			})
-			conn.Close()
-			return
+	// Step 6: Verify identity — SID on Windows, UID on Unix.
+	// The watchdog role is exempt from identity claim validation: it runs
+	// as SYSTEM but its IPCClient doesn't self-report a SID or a usable
+	// UID (Go's os.Getuid() returns -1 on Windows → uint32 overflow).
+	// The kernel-verified creds from GetPeerCredentials (step 1) are
+	// sufficient — a caller can't fake them on a named pipe / Unix socket.
+	if authReq.HelperRole != ipc.HelperRoleWatchdog {
+		if runtime.GOOS == "windows" {
+			if authReq.SID == "" {
+				log.Warn("auth missing SID on Windows", "pid", creds.PID)
+				_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+					Accepted:  false,
+					Reason:    "SID required on Windows",
+					Permanent: true,
+				})
+				conn.Close()
+				return
+			}
+			if authReq.SID != creds.SID {
+				log.Warn("auth SID mismatch", "claimed", authReq.SID, "actual", creds.SID)
+				_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+					Accepted:  false,
+					Reason:    "SID mismatch",
+					Permanent: true,
+				})
+				conn.Close()
+				return
+			}
+		} else {
+			if authReq.UID != creds.UID {
+				log.Warn("auth UID mismatch", "claimed", authReq.UID, "actual", creds.UID)
+				_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+					Accepted:  false,
+					Reason:    "UID mismatch",
+					Permanent: true,
+				})
+				conn.Close()
+				return
+			}
 		}
 	}
 

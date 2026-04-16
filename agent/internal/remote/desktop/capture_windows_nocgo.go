@@ -100,8 +100,13 @@ func (c *gdiCapturer) ensureHandles() error {
 	if w == 0 || h == 0 {
 		return fmt.Errorf("GetSystemMetrics returned zero dimensions")
 	}
-	width := int(w)
-	height := int(h)
+	// Round to even dimensions so the bitmap, BitBlt, and pixBuf all agree
+	// with the downstream H264 encoder's required even alignment. On displays
+	// with odd pixel dimensions (e.g. 1512x949 from a physical panel at 125%
+	// scaling) the unrounded capture buffer produces a one-row mismatch
+	// against the encoder's SetDimensions `h &^ 1` and every frame fails to
+	// encode with "frame size 1434888 doesn't match 1512x948".
+	width, height := AlignEven(int(w), int(h))
 
 	// If handles exist and resolution hasn't changed, reuse them
 	if c.inited && c.width == width && c.height == height {
