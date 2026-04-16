@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -22,12 +23,15 @@ var serviceCmd = &cobra.Command{
 // healLaunchdPlistsIfNeeded is a no-op on Windows.
 func healLaunchdPlistsIfNeeded() {}
 
+var noWatchdog bool
+
 func init() {
 	rootCmd.AddCommand(serviceCmd)
 	serviceCmd.AddCommand(serviceInstallCmd)
 	serviceCmd.AddCommand(serviceUninstallCmd)
 	serviceCmd.AddCommand(serviceStartCmd)
 	serviceCmd.AddCommand(serviceStopCmd)
+	serviceInstallCmd.Flags().BoolVar(&noWatchdog, "no-watchdog", false, "Skip automatic watchdog installation")
 }
 
 var serviceInstallCmd = &cobra.Command{
@@ -67,6 +71,22 @@ var serviceInstallCmd = &cobra.Command{
 		}
 
 		fmt.Printf("Service %q installed successfully.\n", windowsServiceName)
+
+		if !noWatchdog {
+			err := bootstrapWatchdog(bootstrapOptions{
+				agentPath: exePath,
+				version:   version,
+				goos:      runtime.GOOS,
+				goarch:    runtime.GOARCH,
+			})
+			if err != nil {
+				fmt.Fprintf(os.Stderr,
+					"Warning: watchdog bootstrap failed: %v\n"+
+						"The agent service is installed. To install the watchdog manually, run:\n"+
+						"    breeze-watchdog.exe service install\n", err)
+			}
+		}
+
 		return nil
 	},
 }
