@@ -447,7 +447,10 @@ var serviceStatusCmd = &cobra.Command{
 }
 
 // healLaunchdPlistsIfNeeded is the darwin implementation.
-func healLaunchdPlistsIfNeeded() { healLaunchdPlists() }
+func healLaunchdPlistsIfNeeded() {
+	healLaunchdPlists()
+	ensureDesktopHelpersLoaded()
+}
 
 // healLaunchdPlists checks the installed plists for the old SuccessfulExit
 // KeepAlive config and replaces them with KeepAlive=true. This runs on daemon
@@ -485,6 +488,60 @@ func healLaunchdPlists() {
 func isLaunchdLoaded(label string) bool {
 	err := exec.Command("launchctl", "print", "system/"+label).Run()
 	return err == nil
+}
+
+// ensureDesktopHelpersLoaded bootstraps the desktop helper LaunchAgents on
+// daemon startup if they aren't already loaded. Covers the case where an
+// existing install was upgraded via binary-only auto-update and thus never
+// re-ran "service install" to load the helper plists into launchd.
+func ensureDesktopHelpersLoaded() {
+	if os.Geteuid() != 0 {
+		return
+	}
+
+	if fileExists(darwinDesktopUserPlistDst) {
+		if uid := consoleUserUID(); uid != "" {
+			domain := "gui/" + uid
+			label := domain + "/com.breeze.desktop-helper-user"
+			if exec.Command("launchctl", "print", label).Run() != nil {
+				out, err := exec.Command("launchctl", "bootstrap", domain, darwinDesktopUserPlistDst).CombinedOutput()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Note: could not bootstrap desktop helper for console user %s: %s\n",
+						uid, strings.TrimSpace(string(out)))
+				} else {
+					fmt.Printf("Desktop helper bootstrapped for console user uid %s\n", uid)
+				}
+			}
+		}
+	}
+
+	if fileExists(darwinDesktopLoginWindowPlistDst) {
+		lwLabel := "loginwindow/com.breeze.desktop-helper-loginwindow"
+		if exec.Command("launchctl", "print", lwLabel).Run() != nil {
+			out, err := exec.Command("launchctl", "bootstrap", "loginwindow", darwinDesktopLoginWindowPlistDst).CombinedOutput()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Note: could not bootstrap login-window desktop helper: %s\n",
+					strings.TrimSpace(string(out)))
+			} else {
+				fmt.Println("Login-window desktop helper bootstrapped.")
+			}
+		}
+	}
+}
+
+// consoleUserUID returns the UID of the user logged into the macOS console,
+// or empty string if no one is logged in (e.g., the login window is showing,
+// where /dev/console is owned by root).
+func consoleUserUID() string {
+	out, err := exec.Command("stat", "-f", "%u", "/dev/console").Output()
+	if err != nil {
+		return ""
+	}
+	uid := strings.TrimSpace(string(out))
+	if uid == "" || uid == "0" {
+		return ""
+	}
+	return uid
 }
 
 func fileExists(path string) bool {
