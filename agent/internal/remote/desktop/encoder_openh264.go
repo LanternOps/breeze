@@ -180,14 +180,20 @@ func (e *openH264Encoder) Encode(frame []byte) ([]byte, error) {
 		return nil, errors.New("empty frame")
 	}
 
+	if e.width == 0 || e.height == 0 {
+		return nil, fmt.Errorf("OpenH264: call SetDimensions before Encode")
+	}
+
+	// Defense-in-depth: silently accept a capture buffer that is exactly one
+	// row of pixels too tall, so a capturer that forgot to AlignEven its output
+	// cannot produce a tight error loop. See dimensions.go.
+	var err error
+	frame, err = FitRGBAFrame(frame, e.width, e.height)
+	if err != nil {
+		return nil, err
+	}
+
 	if !e.inited {
-		pixelCount := len(frame) / 4
-		if e.width == 0 || e.height == 0 {
-			return nil, fmt.Errorf("OpenH264: call SetDimensions before Encode")
-		}
-		if pixelCount != e.width*e.height {
-			return nil, fmt.Errorf("frame size %d doesn't match %dx%d", pixelCount, e.width, e.height)
-		}
 		if err := e.initEncoder(); err != nil {
 			return nil, err
 		}

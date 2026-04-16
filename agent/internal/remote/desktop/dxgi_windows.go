@@ -436,6 +436,13 @@ func (c *dxgiCapturer) initDXGI() error {
 		slog.Warn("Failed to create GPU texture for video processor pipeline", "error", err.Error())
 	}
 
+	// Round the reported desktop dimensions down to even so GetScreenBounds,
+	// the CPU readback loop, and downstream encoder SetDimensions all agree.
+	// See dimensions.go. The native staging/gpu textures stay at their raw
+	// (texW/texH) size — the readback loop at dxgi_capture_windows.go:248
+	// iterates c.height rows, which naturally truncates the odd last row.
+	alignedW, alignedH := AlignEven(desktopW, desktopH)
+
 	c.device = device
 	c.context = context
 	c.duplication = duplication
@@ -443,8 +450,8 @@ func (c *dxgiCapturer) initDXGI() error {
 	c.gpuTexture = gpuTexture
 	c.texWidth = texW
 	c.texHeight = texH
-	c.width = desktopW
-	c.height = desktopH
+	c.width = alignedW
+	c.height = alignedH
 	c.rotation = rot
 	c.inited = true
 

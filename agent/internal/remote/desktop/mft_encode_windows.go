@@ -27,18 +27,21 @@ func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 		return nil, fmt.Errorf("empty frame")
 	}
 
+	if m.width == 0 || m.height == 0 {
+		return nil, fmt.Errorf("MFT encoder: call SetDimensions before Encode")
+	}
+
+	// Defense-in-depth: silently accept a capture buffer that is exactly one
+	// row of pixels too tall, so a capturer that forgot to AlignEven its output
+	// cannot produce a tight error loop. See dimensions.go.
+	var err error
+	frame, err = FitRGBAFrame(frame, m.width, m.height)
+	if err != nil {
+		return nil, err
+	}
+
 	// Lazy init: need dimensions to configure MFT
 	if !m.inited {
-		// Infer dimensions from RGBA frame size
-		// frame is from img.Pix where img is width*height*4 bytes
-		pixelCount := len(frame) / 4
-		if m.width == 0 || m.height == 0 {
-			// Can't initialize without known dimensions
-			return nil, fmt.Errorf("MFT encoder: call SetDimensions before Encode")
-		}
-		if pixelCount != m.width*m.height {
-			return nil, fmt.Errorf("frame size %d doesn't match %dx%d", pixelCount, m.width, m.height)
-		}
 		if err := m.initialize(m.width, m.height, m.width*4); err != nil {
 			return nil, err
 		}
