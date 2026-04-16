@@ -59,7 +59,25 @@
     <?endif?>
     <Property Id="ARPNOREPAIR" Value="1" />
     <Property Id="POWERSHELL_EXE" Secure="yes" />
+    <Property Id="BREEZE_KILL_CMD" Secure="yes" />
     <CustomAction Id="SetPowerShellPath" Property="POWERSHELL_EXE" Value="[System64Folder]WindowsPowerShell\v1.0\powershell.exe" />
+
+    <!-- Kill any running Breeze processes before InstallValidate so upgrades
+         don't leave a stale helper/watchdog running with an older binary hash.
+         ServiceControl stops BreezeAgent and BreezeWatchdog below, but the
+         user-session desktop helper (spawned via CreateProcessAsUser) is not a
+         service and would otherwise survive an in-place upgrade — causing the
+         sessionbroker binary hash check to fail on the next remote-desktop
+         connection. Runs on upgrade, uninstall, and repair; fresh installs
+         have nothing to kill. Admin token (required by the MSI) is sufficient
+         for cross-session SeDebugPrivilege-backed termination. -->
+    <SetProperty Id="BREEZE_KILL_CMD" Value="[System64Folder]cmd.exe" Before="KillBreezeProcesses" Sequence="execute" />
+    <CustomAction
+      Id="KillBreezeProcesses"
+      Property="BREEZE_KILL_CMD"
+      ExeCommand="/c &quot;taskkill /F /T /IM breeze-agent.exe /IM breeze-watchdog.exe /IM breeze-desktop-helper.exe /IM breeze-backup.exe &amp; exit /b 0&quot;"
+      Execute="immediate"
+      Return="ignore" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Breeze">
@@ -147,6 +165,12 @@
           <RegistryValue Root="HKLM" Key="SOFTWARE\Breeze" Name="ConfigCleanup" Type="integer" Value="1" KeyPath="yes" />
           <RemoveFile Id="rmfAgentYaml" Name="agent.yaml" On="uninstall" />
           <RemoveFile Id="rmfAgentYamlBak" Name="agent.yaml.bak" On="uninstall" />
+          <!-- secrets.yaml holds the agent auth token and mTLS private key
+               (see internal/config/config.go). Remove on uninstall so a
+               decommissioned machine doesn't leave credentials on disk. The
+               logs/ and data/ directories are intentionally preserved (their
+               components are Permanent="yes") for post-uninstall forensics. -->
+          <RemoveFile Id="rmfSecretsYaml" Name="secrets.yaml" On="uninstall" />
         </Component>
         <Directory Id="ProgramDataBreezeDataDir" Name="data">
           <Component Id="cmpProgramDataData" Guid="{B2C3D4E5-F6A7-8901-BCDE-F12345678901}" Permanent="yes">
@@ -195,6 +219,7 @@
       HideTarget="yes" />
 
     <InstallExecuteSequence>
+      <Custom Action="KillBreezeProcesses" Before="InstallValidate" Condition="WIX_UPGRADE_DETECTED OR Installed" />
       <Custom Action="SetPowerShellPath" After="InstallInitialize" />
       <Custom Action="RollbackRegisterUserHelperTask" Before="RegisterUserHelperTask" Condition="NOT Installed AND NOT REMOVE AND NOT WIX_UPGRADE_DETECTED" />
       <Custom Action="RegisterUserHelperTask" After="InstallServices" Condition="NOT Installed AND NOT REMOVE" />
