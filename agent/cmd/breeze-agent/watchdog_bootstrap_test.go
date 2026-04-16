@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+)
 
 func TestWatchdogBinaryName(t *testing.T) {
 	tests := []struct {
@@ -42,5 +47,41 @@ func TestWatchdogDownloadURL(t *testing.T) {
 			t.Errorf("watchdogDownloadURL(%q,%q,%q) = %q, want %q",
 				tc.version, tc.goos, tc.goarch, got, tc.want)
 		}
+	}
+}
+
+func TestLocateSiblingWatchdog_Found(t *testing.T) {
+	dir := t.TempDir()
+	agentPath := filepath.Join(dir, "breeze-agent")
+	if runtime.GOOS == "windows" {
+		agentPath += ".exe"
+	}
+	if err := os.WriteFile(agentPath, []byte("fake agent"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	siblingPath := filepath.Join(dir, watchdogBinaryName(runtime.GOOS))
+	if err := os.WriteFile(siblingPath, []byte("fake watchdog"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := locateSiblingWatchdog(agentPath)
+	if !ok {
+		t.Fatalf("locateSiblingWatchdog returned ok=false, want true")
+	}
+	if got != siblingPath {
+		t.Errorf("locateSiblingWatchdog = %q, want %q", got, siblingPath)
+	}
+}
+
+func TestLocateSiblingWatchdog_NotFound(t *testing.T) {
+	dir := t.TempDir()
+	agentPath := filepath.Join(dir, "breeze-agent")
+	if err := os.WriteFile(agentPath, []byte("fake agent"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, ok := locateSiblingWatchdog(agentPath)
+	if ok {
+		t.Errorf("locateSiblingWatchdog returned ok=true, want false")
 	}
 }
