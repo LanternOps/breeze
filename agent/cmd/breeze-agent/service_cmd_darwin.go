@@ -268,7 +268,7 @@ var serviceInstallCmd = &cobra.Command{
 		}
 		if !noWatchdog {
 			err := bootstrapWatchdog(bootstrapOptions{
-				agentPath: darwinBinaryPath,
+				agentPath: exePath,
 				version:   version,
 				goos:      runtime.GOOS,
 				goarch:    runtime.GOARCH,
