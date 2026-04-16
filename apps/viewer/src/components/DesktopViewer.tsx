@@ -692,6 +692,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	      invoke('register_session', { sessionId: params.sessionId }).catch((err) => {
 	        console.error('Failed to register desktop session:', err);
 	      });
+	      if (params.deviceId) {
+	        invoke('register_device', { deviceId: params.deviceId }).catch((err) => {
+	          console.error('Failed to register desktop device:', err);
+	        });
+	      }
 	      return;
 	    }
 	    if (status !== 'connected' && status !== 'reconnecting' && sessionRegisteredRef.current) {
@@ -700,7 +705,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	        console.error('Failed to unregister desktop session:', err);
 	      });
 	    }
-	  }, [status, params.sessionId]);
+	  }, [status, params.sessionId, params.deviceId]);
 
   // Count WebRTC video frames via requestVideoFrameCallback
   useEffect(() => {
