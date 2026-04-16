@@ -1,9 +1,10 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { buildWsUrl, type ConnectionParams } from '../lib/protocol';
-import { createDesktopWsTicket, exchangeDesktopConnectCode } from '../lib/api';
+import { type ConnectionParams } from '../lib/protocol';
+import { exchangeDesktopConnectCode } from '../lib/api';
 import { scaleVideoCoords, AgentSessionError, type AuthenticatedConnectionParams } from '../lib/webrtc';
 import { connectWebRTC as connectWebRTCTransport, type WebRTCSessionWrapper } from '../lib/transports/webrtc';
+import { connectWebSocket as connectWebSocketTransport, type WebSocketSessionWrapper } from '../lib/transports/websocket';
 import { mapKey, getModifiers, isModifierOnly } from '../lib/keymap';
 import { textToKeyEvents } from '../lib/paste';
 import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
@@ -25,7 +26,7 @@ const RECONNECT_INTERVAL_MS = 3_000;
 export default function DesktopViewer({ params, onDisconnect, onError }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const wsRef = useRef<WebSocketSessionWrapper | null>(null);
   const webrtcRef = useRef<WebRTCSessionWrapper | null>(null);
   const transportRef = useRef<Transport | null>(null);
   const wsCleanupRef = useRef<(() => void) | null>(null);
@@ -111,6 +112,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // always prefer the latest pending frame.
   const jpegDecodeInFlightRef = useRef(false);
   const jpegPendingFrameRef = useRef<ArrayBuffer | null>(null);
+  // renderFrame is defined after connectWebSocket; use a ref to break the TDZ.
+  const renderFrameRef = useRef<(data: ArrayBuffer) => void>(() => {});
 
   // ── WebRTC connection ──────────────────────────────────────────────
 
@@ -221,116 +224,59 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // ── WebSocket connection (fallback) ────────────────────────────────
 
   const connectWebSocket = useCallback(async (auth: AuthenticatedConnectionParams) => {
-    const wsTicket = await createDesktopWsTicket(auth.apiUrl, auth.accessToken, auth.sessionId);
-    if (!wsTicket) {
+    const canvasEl = canvasRef.current;
+    if (!canvasEl) return null;
+
+    const sessionWrapper = await connectWebSocketTransport(auth, {
+      canvasElement: canvasEl,
+      onConnected: ({ hostname: deviceHostname, osType }) => {
+        if (wsRef.current !== sessionWrapper) return;
+        setStatus('connected');
+        setHostname(deviceHostname);
+        if (osType) setRemoteOs(osType);
+        invoke('update_session_hostname', { hostname: deviceHostname }).catch((err) => {
+          console.warn('Failed to update session hostname:', err);
+        });
+        setConnectedAt(new Date());
+        setErrorMessage(null);
+        canvasRef.current?.focus();
+      },
+      onDisconnected: () => {
+        if (wsRef.current !== sessionWrapper) return;
+        setConnectedAt(null);
+        if (!userDisconnectRef.current) {
+          startReconnectRef.current();
+        } else {
+          setStatus('disconnected');
+        }
+      },
+      onError: (message) => {
+        if (wsRef.current !== sessionWrapper) return;
+        setStatus('error');
+        setConnectedAt(null);
+        setErrorMessage(message);
+        onError(message);
+      },
+      onFrame: (data) => renderFrameRef.current(data),
+    });
+
+    if (!sessionWrapper) {
       setStatus('error');
       setErrorMessage('Failed to create connection ticket');
       onError('Failed to create connection ticket');
       return null;
     }
 
-    const wsUrl = buildWsUrl(auth.apiUrl, auth.sessionId, wsTicket);
-    const ws = new WebSocket(wsUrl);
-    ws.binaryType = 'arraybuffer';
-    wsRef.current = ws;
-
-    let closed = false;
-    let hadError = false;
-
-    // Ping keep-alive
-    const pingInterval = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'ping' }));
-      }
-    }, 15000);
-
-	    const cleanup = () => {
-	      // Always clear the shared cleanup ref, even if already closed (race-safe).
-	      wsCleanupRef.current = null;
-	      if (closed) return;
-	      closed = true;
-	      clearInterval(pingInterval);
-	      wsRef.current = null;
-	      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-	        ws.close();
-	      }
-	    };
-
-	    // Expose cleanup immediately so early onerror/onclose can clear it.
-	    wsCleanupRef.current = cleanup;
-
-    ws.onopen = () => {
-      console.log('Desktop WebSocket connected');
-    };
-
-    ws.onmessage = (event) => {
-      if (event.data instanceof ArrayBuffer) {
-        renderFrame(event.data);
-        return;
-      }
-
-      try {
-        const msg = JSON.parse(event.data);
-        switch (msg.type) {
-          case 'connected':
-            setStatus('connected');
-            const deviceHostname = msg.device?.hostname || 'Unknown';
-            setHostname(deviceHostname);
-            if (msg.device?.osType) {
-              setRemoteOs(msg.device.osType);
-            }
-            // Window title set from Rust in update_session_hostname
-            invoke('update_session_hostname', { hostname: deviceHostname }).catch((err) => {
-              console.warn('Failed to update session hostname:', err);
-            });
-            setConnectedAt(new Date());
-            setErrorMessage(null);
-            // Auto-focus the canvas so keyboard events are captured immediately
-            canvasRef.current?.focus();
-            break;
-          case 'pong':
-            break;
-          case 'error':
-            console.error('Server error:', msg.message);
-            setStatus('error');
-            setConnectedAt(null);
-            setErrorMessage(msg.message || 'Remote desktop error');
-            hadError = true;
-            cleanup();
-            onError(msg.message || 'Remote desktop error');
-            break;
-        }
-	      } catch (err) {
-	        console.warn('Failed to parse websocket message:', err);
-	      }
-	    };
-
-    ws.onclose = () => {
-      // If the effect cleanup already called cleanup() (closed=true), this is
-      // a teardown close, not a network disconnection — skip reconnect.
-      const wasCleanedUp = closed;
-      cleanup();
-      if (wasCleanedUp) return;
-      setConnectedAt(null);
-      if (!hadError && !userDisconnectRef.current) {
-        startReconnectRef.current();
-      } else if (!hadError) {
-        setStatus('disconnected');
-      }
-    };
-
-    ws.onerror = () => {
-      hadError = true;
-      setStatus('error');
-      setErrorMessage('WebSocket connection error');
-      setConnectedAt(null);
-      cleanup();
-      onError('WebSocket connection error');
+    wsRef.current = sessionWrapper;
+    wsCleanupRef.current = () => {
+      wsRef.current = null;
+      wsCleanupRef.current = null;
+      sessionWrapper.close();
     };
 
     setTransportState('websocket');
 
-    return cleanup;
+    return wsCleanupRef.current;
   }, [onError]);
 
   // ── Reconnect logic (refs to break circular deps with hooks defined later) ──
@@ -896,6 +842,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       void processJpegFrames();
     }
   }, [processJpegFrames]);
+  // Keep the ref in sync so connectWebSocket (defined earlier) always calls the latest version.
+  renderFrameRef.current = renderFrame;
 
   // Map browser pixel coordinates to remote screen coordinates.
   const scaleCoordsFn = useCallback((clientX: number, clientY: number) => {
@@ -931,9 +879,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       return;
     }
 
-    const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'input', event }));
+    const wsSession = wsRef.current;
+    if (wsSession) {
+      wsSession.inputChannel.send(JSON.stringify(event));
     }
   }, []);
 
@@ -1200,15 +1148,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     setMaxFps(newMaxFps);
 
     if (transport === 'websocket') {
-      const ws = wsRef.current;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: 'config',
-          quality: newQuality,
-          scaleFactor: newScale,
-          maxFps: newMaxFps,
-        }));
-      }
+      wsRef.current?.sendRaw(JSON.stringify({
+        type: 'config',
+        quality: newQuality,
+        scaleFactor: newScale,
+        maxFps: newMaxFps,
+      }));
     } else if (transport === 'webrtc') {
       const ch = webrtcRef.current?.controlChannel;
       if (ch && ch.readyState === 'open') {
