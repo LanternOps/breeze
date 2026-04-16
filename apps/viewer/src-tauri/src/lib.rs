@@ -48,6 +48,10 @@ struct SessionEntry {
 /// Used to detect duplicate deep links and focus the existing window.
 struct SessionMap(Mutex<HashMap<String, SessionEntry>>);
 
+/// Maps device_id → window_label for active sessions.
+/// Used to focus an existing window when the same device is connected again.
+struct DeviceMap(Mutex<HashMap<String, String>>);
+
 /// Monotonic counter for unique window labels.
 struct WindowCounter(Mutex<u32>);
 
@@ -86,6 +90,23 @@ fn extract_session_id(url: &str) -> Option<String> {
     None
 }
 
+/// Extract the `device=` query parameter from a breeze:// deep link URL.
+fn extract_device_id(url: &str) -> Option<String> {
+    let query_start = url.find('?')?;
+    let query = &url[query_start + 1..];
+    for pair in query.split('&') {
+        if let Some(value) = pair.strip_prefix("device=") {
+            let end = value.find('&').unwrap_or(value.len());
+            let id = &value[..end];
+            if !id.is_empty() {
+                return Some(id.to_string());
+            }
+            return None;
+        }
+    }
+    None
+}
+
 /// Called by the frontend to poll for a pending deep link URL.
 /// Returns the URL for the calling window without consuming it (retries safe).
 #[tauri::command]
@@ -118,10 +139,27 @@ fn register_session(
 
 /// Called by the frontend on disconnect (session no longer active).
 #[tauri::command]
-fn unregister_session(window: tauri::WebviewWindow, state: tauri::State<'_, SessionMap>) {
-    let mut map = lock_or_recover(&state.0, "session_map");
-    // Remove all entries that point to this window
-    map.retain(|_, entry| entry.window_label != window.label());
+fn unregister_session(
+    window: tauri::WebviewWindow,
+    sessions: tauri::State<'_, SessionMap>,
+    devices: tauri::State<'_, DeviceMap>,
+) {
+    let mut session_map = lock_or_recover(&sessions.0, "session_map");
+    session_map.retain(|_, entry| entry.window_label != window.label());
+    let mut device_map = lock_or_recover(&devices.0, "device_map");
+    device_map.retain(|_, label| label != window.label());
+}
+
+/// Called by DesktopViewer when the device id is known.
+/// Maps device_id → calling window so duplicate connects to the same device focus it.
+#[tauri::command]
+fn register_device(
+    window: tauri::WebviewWindow,
+    device_id: String,
+    state: tauri::State<'_, DeviceMap>,
+) {
+    let mut map = lock_or_recover(&state.0, "device_map");
+    map.insert(device_id, window.label().to_string());
 }
 
 /// Called by DesktopViewer when the remote hostname is learned.
@@ -167,10 +205,31 @@ fn focus_any_session_window(app: &tauri::AppHandle) {
 /// - If the session is already active in a window, focus that window.
 /// - Otherwise, create a new session window for it.
 fn route_deep_link(app: &tauri::AppHandle, url: String) {
-    // Check if this session is already being viewed.
-    // Clone the label and drop the lock BEFORE calling set_focus(),
-    // which on macOS pumps the AppKit run loop and can re-enter Tauri
-    // command handlers that also need the SessionMap lock.
+    // Check device-id dedup first: if a window is already viewing this device,
+    // focus it and discard the new deep link entirely.
+    // Clone the label and drop the lock BEFORE calling set_focus(); on macOS
+    // set_focus pumps the AppKit run loop and can re-enter Tauri command
+    // handlers that also need this lock.
+    if let Some(device_id) = extract_device_id(&url) {
+        let existing_label = {
+            let devices = app.state::<DeviceMap>();
+            let map = lock_or_recover(&devices.0, "device_map");
+            map.get(&device_id).cloned()
+        }; // lock released here
+        if let Some(label) = existing_label {
+            if let Some(window) = app.get_webview_window(&label) {
+                if let Err(err) = window.set_focus() {
+                    eprintln!(
+                        "Failed to focus existing device window {}: {}",
+                        label, err
+                    );
+                }
+                return;
+            }
+        }
+    }
+
+    // Fallback: dedup by session id (covers older web builds and edge cases).
     if let Some(session_id) = extract_session_id(&url) {
         let existing_label = {
             let sessions = app.state::<SessionMap>();
@@ -190,8 +249,7 @@ fn route_deep_link(app: &tauri::AppHandle, url: String) {
         }
     }
 
-    // Always open a new session window immediately.
-    // Updates are handled by the background auto_update task at startup.
+    // No existing window matched — open a new session window.
     create_session_window(app, url);
 }
 
@@ -359,6 +417,7 @@ pub fn run() {
             clear_pending_deep_link,
             register_session,
             unregister_session,
+            register_device,
             update_session_hostname,
         ]);
 
@@ -403,6 +462,7 @@ pub fn run() {
 
             app.manage(DeepLinkState(Mutex::new(HashMap::new())));
             app.manage(SessionMap(Mutex::new(HashMap::new())));
+            app.manage(DeviceMap(Mutex::new(HashMap::new())));
             app.manage(WindowCounter(Mutex::new(0)));
 
             // If launched with a deep link, defer session window creation to
@@ -453,6 +513,10 @@ pub fn run() {
                         let mut map = lock_or_recover(&sessions.0, "session_map");
                         map.retain(|_, entry| entry.window_label != label);
                     }
+                    if let Some(devices) = app_handle.try_state::<DeviceMap>() {
+                        let mut map = lock_or_recover(&devices.0, "device_map");
+                        map.retain(|_, l| l != &label);
+                    }
                     if let Some(links) = app_handle.try_state::<DeepLinkState>() {
                         let mut map = lock_or_recover(&links.0, "deep_link_state");
                         map.remove(&label);
@@ -488,4 +552,28 @@ pub fn run() {
             _ => {}
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_device_id_cases() {
+        let cases = [
+            ("breeze://connect?session=s&device=d1", Some("d1")),
+            ("breeze://connect?device=d1&session=s", Some("d1")),
+            ("breeze://connect?session=s&device=", None),
+            ("breeze://connect?session=s", None),
+            ("breeze://connect", None),
+            ("breeze://connect?session=s&xdevice=d1", None),
+        ];
+        for (url, expected) in cases {
+            assert_eq!(
+                extract_device_id(url).as_deref(),
+                expected,
+                "extract_device_id({url:?})"
+            );
+        }
+    }
 }

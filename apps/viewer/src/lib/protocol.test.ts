@@ -46,6 +46,30 @@ describe('parseDeepLink', () => {
   it('returns null when required params are missing', () => {
     expect(parseDeepLink('breeze://connect?session=abc')).toBeNull();
   });
+
+  it('parses optional device param', () => {
+    const url = 'breeze://connect?session=abc&code=def&api=https%3A%2F%2Fexample.com&device=dev-123';
+    expect(parseDeepLink(url)).toEqual({
+      sessionId: 'abc',
+      connectCode: 'def',
+      apiUrl: 'https://example.com',
+      deviceId: 'dev-123',
+    });
+  });
+
+  it('omits deviceId when device param is absent', () => {
+    const url = 'breeze://connect?session=abc&code=def&api=https%3A%2F%2Fexample.com';
+    const result = parseDeepLink(url);
+    expect(result).not.toBeNull();
+    expect(result!).not.toHaveProperty('deviceId');
+  });
+
+  it('omits deviceId when device param is empty', () => {
+    const url = 'breeze://connect?session=abc&code=def&api=https%3A%2F%2Fexample.com&device=';
+    const result = parseDeepLink(url);
+    expect(result).not.toBeNull();
+    expect(result!).not.toHaveProperty('deviceId');
+  });
 });
 
 describe('buildWsUrl', () => {
