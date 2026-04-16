@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/config"
@@ -82,6 +83,7 @@ var serviceCmd = &cobra.Command{
 }
 
 var withUserHelper bool
+var noWatchdog bool
 
 // healLaunchdPlistsIfNeeded is a no-op on Linux.
 func healLaunchdPlistsIfNeeded() {}
@@ -94,6 +96,7 @@ func init() {
 	serviceCmd.AddCommand(serviceStopCmd)
 	serviceCmd.AddCommand(serviceStatusCmd)
 	serviceInstallCmd.Flags().BoolVar(&withUserHelper, "with-user-helper", false, "Also install the per-user desktop helper systemd unit")
+	serviceInstallCmd.Flags().BoolVar(&noWatchdog, "no-watchdog", false, "Skip automatic watchdog installation")
 }
 
 var serviceInstallCmd = &cobra.Command{
@@ -226,6 +229,22 @@ var serviceInstallCmd = &cobra.Command{
 			fmt.Printf("  3. Status:  sudo breeze-agent service status\n")
 			fmt.Println("  4. Logs:    journalctl -u breeze-agent -f")
 		}
+
+		if !noWatchdog {
+			err := bootstrapWatchdog(bootstrapOptions{
+				agentPath: linuxBinaryPath,
+				version:   version,
+				goos:      runtime.GOOS,
+				goarch:    runtime.GOARCH,
+			})
+			if err != nil {
+				fmt.Fprintf(os.Stderr,
+					"Warning: watchdog bootstrap failed: %v\n"+
+						"The agent service is installed. To install the watchdog manually, run:\n"+
+						"    sudo breeze-watchdog service install\n", err)
+			}
+		}
+
 		return nil
 	},
 }
