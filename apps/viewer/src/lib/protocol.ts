@@ -7,6 +7,7 @@ export interface ConnectionParams {
   connectCode: string;
   apiUrl: string;
   targetSessionId?: number;
+  deviceId?: string;
 }
 
 function isPrivateHost(hostname: string): boolean {
@@ -47,6 +48,7 @@ export function parseDeepLink(url: string): ConnectionParams | null {
     const connectCode = parsed.searchParams.get('code');
     const apiUrl = parsed.searchParams.get('api');
     const targetSessionIdRaw = parsed.searchParams.get('targetSessionId');
+    const deviceIdRaw = parsed.searchParams.get('device');
 
     if (!sessionId || !connectCode || !apiUrl) {
       return null;
@@ -70,7 +72,16 @@ export function parseDeepLink(url: string): ConnectionParams | null {
       }
     }
 
-    return { sessionId, connectCode, apiUrl: api.toString().replace(/\/$/, ''), ...(targetSessionId != null ? { targetSessionId } : {}) };
+    // Parse optional deviceId
+    const deviceId = deviceIdRaw && deviceIdRaw.length > 0 ? deviceIdRaw : undefined;
+
+    return {
+      sessionId,
+      connectCode,
+      apiUrl: api.toString().replace(/\/$/, ''),
+      ...(targetSessionId != null ? { targetSessionId } : {}),
+      ...(deviceId != null ? { deviceId } : {}),
+    };
   } catch {
     return null;
   }
