@@ -16,7 +16,7 @@ interface Props {
   connectedAt: Date | null;
   reconnectSecondsLeft?: number;
   fps: number;
-  transport: 'webrtc' | 'websocket' | null;
+  transport: 'webrtc' | 'websocket' | 'vnc' | null;
   quality: number;
   scale: number;
   maxFps: number;
@@ -43,6 +43,14 @@ interface Props {
   onLockWorkstation: () => void;
   onPasteAsKeystrokes: () => void;
   onCancelPaste: () => void;
+  /** Task 3.6: whether WebRTC is available again while on VNC (for Switch pill). */
+  webRTCAvailable?: boolean;
+  /** Task 3.6: the logged-in username on the remote end (for Switch pill label). */
+  remoteUserName?: string | null;
+  /** Task 3.6: current desktop state from agent events. */
+  desktopState?: { state: 'loginwindow' | 'user_session' | null; username: string | null };
+  /** Task 3.6: called when the user clicks "Switch to WebRTC" pill. */
+  onSwitchTransport?: (target: 'webrtc' | 'vnc') => void;
 }
 
 interface KeyCombo {

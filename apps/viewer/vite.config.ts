@@ -6,6 +6,12 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
+  build: {
+    // Tauri wraps a modern WKWebView (macOS) / WebView2 (Windows) that
+    // supports top-level await. The default Vite target (chrome87/safari14)
+    // rejects TLA, so we target esnext to allow novnc's async module pattern.
+    target: 'esnext',
+  },
   server: {
     port: 1420,
     strictPort: true,

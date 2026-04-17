@@ -22,6 +22,8 @@ export interface AuthenticatedConnectionParams {
   sessionId: string;
   apiUrl: string;
   accessToken: string;
+  /** Device UUID — required for VNC tunnel creation and desktop-access polling. */
+  deviceId?: string;
 }
 
 export interface WebRTCSession {

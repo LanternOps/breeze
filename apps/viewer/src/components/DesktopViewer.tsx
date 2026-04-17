@@ -5,11 +5,18 @@ import { exchangeDesktopConnectCode } from '../lib/api';
 import { scaleVideoCoords, AgentSessionError, type AuthenticatedConnectionParams } from '../lib/webrtc';
 import { connectWebRTC as connectWebRTCTransport, type WebRTCSessionWrapper } from '../lib/transports/webrtc';
 import { connectWebSocket as connectWebSocketTransport, type WebSocketSessionWrapper } from '../lib/transports/websocket';
+// VncSessionWrapper is type-only — no runtime import (avoids bundling novnc into the main chunk).
+// connectVnc is loaded dynamically inside connectVncTransport so novnc's top-level await
+// is deferred until the VNC path is actually invoked.
+import type { VncSessionWrapper } from '../lib/transports/vnc';
+import { createVncTunnel, closeTunnel } from '../lib/tunnel';
+import { getDesktopAccess } from '../lib/desktopAccess';
 import { mapKey, getModifiers, isModifierOnly } from '../lib/keymap';
 import { textToKeyEvents } from '../lib/paste';
 import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
 import { handleCtrlVPaste } from '../lib/clipboardPaste';
 import ViewerToolbar from './ViewerToolbar';
+import CredentialsPromptModal from './CredentialsPromptModal';
 
 interface Props {
   params: ConnectionParams;
@@ -18,7 +25,7 @@ interface Props {
 }
 
 type ConnectionStatus = 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'error';
-type Transport = 'webrtc' | 'websocket';
+type Transport = 'webrtc' | 'websocket' | 'vnc';
 
 const RECONNECT_TIMEOUT_MS = 30_000;
 const RECONNECT_INTERVAL_MS = 3_000;
@@ -41,7 +48,14 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const reconnectDeadlineRef = useRef<number | null>(null);
   const reconnectInFlightRef = useRef(false);
   const startReconnectRef = useRef<() => void>(() => {});
+  const switchTransportRef = useRef<(target: Transport) => Promise<void>>(async () => {});
   const sessionRegisteredRef = useRef(false);
+
+  // VNC session + tunnel lifecycle
+  const vncContainerRef = useRef<HTMLDivElement>(null);
+  const vncSessionRef = useRef<VncSessionWrapper | null>(null);
+  const activeVncTunnelIdRef = useRef<string | null>(null);
+  const switchingToRef = useRef<Transport | null>(null);
 
   const clipboardDCRef = useRef<RTCDataChannel | null>(null);
   const lastClipboardHashRef = useRef<string>('');
@@ -71,6 +85,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   );
   const [switchingSession, setSwitchingSession] = useState<string | null>(null);
   const switchingSessionRef = useRef(false);
+  // VNC / transport-switcher state
+  const [switchingTo, setSwitchingTo] = useState<Transport | null>(null);
+  const [desktopState, setDesktopState] = useState<{ state: 'loginwindow' | 'user_session' | null; username: string | null }>({ state: null, username: null });
+  const [webRTCAvailable, setWebRTCAvailable] = useState(false);
+  const [remoteUserName, setRemoteUserName] = useState<string | null>(null);
+  const [credentialsPrompt, setCredentialsPrompt] = useState<{ requiresUsername: boolean; submit: (creds: { username?: string; password: string }) => void } | null>(null);
   const audioElRef = useRef<HTMLAudioElement | null>(null);
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [hasAudioTrack, setHasAudioTrack] = useState(false);
@@ -85,6 +105,46 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     transportRef.current = t;
     setTransport(t);
   }, []);
+
+  // ── VNC connect helper ─────────────────────────────────────────────
+
+  const connectVncTransport = useCallback(async (tunnel: { tunnelId: string; wsUrl: string }): Promise<boolean> => {
+    const container = vncContainerRef.current;
+    if (!container) return false;
+
+    try {
+      // Lazy-load the VNC transport so novnc (which uses top-level await) is only
+      // bundled into a separate async chunk and doesn't land in the main bundle.
+      const { connectVnc } = await import('../lib/transports/vnc');
+      const session = await connectVnc(tunnel, {
+        container,
+        onStatus: (s) => {
+          if (s === 'connecting') setStatus('connecting');
+          else if (s === 'connected') {
+            setStatus('connected');
+            setConnectedAt(new Date());
+            setErrorMessage(null);
+          } else if (s === 'disconnected') {
+            setStatus('disconnected');
+            setConnectedAt(null);
+          } else if (s === 'error') {
+            setStatus('error');
+            setConnectedAt(null);
+          }
+        },
+        onError: setErrorMessage,
+        onCredentialsRequired: (requiresUsername, submit) => {
+          setCredentialsPrompt({ requiresUsername, submit });
+        },
+      });
+      vncSessionRef.current = session;
+      setTransportState('vnc');
+      return true;
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'VNC connect failed');
+      return false;
+    }
+  }, [setTransportState]);
 
   useEffect(() => {
     showRemoteCursorRef.current = showRemoteCursor;
@@ -116,6 +176,83 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const jpegPendingFrameRef = useRef<ArrayBuffer | null>(null);
   // renderFrame is defined after connectWebSocket; use a ref to break the TDZ.
   const renderFrameRef = useRef<(data: ArrayBuffer) => void>(() => {});
+
+  // ── Transport switcher ─────────────────────────────────────────────
+  // Forward-declared ref so switchTransport can call connectWebRTC before
+  // connectWebRTC is defined in this scope (they are mutually recursive via
+  // auto-handoff).  The ref is kept in sync below after connectWebRTC is defined.
+  const connectWebRTCRef = useRef<(auth: AuthenticatedConnectionParams, targetSessionId?: number) => Promise<boolean>>(async () => false);
+
+  const switchTransport = useCallback(async (target: Transport) => {
+    if (switchingToRef.current !== null) {
+      // Another switch is in progress — don't start a competing one.
+      return;
+    }
+    if (transportRef.current === target) return;
+    const auth = authRef.current;
+    if (!auth) return;
+
+    // Stop any pending reconnect so attemptReconnect can't fire mid-switch.
+    if (reconnectTimerRef.current) {
+      clearInterval(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    reconnectDeadlineRef.current = null;
+    setReconnectSecondsLeft(0);
+    reconnectInFlightRef.current = false;
+    setCredentialsPrompt(null);
+
+    switchingToRef.current = target;
+    setSwitchingTo(target);
+    setStatus('connecting');
+
+    // Tear down current VNC session + tunnel before switching
+    const prevVnc = vncSessionRef.current;
+    vncSessionRef.current = null;
+    prevVnc?.close();
+    if (activeVncTunnelIdRef.current) {
+      const tunnelId = activeVncTunnelIdRef.current;
+      activeVncTunnelIdRef.current = null;
+      void closeTunnel(tunnelId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
+    }
+
+    // Tear down current WebRTC session
+    if (webrtcMouseMoveRafRef.current !== null) {
+      cancelAnimationFrame(webrtcMouseMoveRafRef.current);
+      webrtcMouseMoveRafRef.current = null;
+    }
+    webrtcMouseMovePendingRef.current = null;
+    const prevRtc = webrtcRef.current;
+    webrtcRef.current = null;
+    prevRtc?.close();
+
+    // Tear down WebSocket
+    wsCleanupRef.current?.();
+    wsCleanupRef.current = null;
+
+    setTransportState(null);
+
+    try {
+      if (target === 'vnc') {
+        if (!auth.deviceId) throw new Error('deviceId required for VNC switch');
+        const tunnel = await createVncTunnel(auth.deviceId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
+        activeVncTunnelIdRef.current = tunnel.tunnelId;
+        const ok = await connectVncTransport(tunnel);
+        if (!ok) throw new Error('VNC connect failed');
+      } else if (target === 'webrtc') {
+        setWebRTCAvailable(false);
+        const ok = await connectWebRTCRef.current(auth);
+        if (!ok) throw new Error('WebRTC connect failed');
+      }
+      // websocket switching not wired here — only webrtc/vnc are in the switcher
+    } catch (err) {
+      setErrorMessage(`Failed to switch to ${target}: ${err instanceof Error ? err.message : String(err)}`);
+      setStatus('error');
+    } finally {
+      switchingToRef.current = null;
+      setSwitchingTo(null);
+    }
+  }, [connectVncTransport, setTransportState]);
 
   // ── WebRTC connection ──────────────────────────────────────────────
 
@@ -223,6 +360,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     return true;
   }, [params.mode === 'desktop' ? params.targetSessionId : undefined]);
 
+  // Keep the forward ref in sync so switchTransport can call the latest version.
+  connectWebRTCRef.current = connectWebRTC;
+
   // ── WebSocket connection (fallback) ────────────────────────────────
 
   const connectWebSocket = useCallback(async (auth: AuthenticatedConnectionParams) => {
@@ -302,11 +442,22 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       return;
     }
     if (reconnectInFlightRef.current) return;
+    if (switchingToRef.current !== null) {
+      // A transport switch is in progress — skip this reconnect tick.
+      // The switch will either install a new session or restore the previous.
+      return;
+    }
 
     // Check deadline
     const deadline = reconnectDeadlineRef.current;
     if (!deadline || Date.now() >= deadline) {
       stopReconnect();
+      // Auto-handoff to VNC on macOS when WebRTC reconnect times out
+      const remoteOsSnap = remoteOs;
+      if (remoteOsSnap === 'macos' && auth.deviceId && transportRef.current !== 'vnc') {
+        void switchTransportRef.current('vnc');
+        return;
+      }
       setStatus('disconnected');
       setConnectedAt(null);
       setErrorMessage('Reconnection timed out');
@@ -369,7 +520,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     } finally {
       reconnectInFlightRef.current = false;
     }
-  }, [connectWebRTC, connectWebSocket, stopReconnect]);
+  }, [connectWebRTC, connectWebSocket, stopReconnect, remoteOs]);
 
   const startReconnect = useCallback(() => {
     if (!authRef.current || userDisconnectRef.current) return;
@@ -393,6 +544,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
   // Keep refs in sync so callbacks inside earlier useCallback closures use the latest version
   startReconnectRef.current = startReconnect;
+  switchTransportRef.current = switchTransport;
 
   // ── Connection lifecycle ───────────────────────────────────────────
 
@@ -431,8 +583,26 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     setErrorMessage(null);
 
     async function connect() {
-      // Task 3.5 adds VNC routing. For now, only the desktop flow is implemented here.
-      if (params.mode !== 'desktop') return;
+      // VNC deep link — bypass connect-code exchange, use credentials from the URL directly.
+      if (params.mode === 'vnc') {
+        authRef.current = {
+          sessionId: '',
+          apiUrl: params.apiUrl,
+          accessToken: params.accessToken,
+          deviceId: params.deviceId,
+        };
+        setRemoteOs('macos'); // VNC is macOS-only for now
+        activeVncTunnelIdRef.current = params.tunnelId;
+        const ok = await connectVncTransport({ tunnelId: params.tunnelId, wsUrl: params.wsUrl });
+        if (cancelled) return;
+        if (!ok) {
+          setStatus('error');
+          onError('Failed to start VNC session');
+        }
+        return;
+      }
+
+      // Desktop connect-code flow
       try {
         const exchange = await exchangeDesktopConnectCode(
           params.apiUrl,
@@ -452,7 +622,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         const authParams: AuthenticatedConnectionParams = {
           sessionId: params.sessionId,  // narrowed: params.mode === 'desktop' guard above
           apiUrl: params.apiUrl,
-          accessToken: exchange.accessToken
+          accessToken: exchange.accessToken,
+          ...(params.deviceId ? { deviceId: params.deviceId } : {}),
         };
         authRef.current = authParams;
 
@@ -529,6 +700,19 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       webrtcRef.current = null;
       oldWebrtc?.close();
 
+      // Close VNC session and tunnel on unmount
+      const oldVnc = vncSessionRef.current;
+      vncSessionRef.current = null;
+      oldVnc?.close();
+      if (activeVncTunnelIdRef.current) {
+        const tunnelId = activeVncTunnelIdRef.current;
+        activeVncTunnelIdRef.current = null;
+        const auth = authRef.current;
+        if (auth) {
+          void closeTunnel(tunnelId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
+        }
+      }
+
       for (const entry of clipboardAckMapRef.current.values()) {
         clearTimeout(entry.timer);
         entry.resolve();
@@ -542,7 +726,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	        });
 	      }
 	    };
-	  }, [connectWebRTC, connectWebSocket, onError, params, stopReconnect]);
+	  }, [connectWebRTC, connectWebSocket, connectVncTransport, onError, params, stopReconnect]);
 
   // Mark a window as "session active" only when fully connected.
   // Pass session_id so Rust can detect duplicate deep links for the same session.
@@ -750,6 +934,19 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           case 'lock_result':
             if (!msg.ok) console.warn('Lock workstation failed:', msg.error);
             break;
+          case 'desktop_state':
+            setDesktopState({ state: msg.state ?? null, username: msg.username ?? null });
+            if (
+              msg.state === 'loginwindow' &&
+              remoteOs === 'macos' &&
+              authRef.current?.deviceId &&
+              transportRef.current !== 'vnc'
+            ) {
+              stopReconnect();
+              setCredentialsPrompt(null);
+              void switchTransportRef.current?.('vnc');
+            }
+            break;
         }
       } catch (err) {
         console.warn('Failed to parse control message:', err);
@@ -790,6 +987,34 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       ch.removeEventListener('open', syncCursorStream);
     };
   }, [showRemoteCursor, transport]);
+
+  // ── Desktop-access polling (VNC + macOS only) ──────────────────────
+  // While connected via VNC, poll every 5s to check if WebRTC has become
+  // available again (e.g. user logged back in). Surfaces to toolbar via
+  // webRTCAvailable + remoteUserName state.
+  useEffect(() => {
+    if (transport !== 'vnc' || remoteOs !== 'macos') return;
+    const auth = authRef.current;
+    if (!auth?.deviceId) return;
+
+    let cancelled = false;
+    const deviceId = auth.deviceId;
+
+    const pollOnce = async () => {
+      const snap = await getDesktopAccess(deviceId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
+      if (cancelled) return;
+      const available = snap?.mode === 'available' && snap?.state === 'user_session';
+      setWebRTCAvailable(available);
+      setRemoteUserName(snap?.username ?? null);
+    };
+
+    void pollOnce();
+    const interval = setInterval(pollOnce, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [transport, remoteOs]);
 
   // ── Frame rendering (WebSocket JPEG path) ──────────────────────────
 
@@ -1319,6 +1544,18 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     const rtcSession = webrtcRef.current;
     webrtcRef.current = null;
     rtcSession?.close();
+    // Close VNC session and tunnel
+    const vncSession = vncSessionRef.current;
+    vncSessionRef.current = null;
+    vncSession?.close();
+    if (activeVncTunnelIdRef.current) {
+      const tunnelId = activeVncTunnelIdRef.current;
+      activeVncTunnelIdRef.current = null;
+      const auth = authRef.current;
+      if (auth) {
+        void closeTunnel(tunnelId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
+      }
+    }
     onDisconnect();
   }, [onDisconnect, releaseAllKeys, stopReconnect]);
 
@@ -1368,6 +1605,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         onPasteAsKeystrokes={handlePasteAsKeystrokes}
         onCancelPaste={handleCancelPaste}
         reconnectSecondsLeft={reconnectSecondsLeft}
+        webRTCAvailable={webRTCAvailable}
+        remoteUserName={remoteUserName}
+        desktopState={desktopState}
+        onSwitchTransport={switchTransport}
       />
       <div className="flex-1 overflow-hidden flex items-center justify-center bg-black relative">
         {/* WebRTC: <video> element (hardware H264 decode) */}
@@ -1410,6 +1651,37 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           className={`max-w-full max-h-full object-contain outline-none cursor-default ${transport !== 'websocket' ? 'hidden' : ''}`}
           {...interactionProps}
         />
+
+        {/* VNC: noVNC container (shown only when transport is VNC) */}
+        <div
+          ref={vncContainerRef}
+          className={`flex-1 min-h-0 w-full h-full bg-black overflow-hidden relative flex items-center justify-center ${transport !== 'vnc' ? 'hidden' : ''}`}
+        />
+
+        {/* VNC credentials prompt */}
+        {credentialsPrompt && (
+          <CredentialsPromptModal
+            requiresUsername={credentialsPrompt.requiresUsername}
+            onSubmit={(creds) => {
+              credentialsPrompt.submit(creds);
+              setCredentialsPrompt(null);
+            }}
+            onCancel={() => {
+              setCredentialsPrompt(null);
+              handleDisconnect();
+            }}
+          />
+        )}
+
+        {/* Transport-switching overlay */}
+        {switchingTo && (
+          <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-20">
+            <div className="text-center">
+              <div className="animate-spin w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full mx-auto mb-3" />
+              <p className="text-white text-sm">Switching to {switchingTo}...</p>
+            </div>
+          </div>
+        )}
 
         {status === 'connecting' && (
           <div className="absolute inset-0 flex items-center justify-center bg-gray-900/80">
