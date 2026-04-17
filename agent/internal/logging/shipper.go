@@ -22,6 +22,15 @@ type TokenRevealer interface {
 	Reveal() string
 }
 
+// AuthSkipper is implemented by authstate.Monitor. Using an interface
+// here avoids taking on a hard dependency on authstate from the logging
+// package (logging is very low-level and many other packages import it).
+type AuthSkipper interface {
+	ShouldSkip() bool
+	RecordAuthFailure()
+	RecordSuccess()
+}
+
 const (
 	defaultBatchInterval = 60 * time.Second
 	defaultMaxBatchSize  = 500
@@ -52,6 +61,7 @@ type Shipper struct {
 	minLevel     slog.Level
 	mu           sync.RWMutex // protects minLevel
 	droppedCount atomic.Int64
+	authMon      AuthSkipper
 }
 
 // ShipperConfig configures the log shipper.
@@ -62,6 +72,7 @@ type ShipperConfig struct {
 	AgentVersion string
 	HTTPClient   *http.Client
 	MinLevel     string // "debug", "info", "warn", "error"
+	AuthMonitor  AuthSkipper
 }
 
 // NewShipper creates a new log shipper.
@@ -79,6 +90,7 @@ func NewShipper(cfg ShipperConfig) *Shipper {
 		buffer:       make(chan LogEntry, defaultBufferSize),
 		stopChan:     make(chan struct{}),
 		minLevel:     parseLevel(cfg.MinLevel),
+		authMon:      cfg.AuthMonitor,
 	}
 }
 
@@ -175,6 +187,36 @@ const (
 )
 
 func (s *Shipper) shipBatch(entries []LogEntry) {
+	if s.authMon != nil && s.authMon.ShouldSkip() {
+		// Auth-dead: don't drop entries on the ticker path — re-buffer
+		// them so they ship once auth recovers. On the drain path
+		// (stopChan closed) we must NOT re-buffer, or the drain loop
+		// pulls them right back out and hangs forever. Drop with count
+		// in that case.
+		//
+		// stopChan is checked first (priority select) before attempting
+		// the buffer send, because when both are ready Go picks randomly
+		// and we need shutdown to win deterministically.
+		for i, e := range entries {
+			select {
+			case <-s.stopChan:
+				// Shutting down: drop entries we haven't re-buffered yet.
+				// Entries [0..i-1] are already back in the buffer and will
+				// be handled by the drain path (which also drops when
+				// auth-dead).
+				s.droppedCount.Add(int64(len(entries) - i))
+				return
+			default:
+			}
+			select {
+			case s.buffer <- e:
+			default:
+				s.droppedCount.Add(1)
+			}
+		}
+		return
+	}
+
 	payload, err := json.Marshal(map[string]any{
 		"logs": entries,
 	})
@@ -254,6 +296,9 @@ func (s *Shipper) shipBatch(entries []LogEntry) {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 			resp.Body.Close()
 			cancel()
+			if resp.StatusCode == http.StatusUnauthorized && s.authMon != nil {
+				s.authMon.RecordAuthFailure()
+			}
 			fmt.Fprintf(os.Stderr, "[log-shipper] server returned %d for %d entries: %s\n",
 				resp.StatusCode, len(entries), string(body))
 			s.droppedCount.Add(int64(len(entries)))
@@ -264,6 +309,9 @@ func (s *Shipper) shipBatch(entries []LogEntry) {
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 		cancel()
+		if s.authMon != nil {
+			s.authMon.RecordSuccess()
+		}
 		return
 	}
 }

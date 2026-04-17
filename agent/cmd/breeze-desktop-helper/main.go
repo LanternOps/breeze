@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
@@ -77,12 +78,14 @@ func runDesktopHelper() {
 	if cfg.AgentID != "" && cfg.ServerURL != "" && cfg.AuthToken != "" {
 		helperToken := secmem.NewSecureString(cfg.AuthToken)
 		cfg.AuthToken = ""
+		authMon := authstate.NewMonitor(3)
 		logging.InitShipper(logging.ShipperConfig{
 			ServerURL:    cfg.ServerURL,
 			AgentID:      cfg.AgentID,
 			AuthToken:    helperToken,
 			AgentVersion: version + "-desktop-helper",
 			MinLevel:     cfg.LogShippingLevel,
+			AuthMonitor:  authMon,
 		})
 		defer logging.StopShipper()
 	}

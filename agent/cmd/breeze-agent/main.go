@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/audit"
+	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/eventlog"
@@ -344,6 +345,11 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	secureToken := secmem.NewSecureString(cfg.AuthToken)
 	cfg.AuthToken = "" // Clear plaintext from config struct
 
+	// Shared auth-failure monitor — gates heartbeat and log shipper
+	// HTTP calls after 3 consecutive 401s so a deauthorized agent
+	// stops spamming the API (#401).
+	authMon := authstate.NewMonitor(3)
+
 	// Initialize log shipper for centralized diagnostics
 	if cfg.AgentID != "" && cfg.ServerURL != "" {
 		logging.InitShipper(logging.ShipperConfig{
@@ -353,6 +359,7 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 			AgentVersion: version,
 			HTTPClient:   nil, // will use default
 			MinLevel:     cfg.LogShippingLevel,
+			AuthMonitor:  authMon,
 		})
 		// Dev builds ship info-level logs for performance tuning and diagnostics.
 		if strings.HasPrefix(version, "dev-") && cfg.LogShippingLevel == "warn" {
@@ -449,6 +456,7 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 
 	// Start heartbeat - this implements the main agent run loop
 	hb := heartbeat.NewWithVersion(cfg, version, secureToken, tlsCfg)
+	hb.SetAuthMonitor(authMon)
 
 	// Log agent start audit event (nil-safe: Log() is a no-op on nil receiver)
 	hb.AuditLog().Log(audit.EventAgentStart, "", map[string]any{
@@ -1005,12 +1013,14 @@ func runHelperProcess(name, role, context, binaryKind string) {
 	if cfg.AgentID != "" && cfg.ServerURL != "" && cfg.AuthToken != "" {
 		helperToken := secmem.NewSecureString(cfg.AuthToken)
 		cfg.AuthToken = "" // Clear plaintext from config struct
+		helperAuthMon := authstate.NewMonitor(3)
 		logging.InitShipper(logging.ShipperConfig{
 			ServerURL:    cfg.ServerURL,
 			AgentID:      cfg.AgentID,
 			AuthToken:    helperToken,
 			AgentVersion: version + "-helper",
 			MinLevel:     cfg.LogShippingLevel,
+			AuthMonitor:  helperAuthMon,
 		})
 		// Dev builds ship info-level logs for performance tuning and diagnostics.
 		if strings.HasPrefix(version, "dev-") && cfg.LogShippingLevel == "warn" {
