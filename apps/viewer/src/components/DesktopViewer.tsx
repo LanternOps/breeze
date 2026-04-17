@@ -128,9 +128,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             setConnectedAt(new Date());
             setErrorMessage(null);
           } else if (s === 'disconnected') {
+            setCredentialsPrompt(null);
             setStatus('disconnected');
             setConnectedAt(null);
           } else if (s === 'error') {
+            setCredentialsPrompt(null);
             setStatus('error');
             setConnectedAt(null);
           }
@@ -249,6 +251,15 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       }
       // websocket switching not wired here — only webrtc/vnc are in the switcher
     } catch (err) {
+      // If we created a tunnel during this attempt, close it now — the caller
+      // won't get a chance to.
+      if (target === 'vnc' && activeVncTunnelIdRef.current) {
+        void closeTunnel(activeVncTunnelIdRef.current, {
+          apiUrl: auth.apiUrl,
+          accessToken: auth.accessToken,
+        });
+        activeVncTunnelIdRef.current = null;
+      }
       setErrorMessage(`Failed to switch to ${target}: ${err instanceof Error ? err.message : String(err)}`);
       setStatus('error');
     } finally {
@@ -601,6 +612,15 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         const ok = await connectVncTransport({ tunnelId: params.tunnelId, wsUrl: params.wsUrl });
         if (cancelled) return;
         if (!ok) {
+          // Viewer stays mounted on error; close the tunnel we own so it doesn't
+          // linger on the server until idle-reaper TTL.
+          if (activeVncTunnelIdRef.current) {
+            void closeTunnel(activeVncTunnelIdRef.current, {
+              apiUrl: params.apiUrl,
+              accessToken: params.accessToken,
+            });
+            activeVncTunnelIdRef.current = null;
+          }
           setStatus('error');
           onError('Failed to start VNC session');
         }
@@ -1016,10 +1036,22 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     const deviceId = auth.deviceId;
 
     const pollOnce = async () => {
-      const snap = await pollDesktopAccess(deviceId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
-      if (cancelled || !snap) return;
-      setWebRTCAvailable(snap.mode === 'user_session');
-      setRemoteUserName(snap.username);
+      const result = await pollDesktopAccess(deviceId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
+      if (cancelled) return;
+      if (!result.ok) {
+        if (result.reason === 'unauthorized') {
+          // Token has expired or been revoked mid-session — stop polling; the user
+          // will need to reconnect. Don't flip webRTCAvailable; leave the last
+          // known state so the pill doesn't flicker.
+          console.warn('pollDesktopAccess: authorization failed — stopping poll');
+          clearInterval(interval);
+          cancelled = true;
+        }
+        // For 'network' and 'error', silently keep trying on the next tick.
+        return;
+      }
+      setWebRTCAvailable(result.poll.mode === 'user_session');
+      setRemoteUserName(result.poll.username);
     };
 
     void pollOnce();
