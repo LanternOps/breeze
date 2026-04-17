@@ -66,7 +66,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [monitors, setMonitors] = useState<Array<{ index: number; name: string; width: number; height: number; isPrimary: boolean }>>([]);
   const [activeMonitor, setActiveMonitor] = useState(0);
   const [sessions, setSessions] = useState<Array<{ sessionId: number; username: string; state: string; type: string; helperConnected: boolean }>>([]);
-  const [activeSessionId, setActiveSessionId] = useState<number | null>(params.targetSessionId ?? null);
+  const [activeSessionId, setActiveSessionId] = useState<number | null>(
+    params.mode === 'desktop' ? (params.targetSessionId ?? null) : null
+  );
   const [switchingSession, setSwitchingSession] = useState<string | null>(null);
   const switchingSessionRef = useRef(false);
   const audioElRef = useRef<HTMLAudioElement | null>(null);
@@ -124,7 +126,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     const sessionWrapper = await connectWebRTCTransport(auth, {
       videoElement: videoEl,
       cursorOverlayRef,
-      targetSessionId: targetSessionId ?? params.targetSessionId,
+      targetSessionId: targetSessionId ?? (params.mode === 'desktop' ? params.targetSessionId : undefined),
       showRemoteCursorRef,
       remoteCursorShapeRef,
       onConnected: () => {
@@ -219,7 +221,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // Hostname is already set from the exchange response before connectWebRTC is called.
     // Connection state will flip to 'connected' via onConnected callback.
     return true;
-  }, [params.targetSessionId]);
+  }, [params.mode === 'desktop' ? params.targetSessionId : undefined]);
 
   // ── WebSocket connection (fallback) ────────────────────────────────
 
@@ -429,6 +431,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     setErrorMessage(null);
 
     async function connect() {
+      // Task 3.5 adds VNC routing. For now, only the desktop flow is implemented here.
+      if (params.mode !== 'desktop') return;
       try {
         const exchange = await exchangeDesktopConnectCode(
           params.apiUrl,
@@ -446,7 +450,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         }
 
         const authParams: AuthenticatedConnectionParams = {
-          sessionId: params.sessionId,
+          sessionId: params.sessionId,  // narrowed: params.mode === 'desktop' guard above
           apiUrl: params.apiUrl,
           accessToken: exchange.accessToken
         };
@@ -545,12 +549,19 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	  useEffect(() => {
 	    if (status === 'connected' && !sessionRegisteredRef.current) {
 	      sessionRegisteredRef.current = true;
-	      invoke('register_session', { sessionId: params.sessionId }).catch((err) => {
-	        console.error('Failed to register desktop session:', err);
-	      });
-	      if (params.deviceId) {
+	      if (params.mode === 'desktop') {
+	        invoke('register_session', { sessionId: params.sessionId }).catch((err) => {
+	          console.error('Failed to register desktop session:', err);
+	        });
+	        if (params.deviceId) {
+	          invoke('register_device', { deviceId: params.deviceId }).catch((err) => {
+	            console.error('Failed to register desktop device:', err);
+	          });
+	        }
+	      } else {
+	        // VNC mode: register by deviceId; Task 3.5 adds full VNC session registration
 	        invoke('register_device', { deviceId: params.deviceId }).catch((err) => {
-	          console.error('Failed to register desktop device:', err);
+	          console.error('Failed to register vnc device:', err);
 	        });
 	      }
 	      return;
@@ -561,7 +572,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	        console.error('Failed to unregister desktop session:', err);
 	      });
 	    }
-	  }, [status, params.sessionId, params.deviceId]);
+	  }, [status, params]);
 
   // Count WebRTC video frames via requestVideoFrameCallback
   useEffect(() => {
