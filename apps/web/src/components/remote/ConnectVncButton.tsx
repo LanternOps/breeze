@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Monitor, MonitorOff, ExternalLink, X, Globe } from 'lucide-react';
 import type { RemoteAccessPolicy } from '@breeze/shared';
-import { fetchWithAuth } from '@/stores/auth';
+import { fetchWithAuth, useAuthStore } from '@/stores/auth';
 
 interface Props {
   deviceId: string;
@@ -80,7 +80,12 @@ export default function ConnectVncButton({
       const wsUrl = `${wsProtocol}://${wsHost}/api/v1/tunnel-ws/${tunnel.id}/ws?ticket=${ticket}`;
       setVncWsUrl(wsUrl);
 
-      const deepLink = `breeze://vnc?tunnel=${encodeURIComponent(tunnel.id)}&ws=${encodeURIComponent(wsUrl)}`;
+      const accessToken = useAuthStore.getState().tokens?.accessToken ?? '';
+      const deepLink = `breeze://vnc?tunnel=${encodeURIComponent(tunnel.id)}` +
+        `&ws=${encodeURIComponent(wsUrl)}` +
+        `&device=${encodeURIComponent(deviceId)}` +
+        `&api=${encodeURIComponent(apiUrl)}` +
+        `&accessToken=${encodeURIComponent(accessToken)}`;
 
       setStatus('launching');
 
