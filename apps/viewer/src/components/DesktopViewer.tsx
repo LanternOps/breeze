@@ -16,6 +16,7 @@ import { mapKey, getModifiers, isModifierOnly } from '../lib/keymap';
 import { textToKeyEvents } from '../lib/paste';
 import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
 import { handleCtrlVPaste } from '../lib/clipboardPaste';
+import { shouldAutoHandoffToVnc } from '../lib/autoHandoff';
 import ViewerToolbar from './ViewerToolbar';
 import CredentialsPromptModal from './CredentialsPromptModal';
 
@@ -51,7 +52,6 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const startReconnectRef = useRef<() => void>(() => {});
   const switchTransportRef = useRef<(target: Transport, reason?: 'user' | 'auto') => Promise<void>>(async () => {});
   const lastUserTransportChoiceAtRef = useRef<number>(0);
-  const USER_CHOICE_COOLDOWN_MS = 60_000;
   const sessionRegisteredRef = useRef(false);
 
   // VNC session + tunnel lifecycle
@@ -479,16 +479,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (!deadline || Date.now() >= deadline) {
       stopReconnect();
       // Auto-handoff to VNC on macOS when WebRTC reconnect times out
-      const remoteOsSnap = remoteOs;
-      if (remoteOsSnap === 'macos' && auth.deviceId && transportRef.current !== 'vnc') {
-        const sinceUserChoice = Date.now() - lastUserTransportChoiceAtRef.current;
-        if (sinceUserChoice < USER_CHOICE_COOLDOWN_MS) {
-          console.log(`auto-handoff suppressed (user picked transport ${Math.round(sinceUserChoice / 1000)}s ago)`);
-          setStatus('disconnected');
-          setConnectedAt(null);
-          setErrorMessage('Reconnection timed out');
-          return;
-        }
+      if (shouldAutoHandoffToVnc({
+        remoteOs,
+        deviceId: auth.deviceId,
+        currentTransport: transportRef.current,
+        desktopState: null,
+        userJustSwitchedAt: lastUserTransportChoiceAtRef.current,
+      })) {
         void switchTransportRef.current('vnc', 'auto');
         return;
       }
@@ -1024,18 +1021,17 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             setDesktopState({ state: msg.state ?? null, username: msg.username ?? null });
             if (
               msg.state === 'loginwindow' &&
-              remoteOs === 'macos' &&
-              authRef.current?.deviceId &&
-              transportRef.current !== 'vnc'
+              shouldAutoHandoffToVnc({
+                remoteOs,
+                deviceId: authRef.current?.deviceId,
+                currentTransport: transportRef.current,
+                desktopState: 'loginwindow',
+                userJustSwitchedAt: lastUserTransportChoiceAtRef.current,
+              })
             ) {
-              const sinceUserChoice = Date.now() - lastUserTransportChoiceAtRef.current;
-              if (sinceUserChoice < USER_CHOICE_COOLDOWN_MS) {
-                console.log(`auto-handoff suppressed (user picked transport ${Math.round(sinceUserChoice / 1000)}s ago)`);
-              } else {
-                stopReconnect();
-                setCredentialsPrompt(null);
-                void switchTransportRef.current?.('vnc', 'auto');
-              }
+              stopReconnect();
+              setCredentialsPrompt(null);
+              void switchTransportRef.current?.('vnc', 'auto');
             }
             break;
         }
