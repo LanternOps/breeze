@@ -120,14 +120,9 @@ type Session struct {
 	gpuVendor string
 
 	// Cached encoded H264 frame used as a fallback resend source when secure
-	// desktop capture yields temporary no-frame periods. lastEncodedIDR holds
-	// the most recent frame that contained an IDR NAL unit — idle resend paths
-	// must prefer this over lastEncodedFrame, because re-sending a P-frame as
-	// a new RTP sample drifts the decoder's reference state and produces the
-	// classic "garbage over static content" artifacting.
+	// desktop capture yields temporary no-frame periods.
 	lastEncodedMu    sync.RWMutex
 	lastEncodedFrame []byte
-	lastEncodedIDR   []byte
 	// Nanoseconds since epoch of the last successful video sample write.
 	lastVideoWriteUnixNano atomic.Int64
 
