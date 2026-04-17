@@ -17,7 +17,6 @@ type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error' | 
 interface VncViewerProps {
   wsUrl: string;
   tunnelId: string;
-  password?: string;
   onDisconnect?: () => void;
   className?: string;
 }
@@ -30,7 +29,7 @@ const statusConfig: Record<ConnectionStatus, { label: string; color: string }> =
   password_required: { label: 'Password required', color: 'text-amber-500' },
 };
 
-export default function VncViewer({ wsUrl, tunnelId, password, onDisconnect, className }: VncViewerProps) {
+export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: VncViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const rfbRef = useRef<any>(null);
 
@@ -89,14 +88,11 @@ export default function VncViewer({ wsUrl, tunnelId, password, onDisconnect, cla
         // `detail.types` tells us what the selected security scheme needs.
         // Apple Remote Desktop auth (type 30) requires ["username", "password"];
         // standard VNC auth (type 2) requires just ["password"].
+        // Always prompt the operator — the agent no longer generates ephemeral passwords.
         const types = (e.detail?.types ?? ['password']) as string[];
         const requiresUsername = types.includes('username');
-        if (password && !requiresUsername) {
-          rfb.sendCredentials({ password });
-        } else {
-          setNeedsUsername(requiresUsername);
-          setStatus('password_required');
-        }
+        setNeedsUsername(requiresUsername);
+        setStatus('password_required');
       });
 
       // Diagnostic: framebuffer updates, resize, errors
@@ -206,7 +202,7 @@ export default function VncViewer({ wsUrl, tunnelId, password, onDisconnect, cla
       }
       rfbRef.current = null;
     };
-  }, [wsUrl, password, onDisconnect]);
+  }, [wsUrl, onDisconnect]);
 
   // Sync scale setting to RFB instance
   useEffect(() => {
