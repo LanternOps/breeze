@@ -10,7 +10,7 @@ import { connectWebSocket as connectWebSocketTransport, type WebSocketSessionWra
 // is deferred until the VNC path is actually invoked.
 import type { VncSessionWrapper } from '../lib/transports/vnc';
 import { createVncTunnel, closeTunnel } from '../lib/tunnel';
-import { getDesktopAccess } from '../lib/desktopAccess';
+import { pollDesktopAccess } from '../lib/desktopAccess';
 import { mapKey, getModifiers, isModifierOnly } from '../lib/keymap';
 import { textToKeyEvents } from '../lib/paste';
 import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
@@ -993,7 +993,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // available again (e.g. user logged back in). Surfaces to toolbar via
   // webRTCAvailable + remoteUserName state.
   useEffect(() => {
-    if (transport !== 'vnc' || remoteOs !== 'macos') return;
+    if (transport !== 'vnc' || remoteOs !== 'macos' || status !== 'connected') return;
     const auth = authRef.current;
     if (!auth?.deviceId) return;
 
@@ -1001,11 +1001,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     const deviceId = auth.deviceId;
 
     const pollOnce = async () => {
-      const snap = await getDesktopAccess(deviceId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
-      if (cancelled) return;
-      const available = snap?.mode === 'available' && snap?.state === 'user_session';
-      setWebRTCAvailable(available);
-      setRemoteUserName(snap?.username ?? null);
+      const snap = await pollDesktopAccess(deviceId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
+      if (cancelled || !snap) return;
+      setWebRTCAvailable(snap.webRTCAvailable);
+      setRemoteUserName(snap.username);
     };
 
     void pollOnce();
@@ -1014,7 +1013,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       cancelled = true;
       clearInterval(interval);
     };
-  }, [transport, remoteOs]);
+  }, [transport, remoteOs, status]);
 
   // ── Frame rendering (WebSocket JPEG path) ──────────────────────────
 
