@@ -1,11 +1,9 @@
 import { RFB } from '../novnc';
 import type { TransportSession } from './types';
 import { capabilitiesFor } from './types';
+import type { VncTunnelInfo } from '../tunnel';
 
-export interface VncTunnelInfo {
-  tunnelId: string;
-  wsUrl: string;
-}
+export type { VncTunnelInfo };
 
 export interface VncDeps {
   container: HTMLDivElement | HTMLElement;

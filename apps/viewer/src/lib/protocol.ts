@@ -150,6 +150,15 @@ function parseVncDeepLink(parsed: URL): VncConnectionParams | null {
     return null;
   }
 
+  // Validate wsUrl: must be ws:// or wss://, and its hostname must match apiUrl's hostname.
+  const api = new URL(validatedApiUrl);
+  const wsUrlParsed = (() => {
+    try { return new URL(wsUrl); } catch { return null; }
+  })();
+  if (!wsUrlParsed) return null;
+  if (wsUrlParsed.protocol !== 'ws:' && wsUrlParsed.protocol !== 'wss:') return null;
+  if (wsUrlParsed.hostname !== api.hostname) return null;
+
   return {
     mode: 'vnc',
     tunnelId,

@@ -110,6 +110,20 @@ describe('parseDeepLink — VNC', () => {
     const p = parseDeepLink(url);
     expect(p?.mode).toBe('vnc');
   });
+
+  it('returns null when wsUrl hostname does not match apiUrl hostname', () => {
+    const url = 'breeze://vnc?tunnel=t&ws=' + encodeURIComponent('wss://evil.example.com/ws') +
+      '&device=d&api=' + encodeURIComponent('https://api.example.com') +
+      '&accessToken=tok';
+    expect(parseDeepLink(url)).toBeNull();
+  });
+
+  it('returns null when wsUrl is not ws:// or wss://', () => {
+    const url = 'breeze://vnc?tunnel=t&ws=' + encodeURIComponent('http://api.example.com/ws') +
+      '&device=d&api=' + encodeURIComponent('https://api.example.com') +
+      '&accessToken=tok';
+    expect(parseDeepLink(url)).toBeNull();
+  });
 });
 
 describe('parseDeepLink — desktop (existing behavior preserved)', () => {

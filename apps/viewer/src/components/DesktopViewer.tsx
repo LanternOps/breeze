@@ -10,7 +10,7 @@ import { capabilitiesFor, type TransportCapabilities } from '../lib/transports/t
 // connectVnc is loaded dynamically inside connectVncTransport so novnc's top-level await
 // is deferred until the VNC path is actually invoked.
 import type { VncSessionWrapper } from '../lib/transports/vnc';
-import { createVncTunnel, closeTunnel } from '../lib/tunnel';
+import { createVncTunnel, closeTunnel, type VncTunnelInfo } from '../lib/tunnel';
 import { pollDesktopAccess } from '../lib/desktopAccess';
 import { mapKey, getModifiers, isModifierOnly } from '../lib/keymap';
 import { textToKeyEvents } from '../lib/paste';
@@ -111,7 +111,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
   // ── VNC connect helper ─────────────────────────────────────────────
 
-  const connectVncTransport = useCallback(async (tunnel: { tunnelId: string; wsUrl: string }): Promise<boolean> => {
+  const connectVncTransport = useCallback(async (tunnel: VncTunnelInfo): Promise<boolean> => {
     const container = vncContainerRef.current;
     if (!container) return false;
 
@@ -259,6 +259,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
   // ── WebRTC connection ──────────────────────────────────────────────
 
+  const defaultTargetSessionId = params.mode === 'desktop' ? params.targetSessionId : undefined;
+
   const connectWebRTC = useCallback(async (auth: AuthenticatedConnectionParams, targetSessionId?: number): Promise<boolean> => {
     const videoEl = videoRef.current;
     if (!videoEl) return false;
@@ -266,7 +268,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     const sessionWrapper = await connectWebRTCTransport(auth, {
       videoElement: videoEl,
       cursorOverlayRef,
-      targetSessionId: targetSessionId ?? (params.mode === 'desktop' ? params.targetSessionId : undefined),
+      targetSessionId: targetSessionId ?? defaultTargetSessionId,
       showRemoteCursorRef,
       remoteCursorShapeRef,
       onConnected: () => {
@@ -361,7 +363,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // Hostname is already set from the exchange response before connectWebRTC is called.
     // Connection state will flip to 'connected' via onConnected callback.
     return true;
-  }, [params.mode === 'desktop' ? params.targetSessionId : undefined]);
+  }, [defaultTargetSessionId]);
 
   // Keep the forward ref in sync so switchTransport can call the latest version.
   connectWebRTCRef.current = connectWebRTC;
@@ -746,7 +748,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	          });
 	        }
 	      } else {
-	        // VNC mode: register by deviceId; Task 3.5 adds full VNC session registration
+	        // VNC mode: register by deviceId so duplicate-link detection works.
 	        invoke('register_device', { deviceId: params.deviceId }).catch((err) => {
 	          console.error('Failed to register vnc device:', err);
 	        });
@@ -759,7 +761,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	        console.error('Failed to unregister desktop session:', err);
 	      });
 	    }
-	  }, [status, params]);
+	  }, [
+	    status,
+	    params.mode,
+	    params.mode === 'desktop' ? params.sessionId : params.tunnelId,
+	    params.deviceId,
+	  ]);
 
   // Count WebRTC video frames via requestVideoFrameCallback
   useEffect(() => {
@@ -937,6 +944,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           case 'lock_result':
             if (!msg.ok) console.warn('Lock workstation failed:', msg.error);
             break;
+          // Agent's live WebRTC control-channel event uses `'loginwindow'` (no underscore).
+          // The persisted DesktopAccessMode enum uses `'login_window'` (with underscore).
+          // Do NOT unify without updating both producers. See:
+          //   - agent/internal/remote/desktop/desktop_state_broadcast.go (event)
+          //   - packages/shared/src/types/index.ts (DesktopAccessMode)
           case 'desktop_state':
             setDesktopState({ state: msg.state ?? null, username: msg.username ?? null });
             if (
@@ -1006,7 +1018,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     const pollOnce = async () => {
       const snap = await pollDesktopAccess(deviceId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
       if (cancelled || !snap) return;
-      setWebRTCAvailable(snap.webRTCAvailable);
+      setWebRTCAvailable(snap.mode === 'user_session');
       setRemoteUserName(snap.username);
     };
 

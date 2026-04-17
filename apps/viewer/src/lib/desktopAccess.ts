@@ -1,13 +1,15 @@
+type DesktopAccessMode = 'user_session' | 'login_window' | 'unavailable';
+
 export interface DesktopAccessPoll {
-  /** True when a user session is active and the agent can drive WebRTC desktop input. */
-  webRTCAvailable: boolean;
-  /** The logged-in username (from devices.lastUser), null if not known or not logged in. */
+  /** Full desktop-access mode from the device record. Null when not reported. */
+  mode: DesktopAccessMode | null;
+  /** The logged-in username (from devices.lastUser), null otherwise. */
   username: string | null;
 }
 
 interface DeviceDetailSubset {
   desktopAccess?: {
-    mode?: 'user_session' | 'login_window' | 'unavailable';
+    mode?: DesktopAccessMode;
   } | null;
   lastUser?: string | null;
 }
@@ -30,9 +32,8 @@ export async function pollDesktopAccess(
     });
     if (!res.ok) return null;
     const body = (await res.json()) as DeviceDetailSubset;
-    const mode = body.desktopAccess?.mode;
     return {
-      webRTCAvailable: mode === 'user_session',
+      mode: body.desktopAccess?.mode ?? null,
       username: body.lastUser ?? null,
     };
   } catch {

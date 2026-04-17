@@ -44,15 +44,15 @@ interface Props {
   onLockWorkstation: () => void;
   onPasteAsKeystrokes: () => void;
   onCancelPaste: () => void;
-  /** Task 3.6: whether WebRTC is available again while on VNC (for Switch pill). */
+  /** True when a user session is active on the remote device and WebRTC is available (for Switch pill). */
   webRTCAvailable?: boolean;
-  /** Task 3.6: the logged-in username on the remote end (for Switch pill label). */
+  /** The logged-in username on the remote end (for Switch pill label). */
   remoteUserName?: string | null;
-  /** Task 3.6: current desktop state from agent events. */
+  /** Current desktop state from agent control-channel events. */
   desktopState?: { state: 'loginwindow' | 'user_session' | null; username: string | null };
-  /** Task 3.6: called when the user clicks "Switch to WebRTC" pill. */
+  /** Called when the user clicks a transport option in the dropdown or Switch pill. */
   onSwitchTransport?: (target: 'webrtc' | 'vnc') => void;
-  /** Task 3.6: capabilities of the active transport session; null = no session yet. */
+  /** Capabilities of the active transport session; null = no session yet. */
   capabilities?: TransportCapabilities | null;
 }
 
