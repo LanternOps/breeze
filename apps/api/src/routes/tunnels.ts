@@ -641,15 +641,20 @@ vncExchangeRoutes.post(
       return c.json({ error: 'Invalid or expired VNC connect code' }, 404);
     }
 
-    // Build WebSocket URL using the request's host
-    const requestUrl = new URL(c.req.url);
-    const wsProtocol = requestUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+    // Build the WebSocket URL from the canonical external base URL. Using
+    // c.req.url would yield an internal http://api:3001 in Caddy-fronted
+    // deployments; honoring X-Forwarded-Proto doesn't help when Caddy itself
+    // sits behind Cloudflare (Caddy overwrites the forwarded header with its
+    // own http view). PUBLIC_APP_URL / DASHBOARD_URL is the source of truth.
+    const publicBase = (process.env.PUBLIC_APP_URL || process.env.DASHBOARD_URL || '').replace(/\/$/, '');
+    const baseUrl = publicBase ? new URL(publicBase) : new URL(c.req.url);
+    const wsProtocol = baseUrl.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsTicketResult = await createWsTicket({
       sessionId: record.tunnelId,
       sessionType: 'tunnel',
       userId: record.userId,
     });
-    const wsUrl = `${wsProtocol}//${requestUrl.host}/api/v1/tunnel-ws/${record.tunnelId}/ws?ticket=${wsTicketResult.ticket}`;
+    const wsUrl = `${wsProtocol}//${baseUrl.host}/api/v1/tunnel-ws/${record.tunnelId}/ws?ticket=${wsTicketResult.ticket}`;
 
     const accessToken = await createViewerAccessToken({
       sub: record.userId,

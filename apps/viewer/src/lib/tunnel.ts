@@ -18,7 +18,7 @@ export async function createVncTunnel(deviceId: string, auth: TunnelAuth): Promi
     Authorization: `Bearer ${auth.accessToken}`,
   };
 
-  const tunnelRes = await fetch(`${auth.apiUrl}/tunnels`, {
+  const tunnelRes = await fetch(`${auth.apiUrl}/api/v1/tunnels`, {
     method: 'POST',
     headers,
     body: JSON.stringify({ deviceId, type: 'vnc' }),
@@ -29,7 +29,7 @@ export async function createVncTunnel(deviceId: string, auth: TunnelAuth): Promi
   }
   const { id: tunnelId } = await tunnelRes.json() as { id: string };
 
-  const ticketRes = await fetch(`${auth.apiUrl}/tunnels/${tunnelId}/ws-ticket`, {
+  const ticketRes = await fetch(`${auth.apiUrl}/api/v1/tunnels/${tunnelId}/ws-ticket`, {
     method: 'POST',
     headers,
   });
@@ -52,7 +52,7 @@ export async function createVncTunnel(deviceId: string, auth: TunnelAuth): Promi
  */
 export async function closeTunnel(tunnelId: string, auth: TunnelAuth): Promise<void> {
   try {
-    await fetch(`${auth.apiUrl}/tunnels/${tunnelId}`, {
+    await fetch(`${auth.apiUrl}/api/v1/tunnels/${tunnelId}`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${auth.accessToken}` },
     });

@@ -33,7 +33,7 @@ export async function pollDesktopAccess(
   auth: { apiUrl: string; accessToken: string },
 ): Promise<DesktopAccessPollResult> {
   try {
-    const res = await fetch(`${auth.apiUrl}/devices/${deviceId}`, {
+    const res = await fetch(`${auth.apiUrl}/api/v1/devices/${deviceId}`, {
       headers: { Authorization: `Bearer ${auth.accessToken}` },
     });
     if (res.status === 401 || res.status === 403) {

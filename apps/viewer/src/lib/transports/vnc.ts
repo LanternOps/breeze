@@ -73,6 +73,21 @@ export async function connectVnc(
     deps.onStatus('error');
   });
 
+  // When the container resizes (first layout pass, fullscreen toggle, window
+  // resize), nudge noVNC to recompute its scaled viewport. Without this the
+  // canvas stays at whatever size it cached at construction — often 0x0 if the
+  // container was display:none when RFB was created — and frames never render.
+  // Toggling scaleViewport forces the viewport math to re-run.
+  const resizeObserver = typeof ResizeObserver !== 'undefined'
+    ? new ResizeObserver(() => {
+        if (rfb.scaleViewport) {
+          rfb.scaleViewport = false;
+          rfb.scaleViewport = true;
+        }
+      })
+    : null;
+  resizeObserver?.observe(deps.container);
+
   let disposed = false;
 
   return {
@@ -82,6 +97,7 @@ export async function connectVnc(
     close: () => {
       if (disposed) return;
       disposed = true;
+      resizeObserver?.disconnect();
       try {
         rfb.disconnect();
       } catch {

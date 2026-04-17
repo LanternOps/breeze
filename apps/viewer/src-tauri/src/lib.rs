@@ -497,8 +497,13 @@ pub fn run() {
 
             // Fire-and-forget: update failures must never block the app.
             // Errors are logged inside auto_update(); panics are absorbed by the runtime.
-            let update_handle = app.handle().clone();
-            let _update_task = tauri::async_runtime::spawn(auto_update(update_handle));
+            // Skipped in debug builds so `pnpm tauri dev` can't get clobbered by
+            // latest.json pointing at an older stable release.
+            #[cfg(not(debug_assertions))]
+            {
+                let update_handle = app.handle().clone();
+                let _update_task = tauri::async_runtime::spawn(auto_update(update_handle));
+            }
 
             Ok(())
         })

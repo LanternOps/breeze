@@ -121,6 +121,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       // Lazy-load the VNC transport so novnc (which uses top-level await) is only
       // bundled into a separate async chunk and doesn't land in the main bundle.
       const { connectVnc } = await import('../lib/transports/vnc');
+      // Set transport BEFORE RFB construction so the container <div> is visible
+      // (the JSX hides it with `hidden` when transport !== 'vnc'). Otherwise RFB
+      // initializes against a 0×0 container and the canvas never renders frames.
+      setTransportState('vnc');
       const session = await connectVnc(tunnel, {
         container,
         onStatus: (s) => {
@@ -150,7 +154,6 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         },
       });
       vncSessionRef.current = session;
-      setTransportState('vnc');
       return true;
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : 'VNC connect failed');
