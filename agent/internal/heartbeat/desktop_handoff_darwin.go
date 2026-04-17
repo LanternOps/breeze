@@ -24,11 +24,17 @@ func (h *Heartbeat) startDarwinDesktopWatcher() {
 		log.Warn("failed to detect initial console user, assuming login window",
 			"error", err.Error())
 	}
+	var initialConsoleUser string
 	if len(sessions) > 0 {
-		h.sessionBroker.SetConsoleUser(sessions[0].Username)
+		initialConsoleUser = sessions[0].Username
 	} else {
-		h.sessionBroker.SetConsoleUser("loginwindow")
+		initialConsoleUser = "loginwindow"
 	}
+	h.sessionBroker.SetConsoleUser(initialConsoleUser)
+
+	// Broadcast the initial desktop state so any viewer that connects early
+	// knows whether we are at the login window or in a user session.
+	h.broadcastDarwinDesktopState(initialConsoleUser)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -93,6 +99,10 @@ func (h *Heartbeat) handleDarwinSessionEvent(event sessionbroker.SessionEvent) {
 
 		_ = h.spawnDesktopHelper("")
 		h.reconcileDarwinDesktopOwners("session_" + string(event.Type))
+
+		// Broadcast the new desktop state over any active WebRTC control
+		// channels so the viewer can auto-handoff between WebRTC and VNC.
+		h.broadcastDarwinDesktopState(newConsoleUser)
 	}()
 }
 
@@ -121,6 +131,23 @@ func (h *Heartbeat) reconcileDarwinDesktopOwners(reason string) {
 
 		return true
 	})
+}
+
+// broadcastDarwinDesktopState sends a desktop_state event to every active
+// WebRTC session's control data channel. consoleUser is the current macOS
+// console user as tracked by the session broker: "loginwindow" at the login
+// screen, a real username when a user session is active.
+func (h *Heartbeat) broadcastDarwinDesktopState(consoleUser string) {
+	if h.desktopMgr == nil {
+		return
+	}
+	state := "user_session"
+	userName := consoleUser
+	if consoleUser == "loginwindow" || consoleUser == "" {
+		state = "loginwindow"
+		userName = ""
+	}
+	h.desktopMgr.BroadcastDesktopState(state, userName)
 }
 
 func (h *Heartbeat) disconnectDarwinDesktopOwner(desktopSessionID string, owner *sessionbroker.Session, reason string) {
