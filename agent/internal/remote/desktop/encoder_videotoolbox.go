@@ -158,7 +158,8 @@ static OSStatus vtEncodeNV12(VTCompressionSessionRef session,
                              int height,
                              int64_t ptsNs,
                              int64_t durNs,
-                             uintptr_t sourceFrameRefCon) {
+                             uintptr_t sourceFrameRefCon,
+                             int forceKeyframe) {
     if (session == NULL || nv12 == NULL || width <= 0 || height <= 0) return -1;
     if (pool == NULL) {
         pool = VTCompressionSessionGetPixelBufferPool(session);
@@ -193,14 +194,28 @@ static OSStatus vtEncodeNV12(VTCompressionSessionRef session,
     CMTime pts = CMTimeMake(ptsNs, 1000000000);
     CMTime dur = CMTimeMake(durNs, 1000000000);
 
+    // Per-frame properties dict: when the caller wants an IDR now (RTCP PLI),
+    // pass kVTEncodeFrameOptionKey_ForceKeyFrame=kCFBooleanTrue so VideoToolbox
+    // emits this frame as a sync/keyframe.
+    CFDictionaryRef frameProps = NULL;
+    if (forceKeyframe) {
+        const void *keys[] = { kVTEncodeFrameOptionKey_ForceKeyFrame };
+        const void *vals[] = { kCFBooleanTrue };
+        frameProps = CFDictionaryCreate(kCFAllocatorDefault,
+                                        keys, vals, 1,
+                                        &kCFTypeDictionaryKeyCallBacks,
+                                        &kCFTypeDictionaryValueCallBacks);
+    }
+
     st = VTCompressionSessionEncodeFrame(session,
                                          pb,
                                          pts,
                                          dur,
-                                         NULL,
+                                         frameProps,
                                          (void *)sourceFrameRefCon,
                                          NULL);
 
+    if (frameProps != NULL) CFRelease(frameProps);
     CVPixelBufferRelease(pb);
     return st;
 }
@@ -339,6 +354,12 @@ type videotoolboxEncoder struct {
 	pool    C.CVPixelBufferPoolRef
 
 	startTime time.Time
+
+	// forceIDR, when true, causes the next Encode to pass
+	// kVTEncodeFrameOptionKey_ForceKeyFrame so VideoToolbox emits a sync
+	// frame. Set by ForceKeyframe (driven by RTCP PLI from the viewer) and
+	// cleared after the encode call is dispatched.
+	forceIDR bool
 }
 
 func init() {
@@ -365,6 +386,8 @@ func (v *videotoolboxEncoder) Encode(frame []byte) ([]byte, error) {
 	stride := v.stride
 	fps := v.cfg.FPS
 	start := v.startTime
+	forceKey := v.forceIDR
+	v.forceIDR = false
 	v.mu.Unlock()
 
 	if session == 0 || width <= 0 || height <= 0 || stride <= 0 {
@@ -396,7 +419,11 @@ func (v *videotoolboxEncoder) Encode(frame []byte) ([]byte, error) {
 		nv12Ptr = (*C.uint8_t)(unsafe.Pointer(&nv12[0]))
 	}
 
-	st := C.vtEncodeNV12(session, pool, nv12Ptr, C.int(width), C.int(height), C.int64_t(ptsNs), C.int64_t(durNs), C.uintptr_t(h))
+	var forceKeyC C.int
+	if forceKey {
+		forceKeyC = 1
+	}
+	st := C.vtEncodeNV12(session, pool, nv12Ptr, C.int(width), C.int(height), C.int64_t(ptsNs), C.int64_t(durNs), C.uintptr_t(h), forceKeyC)
 	if st != 0 {
 		// If encode failed, we own the handle and must delete it.
 		h.Delete()
@@ -555,6 +582,17 @@ func (v *videotoolboxEncoder) SetDimensions(width, height int) error {
 	v.pool = pool
 	v.startTime = time.Now()
 
+	return nil
+}
+
+// ForceKeyframe requests the next encoded frame be an IDR. The flag is
+// consumed by Encode, which passes kVTEncodeFrameOptionKey_ForceKeyFrame to
+// VideoToolbox for that frame. Called from the WebRTC session in response to
+// an RTCP PLI from the viewer.
+func (v *videotoolboxEncoder) ForceKeyframe() error {
+	v.mu.Lock()
+	v.forceIDR = true
+	v.mu.Unlock()
 	return nil
 }
 

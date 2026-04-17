@@ -83,6 +83,20 @@ func newOpenH264Encoder(cfg EncoderConfig) (encoderBackend, error) {
 	return &openH264Encoder{cfg: cfg}, nil
 }
 
+// clampThreads returns a thread count suitable for OpenH264's
+// IMultipleThreadIdc. Realtime H264 sees diminishing returns past 4 threads,
+// and a minimum of 2 lets the encoder overlap slice encode with bitstream
+// emit on even the smallest hosts.
+func clampThreads(n int) int {
+	if n < 2 {
+		return 2
+	}
+	if n > 4 {
+		return 4
+	}
+	return n
+}
+
 // initEncoder creates and configures the OpenH264 encoder. Called lazily on
 // the first Encode() with known dimensions (matching MFT lazy-init pattern).
 func (e *openH264Encoder) initEncoder() error {
@@ -120,8 +134,14 @@ func (e *openH264Encoder) initEncoder() error {
 	params.IRCMode = openh264.RC_BITRATE_MODE
 	params.ISpatialLayerNum = 1
 	params.ITemporalLayerNum = 1
-	params.IMultipleThreadIdc = 1 // single thread for lowest latency
-	params.BEnableFrameSkip = false
+	// Clamp thread count to [2, 4]: realtime H264 sees marginal returns past 4
+	// threads, and leaving headroom avoids stealing CPU from capture/compose
+	// on CPU-bound hosts (e.g., Windows Server VMs with no GPU).
+	params.IMultipleThreadIdc = uint16(clampThreads(runtime.NumCPU()))
+	// Allow the encoder to drop frames when it can't keep up with FPS; without
+	// this, frames queue and end-to-end latency grows without bound on CPU-bound
+	// hosts. Rate control still honors bitrate targets.
+	params.BEnableFrameSkip = true
 	params.BEnableDenoise = false
 	params.BEnableSceneChangeDetect = true
 	params.BEnableBackgroundDetection = true
@@ -131,8 +151,10 @@ func (e *openH264Encoder) initEncoder() error {
 	params.IMinQp = 18
 	params.IMaxQp = 42
 
-	// IDR every 10 seconds
-	idrInterval := uint32(fps * 10)
+	// IDR every 4 seconds — tighter than 10s so packet-loss recovery doesn't
+	// rely solely on PLI, still sparse enough to avoid scene-change-free
+	// keyframes dominating the bitrate budget.
+	idrInterval := uint32(fps * 4)
 	if idrInterval < 30 {
 		idrInterval = 30
 	}
