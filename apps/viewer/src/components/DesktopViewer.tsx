@@ -49,7 +49,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const reconnectDeadlineRef = useRef<number | null>(null);
   const reconnectInFlightRef = useRef(false);
   const startReconnectRef = useRef<() => void>(() => {});
-  const switchTransportRef = useRef<(target: Transport) => Promise<void>>(async () => {});
+  const switchTransportRef = useRef<(target: Transport, reason?: 'user' | 'auto') => Promise<void>>(async () => {});
+  const lastUserTransportChoiceAtRef = useRef<number>(0);
+  const USER_CHOICE_COOLDOWN_MS = 60_000;
   const sessionRegisteredRef = useRef(false);
 
   // VNC session + tunnel lifecycle
@@ -129,8 +131,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             setErrorMessage(null);
           } else if (s === 'disconnected') {
             setCredentialsPrompt(null);
-            setStatus('disconnected');
-            setConnectedAt(null);
+            if (userDisconnectRef.current) {
+              setStatus('disconnected');
+              setConnectedAt(null);
+            } else {
+              // Unexpected disconnect — kick off reconnect (mirrors WebRTC/WebSocket behavior).
+              startReconnectRef.current();
+            }
           } else if (s === 'error') {
             setCredentialsPrompt(null);
             setStatus('error');
@@ -188,7 +195,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // auto-handoff).  The ref is kept in sync below after connectWebRTC is defined.
   const connectWebRTCRef = useRef<(auth: AuthenticatedConnectionParams, targetSessionId?: number) => Promise<boolean>>(async () => false);
 
-  const switchTransport = useCallback(async (target: Transport) => {
+  const switchTransport = useCallback(async (target: Transport, reason: 'user' | 'auto' = 'auto') => {
+    if (reason === 'user') {
+      lastUserTransportChoiceAtRef.current = Date.now();
+    }
     if (switchingToRef.current !== null) {
       // Another switch is in progress — don't start a competing one.
       return;
@@ -471,7 +481,15 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       // Auto-handoff to VNC on macOS when WebRTC reconnect times out
       const remoteOsSnap = remoteOs;
       if (remoteOsSnap === 'macos' && auth.deviceId && transportRef.current !== 'vnc') {
-        void switchTransportRef.current('vnc');
+        const sinceUserChoice = Date.now() - lastUserTransportChoiceAtRef.current;
+        if (sinceUserChoice < USER_CHOICE_COOLDOWN_MS) {
+          console.log(`auto-handoff suppressed (user picked transport ${Math.round(sinceUserChoice / 1000)}s ago)`);
+          setStatus('disconnected');
+          setConnectedAt(null);
+          setErrorMessage('Reconnection timed out');
+          return;
+        }
+        void switchTransportRef.current('vnc', 'auto');
         return;
       }
       setStatus('disconnected');
@@ -512,6 +530,32 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           wsCleanupRef.current = cleanup;
           stopReconnect();
         }
+      } else if (originalTransport === 'vnc') {
+        // Original connection was VNC — tear down stale session/tunnel and re-establish
+        if (!auth.deviceId) {
+          stopReconnect();
+          setStatus('disconnected');
+          return;
+        }
+        vncSessionRef.current?.close();
+        vncSessionRef.current = null;
+        if (activeVncTunnelIdRef.current) {
+          void closeTunnel(activeVncTunnelIdRef.current, {
+            apiUrl: auth.apiUrl,
+            accessToken: auth.accessToken,
+          });
+          activeVncTunnelIdRef.current = null;
+        }
+        if (cancelledRef.current || userDisconnectRef.current) return;
+        const tunnel = await createVncTunnel(auth.deviceId, {
+          apiUrl: auth.apiUrl,
+          accessToken: auth.accessToken,
+        });
+        activeVncTunnelIdRef.current = tunnel.tunnelId;
+        const ok = await connectVncTransport(tunnel);
+        if (cancelledRef.current || userDisconnectRef.current) return;
+        if (ok) stopReconnect();
+        // If !ok, the next interval tick retries.
       } else {
         // Original connection was WebRTC (or unknown) — reconnect with WebRTC only
         const webrtcOk = await connectWebRTC(auth);
@@ -536,7 +580,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     } finally {
       reconnectInFlightRef.current = false;
     }
-  }, [connectWebRTC, connectWebSocket, stopReconnect, remoteOs]);
+  }, [connectWebRTC, connectWebSocket, connectVncTransport, stopReconnect, remoteOs]);
 
   const startReconnect = useCallback(() => {
     if (!authRef.current || userDisconnectRef.current) return;
@@ -977,9 +1021,14 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
               authRef.current?.deviceId &&
               transportRef.current !== 'vnc'
             ) {
-              stopReconnect();
-              setCredentialsPrompt(null);
-              void switchTransportRef.current?.('vnc');
+              const sinceUserChoice = Date.now() - lastUserTransportChoiceAtRef.current;
+              if (sinceUserChoice < USER_CHOICE_COOLDOWN_MS) {
+                console.log(`auto-handoff suppressed (user picked transport ${Math.round(sinceUserChoice / 1000)}s ago)`);
+              } else {
+                stopReconnect();
+                setCredentialsPrompt(null);
+                void switchTransportRef.current?.('vnc', 'auto');
+              }
             }
             break;
         }
@@ -1654,7 +1703,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         webRTCAvailable={webRTCAvailable}
         remoteUserName={remoteUserName}
         desktopState={desktopState}
-        onSwitchTransport={switchTransport}
+        onSwitchTransport={(target) => switchTransport(target, 'user')}
         capabilities={capabilities}
       />
       <div className="flex-1 overflow-hidden flex items-center justify-center bg-black relative">
