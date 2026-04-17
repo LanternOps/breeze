@@ -154,10 +154,27 @@ func (s *Session) maybeResendCachedFrameOnSecureDesktop(cap ScreenCapturer, fram
 	return true
 }
 
-// maybeResendCachedFrameOnIdle resends the last encoded frame when the normal
-// desktop has been static for too long. This prevents WebRTC jitter from
-// accumulating by maintaining a minimum ~2fps floor even with no dirty rects.
+// maybeResendCachedFrameOnIdle bumps the capture-alive heartbeat on a normal
+// (non-secure) desktop that has had no dirty rects for longer than the idle
+// threshold. It intentionally does NOT retransmit the last encoded frame.
+//
+// We used to retransmit the cached H264 sample every ~125ms to keep a minimum
+// framerate floor, but debug logging on Windows Server 2022 (OpenH264, 1024x768)
+// confirmed the browser decodes every resend — framesDecoded climbed in lock-
+// step with the agent's sent counter even while captured/encoded held flat.
+// Resending a P-frame lets the decoder re-apply motion deltas against its
+// drifted reference and paints garbage over static text; resending the cached
+// IDR just replays an older screen state on top of any newer P-frames. The
+// jitter buffer does not need "keepalive samples" — it is happy to hold the
+// last decoded frame indefinitely.
+//
+// We still bump lastVideoWriteUnixNano so the no-video capture watchdog does
+// not confuse "screen is idle, DXGI has no dirty rects" with "capture thread
+// is stuck," which would otherwise force a DXGI reattach every ~5s. A proper
+// fix for that overload (capture-alive vs sample-written are different
+// signals) is tracked as a follow-up.
 func (s *Session) maybeResendCachedFrameOnIdle(frameDuration time.Duration) bool {
+	_ = frameDuration
 	last := s.lastVideoWriteUnixNano.Load()
 	if last == 0 {
 		return false
@@ -165,29 +182,8 @@ func (s *Session) maybeResendCachedFrameOnIdle(frameDuration time.Duration) bool
 	if time.Since(time.Unix(0, last)) < staticDesktopResendInterval {
 		return false
 	}
-
-	s.lastEncodedMu.RLock()
-	cached := s.lastEncodedFrame
-	if len(cached) == 0 {
-		s.lastEncodedMu.RUnlock()
-		return false
-	}
-	frame := make([]byte, len(cached))
-	copy(frame, cached)
-	size := len(frame)
-	s.lastEncodedMu.RUnlock()
-
-	sample := media.Sample{
-		Data:     frame,
-		Duration: frameDuration,
-	}
-	if err := s.videoTrack.WriteSample(sample); err != nil {
-		slog.Debug("Failed to resend cached idle frame", "session", s.id, "error", err.Error())
-		return false
-	}
-	s.metrics.RecordSend(size)
 	s.noteVideoWrite()
-	return true
+	return false
 }
 
 // captureLoop continuously captures and sends encoded H264 frames.
