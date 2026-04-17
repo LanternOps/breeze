@@ -5,6 +5,7 @@ import { exchangeDesktopConnectCode } from '../lib/api';
 import { scaleVideoCoords, AgentSessionError, type AuthenticatedConnectionParams } from '../lib/webrtc';
 import { connectWebRTC as connectWebRTCTransport, type WebRTCSessionWrapper } from '../lib/transports/webrtc';
 import { connectWebSocket as connectWebSocketTransport, type WebSocketSessionWrapper } from '../lib/transports/websocket';
+import { capabilitiesFor, type TransportCapabilities } from '../lib/transports/types';
 // VncSessionWrapper is type-only — no runtime import (avoids bundling novnc into the main chunk).
 // connectVnc is loaded dynamically inside connectVncTransport so novnc's top-level await
 // is deferred until the VNC path is actually invoked.
@@ -87,6 +88,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const switchingSessionRef = useRef(false);
   // VNC / transport-switcher state
   const [switchingTo, setSwitchingTo] = useState<Transport | null>(null);
+  const [capabilities, setCapabilities] = useState<TransportCapabilities | null>(null);
   const [desktopState, setDesktopState] = useState<{ state: 'loginwindow' | 'user_session' | null; username: string | null }>({ state: null, username: null });
   const [webRTCAvailable, setWebRTCAvailable] = useState(false);
   const [remoteUserName, setRemoteUserName] = useState<string | null>(null);
@@ -104,6 +106,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const setTransportState = useCallback((t: Transport | null) => {
     transportRef.current = t;
     setTransport(t);
+    setCapabilities(t ? capabilitiesFor(t) : null);
   }, []);
 
   // ── VNC connect helper ─────────────────────────────────────────────
@@ -1608,6 +1611,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         remoteUserName={remoteUserName}
         desktopState={desktopState}
         onSwitchTransport={switchTransport}
+        capabilities={capabilities}
       />
       <div className="flex-1 overflow-hidden flex items-center justify-center bg-black relative">
         {/* WebRTC: <video> element (hardware H264 decode) */}
@@ -1677,7 +1681,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-20">
             <div className="text-center">
               <div className="animate-spin w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full mx-auto mb-3" />
-              <p className="text-white text-sm">Switching to {switchingTo}...</p>
+              <p className="text-white text-sm">Switching to {switchingTo === 'vnc' ? 'VNC' : 'WebRTC'}…</p>
             </div>
           </div>
         )}
