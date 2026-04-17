@@ -72,43 +72,23 @@ func (s *Session) cacheEncodedFrame(data []byte) {
 	cp := getEncodedFrameBuf(len(data))
 	copy(cp, data)
 
-	var idrCopy []byte
-	isIDR := h264ContainsIDR(data)
-	if isIDR {
-		idrCopy = getEncodedFrameBuf(len(data))
-		copy(idrCopy, data)
-	}
-
 	s.lastEncodedMu.Lock()
 	old := s.lastEncodedFrame
 	s.lastEncodedFrame = cp
-	var oldIDR []byte
-	if isIDR {
-		oldIDR = s.lastEncodedIDR
-		s.lastEncodedIDR = idrCopy
-	}
 	s.lastEncodedMu.Unlock()
 
 	if len(old) != 0 {
 		putEncodedFrameBuf(old)
-	}
-	if len(oldIDR) != 0 {
-		putEncodedFrameBuf(oldIDR)
 	}
 }
 
 func (s *Session) clearCachedEncodedFrame() {
 	s.lastEncodedMu.Lock()
 	old := s.lastEncodedFrame
-	oldIDR := s.lastEncodedIDR
 	s.lastEncodedFrame = nil
-	s.lastEncodedIDR = nil
 	s.lastEncodedMu.Unlock()
 	if len(old) != 0 {
 		putEncodedFrameBuf(old)
-	}
-	if len(oldIDR) != 0 {
-		putEncodedFrameBuf(oldIDR)
 	}
 }
 
@@ -150,13 +130,7 @@ func (s *Session) maybeResendCachedFrameOnSecureDesktop(cap ScreenCapturer, fram
 	}
 
 	s.lastEncodedMu.RLock()
-	// Prefer the cached IDR so the decoder can resync standalone. Resending a
-	// P-frame as a fresh RTP sample accumulates reference-frame drift in the
-	// viewer decoder and paints garbage over static content.
-	cached := s.lastEncodedIDR
-	if len(cached) == 0 {
-		cached = s.lastEncodedFrame
-	}
+	cached := s.lastEncodedFrame
 	if len(cached) == 0 {
 		s.lastEncodedMu.RUnlock()
 		return false
@@ -180,13 +154,9 @@ func (s *Session) maybeResendCachedFrameOnSecureDesktop(cap ScreenCapturer, fram
 	return true
 }
 
-// maybeResendCachedFrameOnIdle resends the last encoded keyframe when the
-// normal desktop has been static for too long. This prevents WebRTC jitter
-// from accumulating by maintaining a minimum ~8fps floor even with no dirty
-// rects. We deliberately resend only an IDR — re-sending a P-frame as a fresh
-// RTP sample drifts the decoder's reference state and paints garbage over
-// static content (the classic "corrupted-over-text" artifact). If we haven't
-// produced an IDR yet, skip; the next real frame change will emit one.
+// maybeResendCachedFrameOnIdle resends the last encoded frame when the normal
+// desktop has been static for too long. This prevents WebRTC jitter from
+// accumulating by maintaining a minimum ~2fps floor even with no dirty rects.
 func (s *Session) maybeResendCachedFrameOnIdle(frameDuration time.Duration) bool {
 	last := s.lastVideoWriteUnixNano.Load()
 	if last == 0 {
@@ -197,14 +167,9 @@ func (s *Session) maybeResendCachedFrameOnIdle(frameDuration time.Duration) bool
 	}
 
 	s.lastEncodedMu.RLock()
-	cached := s.lastEncodedIDR
+	cached := s.lastEncodedFrame
 	if len(cached) == 0 {
 		s.lastEncodedMu.RUnlock()
-		// No IDR cached yet; ask the encoder to produce one on the next frame
-		// so subsequent idle periods can resend safely.
-		if enc := s.encoder.Load(); enc != nil {
-			_ = enc.ForceKeyframe()
-		}
 		return false
 	}
 	frame := make([]byte, len(cached))
