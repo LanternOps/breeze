@@ -29,7 +29,9 @@ export default function App() {
     const parsed = parseDeepLink(url);
     if (!parsed) return;
 
-    const key = `${parsed.sessionId}|${parsed.connectCode}|${parsed.apiUrl}`;
+    const key = parsed.mode === 'desktop'
+      ? `${parsed.sessionId}|${parsed.connectCode}|${parsed.apiUrl}`
+      : `${parsed.tunnelId}|${parsed.code}|${parsed.apiUrl}`;
     const now = Date.now();
     const last = lastDeepLinkRef.current;
     if (last && last.key === key && now - last.at < 2000) return;

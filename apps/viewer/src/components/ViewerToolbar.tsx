@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import type { ComponentType } from 'react';
-import { Monitor, Wifi, WifiOff, Maximize, Minimize, Keyboard, ClipboardPaste, ChevronDown, X, ArrowLeftRight, Volume2, VolumeX, MousePointer2 } from 'lucide-react';
+import { Monitor, Wifi, WifiOff, Maximize, Minimize, Keyboard, ClipboardPaste, ChevronDown, X, ArrowLeftRight, Volume2, VolumeX, MousePointer2, Check } from 'lucide-react';
+import type { TransportCapabilities } from '../lib/transports/types';
 
 interface MonitorInfo {
   index: number;
@@ -16,7 +17,7 @@ interface Props {
   connectedAt: Date | null;
   reconnectSecondsLeft?: number;
   fps: number;
-  transport: 'webrtc' | 'websocket' | null;
+  transport: 'webrtc' | 'websocket' | 'vnc' | null;
   quality: number;
   scale: number;
   maxFps: number;
@@ -43,6 +44,16 @@ interface Props {
   onLockWorkstation: () => void;
   onPasteAsKeystrokes: () => void;
   onCancelPaste: () => void;
+  /** True when a user session is active on the remote device and WebRTC is available (for Switch pill). */
+  webRTCAvailable?: boolean;
+  /** The logged-in username on the remote end (for Switch pill label). */
+  remoteUserName?: string | null;
+  /** Current desktop state from agent control-channel events. */
+  desktopState?: { state: 'loginwindow' | 'user_session' | null; username: string | null };
+  /** Called when the user clicks a transport option in the dropdown or Switch pill. */
+  onSwitchTransport?: (target: 'webrtc' | 'vnc') => void;
+  /** Capabilities of the active transport session; null = no session yet. */
+  capabilities?: TransportCapabilities | null;
 }
 
 interface KeyCombo {
@@ -145,6 +156,11 @@ export default function ViewerToolbar({
   onPasteAsKeystrokes,
   onCancelPaste,
   reconnectSecondsLeft,
+  webRTCAvailable = false,
+  remoteUserName = null,
+  desktopState,
+  onSwitchTransport,
+  capabilities = null,
 }: Props) {
   const MonitorIcon = Monitor as unknown as ComponentType<{ className?: string }>;
   const ConnectedIcon = Wifi as unknown as ComponentType<{ className?: string }>;
@@ -159,12 +175,16 @@ export default function ViewerToolbar({
   const VolumeOnIcon = Volume2 as unknown as ComponentType<{ className?: string }>;
   const VolumeOffIcon = VolumeX as unknown as ComponentType<{ className?: string }>;
   const CursorIcon = MousePointer2 as unknown as ComponentType<{ className?: string }>;
+  const CheckIcon = Check as unknown as ComponentType<{ className?: string }>;
 
   const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement);
   const [duration, setDuration] = useState('0:00');
   const [keysOpen, setKeysOpen] = useState(false);
   const [sasFlash, setSasFlash] = useState(false);
+  const [transportDropdownOpen, setTransportDropdownOpen] = useState(false);
+  const [pillDismissed, setPillDismissed] = useState(false);
   const keysDropdownRef = useRef<HTMLDivElement>(null);
+  const transportDropdownRef = useRef<HTMLDivElement>(null);
 
   // Update duration every second
   useEffect(() => {
@@ -184,7 +204,7 @@ export default function ViewerToolbar({
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
   }, []);
 
-  // Close dropdown when clicking outside
+  // Close keys dropdown when clicking outside
   useEffect(() => {
     if (!keysOpen) return;
     function onPointerDown(e: PointerEvent) {
@@ -195,6 +215,38 @@ export default function ViewerToolbar({
     document.addEventListener('pointerdown', onPointerDown, true);
     return () => document.removeEventListener('pointerdown', onPointerDown, true);
   }, [keysOpen]);
+
+  // Close transport dropdown when clicking outside
+  useEffect(() => {
+    if (!transportDropdownOpen) return;
+    function onPointerDown(e: PointerEvent) {
+      if (transportDropdownRef.current && !transportDropdownRef.current.contains(e.target as Node)) {
+        setTransportDropdownOpen(false);
+      }
+    }
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => document.removeEventListener('pointerdown', onPointerDown, true);
+  }, [transportDropdownOpen]);
+
+  // Reset pill dismissed state when webRTCAvailable toggles off then back on
+  useEffect(() => {
+    if (!webRTCAvailable) {
+      setPillDismissed(false);
+    }
+  }, [webRTCAvailable]);
+
+  // Auto-dismiss the "Switch to WebRTC" pill after 30 seconds
+  const showSwitchPill =
+    transport === 'vnc' &&
+    remoteOs === 'macos' &&
+    webRTCAvailable &&
+    !pillDismissed;
+
+  useEffect(() => {
+    if (!showSwitchPill) return;
+    const timer = setTimeout(() => setPillDismissed(true), 30_000);
+    return () => clearTimeout(timer);
+  }, [showSwitchPill]);
 
   const toggleFullscreen = async () => {
     try {
@@ -234,16 +286,90 @@ export default function ViewerToolbar({
 
       <div className="w-px h-5 bg-gray-600" />
 
-      {/* Transport indicator */}
+      {/* Transport indicator — dropdown on macOS, static badge elsewhere */}
       {transport && (
         <>
-          <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-            isWebRTC
-              ? 'bg-green-900/50 text-green-400 border border-green-800'
-              : 'bg-blue-900/50 text-blue-400 border border-blue-800'
-          }`}>
-            {isWebRTC ? 'WebRTC' : 'WS'}
-          </span>
+          {remoteOs === 'macos' ? (
+            <div className="relative" ref={transportDropdownRef}>
+              <button
+                onClick={() => setTransportDropdownOpen(!transportDropdownOpen)}
+                className={`flex items-center gap-1 text-xs px-1.5 py-0.5 rounded font-medium border ${
+                  transport === 'webrtc'
+                    ? 'bg-green-900/50 text-green-400 border-green-800 hover:bg-green-900/70'
+                    : 'bg-blue-900/50 text-blue-400 border-blue-800 hover:bg-blue-900/70'
+                }`}
+                title="Switch transport"
+              >
+                <span>{transport === 'webrtc' ? '⚡ WebRTC' : transport === 'vnc' ? '🖥 VNC' : 'WS'}</span>
+                <ChevronDownIcon className="w-3 h-3" />
+              </button>
+
+              {transportDropdownOpen && (
+                <div className="absolute left-0 top-full mt-1 w-40 bg-gray-800 border border-gray-600 rounded-lg shadow-xl z-50 py-1">
+                  {(['webrtc', 'vnc'] as const).map((opt) => {
+                    const isActive = transport === opt;
+                    const isLoginWindow = opt === 'webrtc' && desktopState?.state === 'loginwindow';
+                    const label = opt === 'webrtc' ? '⚡ WebRTC' : '🖥 VNC';
+                    return (
+                      <button
+                        key={opt}
+                        disabled={isActive || isLoginWindow}
+                        onClick={() => {
+                          if (!isActive && !isLoginWindow) {
+                            onSwitchTransport?.(opt);
+                          }
+                          setTransportDropdownOpen(false);
+                        }}
+                        title={isLoginWindow ? 'WebRTC unavailable: device is at login window' : undefined}
+                        className={`w-full flex items-center justify-between px-3 py-1.5 text-xs text-left ${
+                          isActive
+                            ? 'text-gray-200 cursor-default'
+                            : isLoginWindow
+                            ? 'text-gray-500 cursor-not-allowed'
+                            : 'text-gray-300 hover:bg-gray-700'
+                        }`}
+                      >
+                        <span>{label}</span>
+                        {isActive && <CheckIcon className="w-3 h-3 text-green-400" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ) : (
+            <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+              isWebRTC
+                ? 'bg-green-900/50 text-green-400 border border-green-800'
+                : 'bg-blue-900/50 text-blue-400 border border-blue-800'
+            }`}>
+              {isWebRTC ? 'WebRTC' : transport === 'vnc' ? 'VNC' : 'WS'}
+            </span>
+          )}
+
+          {/* "Switch to WebRTC" pill — VNC + macOS + webRTCAvailable */}
+          {showSwitchPill && (
+            <div className="flex items-center gap-1 px-2 py-0.5 bg-green-900/40 border border-green-700 rounded text-xs text-green-300">
+              <button
+                onClick={() => {
+                  onSwitchTransport?.('webrtc');
+                  setPillDismissed(true);
+                }}
+                className="hover:text-green-100"
+                title="Switch to WebRTC"
+              >
+                {remoteUserName ? `${remoteUserName} logged in — Switch to WebRTC` : 'User logged in — Switch to WebRTC'}
+              </button>
+              <button
+                onClick={() => setPillDismissed(true)}
+                className="ml-1 text-green-500 hover:text-green-200"
+                title="Dismiss"
+              >
+                <XIcon className="w-3 h-3" />
+              </button>
+            </div>
+          )}
+
           <div className="w-px h-5 bg-gray-600" />
         </>
       )}
@@ -254,7 +380,7 @@ export default function ViewerToolbar({
       <div className="w-px h-5 bg-gray-600" />
 
       {/* WebRTC mode: Bitrate control */}
-      {transport === 'webrtc' && (
+      {capabilities?.bitrateControl && transport === 'webrtc' && (
         <div className="flex items-center gap-1.5">
           <label className="text-gray-400 text-xs">Max Bitrate</label>
           <input
@@ -319,8 +445,8 @@ export default function ViewerToolbar({
         </>
       )}
 
-      {/* Monitor picker (only shown with 2+ monitors on WebRTC) */}
-      {monitors.length > 1 && transport === 'webrtc' && (
+      {/* Monitor picker (only shown with 2+ monitors when transport supports it) */}
+      {capabilities?.monitors && monitors.length > 1 && (
         <>
           <div className="w-px h-5 bg-gray-600" />
           <div className="flex items-center gap-1">
@@ -345,8 +471,8 @@ export default function ViewerToolbar({
         </>
       )}
 
-      {/* Session picker dropdown (only shown with 2+ sessions on WebRTC) */}
-      {sessions.length > 1 && transport === 'webrtc' && (
+      {/* Session picker dropdown (only shown with 2+ sessions when transport supports it) */}
+      {capabilities?.sessionSwitch && sessions.length > 1 && (
         <>
           <div className="w-px h-5 bg-gray-600" />
           <div className="flex items-center gap-1.5">
@@ -396,8 +522,8 @@ export default function ViewerToolbar({
         </div>
       )}
 
-      {/* Audio toggle (only shown when agent has audio track) */}
-      {hasAudioTrack && (
+      {/* Audio toggle (only shown when transport supports audio and agent has audio track) */}
+      {capabilities?.audio && hasAudioTrack && (
         <button
           onClick={onToggleAudio}
           className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${
@@ -466,30 +592,37 @@ export default function ViewerToolbar({
 
         {keysOpen && (
           <div className="absolute right-0 top-full mt-1 w-56 bg-gray-800 border border-gray-600 rounded-lg shadow-xl z-50 py-1">
-            {getKeyCombos(remoteOs).map((combo) => (
-              <button
-                key={combo.label}
-                onClick={() => {
-                  switch (combo.action) {
-                    case 'sas':
-                      onSendSAS();
-                      setSasFlash(true);
-                      setTimeout(() => setSasFlash(false), 2000);
-                      break;
-                    case 'lock':
-                      onLockWorkstation();
-                      break;
-                    default:
-                      onSendKeys(combo.key, combo.modifiers);
-                  }
-                  setKeysOpen(false);
-                }}
-                className="w-full flex items-center justify-between px-3 py-1.5 text-xs hover:bg-gray-700 text-left"
-              >
-                <span className="text-gray-200 font-mono">{combo.label}</span>
-                <span className="text-gray-500">{combo.description}</span>
-              </button>
-            ))}
+            {getKeyCombos(remoteOs)
+              .filter((combo) => {
+                // SAS requires sas capability; lock workstation also requires it (Windows only anyway)
+                if (combo.action === 'sas' && !capabilities?.sas) return false;
+                if (combo.action === 'lock' && !capabilities?.sas) return false;
+                return true;
+              })
+              .map((combo) => (
+                <button
+                  key={combo.label}
+                  onClick={() => {
+                    switch (combo.action) {
+                      case 'sas':
+                        onSendSAS();
+                        setSasFlash(true);
+                        setTimeout(() => setSasFlash(false), 2000);
+                        break;
+                      case 'lock':
+                        onLockWorkstation();
+                        break;
+                      default:
+                        onSendKeys(combo.key, combo.modifiers);
+                    }
+                    setKeysOpen(false);
+                  }}
+                  className="w-full flex items-center justify-between px-3 py-1.5 text-xs hover:bg-gray-700 text-left"
+                >
+                  <span className="text-gray-200 font-mono">{combo.label}</span>
+                  <span className="text-gray-500">{combo.description}</span>
+                </button>
+              ))}
           </div>
         )}
       </div>

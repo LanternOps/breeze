@@ -69,6 +69,21 @@ export async function exchangeDesktopConnectCode(
   return resp.json();
 }
 
+export async function exchangeVncConnectCode(
+  apiUrl: string,
+  code: string,
+): Promise<{ accessToken: string; expiresInSeconds: number; tunnelId: string; wsUrl: string; deviceId: string } | null> {
+  try {
+    const res = await fetch(buildApiUrl(apiUrl, `/api/v1/vnc-exchange/${encodeURIComponent(code)}`), {
+      method: 'POST',
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 export async function createDesktopWsTicket(
   apiUrl: string,
   token: string,

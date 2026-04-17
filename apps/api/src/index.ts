@@ -77,7 +77,7 @@ import { createTerminalWsRoutes } from './routes/terminalWs';
 import { createDesktopWsRoutes } from './routes/desktopWs';
 import { createTunnelWsRoutes } from './routes/tunnelWs';
 import { createEventWsRoutes, createEventWsTicketRoute } from './routes/eventWs';
-import { tunnelRoutes } from './routes/tunnels';
+import { tunnelRoutes, vncExchangeRoutes } from './routes/tunnels';
 import { agentVersionRoutes } from './routes/agentVersions';
 import { viewerRoutes } from './routes/viewers';
 import { aiRoutes } from './routes/ai';
@@ -664,6 +664,7 @@ api.route('/desktop-ws', createDesktopWsRoutes(upgradeWebSocket)); // Desktop We
 api.route('/tunnel-ws', createTunnelWsRoutes(upgradeWebSocket)); // Tunnel WebSocket routes (no auth middleware — uses one-time tickets)
 api.route('/events', createEventWsRoutes(upgradeWebSocket)); // Event stream WebSocket (no auth middleware — uses one-time tickets)
 api.route('/tunnels', tunnelRoutes);
+api.route('/vnc-exchange', vncExchangeRoutes); // No auth — one-time code is the auth
 api.route('/remote', remoteRoutes);
 api.route('/api-keys', apiKeyRoutes);
 api.route('/enrollment-keys', publicEnrollmentRoutes); // Public download (no auth) — must precede auth-protected routes
