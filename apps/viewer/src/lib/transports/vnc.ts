@@ -37,7 +37,11 @@ export async function connectVnc(
 
   const rfb: any = new (RFB as any)(deps.container, info.wsUrl, { wsProtocols: ['binary'] });
   rfb.scaleViewport = true;
-  rfb.resizeSession = false;
+  // Ask the server to resize its framebuffer to match our viewport. Without
+  // this a Retina Mac sends raw 2940x1912 frames (~22 MB each) that WKWebView's
+  // message pump can't keep up with — the rect never completes before the next
+  // update arrives, and the canvas stays dark.
+  rfb.resizeSession = true;
   rfb.showDotCursor = true;
 
   rfb.addEventListener('connect', () => deps.onStatus('connected'));
@@ -90,6 +94,27 @@ export async function connectVnc(
 
   let disposed = false;
 
+  // WKWebView batches WebSocket message delivery, so noVNC's _handleMessage
+  // fires in bursts rather than incrementally. Between bursts the RFB decoder
+  // sits with a partially-read rect while the receive queue fills to its 4 MB
+  // cap. Poking _handleMessage on a short interval keeps the decoder draining
+  // continuously. Cheap: when there's nothing to do the handler returns
+  // immediately. No-op in jsdom (test mocks don't have _handleMessage).
+  const pumpInterval = typeof rfb._handleMessage === 'function'
+    ? setInterval(() => {
+        if (disposed) return;
+        const sock = rfb._sock;
+        if (!sock || (sock._rQlen ?? 0) - (sock._rQi ?? 0) <= 0) return;
+        try {
+          rfb._handleMessage();
+        } catch (err) {
+          console.warn('[VNC] pump _handleMessage threw:', err);
+        }
+      }, 16)
+    : null;
+  const cleanupPump = () => { if (pumpInterval !== null) clearInterval(pumpInterval); };
+  rfb.addEventListener('disconnect', cleanupPump);
+
   return {
     kind: 'vnc',
     capabilities: capabilitiesFor('vnc'),
@@ -97,6 +122,7 @@ export async function connectVnc(
     close: () => {
       if (disposed) return;
       disposed = true;
+      cleanupPump();
       resizeObserver?.disconnect();
       try {
         rfb.disconnect();
