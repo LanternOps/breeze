@@ -31,7 +31,7 @@ export default function App() {
 
     const key = parsed.mode === 'desktop'
       ? `${parsed.sessionId}|${parsed.connectCode}|${parsed.apiUrl}`
-      : `${parsed.tunnelId}|${parsed.wsUrl}|${parsed.apiUrl}`;
+      : `${parsed.tunnelId}|${parsed.code}|${parsed.apiUrl}`;
     const now = Date.now();
     const last = lastDeepLinkRef.current;
     if (last && last.key === key && now - last.at < 2000) return;

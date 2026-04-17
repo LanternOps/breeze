@@ -5,6 +5,7 @@ type SessionType = 'terminal' | 'desktop' | 'tunnel';
 
 const WS_TICKET_TTL_MS = 60 * 1000; // 60 seconds
 const DESKTOP_CONNECT_CODE_TTL_MS = 2 * 60 * 1000; // 2 minutes
+const VNC_CONNECT_CODE_TTL_MS = 60 * 1000; // 60 seconds
 const ACCESS_TOKEN_EXPIRY_SECONDS = 15 * 60; // Must match createAccessToken expiry
 
 interface WsTicketRecord {
@@ -21,11 +22,22 @@ interface DesktopConnectCodeRecord {
   expiresAt: number;
 }
 
+interface VncConnectCodeRecord {
+  tunnelId: string;
+  deviceId: string;
+  orgId: string;
+  userId: string;
+  email: string;
+  expiresAt: number;
+}
+
 const wsTickets = new Map<string, WsTicketRecord>();
 const desktopConnectCodes = new Map<string, DesktopConnectCodeRecord>();
+const vncConnectCodes = new Map<string, VncConnectCodeRecord>();
 
 const REDIS_KEY_PREFIX_WS_TICKET = 'remote:ws_ticket:';
 const REDIS_KEY_PREFIX_DESKTOP_CODE = 'remote:desktop_code:';
+const REDIS_KEY_PREFIX_VNC_CODE = 'vnc-connect:';
 
 function shouldUseRedis(): boolean {
   // In production SaaS, tickets must be shared across replicas.
@@ -169,4 +181,46 @@ export async function consumeDesktopConnectCode(code: string): Promise<DesktopCo
 
 export function getViewerAccessTokenExpirySeconds(): number {
   return ACCESS_TOKEN_EXPIRY_SECONDS;
+}
+
+export async function createVncConnectCode(input: {
+  tunnelId: string;
+  deviceId: string;
+  orgId: string;
+  userId: string;
+  email: string;
+}): Promise<{ code: string; expiresInSeconds: number }> {
+  purgeExpiredRecords(vncConnectCodes);
+  const code = generateSecret(32);
+  const record: VncConnectCodeRecord = {
+    ...input,
+    expiresAt: Date.now() + VNC_CONNECT_CODE_TTL_MS,
+  };
+
+  const ttlSeconds = Math.floor(VNC_CONNECT_CODE_TTL_MS / 1000);
+  if (shouldUseRedis()) {
+    const redis = getRedis();
+    if (!redis) {
+      throw new Error('VNC connect codes are unavailable (Redis required)');
+    }
+    await redis.setex(`${REDIS_KEY_PREFIX_VNC_CODE}${code}`, ttlSeconds, JSON.stringify(record));
+  } else {
+    vncConnectCodes.set(code, record);
+  }
+
+  return {
+    code,
+    expiresInSeconds: ttlSeconds,
+  };
+}
+
+export async function consumeVncConnectCode(code: string): Promise<VncConnectCodeRecord | null> {
+  if (shouldUseRedis()) {
+    const record = await redisConsumeJson<VncConnectCodeRecord>(`${REDIS_KEY_PREFIX_VNC_CODE}${code}`);
+    if (!record) return null;
+    if (isExpired(record.expiresAt)) return null;
+    return record;
+  }
+
+  return consumeRecord(vncConnectCodes, code);
 }

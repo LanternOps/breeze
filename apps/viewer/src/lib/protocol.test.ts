@@ -78,51 +78,46 @@ describe('parseDeepLink', () => {
 });
 
 describe('parseDeepLink — VNC', () => {
-  it('parses a breeze://vnc URL with all required params', () => {
-    const url = 'breeze://vnc?tunnel=tun-1&ws=' + encodeURIComponent('wss://api.example.com/api/v1/tunnel-ws/tun-1/ws?ticket=abc') +
+  it('parses a breeze://vnc URL with all required params (code-based)', () => {
+    const url = 'breeze://vnc?tunnel=tun-1' +
                 '&device=dev-1&api=' + encodeURIComponent('https://api.example.com') +
-                '&accessToken=token-xyz';
+                '&code=abc123xyz';
     expect(parseDeepLink(url)).toEqual({
       mode: 'vnc',
       tunnelId: 'tun-1',
-      wsUrl: 'wss://api.example.com/api/v1/tunnel-ws/tun-1/ws?ticket=abc',
       deviceId: 'dev-1',
       apiUrl: 'https://api.example.com',
-      accessToken: 'token-xyz',
+      code: 'abc123xyz',
     });
   });
 
   it('returns null when any required VNC param is missing', () => {
     expect(parseDeepLink('breeze://vnc?tunnel=tun-1')).toBeNull();
-    expect(parseDeepLink('breeze://vnc?tunnel=tun-1&ws=wss://x')).toBeNull();
-    expect(parseDeepLink('breeze://vnc?tunnel=tun-1&ws=wss://x&device=d&api=https%3A%2F%2Fx')).toBeNull(); // missing accessToken
+    expect(parseDeepLink('breeze://vnc?tunnel=tun-1&device=d&api=https%3A%2F%2Fx')).toBeNull(); // missing code
+    expect(parseDeepLink('breeze://vnc?tunnel=tun-1&device=d&code=xyz')).toBeNull(); // missing api
   });
 
   it('returns null when api is http and host is not private', () => {
-    const url = 'breeze://vnc?tunnel=t&ws=wss%3A%2F%2Fapi%2Fx&device=d&api=' + encodeURIComponent('http://api.example.com') + '&accessToken=tok';
+    const url = 'breeze://vnc?tunnel=t&device=d&api=' + encodeURIComponent('http://api.example.com') + '&code=tok';
     expect(parseDeepLink(url)).toBeNull();
   });
 
   it('accepts api=http://localhost for development', () => {
-    const url = 'breeze://vnc?tunnel=t&ws=' + encodeURIComponent('ws://localhost:3000/ws') +
+    const url = 'breeze://vnc?tunnel=t' +
                 '&device=d&api=' + encodeURIComponent('http://localhost:3000') +
-                '&accessToken=tok';
+                '&code=tok';
     const p = parseDeepLink(url);
     expect(p?.mode).toBe('vnc');
   });
 
-  it('returns null when wsUrl hostname does not match apiUrl hostname', () => {
-    const url = 'breeze://vnc?tunnel=t&ws=' + encodeURIComponent('wss://evil.example.com/ws') +
-      '&device=d&api=' + encodeURIComponent('https://api.example.com') +
-      '&accessToken=tok';
-    expect(parseDeepLink(url)).toBeNull();
-  });
-
-  it('returns null when wsUrl is not ws:// or wss://', () => {
-    const url = 'breeze://vnc?tunnel=t&ws=' + encodeURIComponent('http://api.example.com/ws') +
-      '&device=d&api=' + encodeURIComponent('https://api.example.com') +
-      '&accessToken=tok';
-    expect(parseDeepLink(url)).toBeNull();
+  it('does not include wsUrl or accessToken in parsed params', () => {
+    const url = 'breeze://vnc?tunnel=tun-1&device=dev-1&api=' + encodeURIComponent('https://api.example.com') + '&code=xyz';
+    const p = parseDeepLink(url);
+    expect(p).not.toBeNull();
+    if (p?.mode === 'vnc') {
+      expect(p).not.toHaveProperty('wsUrl');
+      expect(p).not.toHaveProperty('accessToken');
+    }
   });
 });
 

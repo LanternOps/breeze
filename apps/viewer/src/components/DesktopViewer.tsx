@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { type ConnectionParams } from '../lib/protocol';
-import { exchangeDesktopConnectCode } from '../lib/api';
+import { exchangeDesktopConnectCode, exchangeVncConnectCode } from '../lib/api';
 import { scaleVideoCoords, AgentSessionError, type AuthenticatedConnectionParams } from '../lib/webrtc';
 import { connectWebRTC as connectWebRTCTransport, type WebRTCSessionWrapper } from '../lib/transports/webrtc';
 import { connectWebSocket as connectWebSocketTransport, type WebSocketSessionWrapper } from '../lib/transports/websocket';
@@ -643,17 +643,24 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     setErrorMessage(null);
 
     async function connect() {
-      // VNC deep link — bypass connect-code exchange, use credentials from the URL directly.
+      // VNC deep link — exchange the short-lived connect code for credentials + tunnel info.
       if (params.mode === 'vnc') {
+        const exchange = await exchangeVncConnectCode(params.apiUrl, params.code);
+        if (cancelled) return;
+        if (!exchange) {
+          setStatus('error');
+          onError('Invalid or expired VNC connect code');
+          return;
+        }
         authRef.current = {
           sessionId: '',
           apiUrl: params.apiUrl,
-          accessToken: params.accessToken,
-          deviceId: params.deviceId,
+          accessToken: exchange.accessToken,
+          deviceId: exchange.deviceId,
         };
         setRemoteOs('macos'); // VNC is macOS-only for now
-        activeVncTunnelIdRef.current = params.tunnelId;
-        const ok = await connectVncTransport({ tunnelId: params.tunnelId, wsUrl: params.wsUrl });
+        activeVncTunnelIdRef.current = exchange.tunnelId;
+        const ok = await connectVncTransport({ tunnelId: exchange.tunnelId, wsUrl: exchange.wsUrl });
         if (cancelled) return;
         if (!ok) {
           // Viewer stays mounted on error; close the tunnel we own so it doesn't
@@ -661,7 +668,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           if (activeVncTunnelIdRef.current) {
             void closeTunnel(activeVncTunnelIdRef.current, {
               apiUrl: params.apiUrl,
-              accessToken: params.accessToken,
+              accessToken: exchange.accessToken,
             });
             activeVncTunnelIdRef.current = null;
           }

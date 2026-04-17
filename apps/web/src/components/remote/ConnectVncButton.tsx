@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Monitor, MonitorOff, ExternalLink, X, Globe } from 'lucide-react';
 import type { RemoteAccessPolicy } from '@breeze/shared';
-import { fetchWithAuth, useAuthStore } from '@/stores/auth';
+import { fetchWithAuth } from '@/stores/auth';
 
 interface Props {
   deviceId: string;
@@ -65,7 +65,9 @@ export default function ConnectVncButton({
       const tunnel = await tunnelRes.json();
       setTunnelId(tunnel.id);
 
-      // Get WS ticket for the tunnel
+      const apiUrl = import.meta.env.PUBLIC_API_URL || window.location.origin;
+
+      // Get WS ticket for the browser fallback (noVNC in-tab viewer)
       const ticketRes = await fetchWithAuth(`/tunnels/${tunnel.id}/ws-ticket`, { method: 'POST' });
       if (!ticketRes.ok) {
         closeTunnel(tunnel.id);
@@ -73,19 +75,24 @@ export default function ConnectVncButton({
       }
       const { ticket } = await ticketRes.json();
 
-      // Build WebSocket URL and deep link
-      const apiUrl = import.meta.env.PUBLIC_API_URL || window.location.origin;
+      // Build WebSocket URL for the browser fallback path
       const wsProtocol = apiUrl.startsWith('https') ? 'wss' : 'ws';
       const wsHost = apiUrl.replace(/^https?:\/\//, '');
       const wsUrl = `${wsProtocol}://${wsHost}/api/v1/tunnel-ws/${tunnel.id}/ws?ticket=${ticket}`;
       setVncWsUrl(wsUrl);
 
-      const accessToken = useAuthStore.getState().tokens?.accessToken ?? '';
+      // Issue a short-lived connect code for the Tauri viewer deep link (keeps JWT out of URL)
+      const codeRes = await fetchWithAuth(`/tunnels/${tunnel.id}/connect-code`, { method: 'POST' });
+      if (!codeRes.ok) {
+        closeTunnel(tunnel.id);
+        throw new Error('Failed to issue VNC connect code');
+      }
+      const { code } = await codeRes.json();
+
       const deepLink = `breeze://vnc?tunnel=${encodeURIComponent(tunnel.id)}` +
-        `&ws=${encodeURIComponent(wsUrl)}` +
         `&device=${encodeURIComponent(deviceId)}` +
         `&api=${encodeURIComponent(apiUrl)}` +
-        `&accessToken=${encodeURIComponent(accessToken)}`;
+        `&code=${encodeURIComponent(code)}`;
 
       setStatus('launching');
 

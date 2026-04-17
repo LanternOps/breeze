@@ -2,12 +2,13 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, desc, inArray } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { tunnelSessions, tunnelAllowlists, devices, users } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
-import { createWsTicket } from '../services/remoteSessionAuth';
+import { createWsTicket, createVncConnectCode, consumeVncConnectCode, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
+import { createViewerAccessToken } from '../services/jwt';
 import type { AuthContext } from '../middleware/auth';
 
 export const tunnelRoutes = new Hono();
@@ -418,6 +419,56 @@ tunnelRoutes.post(
   }
 );
 
+// POST /tunnels/:id/connect-code — Issue a short-lived VNC connect code (keeps JWT out of deep links)
+tunnelRoutes.post(
+  '/:id/connect-code',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const id = c.req.param('id')!;
+
+    const conditions = [eq(tunnelSessions.id, id)];
+    if (auth.orgId) {
+      conditions.push(eq(tunnelSessions.orgId, auth.orgId));
+    }
+    if (auth.scope === 'organization') {
+      conditions.push(eq(tunnelSessions.userId, auth.user.id));
+    }
+
+    const [session] = await db
+      .select()
+      .from(tunnelSessions)
+      .where(and(...conditions))
+      .limit(1);
+
+    if (!session) {
+      return c.json({ error: 'Tunnel session not found' }, 404);
+    }
+
+    if (session.type !== 'vnc') {
+      return c.json({ error: 'Connect code only supported for VNC tunnels' }, 400);
+    }
+
+    if (session.userId !== auth.user.id) {
+      return c.json({ error: 'Not the session owner' }, 403);
+    }
+
+    try {
+      const result = await createVncConnectCode({
+        tunnelId: session.id,
+        deviceId: session.deviceId,
+        orgId: session.orgId,
+        userId: auth.user.id,
+        email: auth.user.email,
+      });
+      return c.json(result);
+    } catch (err) {
+      console.error('[tunnels] Failed to create VNC connect code:', err instanceof Error ? err.message : err);
+      return c.json({ error: 'Unable to create VNC connect code. Please try again later.' }, 503);
+    }
+  }
+);
+
 // --- Allowlist routes ---
 
 // GET /tunnels/allowlist — List allowlist rules for the org
@@ -548,5 +599,70 @@ tunnelRoutes.delete(
       .where(and(eq(tunnelAllowlists.id, id), eq(tunnelAllowlists.orgId, auth.orgId)));
 
     return c.json({ deleted: true });
+  }
+);
+
+// --- VNC exchange route (no auth — the code IS the auth) ---
+
+export const vncExchangeRoutes = new Hono();
+
+const vncExchangeSchema = z.object({
+  code: z.string().min(1),
+});
+
+// POST /vnc-exchange/:code — Redeem a short-lived VNC connect code for credentials + tunnel info.
+// No bearer auth: the one-time code proves identity. Rate-limited at mount point.
+vncExchangeRoutes.post(
+  '/:code',
+  async (c) => {
+    const code = c.req.param('code')!;
+
+    const record = await consumeVncConnectCode(code);
+    if (!record) {
+      return c.json({ error: 'Invalid or expired VNC connect code' }, 404);
+    }
+
+    // Fetch tunnel info and build ws-ticket in system context (no RLS context from bearer token).
+    const result = await withSystemDbAccessContext(async () => {
+      const [session] = await db
+        .select()
+        .from(tunnelSessions)
+        .where(eq(tunnelSessions.id, record.tunnelId))
+        .limit(1);
+      return session;
+    });
+
+    if (!result) {
+      return c.json({ error: 'Tunnel session not found' }, 404);
+    }
+
+    if (result.userId !== record.userId) {
+      // Ownership mismatch — should never happen if code was minted correctly
+      return c.json({ error: 'Invalid or expired VNC connect code' }, 404);
+    }
+
+    // Build WebSocket URL using the request's host
+    const requestUrl = new URL(c.req.url);
+    const wsProtocol = requestUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsTicketResult = await createWsTicket({
+      sessionId: record.tunnelId,
+      sessionType: 'tunnel',
+      userId: record.userId,
+    });
+    const wsUrl = `${wsProtocol}//${requestUrl.host}/api/v1/tunnel-ws/${record.tunnelId}/ws?ticket=${wsTicketResult.ticket}`;
+
+    const accessToken = await createViewerAccessToken({
+      sub: record.userId,
+      email: record.email,
+      sessionId: record.tunnelId,
+    });
+
+    return c.json({
+      accessToken,
+      expiresInSeconds: getViewerAccessTokenExpirySeconds(),
+      tunnelId: record.tunnelId,
+      wsUrl,
+      deviceId: record.deviceId,
+    });
   }
 );

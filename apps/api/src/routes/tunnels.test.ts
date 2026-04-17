@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
-import { tunnelRoutes } from './tunnels';
+import { tunnelRoutes, vncExchangeRoutes } from './tunnels';
 
 // --- UUID constants ---
 const DEVICE_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
@@ -54,13 +54,23 @@ vi.mock('../services/remoteAccessPolicy', () => ({
   checkRemoteAccess: vi.fn(async () => ({ allowed: true })),
 }));
 
-// --- WS ticket ---
+// --- Remote session auth ---
 vi.mock('../services/remoteSessionAuth', () => ({
-  createWsTicket: vi.fn(async () => 'ws-ticket-abc'),
+  createWsTicket: vi.fn(async () => ({ ticket: 'ws-ticket-abc', expiresInSeconds: 60 })),
+  createVncConnectCode: vi.fn(async () => ({ code: 'test-connect-code-32bytes', expiresInSeconds: 60 })),
+  consumeVncConnectCode: vi.fn(),
+  getViewerAccessTokenExpirySeconds: vi.fn(() => 900),
+}));
+
+// --- JWT service ---
+vi.mock('../services/jwt', () => ({
+  createViewerAccessToken: vi.fn(async () => 'mock-viewer-access-token'),
 }));
 
 import { db } from '../db';
 import { sendCommandToAgent } from './agentWs';
+import { createVncConnectCode, consumeVncConnectCode } from '../services/remoteSessionAuth';
+import { createViewerAccessToken } from '../services/jwt';
 
 // Reusable device fixture (online, agent connected)
 const onlineDevice = {
@@ -170,5 +180,124 @@ describe('POST /tunnels (VNC)', () => {
     expect(body).toHaveProperty('id', SESSION_ID);
     expect(body).toHaveProperty('type', 'vnc');
     expect(body).toHaveProperty('status', 'pending');
+  });
+});
+
+// ─── POST /tunnels/:id/connect-code ───────────────────────────────────────────
+
+describe('POST /tunnels/:id/connect-code', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+  });
+
+  it('returns a code for a valid VNC tunnel the user owns', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([sessionRecord]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}/connect-code`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toHaveProperty('code');
+    expect(typeof body.code).toBe('string');
+    expect(body.code.length).toBeGreaterThanOrEqual(16);
+    expect(createVncConnectCode).toHaveBeenCalledWith(expect.objectContaining({
+      tunnelId: SESSION_ID,
+      userId: USER_ID,
+    }));
+  });
+
+  it('returns 404 when tunnel is not found or user cannot access it', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}/connect-code`, { method: 'POST' });
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 400 when tunnel type is not vnc', async () => {
+    const proxySession = { ...sessionRecord, type: 'proxy' };
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([proxySession]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}/connect-code`, { method: 'POST' });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/vnc/i);
+  });
+
+  it('returns 403 when user is not the session owner', async () => {
+    const otherUserSession = { ...sessionRecord, userId: 'other-user-id' };
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([otherUserSession]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}/connect-code`, { method: 'POST' });
+    expect(res.status).toBe(403);
+  });
+});
+
+// ─── POST /vnc-exchange/:code ─────────────────────────────────────────────────
+
+describe('POST /vnc-exchange/:code', () => {
+  let app: Hono;
+
+  const vncCodeRecord = {
+    tunnelId: SESSION_ID,
+    deviceId: DEVICE_ID,
+    orgId: ORG_ID,
+    userId: USER_ID,
+    email: 'test@example.com',
+    expiresAt: Date.now() + 60_000,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = new Hono();
+    app.route('/vnc-exchange', vncExchangeRoutes);
+  });
+
+  it('returns accessToken, tunnelId, wsUrl, deviceId for a valid code', async () => {
+    vi.mocked(consumeVncConnectCode).mockResolvedValueOnce(vncCodeRecord);
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([sessionRecord]) as any);
+    vi.mocked(createViewerAccessToken).mockResolvedValueOnce('viewer-token-xyz');
+
+    const res = await app.request('/vnc-exchange/valid-code', { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toHaveProperty('accessToken', 'viewer-token-xyz');
+    expect(body).toHaveProperty('tunnelId', SESSION_ID);
+    expect(body).toHaveProperty('wsUrl');
+    expect(body).toHaveProperty('deviceId', DEVICE_ID);
+    expect(typeof body.wsUrl).toBe('string');
+  });
+
+  it('returns 404 for a missing or expired code (single-use)', async () => {
+    vi.mocked(consumeVncConnectCode).mockResolvedValueOnce(null);
+
+    const res = await app.request('/vnc-exchange/bad-code', { method: 'POST' });
+    expect(res.status).toBe(404);
+  });
+
+  it('invalidates the code on exchange (second call returns 404)', async () => {
+    vi.mocked(consumeVncConnectCode)
+      .mockResolvedValueOnce(vncCodeRecord)
+      .mockResolvedValueOnce(null);
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([sessionRecord]) as any);
+    vi.mocked(createViewerAccessToken).mockResolvedValue('tok');
+
+    const res1 = await app.request('/vnc-exchange/dup-code', { method: 'POST' });
+    expect(res1.status).toBe(200);
+
+    const res2 = await app.request('/vnc-exchange/dup-code', { method: 'POST' });
+    expect(res2.status).toBe(404);
+  });
+
+  it('returns 404 when session not found in DB', async () => {
+    vi.mocked(consumeVncConnectCode).mockResolvedValueOnce(vncCodeRecord);
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([]) as any);
+
+    const res = await app.request('/vnc-exchange/valid-code', { method: 'POST' });
+    expect(res.status).toBe(404);
   });
 });

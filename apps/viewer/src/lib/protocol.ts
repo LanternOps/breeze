@@ -1,7 +1,7 @@
 /**
  * Parse breeze:// deep link URLs
  * Format: breeze://connect?session=xxx&code=xxx&api=xxx
- *         breeze://vnc?tunnel=xxx&ws=xxx&device=xxx&api=xxx&accessToken=xxx
+ *         breeze://vnc?tunnel=xxx&device=xxx&api=xxx&code=xxx
  */
 
 export interface DesktopConnectionParams {
@@ -16,10 +16,9 @@ export interface DesktopConnectionParams {
 export interface VncConnectionParams {
   mode: 'vnc';
   tunnelId: string;
-  wsUrl: string;
   deviceId: string;
   apiUrl: string;
-  accessToken: string;
+  code: string;
 }
 
 export type ConnectionParams = DesktopConnectionParams | VncConnectionParams;
@@ -130,12 +129,11 @@ function parseDesktopDeepLink(parsed: URL): DesktopConnectionParams | null {
 
 function parseVncDeepLink(parsed: URL): VncConnectionParams | null {
   const tunnelId = parsed.searchParams.get('tunnel');
-  const wsUrl = parsed.searchParams.get('ws');
   const deviceId = parsed.searchParams.get('device');
   const apiUrl = parsed.searchParams.get('api');
-  const accessToken = parsed.searchParams.get('accessToken');
+  const code = parsed.searchParams.get('code');
 
-  if (!tunnelId || !wsUrl || !deviceId || !apiUrl || !accessToken) {
+  if (!tunnelId || !deviceId || !apiUrl || !code) {
     return null;
   }
 
@@ -150,22 +148,12 @@ function parseVncDeepLink(parsed: URL): VncConnectionParams | null {
     return null;
   }
 
-  // Validate wsUrl: must be ws:// or wss://, and its hostname must match apiUrl's hostname.
-  const api = new URL(validatedApiUrl);
-  const wsUrlParsed = (() => {
-    try { return new URL(wsUrl); } catch { return null; }
-  })();
-  if (!wsUrlParsed) return null;
-  if (wsUrlParsed.protocol !== 'ws:' && wsUrlParsed.protocol !== 'wss:') return null;
-  if (wsUrlParsed.hostname !== api.hostname) return null;
-
   return {
     mode: 'vnc',
     tunnelId,
-    wsUrl,
     deviceId,
     apiUrl: validatedApiUrl,
-    accessToken,
+    code,
   };
 }
 
