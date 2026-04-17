@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { Monitor, MonitorOff, ExternalLink, Download, X } from 'lucide-react';
+import { Monitor, MonitorOff, ExternalLink, Download, X, Globe } from 'lucide-react';
 import type { DesktopAccessState, RemoteAccessPolicy } from '@breeze/shared';
 import { fetchWithAuth } from '@/stores/auth';
 import { getViewerDownloadInfo, getAllViewerDownloads } from '@/lib/viewerDownload';
@@ -80,6 +80,9 @@ function desktopAccessUnavailableReason(
 export default function ConnectDesktopButton({ deviceId, className = '', compact = false, iconOnly = false, disabled = false, isHeadless = false, desktopAccess = null, remoteAccessPolicy = null }: Props) {
   const [status, setStatus] = useState<'idle' | 'creating' | 'launching' | 'fallback'>('idle');
   const [error, setError] = useState<string | null>(null);
+  // Populated when the VNC auto-fallback path times out — carries the info needed
+  // for the "Open in Browser" fallback card so we don't navigate away automatically.
+  const [vncFallback, setVncFallback] = useState<{ tunnelId: string; wsUrl: string } | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const autoDismissTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const sessionIdRef = useRef<string | null>(null);
@@ -120,7 +123,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
 
         const tunnel = await tunnelRes.json();
 
-        // Get WS ticket for the tunnel
+        // Get WS ticket — retained for the browser-fallback noVNC path
         const ticketRes = await fetchWithAuth(`/tunnels/${tunnel.id}/ws-ticket`, {
           method: 'POST',
         });
@@ -135,14 +138,70 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           throw new Error('Invalid ticket response from server');
         }
 
-        // Don't pre-fill the password. On modern macOS the agent can't set an
-        // ephemeral VNC password via kickstart, so Screen Sharing uses whatever
-        // password the user configured in System Settings. Let noVNC's native
-        // prompt show so the user can type their real password.
+        // Build the browser-fallback URL (kept for the "Open in Browser" card below)
         const wsUrl = `wss://${window.location.host}/api/v1/tunnel-ws/${tunnel.id}/ws?ticket=${ticket}`;
-        window.location.href = `/remote/vnc/${tunnel.id}?ws=${encodeURIComponent(wsUrl)}`;
 
-        setStatus('idle');
+        // Issue a short-lived connect code for the Tauri viewer deep link (keeps JWT out of URL)
+        const codeRes = await fetchWithAuth(`/tunnels/${tunnel.id}/connect-code`, { method: 'POST' });
+        if (!codeRes.ok) {
+          fetchWithAuth(`/tunnels/${tunnel.id}`, { method: 'DELETE' }).catch(() => {});
+          throw new Error('Failed to issue VNC connect code');
+        }
+        const { code } = await codeRes.json();
+
+        const apiUrl = import.meta.env.PUBLIC_API_URL || window.location.origin;
+        const deepLink = `breeze://vnc?tunnel=${encodeURIComponent(tunnel.id)}` +
+          `&device=${encodeURIComponent(deviceId)}` +
+          `&api=${encodeURIComponent(apiUrl)}` +
+          `&code=${encodeURIComponent(code)}`;
+
+        setStatus('launching');
+
+        // Try to hand off to the Breeze Viewer first
+        tryDeepLink(deepLink);
+
+        // Poll the tunnel to detect whether the viewer picked it up.
+        // Tunnel moves from 'pending' → 'active' once the viewer connects.
+        // If it stays pending after ~7.5 s, show the "Open in Browser" card.
+        let vncPollCount = 0;
+        const vncMaxPolls = 5;
+
+        const pollVnc = async () => {
+          vncPollCount++;
+          try {
+            const res = await fetchWithAuth(`/tunnels/${tunnel.id}`);
+            if (res.ok) {
+              const data = await res.json();
+              if (data.status === 'active') {
+                setStatus((cur) => cur === 'launching' || cur === 'fallback' ? 'idle' : cur);
+                return;
+              }
+              if (data.status === 'failed') {
+                setError(data.errorMessage || 'VNC tunnel failed to open');
+                setStatus('idle');
+                return;
+              }
+            }
+          } catch { /* network error — keep polling */ }
+
+          if (vncPollCount >= vncMaxPolls) {
+            // Viewer didn't pick it up in time — show the fallback card so the
+            // user can choose to open noVNC in the browser instead.
+            setVncFallback({ tunnelId: tunnel.id, wsUrl });
+            setStatus((cur) => cur === 'launching' ? 'fallback' : cur);
+
+            if (autoDismissTimerRef.current) clearTimeout(autoDismissTimerRef.current);
+            autoDismissTimerRef.current = setTimeout(() => {
+              setStatus((cur) => cur === 'fallback' ? 'idle' : cur);
+              setVncFallback(null);
+            }, 30000);
+            return;
+          }
+
+          pollTimerRef.current = setTimeout(pollVnc, 1500);
+        };
+
+        pollTimerRef.current = setTimeout(pollVnc, 1500);
         return;
       }
 
@@ -236,6 +295,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
   }, [deviceId, desktopAccess, remoteAccessPolicy, endSession]);
 
   const handleDismiss = useCallback(() => {
+    setVncFallback(null);
     setStatus('idle');
   }, []);
 
@@ -245,36 +305,127 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       endSession(sessionIdRef.current);
       sessionIdRef.current = null;
     }
+    setVncFallback(null);
     setStatus('idle');
   }, [endSession]);
 
-  // Shared fallback content for both compact and full modes
+  // VNC-specific: open noVNC in the browser when the viewer didn't pick up
+  const handleOpenInBrowser = useCallback(() => {
+    if (vncFallback) {
+      const viewerUrl = `/remote/vnc/${vncFallback.tunnelId}?ws=${encodeURIComponent(vncFallback.wsUrl)}`;
+      window.open(viewerUrl, '_blank');
+    }
+    setVncFallback(null);
+    setStatus('idle');
+  }, [vncFallback]);
+
+  // VNC-specific: cancel — clean up the tunnel and dismiss
+  const handleCancelVnc = useCallback(() => {
+    if (vncFallback) {
+      fetchWithAuth(`/tunnels/${vncFallback.tunnelId}`, { method: 'DELETE' }).catch(() => {});
+      setVncFallback(null);
+    }
+    setStatus('idle');
+  }, [vncFallback]);
+
+  // Shared fallback content for both compact and full modes.
+  // When the VNC auto-fallback path times out we show a "Open in Browser / Cancel"
+  // card (blue, matching ConnectVncButton). When the WebRTC deep-link path times
+  // out we show the existing "download viewer" card (amber).
   const fallbackContent = status === 'fallback' ? (
-    <div className="absolute right-0 top-full z-50 mt-2 w-72 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm shadow-lg dark:border-amber-800 dark:bg-amber-950">
-      <div className="flex items-start gap-2.5">
-        <Monitor className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
-        <div className="flex-1">
-          <p className="font-medium text-amber-800 dark:text-amber-300">
-            Viewer didn't open?
-          </p>
-          <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
-            If the viewer opened, you can dismiss this. Otherwise, download it below.
-          </p>
-          {(() => {
-            const downloadInfo = getViewerDownloadInfo();
-            if (downloadInfo) {
+    vncFallback ? (
+      // VNC path timed out — viewer didn't pick up the deep link
+      <div className="absolute right-0 top-full z-50 mt-2 w-72 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm shadow-lg dark:border-blue-800 dark:bg-blue-950">
+        <div className="flex items-start gap-2.5">
+          <Monitor className="mt-0.5 h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400" />
+          <div className="flex-1">
+            <p className="font-medium text-blue-800 dark:text-blue-300">
+              Viewer didn't open?
+            </p>
+            <p className="mt-1 text-xs text-blue-700 dark:text-blue-400">
+              Open the VNC session in your browser instead.
+            </p>
+            <div className="mt-2.5 flex items-center gap-3">
+              <button
+                type="button"
+                onClick={handleOpenInBrowser}
+                className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-blue-700"
+              >
+                <Globe className="h-3.5 w-3.5" />
+                Open in Browser
+              </button>
+              <button
+                type="button"
+                onClick={handleCancelVnc}
+                className="text-xs text-muted-foreground transition hover:text-foreground"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleDismiss}
+            className="flex h-5 w-5 items-center justify-center rounded hover:bg-blue-200 dark:hover:bg-blue-800"
+          >
+            <X className="h-3 w-3 text-blue-600 dark:text-blue-400" />
+          </button>
+        </div>
+      </div>
+    ) : (
+      // WebRTC path timed out — viewer didn't pick up the deep link
+      <div className="absolute right-0 top-full z-50 mt-2 w-72 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm shadow-lg dark:border-amber-800 dark:bg-amber-950">
+        <div className="flex items-start gap-2.5">
+          <Monitor className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+          <div className="flex-1">
+            <p className="font-medium text-amber-800 dark:text-amber-300">
+              Viewer didn't open?
+            </p>
+            <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+              If the viewer opened, you can dismiss this. Otherwise, download it below.
+            </p>
+            {(() => {
+              const downloadInfo = getViewerDownloadInfo();
+              if (downloadInfo) {
+                return (
+                  <div className="mt-2.5 flex items-center gap-3">
+                    <a
+                      href={downloadInfo.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() => handleDismissAndCleanup()}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-blue-700"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      Download for {downloadInfo.label}
+                    </a>
+                    <button
+                      type="button"
+                      onClick={handleDismiss}
+                      className="text-xs text-muted-foreground transition hover:text-foreground"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                );
+              }
               return (
-                <div className="mt-2.5 flex items-center gap-3">
-                  <a
-                    href={downloadInfo.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={() => handleDismissAndCleanup()}
-                    className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-blue-700"
-                  >
-                    <Download className="h-3.5 w-3.5" />
-                    Download for {downloadInfo.label}
-                  </a>
+                <div className="mt-2.5 space-y-2">
+                  <div className="flex flex-col gap-1.5">
+                    {getAllViewerDownloads().map((dl) => (
+                      <a
+                        key={dl.os}
+                        href={dl.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() => handleDismissAndCleanup()}
+                        className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-blue-700"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        {dl.label}
+                      </a>
+                    ))}
+                  </div>
                   <button
                     type="button"
                     onClick={handleDismiss}
@@ -284,44 +435,18 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
                   </button>
                 </div>
               );
-            }
-            return (
-              <div className="mt-2.5 space-y-2">
-                <div className="flex flex-col gap-1.5">
-                  {getAllViewerDownloads().map((dl) => (
-                    <a
-                      key={dl.os}
-                      href={dl.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={() => handleDismissAndCleanup()}
-                      className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-blue-700"
-                    >
-                      <Download className="h-3.5 w-3.5" />
-                      {dl.label}
-                    </a>
-                  ))}
-                </div>
-                <button
-                  type="button"
-                  onClick={handleDismiss}
-                  className="text-xs text-muted-foreground transition hover:text-foreground"
-                >
-                  Dismiss
-                </button>
-              </div>
-            );
-          })()}
+            })()}
+          </div>
+          <button
+            type="button"
+            onClick={handleDismiss}
+            className="flex h-5 w-5 items-center justify-center rounded hover:bg-amber-200 dark:hover:bg-amber-800"
+          >
+            <X className="h-3 w-3 text-amber-600 dark:text-amber-400" />
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={handleDismiss}
-          className="flex h-5 w-5 items-center justify-center rounded hover:bg-amber-200 dark:hover:bg-amber-800"
-        >
-          <X className="h-3 w-3 text-amber-600 dark:text-amber-400" />
-        </button>
       </div>
-    </div>
+    )
   ) : null;
 
   const headlessTitle = 'This device has no display \u2014 remote desktop is unavailable';
