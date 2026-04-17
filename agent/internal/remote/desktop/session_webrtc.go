@@ -410,6 +410,13 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 				session.handleControlMessage(msg.Data)
 			})
+			dc.OnOpen(func() {
+				// Send the current cached desktop state to this viewer so it
+				// gets an initial state even if it connected after the watcher
+				// quiesced. Non-darwin platforms have no cached state and this
+				// is a no-op.
+				m.SendDesktopStateTo(sessionID)
+			})
 		}
 	})
 

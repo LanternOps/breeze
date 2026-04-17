@@ -19,14 +19,13 @@ import (
 // state must be "loginwindow" or "user_session".
 // userName is included in the message only when non-empty.
 func (m *SessionManager) BroadcastDesktopState(state string, userName string) {
-	msg := map[string]any{
-		"type":  "desktop_state",
-		"state": state,
-	}
-	if userName != "" {
-		msg["userName"] = userName
-	}
-	payload, err := json.Marshal(msg)
+	// Cache the state so late-connecting viewers receive it on control-channel open.
+	m.mu.Lock()
+	m.lastDesktopState = state
+	m.lastDesktopUsername = userName
+	m.mu.Unlock()
+
+	payload, err := buildDesktopStatePayload(state, userName)
 	if err != nil {
 		slog.Warn("BroadcastDesktopState: failed to marshal message", "error", err.Error())
 		return
@@ -59,4 +58,59 @@ func (m *SessionManager) BroadcastDesktopState(state string, userName string) {
 			)
 		}
 	}
+}
+
+// SendDesktopStateTo sends the current cached desktop state to a single session
+// identified by sessionID. No-op when the session is not found, its control
+// channel is not open, or no state has been cached yet.
+//
+// Called when a new viewer's control data channel opens so it receives an
+// immediate initial state without waiting for the next event-driven broadcast.
+func (m *SessionManager) SendDesktopStateTo(sessionID string) {
+	m.mu.RLock()
+	state := m.lastDesktopState
+	userName := m.lastDesktopUsername
+	session := m.sessions[sessionID]
+	m.mu.RUnlock()
+
+	if state == "" || session == nil {
+		return
+	}
+
+	payload, err := buildDesktopStatePayload(state, userName)
+	if err != nil {
+		slog.Warn("SendDesktopStateTo: failed to marshal message", "session", sessionID, "error", err.Error())
+		return
+	}
+
+	session.mu.RLock()
+	dc := session.controlDC
+	active := session.isActive
+	session.mu.RUnlock()
+
+	if !active || dc == nil {
+		return
+	}
+	if dc.ReadyState() != webrtc.DataChannelStateOpen {
+		return
+	}
+	if err := dc.SendText(string(payload)); err != nil {
+		slog.Warn("SendDesktopStateTo: send failed",
+			"session", sessionID,
+			"state", state,
+			"error", err.Error(),
+		)
+	}
+}
+
+// buildDesktopStatePayload marshals a desktop_state control message.
+func buildDesktopStatePayload(state, userName string) ([]byte, error) {
+	msg := map[string]any{
+		"type":  "desktop_state",
+		"state": state,
+	}
+	if userName != "" {
+		msg["username"] = userName
+	}
+	return json.Marshal(msg)
 }
