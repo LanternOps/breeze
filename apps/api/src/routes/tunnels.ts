@@ -1,4 +1,3 @@
-import { randomBytes } from 'node:crypto';
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
@@ -243,9 +242,6 @@ tunnelRoutes.post(
       })
       .returning();
 
-    // Generate ephemeral VNC password for JIT Screen Sharing
-    const vncPassword = isVNC ? randomBytes(6).toString('base64url').slice(0, 8) : undefined;
-
     // Send tunnel_open command to agent
     const allowlistPatterns = isVNC ? [] : await getActiveAllowlistPatterns(device.orgId);
     const sent = sendCommandToAgent(device.agentId!, {
@@ -257,7 +253,6 @@ tunnelRoutes.post(
         targetPort,
         tunnelType: body.type,
         allowlistRules: allowlistPatterns,
-        ...(vncPassword && { vncPassword }),
       },
     });
     if (!sent) {
@@ -267,7 +262,7 @@ tunnelRoutes.post(
       return c.json({ error: 'Agent disconnected before tunnel could be opened' }, 503);
     }
 
-    return c.json({ ...session, ...(vncPassword && { vncPassword }) }, 201);
+    return c.json(session, 201);
   }
 );
 

@@ -152,6 +152,12 @@ type SessionManager struct {
 	// Failed or Closed. Used to notify the API so it can mark the session as
 	// disconnected and allow reconnection.
 	OnSessionStopped func(sessionID string)
+
+	// lastDesktopState caches the most recently broadcast desktop state so
+	// late-connecting viewers can receive an initial state when their control
+	// channel opens. Protected by mu.
+	lastDesktopState    string
+	lastDesktopUsername string
 }
 
 // NewSessionManager creates a new session manager.

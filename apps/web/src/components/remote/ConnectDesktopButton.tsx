@@ -107,7 +107,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       const needsVNC = canFallbackToVNC(desktopAccess, remoteAccessPolicy);
 
       if (needsVNC) {
-        // Create VNC tunnel — API generates ephemeral password
+        // Create VNC tunnel — user provides their macOS credentials in the noVNC prompt
         const tunnelRes = await fetchWithAuth('/tunnels', {
           method: 'POST',
           body: JSON.stringify({ deviceId, type: 'vnc' }),

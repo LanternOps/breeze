@@ -89,8 +89,7 @@ func handleTunnelOpen(h *Heartbeat, cmd Command) tools.CommandResult {
 			}
 		}
 		if managedByPolicy && !running {
-			vncPassword, _ := cmd.Payload["vncPassword"].(string)
-			if err := tunnel.EnableScreenSharing(vncPassword); err != nil {
+			if err := tunnel.EnableScreenSharing(); err != nil {
 				return tools.CommandResult{
 					Status:     "failed",
 					Error:      fmt.Sprintf("failed to enable VNC screen sharing: %s", err.Error()),
