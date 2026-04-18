@@ -28,12 +28,19 @@ interface DeviceDetailSubset {
  * on fetch errors. Callers should stop polling on 'unauthorized' and silently
  * retry on 'network'/'error'.
  */
+/**
+ * Hits the viewer-token-authed endpoint at `/api/v1/vnc-viewer/desktop-access`.
+ * That endpoint scopes the lookup by the token's bound tunnelId, so the viewer
+ * does not need to supply a deviceId and cannot observe unrelated devices.
+ * Kept the `deviceId` arg for API symmetry with the previous version but it's
+ * no longer sent over the wire.
+ */
 export async function pollDesktopAccess(
-  deviceId: string,
+  _deviceId: string,
   auth: { apiUrl: string; accessToken: string },
 ): Promise<DesktopAccessPollResult> {
   try {
-    const res = await fetch(`${auth.apiUrl}/devices/${deviceId}`, {
+    const res = await fetch(`${auth.apiUrl}/api/v1/vnc-viewer/desktop-access`, {
       headers: { Authorization: `Bearer ${auth.accessToken}` },
     });
     if (res.status === 401 || res.status === 403) {

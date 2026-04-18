@@ -16,7 +16,7 @@ import { mapKey, getModifiers, isModifierOnly } from '../lib/keymap';
 import { textToKeyEvents } from '../lib/paste';
 import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
 import { handleCtrlVPaste } from '../lib/clipboardPaste';
-import { shouldAutoHandoffToVnc } from '../lib/autoHandoff';
+import { shouldAutoHandoffToVnc, shouldAutoHandoffToWebRTC } from '../lib/autoHandoff';
 import ViewerToolbar from './ViewerToolbar';
 import CredentialsPromptModal from './CredentialsPromptModal';
 
@@ -121,6 +121,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       // Lazy-load the VNC transport so novnc (which uses top-level await) is only
       // bundled into a separate async chunk and doesn't land in the main bundle.
       const { connectVnc } = await import('../lib/transports/vnc');
+      // Set transport BEFORE RFB construction so the container <div> is visible
+      // (the JSX hides it with `hidden` when transport !== 'vnc'). Otherwise RFB
+      // initializes against a 0×0 container and the canvas never renders frames.
+      setTransportState('vnc');
       const session = await connectVnc(tunnel, {
         container,
         onStatus: (s) => {
@@ -150,7 +154,6 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         },
       });
       vncSessionRef.current = session;
-      setTransportState('vnc');
       return true;
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : 'VNC connect failed');
@@ -250,13 +253,59 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     try {
       if (target === 'vnc') {
         if (!auth.deviceId) throw new Error('deviceId required for VNC switch');
-        const tunnel = await createVncTunnel(auth.deviceId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
+        // Browser-originated viewers carry a full JWT and go through the
+        // public POST /tunnels route. Deep-link viewers carry a purpose=
+        // 'viewer' token which POST /tunnels rejects (authMiddleware); use
+        // the viewer-token downgrade endpoint instead. We detect viewer
+        // tokens by the presence of a sessionId — the initial VNC deep
+        // link arrives with sessionId=='', which also works but that path
+        // already has an open tunnel so it doesn't hit this branch.
+        let tunnel: VncTunnelInfo;
+        let tunnelAuth = auth;
+        if (auth.sessionId) {
+          const res = await fetch(`${auth.apiUrl}/api/v1/vnc-viewer/downgrade-to-vnc`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${auth.accessToken}` },
+          });
+          if (!res.ok) {
+            const body = await res.json().catch(() => null) as { error?: string } | null;
+            throw new Error(body?.error ?? `Downgrade to VNC failed (${res.status})`);
+          }
+          const body = await res.json() as { tunnelId: string; wsUrl: string; accessToken: string };
+          tunnel = { tunnelId: body.tunnelId, wsUrl: body.wsUrl };
+          // sessionId stays '' after a VNC switch so the next WebRTC
+          // handoff knows to mint a fresh desktop session via the upgrade
+          // endpoint instead of reusing a stale (or worse, tunnel-shaped)
+          // id. The tunnel id is tracked in activeVncTunnelIdRef below.
+          tunnelAuth = { ...auth, sessionId: '', accessToken: body.accessToken };
+          authRef.current = tunnelAuth;
+        } else {
+          tunnel = await createVncTunnel(auth.deviceId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
+        }
         activeVncTunnelIdRef.current = tunnel.tunnelId;
         const ok = await connectVncTransport(tunnel);
         if (!ok) throw new Error('VNC connect failed');
       } else if (target === 'webrtc') {
         setWebRTCAvailable(false);
-        const ok = await connectWebRTCRef.current(auth);
+        // VNC-originated viewers arrive with sessionId='' (see the vnc mode
+        // branch in the connect effect). To hand off to WebRTC we need a real
+        // `remote_sessions.id` and a desktop-scoped viewer token. The
+        // upgrade endpoint creates both using the current viewer token.
+        let webrtcAuth = auth;
+        if (!auth.sessionId) {
+          const res = await fetch(`${auth.apiUrl}/api/v1/vnc-viewer/upgrade-to-webrtc`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${auth.accessToken}` },
+          });
+          if (!res.ok) {
+            const body = await res.json().catch(() => null) as { error?: string } | null;
+            throw new Error(body?.error ?? `Upgrade to WebRTC failed (${res.status})`);
+          }
+          const { sessionId, accessToken } = await res.json() as { sessionId: string; accessToken: string };
+          webrtcAuth = { ...auth, sessionId, accessToken };
+          authRef.current = webrtcAuth;
+        }
+        const ok = await connectWebRTCRef.current(webrtcAuth);
         if (!ok) throw new Error('WebRTC connect failed');
       }
       // websocket switching not wired here — only webrtc/vnc are in the switcher
@@ -1076,9 +1125,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   }, [showRemoteCursor, transport]);
 
   // ── Desktop-access polling (VNC + macOS only) ──────────────────────
-  // While connected via VNC, poll every 5s to check if WebRTC has become
+  // While connected via VNC, poll every 2s to check if WebRTC has become
   // available again (e.g. user logged back in). Surfaces to toolbar via
-  // webRTCAvailable + remoteUserName state.
+  // webRTCAvailable + remoteUserName state, and auto-hands off to WebRTC
+  // the first time the mode transitions to `user_session`. 2s is fast
+  // enough for the handoff to feel prompt while still cheap for the API.
   useEffect(() => {
     if (transport !== 'vnc' || remoteOs !== 'macos' || status !== 'connected') return;
     const auth = authRef.current;
@@ -1086,6 +1137,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
     let cancelled = false;
     const deviceId = auth.deviceId;
+    // Tracked locally so a fresh VNC session always starts with "unknown"
+    // previous mode — a user who logged in before opening the viewer still
+    // triggers the auto-switch on the first successful poll.
+    let previousMode: 'user_session' | 'login_window' | 'unavailable' | null = null;
 
     const pollOnce = async () => {
       const result = await pollDesktopAccess(deviceId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
@@ -1102,12 +1157,25 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         // For 'network' and 'error', silently keep trying on the next tick.
         return;
       }
-      setWebRTCAvailable(result.poll.mode === 'user_session');
+      const mode = result.poll.mode;
+      setWebRTCAvailable(mode === 'user_session');
       setRemoteUserName(result.poll.username);
+
+      if (shouldAutoHandoffToWebRTC({
+        remoteOs,
+        deviceId,
+        currentTransport: transportRef.current,
+        userJustSwitchedAt: lastUserTransportChoiceAtRef.current,
+        previousMode,
+        currentMode: mode,
+      })) {
+        void switchTransportRef.current?.('webrtc', 'auto');
+      }
+      previousMode = mode;
     };
 
     void pollOnce();
-    const interval = setInterval(pollOnce, 5000);
+    const interval = setInterval(pollOnce, 2000);
     return () => {
       cancelled = true;
       clearInterval(interval);

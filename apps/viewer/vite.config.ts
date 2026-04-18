@@ -12,6 +12,14 @@ export default defineConfig({
     // rejects TLA, so we target esnext to allow novnc's async module pattern.
     target: 'esnext',
   },
+  // Same rationale for the dev server's dependency pre-bundler — without this
+  // override, `pnpm tauri dev` fails to prebundle @novnc/novnc (TLA in
+  // core/util/browser.js).
+  optimizeDeps: {
+    esbuildOptions: {
+      target: 'esnext',
+    },
+  },
   server: {
     port: 1420,
     strictPort: true,

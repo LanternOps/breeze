@@ -428,6 +428,14 @@ func (c *Client) SendDesktopFrame(sessionId string, data []byte) error {
 	}
 }
 
+// BinaryFrameChanStats returns the current depth and capacity of the binary
+// frame send channel (used for tunnel data). A full channel stalls
+// SendTunnelData, which blocks the tunnel read loop and produces one-directional
+// freezes where input still works but server-side bytes stop flowing.
+func (c *Client) BinaryFrameChanStats() (length, capacity int) {
+	return len(c.binaryFrameChan), cap(c.binaryFrameChan)
+}
+
 // SendTunnelData sends binary tunnel data to the server.
 // Format: [0x03][36-byte tunnelId UTF-8][payload]
 //

@@ -4,7 +4,13 @@ import { randomUUID } from 'crypto';
 const e2eMode = process.env.E2E_MODE === '1' || process.env.E2E_MODE === 'true';
 const ACCESS_TOKEN_EXPIRY = e2eMode ? '24h' : '15m';
 const REFRESH_TOKEN_EXPIRY = e2eMode ? '30d' : '7d';
-const VIEWER_ACCESS_TOKEN_EXPIRY = e2eMode ? '24h' : '15m';
+// Viewer sessions (WebRTC + VNC) routinely outlast 15m — the viewer polls
+// /api/v1/devices/:id every 5s to detect user-session transitions for the
+// login-window → logged-in auto-handoff, and remote-desktop sessions often
+// run for hours. A 15m access token turned into silent 401s that killed the
+// poll and the auto-handoff with it. The token is scoped to purpose='viewer'
+// and a specific sessionId, so the longer TTL is low-risk.
+const VIEWER_ACCESS_TOKEN_EXPIRY = e2eMode ? '24h' : '8h';
 
 function getSecretKey(): Uint8Array {
   const secret = process.env.JWT_SECRET;

@@ -430,6 +430,13 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 // SetWebSocketClient sets the WebSocket client for terminal output streaming
 func (h *Heartbeat) SetWebSocketClient(ws *websocket.Client) {
 	h.wsClient = ws
+	// Opt-in diagnostic logger that reports per-tunnel bytesRecv/bytesSent
+	// and the WS binary-frame channel depth every 5s. Off by default; set
+	// BREEZE_TUNNEL_DIAG=1 in the agent's environment to enable when
+	// debugging tunnel stalls or backpressure.
+	if os.Getenv("BREEZE_TUNNEL_DIAG") == "1" && h.tunnelMgr != nil && ws != nil {
+		h.tunnelMgr.StartDiagLogger(5*time.Second, ws.BinaryFrameChanStats)
+	}
 }
 
 // SetAuthMonitor sets the shared auth-failure monitor.

@@ -65,4 +65,12 @@ describe('pollDesktopAccess', () => {
     const headers = fetchMock.mock.calls[0][1]!.headers as Record<string, string>;
     expect(headers.Authorization).toBe('Bearer tok');
   });
+
+  it('hits the viewer-token endpoint (not /devices/:id which requires full JWT)', async () => {
+    const fetchMock = mockFetch(200, { desktopAccess: null, lastUser: null });
+    vi.stubGlobal('fetch', fetchMock);
+    await pollDesktopAccess('dev-1', auth);
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toBe('https://api.example.com/api/v1/vnc-viewer/desktop-access');
+  });
 });

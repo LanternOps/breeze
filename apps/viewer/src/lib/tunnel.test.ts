@@ -32,14 +32,14 @@ describe('createVncTunnel', () => {
     });
 
     const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
-    expect(calls[0][0]).toBe('https://api.example.com/tunnels');
+    expect(calls[0][0]).toBe('https://api.example.com/api/v1/tunnels');
     expect(calls[0][1].method).toBe('POST');
     const body = JSON.parse(calls[0][1].body as string);
     expect(body).toEqual({ deviceId: 'dev-1', type: 'vnc' });
     expect((calls[0][1].headers as Record<string, string>).Authorization).toBe('Bearer token-xyz');
     expect((calls[0][1].headers as Record<string, string>)['Content-Type']).toBe('application/json');
 
-    expect(calls[1][0]).toBe('https://api.example.com/tunnels/tun-123/ws-ticket');
+    expect(calls[1][0]).toBe('https://api.example.com/api/v1/tunnels/tun-123/ws-ticket');
     expect(calls[1][1].method).toBe('POST');
     expect((calls[1][1].headers as Record<string, string>).Authorization).toBe('Bearer token-xyz');
   });
@@ -78,7 +78,7 @@ describe('createVncTunnel', () => {
 
     // Third call should be DELETE to clean up the dangling tunnel
     const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
-    expect(calls[2][0]).toBe('https://api.example.com/tunnels/tun-zz');
+    expect(calls[2][0]).toBe('https://api.example.com/api/v1/tunnels/tun-zz');
     expect(calls[2][1].method).toBe('DELETE');
   });
 });
@@ -91,7 +91,7 @@ describe('closeTunnel', () => {
     vi.stubGlobal('fetch', fetchMock);
     await closeTunnel('tun-1', { apiUrl: 'https://api.example.com', accessToken: 'tok' });
     const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
-    expect(calls[0][0]).toBe('https://api.example.com/tunnels/tun-1');
+    expect(calls[0][0]).toBe('https://api.example.com/api/v1/tunnels/tun-1');
     expect(calls[0][1].method).toBe('DELETE');
     expect((calls[0][1].headers as Record<string, string>).Authorization).toBe('Bearer tok');
   });
