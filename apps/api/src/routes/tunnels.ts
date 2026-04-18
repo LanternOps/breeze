@@ -1,14 +1,14 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, desc, inArray } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
-import { tunnelSessions, tunnelAllowlists, devices, users } from '../db/schema';
+import { tunnelSessions, tunnelAllowlists, devices, users, remoteSessions } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { createWsTicket, createVncConnectCode, consumeVncConnectCode, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
-import { createViewerAccessToken } from '../services/jwt';
+import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
 import type { AuthContext } from '../middleware/auth';
 
 export const tunnelRoutes = new Hono();
@@ -671,3 +671,254 @@ vncExchangeRoutes.post(
     });
   }
 );
+
+// --- Viewer-token endpoints (used by the Breeze Viewer after vnc-exchange) ---
+//
+// The viewer receives a `purpose: 'viewer'` JWT scoped to a specific tunnel
+// sessionId. It can't use the regular authMiddleware (which requires a full
+// user access token), so this router verifies viewer tokens directly and
+// enforces that the token is bound to the tunnelId being queried.
+
+export const vncViewerRoutes = new Hono();
+
+async function requireViewerToken(c: Context): Promise<{ sessionId: string } | Response> {
+  const authHeader = c.req.header('Authorization');
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return c.json({ error: 'Missing or invalid authorization header' }, 401);
+  }
+  const token = authHeader.slice(7);
+  const payload = await verifyViewerAccessToken(token);
+  if (!payload) {
+    return c.json({ error: 'Invalid or expired token' }, 401);
+  }
+  return { sessionId: payload.sessionId };
+}
+
+// GET /vnc-viewer/desktop-access
+// Returns the bound device's desktopAccess mode + last_user. Used by the
+// viewer's 5s poll to detect login-window → user_session transitions so it
+// can auto-hand off from VNC to WebRTC once a user logs in.
+vncViewerRoutes.get('/desktop-access', async (c) => {
+  const result = await requireViewerToken(c);
+  if (result instanceof Response) return result;
+
+  const device = await withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select({
+        desktopAccess: devices.desktopAccess,
+        lastUser: devices.lastUser,
+      })
+      .from(tunnelSessions)
+      .innerJoin(devices, eq(tunnelSessions.deviceId, devices.id))
+      .where(eq(tunnelSessions.id, result.sessionId))
+      .limit(1);
+    return row ?? null;
+  });
+
+  if (!device) {
+    return c.json({ error: 'Tunnel session not found' }, 404);
+  }
+
+  return c.json({
+    desktopAccess: device.desktopAccess,
+    lastUser: device.lastUser,
+  });
+});
+
+// POST /vnc-viewer/upgrade-to-webrtc
+// Called by the viewer when the poll above reports user_session and we want
+// to hand off from VNC to WebRTC. Creates a new `remote_sessions` row (type
+// 'desktop') for the tunnel-bound device and issues a fresh viewer access
+// token scoped to the new desktop sessionId. The viewer then uses that
+// sessionId + token to drive the standard `/desktop-ws/:sessionId/viewer/*`
+// endpoints for ICE, offer, ws-ticket, etc.
+vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
+  const auth = await requireViewerToken(c);
+  if (auth instanceof Response) return auth;
+
+  const bound = await withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select({
+        tunnelUserId: tunnelSessions.userId,
+        tunnelOrgId: tunnelSessions.orgId,
+        deviceId: tunnelSessions.deviceId,
+        deviceStatus: devices.status,
+        agentId: devices.agentId,
+        userEmail: users.email,
+      })
+      .from(tunnelSessions)
+      .innerJoin(devices, eq(tunnelSessions.deviceId, devices.id))
+      .innerJoin(users, eq(tunnelSessions.userId, users.id))
+      .where(eq(tunnelSessions.id, auth.sessionId))
+      .limit(1);
+    return row ?? null;
+  });
+
+  if (!bound) {
+    return c.json({ error: 'Tunnel session not found' }, 404);
+  }
+  if (bound.deviceStatus !== 'online') {
+    return c.json({ error: 'Device is not online' }, 400);
+  }
+
+  const policyCheck = await checkRemoteAccess(bound.deviceId, 'webrtcDesktop');
+  if (!policyCheck.allowed) {
+    return c.json({ error: policyCheck.reason ?? 'WebRTC desktop access is disabled by policy' }, 403);
+  }
+
+  // Reuse the same pattern as /sessions: terminate stragglers first, insert
+  // new pending row, return its id.
+  const session = await withSystemDbAccessContext(async () => {
+    await db
+      .update(remoteSessions)
+      .set({ status: 'disconnected', endedAt: new Date() })
+      .where(
+        and(
+          eq(remoteSessions.deviceId, bound.deviceId),
+          eq(remoteSessions.type, 'desktop'),
+          inArray(remoteSessions.status, ['pending', 'connecting', 'active'])
+        )
+      );
+    const [row] = await db
+      .insert(remoteSessions)
+      .values({
+        deviceId: bound.deviceId,
+        orgId: bound.tunnelOrgId,
+        userId: bound.tunnelUserId,
+        type: 'desktop',
+        status: 'pending',
+        iceCandidates: [],
+      })
+      .returning();
+    return row;
+  });
+
+  if (!session) {
+    return c.json({ error: 'Failed to create desktop session' }, 500);
+  }
+
+  const accessToken = await createViewerAccessToken({
+    sub: bound.tunnelUserId,
+    email: bound.userEmail,
+    sessionId: session.id,
+  });
+
+  return c.json({
+    sessionId: session.id,
+    accessToken,
+    expiresInSeconds: getViewerAccessTokenExpirySeconds(),
+  });
+});
+
+// POST /vnc-viewer/downgrade-to-vnc
+// Inverse of upgrade-to-webrtc. Called when the viewer is on WebRTC and
+// receives a `desktop_state: 'loginwindow'` broadcast (user locked/logged
+// out) and wants to fall back to VNC. The viewer token is desktop-scoped
+// (sessionId = remote_sessions.id); we use it to look up the device, spin
+// up a fresh VNC tunnel, issue a ws-ticket, and hand back a new viewer
+// token scoped to the tunnel id. Mirrors POST /tunnels but for viewer-token
+// auth (which can't hit the user-JWT-gated route).
+vncViewerRoutes.post('/downgrade-to-vnc', async (c) => {
+  const auth = await requireViewerToken(c);
+  if (auth instanceof Response) return auth;
+
+  const bound = await withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select({
+        userId: remoteSessions.userId,
+        orgId: remoteSessions.orgId,
+        deviceId: remoteSessions.deviceId,
+        deviceStatus: devices.status,
+        agentId: devices.agentId,
+        userEmail: users.email,
+      })
+      .from(remoteSessions)
+      .innerJoin(devices, eq(remoteSessions.deviceId, devices.id))
+      .innerJoin(users, eq(remoteSessions.userId, users.id))
+      .where(eq(remoteSessions.id, auth.sessionId))
+      .limit(1);
+    return row ?? null;
+  });
+
+  if (!bound) {
+    return c.json({ error: 'Desktop session not found' }, 404);
+  }
+  if (bound.deviceStatus !== 'online') {
+    return c.json({ error: 'Device is not online' }, 400);
+  }
+  if (!bound.agentId || !isAgentConnected(bound.agentId)) {
+    return c.json({ error: 'Agent is not connected' }, 400);
+  }
+
+  const policyCheck = await checkRemoteAccess(bound.deviceId, 'vncRelay');
+  if (!policyCheck.allowed) {
+    return c.json({ error: policyCheck.reason ?? 'VNC relay is disabled by policy' }, 403);
+  }
+
+  // Insert the tunnel session row, then kick the agent off.
+  const tunnel = await withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .insert(tunnelSessions)
+      .values({
+        deviceId: bound.deviceId,
+        userId: bound.userId,
+        orgId: bound.orgId,
+        type: 'vnc',
+        status: 'pending',
+        targetHost: '127.0.0.1',
+        targetPort: 5900,
+        sourceIp: getClientIp(c),
+      })
+      .returning();
+    return row;
+  });
+
+  if (!tunnel) {
+    return c.json({ error: 'Failed to create tunnel' }, 500);
+  }
+
+  const sent = sendCommandToAgent(bound.agentId, {
+    id: `tun-open-${tunnel.id}`,
+    type: 'tunnel_open',
+    payload: {
+      tunnelId: tunnel.id,
+      targetHost: '127.0.0.1',
+      targetPort: 5900,
+      tunnelType: 'vnc',
+      allowlistRules: [],
+    },
+  });
+  if (!sent) {
+    await withSystemDbAccessContext(() =>
+      db.update(tunnelSessions)
+        .set({ status: 'failed', errorMessage: 'Agent disconnected before tunnel could be opened', endedAt: new Date() })
+        .where(eq(tunnelSessions.id, tunnel.id))
+    );
+    return c.json({ error: 'Agent disconnected before tunnel could be opened' }, 503);
+  }
+
+  // Build the ws-ticket + wsUrl the same way /vnc-exchange does. Ticket TTL
+  // is short (60s) — the viewer connects immediately after this call.
+  const ticket = await createWsTicket({
+    sessionId: tunnel.id,
+    sessionType: 'tunnel',
+    userId: bound.userId,
+  });
+  const publicBase = (process.env.PUBLIC_APP_URL || process.env.DASHBOARD_URL || '').replace(/\/$/, '');
+  const baseUrl = publicBase ? new URL(publicBase) : new URL(c.req.url);
+  const wsProtocol = baseUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${wsProtocol}//${baseUrl.host}/api/v1/tunnel-ws/${tunnel.id}/ws?ticket=${ticket.ticket}`;
+
+  const accessToken = await createViewerAccessToken({
+    sub: bound.userId,
+    email: bound.userEmail,
+    sessionId: tunnel.id,
+  });
+
+  return c.json({
+    tunnelId: tunnel.id,
+    wsUrl,
+    accessToken,
+    expiresInSeconds: getViewerAccessTokenExpirySeconds(),
+  });
+});

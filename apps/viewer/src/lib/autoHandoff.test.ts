@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { shouldAutoHandoffToVnc } from './autoHandoff';
+import { shouldAutoHandoffToVnc, shouldAutoHandoffToWebRTC } from './autoHandoff';
 
 describe('shouldAutoHandoffToVnc', () => {
   const base = {
@@ -57,6 +57,67 @@ describe('shouldAutoHandoffToVnc', () => {
       ...base,
       userJustSwitchedAt: 1_000_000 - 15_000,
       cooldownMs: 10_000,
+    })).toBe(true);
+  });
+});
+
+describe('shouldAutoHandoffToWebRTC', () => {
+  const base = {
+    remoteOs: 'macos',
+    deviceId: 'dev-1',
+    currentTransport: 'vnc' as const,
+    userJustSwitchedAt: 0,
+    previousMode: 'login_window' as const,
+    currentMode: 'user_session' as const,
+    now: 1_000_000,
+  };
+
+  it('returns true on transition login_window → user_session while on VNC', () => {
+    expect(shouldAutoHandoffToWebRTC(base)).toBe(true);
+  });
+
+  it('returns true on transition from null (first poll) → user_session', () => {
+    expect(shouldAutoHandoffToWebRTC({ ...base, previousMode: null })).toBe(true);
+  });
+
+  it('returns true on transition unavailable → user_session', () => {
+    expect(shouldAutoHandoffToWebRTC({ ...base, previousMode: 'unavailable' })).toBe(true);
+  });
+
+  it('returns false when mode stays user_session (no transition)', () => {
+    expect(shouldAutoHandoffToWebRTC({ ...base, previousMode: 'user_session' })).toBe(false);
+  });
+
+  it('returns false when currentMode is not user_session', () => {
+    expect(shouldAutoHandoffToWebRTC({ ...base, currentMode: 'login_window' })).toBe(false);
+    expect(shouldAutoHandoffToWebRTC({ ...base, currentMode: 'unavailable' })).toBe(false);
+    expect(shouldAutoHandoffToWebRTC({ ...base, currentMode: null })).toBe(false);
+  });
+
+  it('returns false when remote is not macOS', () => {
+    expect(shouldAutoHandoffToWebRTC({ ...base, remoteOs: 'windows' })).toBe(false);
+    expect(shouldAutoHandoffToWebRTC({ ...base, remoteOs: null })).toBe(false);
+  });
+
+  it('returns false when deviceId is missing', () => {
+    expect(shouldAutoHandoffToWebRTC({ ...base, deviceId: undefined })).toBe(false);
+  });
+
+  it('returns false when already on webrtc', () => {
+    expect(shouldAutoHandoffToWebRTC({ ...base, currentTransport: 'webrtc' })).toBe(false);
+  });
+
+  it('returns false during user-choice cooldown (user just picked VNC)', () => {
+    expect(shouldAutoHandoffToWebRTC({
+      ...base,
+      userJustSwitchedAt: 1_000_000 - 30_000,
+    })).toBe(false);
+  });
+
+  it('returns true after the user-choice cooldown window expires', () => {
+    expect(shouldAutoHandoffToWebRTC({
+      ...base,
+      userJustSwitchedAt: 1_000_000 - 60_001,
     })).toBe(true);
   });
 });

@@ -245,6 +245,66 @@ func (m *Manager) Stop() {
 	})
 }
 
+// StartDiagLogger starts a goroutine that periodically logs per-tunnel byte
+// counters plus an optional WebSocket binary-frame channel depth. Gated by the
+// caller (typically via env var) so it's off by default. The returned goroutine
+// exits when the manager stops.
+func (m *Manager) StartDiagLogger(interval time.Duration, chanStats func() (int, int)) {
+	go m.diagLoop(interval, chanStats)
+}
+
+func (m *Manager) diagLoop(interval time.Duration, chanStats func() (int, int)) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.done:
+			return
+		case <-ticker.C:
+			m.logDiag(chanStats)
+		}
+	}
+}
+
+func (m *Manager) logDiag(chanStats func() (int, int)) {
+	m.mu.RLock()
+	snapshot := make(map[string]*Session, len(m.sessions))
+	for id, s := range m.sessions {
+		snapshot[id] = s
+	}
+	m.mu.RUnlock()
+
+	if len(snapshot) == 0 {
+		return
+	}
+
+	var chanLen, chanCap int
+	haveChan := false
+	if chanStats != nil {
+		chanLen, chanCap = chanStats()
+		haveChan = true
+	}
+
+	now := time.Now().Unix()
+	for id, s := range snapshot {
+		if s == nil {
+			continue
+		}
+		attrs := []any{
+			"tunnelId", id,
+			"type", s.TunnelType,
+			"bytesRecv", s.BytesRecv(),
+			"bytesSent", s.BytesSent(),
+			"idleSec", now - s.LastActive(),
+		}
+		if haveChan {
+			attrs = append(attrs, "wsBinChanLen", chanLen, "wsBinChanCap", chanCap)
+		}
+		log.Info("tunnel diag", attrs...)
+	}
+}
+
 func (m *Manager) reapLoop() {
 	ticker := time.NewTicker(reaperInterval)
 	defer ticker.Stop()

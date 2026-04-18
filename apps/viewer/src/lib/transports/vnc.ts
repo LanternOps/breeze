@@ -115,6 +115,68 @@ export async function connectVnc(
   const cleanupPump = () => { if (pumpInterval !== null) clearInterval(pumpInterval); };
   rfb.addEventListener('disconnect', cleanupPump);
 
+  // macOS screensharingd sometimes stops emitting framebuffer updates while
+  // the TCP pipe stays open — the client sits forever waiting on its
+  // FramebufferUpdateRequest(incremental=1). Input still flows (bytesSent
+  // climbs on the agent) but bytesRecv goes flat. To recover without
+  // flooding the pipe with full-screen refreshes, use a tiered watchdog:
+  //   * 1.5s silent → send another incremental request (near-zero cost, just
+  //     nudges the server to send whatever it has been holding back)
+  //   * 5s silent → fall back to a non-incremental refresh (whole framebuffer)
+  //   * after a non-incremental fires, cool down for 10s before another full
+  //     refresh — incremental nudges are still allowed during cooldown
+  const INCREMENTAL_STALE_MS = 1500;
+  const FULL_STALE_MS = 5000;
+  const FULL_COOLDOWN_MS = 10_000;
+  let lastMessageAt = Date.now();
+  let lastIncrementalNudgeAt = 0;
+  let lastFullRefreshAt = 0;
+
+  // noVNC's Websock stores exactly one handler per event in `_eventHandlers`.
+  // RFB's constructor set `message` to its own `_handleMessage`, which drives
+  // the decoder. We wrap it (not replace) so our arrival marker runs after
+  // every incoming batch without starving noVNC's pipeline.
+  if (rfb._sock && rfb._sock._eventHandlers) {
+    const origMessage = rfb._sock._eventHandlers.message;
+    rfb._sock.on('message', () => {
+      if (typeof origMessage === 'function') origMessage();
+      lastMessageAt = Date.now();
+    });
+  }
+
+  const watchdogInterval = setInterval(() => {
+    if (disposed) return;
+    if (rfb._rfbConnectionState !== 'connected') return;
+    const fbW = rfb._fbWidth | 0;
+    const fbH = rfb._fbHeight | 0;
+    if (fbW <= 0 || fbH <= 0) return;
+
+    const now = Date.now();
+    const silentFor = now - lastMessageAt;
+
+    if (silentFor >= FULL_STALE_MS && now - lastFullRefreshAt >= FULL_COOLDOWN_MS) {
+      try {
+        (RFB as any).messages.fbUpdateRequest(rfb._sock, false, 0, 0, fbW, fbH);
+        lastFullRefreshAt = now;
+        lastIncrementalNudgeAt = now;
+      } catch (err) {
+        console.warn('[VNC] full refresh failed:', err);
+      }
+      return;
+    }
+
+    if (silentFor >= INCREMENTAL_STALE_MS && now - lastIncrementalNudgeAt >= INCREMENTAL_STALE_MS) {
+      try {
+        (RFB as any).messages.fbUpdateRequest(rfb._sock, true, 0, 0, fbW, fbH);
+        lastIncrementalNudgeAt = now;
+      } catch (err) {
+        console.warn('[VNC] incremental nudge failed:', err);
+      }
+    }
+  }, 500);
+  const cleanupWatchdog = () => clearInterval(watchdogInterval);
+  rfb.addEventListener('disconnect', cleanupWatchdog);
+
   return {
     kind: 'vnc',
     capabilities: capabilitiesFor('vnc'),
@@ -123,6 +185,7 @@ export async function connectVnc(
       if (disposed) return;
       disposed = true;
       cleanupPump();
+      cleanupWatchdog();
       resizeObserver?.disconnect();
       try {
         rfb.disconnect();

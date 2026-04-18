@@ -104,10 +104,26 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
     setError(null);
 
     try {
+      // The `desktopAccess` prop is fetched once when the Remote Tools page mounts
+      // and never refreshed. On a slow helper-attach or after the user logs in
+      // on the Mac, the snapshot goes stale and we'd route to VNC even when
+      // WebRTC is now available. Re-fetch the device record right before
+      // deciding so the click always uses fresh state.
+      let liveDesktopAccess: DesktopAccessState | null = desktopAccess ?? null;
+      try {
+        const devRes = await fetchWithAuth(`/devices/${deviceId}`);
+        if (devRes.ok) {
+          const devBody = await devRes.json() as { desktopAccess?: DesktopAccessState | null };
+          liveDesktopAccess = devBody.desktopAccess ?? null;
+        }
+      } catch {
+        // Network blip — fall back to the prop so the connect flow still runs.
+      }
+
       // Auto-detect: fall back to VNC when the WebRTC path can't work but VNC relay is enabled.
       // Covers old macOS (unsupported_os), stuck helper (helper_not_connected), and virtual
       // display unavailable — all cases where native Screen Sharing via kickstart can still connect.
-      const needsVNC = canFallbackToVNC(desktopAccess, remoteAccessPolicy);
+      const needsVNC = canFallbackToVNC(liveDesktopAccess, remoteAccessPolicy);
 
       if (needsVNC) {
         // Create VNC tunnel — user provides their macOS credentials in the noVNC prompt
