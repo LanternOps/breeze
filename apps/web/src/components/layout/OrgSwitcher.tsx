@@ -229,13 +229,20 @@ export default function OrgSwitcher() {
                   org={org}
                   isSelected={org.id === currentOrgId}
                   onSelect={() => {
-                    setOrganization(org.id);
+                    if (org.id !== currentOrgId) {
+                      setOrganization(org.id);
+                      window.location.reload();
+                    }
                   }}
                   sites={sites}
                   currentSiteId={currentSiteId}
                   onSelectSite={(siteId) => {
+                    const changed = siteId !== currentSiteId;
                     setSite(siteId);
                     setIsOpen(false);
+                    if (changed) {
+                      window.location.reload();
+                    }
                   }}
                 />
               ))}
