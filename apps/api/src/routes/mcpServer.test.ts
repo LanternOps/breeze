@@ -463,4 +463,81 @@ describe('MCP bootstrap carve-out', () => {
       skipped_duplicates: 0,
     });
   });
+
+  it('unauth bootstrap dispatch runs tool handler inside withSystemDbAccessContext', async () => {
+    // Regression test: unauth bootstrap tools (create_tenant, verify_tenant,
+    // attach_payment_method) write to RLS-enabled tables (partner_activations,
+    // api_keys) with no request-scoped DB context, so the dispatcher must wrap
+    // the handler in withSystemDbAccessContext or production will fail with
+    // "new row violates row-level security policy" on every create_tenant call.
+    process.env.MCP_BOOTSTRAP_ENABLED = 'true';
+
+    vi.doMock('../middleware/apiKeyAuth', () => ({
+      apiKeyAuthMiddleware: async () => {
+        throw new Error('should not be called when no X-API-Key header');
+      },
+      requireApiKeyScope: () => async (_c: any, next: any) => next(),
+    }));
+
+    // Spy: the system-context wrapper should be invoked with a function that,
+    // when called, drives the tool handler.
+    const systemCtxSpy = vi.fn(async (fn: () => any) => await fn());
+    vi.doMock('../db', () => ({
+      db: {},
+      withDbAccessContext: vi.fn(),
+      withSystemDbAccessContext: systemCtxSpy,
+      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+    }));
+
+    const handlerMock = vi.fn(async () => ({ tenant_id: 'p-new', activation_status: 'pending_email' }));
+    const fakeTool = {
+      definition: {
+        name: 'create_tenant',
+        description: 'fake',
+        inputSchema: {
+          _def: { typeName: 'ZodObject', shape: () => ({}) },
+          safeParse: (v: unknown) => ({ success: true, data: v }),
+        },
+      },
+      handler: handlerMock,
+    };
+    vi.doMock('../modules/mcpBootstrap', () => ({
+      initMcpBootstrap: () => ({
+        unauthTools: [fakeTool],
+        authTools: [],
+      }),
+    }));
+
+    const mod = await import('./mcpServer');
+    await mod.__loadMcpBootstrapForTests();
+
+    const res = await mod.mcpServerRoutes.request('/message', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'create_tenant',
+          arguments: {
+            org_name: 'Acme',
+            admin_email: 'alex@acme-ops.com',
+            admin_name: 'Alex',
+            region: 'us',
+          },
+        },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.error).toBeUndefined();
+    expect(systemCtxSpy).toHaveBeenCalledTimes(1);
+    expect(systemCtxSpy).toHaveBeenCalledWith(expect.any(Function));
+    expect(handlerMock).toHaveBeenCalledTimes(1);
+    // The wrapper must be invoked strictly before the tool handler runs.
+    const wrapperInvokedBeforeHandler =
+      systemCtxSpy.mock.invocationCallOrder[0]! < handlerMock.mock.invocationCallOrder[0]!;
+    expect(wrapperInvokedBeforeHandler).toBe(true);
+  });
 });

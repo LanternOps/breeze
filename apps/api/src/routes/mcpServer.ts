@@ -21,7 +21,7 @@ import type { z } from 'zod';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
 import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from '../services/aiGuardrails';
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { devices, alerts, scripts, automations, organizations, partners } from '../db/schema';
 import { eq, and, desc, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -634,7 +634,12 @@ async function handleBootstrapToolsCall(
   };
 
   try {
-    const result = await tool.handler(parsed.data, ctx);
+    // Bootstrap unauth tools run BEFORE any API key is issued, so there's no
+    // request-scoped DB access context. They must write via the system context
+    // or RLS will reject the inserts (partner_activations, api_keys, partners).
+    const result = await withSystemDbAccessContext(async () =>
+      tool.handler(parsed.data, ctx),
+    );
     return jsonRpcResult(id, {
       content: [{ type: 'text', text: JSON.stringify(result) }],
     });

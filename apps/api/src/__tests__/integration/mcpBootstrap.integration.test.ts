@@ -56,10 +56,16 @@ async function rpcCall(
   params: { name: string; arguments: Record<string, unknown> },
   headers: Record<string, string> = {},
 ): Promise<Response> {
-  // Production deployments set a DB access context via upstream middleware /
-  // auth; this integration test drives the Hono app directly so we wrap each
-  // request in a system-scoped context so inserts into RLS-enabled tables
-  // (partner_activations, api_keys, deployment_invites) pass.
+  // The unauth bootstrap dispatch now wraps handler execution in
+  // withSystemDbAccessContext internally (see mcpServer.ts), so the unauth
+  // path does not need an outer wrap. The authed path still needs one in this
+  // harness: the authed `requirePaymentMethod` decorator reads `partners`,
+  // which is partner-axis RLS; apiKeyAuthMiddleware enters `organization`
+  // scope with `accessiblePartnerIds: []`, so the direct read would return
+  // empty and trip a false PAYMENT_REQUIRED. Wrapping here short-circuits
+  // nested withDbAccessContext (it returns fn() when a store is already set)
+  // so the partner read runs under system scope, matching production flow
+  // where upstream middleware establishes context before routes run.
   return withSystemDbAccessContext(async () =>
     app.request('/mcp/message', {
       method: 'POST',
