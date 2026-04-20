@@ -148,6 +148,19 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     console.error('Failed to update API key usage stats:', err);
   });
 
+  // Resolve the owning partner for this API key's org. Required so partner-axis
+  // RLS tables (e.g. `partners` read by the MCP bootstrap paymentGate) remain
+  // visible to the API key's request — otherwise breeze_has_partner_access()
+  // short-circuits to false and the authed caller sees zero rows.
+  const resolvedPartnerId = await withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, apiKey.orgId))
+      .limit(1);
+    return row?.partnerId ?? null;
+  });
+
   // Set API key context for route handlers
   c.set('apiKey', {
     id: apiKey.id,
@@ -166,8 +179,11 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
       scope: 'organization',
       orgId: apiKey.orgId,
       accessibleOrgIds: [apiKey.orgId],
-      // API keys are org-scoped; they have no access to partner-level tables.
-      accessiblePartnerIds: []
+      // The API key is scoped to a single org, but that org belongs to a
+      // partner. We include the owning partner in the allowlist so the key can
+      // read its own partner row (billing gate, MCP provisioning). If the org
+      // somehow has no partner link, fall back to an empty allowlist.
+      accessiblePartnerIds: resolvedPartnerId ? [resolvedPartnerId] : []
     },
     async () => {
       await next();
