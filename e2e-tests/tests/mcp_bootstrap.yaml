@@ -1,0 +1,209 @@
+# MCP Agent-Deployable Setup E2E Test
+#
+# Exercises the full "agent-deployable MCP bootstrap" flow end-to-end via HTTP
+# only (no UI). An AI coding agent walks a prospect through tenant creation,
+# email verification, payment, and deployment-invite send — all via MCP
+# tools/call on /mcp/message.
+#
+# Prerequisites for --mode live:
+#   MCP_BOOTSTRAP_ENABLED=true          — gates the create_tenant / verify_tenant
+#                                          / send_deployment_invites tools.
+#   MCP_BOOTSTRAP_TEST_MODE=true        — exposes /test/activate/:partnerId and
+#                                          /test/complete-payment/:partnerId
+#                                          shortcuts so the test doesn't need
+#                                          real email or a Stripe round-trip.
+#   PUBLIC_ACTIVATION_BASE_URL          — required by create_tenant handler.
+#   STRIPE_SECRET_KEY                   — required on partner creation path.
+#   BREEZE_BILLING_URL (optional)       — bypassed by MCP_BOOTSTRAP_TEST_MODE.
+#
+# Run:
+#   cd e2e-tests && \
+#     MCP_BOOTSTRAP_ENABLED=true MCP_BOOTSTRAP_TEST_MODE=true \
+#     npx tsx run.ts --mode live --test mcp_bootstrap
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# RUNNER NOTE (must read before executing):
+#
+# The `e2e-tests/run.ts` `api` action currently:
+#   1. ALWAYS attaches `Authorization: Bearer <token>` and cannot emit
+#      unauthenticated requests. The bootstrap carve-out on `/mcp/message`
+#      requires NO auth header for tier-0 tools (create_tenant, verify_tenant).
+#   2. Does not accept per-step custom headers, so the tier-2 authed tools
+#      (send_deployment_invites, get_fleet_status) cannot be given the
+#      `X-API-Key` header the MCP server expects for a freshly-issued
+#      `brz_test_*` key (Bearer JWT won't match the api-key-auth path).
+#   3. Does not unwrap the JSON-RPC `result.content[0].text` JSON-string
+#      payload, so `expect:` matchers can't assert on fields like
+#      `activation_status` or `api_key` without step-side extraction.
+#
+# Until the runner grows (a) `auth: none` + `headers:` on `api` steps and
+# (b) a `contentJsonPath` extractor for `tools/call` responses, execute this
+# flow via the existing integration test at
+#   apps/api/src/__tests__/integration/mcpBootstrap.integration.test.ts
+# (Task 9.1), which exercises the same seven stages against a live
+# PostgreSQL + Stripe-stub stack in-process.
+#
+# This YAML is the *intended* public-runner shape and documents the contract
+# the runner extensions should satisfy.
+# ─────────────────────────────────────────────────────────────────────────────
+
+tests:
+  - id: mcp_bootstrap
+    name: "MCP Agent-Deployable Bootstrap Flow"
+    description: >
+      Full agent-deployable MCP flow: create_tenant → verify_tenant(pending_email)
+      → simulated email activation → verify_tenant(pending_payment) → simulated
+      payment completion → authed send_deployment_invites → authed get_fleet_status.
+    tags: [mcp, bootstrap, api, critical]
+    nodes: [linux]
+    timeout: 120000
+
+    steps:
+      # ── Stage 1: create_tenant (unauthenticated MCP call) ─────────────
+      - id: create_tenant
+        action: api
+        description: "MCP tools/call create_tenant — unauthenticated bootstrap tool"
+        # RUNNER EXTENSION NEEDED: auth: none  |  headers: {}
+        request:
+          method: POST
+          path: "/mcp/message"
+          body:
+            jsonrpc: "2.0"
+            id: 1
+            method: "tools/call"
+            params:
+              name: create_tenant
+              arguments:
+                org_name: "MCP E2E {{testId}}-{{testStartTime}}"
+                admin_email: "test+{{testId}}@acme-e2e.test"
+                admin_name: "Test Admin"
+                region: us
+        # RUNNER EXTENSION NEEDED: extract `result.content[0].text` as JSON
+        # and hoist `tenant_id`, `activation_status` into context.vars.
+        expect:
+          # Tier-0 bootstrap tools always return a success envelope with
+          # content-array text payload. Once unwrapped:
+          #   activation_status: pending_email
+          #   tenant_id: <uuid>
+          jsonrpc: "2.0"
+
+      # ── Stage 2: verify_tenant before activation ──────────────────────
+      - id: verify_pending_email
+        action: api
+        description: "verify_tenant should report pending_email before activation"
+        request:
+          method: POST
+          path: "/mcp/message"
+          body:
+            jsonrpc: "2.0"
+            id: 2
+            method: "tools/call"
+            params:
+              name: verify_tenant
+              arguments:
+                tenant_id: "{{tenant_id}}"
+        # Expected unwrapped payload: { status: "pending_email" }
+        expect:
+          jsonrpc: "2.0"
+
+      # ── Stage 3: Simulate email-verification click ────────────────────
+      - id: simulate_email_click
+        action: api
+        description: "POST /test/activate/:partnerId — simulates the email link click"
+        # RUNNER EXTENSION NEEDED: auth: none
+        request:
+          method: POST
+          path: "/test/activate/{{tenant_id}}"
+          body: {}
+
+      # ── Stage 4: verify_tenant after email, expect pending_payment ────
+      - id: verify_pending_payment
+        action: api
+        description: "verify_tenant should now report pending_payment and return the API key"
+        request:
+          method: POST
+          path: "/mcp/message"
+          body:
+            jsonrpc: "2.0"
+            id: 3
+            method: "tools/call"
+            params:
+              name: verify_tenant
+              arguments:
+                tenant_id: "{{tenant_id}}"
+        # Expected unwrapped payload:
+        #   { status: "pending_payment", api_key: "brz_test_...", payment_link: "https://..." }
+        # RUNNER EXTENSION NEEDED: extract `api_key` into context.vars.
+        expect:
+          jsonrpc: "2.0"
+
+      # ── Stage 5: Simulate Stripe payment-method attach ────────────────
+      - id: simulate_payment
+        action: api
+        description: "POST /test/complete-payment/:partnerId — simulates Stripe webhook"
+        # RUNNER EXTENSION NEEDED: auth: none
+        request:
+          method: POST
+          path: "/test/complete-payment/{{tenant_id}}"
+          body: {}
+
+      # ── Stage 6: verify_tenant post-payment, expect active ────────────
+      - id: verify_active
+        action: api
+        description: "verify_tenant should now report active (tier-2 scope granted)"
+        request:
+          method: POST
+          path: "/mcp/message"
+          body:
+            jsonrpc: "2.0"
+            id: 4
+            method: "tools/call"
+            params:
+              name: verify_tenant
+              arguments:
+                tenant_id: "{{tenant_id}}"
+        # Expected unwrapped payload: { status: "active" }
+        expect:
+          jsonrpc: "2.0"
+
+      # ── Stage 7: Authed send_deployment_invites ───────────────────────
+      - id: send_invites
+        action: api
+        description: "Authed send_deployment_invites using the API key from stage 4"
+        # RUNNER EXTENSION NEEDED:
+        #   headers: { X-API-Key: "{{api_key}}" }
+        #   auth: none   (so Bearer is NOT added)
+        request:
+          method: POST
+          path: "/mcp/message"
+          body:
+            jsonrpc: "2.0"
+            id: 5
+            method: "tools/call"
+            params:
+              name: send_deployment_invites
+              arguments:
+                emails:
+                  - "test+invitee-{{testId}}@acme-e2e.test"
+        expect:
+          jsonrpc: "2.0"
+
+      # ── Stage 8: Authed get_fleet_status ──────────────────────────────
+      - id: fleet_status
+        action: api
+        description: "Authed get_fleet_status — invite funnel should count the invite"
+        # RUNNER EXTENSION NEEDED: headers: { X-API-Key: "{{api_key}}" }
+        request:
+          method: POST
+          path: "/mcp/message"
+          body:
+            jsonrpc: "2.0"
+            id: 6
+            method: "tools/call"
+            params:
+              name: get_fleet_status
+              arguments: {}
+        # Expected unwrapped payload includes:
+        #   invite_funnel: { total_invited: >= 1, ... }
+        expect:
+          jsonrpc: "2.0"
