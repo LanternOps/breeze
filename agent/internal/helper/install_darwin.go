@@ -21,6 +21,16 @@ func packageExtension() string { return ".dmg" }
 // destAppPath is the fixed install location — avoids fragile filepath.Dir chains.
 const destAppPath = "/Applications/Breeze Helper.app"
 
+// uninstallPackage removes the installed Breeze Helper.app bundle.
+// Idempotent: returns nil if the bundle is already gone.
+func uninstallPackage() error {
+	if err := os.RemoveAll(destAppPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove app bundle: %w", err)
+	}
+	log.Info("app bundle removed", "path", destAppPath)
+	return nil
+}
+
 // installPackage mounts the DMG, copies the .app bundle, and unmounts.
 func installPackage(dmgPath, _ string) error {
 	// Mount the DMG to a temp mount point

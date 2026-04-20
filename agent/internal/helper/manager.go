@@ -233,7 +233,54 @@ func (m *Manager) Apply(settings *Settings) {
 
 	if settings.Enabled {
 		m.applyPendingUpdate()
+	} else {
+		m.uninstallLocked()
 	}
+}
+
+// uninstallLocked performs full cleanup when the helper policy is disabled.
+// Removes the autostart entry, the installed package, and any per-session
+// config/status files. All operations are idempotent so this is safe to call
+// every Apply tick while the policy is off.
+//
+// Must be called with m.mu held.
+func (m *Manager) uninstallLocked() {
+	if !m.isInstalled() && !m.hasResidualState() {
+		return
+	}
+
+	if err := removeAutoStartFunc(); err != nil {
+		log.Warn("uninstall: remove autostart failed", "error", err.Error())
+	}
+
+	if err := uninstallPackageFunc(); err != nil {
+		log.Warn("uninstall: remove package failed", "error", err.Error())
+	}
+
+	sessionsDir := filepath.Join(m.baseDir, "sessions")
+	if err := os.RemoveAll(sessionsDir); err != nil {
+		log.Warn("uninstall: remove sessions dir failed", "path", sessionsDir, "error", err.Error())
+	}
+
+	if err := os.Remove(m.legacyConfigPath()); err != nil && !os.IsNotExist(err) {
+		log.Debug("uninstall: legacy config removal", "error", err.Error())
+	}
+
+	m.pendingHelperVersion = ""
+	m.abandonedVersion = ""
+	m.updateFailures = 0
+
+	log.Info("breeze assist uninstalled")
+}
+
+// hasResidualState reports whether per-session helper state still exists on
+// disk. Used by uninstallLocked to know when more cleanup is needed even if
+// the binary is already gone.
+func (m *Manager) hasResidualState() bool {
+	if _, err := os.Stat(filepath.Join(m.baseDir, "sessions")); err == nil {
+		return true
+	}
+	return false
 }
 
 func settingsToConfig(s *Settings) *Config {

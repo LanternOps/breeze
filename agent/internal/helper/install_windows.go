@@ -16,6 +16,67 @@ const registryValue = "BreezeHelper"
 
 func packageExtension() string { return ".msi" }
 
+const helperDisplayName = "Breeze Helper"
+
+// uninstallPackage finds the MSI ProductCode in the registry and runs
+// msiexec /x to uninstall it. Idempotent: returns nil if not installed.
+func uninstallPackage() error {
+	productCode, err := findHelperProductCode(helperDisplayName)
+	if err != nil {
+		return fmt.Errorf("locate product code: %w", err)
+	}
+	if productCode == "" {
+		return nil // not installed
+	}
+
+	cmd := exec.Command("msiexec", "/x", productCode, "/qn", "/norestart")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 3010 {
+			log.Info("MSI uninstalled (reboot required)", "productCode", productCode)
+			return nil
+		}
+		return fmt.Errorf("msiexec /x %s: %w (output: %s)", productCode, err, strings.TrimSpace(string(out)))
+	}
+	log.Info("MSI uninstalled", "productCode", productCode)
+	return nil
+}
+
+// findHelperProductCode walks the standard 64-bit and 32-bit Uninstall keys
+// looking for a ProductCode-style subkey whose DisplayName matches displayName.
+func findHelperProductCode(displayName string) (string, error) {
+	roots := []string{
+		`SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`,
+		`SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall`,
+	}
+	for _, root := range roots {
+		key, err := registry.OpenKey(registry.LOCAL_MACHINE, root, registry.READ)
+		if err != nil {
+			continue
+		}
+		subKeys, err := key.ReadSubKeyNames(0)
+		key.Close()
+		if err != nil {
+			continue
+		}
+		for _, sk := range subKeys {
+			if !strings.HasPrefix(sk, "{") {
+				continue // only ProductCode-style entries
+			}
+			child, err := registry.OpenKey(registry.LOCAL_MACHINE, root+`\`+sk, registry.READ)
+			if err != nil {
+				continue
+			}
+			name, _, _ := child.GetStringValue("DisplayName")
+			child.Close()
+			if name == displayName {
+				return sk, nil
+			}
+		}
+	}
+	return "", nil
+}
+
 // installPackage runs the MSI installer silently.
 // Exit code 3010 means success but reboot required — treated as success.
 func installPackage(msiPath, _ string) error {

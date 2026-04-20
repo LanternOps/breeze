@@ -8,6 +8,7 @@ import (
 
 var (
 	removeAutoStartFunc   = removeAutoStart
+	uninstallPackageFunc  = uninstallPackage
 	stopHelperLegacyFunc  = stopHelperLegacy
 	migrationTargetsFunc  = migrationTargets
 	prepareSessionDirFunc = prepareSessionDir
