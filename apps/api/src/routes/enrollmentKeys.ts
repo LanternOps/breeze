@@ -167,6 +167,141 @@ export async function allocateShortCode(): Promise<string> {
 }
 
 // ============================================
+// Short-code redemption (used by /i/ invite landing + download routes)
+// ============================================
+
+export interface PeekedShortCode {
+  /** Parent short-link row id (enrollmentKeys.id whose shortCode matched). */
+  id: string;
+  orgId: string;
+  siteId: string;
+}
+
+export interface RedeemedShortCode {
+  /** Id of the freshly minted single-use child enrollment key. */
+  id: string;
+  /** Parent short-link row id (enrollmentKeys.id whose shortCode matched). */
+  parentId: string;
+  /** Owning org of the child key (matches the parent). */
+  orgId: string;
+  /** Site id baked into the installer. */
+  siteId: string;
+  /** Raw enrollment token (plaintext) to embed in the installer. Never stored. */
+  rawKey: string;
+  /** Optional pre-shared secret hash if configured on the parent. */
+  keySecretHash: string | null;
+}
+
+/**
+ * Look up a short code without consuming a slot. Used by the `/i/:shortCode`
+ * landing page so loading the page doesn't burn a use. Returns the parent
+ * row id + org/site for joins (e.g. marking `deployment_invites.clickedAt`).
+ * Returns `null` for unknown / expired codes.
+ */
+export async function peekShortCode(shortCode: string): Promise<PeekedShortCode | null> {
+  if (!shortCode || shortCode.length > 12) return null;
+  return withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select({
+        id: enrollmentKeys.id,
+        orgId: enrollmentKeys.orgId,
+        siteId: enrollmentKeys.siteId,
+        expiresAt: enrollmentKeys.expiresAt,
+        maxUsage: enrollmentKeys.maxUsage,
+        usageCount: enrollmentKeys.usageCount,
+      })
+      .from(enrollmentKeys)
+      .where(eq(enrollmentKeys.shortCode, shortCode))
+      .limit(1);
+    if (!row) return null;
+    if (!row.orgId || !row.siteId) return null;
+    if (row.expiresAt && new Date(row.expiresAt) < new Date()) return null;
+    if (row.maxUsage !== null && row.usageCount >= row.maxUsage) return null;
+    return { id: row.id, orgId: row.orgId, siteId: row.siteId };
+  });
+}
+
+/**
+ * Redeem a short code: look up the parent short-link row, validate it's
+ * still claimable (not expired, under maxUsage), mint a fresh single-use
+ * child enrollment key, and atomically claim a slot on the parent.
+ *
+ * Returns `null` for any failure case (unknown code, expired, used up),
+ * matching the "just 404 it" posture of the landing page. Callers that
+ * want to distinguish reasons should use {@link publicShortLinkRoutes}
+ * directly.
+ *
+ * Unlike the `/s/:code` path, this does NOT require the parent row to
+ * have `installerPlatform` set — MCP-invite short codes are OS-agnostic
+ * and the `/i/` landing page lets the recipient pick their OS.
+ */
+export async function redeemShortCode(shortCode: string): Promise<RedeemedShortCode | null> {
+  if (!shortCode || shortCode.length > 12) return null;
+
+  return withSystemDbAccessContext(async () => {
+    const [parent] = await db
+      .select()
+      .from(enrollmentKeys)
+      .where(eq(enrollmentKeys.shortCode, shortCode))
+      .limit(1);
+
+    if (!parent) return null;
+    if (parent.expiresAt && new Date(parent.expiresAt) < new Date()) return null;
+    if (!parent.siteId || !parent.orgId) return null;
+
+    const rawKey = generateEnrollmentKey();
+    const tokenHash = hashEnrollmentKey(rawKey);
+
+    const [child] = await db
+      .insert(enrollmentKeys)
+      .values({
+        orgId: parent.orgId,
+        siteId: parent.siteId,
+        name: `${parent.name} (invite download)`,
+        key: tokenHash,
+        keySecretHash: parent.keySecretHash,
+        maxUsage: 1,
+        expiresAt: freshChildExpiresAt(),
+        createdBy: null,
+        installerPlatform: parent.installerPlatform,
+      })
+      .returning();
+
+    if (!child) return null;
+
+    // Atomic slot claim against the parent. Drop the child if the parent
+    // was already at its cap — prevents orphan rows when a popular invite
+    // is clicked concurrently.
+    const claimed = await db
+      .update(enrollmentKeys)
+      .set({ usageCount: sql`${enrollmentKeys.usageCount} + 1` })
+      .where(
+        and(
+          eq(enrollmentKeys.id, parent.id),
+          parent.maxUsage !== null
+            ? lt(enrollmentKeys.usageCount, parent.maxUsage)
+            : sql`true`,
+        ),
+      )
+      .returning({ id: enrollmentKeys.id });
+
+    if (claimed.length === 0) {
+      await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, child.id)).catch(() => {});
+      return null;
+    }
+
+    return {
+      id: child.id,
+      parentId: parent.id,
+      orgId: parent.orgId,
+      siteId: parent.siteId,
+      rawKey,
+      keySecretHash: parent.keySecretHash,
+    };
+  });
+}
+
+// ============================================
 // Child enrollment key helper (used by MCP bootstrap invite flow)
 // ============================================
 

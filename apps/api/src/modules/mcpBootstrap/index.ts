@@ -22,3 +22,4 @@ export function initMcpBootstrap(): {
 
 export { BOOTSTRAP_TOOL_NAMES, BootstrapError } from './types';
 export { mountActivationRoutes } from './activationRoutes';
+export { mountInviteLandingRoutes } from './inviteLandingRoutes';

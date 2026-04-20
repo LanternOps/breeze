@@ -347,8 +347,9 @@ app.route('/s', publicShortLinkRoutes);
 // MCP_BOOTSTRAP_ENABLED=true so the module's side effects and env
 // requirements stay off the hot path on deployments that don't use it.
 if (process.env.MCP_BOOTSTRAP_ENABLED === 'true') {
-  const { mountActivationRoutes } = await import('./modules/mcpBootstrap');
+  const { mountActivationRoutes, mountInviteLandingRoutes } = await import('./modules/mcpBootstrap');
   mountActivationRoutes(app);
+  mountInviteLandingRoutes(app);
 }
 
 // API routes
