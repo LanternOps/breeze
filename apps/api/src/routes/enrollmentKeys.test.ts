@@ -21,6 +21,13 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   enrollmentKeys: {},
+  installerBootstrapTokens: {},
+}));
+
+vi.mock('../services/installerBootstrapToken', () => ({
+  generateBootstrapToken: vi.fn(() => 'ABC123'),
+  bootstrapTokenExpiresAt: vi.fn(() => new Date('2026-04-20T00:00:00.000Z')),
+  BOOTSTRAP_TOKEN_PATTERN: /^[A-Z0-9]{6}$/,
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -578,5 +585,141 @@ describe('GET /public-download/:platform', () => {
     );
 
     delete process.env.BINARY_VERSION;
+  });
+});
+
+// ============================================================
+// POST /:id/bootstrap-token
+// ============================================================
+
+describe('POST /:id/bootstrap-token', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.PUBLIC_API_URL = 'https://api.example.com';
+    app = new Hono();
+    app.route('/enrollment-keys', enrollmentKeyRoutes);
+  });
+
+  it('issues a bootstrap token for a valid parent key', async () => {
+    const parent = makeKeyRow();
+    const tokenRow = {
+      id: randomUUID(),
+      token: 'ABC123',
+      orgId: ORG_ID,
+      parentEnrollmentKeyId: parent.id,
+      siteId: SITE_ID,
+      maxUsage: 1,
+      createdBy: 'user-system',
+      createdAt: new Date(),
+      expiresAt: new Date('2026-04-20T00:00:00.000Z'),
+      consumedAt: null,
+      consumedFromIp: null,
+    };
+
+    // select: look up parent key
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([parent]),
+        }),
+      }),
+    } as any);
+
+    // insert: create bootstrap token row
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([tokenRow]),
+      }),
+    } as any);
+
+    const res = await app.request(`/enrollment-keys/${KEY_ID}/bootstrap-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ maxUsage: 1 }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.token).toMatch(/^[A-Z0-9]{6}$/);
+    expect(body.expiresAt).toBeTypeOf('string');
+    expect(body.maxUsage).toBe(1);
+  });
+
+  it('rejects unknown parent key with 404', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request('/enrollment-keys/missing/bootstrap-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ maxUsage: 1 }),
+    });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects when caller has no org access (403)', async () => {
+    // Override authMiddleware to return a scope where canAccessOrg returns false
+    const { authMiddleware: mockAuth } = await import('../middleware/auth');
+    vi.mocked(mockAuth).mockImplementationOnce((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'partner',
+        orgId: null,
+        user: { id: 'user-partner', email: 'partner@example.com' },
+        canAccessOrg: () => false,
+        accessibleOrgIds: [],
+      });
+      return next();
+    });
+
+    const restrictedApp = new Hono();
+    restrictedApp.route('/enrollment-keys', enrollmentKeyRoutes);
+
+    const parent = makeKeyRow();
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([parent]),
+        }),
+      }),
+    } as any);
+
+    const res = await restrictedApp.request(`/enrollment-keys/${KEY_ID}/bootstrap-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ maxUsage: 1 }),
+    });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('rejects expired parent key with 410', async () => {
+    const expiredParent = makeKeyRow({
+      expiresAt: new Date(Date.now() - 10_000), // past
+    });
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([expiredParent]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request(`/enrollment-keys/${KEY_ID}/bootstrap-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ maxUsage: 1 }),
+    });
+
+    expect(res.status).toBe(410);
   });
 });
