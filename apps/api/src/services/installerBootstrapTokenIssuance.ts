@@ -70,6 +70,9 @@ export async function issueBootstrapTokenForKey(
     createdBy: input.createdByUserId,
     expiresAt,
   }).returning();
+  if (!row) {
+    throw new Error('installerBootstrapTokens insert returned no row');
+  }
 
   return { id: row.id, token, expiresAt, parentKeyName: parent.name };
 }
