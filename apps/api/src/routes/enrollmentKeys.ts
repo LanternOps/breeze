@@ -13,8 +13,9 @@ import { PERMISSIONS } from '../services/permissions';
 import { hashEnrollmentKey } from '../services/enrollmentKeySecurity';
 import {
   buildMacosInstallerZip, buildWindowsInstallerZip,
-  fetchRegularMsi, fetchMacosPkg,
+  fetchRegularMsi, fetchMacosPkg, fetchMacosInstallerAppZip,
 } from '../services/installerBuilder';
+import { renameAppInZip } from '../services/installerAppZip';
 import {
   issueBootstrapTokenForKey,
   BootstrapTokenIssuanceError,
@@ -568,6 +569,60 @@ enrollmentKeyRoutes.get(
     const globalSecret = process.env.AGENT_ENROLLMENT_SECRET || '';
     if (!globalSecret && parentKey.keySecretHash) {
       console.warn('[installer] AGENT_ENROLLMENT_SECRET not configured but parent key has a secret hash — agents may fail to enroll');
+    }
+
+    // ----------------------------------------------------------------
+    // macOS — new app-bundle path (bootstrap token + renamed app zip)
+    // Runs before the legacy binary fetch and child key creation.
+    // Falls through to the legacy path when:
+    //   (a) caller passed ?legacy=1, OR
+    //   (b) the installer-app asset is not yet published on GitHub.
+    // ----------------------------------------------------------------
+    if (platform === 'macos') {
+      const wantLegacy = c.req.query('legacy') === '1';
+      const appZip = wantLegacy ? null : await fetchMacosInstallerAppZip();
+
+      if (appZip) {
+        // New path — bootstrap token + renamed app zip. No child enrollment key
+        // is created here; the bootstrap endpoint creates it lazily on consume.
+        let issued;
+        try {
+          issued = await issueBootstrapTokenForKey({
+            parentEnrollmentKeyId: parentKey.id,
+            createdByUserId: auth.user.id,
+            maxUsage: childMaxUsage,
+          });
+        } catch (err) {
+          if (err instanceof BootstrapTokenIssuanceError) {
+            if (err.code === 'parent_not_found') return c.json({ error: err.message }, 404);
+            return c.json({ error: err.message }, 410);
+          }
+          throw err;
+        }
+
+        const apiHost = new URL(serverUrl).host;
+        const newAppName = `Breeze Installer [${issued.token}@${apiHost}].app`;
+        const renamedZip = await renameAppInZip(appZip, {
+          oldAppName: 'Breeze Installer.app',
+          newAppName,
+        });
+
+        writeEnrollmentKeyAudit(c, auth, {
+          orgId: parentKey.orgId,
+          action: 'enrollment_key.installer_download',
+          keyId: parentKey.id,
+          keyName: parentKey.name,
+          details: { platform, mode: 'app-bundle', token: issued.token, count: childMaxUsage },
+        });
+
+        c.header('Content-Type', 'application/zip');
+        c.header('Content-Disposition', `attachment; filename="${newAppName}.zip"`);
+        c.header('Content-Length', String(renamedZip.length));
+        c.header('Cache-Control', 'no-store');
+        return c.body(renamedZip as unknown as ArrayBuffer);
+      }
+
+      // Falls through to legacy path below.
     }
 
     // Determine signing availability and fetch the binary BEFORE creating
