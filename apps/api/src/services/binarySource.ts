@@ -78,3 +78,11 @@ export function getGithubHelperUrl(os: string): string {
   if (!filename) throw new Error(`Unknown helper OS: ${os}`);
   return `${githubDownloadBase()}/${filename}`;
 }
+
+/**
+ * URL of the notarized Breeze Installer.app.zip for the current release.
+ * Asset is uploaded by the build-macos-installer-app job in release.yml.
+ */
+export function getGithubInstallerAppUrl(): string {
+  return `${githubDownloadBase()}/Breeze%20Installer.app.zip`;
+}
