@@ -26,8 +26,16 @@ func isOurProcess(pid int, binaryPath string) bool {
 	return filepath.Clean(exePath) == filepath.Clean(binaryPath)
 }
 
-// isHelperRunningInSession is a no-op on macOS (session-based spawning is
-// Windows-only). The PID-based check is sufficient on macOS/Linux.
-func isHelperRunningInSession(_ string, _ string) bool {
-	return false
+// isHelperRunningInSession scans the process table for the helper binary.
+// The PID-tracked check in the watcher fails when:
+//   - the helper was spawned via IPC (PID returned as 0)
+//   - helper_status.yaml hasn't been written yet (Tauri still booting)
+// In those windows the watcher would respawn even though a helper is alive,
+// piling up orphaned processes. Session arg is ignored — macOS is single-
+// session from the agent's perspective.
+func isHelperRunningInSession(_ string, binaryPath string) bool {
+	if binaryPath == "" {
+		return false
+	}
+	return runHelperCommand("pgrep", "-f", binaryPath) == nil
 }

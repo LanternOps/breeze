@@ -18,6 +18,16 @@ const desktopEntryPath = "/etc/xdg/autostart/breeze-helper.desktop"
 
 func packageExtension() string { return ".AppImage" }
 
+// uninstallPackage removes the installed AppImage. Idempotent.
+func uninstallPackage() error {
+	binaryPath := defaultBinaryPath()
+	if err := os.Remove(binaryPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove binary: %w", err)
+	}
+	log.Info("AppImage removed", "path", binaryPath)
+	return nil
+}
+
 // installPackage copies the AppImage to the target path and makes it executable.
 // AppImages are self-contained and directly runnable.
 func installPackage(appImagePath, binaryPath string) error {
