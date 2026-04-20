@@ -22,7 +22,7 @@ import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAu
 import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from '../services/aiGuardrails';
 import { db } from '../db';
-import { devices, alerts, scripts, automations, organizations } from '../db/schema';
+import { devices, alerts, scripts, automations, organizations, partners } from '../db/schema';
 import { eq, and, desc, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { writeAuditEvent } from '../services/auditEvents';
@@ -30,6 +30,7 @@ import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import type { BootstrapTool } from '../modules/mcpBootstrap/types';
 import { BOOTSTRAP_TOOL_NAMES, BootstrapError } from '../modules/mcpBootstrap/types';
+import { PaymentRequiredError } from '../modules/mcpBootstrap/paymentGate';
 
 export const mcpServerRoutes = new Hono();
 
@@ -413,7 +414,7 @@ mcpServerRoutes.post(
     // Build a minimal AuthContext from the API key
     const auth = await buildAuthFromApiKey(apiKey);
 
-    const response = await handleJsonRpc(body, auth, apiKey.scopes, apiKey.scopeState);
+    const response = await handleJsonRpc(body, auth, apiKey.scopes, apiKey.scopeState, apiKey, c);
 
     writeAuditEvent(c, {
       orgId: apiKey.orgId,
@@ -460,7 +461,9 @@ async function handleJsonRpc(
   req: JsonRpcRequest,
   auth: AuthContext,
   scopes: string[],
-  scopeState: 'readonly' | 'full' = 'full'
+  scopeState: 'readonly' | 'full' = 'full',
+  apiKey?: { id: string; orgId: string; scopeState: 'readonly' | 'full' },
+  c?: Context,
 ): Promise<JsonRpcResponse> {
   try {
     switch (req.method) {
@@ -485,7 +488,7 @@ async function handleJsonRpc(
         return handleToolsList(req.id, scopes);
 
       case 'tools/call':
-        return await handleToolsCall(req.id, req.params ?? {}, auth, scopes, scopeState);
+        return await handleToolsCall(req.id, req.params ?? {}, auth, scopes, scopeState, apiKey, c);
 
       case 'resources/list':
         return handleResourcesList(req.id);
@@ -530,13 +533,29 @@ function handleToolsList(id: string | number, scopes: string[]): JsonRpcResponse
     return hasExecute && (!requireExecuteAdmin || hasExecuteAdmin);
   });
 
-  return jsonRpcResult(id, {
-    tools: filteredTools.map((tool) => ({
-      name: tool.name,
-      description: tool.description ?? '',
-      inputSchema: tool.input_schema
-    }))
-  });
+  const result = filteredTools.map((tool) => ({
+    name: tool.name,
+    description: tool.description ?? '',
+    inputSchema: tool.input_schema,
+  }));
+
+  // Surface bootstrap authTools (post-activation: send_deployment_invites, etc.)
+  // to authenticated callers with the matching scope. These tools live outside
+  // the main aiTools registry but flow through the authed dispatch path below.
+  if (bootstrapModule) {
+    const authToolsEligible = hasExecute && (!requireExecuteAdmin || hasExecuteAdmin);
+    if (authToolsEligible) {
+      for (const tool of bootstrapModule.authTools) {
+        result.push({
+          name: tool.definition.name,
+          description: tool.definition.description,
+          inputSchema: zodToJsonSchema(tool.definition.inputSchema) as typeof result[number]['inputSchema'],
+        });
+      }
+    }
+  }
+
+  return jsonRpcResult(id, { tools: result });
 }
 
 // ============================================
@@ -643,7 +662,9 @@ async function handleToolsCall(
   params: Record<string, unknown>,
   auth: AuthContext,
   scopes: string[],
-  scopeState: 'readonly' | 'full' = 'full'
+  scopeState: 'readonly' | 'full' = 'full',
+  apiKey?: { id: string; orgId: string; scopeState: 'readonly' | 'full' },
+  c?: Context,
 ): Promise<JsonRpcResponse> {
   const toolName = params.name as string;
   const toolInput = (params.arguments ?? {}) as Record<string, unknown>;
@@ -652,12 +673,30 @@ async function handleToolsCall(
     return jsonRpcError(id, -32602, 'Missing required parameter: name');
   }
 
-  // Bootstrap tools are pre-activation only — refuse when authed.
+  // Bootstrap unauth tools are pre-activation only — refuse when authed.
   if ((BOOTSTRAP_TOOL_NAMES as readonly string[]).includes(toolName)) {
     return jsonRpcError(
       id,
       -32001,
       `already_authenticated: bootstrap tool "${toolName}" is only available pre-activation.`,
+    );
+  }
+
+  // Bootstrap authTools (post-activation, e.g. send_deployment_invites) live
+  // outside the main aiTools registry but dispatch through this authed path.
+  const bootstrapAuthTool = bootstrapModule?.authTools.find(
+    (t) => t.definition.name === toolName,
+  );
+  if (bootstrapAuthTool) {
+    return dispatchBootstrapAuthTool(
+      id,
+      bootstrapAuthTool,
+      toolInput,
+      auth,
+      scopes,
+      scopeState,
+      apiKey,
+      c,
     );
   }
 
@@ -770,6 +809,139 @@ async function handleToolsCall(
     return jsonRpcResult(id, {
       content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
       isError: true
+    });
+  }
+}
+
+// ============================================
+// Bootstrap authTool dispatch (authed path)
+// ============================================
+
+/**
+ * Dispatch a bootstrap authTool (e.g. send_deployment_invites) from the authed
+ * MCP path. Enforces the same scope/payment/allowlist gates as a tier-3 aiTool,
+ * then builds a BootstrapContext from the API key + Hono request and invokes
+ * the handler with the tool's own Zod-validated input.
+ *
+ * Errors are mapped 1:1 with the unauth bootstrap dispatch so callers see a
+ * consistent shape whether they hit the pre- or post-activation path.
+ */
+async function dispatchBootstrapAuthTool(
+  id: string | number,
+  tool: BootstrapTool<any, any>,
+  toolInput: Record<string, unknown>,
+  auth: AuthContext,
+  scopes: string[],
+  scopeState: 'readonly' | 'full',
+  apiKey: { id: string; orgId: string; scopeState: 'readonly' | 'full' } | undefined,
+  c: Context | undefined,
+): Promise<JsonRpcResponse> {
+  // Readonly-scope backstop — authTools are tier-3 mutations.
+  if (scopeState === 'readonly') {
+    return jsonRpcError(id, -32001, 'PAYMENT_REQUIRED', {
+      code: 'PAYMENT_REQUIRED',
+      message:
+        'This action requires a payment method on file (identity verification, no charge for free tier).',
+      remediation: {
+        tool: 'attach_payment_method',
+        args: { tenant_id: auth.partnerId },
+      },
+    });
+  }
+
+  const hasExecute = scopes.includes('*') || scopes.includes('ai:execute');
+  const requireExecuteAdmin =
+    process.env.NODE_ENV === 'production' && envFlag('MCP_REQUIRE_EXECUTE_ADMIN', false);
+  const hasExecuteAdmin = scopes.includes('*') || scopes.includes('ai:execute_admin');
+
+  if (!hasExecute) {
+    return jsonRpcError(
+      id,
+      -32603,
+      `Tool "${tool.definition.name}" requires ai:execute scope`,
+    );
+  }
+  if (requireExecuteAdmin && !hasExecuteAdmin) {
+    return jsonRpcError(
+      id,
+      -32603,
+      `Tool "${tool.definition.name}" requires ai:execute_admin scope in production`,
+    );
+  }
+  if (
+    process.env.NODE_ENV === 'production' &&
+    !isExecuteToolAllowedInProd(tool.definition.name)
+  ) {
+    return jsonRpcError(
+      id,
+      -32603,
+      `Tool "${tool.definition.name}" is not in MCP_EXECUTE_TOOL_ALLOWLIST for production`,
+    );
+  }
+
+  // Validate via the tool's own Zod schema (mirrors handleBootstrapToolsCall).
+  const parsed = tool.definition.inputSchema.safeParse(toolInput);
+  if (!parsed.success) {
+    return jsonRpcError(id, -32602, 'Invalid arguments', parsed.error.flatten());
+  }
+
+  if (!apiKey || !auth.partnerId) {
+    return jsonRpcError(
+      id,
+      -32603,
+      'Bootstrap authTool requires an API key with a resolvable partner.',
+    );
+  }
+
+  // Look up partner billing email (used as the admin email in invite templates).
+  let partnerAdminEmail = '';
+  try {
+    const [row] = await db
+      .select({ billingEmail: partners.billingEmail })
+      .from(partners)
+      .where(eq(partners.id, auth.partnerId))
+      .limit(1);
+    partnerAdminEmail = row?.billingEmail ?? '';
+  } catch (err) {
+    console.error('[MCP] Failed to load partner billing email:', err);
+  }
+
+  const bootstrapCtx = {
+    ip: c?.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? null,
+    userAgent: c?.req.header('user-agent') ?? null,
+    region: ((process.env.BREEZE_REGION as 'us' | 'eu') ?? 'us') as 'us' | 'eu',
+    apiKey: {
+      id: apiKey.id,
+      partnerId: auth.partnerId,
+      defaultOrgId: apiKey.orgId,
+      partnerAdminEmail,
+      scopeState: apiKey.scopeState,
+    },
+  };
+
+  try {
+    const result = await tool.handler(parsed.data, bootstrapCtx);
+    return jsonRpcResult(id, {
+      content: [{ type: 'text', text: JSON.stringify(result) }],
+    });
+  } catch (err) {
+    if (err instanceof PaymentRequiredError) {
+      return jsonRpcError(id, -32001, 'PAYMENT_REQUIRED', {
+        code: err.code,
+        message: err.message,
+        remediation: err.remediation,
+      });
+    }
+    if (err instanceof BootstrapError) {
+      return jsonRpcError(id, -32000, err.message, {
+        code: err.code,
+        remediation: err.remediation,
+      });
+    }
+    const message = err instanceof Error ? err.message : 'Tool execution failed';
+    return jsonRpcResult(id, {
+      content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
+      isError: true,
     });
   }
 }

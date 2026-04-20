@@ -4,7 +4,10 @@ export interface BootstrapTool<TInput = unknown, TOutput = unknown> {
   definition: {
     name: string;
     description: string;
-    inputSchema: z.ZodSchema<TInput>;
+    // Output type is fixed to TInput; input type left open so schemas with
+    // `.default()` / `.optional()` on fields still match (their _input type
+    // differs from their _output type).
+    inputSchema: z.ZodType<TInput, z.ZodTypeDef, any>;
   };
   handler: (input: TInput, ctx: BootstrapContext) => Promise<TOutput>;
 }

@@ -16,6 +16,7 @@ vi.mock('../db/schema', () => ({
   automations: {},
   organizations: {},
   apiKeys: {},
+  partners: { id: 'partners.id', billingEmail: 'partners.billingEmail' },
 }));
 
 vi.mock('../services/aiTools', () => ({
@@ -357,5 +358,109 @@ describe('MCP bootstrap carve-out', () => {
     expect(body.result?.tools).toBeDefined();
     const names = body.result.tools.map((t: any) => t.name).sort();
     expect(names).toEqual(['attach_payment_method', 'create_tenant', 'verify_tenant']);
+  });
+
+  it('flag on + authed key → authTools surface in tools/list AND dispatch to handler', async () => {
+    process.env.MCP_BOOTSTRAP_ENABLED = 'true';
+
+    vi.doMock('../middleware/apiKeyAuth', () => ({
+      apiKeyAuthMiddleware: async (c: any, next: any) => {
+        c.set('apiKey', {
+          id: 'key-authtool',
+          orgId: 'org-1',
+          name: 'test',
+          keyPrefix: 'brz_test',
+          scopes: ['ai:read', 'ai:execute'],
+          rateLimit: 1000,
+          createdBy: 'user-1',
+          scopeState: 'full',
+        });
+        c.set('apiKeyOrgId', 'org-1');
+        await next();
+      },
+      requireApiKeyScope: () => async (_c: any, next: any) => next(),
+    }));
+
+    vi.doMock('../services/aiTools', () => ({
+      getToolDefinitions: () => [],
+      executeTool: vi.fn(),
+      getToolTier: () => undefined,
+    }));
+
+    vi.doMock('../db', () => ({
+      db: {
+        select: () => ({
+          from: () => ({
+            where: () => ({ limit: async () => [{ partnerId: 'partner-1', billingEmail: 'admin@acme.com' }] }),
+          }),
+        }),
+      },
+      withDbAccessContext: vi.fn(),
+      withSystemDbAccessContext: vi.fn(),
+      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+    }));
+
+    const handlerMock = vi.fn(async () => ({ invites_sent: 2, invite_ids: ['i1', 'i2'], skipped_duplicates: 0 }));
+    const fakeAuthTool = {
+      definition: {
+        name: 'send_deployment_invites',
+        description: 'fake authTool',
+        inputSchema: {
+          _def: { typeName: 'ZodObject', shape: () => ({}) },
+          safeParse: (v: unknown) => ({ success: true, data: v }),
+        },
+      },
+      handler: handlerMock,
+    };
+    vi.doMock('../modules/mcpBootstrap', () => ({
+      initMcpBootstrap: () => ({
+        unauthTools: [],
+        authTools: [fakeAuthTool],
+      }),
+    }));
+
+    const mod = await import('./mcpServer');
+    await mod.__loadMcpBootstrapForTests();
+
+    // 1) tools/list surfaces send_deployment_invites for an ai:execute key.
+    const listRes = await mod.mcpServerRoutes.request('/message', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+    expect(listRes.status).toBe(200);
+    const listBody = await listRes.json();
+    const names = listBody.result.tools.map((t: any) => t.name);
+    expect(names).toContain('send_deployment_invites');
+
+    // 2) tools/call dispatches to the handler with parsed input + ctx.apiKey.
+    const callRes = await mod.mcpServerRoutes.request('/message', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'send_deployment_invites', arguments: { emails: ['a@b.com'] } },
+      }),
+    });
+    expect(callRes.status).toBe(200);
+    const callBody = await callRes.json();
+    expect(callBody.error).toBeUndefined();
+    expect(handlerMock).toHaveBeenCalledTimes(1);
+    const call = handlerMock.mock.calls[0] as unknown as [any, any];
+    const [calledInput, calledCtx] = call;
+    expect(calledInput).toEqual({ emails: ['a@b.com'] });
+    expect(calledCtx.apiKey.id).toBe('key-authtool');
+    expect(calledCtx.apiKey.partnerId).toBe('partner-1');
+    expect(calledCtx.apiKey.defaultOrgId).toBe('org-1');
+    expect(calledCtx.apiKey.partnerAdminEmail).toBe('admin@acme.com');
+    expect(calledCtx.apiKey.scopeState).toBe('full');
+    const contentText = callBody.result.content[0].text;
+    expect(JSON.parse(contentText)).toEqual({
+      invites_sent: 2,
+      invite_ids: ['i1', 'i2'],
+      skipped_duplicates: 0,
+    });
   });
 });

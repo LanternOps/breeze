@@ -24,7 +24,7 @@ const inputSchema = z.object({
   // os_targets is accepted but currently unused — OS detection happens at
   // the /i/:short_code landing page based on the recipient's user-agent.
   // Kept on the schema for forward-compat with per-recipient OS overrides.
-  os_targets: z.enum(['win', 'mac', 'linux', 'auto']).optional(),
+  os_targets: z.enum(['win', 'mac', 'linux', 'auto']).default('auto'),
 });
 
 type SendInput = z.infer<typeof inputSchema>;

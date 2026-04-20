@@ -156,12 +156,12 @@ describe('send_deployment_invites', () => {
     expect(parsed.success).toBe(false);
   });
 
-  it('accepts valid input with os_targets omitted', () => {
+  it('accepts valid input with os_targets omitted (defaults to "auto")', () => {
     const parsed = sendDeploymentInvitesTool.definition.inputSchema.safeParse({
       emails: ['alex@acme.com'],
     });
     expect(parsed.success).toBe(true);
-    if (parsed.success) expect(parsed.data.os_targets).toBeUndefined();
+    if (parsed.success) expect(parsed.data.os_targets).toBe('auto');
   });
 
   it('enforces per-tenant invite rate limit (50/hour) BEFORE any DB writes', async () => {
