@@ -3,6 +3,7 @@ import { createTenantTool } from './tools/createTenant';
 import { verifyTenantTool } from './tools/verifyTenant';
 import { attachPaymentMethodTool } from './tools/attachPaymentMethod';
 import { sendDeploymentInvitesTool } from './tools/sendDeploymentInvites';
+import { configureDefaultsTool } from './tools/configureDefaults';
 import { checkMcpBootstrapStartup } from './startupCheck';
 
 export function initMcpBootstrap(): {
@@ -14,9 +15,8 @@ export function initMcpBootstrap(): {
     // Unauth tools: reachable before the partner has an API key (pre-activation).
     unauthTools: [createTenantTool, verifyTenantTool, attachPaymentMethodTool],
     // Auth tools require a valid API key AND a payment method on file
-    // (enforced via the requirePaymentMethod decorator). configureDefaultsTool
-    // lands in Phase 6.
-    authTools: [sendDeploymentInvitesTool],
+    // (enforced via the requirePaymentMethod decorator).
+    authTools: [sendDeploymentInvitesTool, configureDefaultsTool],
   };
 }
 
