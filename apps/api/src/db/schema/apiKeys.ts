@@ -18,5 +18,6 @@ export const apiKeys = pgTable('api_keys', {
   createdBy: uuid('created_by').notNull().references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
-  status: apiKeyStatusEnum('status').notNull().default('active')
+  status: apiKeyStatusEnum('status').notNull().default('active'),
+  scopeState: text('scope_state').notNull().default('full'),
 });
