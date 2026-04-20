@@ -2,7 +2,7 @@ import Foundation
 
 /// Parses the bootstrap token + API host out of the installer app's own
 /// bundle filename. Format: `Breeze Installer [TOKEN@host.example].app`
-/// where TOKEN is exactly 6 chars of [A-Z0-9] and host matches a relaxed
+/// where TOKEN is exactly 10 chars of [A-Z0-9] and host matches a relaxed
 /// hostname pattern (letters, digits, dots, hyphens).
 enum FilenameTokenParser {
     struct Result: Equatable {
@@ -14,7 +14,7 @@ enum FilenameTokenParser {
         case invalidFormat
     }
 
-    private static let pattern = #"\[([A-Z0-9]{6})@([a-zA-Z0-9.\-]+)\]"#
+    private static let pattern = #"\[([A-Z0-9]{10})@([a-zA-Z0-9.\-]+)\]"#
 
     static func parse(bundleName: String) throws -> Result {
         guard let regex = try? NSRegularExpression(pattern: pattern),

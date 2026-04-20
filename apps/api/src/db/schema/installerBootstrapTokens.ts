@@ -21,10 +21,12 @@ export const installerBootstrapTokens = pgTable(
     parentEnrollmentKeyId: uuid('parent_enrollment_key_id')
       .notNull()
       .references(() => enrollmentKeys.id, { onDelete: 'cascade' }),
-    siteId: uuid('site_id').references(() => sites.id),
+    siteId: uuid('site_id').references(() => sites.id, { onDelete: 'set null' }),
+    /** Must be >= 1; enforced by DB CHECK installer_bootstrap_tokens_max_usage_positive */
     maxUsage: integer('max_usage').notNull().default(1),
     createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    /** Must be strictly after created_at; enforced by DB CHECK installer_bootstrap_tokens_expires_after_created */
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     consumedAt: timestamp('consumed_at', { withTimezone: true }),
     consumedFromIp: text('consumed_from_ip'),
