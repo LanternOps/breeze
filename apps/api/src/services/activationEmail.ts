@@ -1,7 +1,12 @@
-// Phase 3 stub: replaced with a real sender by the MCP bootstrap plan, Task 3.x.
-// Kept here so `create_tenant` (Task 2.2) can import the symbol at build time
-// while callers mock it in tests. The unmocked runtime path intentionally throws
-// until Phase 3 wires up the real transactional-email transport.
+import { eq } from 'drizzle-orm';
+import { db } from '../db';
+import { partners } from '../db/schema';
+import { getEmailService } from './email';
+
+export interface BuildActivationEmailInput {
+  activationUrl: string;
+  orgName: string;
+}
 
 export interface SendActivationEmailArgs {
   to: string;
@@ -9,8 +14,50 @@ export interface SendActivationEmailArgs {
   partnerId: string;
 }
 
-export async function sendActivationEmail(_args: SendActivationEmailArgs): Promise<void> {
-  throw new Error(
-    'sendActivationEmail not implemented yet — wire up the real sender in Phase 3 (MCP bootstrap plan).',
-  );
+export function buildActivationEmail({ activationUrl, orgName }: BuildActivationEmailInput) {
+  const safeOrg = escapeHtml(orgName);
+  const subject = `Activate your Breeze tenant for ${orgName}`;
+  const text = [
+    `Welcome to Breeze!`,
+    ``,
+    `Click the link below to activate ${orgName}'s tenant (link valid 24 hours):`,
+    ``,
+    activationUrl,
+    ``,
+    `After clicking, you'll be asked to attach a payment method for identity verification (no charge for free tier).`,
+    ``,
+    `— Breeze`,
+  ].join('\n');
+  const html = [
+    `<p>Welcome to <strong>Breeze</strong>!</p>`,
+    `<p>Click the link below to activate <strong>${safeOrg}</strong>'s tenant (link valid 24 hours):</p>`,
+    `<p><a href="${escapeHtml(activationUrl)}">${escapeHtml(activationUrl)}</a></p>`,
+    `<p>After clicking, you'll be asked to attach a payment method for identity verification (no charge for free tier).</p>`,
+    `<p>— Breeze</p>`,
+  ].join('');
+  return { subject, html, text };
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!
+  ));
+}
+
+export async function sendActivationEmail(input: SendActivationEmailArgs): Promise<void> {
+  const base = process.env.PUBLIC_ACTIVATION_BASE_URL;
+  if (!base) throw new Error('PUBLIC_ACTIVATION_BASE_URL is not configured.');
+  const [partner] = await db
+    .select({ name: partners.name })
+    .from(partners)
+    .where(eq(partners.id, input.partnerId))
+    .limit(1);
+  const orgName = partner?.name ?? 'your organization';
+  const tmpl = buildActivationEmail({
+    activationUrl: `${base}/activate/${input.rawToken}`,
+    orgName,
+  });
+  const svc = getEmailService();
+  if (!svc) throw new Error('Email service is not configured.');
+  await svc.sendEmail({ to: input.to, ...tmpl });
 }
