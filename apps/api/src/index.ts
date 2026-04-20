@@ -343,6 +343,14 @@ app.route('/metrics', metricsRoutes);
 // Short link routes (enrollment short URLs at /s/<code>)
 app.route('/s', publicShortLinkRoutes);
 
+// MCP bootstrap activation routes (flag-gated). Mounted only when
+// MCP_BOOTSTRAP_ENABLED=true so the module's side effects and env
+// requirements stay off the hot path on deployments that don't use it.
+if (process.env.MCP_BOOTSTRAP_ENABLED === 'true') {
+  const { mountActivationRoutes } = await import('./modules/mcpBootstrap');
+  mountActivationRoutes(app);
+}
+
 // API routes
 const api = new Hono();
 
