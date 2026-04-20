@@ -1,6 +1,6 @@
 import type { Hono } from 'hono';
 import { createHash } from 'node:crypto';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import Stripe from 'stripe';
 import { db } from '../../db';
 import {
@@ -195,4 +195,74 @@ export function mountActivationRoutes(app: Hono): void {
 
     return c.text('ok');
   });
+
+  // ============================================
+  // Test-mode hooks (MCP_BOOTSTRAP_TEST_MODE)
+  // ============================================
+  // These routes mirror the side-effects of a real email click and a real
+  // Stripe setup_intent.succeeded webhook so YAML E2E tests can drive the
+  // activation state machine without running a mail server or signing a
+  // Stripe payload. Mounted only when the flag is on; otherwise the routes
+  // simply don't exist (Hono returns 404).
+  if (process.env.MCP_BOOTSTRAP_TEST_MODE === 'true') {
+    app.post('/test/activate/:partnerId', async (c) => {
+      const partnerId = c.req.param('partnerId');
+      await db.transaction(async (tx) => {
+        await tx
+          .update(partners)
+          .set({ emailVerifiedAt: new Date() })
+          .where(eq(partners.id, partnerId));
+        await tx
+          .update(partnerActivations)
+          .set({ consumedAt: new Date() })
+          .where(
+            and(
+              eq(partnerActivations.partnerId, partnerId),
+              isNull(partnerActivations.consumedAt),
+            ),
+          );
+        const [link] = await tx
+          .select({ userId: partnerUsers.userId })
+          .from(partnerUsers)
+          .where(eq(partnerUsers.partnerId, partnerId))
+          .limit(1);
+        if (link) {
+          await tx
+            .update(users)
+            .set({ status: 'active' })
+            .where(eq(users.id, link.userId));
+        }
+      });
+      return c.json({ ok: true });
+    });
+
+    app.post('/test/complete-payment/:partnerId', async (c) => {
+      const partnerId = c.req.param('partnerId');
+      await db.transaction(async (tx) => {
+        await tx
+          .update(partners)
+          .set({ paymentMethodAttachedAt: new Date() })
+          .where(eq(partners.id, partnerId));
+        const orgs = await tx
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(eq(organizations.partnerId, partnerId));
+        if (orgs.length > 0) {
+          await tx
+            .update(apiKeys)
+            .set({ scopeState: 'full' })
+            .where(
+              and(
+                inArray(
+                  apiKeys.orgId,
+                  orgs.map((o) => o.id),
+                ),
+                eq(apiKeys.scopeState, 'readonly'),
+              ),
+            );
+        }
+      });
+      return c.json({ ok: true });
+    });
+  }
 }

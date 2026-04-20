@@ -366,3 +366,60 @@ describe('POST /activate/complete/webhook', () => {
     );
   });
 });
+
+describe('test-mode hooks (MCP_BOOTSTRAP_TEST_MODE)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('POST /test/activate/:partnerId returns 404 when flag is unset', async () => {
+    delete process.env.MCP_BOOTSTRAP_TEST_MODE;
+    const res = await buildApp().request('/test/activate/partner-xyz', { method: 'POST' });
+    expect(res.status).toBe(404);
+  });
+
+  it('POST /test/complete-payment/:partnerId returns 404 when flag is unset', async () => {
+    delete process.env.MCP_BOOTSTRAP_TEST_MODE;
+    const res = await buildApp().request('/test/complete-payment/partner-xyz', { method: 'POST' });
+    expect(res.status).toBe(404);
+  });
+
+  it('POST /test/activate/:partnerId runs activation side-effects when flag is true', async () => {
+    process.env.MCP_BOOTSTRAP_TEST_MODE = 'true';
+    try {
+      enqueueSelects([
+        [{ userId: 'user-1' }], // partnerUsers lookup inside the transaction
+      ]);
+      const { setMock } = defaultUpdateMock();
+      const res = await buildApp().request('/test/activate/partner-xyz', { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true });
+      expect(setMock).toHaveBeenCalledWith(
+        expect.objectContaining({ emailVerifiedAt: expect.any(Date) }),
+      );
+      expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ consumedAt: expect.any(Date) }));
+      expect(setMock).toHaveBeenCalledWith({ status: 'active' });
+    } finally {
+      delete process.env.MCP_BOOTSTRAP_TEST_MODE;
+    }
+  });
+
+  it('POST /test/complete-payment/:partnerId marks payment + upgrades keys when flag is true', async () => {
+    process.env.MCP_BOOTSTRAP_TEST_MODE = 'true';
+    try {
+      enqueueSelects([
+        [{ id: 'org-1' }, { id: 'org-2' }], // organizations under the partner
+      ]);
+      const { setMock } = defaultUpdateMock();
+      const res = await buildApp().request('/test/complete-payment/partner-xyz', { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true });
+      expect(setMock).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentMethodAttachedAt: expect.any(Date) }),
+      );
+      expect(setMock).toHaveBeenCalledWith({ scopeState: 'full' });
+    } finally {
+      delete process.env.MCP_BOOTSTRAP_TEST_MODE;
+    }
+  });
+});
