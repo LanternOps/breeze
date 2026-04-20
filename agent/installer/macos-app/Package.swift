@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "BreezeInstaller",
-    platforms: [.macOS(.v11)],
+    platforms: [.macOS(.v12)],
     products: [
         .executable(name: "BreezeInstaller", targets: ["BreezeInstaller"]),
     ],
