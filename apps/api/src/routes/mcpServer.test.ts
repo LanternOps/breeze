@@ -192,6 +192,123 @@ describe('MCP bootstrap carve-out', () => {
     expect(body.error?.code).toBe(-32001);
   });
 
+  it('readonly scope backstop — allows tier-1 tool calls with readonly key', async () => {
+    delete process.env.MCP_BOOTSTRAP_ENABLED;
+
+    vi.doMock('../middleware/apiKeyAuth', () => ({
+      apiKeyAuthMiddleware: async (c: any, next: any) => {
+        c.set('apiKey', {
+          id: 'key-1',
+          orgId: 'org-1',
+          name: 'test',
+          keyPrefix: 'brz_test',
+          scopes: ['ai:read'],
+          rateLimit: 1000,
+          createdBy: 'user-1',
+          scopeState: 'readonly',
+        });
+        c.set('apiKeyOrgId', 'org-1');
+        await next();
+      },
+      requireApiKeyScope: () => async (_c: any, next: any) => next(),
+    }));
+
+    vi.doMock('../services/aiTools', () => ({
+      getToolDefinitions: () => [{ name: 'list_devices', description: '', input_schema: {} }],
+      executeTool: async () => '{"ok":true}',
+      getToolTier: (name: string) => (name === 'list_devices' ? 1 : undefined),
+    }));
+
+    // Stub DB select chain used by buildAuthFromApiKey.
+    vi.doMock('../db', () => ({
+      db: {
+        select: () => ({
+          from: () => ({
+            where: () => ({ limit: async () => [{ partnerId: 'partner-1' }] }),
+          }),
+        }),
+      },
+      withDbAccessContext: vi.fn(),
+      withSystemDbAccessContext: vi.fn(),
+      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+    }));
+
+    const { mcpServerRoutes } = await import('./mcpServer');
+    const res = await mcpServerRoutes.request('/message', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'list_devices', arguments: {} },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.error).toBeUndefined();
+    expect(body.result).toBeDefined();
+  });
+
+  it('readonly scope backstop — blocks tier-2+ tool, returns 402 PAYMENT_REQUIRED', async () => {
+    delete process.env.MCP_BOOTSTRAP_ENABLED;
+
+    vi.doMock('../middleware/apiKeyAuth', () => ({
+      apiKeyAuthMiddleware: async (c: any, next: any) => {
+        c.set('apiKey', {
+          id: 'key-1',
+          orgId: 'org-1',
+          name: 'test',
+          keyPrefix: 'brz_test',
+          scopes: ['ai:read', 'ai:write'],
+          rateLimit: 1000,
+          createdBy: 'user-1',
+          scopeState: 'readonly',
+        });
+        c.set('apiKeyOrgId', 'org-1');
+        await next();
+      },
+      requireApiKeyScope: () => async (_c: any, next: any) => next(),
+    }));
+
+    vi.doMock('../services/aiTools', () => ({
+      getToolDefinitions: () => [{ name: 'restart_device', description: '', input_schema: {} }],
+      executeTool: async () => '{"ok":true}',
+      getToolTier: (name: string) => (name === 'restart_device' ? 2 : undefined),
+    }));
+
+    vi.doMock('../db', () => ({
+      db: {
+        select: () => ({
+          from: () => ({
+            where: () => ({ limit: async () => [{ partnerId: 'partner-1' }] }),
+          }),
+        }),
+      },
+      withDbAccessContext: vi.fn(),
+      withSystemDbAccessContext: vi.fn(),
+      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+    }));
+
+    const { mcpServerRoutes } = await import('./mcpServer');
+    const res = await mcpServerRoutes.request('/message', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'restart_device', arguments: {} },
+      }),
+    });
+    expect(res.status).toBe(402);
+    const body = await res.json();
+    expect(body.error?.message).toBe('PAYMENT_REQUIRED');
+    expect(body.error?.data?.code).toBe('PAYMENT_REQUIRED');
+    expect(body.error?.data?.remediation?.tool).toBe('attach_payment_method');
+    expect(body.error?.data?.remediation?.args?.tenant_id).toBe('partner-1');
+  });
+
   it('flag on + no auth header → tools/list returns the three bootstrap tools', async () => {
     process.env.MCP_BOOTSTRAP_ENABLED = 'true';
 

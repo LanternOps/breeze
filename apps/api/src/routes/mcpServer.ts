@@ -413,7 +413,7 @@ mcpServerRoutes.post(
     // Build a minimal AuthContext from the API key
     const auth = await buildAuthFromApiKey(apiKey);
 
-    const response = await handleJsonRpc(body, auth, apiKey.scopes);
+    const response = await handleJsonRpc(body, auth, apiKey.scopes, apiKey.scopeState);
 
     writeAuditEvent(c, {
       orgId: apiKey.orgId,
@@ -441,6 +441,12 @@ mcpServerRoutes.post(
       }
     }
 
+    // PAYMENT_REQUIRED (readonly-scope backstop) surfaces as HTTP 402.
+    const errData = response.error?.data as { code?: string } | undefined;
+    if (errData?.code === 'PAYMENT_REQUIRED') {
+      return c.json(response, 402);
+    }
+
     // Otherwise return inline (stateless HTTP mode)
     return c.json(response);
   }
@@ -453,7 +459,8 @@ mcpServerRoutes.post(
 async function handleJsonRpc(
   req: JsonRpcRequest,
   auth: AuthContext,
-  scopes: string[]
+  scopes: string[],
+  scopeState: 'readonly' | 'full' = 'full'
 ): Promise<JsonRpcResponse> {
   try {
     switch (req.method) {
@@ -478,7 +485,7 @@ async function handleJsonRpc(
         return handleToolsList(req.id, scopes);
 
       case 'tools/call':
-        return await handleToolsCall(req.id, req.params ?? {}, auth, scopes);
+        return await handleToolsCall(req.id, req.params ?? {}, auth, scopes, scopeState);
 
       case 'resources/list':
         return handleResourcesList(req.id);
@@ -635,7 +642,8 @@ async function handleToolsCall(
   id: string | number,
   params: Record<string, unknown>,
   auth: AuthContext,
-  scopes: string[]
+  scopes: string[],
+  scopeState: 'readonly' | 'full' = 'full'
 ): Promise<JsonRpcResponse> {
   const toolName = params.name as string;
   const toolInput = (params.arguments ?? {}) as Record<string, unknown>;
@@ -657,6 +665,23 @@ async function handleToolsCall(
   const tier = getToolTier(toolName);
   if (tier === undefined) {
     return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
+  }
+
+  // Readonly-scope backstop: pre-payment keys can't call tier-2+ tools.
+  // Defense-in-depth — the primary enforcement is the `requirePaymentMethod`
+  // decorator on individual bootstrap tools. Returned as a JSON-RPC error;
+  // the outer /message handler translates a PAYMENT_REQUIRED data.code into a
+  // 402 HTTP response.
+  if (scopeState === 'readonly' && tier >= 2) {
+    return jsonRpcError(id, -32001, 'PAYMENT_REQUIRED', {
+      code: 'PAYMENT_REQUIRED',
+      message:
+        'This action requires a payment method on file (identity verification, no charge for free tier).',
+      remediation: {
+        tool: 'attach_payment_method',
+        args: { tenant_id: auth.partnerId },
+      },
+    });
   }
 
   const hasExecute = scopes.includes('*') || scopes.includes('ai:execute');
