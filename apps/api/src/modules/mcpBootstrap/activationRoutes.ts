@@ -15,6 +15,7 @@ import { rateLimiter } from '../../services/rate-limit';
 import { getRedis } from '../../services/redis';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { getBreezeBillingClient } from '../../services/breezeBillingClient';
+import { recordActivationTransition } from './metrics';
 
 /**
  * Activation routes for MCP-provisioned tenants.
@@ -76,6 +77,7 @@ export function mountActivationRoutes(app: Hono): void {
       resourceId: row.partnerId,
       result: 'success',
     });
+    recordActivationTransition('pending_payment');
 
     return c.redirect(`/activate/${raw}?status=email_verified`);
   });
@@ -189,6 +191,7 @@ export function mountActivationRoutes(app: Hono): void {
       resourceId: partner.id,
       result: 'success',
     });
+    recordActivationTransition('active');
 
     return c.text('ok');
   });

@@ -10,6 +10,7 @@ import { sendActivationEmail } from '../../../services/activationEmail';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../../../services/auditEvents';
 import type { BootstrapTool } from '../types';
 import { BootstrapError } from '../types';
+import { recordActivationTransition } from '../metrics';
 
 const inputSchema = z.object({
   org_name: z.string().min(2).max(64),
@@ -72,6 +73,7 @@ export const createTenantTool: BootstrapTool<z.infer<typeof inputSchema>, Create
     const existing = await findRecentMcpPartnerByAdminEmail(input.admin_email, input.org_name, since);
     if (existing) {
       await issueActivationToken(existing.id, input.admin_email);
+      recordActivationTransition('pending_email');
       return { tenant_id: existing.id, activation_status: 'pending_email' };
     }
 
@@ -104,6 +106,7 @@ export const createTenantTool: BootstrapTool<z.infer<typeof inputSchema>, Create
       },
     });
 
+    recordActivationTransition('pending_email');
     return { tenant_id: result.partnerId, activation_status: 'pending_email' };
   },
 };

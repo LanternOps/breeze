@@ -13,6 +13,7 @@ import { getRedis } from '../../../services/redis';
 import { mintApiKey } from '../../../services/apiKeys';
 import type { BootstrapTool } from '../types';
 import { BootstrapError } from '../types';
+import { recordActivationTransition } from '../metrics';
 
 const inputSchema = z.object({ tenant_id: z.string().uuid() });
 
@@ -70,6 +71,7 @@ export const verifyTenantTool: BootstrapTool<z.infer<typeof inputSchema>, Verify
         .limit(1);
 
       if (latest && !latest.consumedAt && latest.expiresAt < new Date()) {
+        recordActivationTransition('expired');
         return {
           status: 'expired',
           remediation: 'Call create_tenant again with the same admin_email to issue a new activation link.',
