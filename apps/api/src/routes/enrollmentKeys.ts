@@ -2,10 +2,10 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, sql, desc, inArray, lt, isNull, or } from 'drizzle-orm';
+import { and, eq, sql, desc, inArray, lt, isNull, or, asc } from 'drizzle-orm';
 import { customAlphabet } from 'nanoid';
 import { db, withSystemDbAccessContext } from '../db';
-import { enrollmentKeys } from '../db/schema';
+import { enrollmentKeys, organizations } from '../db/schema';
 import { sites } from '../db/schema/orgs';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { userRateLimit } from '../middleware/userRateLimit';
@@ -153,7 +153,7 @@ function writeEnrollmentKeyAudit(
 const shortCodeAlphabet = '23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz';
 const generateShortCode = customAlphabet(shortCodeAlphabet, 10);
 
-async function allocateShortCode(): Promise<string> {
+export async function allocateShortCode(): Promise<string> {
   for (let attempt = 0; attempt < 5; attempt++) {
     const code = generateShortCode();
     const [existing] = await db
@@ -164,6 +164,108 @@ async function allocateShortCode(): Promise<string> {
     if (!existing) return code;
   }
   throw new Error('Failed to allocate unique short code after 5 attempts');
+}
+
+// ============================================
+// Child enrollment key helper (used by MCP bootstrap invite flow)
+// ============================================
+
+export interface MintChildEnrollmentKeyInput {
+  /** Partner id — used to resolve the partner's default org/site if orgId/siteId not supplied. */
+  partnerId: string;
+  /** Optional explicit org. Defaults to the partner's first organization (by createdAt asc). */
+  orgId?: string;
+  /** Optional explicit site. Defaults to the org's first site (by createdAt asc). */
+  siteId?: string;
+  /** Child key TTL. Defaults to CHILD_ENROLLMENT_KEY_TTL_MINUTES. */
+  expiresInSeconds?: number;
+  /** maxUsage on the child key. Defaults to 1. */
+  maxUsage?: number;
+  /** Display name suffix for the child key. */
+  nameSuffix?: string;
+  /** Optional installer platform to persist on the row. */
+  installerPlatform?: 'windows' | 'macos' | null;
+}
+
+export interface MintChildEnrollmentKeyResult {
+  id: string;
+  orgId: string;
+  siteId: string;
+  shortCode: string;
+  rawKey: string;
+  expiresAt: Date;
+}
+
+/**
+ * Mint a single-use (or N-use) child enrollment key, allocate a short-code,
+ * and return the raw token + metadata. Used by the MCP bootstrap invite flow
+ * (`send_deployment_invites`) but shaped as a general helper so other callers
+ * can reuse it without going through the MFA-gated HTTP route.
+ *
+ * Resolves the partner's default org + site when `orgId` / `siteId` are
+ * omitted. Raises when the partner has no org or no site yet — both are
+ * guaranteed by `createPartner`, so this path is only hit for pathologically
+ * incomplete tenants.
+ */
+export async function mintChildEnrollmentKey(
+  input: MintChildEnrollmentKeyInput,
+): Promise<MintChildEnrollmentKeyResult> {
+  let orgId = input.orgId;
+  if (!orgId) {
+    const [org] = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.partnerId, input.partnerId))
+      .orderBy(asc(organizations.createdAt))
+      .limit(1);
+    if (!org) {
+      throw new Error(`mintChildEnrollmentKey: partner ${input.partnerId} has no organizations`);
+    }
+    orgId = org.id;
+  }
+
+  let siteId = input.siteId;
+  if (!siteId) {
+    const [site] = await db
+      .select({ id: sites.id })
+      .from(sites)
+      .where(eq(sites.orgId, orgId))
+      .orderBy(asc(sites.createdAt))
+      .limit(1);
+    if (!site) {
+      throw new Error(`mintChildEnrollmentKey: org ${orgId} has no sites`);
+    }
+    siteId = site.id;
+  }
+
+  const rawKey = generateEnrollmentKey();
+  const keyHash = hashEnrollmentKey(rawKey);
+  const shortCode = await allocateShortCode();
+  const expiresAt = new Date(
+    Date.now()
+      + (input.expiresInSeconds ?? CHILD_ENROLLMENT_KEY_TTL_MINUTES * 60) * 1000,
+  );
+
+  const [row] = await db
+    .insert(enrollmentKeys)
+    .values({
+      orgId,
+      siteId,
+      name: input.nameSuffix ? `mcp-invite ${input.nameSuffix}` : 'mcp-invite',
+      key: keyHash,
+      maxUsage: input.maxUsage ?? 1,
+      expiresAt,
+      createdBy: null,
+      shortCode,
+      installerPlatform: input.installerPlatform ?? null,
+    })
+    .returning();
+
+  if (!row) {
+    throw new Error('mintChildEnrollmentKey: insert returned no row');
+  }
+
+  return { id: row.id, orgId, siteId, shortCode, rawKey, expiresAt };
 }
 
 // ============================================
