@@ -14,6 +14,7 @@ export interface IssueBootstrapTokenInput {
 }
 
 export interface IssuedBootstrapToken {
+  id: string;
   token: string;
   expiresAt: Date;
   parentKeyName: string;
@@ -60,7 +61,7 @@ export async function issueBootstrapTokenForKey(
   const token = generateBootstrapToken();
   const expiresAt = bootstrapTokenExpiresAt();
 
-  await db.insert(installerBootstrapTokens).values({
+  const [row] = await db.insert(installerBootstrapTokens).values({
     token,
     orgId: parent.orgId,
     parentEnrollmentKeyId: parent.id,
@@ -68,7 +69,7 @@ export async function issueBootstrapTokenForKey(
     maxUsage: input.maxUsage ?? 1,
     createdBy: input.createdByUserId,
     expiresAt,
-  });
+  }).returning();
 
-  return { token, expiresAt, parentKeyName: parent.name };
+  return { id: row.id, token, expiresAt, parentKeyName: parent.name };
 }
