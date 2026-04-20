@@ -47,7 +47,6 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['partners', 'id'],
   ['partner_users', 'partner_id'],
   ['partner_activations', 'partner_id'],
-  ['deployment_invites', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
@@ -55,6 +54,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
 // to the user's partner OR the user's org OR is the user themselves.
 const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   'users',
+  'deployment_invites',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their
