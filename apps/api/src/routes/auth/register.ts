@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { eq, and, isNull, sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import * as dbModule from '../../db';
-import { users, partners, partnerUsers, roles, rolePermissions, organizations, sites } from '../../db/schema';
+import { users, partners, partnerUsers } from '../../db/schema';
 import {
   hashPassword,
   isPasswordStrong,
@@ -12,6 +12,7 @@ import {
 } from '../../services';
 import { ENABLE_REGISTRATION, ENABLE_2FA, registerSchema, registerPartnerSchema } from './schemas';
 import { dispatchHook } from '../../services/partnerHooks';
+import { createPartner } from '../../services/partnerCreate';
 import {
   runWithSystemDbAccess,
   getClientRateLimitKey,
@@ -125,177 +126,60 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
       return c.json({ success: true, message: 'If registration can proceed, you will receive next steps shortly.' });
     }
 
-    // Generate slug from company name
-    const baseSlug = companyName
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 50);
-
-    // Check if slug exists and make unique if needed
-    let slug = baseSlug;
-    let suffix = 1;
-    while (true) {
-      const existingPartner = await db
-        .select({ id: partners.id })
-        .from(partners)
-        .where(eq(partners.slug, slug))
-        .limit(1);
-
-      if (existingPartner.length === 0) break;
-      slug = `${baseSlug}-${suffix}`;
-      suffix++;
-      if (suffix > 100) {
-        return c.json({ error: 'Unable to generate unique company identifier' }, 500);
-      }
-    }
-
     // Hash password before transaction (CPU-intensive, don't hold tx open)
     const passwordHash = await hashPassword(password);
 
-    // Atomic transaction — all-or-nothing creation of partner, role, user, association
     try {
-      const result = await db.transaction(async (tx) => {
-        // Signup is an unauthenticated, system-initiated tenant-creation flow.
-        // Elevate this tx to system scope so RLS policies on partners,
-        // organizations, and any other tenant-root tables in this tx pass
-        // for rows whose ids aren't yet in any accessible_*_ids list.
-        await tx.execute(sql`select set_config('breeze.scope', 'system', true)`);
-        await tx.execute(sql`select set_config('breeze.org_id', '', true)`);
-        await tx.execute(sql`select set_config('breeze.accessible_org_ids', '*', true)`);
-        await tx.execute(sql`select set_config('breeze.accessible_partner_ids', '*', true)`);
-
-        const [newPartner] = await tx
-          .insert(partners)
-          .values({
-            name: companyName,
-            slug,
-            type: 'msp',
-            plan: 'free',
-            status: 'active',
-            billingEmail: email.toLowerCase(),
-          })
-          .returning();
-
-        if (!newPartner) {
-          throw new Error('Failed to create company');
-        }
-
-        const [adminRole] = await tx
-          .insert(roles)
-          .values({
-            partnerId: newPartner.id,
-            scope: 'partner',
-            name: 'Partner Admin',
-            description: 'Full access to partner and all organizations',
-            isSystem: true
-          })
-          .returning();
-
-        if (!adminRole) {
-          throw new Error('Failed to create admin role');
-        }
-
-        const [newUser] = await tx
-          .insert(users)
-          .values({
-            partnerId: newPartner.id,
-            email: email.toLowerCase(),
-            name,
-            passwordHash,
-            status: 'active'
-          })
-          .returning();
-
-        if (!newUser) {
-          throw new Error('Failed to create user');
-        }
-
-        await tx.insert(partnerUsers).values({
-          partnerId: newPartner.id,
-          userId: newUser.id,
-          roleId: adminRole.id,
-          orgAccess: 'all'
-        });
-
-        // Copy permissions from the seeded system Partner Admin role
-        const [systemPartnerAdmin] = await tx
-          .select({ id: roles.id })
-          .from(roles)
-          .where(
-            and(
-              eq(roles.name, 'Partner Admin'),
-              eq(roles.isSystem, true),
-              isNull(roles.partnerId)
-            )
-          )
-          .limit(1);
-
-        if (!systemPartnerAdmin) {
-          throw new Error('System Partner Admin role not found — run seed first');
-        }
-
-        const systemPerms = await tx
-          .select({ permissionId: rolePermissions.permissionId })
-          .from(rolePermissions)
-          .where(eq(rolePermissions.roleId, systemPartnerAdmin.id));
-
-        for (const perm of systemPerms) {
-          await tx.insert(rolePermissions).values({
-            roleId: adminRole.id,
-            permissionId: perm.permissionId
-          });
-        }
-
-        // Create default organization
-        const orgSlug = slug + '-org';
-        const [newOrg] = await tx
-          .insert(organizations)
-          .values({
-            partnerId: newPartner.id,
-            name: companyName,
-            slug: orgSlug,
-            type: 'customer',
-            status: 'active'
-          })
-          .returning();
-
-        if (!newOrg) {
-          throw new Error('Failed to create default organization');
-        }
-
-        // Create default site
-        const [newSite] = await tx
-          .insert(sites)
-          .values({
-            orgId: newOrg.id,
-            name: 'Main Office',
-            timezone: 'UTC'
-          })
-          .returning();
-
-        if (!newSite) {
-          throw new Error('Failed to create default site');
-        }
-
-        // Mark setup as complete — new partners don't need the wizard
-        await tx
-          .update(users)
-          .set({ lastLoginAt: new Date(), setupCompletedAt: new Date() })
-          .where(eq(users.id, newUser.id));
-
-        return { newPartner, adminRole, newUser, newOrg, newSite };
+      // Atomic creation of partner, role, user, partner-user link, org, site.
+      // Slug generation + uniqueness loop now live inside the service so the
+      // MCP bootstrap tool can reuse them.
+      const result = await createPartner({
+        orgName: companyName,
+        adminEmail: email,
+        adminName: name,
+        passwordHash,
+        origin: { mcp: false },
       });
+
+      // Fetch the partner + user rows we need downstream (slug, plan, status,
+      // billingEmail, mfa state). Kept outside the service so the service's
+      // return contract stays minimal / stable across callers.
+      const [newPartner] = await db
+        .select({
+          id: partners.id,
+          name: partners.name,
+          slug: partners.slug,
+          plan: partners.plan,
+          status: partners.status,
+        })
+        .from(partners)
+        .where(eq(partners.id, result.partnerId))
+        .limit(1);
+
+      const [newUser] = await db
+        .select({
+          id: users.id,
+          email: users.email,
+          name: users.name,
+          mfaEnabled: users.mfaEnabled,
+        })
+        .from(users)
+        .where(eq(users.id, result.adminUserId))
+        .limit(1);
+
+      if (!newPartner || !newUser) {
+        throw new Error('Partner or user row missing after createPartner');
+      }
 
       // Token creation outside tx (doesn't need rollback)
       // MFA is vacuously satisfied when the user hasn't enrolled in MFA
-      const mfaSatisfied = !(ENABLE_2FA && result.newUser.mfaEnabled);
+      const mfaSatisfied = !(ENABLE_2FA && newUser.mfaEnabled);
       const tokens = await createTokenPair({
-        sub: result.newUser.id,
-        email: result.newUser.email,
-        roleId: result.adminRole.id,
-        orgId: result.newOrg?.id ?? null,
-        partnerId: result.newPartner.id,
+        sub: newUser.id,
+        email: newUser.email,
+        roleId: result.adminRoleId,
+        orgId: result.orgId,
+        partnerId: newPartner.id,
         scope: 'partner',
         mfa: mfaSatisfied
       });
@@ -303,23 +187,23 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
       setRefreshTokenCookie(c, tokens.refreshToken);
 
       // Dispatch post-registration hook (external services can override status/redirect)
-      const hookResponse = await dispatchHook('registration', result.newPartner.id, {
-        email: result.newUser.email,
-        partnerName: result.newPartner.name,
-        plan: result.newPartner.plan,
+      const hookResponse = await dispatchHook('registration', newPartner.id, {
+        email: newUser.email,
+        partnerName: newPartner.name,
+        plan: newPartner.plan,
       });
 
       // If hook overrides the partner status (e.g. to 'pending'), apply it
       const VALID_STATUSES = ['pending', 'active', 'suspended', 'churned'] as const;
-      let effectiveStatus: string = result.newPartner.status;
+      let effectiveStatus: string = newPartner.status;
 
-      if (hookResponse?.status && hookResponse.status !== result.newPartner.status) {
+      if (hookResponse?.status && hookResponse.status !== newPartner.status) {
         if (!VALID_STATUSES.includes(hookResponse.status as any)) {
-          console.error(`[Registration] Hook returned invalid status '${hookResponse.status}' for partner ${result.newPartner.id}; ignoring`);
+          console.error(`[Registration] Hook returned invalid status '${hookResponse.status}' for partner ${newPartner.id}; ignoring`);
         } else {
           try {
             const updateSet: Record<string, unknown> = {
-              status: hookResponse.status as typeof result.newPartner.status,
+              status: hookResponse.status as typeof newPartner.status,
             };
 
             // Apply optional status message fields from hook response
@@ -334,10 +218,10 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
             await db
               .update(partners)
               .set(updateSet)
-              .where(eq(partners.id, result.newPartner.id));
+              .where(eq(partners.id, newPartner.id));
             effectiveStatus = hookResponse.status;
           } catch (statusErr) {
-            console.error(`[Registration] Failed to update partner ${result.newPartner.id} status to '${hookResponse.status}':`, statusErr instanceof Error ? statusErr.message : String(statusErr));
+            console.error(`[Registration] Failed to update partner ${newPartner.id} status to '${hookResponse.status}':`, statusErr instanceof Error ? statusErr.message : String(statusErr));
             // Keep effectiveStatus at original value since DB update failed
           }
         }
@@ -348,15 +232,15 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
 
       return c.json({
         user: {
-          id: result.newUser.id,
-          email: result.newUser.email,
-          name: result.newUser.name,
+          id: newUser.id,
+          email: newUser.email,
+          name: newUser.name,
           mfaEnabled: false
         },
         partner: {
-          id: result.newPartner.id,
-          name: result.newPartner.name,
-          slug: result.newPartner.slug,
+          id: newPartner.id,
+          name: newPartner.name,
+          slug: newPartner.slug,
           status: effectiveStatus,
         },
         tokens: toPublicTokens(tokens),
