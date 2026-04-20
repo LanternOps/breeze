@@ -35,8 +35,9 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
     setNewTag('');
     setError(undefined);
 
-    // Fetch sites for the dropdown
-    fetchWithAuth('/orgs/sites')
+    // Scope to the device's org — the PATCH endpoint rejects cross-org moves,
+    // so showing other orgs' sites would just surface invalid choices.
+    fetchWithAuth(`/orgs/sites?organizationId=${device.orgId}`)
       .then(res => res.ok ? res.json() : Promise.reject(new Error('Failed to load sites')))
       .then(data => setSites(data.data ?? data.sites ?? data ?? []))
       .catch(() => setSites([]));

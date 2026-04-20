@@ -4,6 +4,7 @@ import { ArrowLeft } from 'lucide-react';
 import { showToast } from '../shared/Toast';
 import DeviceDetails from './DeviceDetails';
 import DeviceSettingsModal from './DeviceSettingsModal';
+import ChangeSiteModal from './ChangeSiteModal';
 import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
 import { fetchWithAuth } from '../../stores/auth';
@@ -22,6 +23,7 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
   const [error, setError] = useState<string>();
   const [actionInProgress, setActionInProgress] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [changeSiteOpen, setChangeSiteOpen] = useState(false);
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
 
   const fetchDevice = useCallback(async () => {
@@ -176,6 +178,10 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           setSettingsOpen(true);
           break;
 
+        case 'change-site':
+          setChangeSiteOpen(true);
+          return;
+
         case 'clear-sessions': {
           const result = await clearDeviceSessions(device.id);
           showToast({ type: 'success', message: `Cleared ${result.cleaned} session${result.cleaned !== 1 ? 's' : ''} for ${device.hostname}` });
@@ -311,6 +317,15 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         onClose={() => setSettingsOpen(false)}
         onSaved={fetchDevice}
         onAction={handleAction}
+      />
+      <ChangeSiteModal
+        device={device}
+        isOpen={changeSiteOpen}
+        onClose={() => setChangeSiteOpen(false)}
+        onSaved={() => {
+          showToast({ type: 'success', message: `${device.hostname} moved to new site` });
+          void fetchDevice();
+        }}
       />
       <ScriptPickerModal
         isOpen={scriptPickerOpen}

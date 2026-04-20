@@ -12,7 +12,8 @@ import {
   Wrench,
   Trash2,
   XCircle,
-  Package
+  Package,
+  MapPin
 } from 'lucide-react';
 import type { Device } from './DeviceList';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
@@ -136,6 +137,14 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
               <hr className="my-1" />
               <button
                 type="button"
+                onClick={() => handleAction('change-site')}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+              >
+                <MapPin className="h-4 w-4" />
+                Change Site
+              </button>
+              <button
+                type="button"
                 onClick={() => handleAction('maintenance')}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
@@ -256,6 +265,14 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
               >
                 <XCircle className="h-4 w-4" />
                 Clear Sessions
+              </button>
+              <button
+                type="button"
+                onClick={() => handleAction('change-site')}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+              >
+                <MapPin className="h-4 w-4" />
+                Change Site
               </button>
               <button
                 type="button"
