@@ -47,6 +47,31 @@ describe('parseDeepLink', () => {
     expect(parseDeepLink(url)).toBeNull();
   });
 
+  it('rejects HTTP API URLs on RFC1918 addresses', () => {
+    const url = 'breeze://connect?session=a&code=b&api=http%3A%2F%2F192.168.1.5';
+    expect(parseDeepLink(url)).toBeNull();
+  });
+
+  it('rejects HTTP API URLs on 100.* (Tailscale) addresses', () => {
+    const url = 'breeze://connect?session=a&code=b&api=http%3A%2F%2F100.100.100.100';
+    expect(parseDeepLink(url)).toBeNull();
+  });
+
+  it('rejects HTTP API URLs on 10.* addresses', () => {
+    const url = 'breeze://connect?session=a&code=b&api=http%3A%2F%2F10.0.0.1';
+    expect(parseDeepLink(url)).toBeNull();
+  });
+
+  it('accepts HTTP API URLs on 127.0.0.1', () => {
+    const url = 'breeze://connect?session=a&code=b&api=http%3A%2F%2F127.0.0.1%3A3000';
+    expect(parseDeepLink(url)).not.toBeNull();
+  });
+
+  it('accepts HTTP API URLs on [::1] (IPv6 loopback)', () => {
+    const url = 'breeze://connect?session=a&code=b&api=http%3A%2F%2F%5B%3A%3A1%5D';
+    expect(parseDeepLink(url)).not.toBeNull();
+  });
+
   it('returns null when required params are missing', () => {
     expect(parseDeepLink('breeze://connect?session=abc')).toBeNull();
   });
